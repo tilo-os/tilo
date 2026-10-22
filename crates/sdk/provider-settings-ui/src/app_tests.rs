@@ -112,7 +112,7 @@ fn standalone_without_authority_starts_empty_and_rejects_mutation() {
     assert!(config(&mut app).profiles.is_empty());
     assert!(
         app.effect(&ProviderEffect::AddProvider {
-            protocol: "anthropic".into()
+            preset: "anthropic".into()
         })
         .is_err()
     );

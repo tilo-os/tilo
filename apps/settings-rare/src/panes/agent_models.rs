@@ -27,12 +27,13 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
-use ui::widget::{Button, ProgressBar, Row, Text, Widget};
+use ui::widget::{Button, ProgressBar, Row, Widget};
 
 use crate::effects::SettingsEffect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::{BrowserOpener, PortalOpener};
+use crate::panes::agent_sign_in::SignInSetup;
 use crate::panes::agent_vertex::{self, Polled, VertexFields, VertexSetup};
 use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
@@ -47,6 +48,7 @@ use ui::lock::MutexRecover as _;
 mod admin_tests;
 mod hub;
 mod sample;
+mod sign_in_cards;
 use provider_settings_ui::{ProviderEffect, ProviderPanel};
 use sample::SampleManager;
 
@@ -188,11 +190,31 @@ pub enum AgentModelsEffect {
     /// Reload the authoritative profiles and credential status.
     #[effect(job, device_only, label = "Refresh providers")]
     RefreshProviders,
-    /// Add a hosted provider speaking `anthropic` or `openai-compatible`.
+    /// Add a provider from a known one, which fills its name, endpoint and
+    /// protocol; its model is chosen afterwards.
     #[effect(job, device_only, label = "Add provider")]
     AddProvider {
-        #[param("`anthropic` or `openai-compatible`")]
-        protocol: String,
+        #[param(
+            "`openai`, `anthropic`, `gemini`, `mistral`, `openrouter`, `groq`, `xai`, `deepseek`, `together`, `fireworks`, `huggingface`, `ollama`, `lm-studio`, or `openai-compatible` for any other"
+        )]
+        preset: String,
+    },
+    /// Ask the provider which models it offers, with its stored key or
+    /// sign-in: shows whether the connection works, and the models to
+    /// choose from.
+    #[effect(job, device_only, row, label = "Test connection")]
+    ListProviderModels {
+        #[param("The provider's id")]
+        provider: String,
+    },
+    /// Make one model the one agents use from this provider: one it listed,
+    /// or any other id.
+    #[effect(job, device_only, row, idempotent, label = "Use model")]
+    SetProviderModel {
+        #[param("The provider's id")]
+        provider: String,
+        #[param("The model's id")]
+        model: String,
     },
     /// Speak another protocol to a provider.
     #[effect(job, device_only, row, idempotent)]
@@ -307,9 +329,33 @@ pub enum AgentModelsEffect {
         #[param("The provider's id; omit for the one being added")]
         provider: Option<String>,
     },
-    /// Stop a Google sign-in, or the setup of a provider being added.
+    /// Stop a sign-in, or the setup of a provider being added.
     #[effect(view)]
-    CancelGoogleSignIn,
+    CancelSignIn,
+    /// Sign in to `ChatGPT`, GitHub Copilot, `OpenRouter` or Hugging Face: for
+    /// a provider to add, or again for an existing one. Finishes once the
+    /// person has signed in and the provider is saved.
+    #[effect(job, device_only, row, label = "Sign in")]
+    SignInToProvider {
+        #[param("`chatgpt`, `github-copilot`, `openrouter` or `huggingface`")]
+        service: String,
+        #[param("The provider's id; omit to add one")]
+        provider: Option<String>,
+    },
+    /// Start adding the Gemini API signed in with Google and billed to one
+    /// of the person's Cloud projects. Shows its setup; signs in to nothing
+    /// yet.
+    #[effect(view, label = "Add Gemini with Google")]
+    AddGoogleGemini,
+    /// Save the Gemini provider being added, once signed in with Google, or
+    /// change the Cloud project an existing one bills.
+    #[effect(job, device_only, row)]
+    SetGeminiProvider {
+        #[param("The provider's id; omit for the one being added")]
+        provider: Option<String>,
+        #[param("The Google Cloud project billed for requests")]
+        project: String,
+    },
     /// Put one of the person's listed Google Cloud projects in the setup.
     #[effect(view)]
     ChooseVertexProject {
@@ -329,25 +375,6 @@ pub enum AgentModelsEffect {
         #[param("The model, for example gemini-4-argon; the default when omitted")]
         model: Option<String>,
     },
-}
-
-/// Native sign-in actions augment the shared provider row at the same public door.
-fn vertex_provider_row(row: LiveRow, profile: &ProviderProfile) -> LiveRow {
-    row.operation(
-        SettingsEffect::from(AgentModelsEffect::SignInWithGoogle {
-            provider: Some(profile.id.clone()),
-        })
-        .bound(),
-    )
-    .operation(
-        SettingsEffect::from(AgentModelsEffect::SetVertexProvider {
-            provider: Some(profile.id.clone()),
-            project: String::new(),
-            location: None,
-            model: None,
-        })
-        .bound_asking(&["project", "location", "model"]),
-    )
 }
 
 fn token(id: &str) -> String {
@@ -471,19 +498,33 @@ pub(crate) fn answer(
                 },
             ))
         }
-        AgentModelsEffect::AddGoogleVertex => {
-            if model.vertex.as_ref().is_none_or(|setup| setup.existing) {
+        AgentModelsEffect::AddGoogleVertex | AgentModelsEffect::AddGoogleGemini => {
+            let gemini = matches!(effect, AgentModelsEffect::AddGoogleGemini);
+            if model
+                .vertex
+                .as_ref()
+                .is_none_or(|setup| setup.existing || setup.gemini != gemini)
+            {
                 model.cancel_vertex();
-                model.vertex = Some(VertexSetup::adding());
+                model.vertex = Some(if gemini {
+                    VertexSetup::adding_gemini()
+                } else {
+                    VertexSetup::adding()
+                });
             }
             Ok(Effected::done())
+        }
+        AgentModelsEffect::SignInToProvider { service, provider } => {
+            model.sign_in_to(&service, provider.as_deref(), Some(cx.reply()))?;
+            Ok(Effected::Pending)
         }
         AgentModelsEffect::SignInWithGoogle { provider } => {
             model.sign_in_with_google(provider.as_deref())?;
             Ok(Effected::done())
         }
-        AgentModelsEffect::CancelGoogleSignIn => {
+        AgentModelsEffect::CancelSignIn => {
             model.cancel_vertex();
+            model.cancel_sign_in();
             Ok(Effected::done())
         }
         AgentModelsEffect::ChooseVertexProject { project } => {
@@ -496,8 +537,11 @@ pub(crate) fn answer(
             Ok(Effected::done())
         }
         provider => {
-            let vertex_change = matches!(provider, AgentModelsEffect::SetVertexProvider { .. })
-                || matches!(&provider, AgentModelsEffect::RemoveProvider { provider }
+            let vertex_change = matches!(
+                provider,
+                AgentModelsEffect::SetVertexProvider { .. }
+                    | AgentModelsEffect::SetGeminiProvider { .. }
+            ) || matches!(&provider, AgentModelsEffect::RemoveProvider { provider }
                     if model.panel.provider_config().profiles.iter().any(|profile| profile.id == *provider && profile.sign_in.is_some()));
             if vertex_change && model.cx.provider_admin.is_available() {
                 model.submit_vertex_change(provider, cx.reply())?;
@@ -513,6 +557,7 @@ pub(crate) fn answer(
                         | AgentModelsEffect::RemoveProviderKey { .. }
                         | AgentModelsEffect::RemoveLegacyProviderKey { .. }
                         | AgentModelsEffect::MigrateProviderKey { .. }
+                        | AgentModelsEffect::ListProviderModels { .. }
                         | AgentModelsEffect::RefreshProviders
                 ) {
                     let error = t("agent-provider-offline");
@@ -848,7 +893,7 @@ impl AgentModelsArea {
                         && row.id() == format!("settings.agent-provider:{}", profile.id)
                 });
             if let Some(profile) = profile {
-                vertex_provider_row(row, profile)
+                sign_in_cards::sign_in_provider_row(row, profile)
             } else {
                 row
             }
@@ -885,6 +930,8 @@ pub struct AgentModelsModel {
     vertex_commit: Option<(String, Option<ProviderProfile>)>,
     /// Hugging Face: what was found, the model shown, the token.
     hub: hub::HubBrowser,
+    /// A sign-in to `ChatGPT`, Copilot, `OpenRouter` or Hugging Face under way.
+    sign_in: Option<SignInSetup>,
 }
 
 impl std::ops::Deref for AgentModelsModel {
@@ -946,6 +993,7 @@ impl AgentModelsModel {
             opener: Arc::new(PortalOpener),
             vertex_commit: None,
             hub: hub::HubBrowser::new(read.hub_token),
+            sign_in: None,
         };
         model.notice = notice;
         model.sync_local_profile();
@@ -1283,12 +1331,37 @@ impl AgentModelsModel {
         provider: Option<String>,
         fields: (&str, Option<&str>, Option<&str>),
     ) -> Result<String, String> {
+        let (id, existing) = self.google_provider(provider, false)?;
+        agent_vertex::apply(config, &id, existing, fields)?;
+        Ok(id)
+    }
+
+    /// Add the Gemini API provider being set up (`provider` `None`), once
+    /// signed in, or bill another project with an existing one.
+    fn set_gemini_provider(
+        &self,
+        config: &mut ProviderConfig,
+        provider: Option<String>,
+        project: &str,
+    ) -> Result<String, String> {
+        let (id, existing) = self.google_provider(provider, true)?;
+        agent_vertex::apply_gemini(config, &id, existing, project)?;
+        Ok(id)
+    }
+
+    /// The Google provider an edit is for and whether it exists: the named
+    /// one, or the one being added, which must be signed in already.
+    fn google_provider(
+        &self,
+        provider: Option<String>,
+        gemini: bool,
+    ) -> Result<(String, bool), String> {
         let (id, existing) = match provider {
             Some(id) => (id, true),
             None => (
                 self.vertex
                     .as_ref()
-                    .filter(|setup| !setup.existing)
+                    .filter(|setup| !setup.existing && setup.gemini == gemini)
                     .map(|setup| setup.profile_id.clone())
                     .ok_or_else(|| t("agent-vertex-sign-in-first"))?,
                 false,
@@ -1297,8 +1370,7 @@ impl AgentModelsModel {
         if !existing && !agent_vertex::signed_in(&self.custodian, &id) {
             return Err(t("agent-vertex-sign-in-first"));
         }
-        agent_vertex::apply(config, &id, existing, fields)?;
-        Ok(id)
+        Ok((id, existing))
     }
 
     /// Close the setup of the Vertex AI provider `id` once it is saved, and
@@ -1310,6 +1382,13 @@ impl AgentModelsModel {
             .is_some_and(|setup| setup.profile_id == id)
         {
             self.vertex = None;
+        }
+        if self
+            .sign_in
+            .as_ref()
+            .is_some_and(|setup| setup.profile_id == id)
+        {
+            self.sign_in = None;
         }
         self.vertex_fields.lock_recover().remove(id);
         self.read_keys();
@@ -1342,6 +1421,9 @@ impl AgentModelsModel {
                 provider,
                 (&project, location.as_deref(), model.as_deref()),
             )?,
+            AgentModelsEffect::SetGeminiProvider { provider, project } => {
+                self.set_gemini_provider(&mut config, provider, &project)?
+            }
             AgentModelsEffect::RemoveProvider { provider } => {
                 config
                     .remove(&provider)
@@ -1380,6 +1462,11 @@ impl AgentModelsModel {
                     provider,
                     (&project, location.as_deref(), model.as_deref()),
                 )?);
+                config.sanitised()
+            }
+            AgentModelsEffect::SetGeminiProvider { provider, project } => {
+                let mut config = self.providers.get().config.clone();
+                vertex_saved = Some(self.set_gemini_provider(&mut config, provider, &project)?);
                 config.sanitised()
             }
             AgentModelsEffect::RemoveProvider { provider }
@@ -1836,116 +1923,6 @@ impl AgentModelsModel {
                 provider: profile.id.clone(),
             },
         ))))
-    }
-
-    /// A provider that signs in with Google: its project, location and
-    /// model, whether its sign-in still holds on this device, and the offer
-    /// to sign in again. It has no key, endpoint or protocol to edit.
-    fn push_sign_in_profile(
-        &self,
-        body: &mut Vec<Item>,
-        profile: &ProviderProfile,
-        default_profile: Option<&str>,
-    ) {
-        let profile_id = profile.id.clone();
-        self.vertex_fields(profile)
-            .push(&self.cx, body, &profile_id);
-        let setup = self
-            .vertex
-            .as_ref()
-            .filter(|setup| setup.profile_id == profile_id);
-        let waiting = setup.is_some_and(VertexSetup::waiting);
-        let state = self.vertex_keys.get(&profile_id);
-        if let Some(Err(error)) = state {
-            body.push(row(crate::widgets::error_caption(&t_args(
-                "agent-sign-in-read-error",
-                &[("error", error.as_str().into())],
-            ))));
-        }
-        // why: a sign-in status sentence or badge is a status line, not a label/control pair.
-        body.push(row(if waiting {
-            Box::new(Text::new(&t("agent-vertex-waiting")).dimmed())
-        } else if matches!(state, Some(Ok(true))) {
-            Box::new(Text::new(&t("agent-signed-in")).dimmed())
-        } else if matches!(state, Some(Ok(false))) {
-            semantic_status_pill(&t("agent-sign-in-again-needed"), StatusTone::Warning)
-        } else {
-            Box::new(Text::new(&t("agent-sign-in-unknown")).dimmed())
-        }));
-        if let Some(message) = setup.and_then(VertexSetup::message) {
-            body.push(row(crate::widgets::error_caption(message)));
-        }
-        let sign_in: Box<dyn Widget> = if waiting {
-            Box::new(self.cx.bind_invocation(
-                Button::new(
-                    &format!("agent-models-vertex-cancel-{profile_id}"),
-                    &t("agent-cancel"),
-                ),
-                AgentModelsEffect::CancelGoogleSignIn,
-            ))
-        } else {
-            Box::new(self.cx.bind_invocation(
-                Button::new(
-                    &format!("agent-models-vertex-sign-in-{profile_id}"),
-                    &t("agent-sign-in-again"),
-                ),
-                AgentModelsEffect::SignInWithGoogle {
-                    provider: Some(profile_id.clone()),
-                },
-            ))
-        };
-        body.push(row(Box::new(
-            Row::new()
-                .push(sign_in)
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("agent-models-enabled-{profile_id}"),
-                        &if profile.enabled {
-                            t("agent-disable")
-                        } else {
-                            t("agent-enable")
-                        },
-                    ),
-                    AgentModelsEffect::SetProviderEnabled {
-                        provider: profile_id.clone(),
-                        on: !profile.enabled,
-                    },
-                )))
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(
-                        &format!("agent-models-remove-provider-{profile_id}"),
-                        &t("agent-remove-provider"),
-                    ),
-                    AgentModelsEffect::RemoveProvider {
-                        provider: profile_id.clone(),
-                    },
-                ))),
-        )));
-        body.extend(self.default_button(profile, default_profile));
-    }
-
-    /// The setup of a Vertex AI provider being added, then the hosted
-    /// providers and their request limits.
-    fn push_provider_cards(&self, cards: &mut Vec<SettingsSection>) {
-        if let Some(setup) = self.vertex.as_ref().filter(|setup| !setup.existing) {
-            cards.push(setup.section(&self.cx));
-        }
-        cards.extend(self.panel.sections_without_sign_in());
-        let config = self.panel.provider_config();
-        let mut body = vec![row(Box::new(self.cx.bind_invocation(
-            Button::new("agent-models-add-vertex", &t("agent-add-vertex")),
-            AgentModelsEffect::AddGoogleVertex,
-        )))];
-        for profile in config
-            .profiles
-            .iter()
-            .filter(|profile| profile.sign_in.is_some())
-        {
-            self.push_sign_in_profile(&mut body, profile, config.default_profile.as_deref());
-        }
-        cards.push(section(&t("agent-vertex-title"), rows(body)));
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -2448,6 +2425,7 @@ impl PaneModel for AgentModelsModel {
             self.read_keys();
             self.read_vertex_keys();
         }
+        self.poll_sign_in();
         let polled = self.vertex.as_mut().map(VertexSetup::poll);
         match polled {
             None | Some(Polled::Nothing) => {}
@@ -2771,7 +2749,7 @@ mod tests {
     fn a_hosted_provider_without_a_key_here_asks_for_one() {
         let mut pane = model_over(mock(snapshot(None)));
         pane.change_providers(AgentModelsEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         })
         .unwrap();
         let profile = pane.providers.get().config.profiles[0].clone();
@@ -2799,7 +2777,7 @@ mod tests {
     fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
         let mut pane = model_over(mock(snapshot(None)));
         pane.change_providers(AgentModelsEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         })
         .unwrap();
         let profile = pane.providers.get().config.profiles[0].clone();
@@ -3268,7 +3246,7 @@ mod tests {
     fn providers_are_the_persons_settings() {
         let mut pane = model_over(mock(snapshot(None)));
         pane.change_providers(AgentModelsEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         })
         .unwrap();
         let id = pane.providers.get().config.profiles[0].id.clone();

@@ -16,11 +16,19 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     let mut app = mount(backend.clone());
     app.harness().resize((1800, 6000)).unwrap();
     app.settle();
+    // The known providers are one chooser; typing narrows it.
     app.harness()
-        .click_named("agent-models-add-anthropic")
+        .click_named("agent-models-add-provider")
         .unwrap();
+    app.harness().type_text("Anthropic");
+    app.harness().key("Enter");
     app.settle();
     assert_eq!(config(&mut app).profiles.len(), 1);
+    assert_eq!(config(&mut app).profiles[0].label, "Anthropic");
+    assert_eq!(
+        config(&mut app).profiles[0].endpoint,
+        "https://api.anthropic.com"
+    );
     let id = config(&mut app).profiles[0].id.clone();
     let save = format!("agent-models-save-provider-{id}");
     assert_eq!(
@@ -72,7 +80,7 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     for role in [ui::Role::Viewer, ui::Role::Commenter] {
         app.set_role(role);
         app.settle();
-        for control in ["agent-models-add-anthropic", &save, &key, &toggle, &remove] {
+        for control in ["agent-models-add-provider", &save, &key, &toggle, &remove] {
             assert_eq!(
                 rendered_enabled(app.harness().root_widget(), control),
                 Some(false),
@@ -224,7 +232,7 @@ fn mounted_metadata_waits_for_durable_ack_and_failed_create_can_retry() {
     backend.delay.store(true, Ordering::SeqCst);
     backend.state.lock_recover().fail_next = true;
     app.start_effect(&host_effect(ProviderEffect::AddProvider {
-        protocol: "anthropic".into(),
+        preset: "anthropic".into(),
     }))
     .unwrap();
     assert!(config(&mut app).profiles.is_empty());
@@ -236,7 +244,7 @@ fn mounted_metadata_waits_for_durable_ack_and_failed_create_can_retry() {
     run(
         &mut app,
         ProviderEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         },
     );
     assert_eq!(config(&mut app).profiles.len(), 1);
@@ -252,14 +260,14 @@ fn mounted_administration_is_scoped_to_each_host_not_an_ambient_default() {
     run(
         &mut first,
         ProviderEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         },
     );
     assert!(config(&mut second).profiles.is_empty());
     run(
         &mut second,
         ProviderEffect::AddProvider {
-            protocol: "openai-compatible".into(),
+            preset: "openai-compatible".into(),
         },
     );
     assert_ne!(
@@ -288,7 +296,7 @@ fn mounted_provider_administration_create_edit_key_status_default_remove() {
     run(
         &mut app,
         ProviderEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         },
     );
     let id = config(&mut app).profiles[0].id.clone();
@@ -337,7 +345,7 @@ fn mounted_delayed_failure_retains_private_key_and_retries_without_racing_metada
     run(
         &mut app,
         ProviderEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         },
     );
     let id = config(&mut app).profiles[0].id.clone();
@@ -386,7 +394,7 @@ fn mounted_conflict_reloads_authority_and_keeps_details_draft_for_explicit_retry
     run(
         &mut app,
         ProviderEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         },
     );
     let id = config(&mut app).profiles[0].id.clone();
@@ -423,7 +431,7 @@ fn mounted_legacy_migration_and_both_removal_controls_use_host_authority() {
     run(
         &mut app,
         ProviderEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         },
     );
     let id = config(&mut app).profiles[0].id.clone();
@@ -478,7 +486,7 @@ fn mounted_ack_preserves_a_newer_private_key_draft() {
     run(
         &mut app,
         ProviderEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         },
     );
     let id = config(&mut app).profiles[0].id.clone();
@@ -548,4 +556,75 @@ fn mounted_agent_models_are_chosen_and_sent_back_to_the_default() {
     app.settle();
     assert!(backend.state.lock_recover().config.agent_models.is_empty());
     assert!(config(&mut app).agent_models.is_empty());
+}
+
+#[test]
+fn mounted_test_connection_lists_models_to_choose_from_and_says_why_it_failed() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend.clone());
+    app.harness().resize((1800, 6000)).unwrap();
+    app.settle();
+    app.start_effect(&host_effect(ProviderEffect::AddProvider {
+        preset: "openrouter".into(),
+    }))
+    .unwrap();
+    app.settle();
+    let profile = config(&mut app).profiles[0].clone();
+    assert_eq!(profile.endpoint, "https://openrouter.ai/api/v1");
+    let id = profile.id;
+    let test = format!("agent-models-test-{id}");
+
+    // Without a key the provider refuses, and the panel says what to do.
+    app.harness().click_named(&test).unwrap();
+    app.settle();
+    let refused = with_panel(&mut app, |panel| panel.listed_models.get(&id).cloned())
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(refused, crate::i18n::t("agent-test-key-refused"));
+
+    backend
+        .state
+        .lock_recover()
+        .keys
+        .insert(id.clone(), CredentialStatus::Configured);
+    app.harness().click_named(&test).unwrap();
+    app.settle();
+    let listed = with_panel(&mut app, |panel| panel.listed_models.get(&id).cloned())
+        .unwrap()
+        .unwrap();
+    assert_eq!(listed.len(), 2);
+    // Listing changes nothing until a model is chosen.
+    assert_eq!(config(&mut app).profiles[0].default_model, None);
+
+    let choose = format!("agent-models-choose-{id}");
+    // The list opens on its first model.
+    app.harness().click_named(&choose).unwrap();
+    app.harness().key("Enter");
+    app.settle();
+    let chosen = config(&mut app).profiles[0].clone();
+    assert_eq!(chosen.default_model.as_deref(), Some("listed-a"));
+    // The listed name and context size come along.
+    assert_eq!(chosen.models[0].label, "Listed Model A");
+    assert_eq!(chosen.models[0].context_window, Some(200_000));
+
+    // Any other id is still typed, through the same action.
+    invoke(
+        &mut app,
+        ProviderEffect::SetProviderModel {
+            provider: id.clone(),
+            model: "vendor/unlisted".into(),
+        },
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        config(&mut app).profiles[0].default_model.as_deref(),
+        Some("vendor/unlisted")
+    );
+    // Sign-in providers are not added from here.
+    let _ = app.start_effect(&host_effect(ProviderEffect::AddProvider {
+        preset: "chatgpt".into(),
+    }));
+    app.settle();
+    assert_eq!(config(&mut app).profiles.len(), 1);
 }

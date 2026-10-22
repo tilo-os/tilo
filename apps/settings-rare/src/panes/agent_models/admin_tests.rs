@@ -130,7 +130,7 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
     run(
         &mut app,
         AgentModelsEffect::AddProvider {
-            protocol: "anthropic".into(),
+            preset: "anthropic".into(),
         },
     );
     let id = config(&mut app).profiles[0].id.clone();

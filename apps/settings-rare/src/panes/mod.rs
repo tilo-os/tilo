@@ -7,6 +7,7 @@
 pub mod about;
 pub mod accounts;
 pub mod agent_models;
+pub mod agent_sign_in;
 pub mod agent_vertex;
 pub mod device_mesh;
 pub mod disk_unlock;
