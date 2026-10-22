@@ -466,19 +466,24 @@ fn while_recording_the_bar_is_the_stop_shutter_and_the_time() {
     assert_eq!(stop_intent.recording_command, Some(RecordingCommand::Stop));
 }
 
+// USER REQUIREMENT (2026-10-22): "a screenshot freezes the state of all
+// windows when it opens"
 #[test]
-fn choosing_a_window_keeps_the_desktop_live_and_choosing_pixels_holds_it() {
+fn every_screenshot_target_holds_the_windows_and_recording_stays_live() {
     let mut s = studio();
     s.set_candidates(two_windows());
-    assert!(
-        s.is_choosing_screenshot(),
-        "a selection holds the screen still"
-    );
-    s.set_source_mode(SourceMode::Window);
+    for source in TARGETS {
+        s.set_source_mode(source);
+        assert!(
+            s.is_choosing_screenshot(),
+            "{source:?}: the windows stay held, so changing the target never ends the hold"
+        );
+    }
+    s.set_mode(CaptureMode::Recording);
+    assert!(!s.is_choosing_screenshot(), "a recording stays live");
+    s.set_mode(CaptureMode::Pip);
     assert!(
         !s.is_choosing_screenshot(),
-        "a window is repainted whole, so the strip may scroll to it"
+        "a picture in picture stays live"
     );
-    s.set_source_mode(SourceMode::Display);
-    assert!(s.is_choosing_screenshot());
 }

@@ -86,6 +86,7 @@ use crate::compositor::surface_readback::{
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
 
 mod commit_damage;
+mod held;
 mod scale;
 mod sheets;
 pub use scale::SurfaceScale;
@@ -1319,6 +1320,9 @@ pub struct ForeignFrameStore {
     /// ([`Widget::set_full_bleed`]): square, where a framed window's
     /// corners are rounded at the theme's window radius.
     full_bleed: Mutex<HashMap<SurfaceId, (String, bool)>>,
+    /// Every window's frame as it was when a screenshot opened, drawn
+    /// instead of the live ones until it is released ([`held`]).
+    held: Mutex<Option<held::HeldFrames>>,
 }
 
 /// Capture-protection requests, kept beside the frames they withhold.
@@ -3415,6 +3419,7 @@ impl ForeignFrameStore {
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
         self.full_bleed.lock_recover().remove(&id);
+        self.forget_held(id);
         self.set_surface_capture_protected(id, false);
         let mut guard = self.entries.lock_recover();
         let forgotten = guard.remove(&id);
@@ -3479,18 +3484,13 @@ impl ForeignFrameStore {
     }
 
     fn surface_and_children_seq(&self, id: SurfaceId) -> u64 {
-        let children = self
-            .children
-            .lock_recover()
-            .get(&id)
-            .cloned()
-            .unwrap_or_default();
-        let guard = self.entries.lock_recover();
-        let mut seq = guard.get(&id).map_or(0, |e| e.seq);
-        for child in children {
-            seq = seq.wrapping_add(guard.get(&child.surface).map_or(0, |entry| entry.seq));
-        }
-        seq
+        self.with_frames(id, |entries, children| {
+            let mut seq = entries.get(&id).map_or(0, |e| e.seq);
+            for child in children {
+                seq = seq.wrapping_add(entries.get(&child.surface).map_or(0, |entry| entry.seq));
+            }
+            seq
+        })
     }
 
     /// Whether `id` has committed a non-null buffer and is therefore eligible
@@ -3546,11 +3546,7 @@ impl ForeignFrameStore {
     /// How `id`'s image is made: the canvas it and its subsurfaces are
     /// flattened onto, and the window cut out of it. `None` without a frame.
     fn layout(&self, id: SurfaceId) -> Option<scale::FrameLayout> {
-        let children = self.children_of(id);
-        let guard = self.entries.lock_recover();
-        let layout = layout_of(&guard, id, &children);
-        drop(guard);
-        layout
+        self.with_frames(id, |entries, children| layout_of(entries, id, children))
     }
 
     /// Copy out the current frame, or `None` when the surface has no pixels staged.
@@ -3563,39 +3559,46 @@ impl ForeignFrameStore {
         reason = "one snapshot assembled from every layer of the surface"
     )]
     pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
-        let children = self.children_of(id);
-        let guard = self.entries.lock_recover();
-        let e = guard.get(&id)?;
-        let layout = layout_of(&guard, id, &children)?;
-        let root_placed = e.buffer_placement()?;
-        let root_size = (e.width, e.height);
-        let gpu = if e.rgba.is_empty() {
-            Some(e.gpu.clone()?)
-        } else {
-            None
-        };
         // Shared under the lock, copied after it.
-        let cpu = Arc::clone(&e.rgba);
-        let (seq, hdr) = (e.seq, e.hdr.clone());
-        let child_frames: Vec<_> = children
-            .iter()
-            .filter_map(|child| {
-                let frame = guard.get(&child.surface)?;
-                let pixels = if frame.rgba.is_empty() {
-                    frame.gpu.clone().map(ChildSource::Gpu)
+        let (layout, root_placed, root_size, gpu, cpu, seq, hdr, child_frames) =
+            self.with_frames(id, |guard, children| {
+                let e = guard.get(&id)?;
+                let layout = layout_of(guard, id, children)?;
+                let root_placed = e.buffer_placement()?;
+                let gpu = if e.rgba.is_empty() {
+                    Some(e.gpu.clone()?)
                 } else {
-                    Some(ChildSource::Cpu(Arc::clone(&frame.rgba)))
+                    None
                 };
+                let child_frames: Vec<_> = children
+                    .iter()
+                    .filter_map(|child| {
+                        let frame = guard.get(&child.surface)?;
+                        let pixels = if frame.rgba.is_empty() {
+                            frame.gpu.clone().map(ChildSource::Gpu)
+                        } else {
+                            Some(ChildSource::Cpu(Arc::clone(&frame.rgba)))
+                        };
+                        Some((
+                            (child.x, child.y),
+                            frame.buffer_placement(),
+                            (frame.width, frame.height),
+                            frame.seq,
+                            pixels,
+                        ))
+                    })
+                    .collect();
                 Some((
-                    (child.x, child.y),
-                    frame.buffer_placement(),
-                    (frame.width, frame.height),
-                    frame.seq,
-                    pixels,
+                    layout,
+                    root_placed,
+                    (e.width, e.height),
+                    gpu,
+                    Arc::clone(&e.rgba),
+                    e.seq,
+                    e.hdr.clone(),
+                    child_frames,
                 ))
-            })
-            .collect();
-        drop(guard);
+            })?;
         // A frame that stayed on the GPU is read back here, on demand.
         let pixels = match gpu {
             Some(gpu) => gpu.rgba()?,
@@ -3688,45 +3691,40 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
     ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
-        let has_children = self
-            .children
-            .lock_recover()
-            .get(&id)
-            .is_some_and(|children| !children.is_empty());
-        if !has_children {
-            let shared = {
-                let guard = self.entries.lock_recover();
-                guard.get(&id).and_then(|e| {
-                    // A buffer that needs resampling is drawn from a snapshot.
-                    let layout = layout_of(&guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
-                    // A frame on the GPU is drawn from its texture, also an
-                    // SHM frame that keeps its pixels on the CPU too.
-                    if let Some(gpu) = e.gpu.clone() {
-                        return Some(SharedFrame::Gpu(gpu, layout.content));
-                    }
-                    if e.rgba.is_empty() {
-                        return None;
-                    }
-                    // A CPU frame shown whole is drawn from the stored pixels
-                    // themselves; a cropped one is cut out of a snapshot.
-                    let whole = (0, 0, e.width, e.height);
-                    (layout.content == whole).then(|| {
-                        SharedFrame::Cpu(Arc::clone(&e.rgba), (e.width, e.height), e.hdr.clone())
-                    })
-                })
-            };
-            match shared {
-                Some(SharedFrame::Gpu(gpu, content)) => {
-                    if content.2 == 0 || content.3 == 0 {
-                        return None;
-                    }
-                    return Some((gpu.image(content), None));
-                }
-                Some(SharedFrame::Cpu(pixels, (width, height), hdr)) => {
-                    return Some((rgba_image(pixels, width, height), hdr));
-                }
-                None => {}
+        let shared = self.with_frames(id, |guard, children| {
+            if !children.is_empty() {
+                return None;
             }
+            guard.get(&id).and_then(|e| {
+                // A buffer that needs resampling is drawn from a snapshot.
+                let layout = layout_of(guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
+                // A frame on the GPU is drawn from its texture, also an
+                // SHM frame that keeps its pixels on the CPU too.
+                if let Some(gpu) = e.gpu.clone() {
+                    return Some(SharedFrame::Gpu(gpu, layout.content));
+                }
+                if e.rgba.is_empty() {
+                    return None;
+                }
+                // A CPU frame shown whole is drawn from the stored pixels
+                // themselves; a cropped one is cut out of a snapshot.
+                let whole = (0, 0, e.width, e.height);
+                (layout.content == whole).then(|| {
+                    SharedFrame::Cpu(Arc::clone(&e.rgba), (e.width, e.height), e.hdr.clone())
+                })
+            })
+        });
+        match shared {
+            Some(SharedFrame::Gpu(gpu, content)) => {
+                if content.2 == 0 || content.3 == 0 {
+                    return None;
+                }
+                return Some((gpu.image(content), None));
+            }
+            Some(SharedFrame::Cpu(pixels, (width, height), hdr)) => {
+                return Some((rgba_image(pixels, width, height), hdr));
+            }
+            None => {}
         }
         let snapshot = self.snapshot(id)?;
         let hdr = snapshot.hdr.clone();

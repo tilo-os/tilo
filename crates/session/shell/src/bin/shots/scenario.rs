@@ -198,6 +198,17 @@ pub enum Action {
     /// Run queued capture intents through the production compositor executor.
     /// Opt-in avoids filesystem work in unrelated deterministic scenarios.
     CaptureExecutionEnabled(bool),
+    /// The client of `surface_id` commits a new buffer, filled with `rgba`,
+    /// at its window's size: a window that changes while the person looks.
+    ClientCommit {
+        surface_id: u64,
+        rgba: [u8; 4],
+    },
+    /// The active Terminal window's session prints lines `from..=to`.
+    TerminalPrints {
+        from: u32,
+        to: u32,
+    },
     /// Seed real collaborative room changes and open one of the two history
     /// surfaces. `explore = false` captures outcome-first Catch up;
     /// `true` captures the full three-panel browser.
@@ -1051,6 +1062,27 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         }
         Action::CaptureExecutionEnabled(enabled) => {
             driver.set_capture_execution_enabled(*enabled);
+        }
+        Action::TerminalPrints { from, to } => {
+            let text = (*from..=*to).fold(String::new(), |mut text, line| {
+                use std::fmt::Write as _;
+                let _ = write!(text, "output line {line}\r\n");
+                text
+            });
+            if let Err(error) = driver.feed_active_terminal(&text) {
+                eprintln!("shots: terminal prints: {error}");
+            }
+        }
+        Action::ClientCommit { surface_id, rgba } => {
+            let store = shell::compositor::foreign::store();
+            if let Some((w, h)) = store.viewport(*surface_id)
+                && let Some(texels) = w
+                    .checked_mul(h)
+                    .filter(|texels| *texels > 0)
+                    .and_then(|texels| usize::try_from(texels).ok())
+            {
+                store.publish_rgba(*surface_id, &rgba.repeat(texels), w, h);
+            }
         }
         Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
         Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
@@ -2816,6 +2848,69 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Relayout,
                 Action::MoveCursor(Point::new(700.0, 300.0)),
                 Action::Snapshot("window-picked-after-focus-move"),
+            ],
+        },
+        Scenario {
+            name: "capture_frozen",
+            description: "A screenshot freezes the windows when it opens: a client that draws meanwhile still shows what it showed, the strip still moves, and closing shows what it drew.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::OpenWindow {
+                    app_id: "org.example.current",
+                    surface_id: 5451,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(700),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(24),
+                Action::Relayout,
+                Action::CaptureExecutionEnabled(true),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::ClientCommit {
+                    surface_id: 5451,
+                    rgba: [0xD8, 0x3A, 0x4A, 0xFF],
+                },
+                Action::Wait(8),
+                Action::MoveCursor(Point::new(700.0, 300.0)),
+                Action::Snapshot("frozen-after-client-drew"),
+                Action::ClickNamed("capture.target.window"),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(40),
+                Action::Relayout,
+                Action::MoveCursor(Point::new(700.0, 300.0)),
+                Action::Snapshot("frozen-window-picked-after-focus-move"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(8),
+                Action::Snapshot("released-after-close"),
+            ],
+        },
+        Scenario {
+            name: "capture_frozen_terminal",
+            description: "A screenshot opened while the terminal prints: the terminal holds still at the line it showed when the screenshot opened while it goes on printing, and closing shows what it printed meanwhile.",
+            actions: vec![
+                Action::OpenHostedWindow {
+                    app: "Terminal",
+                    title: "Terminal",
+                },
+                Action::Wait(24),
+                Action::TerminalPrints { from: 1, to: 40 },
+                Action::Wait(4),
+                Action::CaptureExecutionEnabled(true),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(4),
+                Action::Snapshot("terminal-held-as-opened"),
+                Action::TerminalPrints { from: 41, to: 120 },
+                Action::Wait(4),
+                Action::Snapshot("terminal-still-held-while-printing"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(4),
+                Action::Snapshot("terminal-released-after-close"),
             ],
         },
         Scenario {

@@ -105,9 +105,14 @@ impl ShellOverlayHost {
     }
 
     /// Whether the screenshot picker is up and nothing has been chosen yet;
-    /// the compositor holds the screen still for exactly this span.
+    /// the compositor holds every window's frame still for exactly this span.
     pub fn capture_choosing_screenshot(&self) -> bool {
         self.capture_studio.is_choosing_screenshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_studio_source_for_tests(&self) -> ui::widget::SourceMode {
+        self.capture_studio.source_mode()
     }
 
     /// Whether an inner shell surface currently owns the seat even though it
@@ -493,6 +498,33 @@ impl ShellOverlayHost {
         self.capture_mirrors_structure_dirty = true;
     }
 
+    /// Record every window on the strips as it is now, to be drawn until
+    /// the hold [`ui::widget::hold_windows`] began ends. Windows scrolled
+    /// off screen are held too, so a capture of the strip is of one moment.
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the windows are held through raw row pointers; `&mut self` is what makes that access unaliased"
+    )]
+    pub(crate) fn hold_window_content(
+        &mut self,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor: the pointer is to a `Box<GroupRow>` the content
+            // tree owns for the host's lifetime; `&mut self` makes the
+            // access unaliased.
+            let row = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                if let Some(host) = group.active_host_mut() {
+                    host.hold_content(text_renderer, theme, presence);
+                }
+            }
+        }
+    }
+
     /// Paint capture-owned presentation surfaces as a distinct compositor
     /// pass. Keeping mirrors and status chrome out of the ordinary desktop
     /// scene prevents recursive `PiP` feedback and keeps the recording pill out
@@ -509,12 +541,10 @@ impl ShellOverlayHost {
         // "Screen" captures that display and the recording indicator stays
         // on it.
         self.capture_studio.set_overlay_rect(self.overlay_area());
-        // The screenshot picker is the one live thing over the desktop the
-        // compositor holds still while it chooses (`CaptureExecutor`). Drawn
-        // into the desktop scene, it was held still with it: frozen on its
-        // first, fully transparent frame, with no hover, selection or
-        // tooltip ever reaching the screen. Drawn here, after the hold, it
-        // stays live and stays out of the screenshot.
+        // The screenshot picker is drawn over the desktop, after the scene
+        // a screenshot is cropped from, so it never reaches the screenshot.
+        // The windows under it are held still while it chooses
+        // (`CaptureExecutor`); the picker itself stays live.
         if self.capture_studio.is_choosing_screenshot() {
             self.capture_studio
                 .draw(scene, transform, text_renderer, theme, presence);
