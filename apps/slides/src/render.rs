@@ -43,6 +43,10 @@ pub fn element_dest(dest: Rect, s: f64, e: &Element) -> Rect {
 pub struct DeckAssets<'a> {
     pub palette: &'a Palette,
     pub images: &'a dyn ImageLookup,
+    /// Where collaborators are in the deck's words, for the canvas to show
+    /// their carets and selections; `None` where nobody's place is shown (a
+    /// thumbnail, a presentation).
+    pub presence: Option<&'a ui::presence::PresenceCtx>,
 }
 
 /// `theme` at unit text scale, when it is scaled: what a slide's words lay
@@ -143,6 +147,7 @@ pub fn draw_slide_except(
     let assets = DeckAssets {
         palette,
         images: assets.images,
+        presence: assets.presence,
     };
     // A slide's type is sized in slide units, whatever the reader's text
     // scale: its words lay out against a theme at unit scale.
@@ -161,7 +166,7 @@ pub fn draw_slide_except(
             let ink = text_ink(palette, slide, shown);
             draw_text_element(
                 &mut PaintCtx::new(ctx.scene, ctx.transform, ctx.text, theme),
-                ink,
+                (ink, assets.presence),
                 shown,
                 dest,
                 s,
@@ -283,7 +288,10 @@ fn draw_element(ctx: &mut PaintCtx<'_>, assets: DeckAssets<'_>, e: &Element, des
         ElementKind::Text => {
             draw_text_element(
                 ctx,
-                palette.resolve_role(&e.fill).unwrap_or(palette.text),
+                (
+                    palette.resolve_role(&e.fill).unwrap_or(palette.text),
+                    assets.presence,
+                ),
                 e,
                 dest,
                 s,
@@ -444,6 +452,17 @@ pub fn shown_text_heights(deck: &crate::model::Deck) -> HashMap<String, f64> {
         .collect()
 }
 
+/// The key collaborators address a paragraph of a text box's words by
+/// (`block` is its document id): the one the shared editor publishes a caret
+/// under while the words are edited, so that caret shows wherever the words
+/// are drawn.
+pub fn words_presence_key(block: &str) -> ui::presence::PresenceKey {
+    use ui::framework::ResourceApp;
+    ui::framework::ResourceSelection::Item(block.to_owned())
+        .presence::<tilo_document::RichText>(crate::resource::SlidesShell::ID)
+        .0
+}
+
 /// The most text boxes whose layout is kept between frames.
 const KEPT_TEXT_VIEWS: usize = 4_096;
 
@@ -483,7 +502,15 @@ pub fn text_box_rect(e: &Element) -> Rect {
     Rect::new(e.x, e.y, e.x + e.w.max(1.0), e.y)
 }
 
-fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Rect, s: f64) {
+/// Paint text element `e` in `color`, with the collaborators' carets and
+/// selections `presence` places in its words.
+fn draw_text_element(
+    ctx: &mut PaintCtx<'_>,
+    (color, presence): (Color, Option<&ui::presence::PresenceCtx>),
+    e: &Element,
+    dest: Rect,
+    s: f64,
+) {
     let PaintCtx {
         scene,
         transform,
@@ -499,9 +526,11 @@ fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Re
         if views.len() > KEPT_TEXT_VIEWS && !views.contains_key(&e.id) {
             views.clear();
         }
-        let laid = views.entry(e.id.clone()).or_insert_with(|| LaidText {
-            view: RichTextView::with_editor(text_box_editor(e)),
-            height: 0.0,
+        let laid = views.entry(e.id.clone()).or_insert_with(|| {
+            let mut view = RichTextView::with_editor(text_box_editor(e));
+            view.editor_mut()
+                .set_presence_key(std::rc::Rc::new(words_presence_key));
+            LaidText { view, height: 0.0 }
         });
         let view = &mut laid.view;
         view.editor_mut().set_body_size(e.font_size as f32);
@@ -510,7 +539,10 @@ fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Re
         view.show(&e.rich_blocks());
         let content_h = view.layout(text_box_rect(e), theme, tr);
         view.set_transform(text_box_transform(dest, s, e, content_h));
-        view.draw(scene, transform, tr, theme);
+        match presence {
+            Some(presence) => view.draw_with_presence(scene, transform, tr, theme, presence),
+            None => view.draw(scene, transform, tr, theme),
+        }
         laid.height = content_h;
     });
     tr.set_text_scale(reader_scale);

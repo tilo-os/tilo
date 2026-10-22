@@ -4,11 +4,12 @@
 //! its words.
 
 use super::{
-    Affine, AutoCommit, Chrome, DeckRecord, Dispatcher, Element, ElementKind, ElementState,
-    Embedded, FieldOutcome, Mode, Modifiers, MouseButton, Palette, Point, PresenceCtx, Rect,
-    RichTextField, RichTextSurface, RoutedEvent, Scene, SlidesApp, SplitLayout, SubmitKey,
-    TextRenderer, Theme, Widget, WindowEvent, actions, render,
+    AutoCommit, Chrome, DeckRecord, Dispatcher, Element, ElementKind, ElementState, Embedded,
+    FieldOutcome, Mode, Modifiers, MouseButton, Palette, Point, PresenceCtx, Rect, RichTextField,
+    RichTextSurface, RoutedEvent, SlidesApp, SplitLayout, SubmitKey, TextRenderer, Theme, Widget,
+    WindowEvent, actions, render,
 };
+use ui::paint::PaintCtx;
 
 /// The words of the selected text box on the canvas: the SDK editor,
 /// embedded where the box is drawn and laid out at the slide's size, editing
@@ -41,7 +42,8 @@ impl TextBoxEditor {
         let field = RichTextField::view_only(move |doc| {
             body.clone()
                 .filter(|body| tilo_doc::model::open(doc, body).is_ok())
-        });
+        })
+        .with_presence(render::words_presence_key);
         let surface = RichTextSurface::field(field)
             .with_editor(render::text_box_editor(element))
             .with_submit(SubmitKey::ModEnter);
@@ -378,13 +380,14 @@ impl SlidesApp {
     }
 
     /// Paint the words of the text box being edited, through its editor.
-    pub(super) fn draw_text_editor(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    pub(super) fn draw_text_editor(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx;
+        let (t, theme) = (*t, *theme);
         if !self.editing_text {
             return;
         }
@@ -398,7 +401,7 @@ impl SlidesApp {
             .as_mut()
             .filter(|editor| editor.element_id == element.id && editor.words_h.is_some())
         {
-            editor.host.draw(scene, t, tr, theme, &PresenceCtx::empty());
+            editor.host.draw(scene, t, tr, theme, presence);
         }
     }
 
@@ -498,4 +501,30 @@ pub(super) fn mark_covers(
         && words.all(|block| {
             ui::widget::marks::range_fully_covered(&block.marks, &(0..block.text.len()), mark)
         })
+}
+
+/// Where the person is in the words they edit (the shared editor's caret or
+/// selection), published to collaborators as Slides' own, so their canvas
+/// shows it in the same box.
+impl ui::presence::capability::PublishesPresence for SlidesApp {
+    fn presence_payload(
+        &self,
+    ) -> Option<(
+        ui::presence::PresenceKey,
+        ui::collaboration::PresencePayload,
+    )> {
+        self.editing_editor()?.host.presence_payload()
+    }
+
+    fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
+        self.editing_editor()?.host.shared_selection()
+    }
+}
+
+impl SlidesApp {
+    /// The editor of the words being edited, read-only.
+    fn editing_editor(&self) -> Option<&TextBoxEditor> {
+        self.editing_text_box()?;
+        self.text_editor.as_ref().filter(|editor| editor.focused)
+    }
 }

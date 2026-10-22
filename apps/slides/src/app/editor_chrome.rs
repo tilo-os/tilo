@@ -8,10 +8,10 @@
 //! the renderer at the top of every frame.
 
 use super::{
-    Affine, ArgValue, Background, BlendMode, Element, ElementKind, FILL_ROLES, Fill, HashMap, Hit,
-    Icon, Mode, PaintCtx, Palette, PaletteKind, Point, Rect, SLIDE_H, SLIDE_W, STROKE_ROLES, Scene,
-    SidebarDrawer, SlidesApp, SplitLayout, TextAlign, TextRenderer, Theme, custom_colour_hex, tr,
-    tr_args,
+    Affine, ArgValue, Background, BlendMode, DeckAssets, Element, ElementKind, FILL_ROLES, Fill,
+    HashMap, Hit, Icon, Mode, PaintCtx, Palette, PaletteKind, Point, PresenceCtx, Rect, SLIDE_H,
+    SLIDE_W, STROKE_ROLES, Scene, SidebarDrawer, SlidesApp, SplitLayout, TextAlign, TextRenderer,
+    Theme, custom_colour_hex, tr, tr_args,
 };
 
 use ui::TextRole;
@@ -1348,12 +1348,11 @@ impl SlidesApp {
     /// over its scrim.
     pub(super) fn draw_editor(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         chrome: &Chrome,
+        presence: &PresenceCtx,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let pal = self.palette(theme);
         let rail_docked = chrome.layout == SplitLayout::Docked;
         let inspector_docked = chrome.inspector_layout == SplitLayout::Docked;
@@ -1364,8 +1363,13 @@ impl SlidesApp {
         let reader_scale = tr.text_scale();
         tr.set_text_scale(1.0);
         self.layout_text_editor(tr, theme, chrome, &pal);
-        self.draw_editor_canvas(scene, t, tr, theme, chrome, &pal);
-        self.draw_text_editor(scene, t, tr, theme);
+        let assets = DeckAssets {
+            palette: &pal,
+            images: &self.images,
+            presence: Some(presence),
+        };
+        self.draw_editor_canvas(&mut PaintCtx::new(scene, t, tr, theme), chrome, assets);
+        self.draw_text_editor(&mut PaintCtx::new(scene, t, tr, theme), presence);
         tr.set_text_scale(reader_scale);
 
         // The content column's header: a hairline under it, its controls.

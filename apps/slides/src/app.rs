@@ -1985,37 +1985,18 @@ impl SlidesApp {
     /// border, the selection ring/handles or live text caret+selection, the
     /// snap guides, and the caption underneath. No-op while the deck has no
     /// current slide.
-    fn draw_editor_canvas(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        chrome: &Chrome,
-        pal: &Palette,
-    ) {
+    fn draw_editor_canvas(&self, ctx: &mut PaintCtx<'_>, chrome: &Chrome, assets: DeckAssets<'_>) {
         let Some(slide) = self.slide() else { return };
-        let radius = f64::from(theme.tokens.radii.control);
+        let radius = f64::from(ctx.theme.tokens.radii.control);
         // The text box being edited draws its words through its editor.
         let editing = self
             .text_editor
             .as_ref()
             .filter(|_| self.editing_text)
             .map(|editor| editor.element_id.as_str());
-        render::draw_slide_except(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            DeckAssets {
-                palette: pal,
-                images: &self.images,
-            },
-            slide,
-            chrome.slide_dest,
-            radius,
-            editing,
-            true,
-        );
-        self.draw_editor_selection_chrome(scene, t, theme, chrome);
-        self.draw_editor_guides(scene, t, theme, chrome);
+        render::draw_slide_except(ctx, assets, slide, chrome.slide_dest, radius, editing, true);
+        self.draw_editor_selection_chrome(ctx.scene, ctx.transform, ctx.theme, chrome);
+        self.draw_editor_guides(ctx.scene, ctx.transform, ctx.theme, chrome);
     }
 
     /// The selection ring + resize handles around the selected element, or
@@ -2252,6 +2233,7 @@ impl SlidesApp {
             DeckAssets {
                 palette: &palette,
                 images: &self.images,
+                presence: None,
             },
         );
         let (buttons, title, title_max) = self.overview_header();
@@ -2630,7 +2612,8 @@ impl AudiencePresentationProvider for SlidesApp {
 impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::AudiencePresentationProvider
+        dyn ui::widget::AudiencePresentationProvider,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -2729,7 +2712,11 @@ impl Widget for SlidesApp {
                     chrome.inspector_body.width() as f32,
                     chrome.inspector_content_h as f32,
                 );
-                self.draw_editor(scene, transform, text_renderer, theme, &chrome);
+                self.draw_editor(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    &chrome,
+                    presence,
+                );
                 self.draw_inspector_widgets(
                     scene,
                     transform,
@@ -4836,6 +4823,7 @@ impl SlidesApp {
                     DeckAssets {
                         palette: pal,
                         images,
+                        presence: None,
                     },
                     slide,
                     rect,
