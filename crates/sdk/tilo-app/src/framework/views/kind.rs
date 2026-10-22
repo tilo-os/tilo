@@ -260,7 +260,7 @@ impl Item {
             item.found_by.push((entry.text.clone(), SearchWeight::Body));
         }
         item.found_by.extend(entry.fields.iter().cloned());
-        item.body = entry.body.clone();
+        item.body.clone_from(&entry.body);
         item.payload = Some(Arc::new(entry.clone()));
         Some(item)
     }

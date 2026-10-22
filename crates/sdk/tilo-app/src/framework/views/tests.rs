@@ -733,7 +733,7 @@ impl tilo_resource::SearchText for Prose {
 
     fn location(&self, segment: usize) -> Option<tilo_resource::SearchEntry> {
         Some(
-            tilo_resource::SearchEntry::new(format!("Paragraph {}", segment + 1), "")
+            tilo_resource::SearchEntry::new(format!("Paragraph {}", segment.saturating_add(1)), "")
                 .anchored(format!("{}#{segment}", self.book))
                 .grouped("Passages")
                 .subtitled(self.book),

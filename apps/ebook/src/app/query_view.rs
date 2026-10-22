@@ -506,7 +506,7 @@ impl BooksApp {
             TextRole::Body,
             theme.text_dim,
             Point::new(span.0, y),
-            Some(span.1 - span.0),
+            Some(ui::num::f32_of_f64(span.1 - span.0)),
         );
         y + ctx.line_box(TextRole::Body)
     }
@@ -519,7 +519,7 @@ impl BooksApp {
             TextRole::Heading,
             theme.text_primary,
             Point::new(span.0, y),
-            Some(span.1 - span.0),
+            Some(ui::num::f32_of_f64(span.1 - span.0)),
         );
         y + ctx.line_box(TextRole::Heading) + f64::from(theme.tokens.spacing.rhythm.related)
     }

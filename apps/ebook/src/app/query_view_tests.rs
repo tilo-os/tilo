@@ -132,17 +132,17 @@ fn a_search_from_inside_a_book_is_the_books_until_its_chip_is_cleared() {
 #[test]
 fn closing_the_search_returns_to_the_page_it_began_on() {
     let mut app = TestApp::<EbookShell>::capture(Some("search-in-book")).unwrap();
-    let books = books(&mut app);
-    assert_eq!(books.view, View::Search);
-    assert_eq!(books.query.returns_to, View::Reader);
-    let (book, chapter, page) = (books.book_idx, books.chapter, books.page);
-    books.query_closed();
-    assert_eq!(books.view, View::Reader);
+    let reading = books(&mut app);
+    assert_eq!(reading.view, View::Search);
+    assert_eq!(reading.query.returns_to, View::Reader);
+    let (book, chapter, page) = (reading.book_idx, reading.chapter, reading.page);
+    reading.query_closed();
+    assert_eq!(reading.view, View::Reader);
     assert_eq!(
-        (books.book_idx, books.chapter, books.page),
+        (reading.book_idx, reading.chapter, reading.page),
         (book, chapter, page)
     );
-    assert!(!books.query.engine.is_open());
+    assert!(!reading.query.engine.is_open());
 
     let mut app = TestApp::<EbookShell>::capture(Some("search")).unwrap();
     let books = books(&mut app);
