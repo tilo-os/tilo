@@ -3681,7 +3681,7 @@ impl BrowserWidget {
                 anchor_ids(&["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
         }
-        if let Some((content, mut anchors)) = self.extensions.panel(width) {
+        if let Some((content, mut anchors)) = self.extensions.panel(width, max_height) {
             anchors.push(toolbar::OVERFLOW_ID.to_owned());
             anchors.push(URL_INPUT_ID.to_owned());
             return Some((PanelKind::Extension, content, anchors));
