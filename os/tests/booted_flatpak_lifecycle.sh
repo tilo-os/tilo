@@ -94,14 +94,16 @@ else
   ok "x86_64 subject: every Flathub app has a build here, nothing to mark unavailable"
 fi
 
-# --- 2. installed from search, then opened -----------------------------------
+# --- 2. installed by its row's Install action, then opened -------------------
 deadline=$((SECONDS + 120))
 until search_rows "$APP_NAME" | grep -qP "^store-catalogue\tflathub:$APP\t"; do
   [ "$SECONDS" -lt "$deadline" ] || die "search for '$APP_NAME' does not offer $APP"
   sleep 3
 done
-control actions invoke store-catalogue "flathub:$APP" --wait=30000 >/dev/null \
-  || die "choosing $APP in search failed"
+# Picking the app only opens its Store page; installing is the row's own
+# "Install and open" action.
+control actions invoke store-catalogue "flathub-install:$APP" --wait=30000 >/dev/null \
+  || die "choosing Install and open for $APP in search failed"
 started=$SECONDS
 deadline=$((SECONDS + 900))
 until user_apps | grep -qx "$APP"; do

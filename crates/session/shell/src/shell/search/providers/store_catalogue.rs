@@ -7,11 +7,12 @@
 //!   it downloads first, through the on-demand path a missing app's window
 //!   takes ([`catalogue::install_and_launch`]), with its place held by the
 //!   opening card.
-//! - A **Flathub app** is installed explicitly: Enter installs it and opens
-//!   it when that is done. Its other action shows it in the App Store. One
-//!   Flathub builds only for another processor (Steam, on an ARM device) is
-//!   found all the same: its row says it is not available for this device,
-//!   and Enter shows its App Store page, which says why.
+//! - A **Flathub app** is never installed by picking it: Enter opens its App
+//!   Store page, where the person decides. Installing from the row is its
+//!   other action, named for what it does ("Install and open"). One Flathub
+//!   builds only for another processor (Steam, on an ARM device) is found
+//!   all the same: its row says it is not available for this device, Enter
+//!   shows the Store page that says why, and there is nothing to install.
 //! - A Tilo app's **document** ("Workbook") opens the app, which starts on a
 //!   new one; its **action** ("Show tasks") gets the app if needed and runs
 //!   through the session's action host, which starts the app as it does for
@@ -86,8 +87,8 @@ const FLATHUB_PREFIX: &str = "flathub:";
 const DOCUMENT_PREFIX: &str = "new:";
 /// `offer:<app>/<resource>/<action>`.
 const ACTION_PREFIX: &str = "offer:";
-/// The "Show in App Store" row of a Flathub app's other actions.
-const STORE_PAGE_PREFIX: &str = "store-page:";
+/// The "Install and open" row of a Flathub app's other actions.
+const FLATHUB_INSTALL_PREFIX: &str = "flathub-install:";
 
 /// Matching like the installed apps': words spread over fields, typos in
 /// names.
@@ -483,7 +484,7 @@ fn app_of_row(id: &str) -> Option<&str> {
     if let Some(app) = id
         .strip_prefix(TILO_PREFIX)
         .or_else(|| id.strip_prefix(FLATHUB_PREFIX))
-        .or_else(|| id.strip_prefix(STORE_PAGE_PREFIX))
+        .or_else(|| id.strip_prefix(FLATHUB_INSTALL_PREFIX))
     {
         return Some(app);
     }
@@ -582,9 +583,10 @@ fn app_row(entry: &CatalogueEntry, score: i32) -> SearchResult {
             score,
             move |_doc, _root, chrome: &Chrome| open_tilo_app(chrome, &id, &name),
         ),
-        Source::Flathub { .. } if entry.not_built_for_this_device => {
-            // Nothing to install: its Store page says why it is not
-            // available here.
+        Source::Flathub { .. } => {
+            // Picking it opens its Store page, where the person decides to
+            // install (or reads why it is not available here); it never
+            // installs on its own.
             let mut row = SearchResult::nullary_fallible(
                 ResourceKind::Application,
                 PROVIDER_ID,
@@ -594,22 +596,9 @@ fn app_row(entry: &CatalogueEntry, score: i32) -> SearchResult {
                 score,
                 move |_doc, _root, chrome: &Chrome| show_in_store(chrome, &id, &name),
             );
-            row.badge = Some(t("search-catalogue-source-flathub"));
-            row
-        }
-        Source::Flathub { .. } => {
-            let mut row = SearchResult::nullary_fallible(
-                ResourceKind::Application,
-                PROVIDER_ID,
-                app_row_id(entry),
-                entry.name.clone(),
-                Some(app_subtitle(entry)),
-                score,
-                move |_doc, _root, chrome: &Chrome| install_flathub_app(chrome, &id, &name),
-            );
             // Where it comes from is said once: beside the tag line, or as
             // the second line when there is no tag line.
-            if !entry.tagline.trim().is_empty() {
+            if entry.not_built_for_this_device || !entry.tagline.trim().is_empty() {
                 row.badge = Some(t("search-catalogue-source-flathub"));
             }
             row
@@ -1022,8 +1011,7 @@ impl SearchProvider for StoreCatalogueProvider {
         let Some(app_id) = result.id.strip_prefix(FLATHUB_PREFIX) else {
             return Vec::new();
         };
-        // An app not built for this device shows its Store page on Enter
-        // already; a second way there would be the same action twice.
+        // An app not built for this device has nothing to install.
         if self.snapshot().is_some_and(|snapshot| {
             snapshot
                 .entries
@@ -1034,15 +1022,17 @@ impl SearchProvider for StoreCatalogueProvider {
         }
         let app_id = app_id.to_owned();
         let name = result.title.clone();
-        vec![SearchResult::nullary_fallible(
+        let mut install = SearchResult::nullary_fallible(
             ResourceKind::Action,
             PROVIDER_ID,
-            format!("{STORE_PAGE_PREFIX}{app_id}"),
-            t("search-catalogue-show-in-store"),
+            format!("{FLATHUB_INSTALL_PREFIX}{app_id}"),
+            t("search-catalogue-install-and-open"),
             None,
             result.score,
-            move |_doc, _root, chrome: &Chrome| show_in_store(chrome, &app_id, &name),
-        )]
+            move |_doc, _root, chrome: &Chrome| install_flathub_app(chrome, &app_id, &name),
+        );
+        install.operation_kind = tilo_actions::OperationKind::Effect;
+        vec![install]
     }
 
     fn query_incomplete_reason(
@@ -1085,6 +1075,21 @@ impl SearchProvider for StoreCatalogueProvider {
                 || self.source_generation(),
                 || self.builder(),
             );
+        }
+        // A Flathub app's "Install and open" is addressed on its own, so an
+        // install is always asked for by name, never by picking the app.
+        if let Some(app) = id.strip_prefix(FLATHUB_INSTALL_PREFIX) {
+            let app_row = {
+                let snapshot = self.snapshot()?;
+                let row = snapshot.rows.iter().copied().find(|row| {
+                    snapshot.row_id(*row).as_deref() == Some(&format!("{FLATHUB_PREFIX}{app}"))
+                })?;
+                self.row(&snapshot, row, provider_score(0))?
+            };
+            return self
+                .secondary_actions(&app_row)
+                .into_iter()
+                .find(|action| action.id == id);
         }
         let snapshot = self.snapshot()?;
         let row = snapshot
@@ -1230,7 +1235,7 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "test fixtures transitively own long-lived permits and lock guards by design"
     )]
-    fn spotify_from_the_cached_flathub_catalogue_is_found_and_installs() {
+    fn spotify_from_the_cached_flathub_catalogue_is_found() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
             state(&[], &[]),
         ));
@@ -1255,9 +1260,9 @@ mod tests {
             spotify.score < 100,
             "an app to install ranks below an installed app of the same match"
         );
-        let store = provider.secondary_actions(spotify);
-        assert_eq!(store.len(), 1, "its other action shows it in the Store");
-        assert_eq!(store[0].id, "store-page:com.spotify.Client");
+        let other = provider.secondary_actions(spotify);
+        assert_eq!(other.len(), 1, "its other action installs it");
+        assert_eq!(other[0].id, "flathub-install:com.spotify.Client");
         let snapshot = provider.snapshot().expect("indexed");
         assert_eq!(
             snapshot.icons.get(&spotify.id),
@@ -1270,8 +1275,8 @@ mod tests {
 
     /// Flathub builds Steam for `x86_64` only. On another processor search
     /// still finds it: the row says it is not available for this device,
-    /// Enter shows its App Store page (which says why) instead of installing,
-    /// and there is no second way to the same page.
+    /// Enter shows its App Store page (which says why), and there is nothing
+    /// to install.
     #[test]
     #[expect(
         clippy::significant_drop_tightening,
@@ -1303,7 +1308,7 @@ mod tests {
         assert_eq!(steam.badge.as_deref(), Some("Flathub"));
         assert!(
             provider.secondary_actions(steam).is_empty(),
-            "Enter already shows its Store page"
+            "there is nothing to install"
         );
         let spotify = search(&provider, "spotify");
         let spotify = spotify
@@ -1311,6 +1316,71 @@ mod tests {
             .find(|row| row.id == "flathub:com.spotify.Client")
             .expect("Spotify is still offered");
         assert_eq!(provider.secondary_actions(spotify).len(), 1);
+    }
+
+    // USER REQUIREMENT (2026-10-22): "searching for a Flatpak opens its Store
+    // page, it never installs on its own"
+    #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
+    fn searching_for_a_flatpak_opens_its_store_page_it_never_installs_on_its_own() {
+        let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
+            state(&[], &[]),
+        ));
+        let rows = search(&provider, "spotify");
+        let spotify = rows
+            .iter()
+            .find(|row| row.id == "flathub:com.spotify.Client")
+            .expect("\"spotify\" finds Spotify from Flathub");
+        assert_eq!(
+            spotify.operation_kind,
+            tilo_actions::OperationKind::View,
+            "picking it shows something; it changes nothing on this device"
+        );
+
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let mut doc = AutoCommit::new();
+        // No Store is installed in a test, so opening its page may fail; what
+        // matters is what did not happen.
+        let _ = (spotify.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &tilo_actions::ActionArgs::none(),
+        );
+        assert!(
+            !catalogue::installing_from_flathub("com.spotify.Client"),
+            "picking a Flatpak never starts an install"
+        );
+        assert!(
+            chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .all(|n| n.title != "Installing Spotify"),
+            "nor says it is installing"
+        );
+
+        let other = provider.secondary_actions(spotify);
+        assert_eq!(other.len(), 1, "installing is a separate, explicit action");
+        assert_eq!(other[0].title, "Install and open", "named for what it does");
+        assert_eq!(other[0].operation_kind, tilo_actions::OperationKind::Effect);
+        let state = chrome.borrow();
+        let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "",
+            wanted: &[ResourceKind::Application, ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let resolved = provider
+            .resolve("flathub-install:com.spotify.Client", ctx)
+            .expect("the install is addressable on its own");
+        assert_eq!(resolved.title, "Install and open");
     }
 
     // USER REQUIREMENT (2026-10-19): "directly opening tapps without explicit
