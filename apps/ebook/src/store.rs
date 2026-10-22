@@ -75,7 +75,8 @@ pub(crate) fn cover_fetcher() -> ui::Fetcher {
 /// shelf.
 pub(crate) fn fetched_path(id: u64) -> PathBuf {
     tilo_paths::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default()
         .join("so.tilo.ebook")
         .join("store")
         .join(format!("gutenberg-{id}.epub"))
@@ -137,17 +138,13 @@ pub(crate) fn download(url: &str, path: &Path) -> Result<(), String> {
             "Couldn\u{2019}t get the book from {STORE_LABEL}. Try again when you\u{2019}re online."
         )
     })?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "There\u{2019}s no place to keep the book.".to_string())?;
-    let keep = |error: std::io::Error| {
+    let keep = |error: tilo_files::FsError| {
         tracing::debug!(%error, "books: the store's book could not be kept");
         "Couldn\u{2019}t keep the book on this device.".to_string()
     };
-    std::fs::create_dir_all(parent).map_err(keep)?;
-    let partial = path.with_extension("part");
-    std::fs::write(&partial, bytes).map_err(keep)?;
-    std::fs::rename(&partial, path).map_err(keep)
+    // Written whole or not at all, its folders made as needed.
+    let (dir, name) = tilo_files::file_at(path).map_err(keep)?;
+    tilo_files::blocking::write_atomic(&dir, &name, &bytes).map_err(keep)
 }
 
 /// The books in one page of the catalogue's OPDS answer, in its order.

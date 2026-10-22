@@ -175,14 +175,14 @@ fn bench_store(queries: &[&str]) {
                     failed += 1;
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(1));
+                let _ = ui::rt::sleep_thread(Duration::from_millis(1));
             }
             if !got {
                 superseded += 1;
             }
             // The rest of the keystroke's time passes before the next one.
             if let Some(rest) = KEYSTROKE.checked_sub(elapsed(since)) {
-                std::thread::sleep(rest);
+                let _ = ui::rt::sleep_thread(rest);
             }
         }
         println!(
