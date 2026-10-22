@@ -157,7 +157,7 @@ const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "id",
         ParamType::Text,
-        "The identity's 64-character public-key fingerprint.",
+        "The identity to use in this workspace.",
     ),
     ActionParam::required(
         "confirm",
@@ -165,6 +165,58 @@ const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
         "Confirm delegating workspace administration to this identity.",
     ),
 ];
+
+/// The parameters `action` asks for now. Choosing the identity a workspace
+/// uses offers the identities this device has, each by its name and avatar;
+/// nobody types a fingerprint.
+fn live_params(action: &Action) -> Vec<ActionParam> {
+    if action.id != "identity.select" {
+        return action.params.to_vec();
+    }
+    let identities = crate::identity_registry::IdentityRegistryStore::from_env()
+        .and_then(|store| store.load_reconciled_cached())
+        .map(|registry| {
+            registry
+                .identities
+                .values()
+                .map(|profile| (profile.id.clone(), identity_label(&profile.display_name)))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    identity_select_params(&identities)
+}
+
+/// [`IDENTITY_SELECT_PARAMS`], its identity one of `identities`
+/// (`(id, name)`), each read as its name with its avatar.
+pub(crate) fn identity_select_params(identities: &[(String, String)]) -> Vec<ActionParam> {
+    IDENTITY_SELECT_PARAMS
+        .iter()
+        .map(|param| {
+            if param.name != "id" {
+                return param.clone();
+            }
+            let mut param = param
+                .clone()
+                .with_labelled_choices(identities.iter().cloned())
+                .choosing_people(identities.iter().map(|(id, _)| id.clone()));
+            if identities.is_empty() {
+                param.description = t("search-action-identity-none").into();
+            }
+            param
+        })
+        .collect()
+}
+
+/// How an identity reads in the chooser: its name, or "Unnamed identity"
+/// for one minted before it had one.
+fn identity_label(display_name: &str) -> String {
+    let name = display_name.trim();
+    if name.is_empty() {
+        t("search-action-identity-unnamed")
+    } else {
+        name.to_owned()
+    }
+}
 
 const SEARCH_PROVIDER_SET_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -4031,7 +4083,7 @@ impl ActionsProvider {
                 subtitle: Some(subtitle),
                 badge: state_badge(action.id, ctx.chrome),
                 score,
-                params: action.params.to_vec(),
+                params: live_params(action),
                 contract: Some(shell_action_contract(action.id)),
                 on_open,
                 on_invoke: match action.id {
