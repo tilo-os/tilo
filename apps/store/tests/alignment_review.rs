@@ -169,23 +169,26 @@ fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
     }
 }
 
-/// Secondary pages share one header composition: the window's title, then the body.
+/// Secondary pages share one header composition: the window bar's location, then the body.
 #[test]
 fn secondary_pages_share_one_header_composition() {
+    // Each page's title is the window bar's location, as the catalogue's is.
+    let location = || {
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label)
+    };
     let remotes = lay_out(staged("remotes"), (1200.0, 800.0));
+    assert_eq!(location().as_deref(), Some("Flatpak repositories"));
     let safety = lay_out(staged("moderation"), (1200.0, 800.0));
+    assert_eq!(location().as_deref(), Some("Trust and moderation"));
 
-    let remotes_title = first_named(&*remotes, "Flatpak repositories");
-    let safety_title = first_named(&*safety, "Trust and moderation");
+    // Under the bar, both pages start their content on one line.
+    let remotes_top = by_widget_name(&*remotes, "Scrollable")[0].y0;
     close(
-        remotes_title.height(),
-        safety_title.height(),
-        "titles use one size",
-    );
-    close(
-        remotes_title.y0,
-        safety_title.y0,
-        "titles start on one line",
+        remotes_top,
+        by_widget_name(&*safety, "Scrollable")[0].y0,
+        "pages start on one line",
     );
     let explanation = first_named(
         &*remotes,
@@ -193,8 +196,8 @@ fn secondary_pages_share_one_header_composition() {
     );
     let form_title = first_named(&*remotes, "Add a repository");
     assert!(
-        explanation.y0 >= remotes_title.y1,
-        "repository scope explanation follows the shared header"
+        explanation.y0 >= remotes_top,
+        "repository scope explanation starts on the page"
     );
     assert!(
         explanation.y1 < form_title.y0,
