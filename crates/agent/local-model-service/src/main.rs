@@ -370,33 +370,31 @@ fn local_hardware(root: &Path) -> Result<HardwareSnapshot, String> {
         .ok()
         .map(|version| version.trim().to_string())
         .filter(|version| !version.is_empty());
-    if let Ok(cards) = std::fs::read_dir("/sys/class/drm") {
-        for card in cards.flatten() {
-            let device = card.path().join("device");
+    // One render node per GPU; its kernel driver says who can use it.
+    if let Ok(nodes) = std::fs::read_dir("/sys/class/drm") {
+        for node in nodes.flatten() {
+            if !node.file_name().to_string_lossy().starts_with("renderD") {
+                continue;
+            }
+            let device = node.path().join("device");
             let vendor = std::fs::read_to_string(device.join("vendor"))
                 .ok()
                 .map(|value| value.trim().to_string());
-            if vendor.as_deref() == Some("0x1002") {
-                let vram_mib = std::fs::read_to_string(device.join("mem_info_vram_total"))
-                    .ok()
-                    .and_then(|bytes| bytes.trim().parse::<u64>().ok())
-                    .map_or(0, |bytes| bytes / 1024 / 1024);
-                accelerators.push(Accelerator::Amd {
-                    vram_mib,
-                    rocm: rocm.clone(),
-                });
-            } else if vendor.as_deref() == Some("0x10de")
-                && !accelerators
-                    .iter()
-                    .any(|item| matches!(item, Accelerator::Nvidia { .. }))
+            let driver = std::fs::read_link(device.join("driver"))
+                .ok()
+                .and_then(|link| {
+                    link.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+                .unwrap_or_default();
+            if let Some(accelerator) =
+                gpu_accelerator(vendor.as_deref(), &driver, &device, rocm.as_deref())
+                && !(matches!(accelerator, Accelerator::Nvidia { .. })
+                    && accelerators
+                        .iter()
+                        .any(|item| matches!(item, Accelerator::Nvidia { .. })))
             {
-                // Retain the PCI device when `nvidia-smi` is absent so policy
-                // asks for the signed driver boot pack instead of quietly
-                // launching an unsuitable CPU model.
-                accelerators.push(Accelerator::Nvidia {
-                    vram_mib: 0,
-                    driver: String::new(),
-                });
+                accelerators.push(accelerator);
             }
         }
     }
@@ -408,6 +406,39 @@ fn local_hardware(root: &Path) -> Result<HardwareSnapshot, String> {
         accelerators,
     })
 }
+/// Mesa's kernel drivers whose GPUs its Vulkan drivers serve.
+const MESA_VULKAN_DRIVERS: [&str; 7] = ["i915", "xe", "panfrost", "panthor", "msm", "v3d", "asahi"];
+
+/// The accelerator one render node of `vendor` and kernel `driver` is.
+fn gpu_accelerator(
+    vendor: Option<&str>,
+    driver: &str,
+    device: &Path,
+    rocm: Option<&str>,
+) -> Option<Accelerator> {
+    match vendor {
+        Some("0x1002") => Some(Accelerator::Amd {
+            vram_mib: std::fs::read_to_string(device.join("mem_info_vram_total"))
+                .ok()
+                .and_then(|bytes| bytes.trim().parse::<u64>().ok())
+                .map_or(0, |bytes| bytes / 1024 / 1024),
+            rocm: rocm.map(str::to_owned),
+        }),
+        // Retain the PCI device when `nvidia-smi` is absent so policy asks
+        // for the signed driver boot pack instead of quietly launching an
+        // unsuitable CPU model.
+        Some("0x10de") => Some(Accelerator::Nvidia {
+            vram_mib: 0,
+            driver: String::new(),
+        }),
+        _ if MESA_VULKAN_DRIVERS.contains(&driver) => Some(Accelerator::Vulkan {
+            vram_mib: 0,
+            driver: driver.to_owned(),
+        }),
+        _ => None,
+    }
+}
+
 /// Observe the selected store's filesystem, including a normal not-yet-created
 /// store. Only `NotFound` permits bounded ascent; invalid paths and probe errors
 /// remain unavailable rather than borrowing capacity from an unrelated store.
@@ -498,41 +529,32 @@ fn recommended_model<'a>(
             (required_storage <= hardware.free_storage_mib).then_some((model, runtime.release.kind))
         })
         .max_by_key(|(model, kind)| {
-            let priority = match kind {
-                RuntimeKind::NvidiaCuda => 2,
-                RuntimeKind::AmdRocm => 1,
-                RuntimeKind::Cpu => 0,
-            };
+            let priority = RuntimeKind::PREFERENCE.iter().rev().position(|item| item == kind);
             (priority, model.context_window, std::cmp::Reverse(model.artifact.size_bytes))
         })
         .ok_or_else(|| "No signed model and compatible runtime fit the detected RAM, accelerator memory, and selected store's free storage.".into())
 }
 
+/// The signed runtime that serves `model` on this machine: built for its
+/// architecture, of the kind its hardware calls for.
 fn signed_runtime_for<'a>(
     catalog: &'a CatalogPayload,
     hardware: &HardwareSnapshot,
     model: &LocalModelRelease,
 ) -> Result<&'a SignedRuntime, String> {
-    let kind = runtime_kind_for(
-        hardware,
-        model,
+    let serving = || {
         catalog
             .runtimes
             .iter()
-            .filter(|runtime| {
-                model.allowed_runtimes.contains(&runtime.release.kind)
-                    && runtime.release.supports_format(model.artifact_format)
-            })
-            .map(|runtime| runtime.release.kind),
+            .filter(|runtime| runtime.serves(model, std::env::consts::ARCH))
+    };
+    let kind = runtime_kind_for(
+        hardware,
+        model,
+        serving().map(|runtime| runtime.release.kind),
     )?;
-    catalog
-        .runtimes
-        .iter()
-        .filter(|runtime| {
-            runtime.release.kind == kind
-                && model.allowed_runtimes.contains(&kind)
-                && runtime.release.supports_format(model.artifact_format)
-        })
+    serving()
+        .filter(|runtime| runtime.release.kind == kind)
         .max_by_key(|runtime| &runtime.release.version)
         .ok_or_else(|| format!("The selected model has no signed {} runtime.", kind.label()))
 }
@@ -550,7 +572,7 @@ fn recommendation(
                 .iter()
                 .filter_map(|item| match item {
                     Accelerator::Nvidia { vram_mib, .. } => Some(*vram_mib),
-                    Accelerator::Amd { .. } => None,
+                    Accelerator::Amd { .. } | Accelerator::Vulkan { .. } => None,
                 })
                 .max();
             (
@@ -580,6 +602,18 @@ fn recommendation(
                     .into(),
             )
         }
+        Ok(RuntimeKind::Vulkan) => (
+            "Vulkan".into(),
+            hardware
+                .accelerators
+                .iter()
+                .filter(|item| item.serves_vulkan())
+                .map(Accelerator::vulkan_vram_mib)
+                .max()
+                .filter(|vram| *vram > 0)
+                .map(|value| u16::try_from(value / 1024).unwrap_or(u16::MAX)),
+            "A signed Vulkan runtime was selected for this GPU's open driver.".into(),
+        ),
         Ok(RuntimeKind::Cpu) => (
             "CPU".into(),
             None,
@@ -1341,10 +1375,9 @@ fn hub_offer(
         &info,
         hardware,
         |format| {
-            catalog
-                .runtimes
-                .iter()
-                .any(|runtime| runtime.release.supports_format(format))
+            catalog.runtimes.iter().any(|runtime| {
+                runtime.runs_on(std::env::consts::ARCH) && runtime.release.supports_format(format)
+            })
         },
         signed_in,
     )
@@ -1499,7 +1532,7 @@ fn local_snapshot(
             package.no_runtime = !catalog
                 .runtimes
                 .iter()
-                .any(|runtime| runtime.release.supports_format(release.artifact_format));
+                .any(|runtime| runtime.serves(&release, std::env::consts::ARCH));
             Some(InstalledLocalModel {
                 package,
                 phase: phase(&managed.status),
@@ -1965,6 +1998,26 @@ mod tests {
         assert!(recommended_model(&catalog, &hardware).is_err());
         hardware.free_storage_mib = 2;
         assert!(recommended_model(&catalog, &hardware).is_ok());
+        // A build for another architecture never serves this machine.
+        let other = if std::env::consts::ARCH == "x86_64" {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
+        catalog.runtimes[0]
+            .accepted
+            .signed
+            .manifest
+            .target
+            .architecture = Some(other.into());
+        assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+        catalog.runtimes[0]
+            .accepted
+            .signed
+            .manifest
+            .target
+            .architecture = Some(std::env::consts::ARCH.into());
+        assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_ok());
     }
 
     #[test]

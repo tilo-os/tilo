@@ -832,11 +832,19 @@ pub fn rate_fit(
     if download_bytes.div_ceil(MIB) > hardware.free_storage_mib {
         return rated(HardwareFit::Unsupported, HubFitReason::NoStorage);
     }
-    let accelerator = usable_accelerator_mib(hardware);
-    let memory = hardware.memory_mib.saturating_sub(DESKTOP_HEADROOM_MIB);
     // vLLM keeps the whole model in accelerator memory; llama.cpp can split
-    // its layers between accelerator and system memory.
+    // its layers between accelerator and system memory, and reaches more
+    // GPUs through Vulkan.
     let whole = format == ModelArtifactFormat::HfSnapshotFiles;
+    let accelerator = usable_accelerator_mib(hardware, !whole);
+    let memory = hardware.memory_mib.saturating_sub(DESKTOP_HEADROOM_MIB);
+    // A GPU sharing system memory carries llama.cpp's work, so the processor
+    // floor below does not apply to it.
+    let shared_gpu = !whole
+        && hardware
+            .accelerators
+            .iter()
+            .any(|gpu| gpu.serves_vulkan() && gpu.vulkan_vram_mib() == 0);
     if accelerator > 0 {
         if needs <= (accelerator / 10).saturating_mul(9) {
             return rated(HardwareFit::Excellent, HubFitReason::Accelerator);
@@ -857,7 +865,7 @@ pub fn rate_fit(
             rated(HardwareFit::Unsupported, HubFitReason::TooLarge)
         };
     }
-    if hardware.cpu_threads < 4 || hardware.memory_mib < 8192 {
+    if !shared_gpu && (hardware.cpu_threads < 4 || hardware.memory_mib < 8192) {
         return rated(HardwareFit::Unsupported, HubFitReason::ProcessorTooSmall);
     }
     // The processor path is labelled honestly: never excellent, and a
@@ -871,8 +879,9 @@ pub fn rate_fit(
     }
 }
 
-/// The largest accelerator memory whose driver is active.
-fn usable_accelerator_mib(hardware: &HardwareSnapshot) -> u64 {
+/// The largest dedicated accelerator memory a runtime can use: one whose
+/// vendor driver is active, or with `vulkan`, any GPU Mesa drives.
+fn usable_accelerator_mib(hardware: &HardwareSnapshot, vulkan: bool) -> u64 {
     hardware
         .accelerators
         .iter()
@@ -884,6 +893,7 @@ fn usable_accelerator_mib(hardware: &HardwareSnapshot) -> u64 {
                 vram_mib,
                 rocm: Some(version),
             } if !version.trim().is_empty() => Some(*vram_mib),
+            gpu if vulkan && gpu.serves_vulkan() => Some(gpu.vulkan_vram_mib()),
             _ => None,
         })
         .max()
@@ -1168,12 +1178,7 @@ impl UserModel {
             installed_size_bytes: size,
             // Any signed runtime of the matching engine may serve it; the
             // hardware decides which, as for a catalog release.
-            allowed_runtimes: [
-                RuntimeKind::Cpu,
-                RuntimeKind::NvidiaCuda,
-                RuntimeKind::AmdRocm,
-            ]
-            .into(),
+            allowed_runtimes: RuntimeKind::PREFERENCE.into(),
             required_memory_mib: 0,
             required_accelerator_mib: 0,
             context_window: self.context_window,

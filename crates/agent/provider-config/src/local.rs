@@ -19,8 +19,39 @@ pub mod snapshot;
 /// One accelerator the trusted hardware probe observed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Accelerator {
-    Nvidia { vram_mib: u64, driver: String },
-    Amd { vram_mib: u64, rocm: Option<String> },
+    Nvidia {
+        vram_mib: u64,
+        driver: String,
+    },
+    Amd {
+        vram_mib: u64,
+        rocm: Option<String>,
+    },
+    /// Any other GPU an open kernel driver serves (Intel, Arm Mali, Qualcomm
+    /// Adreno, ...), which Mesa's Vulkan drivers in a runtime image can use.
+    /// `vram_mib` is 0 for a GPU that shares system memory.
+    Vulkan {
+        vram_mib: u64,
+        driver: String,
+    },
+}
+
+impl Accelerator {
+    /// Whether a Vulkan runtime can use this GPU through Mesa: AMD's and the
+    /// other open drivers, not NVIDIA's proprietary one.
+    #[must_use]
+    pub const fn serves_vulkan(&self) -> bool {
+        matches!(self, Self::Amd { .. } | Self::Vulkan { .. })
+    }
+
+    /// Dedicated memory a Vulkan runtime can use; 0 when it shares RAM.
+    #[must_use]
+    pub const fn vulkan_vram_mib(&self) -> u64 {
+        match self {
+            Self::Amd { vram_mib, .. } | Self::Vulkan { vram_mib, .. } => *vram_mib,
+            Self::Nvidia { .. } => 0,
+        }
+    }
 }
 
 /// The capability snapshot a privileged hardware service publishes. A UI or
@@ -41,6 +72,8 @@ pub enum RuntimeKind {
     Cpu,
     NvidiaCuda,
     AmdRocm,
+    /// llama.cpp's Vulkan backend: AMD, Intel and Arm GPUs through Mesa.
+    Vulkan,
 }
 
 impl RuntimeKind {
@@ -49,8 +82,12 @@ impl RuntimeKind {
             Self::Cpu => "CPU",
             Self::NvidiaCuda => "NVIDIA CUDA",
             Self::AmdRocm => "AMD ROCm",
+            Self::Vulkan => "Vulkan",
         }
     }
+
+    /// Every runtime kind, in the order a machine prefers them.
+    pub const PREFERENCE: [Self; 4] = [Self::NvidiaCuda, Self::AmdRocm, Self::Vulkan, Self::Cpu];
 }
 
 /// A pinned runtime image or package. `artifact` is checksum-addressed, so a
@@ -517,6 +554,9 @@ fn accelerator_memory(hardware: &HardwareSnapshot, runtime: RuntimeKind) -> u64 
                     ..
                 },
             ) if !version.trim().is_empty() => Some(*vram_mib),
+            (RuntimeKind::Vulkan, accelerator) if accelerator.serves_vulkan() => {
+                Some(accelerator.vulkan_vram_mib())
+            }
             _ => None,
         })
         .max()
@@ -539,6 +579,7 @@ pub fn select_runtime_for_model(
         );
     }
     let compatible: BTreeSet<_> = compatible.into_iter().collect();
+    let mut vendor_runtime_missing = false;
     for kind in [RuntimeKind::NvidiaCuda, RuntimeKind::AmdRocm] {
         if model.allowed_runtimes.contains(&kind)
             && hardware
@@ -558,14 +599,29 @@ pub fn select_runtime_for_model(
                     _ => false,
                 })
         {
-            return if compatible.contains(&kind) {
-                RuntimeDecision::Ready(kind)
-            } else {
-                RuntimeDecision::Unavailable(
-                    "The selected accelerator has no compatible signed runtime. Install the matching signed driver boot pack and restart before local inference.",
-                )
-            };
+            if compatible.contains(&kind) {
+                return RuntimeDecision::Ready(kind);
+            }
+            vendor_runtime_missing = true;
         }
+    }
+    // Mesa's Vulkan drivers in the runtime image need no vendor runtime on
+    // the host, and a GPU that shares system memory has all of it.
+    if model.allowed_runtimes.contains(&RuntimeKind::Vulkan)
+        && compatible.contains(&RuntimeKind::Vulkan)
+        && hardware.accelerators.iter().any(|accelerator| {
+            let vram = accelerator.vulkan_vram_mib();
+            accelerator.serves_vulkan()
+                && model.required_accelerator_mib
+                    <= if vram == 0 { hardware.memory_mib } else { vram }
+        })
+    {
+        return RuntimeDecision::Ready(RuntimeKind::Vulkan);
+    }
+    if vendor_runtime_missing {
+        return RuntimeDecision::Unavailable(
+            "The selected accelerator has no compatible signed runtime. Install the matching signed driver boot pack and restart before local inference.",
+        );
     }
     if hardware
         .accelerators
@@ -575,6 +631,7 @@ pub fn select_runtime_for_model(
             Accelerator::Amd { rocm, .. } => rocm
                 .as_ref()
                 .is_none_or(|version| version.trim().is_empty()),
+            Accelerator::Vulkan { .. } => false,
         })
     {
         return RuntimeDecision::Unavailable(
@@ -1349,6 +1406,94 @@ mod tests {
             select_runtime_for_model(&cpu(), &model, [RuntimeKind::Cpu]),
             RuntimeDecision::Ready(RuntimeKind::Cpu)
         );
+    }
+
+    #[test]
+    fn mesa_gpus_take_the_vulkan_runtime_and_vendor_runtimes_come_first() {
+        let mut model = catalog_model();
+        model.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        model.allowed_runtimes = RuntimeKind::PREFERENCE.into();
+        let all = RuntimeKind::PREFERENCE;
+        let gpu = |accelerator| HardwareSnapshot {
+            accelerators: vec![accelerator],
+            ..cpu()
+        };
+        let mali = gpu(Accelerator::Vulkan {
+            vram_mib: 0,
+            driver: "panfrost".into(),
+        });
+        assert_eq!(
+            select_runtime_for_model(&mali, &model, all),
+            RuntimeDecision::Ready(RuntimeKind::Vulkan)
+        );
+        // A small board passes on the GPU where the processor path refuses it.
+        model.required_memory_mib = 2048;
+        let board = HardwareSnapshot {
+            cpu_threads: 2,
+            memory_mib: 4096,
+            ..mali.clone()
+        };
+        assert_eq!(
+            select_runtime_for_model(&board, &model, all),
+            RuntimeDecision::Ready(RuntimeKind::Vulkan)
+        );
+        // AMD without ROCm runs on Vulkan instead of being refused.
+        let radeon = gpu(Accelerator::Amd {
+            vram_mib: 8192,
+            rocm: None,
+        });
+        assert_eq!(
+            select_runtime_for_model(&radeon, &model, all),
+            RuntimeDecision::Ready(RuntimeKind::Vulkan)
+        );
+        // ROCm with no signed llama.cpp ROCm build still falls to Vulkan.
+        let rocm = gpu(Accelerator::Amd {
+            vram_mib: 8192,
+            rocm: Some("7.0".into()),
+        });
+        assert_eq!(
+            select_runtime_for_model(&rocm, &model, [RuntimeKind::Vulkan, RuntimeKind::Cpu]),
+            RuntimeDecision::Ready(RuntimeKind::Vulkan)
+        );
+        assert_eq!(
+            select_runtime_for_model(&rocm, &model, all),
+            RuntimeDecision::Ready(RuntimeKind::AmdRocm)
+        );
+        // Dedicated memory too small for the model's requirement.
+        model.required_accelerator_mib = 9000;
+        assert!(matches!(
+            select_runtime_for_model(&radeon, &model, all),
+            RuntimeDecision::Unavailable(_)
+        ));
+        model.required_accelerator_mib = 0;
+        // A layout no Vulkan runtime serves keeps the inactive-driver refusal.
+        assert!(matches!(
+            select_runtime_for_model(&radeon, &model, [RuntimeKind::Cpu]),
+            RuntimeDecision::Unavailable(_)
+        ));
+        // An Intel GPU without a Vulkan runtime does not block the processor.
+        let intel = gpu(Accelerator::Vulkan {
+            vram_mib: 0,
+            driver: "xe".into(),
+        });
+        assert_eq!(
+            select_runtime_for_model(&intel, &model, [RuntimeKind::Cpu]),
+            RuntimeDecision::Ready(RuntimeKind::Cpu)
+        );
+        assert_eq!(
+            catalog_with_vulkan()
+                .recommend(&mali, RuntimeKind::Vulkan)
+                .map(|m| m.id.as_str()),
+            Some("tiny-q4")
+        );
+    }
+
+    fn catalog_with_vulkan() -> LocalModelCatalog {
+        let mut value = partial_offload_catalog();
+        value.models[0].allowed_runtimes = RuntimeKind::PREFERENCE.into();
+        value.models[0].required_accelerator_mib = 0;
+        value.runtimes[0].kind = RuntimeKind::Vulkan;
+        value
     }
 
     fn catalog_model() -> LocalModelRelease {

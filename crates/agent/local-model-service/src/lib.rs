@@ -176,6 +176,27 @@ impl SignedRuntime {
             .map_err(|_| ServiceError::RuntimeNotAccepted)?;
         Ok(())
     }
+
+    /// Whether this build runs on `architecture` (`x86_64`, `aarch64`): its
+    /// signed manifest names that one, or none.
+    #[must_use]
+    pub fn runs_on(&self, architecture: &str) -> bool {
+        self.accepted
+            .signed
+            .manifest
+            .target
+            .architecture
+            .as_deref()
+            .is_none_or(|target| target == architecture)
+    }
+
+    /// Whether this build can serve `model` on `architecture`.
+    #[must_use]
+    pub fn serves(&self, model: &LocalModelRelease, architecture: &str) -> bool {
+        self.runs_on(architecture)
+            && model.allowed_runtimes.contains(&self.release.kind)
+            && self.release.supports_format(model.artifact_format)
+    }
 }
 
 /// Build bounded argv exclusively from signed runtime/model metadata.
