@@ -610,6 +610,7 @@ fn repositories_json_from(app: &std::path::Path) -> Result<String, Error> {
 const MAX_REGISTRY_CATALOGUE_BYTES: usize = 4 * 1024 * 1024;
 
 fn registry_catalogue(registry: &str) -> Result<String, Error> {
+    system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
     let configured = app_cli::config::load_registries();
     registry_catalogue_from(&configured, registry, app_cli::client::fetch_entries)
 }
@@ -617,12 +618,34 @@ fn registry_catalogue(registry: &str) -> Result<String, Error> {
 /// The catalogue last accepted from `registry`, without the network, under
 /// the same configuration and size rules as a fresh one.
 fn last_verified_catalogue(registry: &str) -> Result<String, Error> {
+    system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
     let configured = app_cli::config::load_registries();
     registry_catalogue_from(
         &configured,
         registry,
         app_cli::client::last_verified_entries,
     )
+}
+
+/// Refuse to read any repository while the system's interface declaration
+/// at `path` cannot be read, with [`crate::SYSTEM_UPDATE_NEEDED`] first.
+///
+/// Which builds of an app run here is decided against that declaration.
+/// Unreadable, it is written for another version of the system than this
+/// app host (a component swapped over an older image), so the Store must
+/// say that the system needs an update, not list apps judged against
+/// nothing or show the repository as unavailable.
+fn system_declaration_readable(path: &std::path::Path) -> Result<(), Error> {
+    match package_store::interfaces::read_interfaces(path) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            tracing::error!(%error, "the system's interface declaration cannot be read; repositories are refused until the system is updated");
+            Err(Error::failed(format!(
+                "{}: {error}",
+                crate::SYSTEM_UPDATE_NEEDED
+            )))
+        }
+    }
 }
 
 fn registry_catalogue_from(
@@ -1469,6 +1492,35 @@ mod command_tests {
                 channel: tilo_app_package::version::ReleaseChannel::Stable,
             }],
         }
+    }
+
+    // USER REQUIREMENT (2026-10-22): "the Tilo app repository stays available
+    // after a component swap"
+    /// When a swap does leave the app host with a declaration it cannot read
+    /// (the laptop on 2026-10-22: a one-version-per-interface file over an
+    /// app host reading lists), reading a repository fails with the reason
+    /// the Store shows, never an empty or silently unjudged catalogue.
+    #[test]
+    fn an_unreadable_system_declaration_refuses_the_repository_saying_the_system_needs_an_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("system-interfaces.toml");
+        std::fs::write(&path, "[interfaces]\nsystem = [1]\nshell-ui = [1]\n").unwrap();
+        let refused = super::system_declaration_readable(&path)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(crate::SYSTEM_UPDATE_NEEDED), "{refused}");
+        assert!(refused.contains("system-interfaces.toml"), "{refused}");
+
+        std::fs::write(
+            &path,
+            "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n\n[runtime]\nservices = [\"app-host\"]\n",
+        )
+        .unwrap();
+        assert!(super::system_declaration_readable(&path).is_ok());
+        // A host without a declaration (a development machine) judges
+        // nothing and reads repositories as before.
+        std::fs::remove_file(&path).unwrap();
+        assert!(super::system_declaration_readable(&path).is_ok());
     }
 
     #[test]
