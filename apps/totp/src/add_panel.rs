@@ -1203,6 +1203,9 @@ impl AddAccountPanel {
 }
 
 #[cfg(test)]
+mod file_picker_tests;
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::app::AuthenticatorApp;
