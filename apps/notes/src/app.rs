@@ -361,7 +361,7 @@ pub struct NotesApp {
     header_in_bar: bool,
     /// The note title and sidebar state the bar's slots were last declared
     /// with.
-    declared_bar: Option<(Option<String>, bool)>,
+    declared_bar: Option<(Option<(String, String)>, bool)>,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
     /// `apply_layout` and `handle_event`. The columns' nodes exist only while
     /// the shell shows them (a closed drawer shows no page tree).

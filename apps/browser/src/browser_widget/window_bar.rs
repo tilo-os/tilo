@@ -287,6 +287,7 @@ impl BrowserWidget {
                 image: self.favicon_png.clone().map(|png| ToolbarImage { png }),
                 suggestions: self.bar_suggestions(),
                 choices: Vec::new(),
+                anchor: None,
             }),
             actions: self.bar_actions(),
             ..WindowToolbar::default()

@@ -217,6 +217,11 @@ pub struct ToolbarLocation {
     /// editable location, which edits instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<LocationChoice>,
+    /// Where in the app the window is, as the app's `open` action takes it
+    /// (a search entry's anchor): the desktop reopens it there, from the
+    /// launcher's Continue. `None`: the app cannot be opened at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 /// One row of a location's picker.
@@ -672,6 +677,9 @@ impl WindowToolbar {
                 .is_some_and(|icon| crate::icons::Icon::from_name(icon).is_none())
             {
                 location.icon = None;
+            }
+            if let Some(anchor) = &mut location.anchor {
+                cut(anchor);
             }
             location.segments.truncate(MAX_SEGMENTS);
             for segment in &mut location.segments {

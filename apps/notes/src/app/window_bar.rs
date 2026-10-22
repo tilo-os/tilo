@@ -16,14 +16,17 @@ const NEW_NOTE: &str = "new-note";
 const NOTE_ACTIONS: &str = "note-actions";
 
 impl NotesApp {
-    /// The slots for the note shown (`title`; `None`: no note is open).
-    fn window_toolbar(title: Option<&str>, sidebar_open: bool) -> WindowToolbar {
+    /// The slots for the note shown (`title`, and the anchor `open` shows it
+    /// at; `None`: no note is open).
+    fn window_toolbar(note: Option<(&str, String)>, sidebar_open: bool) -> WindowToolbar {
+        let title = note.as_ref().map(|(title, _)| *title);
         WindowToolbar {
             sidebar: Some(sidebar_open),
             navigation: None,
-            location: title.map(|title| ToolbarLocation {
+            location: note.map(|(title, anchor)| ToolbarLocation {
                 label: title.to_owned(),
                 placeholder: ui::i18n!("notes-title-placeholder"),
+                anchor: Some(anchor),
                 ..ToolbarLocation::default()
             }),
             actions: vec![
@@ -76,10 +79,15 @@ impl NotesApp {
             return changed;
         }
         let title = self.main.title().map(str::to_owned);
+        let anchor = self.main.page_id().map(crate::actions::page_resource_id);
         let open = self.shell.is_sidebar_open();
-        let key = (title, open);
+        let key = (title.zip(anchor), open);
         if self.declared_bar.as_ref() != Some(&key) {
-            ui::window_toolbar::declare(Some(Self::window_toolbar(key.0.as_deref(), open)));
+            let note = key
+                .0
+                .as_ref()
+                .map(|(title, anchor)| (title.as_str(), anchor.clone()));
+            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open)));
             self.declared_bar = Some(key);
         }
         let header = Rc::clone(&self.header);
