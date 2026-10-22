@@ -14,8 +14,10 @@ the commit's parent must still exist in the commit (same name, in the same file
 or another Rust file the commit touches), still be pinned, and make the same
 assertions: each call whose name starts with `assert` (macros such as
 `assert_eq!` and helpers such as `assert_widths(...)`), compared with all
-whitespace removed, in order. Renaming the test, dropping the marker, deleting
-an assertion or editing one all fail.
+whitespace removed, in order. New assertions may join them anywhere, since
+checking more never weakens what the user asked for. Renaming the test,
+dropping the marker, deleting an assertion, editing one or reordering them all
+fail.
 
 When the user has agreed to the change, the commit says so in a trailer,
 which this check then accepts:
@@ -143,6 +145,12 @@ def functions(text):
     return result
 
 
+def keeps_in_order(before, after):
+    """Whether every assertion of `before` is still in `after`, in the same order."""
+    remaining = iter(after)
+    return all(any(a == b for b in remaining) for a in before)
+
+
 def blob(commit, path):
     try:
         return git("show", f"{commit}:{path}").decode("utf-8", errors="replace")
@@ -179,7 +187,7 @@ def check_commit(commit):
                 failures.append(f"{where} and was removed or renamed")
             elif not here[0]:
                 failures.append(f"{where} and lost its USER REQUIREMENT marker")
-            elif here[1] != asserts:
+            elif not keeps_in_order(asserts, here[1]):
                 gone = [a for a in asserts if a not in here[1]]
                 new = [a for a in here[1] if a not in asserts]
                 detail = "".join(f"\n    - {a[:150]}" for a in gone) + "".join(f"\n    + {a[:150]}" for a in new)

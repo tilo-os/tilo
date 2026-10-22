@@ -85,6 +85,25 @@ class UserRequirementTests(unittest.TestCase):
         self.assertIn("only_the_grabbed_window_changes", result.stderr)
         self.assertIn("assertions changed", result.stderr)
 
+    def test_adding_assertions_to_a_pinned_test_passes(self):
+        added = PINNED.replace(
+            "    let widths = drag();\n",
+            "    let widths = drag();\n    assert_eq!(widths.len(), 3);\n",
+        ).replace(
+            "    assert_widths(&widths, [0.0, 40.0, 0.0]);\n",
+            "    assert_widths(&widths, [0.0, 40.0, 0.0]);\n    assert!(widths[1] > 0.0);\n",
+        )
+        self.commit({"src/resize.rs": added}, "test: check more of the resize")
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_reordering_assertions_fails(self):
+        self.edit(
+            '    assert_eq!(widths, [0.0, 40.0, 0.0], "only the middle one");\n    assert_widths(&widths, [0.0, 40.0, 0.0]);\n',
+            '    assert_widths(&widths, [0.0, 40.0, 0.0]);\n    assert_eq!(widths, [0.0, 40.0, 0.0], "only the middle one");\n',
+        )
+        self.assertEqual(self.check().returncode, 1)
+
     def test_removing_an_assertion_helper_call_fails(self):
         self.edit("    assert_widths(&widths, [0.0, 40.0, 0.0]);\n", "")
         self.assertEqual(self.check().returncode, 1)
