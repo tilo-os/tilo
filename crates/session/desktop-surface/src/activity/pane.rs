@@ -9560,6 +9560,18 @@ fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
         Grantee::App(app) => app.clone(),
         Grantee::Bot(bot) => t_args("activity-grant-bot", &[("bot", short(bot).into())]),
         Grantee::ForeignDevice => t("activity-grant-foreign-device"),
+        Grantee::AllBut(except) => t_args(
+            "activity-grant-all-but",
+            &[(
+                "except",
+                except
+                    .iter()
+                    .map(describe_grantee)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+                    .into(),
+            )],
+        ),
     }
 }
 

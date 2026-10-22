@@ -32,8 +32,9 @@ impl<'g> Decision<'g> {
 
 /// Decides for one set of subjects over one set of grants:
 ///
-/// 1. Take the live grants whose subject is one of `subjects`, whose node is
-///    `node` or an ancestor of it, and whose kinds include `kind`.
+/// 1. Take the live grants whose subject names one of `subjects`
+///    ([`Subject::names`]), whose node is `node` or an ancestor of it, and
+///    whose kinds include `kind`.
 /// 2. The most specific node wins.
 /// 3. At the same node, Deny beats Ask beats Allow.
 /// 4. No grant: Deny.
@@ -47,7 +48,7 @@ pub fn decide<'g>(
     let mut best: Option<&'g Grant> = None;
     for grant in grants {
         if !grant.kinds.contains(kind)
-            || !subjects.contains(&grant.subject)
+            || !grant.subject.names(subjects)
             || !grant.node.covers(node)
             || !grant.is_live(cx)
         {

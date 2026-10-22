@@ -54,6 +54,10 @@ fn subject_key(subject: &Subject) -> String {
         Subject::App(id) => format!("app:{id}"),
         Subject::Bot(id) => format!("bot:{id}"),
         Subject::ForeignDevice => "foreign-device".to_owned(),
+        Subject::AllBut(except) => {
+            let except: Vec<String> = except.iter().map(subject_key).collect();
+            format!("all-but:{}", except.join(","))
+        }
     }
 }
 
