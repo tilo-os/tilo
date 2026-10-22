@@ -9,15 +9,18 @@ use winit::keyboard::{Key, NamedKey};
 use super::{BlockEditor, BlockKind, CursorPlacement, DocumentPosition};
 use crate::i18n::I18nManager;
 use crate::platform::Shortcut;
-use crate::text_selection::{clipboard_paste, word_boundaries};
+use crate::text_selection::word_boundaries;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::marks::Mark;
 use crate::widget::{EventCtx, Widget};
 
+/// The prefix of the text menu's rows' targets in the accessibility tree.
+const TEXT_MENU_TARGET: &str = "editor.text-menu:";
+
 /// What a row of the text menu does.
 #[derive(Clone, Debug, PartialEq)]
 enum TextMenuAction {
-    /// `cut`, `copy`, `paste` or `select-all`
+    /// `cut`, `copy`, `paste`, `paste-plain` or `select-all`
     /// ([`BlockEditor::clipboard_command`]).
     Clipboard(&'static str),
     Mark(Mark),
@@ -184,6 +187,51 @@ impl BlockEditor {
         );
     }
 
+    /// The open text menu's node of the accessibility tree: its rows, each
+    /// an action an assistive technology runs as a click does.
+    pub(super) fn text_menu_access_node(&self) -> Option<crate::a11y::AccessNode> {
+        fn namespace_targets(node: &mut crate::a11y::AccessNode) {
+            if let Some(target) = node.action_target.take() {
+                node.action_target = Some(format!("{TEXT_MENU_TARGET}{target}"));
+            }
+            for child in &mut node.children {
+                namespace_targets(child);
+            }
+        }
+        if !self.text_menu.is_open() {
+            return None;
+        }
+        let mut menu = Widget::accessibility(&self.text_menu.menu)?;
+        namespace_targets(&mut menu);
+        menu.semantic_key = Some("editor.text-menu".into());
+        menu.bounds = self.text_menu.modal_rect().map(Into::into);
+        Some(menu)
+    }
+
+    /// Run the text menu's row an assistive technology activated
+    /// (`target` from [`Self::text_menu_access_node`]). `None` when `target`
+    /// is not the menu's.
+    pub(super) fn perform_text_menu_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> Option<bool> {
+        let target = target.strip_prefix(TEXT_MENU_TARGET)?;
+        let handled = self
+            .text_menu
+            .menu
+            .perform_semantic_action(target, action, state, path);
+        if let Some(row) = self.text_menu.menu.take_selection() {
+            self.run_text_menu_row(row);
+        }
+        if handled {
+            self.dirty = true;
+        }
+        Some(handled)
+    }
+
     /// The menu key's text menu: at the caret, over the selection.
     fn open_text_menu_at_caret(&mut self) -> bool {
         let Some(line) = self
@@ -228,7 +276,9 @@ impl BlockEditor {
     fn show_text_menu(&mut self, at: Point) {
         let label = |key: &str| I18nManager::lookup_plain(key);
         let selected = self.has_text_selection();
-        let can_paste = clipboard_paste().is_some_and(|text| !text.is_empty());
+        // Paste stays offered: reading the clipboard to find out would wait
+        // on the compositor while the menu opens, and use up a browser's
+        // one read of a paste. A paste of nothing changes nothing.
         let active = self.active_marks();
         let focused_kind = self
             .focused
@@ -251,7 +301,13 @@ impl BlockEditor {
         row(
             MenuItem::action(label("text-menu-paste"), || {}).with_shortcut(Shortcut::command("V")),
             TextMenuAction::Clipboard("paste"),
-            can_paste,
+            true,
+        );
+        row(
+            MenuItem::action(label("text-menu-paste-plain"), || {})
+                .with_shortcut(Shortcut::command("V").shift()),
+            TextMenuAction::Clipboard("paste-plain"),
+            true,
         );
         row(
             MenuItem::action(label("text-menu-select-all"), || {})

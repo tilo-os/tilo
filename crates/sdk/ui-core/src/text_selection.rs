@@ -334,6 +334,27 @@ pub(crate) fn clipboard_copy_accepted(text: &str) -> bool {
     clipboard().copy(CopyContent::Text(text)).outcome() != Some(false)
 }
 
+/// Copy formatted text: `html` for the apps that read formatting, `plain`
+/// for every other. Reports whether the host's clipboard took it, as
+/// [`clipboard_copy_accepted`] does, so Cut never deletes words a refused
+/// copy did not keep.
+#[must_use]
+pub fn clipboard_copy_rich_accepted(html: &str, plain: &str) -> bool {
+    clipboard()
+        .copy(CopyContent::Rich { html, plain })
+        .outcome()
+        != Some(false)
+}
+
+/// The formatted text on the clipboard, when what was copied has
+/// formatting: its HTML with its plain-text words. `None` when it holds
+/// plain text only, or nothing; read [`clipboard_paste`] then.
+pub fn clipboard_paste_rich() -> Option<crate::clipboard::RichTextOffer> {
+    clipboard()
+        .rich_text()
+        .filter(crate::clipboard::RichTextOffer::is_valid)
+}
+
 /// Copy text only if a system clipboard backend accepts it, without waiting
 /// for it to.
 ///

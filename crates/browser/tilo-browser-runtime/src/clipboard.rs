@@ -69,6 +69,14 @@ impl EventTransfer for DataTransfer {
             .is_some_and(|f| f.call2(&self.0, &"text/plain".into(), &text.into()).is_ok())
     }
 
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        self.method("setData").is_some_and(|f| {
+            f.call2(&self.0, &"text/html".into(), &html.into()).is_ok()
+                && f.call2(&self.0, &"text/plain".into(), &plain.into())
+                    .is_ok()
+        })
+    }
+
     fn rich_text(&self) -> Option<RichTextOffer> {
         let html = bounded_clipboard_text(&self.0, "text/html", MAX_CLIPBOARD_HTML_BYTES)
             .as_string()

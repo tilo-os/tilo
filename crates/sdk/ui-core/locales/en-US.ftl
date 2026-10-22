@@ -833,6 +833,7 @@ workspace-identity-required-choose = Choose identity
 text-menu-cut = Cut
 text-menu-copy = Copy
 text-menu-paste = Paste
+text-menu-paste-plain = Paste without formatting
 text-menu-select-all = Select all
 text-menu-bold = Bold
 text-menu-italic = Italic

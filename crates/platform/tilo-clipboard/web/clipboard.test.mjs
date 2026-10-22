@@ -1,21 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {writeClipboardText} from './clipboard.mjs';
+import {writeClipboardRich,writeClipboardText} from './clipboard.mjs';
 
 // The external browser command/clipboard boundary is unavailable in Node.
 function browser({allowed=true,dispatch=true,throws=false,transferFails=false}={}) {
-  const document=new EventTarget();let text='previous',forwarded=0;
+  const document=new EventTarget();let text='previous',forwarded=0;const data={};
   document.execCommand=command=>{
     assert.equal(command,'copy');
     if(throws)throw Error('Clipboard blocked');
     if(!dispatch)return allowed;
     const event=new Event('copy',{cancelable:true});
-    event.clipboardData={setData(type,value){assert.equal(type,'text/plain');if(transferFails)throw Error('Transfer refused');text=value;}};
+    event.clipboardData={setData(type,value){assert.ok(type==='text/plain'||type==='text/html');if(transferFails)throw Error('Transfer refused');data[type]=value;if(type==='text/plain')text=value;}};
     document.dispatchEvent(event);
     if(!event.defaultPrevented)forwarded++;
     return allowed;
   };
-  return {document,text:()=>text,forwarded:()=>forwarded};
+  return {document,text:()=>text,data:()=>data,forwarded:()=>forwarded};
 }
 
 test('clicked Copy synchronously publishes Unicode to the system transfer',()=>{
@@ -44,4 +44,11 @@ test('unavailable native copy reports failure',()=>{
   const reports=[];
   assert.equal(writeClipboardText('text',(ok,error)=>reports.push(ok?{clipboard:'copied'}:{clipboard:'failed',clipboardError:error}),null),false);
   assert.equal(reports[0].clipboard,'failed');
+});
+
+test('a rich copy publishes its HTML and its words in one transfer',()=>{
+  const host=browser(),reports=[];
+  assert.equal(writeClipboardRich('<p>plain <b>bold</b></p>','plain bold',(ok)=>reports.push(ok),host.document),true);
+  assert.deepEqual(host.data(),{'text/html':'<p>plain <b>bold</b></p>','text/plain':'plain bold'});
+  assert.deepEqual(reports,[true]);
 });

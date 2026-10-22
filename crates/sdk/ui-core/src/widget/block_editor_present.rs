@@ -173,6 +173,21 @@ impl Block {
         }
     }
 
+    /// Make this block a `kind` block, keeping its words, marks, authors,
+    /// caret and focus.
+    pub(super) fn retype(&mut self, kind: &BlockKind) {
+        let focused = self.line.is_focused();
+        let caret = self.line.cursor_pos();
+        let marks = self.line.marks().to_vec();
+        let authors = self.line.author_runs().to_vec();
+        self.line = line_for(kind, self.text());
+        self.line.set_marks(marks);
+        self.line.set_author_runs(authors);
+        self.line.set_cursor_pos(caret);
+        self.line.set_focus(focused);
+        self.kind = kind.clone();
+    }
+
     /// What this block shows, as [`BlockEditor::present_blocks`] takes it.
     #[must_use]
     pub fn content(&self) -> BlockContent {
@@ -198,16 +213,7 @@ impl Block {
     fn present(&mut self, content: &BlockContent) -> (bool, bool) {
         let kind_changed = self.kind != content.kind;
         if kind_changed {
-            let focused = self.line.is_focused();
-            let caret = self.line.cursor_pos();
-            let marks = self.line.marks().to_vec();
-            let authors = self.line.author_runs().to_vec();
-            self.line = line_for(&content.kind, self.text());
-            self.line.set_marks(marks);
-            self.line.set_author_runs(authors);
-            self.line.set_cursor_pos(caret);
-            self.line.set_focus(focused);
-            self.kind = content.kind.clone();
+            self.retype(&content.kind);
         }
         let mut changed = kind_changed;
         let mut reshaped = kind_changed;

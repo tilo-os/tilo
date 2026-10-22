@@ -2959,7 +2959,7 @@ pub mod paint_damage;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
     DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, SlashRequest,
-    TransclusionPreview, legacy_block_id,
+    TransclusionPreview, blocks_from_html, blocks_to_html, legacy_block_id,
 };
 mod filter_menu;
 pub use filter_menu::FilterMenu;

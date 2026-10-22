@@ -1568,3 +1568,37 @@ fn an_unanswered_copy_settles_as_failed_at_its_deadline() {
         "a copy settled as failed became the selection"
     );
 }
+
+// USER REQUIREMENT (2026-10-22): "rich copy and paste: a rich mode in every
+// clipboard implementation including the compositor's, HTML both ways in the
+// shared editor"
+#[test]
+fn a_rich_copy_offers_its_html_and_its_words() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+
+    let html = "<p>plain <b>bold</b></p>";
+    assert!(harness.backend().set_rich_text(html, "plain bold"));
+    let mimes = harness.selection_mimes();
+    for mime in ["text/html", PLAIN, "text/plain"] {
+        assert!(
+            mimes.iter().any(|offered| offered == mime),
+            "a rich copy must offer {mime}: {mimes:?}"
+        );
+    }
+    assert_eq!(harness.selection_bytes("text/html"), html.as_bytes());
+    assert_eq!(harness.selection_bytes("text/plain"), b"plain bold");
+
+    // The next plain copy offers no stale formatting.
+    assert!(
+        harness
+            .backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "next")
+    );
+    let mimes = harness.selection_mimes();
+    assert!(
+        !mimes.iter().any(|mime| mime.starts_with("text/html")),
+        "a plain copy must not keep the formatting of the one before: {mimes:?}"
+    );
+}

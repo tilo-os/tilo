@@ -176,6 +176,81 @@ impl AndroidClipboard {
         result.is_ok()
     }
 
+    /// Formatted text: `ClipData.newHtmlText`, `html` with `plain` as the
+    /// text every app that reads no formatting pastes.
+    fn set_system_html(html: &str, plain: &str) -> bool {
+        let result = with_activity(|env, activity| {
+            let manager = system_service(env, activity, "clipboard")?;
+            let label = env.new_string("")?;
+            let plain = env.new_string(plain)?;
+            let html = env.new_string(html)?;
+            let clip = env
+                .call_static_method(
+                    "android/content/ClipData",
+                    "newHtmlText",
+                    "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/lang/String;)Landroid/content/ClipData;",
+                    &[JValue::Object(&label), JValue::Object(&plain), JValue::Object(&html)],
+                )?
+                .l()?;
+            env.call_method(
+                &manager,
+                "setPrimaryClip",
+                "(Landroid/content/ClipData;)V",
+                &[JValue::Object(&clip)],
+            )?;
+            Ok(())
+        });
+        if let Err(error) = &result {
+            tracing::warn!(target: "tilo_ui::clipboard", %error, "android clipboard write failed");
+        }
+        result.is_ok()
+    }
+
+    /// The HTML of the clip on the clipboard, when it holds formatted text.
+    fn system_html() -> Option<String> {
+        let result = with_activity(|env, activity| {
+            let manager = system_service(env, activity, "clipboard")?;
+            let clip = env
+                .call_method(
+                    &manager,
+                    "getPrimaryClip",
+                    "()Landroid/content/ClipData;",
+                    &[],
+                )?
+                .l()?;
+            if clip.is_null() {
+                return Ok(None);
+            }
+            let count = env.call_method(&clip, "getItemCount", "()I", &[])?.i()?;
+            if count < 1 {
+                return Ok(None);
+            }
+            let item = env
+                .call_method(
+                    &clip,
+                    "getItemAt",
+                    "(I)Landroid/content/ClipData$Item;",
+                    &[JValue::Int(0)],
+                )?
+                .l()?;
+            let html = env
+                .call_method(&item, "getHtmlText", "()Ljava/lang/String;", &[])?
+                .l()?;
+            if html.is_null() {
+                return Ok(None);
+            }
+            let html: String = env.get_string(&html.into())?.into();
+            Ok(Some(html))
+        });
+        match result {
+            Ok(html) => html.filter(|html| !html.is_empty()),
+            Err(error) => {
+                tracing::warn!(target: "tilo_ui::clipboard", %error, "android clipboard read failed");
+                None
+            }
+        }
+    }
+
     fn system_text() -> Option<String> {
         let result = with_activity(|env, activity| {
             let manager = system_service(env, activity, "clipboard")?;
@@ -253,6 +328,19 @@ impl ClipboardBackend for AndroidClipboard {
             ClipboardTarget::Clipboard => Self::system_text(),
             ClipboardTarget::Primary => self.primary.text(target),
         }
+    }
+
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        Self::set_system_html(html, plain)
+    }
+
+    fn rich_text(&self) -> Option<crate::clipboard::RichTextOffer> {
+        let html = Self::system_html()?;
+        Some(crate::clipboard::RichTextOffer {
+            html,
+            plain: Self::system_text(),
+        })
+        .filter(crate::clipboard::RichTextOffer::is_valid)
     }
 
     fn name(&self) -> &'static str {

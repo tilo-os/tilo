@@ -827,6 +827,7 @@ workspace-identity-required-choose = Identität wählen
 text-menu-cut = Ausschneiden
 text-menu-copy = Kopieren
 text-menu-paste = Einfügen
+text-menu-paste-plain = Ohne Formatierung einfügen
 text-menu-select-all = Alles auswählen
 text-menu-bold = Fett
 text-menu-italic = Kursiv

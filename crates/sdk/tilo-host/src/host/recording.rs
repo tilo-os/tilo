@@ -11,7 +11,9 @@ use super::{
     SpeechFactory, UriOpener, answered,
 };
 use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRequest};
-use crate::clipboard::{ClipboardBackend, ClipboardImage, ClipboardTarget, InProcessClipboard};
+use crate::clipboard::{
+    ClipboardBackend, ClipboardImage, ClipboardTarget, InProcessClipboard, RichTextOffer,
+};
 use crate::location::{LocationChannel, LocationOutcome};
 use crate::mpris::{MprisConfig, PlayerSnapshot};
 use crate::portal::{
@@ -24,6 +26,9 @@ use tilo_lock::MutexRecover as _;
 struct Log {
     copies: Vec<(ClipboardTarget, String)>,
     secret_copies: Vec<String>,
+    /// The HTML of every formatted copy, in order; its words are among
+    /// `copies`.
+    rich_copies: Vec<String>,
     /// What another app last copied, when it was an image.
     clipboard_image: Option<ClipboardImage>,
     opened_uris: Vec<String>,
@@ -65,6 +70,12 @@ impl HostRecorder {
     /// Every text copy, in order.
     pub fn copies(&self) -> Vec<(ClipboardTarget, String)> {
         self.log().copies.clone()
+    }
+
+    /// The HTML of every formatted copy, in order. Their words are among
+    /// [`Self::copies`].
+    pub fn rich_copies(&self) -> Vec<String> {
+        self.log().rich_copies.clone()
     }
 
     /// Every secret copy, in order. These are not among [`Self::copies`].
@@ -195,6 +206,24 @@ impl ClipboardBackend for RecordingClipboard {
             log.clipboard_image = None;
         }
         self.buffer.set_text(ClipboardTarget::Clipboard, text)
+    }
+
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        {
+            let mut log = self.recorder.log();
+            log.copies
+                .push((ClipboardTarget::Clipboard, plain.to_string()));
+            log.rich_copies.push(html.to_string());
+            log.clipboard_image = None;
+        }
+        self.buffer.set_rich_text(html, plain)
+    }
+
+    fn rich_text(&self) -> Option<RichTextOffer> {
+        if self.recorder.log().clipboard_image.is_some() {
+            return None;
+        }
+        self.buffer.rich_text()
     }
 
     fn text(&self, target: ClipboardTarget) -> Option<String> {
