@@ -228,10 +228,13 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     // invitation it redeems.
     let room = RoomId::parse(&acme.room).unwrap();
     net.join_host_rooms();
+    // Its workspace is made as the join starts; the room is held once the
+    // replica installs into it.
     until("the session to hold the company workspace", || {
         net.tick();
         let tree = tree.read();
         (tree.requires_native_owner(room)
+            && !tree.is_joining(room)
             && tree
                 .desktop
                 .workspaces

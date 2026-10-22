@@ -6916,7 +6916,7 @@ mod tests {
         let switch_to = |provider: &ActionsProvider| {
             row(
                 &rows_for(provider, &chrome, ""),
-                &format!("workspace.select.{}", workspace_id.0),
+                &format!("workspace.select.{workspace_room}"),
             )
             .map(|row| row.title.clone())
             .expect("every workspace can be switched to")

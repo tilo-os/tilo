@@ -221,6 +221,15 @@ fn redeeming_an_invitation_opens_the_owner_on_the_worker_not_the_loop() {
         tilo_test_env::hang_bound(),
     );
 
+    // An invitation that verifies: text that does not is refused before
+    // any workspace is made for it, without the owner.
+    let invitation = tilo_peer_state::join::encode_invitation_text(
+        tilo_joined_room::testing::raw_fixture()
+            .0
+            .verified_join()
+            .signed_invitation(),
+    );
+
     let syncs = Rc::new(Cell::new(0_usize));
     let directories = Rc::clone(&syncs);
     let data = Rc::clone(&syncs);
@@ -240,10 +249,7 @@ fn redeeming_an_invitation_opens_the_owner_on_the_worker_not_the_loop() {
                     }
                 },
                 || {
-                    host.run_peer_sync_request(
-                        &PeerSyncRequest::AcceptInvite("not an invitation".into()),
-                        false,
-                    );
+                    host.run_peer_sync_request(&PeerSyncRequest::AcceptInvite(invitation), false);
                     for _ in 0..8 {
                         host.pump_peer_sync();
                     }
