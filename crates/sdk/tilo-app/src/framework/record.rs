@@ -322,6 +322,9 @@ pub struct Records<'a> {
     base: Option<Rc<dyn std::any::Any>>,
     /// The resource types of the chains declared, while declaring.
     chains: Vec<tilo_resource::ResourceKind>,
+    /// Where a host without a window keeps the settings sections declared,
+    /// with the app they are the settings of ([`super::SettingsRecords`]).
+    sections: Option<(&'static str, Vec<Rc<super::section::SectionDoor>>)>,
 }
 
 impl<'a> Records<'a> {
@@ -330,6 +333,7 @@ impl<'a> Records<'a> {
             storage: Some(storage),
             base: None,
             chains: Vec::new(),
+            sections: None,
         }
     }
 
@@ -341,7 +345,24 @@ impl<'a> Records<'a> {
             storage: None,
             base: None,
             chains: Vec::new(),
+            sections: None,
         }
+    }
+
+    /// The settings sections of the app `app_id` declares, each held in a
+    /// document of the host's own; nothing else it declares is opened.
+    pub(crate) const fn sections(app_id: &'static str) -> Self {
+        Self {
+            storage: None,
+            base: None,
+            chains: Vec::new(),
+            sections: Some((app_id, Vec::new())),
+        }
+    }
+
+    /// The settings sections held, after [`Self::sections`].
+    pub(crate) fn into_sections(self) -> Vec<Rc<super::section::SectionDoor>> {
+        self.sections.map(|(_, doors)| doors).unwrap_or_default()
     }
 
     /// The resource types of the chains declared.
@@ -423,6 +444,18 @@ impl<'a> Records<'a> {
     where
         T: Resource<State = T> + Fields + SettingsSchema,
     {
+        if let Some((app_id, doors)) = &mut self.sections {
+            let settings = ui_core::storage::Settings::<T>::for_app(app_id);
+            match super::section::SectionDoor::window(
+                super::section::SectionKind::of(&settings),
+                true,
+            ) {
+                Ok(door) => doors.push(Rc::new(door)),
+                Err(error) => {
+                    tracing::warn!(kind = T::KIND, %error, "settings section unavailable");
+                }
+            }
+        }
         let Some(storage) = self.storage else {
             return self;
         };

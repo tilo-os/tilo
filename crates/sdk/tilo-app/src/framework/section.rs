@@ -565,6 +565,59 @@ impl RecordDoor for SectionDoor {
     }
 }
 
+/// The settings sections an app keeps as records
+/// ([`ResourceApp::records`](super::ResourceApp::records)), held by a host
+/// without a window: the session, which keeps them for the palette and
+/// agents whether or not the app is open. Each is published and changed as
+/// the app's window does it, so a change checks the section's model and is
+/// recorded in the settings document with what made it and who; admitting
+/// an invocation (its confirmation, the invoker's grants) is the caller's,
+/// from the published action.
+pub struct SettingsRecords {
+    doors: Vec<Rc<SectionDoor>>,
+}
+
+impl SettingsRecords {
+    /// The settings sections `A` declares, as they are stored now.
+    #[must_use]
+    pub fn of<A: super::ResourceApp>() -> Self {
+        let mut declared = super::Records::sections(A::ID);
+        A::records(&mut declared);
+        Self {
+            doors: declared.into_sections(),
+        }
+    }
+
+    /// Every section, published with its field edits and verbs.
+    #[must_use]
+    pub fn resources(&self) -> Vec<tilo_actions::Resource> {
+        self.doors.iter().map(|door| door.publish()).collect()
+    }
+
+    /// Run the action at `address` with its typed `arguments` for `invoker`.
+    ///
+    /// # Errors
+    /// No section publishes the action, the arguments do not bind, or the
+    /// section's model refused the change.
+    pub fn invoke(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        invoker: &ActionInvoker,
+    ) -> Result<(), String> {
+        let encoded = tilo_actions::door::encode_json(&self.resources(), address, arguments)
+            .map_err(|error| error.to_string())?;
+        let request: super::record::RecordAction =
+            tilo_actions::decode_json(&encoded.payload).map_err(|error| error.to_string())?;
+        let door = self
+            .doors
+            .iter()
+            .find(|door| door.id() == request.record)
+            .ok_or_else(|| format!("no settings section `{}`", request.record))?;
+        door.apply_encoded(&request.action, invoker)
+    }
+}
+
 /// Take into `doc`, a document of the section's own, what was stored since
 /// it last followed at `seen`. Whether it moved.
 fn follow_doc(kind: &SectionKind, doc: &RefCell<Doc>, seen: &Cell<SettingsRevision>) -> bool {
