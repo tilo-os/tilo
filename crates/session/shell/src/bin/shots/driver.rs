@@ -546,6 +546,14 @@ impl ShellDriver {
     /// character. Triggers the same `handle_event` path the live binary's
     /// keyboard handler does. Caller is expected to have opened an
     /// input target (palette, name editor, etc.) first.
+    /// Write `text` to the active Terminal window as its session's output.
+    ///
+    /// # Errors
+    /// No Terminal window is active.
+    pub fn feed_active_terminal(&mut self, text: &str) -> Result<(), String> {
+        self.fb.feed_active_terminal_for_shots(text.as_bytes())
+    }
+
     pub fn type_str(&mut self, s: &str) {
         for c in s.chars() {
             if c.is_control() {

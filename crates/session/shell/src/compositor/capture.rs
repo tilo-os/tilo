@@ -235,17 +235,12 @@ pub struct CaptureExecutor {
     external_updates: Vec<(String, Rect, String, Rect)>,
     external_dismissals: Vec<String>,
     portal_screenshot_armed: bool,
-    /// The desktop as it was when the screenshot picker opened. While the
-    /// person chooses, this is what is presented under the scrim and what the
-    /// screenshot is cropped from, so the capture is the screen they saw, not
-    /// whatever clients drew meanwhile. Held through the frame that confirms
-    /// or cancels, then released.
-    frozen_desktop: Option<Scene>,
-    /// The client frames [`Self::frozen_desktop`] draws. A GPU client frame
-    /// is drawn by id from a texture that lives only while something holds
-    /// it, so without these a window that committed a new buffer while the
-    /// picker was up dropped out of the held desktop (and the screenshot).
-    frozen_pins: crate::shell::gpu_frames::FramePins,
+    /// Whether this executor holds every window's frame still
+    /// ([`crate::shell::foreign::ForeignFrameStore::hold_frames`]): from the
+    /// frame a screenshot opens on, whatever its target, through the frame
+    /// that confirms or cancels it. Tiles, the screen and the capture all
+    /// draw the frames of that moment, while windows may still move.
+    holds_windows: bool,
     /// Live window previews for the switcher and the overview, rendered
     /// here because this is where live geometry and a GPU meet.
     window_previews: super::window_previews::WindowPreviewRenderer,
@@ -549,46 +544,38 @@ impl CaptureExecutor {
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &mut Scene,
     ) -> (Vec<CaptureOutcome>, bool) {
-        let frozen_swapped = self.hold_desktop_while_choosing(
-            frame_builder.capture_choosing_screenshot(),
-            clean_screen_scene,
-        );
+        self.hold_windows_while_choosing(frame_builder);
         let (outcomes, overlays_appended) =
             self.execute_ready_frame(frame_builder, clean_screen_scene);
-        // The confirming (or cancelling) frame has now read the held scene.
+        // The confirming (or cancelling) frame has now read the held frames.
         if !frame_builder.capture_choosing_screenshot() {
-            self.release_held_desktop();
+            self.release_held_windows(frame_builder);
         }
-        (outcomes, overlays_appended || frozen_swapped)
+        (outcomes, overlays_appended)
     }
 
-    /// End the hold: the live desktop shows again and the client frames the
-    /// held one drew go back to their clients.
-    fn release_held_desktop(&mut self) {
-        self.frozen_desktop = None;
-        self.frozen_pins = crate::shell::gpu_frames::FramePins::default();
+    /// Hold every window still from the first frame a screenshot is chosen
+    /// on: client windows' frames and the windows of apps the shell runs
+    /// itself, as that frame drew them. Changing the target never starts or
+    /// ends the hold.
+    fn hold_windows_while_choosing(&mut self, frame_builder: &mut FrameBuilder) {
+        if frame_builder.capture_choosing_screenshot() && !self.holds_windows {
+            crate::shell::foreign::store().hold_frames();
+            frame_builder.hold_windows();
+            self.holds_windows = true;
+        }
     }
 
-    /// Freeze the desktop while the screenshot picker is choosing: the first
-    /// such frame keeps `clean` as the snapshot, later frames (and the frame
-    /// that confirms, once the picker has already closed) have `clean`
-    /// replaced by it. Returns whether `clean` was replaced, which the caller
-    /// must treat as a full repaint.
-    fn hold_desktop_while_choosing(&mut self, choosing: bool, clean: &mut Scene) -> bool {
-        if choosing && self.frozen_desktop.is_none() {
-            let mut pins = crate::shell::gpu_frames::FramePins::default();
-            pins.add_scene(clean);
-            self.frozen_pins = pins;
-            self.frozen_desktop = Some(clean.clone());
-            return false;
+    /// End the hold: the windows' live frames show again from the next
+    /// frame, and the frames and client buffers only the hold kept go back.
+    fn release_held_windows(&mut self, frame_builder: &mut FrameBuilder) {
+        if !std::mem::take(&mut self.holds_windows) {
+            return;
         }
-        match self.frozen_desktop.as_ref() {
-            Some(frozen) => {
-                *clean = frozen.clone();
-                true
-            }
-            None => false,
-        }
+        crate::shell::foreign::store().release_frames();
+        frame_builder.release_windows();
+        // Nothing else may ask for the frame that shows the live windows.
+        frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
     }
 
     #[allow(
@@ -2559,5 +2546,7 @@ fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     Ok((decoded.width, decoded.height, decoded.rgba))
 }
 
+#[cfg(test)]
+mod freeze_tests;
 #[cfg(test)]
 mod tests;

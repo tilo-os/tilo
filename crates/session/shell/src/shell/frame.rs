@@ -3154,8 +3154,13 @@ impl FrameBuilder {
         }
         // Night light, a colour filter and the magnifier change every pixel
         // of the output; the magnifier does it without drawing anything more.
-        let client_on_top = client_on_top
-            .filter(|_| !global_filter && scene.encoding().draw_tags.len() == draws_below_filters);
+        // While a screenshot holds the windows still, a client's live buffer
+        // is never flipped to the screen in place of its held frame.
+        let client_on_top = client_on_top.filter(|_| {
+            !global_filter
+                && scene.encoding().draw_tags.len() == draws_below_filters
+                && !super::foreign::store().frames_held()
+        });
         let scene = self.to_scene(scene);
         let scanout = client_on_top
             .and_then(|(surface, drawn)| self.scanout_candidate(surface, drawn, &scene));
@@ -4391,6 +4396,28 @@ impl FrameBuilder {
     /// that a received peer packet uses. Deterministic product proofs need
     /// this seam so they can render intent without standing up a network
     /// relay; it is unavailable in production-only builds.
+    /// Write `bytes` to the active Terminal window as its session's output:
+    /// for captures of a terminal at work.
+    ///
+    /// # Errors
+    /// No Terminal window is active.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn feed_active_terminal_for_shots(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.relayout();
+        let id = self
+            .active_terminal_node()
+            .ok_or("no Terminal window is active")?;
+        let widget = *self
+            .node_map
+            .get(&id)
+            .ok_or("the Terminal is not laid out")?;
+        // SAFETY: the pointer belongs to the current node map.
+        let terminal = hosted_terminal(unsafe { &mut *widget })
+            .ok_or("the active window is not a hosted Terminal")?;
+        terminal.feed(bytes);
+        Ok(())
+    }
+
     /// The presence the next paint draws, to seed it for captures.
     #[cfg(feature = "hosted-test-control")]
     pub fn presence_mut_for_shots(&mut self) -> &mut PresenceCtx {
@@ -4916,6 +4943,21 @@ impl FrameBuilder {
     /// source has been consumed. This keeps live mirrors recursive-safe and
     /// recording status out of the encoded pixels.
     /// Returns whether compositor-owned capture chrome appended encoded scene data.
+    /// Hold every window of an app this shell runs still, as last drawn,
+    /// until [`Self::release_windows`] (a screenshot's freeze; client
+    /// windows are held in the frame store).
+    pub fn hold_windows(&mut self) {
+        if ui::widget::hold_windows() {
+            self.host
+                .hold_window_content(&mut self.text_renderer, &self.theme, &self.presence);
+        }
+    }
+
+    /// Let the windows [`Self::hold_windows`] held draw live again.
+    pub fn release_windows(&mut self) {
+        ui::widget::release_windows();
+    }
+
     pub fn draw_capture_overlays(&mut self, scene: &mut Scene) -> bool {
         let mut logical = Scene::new();
         self.host.draw_capture_overlays(
@@ -6122,6 +6164,15 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     }
 }
 
+/// The terminal a hosted Terminal tab shows, inside its app.
+#[cfg(any(test, feature = "hosted-test-control"))]
+fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
+    let embedded = widget
+        .as_any_mut()?
+        .downcast_mut::<ui::app::EmbeddedApp>()?;
+    terminal::mounted_terminal(embedded.component_root_mut()?)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
@@ -6134,13 +6185,7 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 mod tests {
     use super::*;
 
-    /// The terminal a hosted Terminal tab shows, inside its app.
-    fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
-        let embedded = widget
-            .as_any_mut()?
-            .downcast_mut::<ui::app::EmbeddedApp>()?;
-        terminal::mounted_terminal(embedded.component_root_mut()?)
-    }
+    use super::hosted_terminal;
     /// Attach a real process before rebuilding any pointers into its widget.
     /// A probe of the unopened production tab cannot prove PTY dispatch.
     fn live_hosted_terminal_probe(fb: &mut FrameBuilder) -> std::sync::mpsc::Receiver<Vec<u8>> {

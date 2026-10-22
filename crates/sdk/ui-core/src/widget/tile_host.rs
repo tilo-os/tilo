@@ -403,6 +403,10 @@ pub struct TileHost {
     /// `None` by default, matching the "animations only fire for runtime
     /// insertions" rule `TabBar` uses.
     spawned_at: Option<Instant>,
+    /// What the window showed when the windows were held still
+    /// ([`TileHost::hold_content`]), drawn in place of the live content
+    /// until released.
+    held: Option<held::HeldContent>,
     /// Pushed down by the parent [`crate::widget::WindowGroup`] every
     /// frame: the pill is where a wayland app-id becomes a name a person
     /// recognises, and resolving it a second time down here would only be
@@ -783,6 +787,7 @@ impl TileHost {
             full_bleed: false,
             square_bottom: false,
             spawned_at: None,
+            held: None,
             opening_name: String::new(),
             opening_spinner: Spinner::with_size(OPENING_SPINNER_PX_F32),
             opening_shown: false,
@@ -1609,6 +1614,13 @@ impl TileHost {
     /// The provider reports tile-content size; the shell card grows from the
     /// live tile's top-left and never shrinks below the live window surface.
     pub fn complete_content_rect(&self) -> Option<Rect> {
+        if let Some(held) = self.held.as_ref().filter(|_| self.content_held()) {
+            return self.held_complete_rect(held);
+        }
+        self.live_complete_content_rect()
+    }
+
+    fn live_complete_content_rect(&self) -> Option<Rect> {
         let TileContent::App(app) = &self.content else {
             return None;
         };
@@ -1639,7 +1651,10 @@ impl TileHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
-        let rect = self.complete_content_rect()?;
+        if self.content_held() {
+            return self.draw_held_complete_content(scene, transform);
+        }
+        let rect = self.live_complete_content_rect()?;
         let radius = f64::from(theme.tokens.radii.tile);
         let shape = RoundedRect::from_rect(rect, radius);
         scene.fill(
@@ -2546,13 +2561,23 @@ impl Widget for TileHost {
                 &clip,
             );
             let anim_transform = pose.applied_to(transform);
-            self.draw_steady_state(scene, anim_transform, tr, theme, presence);
+            self.draw_window(scene, anim_transform, tr, theme, presence);
             scene.pop_layer();
             crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
             return;
         }
-        self.draw_steady_state(scene, transform, tr, theme, presence);
+        self.draw_window(scene, transform, tr, theme, presence);
         crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+    }
+    fn needs_redraw(&self) -> bool {
+        if let Some(redraw) = self.held_redraw() {
+            return redraw;
+        }
+        super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+    }
+    fn mark_drawn(&mut self) {
+        self.drop_ended_hold();
+        super::defaults::mark_drawn(self.children_mut());
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let _running = self.running();
@@ -3612,6 +3637,10 @@ fn draw_card_text(
     super::EmptyState::paint(&mut paint, rect, &content, Point::new(-1.0, -1.0));
 }
 
+mod held;
+pub use held::{hold_windows, release_windows};
+#[cfg(test)]
+mod held_tests;
 #[cfg(test)]
 mod tests;
 

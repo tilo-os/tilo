@@ -785,15 +785,14 @@ impl CaptureStudio {
             && self.armed_capture.is_none()
     }
 
-    /// Whether the person is choosing pixels of a screenshot: a selection
-    /// or the screen. The compositor holds the screen still for exactly this
-    /// span. A window or the strip is repainted whole, so the desktop stays
-    /// live while one is chosen, and moving focus to another window scrolls
-    /// the strip as usual.
+    /// Whether the person is choosing a screenshot, whatever its target.
+    /// The compositor holds every window's content still for exactly this
+    /// span, so changing the target never starts or ends the hold. Windows
+    /// still move: picking one scrolls the strip to it as usual, carrying
+    /// its frozen content. A recording or picture in picture stays live, and
+    /// so does the countdown of a delayed screenshot.
     pub fn is_choosing_screenshot(&self) -> bool {
-        self.mode == CaptureMode::Screenshot
-            && self.choosing()
-            && matches!(self.source, SourceMode::Region | SourceMode::Display)
+        self.mode == CaptureMode::Screenshot && self.choosing()
     }
 
     /// Whether the desktop's own navigation (moving focus with the keys,
