@@ -153,25 +153,23 @@ impl App {
     }
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
         self.refresh_document_routes();
-        let status = self
-            .document_sync_status()
-            .map(std::borrow::Cow::into_owned);
+        let status = self.window_status();
         // A status that only changes the text where it already shows repaints
         // that text; it is no reason to rebuild History or the app.
         crate::history_mode::embedded::set_sync_status_in_place(
             self.root_widget.as_mut(),
-            status.as_deref(),
+            status.as_ref(),
         );
         if let Some(history) = &mut self.history
-            && !history.sync_status_matches(status.as_deref())
+            && !history.sync_status_matches(status.as_ref())
         {
-            history.set_sync_status_in_place(status.as_deref(), self.root_widget.as_mut());
+            history.set_sync_status_in_place(status.as_ref(), self.root_widget.as_mut());
         }
         let nested = crate::history_mode::embedded::needs_refresh(
             self.root_widget.as_ref(),
             &self.state.doc,
             width,
-            status.as_deref(),
+            status.as_ref(),
         );
         let invalid = self
             .history
@@ -180,7 +178,7 @@ impl App {
         let status_changed = self
             .history
             .as_ref()
-            .is_some_and(|history| !history.sync_status_matches(status.as_deref()));
+            .is_some_and(|history| !history.sync_status_matches(status.as_ref()));
         if !nested
             && !invalid
             && !status_changed
@@ -214,7 +212,7 @@ impl App {
             self.root_widget.as_mut(),
             &self.state.doc,
             width,
-            status.as_deref(),
+            status.as_ref(),
         );
         let returning_live = self
             .history

@@ -127,11 +127,13 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
         let mut baseline = None;
         for key in [
             None,
-            Some("history-local-action-unsigned"),
-            Some("history-local-action-pending"),
+            Some("history-local-action-not-saved"),
+            Some("history-sync-offline"),
             None,
         ] {
-            let status = key.map(crate::i18n::I18nManager::lookup_plain);
+            let status = key
+                .map(crate::i18n::I18nManager::lookup_plain)
+                .map(crate::widget::WindowStatus::says);
             history.set_sync_status(status.clone());
             let mut tree = taffy::TaffyTree::new();
             let mut nodes = std::collections::HashMap::new();
@@ -162,7 +164,10 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
                 .children()
                 .into_iter()
                 .filter_map(Widget::accessibility)
-                .any(|node| node.name.as_deref() == status.as_deref() && status.is_some());
+                .any(|node| {
+                    node.name.as_deref() == status.as_ref().map(|s| s.text.as_str())
+                        && status.is_some()
+                });
             assert_eq!(
                 published,
                 status.is_some(),
@@ -274,7 +279,7 @@ fn replacing_admitted_history_controls_reports_structure_dirty() {
         "an admitted composition is clean"
     );
 
-    history.set_sync_status(Some("Syncing".into()));
+    history.set_sync_status(Some(crate::widget::WindowStatus::says("Syncing")));
     assert!(
         history.take_structure_dirty(),
         "the admitted toolbar was replaced"

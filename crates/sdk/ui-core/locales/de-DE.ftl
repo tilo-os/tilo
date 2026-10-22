@@ -222,9 +222,8 @@ room-sync-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren
 room-sync-host-needs-update-body = Bis dahin wird hier nichts synchronisiert. Deine Änderungen bleiben auf diesem Gerät und erreichen ihn danach.
 room-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereich zu synchronisieren
 room-sync-device-needs-update-body = Die Aktualisierung kommt. Bis dahin bleiben deine Änderungen auf diesem Gerät.
-history-local-action-unconfirmed = Das Teilen dieser Änderung wurde nicht bestätigt.
-history-local-action-unsigned = Für diese Änderung gibt es keinen authentifizierten Teilungsverlauf.
-history-local-action-pending = Der Aktionsverlauf wartet auf Bestätigung.
+history-local-action-not-saved = Diese Änderung konnte nicht in deinem Verlauf gespeichert werden.
+history-local-action-retry = Erneut versuchen
 
 history-sync-refused = Synchronisierung angehalten: Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Deine Änderungen bleiben auf diesem Gerät.
 history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.

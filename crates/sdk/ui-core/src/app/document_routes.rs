@@ -186,9 +186,8 @@ impl App {
         if let Some(reported) = reported {
             return Some(Cow::Borrowed(reported));
         }
-        let key = if self.local_input_capture.has_pending() {
-            Some("history-local-action-pending")
-        } else if self.document_routes.witness.is_none() {
+        // A change still on its way to the history says nothing.
+        let key = if self.document_routes.witness.is_none() {
             let manager = &self.collaboration.manager;
             // A change the workspace refused stops sync just as a lost
             // connection does, but reconnecting will not resume it, and the
@@ -307,9 +306,15 @@ impl App {
             })
             && self.collaboration.manager.document_route_ready(route)
             && self.document_routes.owners.iter().all(|entry| {
-                self.collaboration
-                    .manager
-                    .document_route_ready(Some(&entry.route))
+                // A record held only for a tree (a chat's next part) syncs
+                // on its own; the surface the person acts through never
+                // waits for its route to open, or every input meanwhile
+                // would act through a stale one.
+                self.document_routes.holds_only_tree_records(entry)
+                    || self
+                        .collaboration
+                        .manager
+                        .document_route_ready(Some(&entry.route))
             })
     }
 

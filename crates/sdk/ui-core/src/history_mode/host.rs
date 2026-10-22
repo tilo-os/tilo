@@ -100,7 +100,7 @@ pub struct HistoryHost {
     registration: HistoryRegistration,
     assets: media::AssetSession,
     active_scope: usize,
-    sync_status: Option<String>,
+    sync_status: Option<crate::widget::WindowStatus>,
     bar_status: crate::widget::HeaderStatus,
     restored_source: Option<HistorySourceRegistration>,
     review: Option<review::ReviewPanel>,
@@ -469,10 +469,10 @@ impl HistoryHost {
     pub(crate) fn set_control_domain(&mut self, domain: &crate::ControlDomain) {
         self.control_domain = Some(domain.clone());
     }
-    pub(crate) fn sync_status_matches(&self, status: Option<&str>) -> bool {
-        self.sync_status.as_deref() == status
+    pub(crate) fn sync_status_matches(&self, status: Option<&crate::widget::WindowStatus>) -> bool {
+        self.sync_status.as_ref() == status
     }
-    pub(crate) fn set_sync_status(&mut self, status: Option<String>) {
+    pub(crate) fn set_sync_status(&mut self, status: Option<crate::widget::WindowStatus>) {
         self.sync_status = status;
         self.rebuild_toolbar();
     }
@@ -484,7 +484,7 @@ impl HistoryHost {
     /// refreshes it whole ([`Self::set_sync_status`]).
     pub(crate) fn set_sync_status_in_place(
         &mut self,
-        status: Option<&str>,
+        status: Option<&crate::widget::WindowStatus>,
         live: &mut dyn Widget,
     ) -> bool {
         if self.open || self.invalid_owner || !self.app_presents_status {
@@ -493,7 +493,7 @@ impl HistoryHost {
         if !crate::widget::window_header::offer_sync_status(live, status) {
             return false;
         }
-        self.sync_status = status.map(str::to_owned);
+        self.sync_status = status.cloned();
         true
     }
     pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
@@ -1682,20 +1682,24 @@ impl HistoryHost {
                 // This bar already reserves the History control's height. Status
                 // belongs beside it, not in a new row that moves the live app
                 // when an ordinary input first discovers unsigned history.
-                if !self.app_presents_status {
-                    self.bar_status.set(self.sync_status.as_deref());
+                let mut row = Row::new().with_justify(taffy::JustifyContent::FlexEnd);
+                if !self.app_presents_status
+                    && let Some(status) = &self.sync_status
+                {
+                    self.bar_status.set(Some(&status.text));
+                    if let Some(action) = &status.action {
+                        row = row.push(Box::new(action.button()));
+                    }
                 }
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
-                    Row::new()
-                        .with_justify(taffy::JustifyContent::FlexEnd)
-                        .push(Box::new(
-                            crate::standalone_history_host::history_control_face(
-                                "history-open",
-                                crate::widget::window_header::HistoryControl::of(self.open),
-                            )
-                            .on_click(move || clicked.set(true)),
-                        )),
+                    row.push(Box::new(
+                        crate::standalone_history_host::history_control_face(
+                            "history-open",
+                            crate::widget::window_header::HistoryControl::of(self.open),
+                        )
+                        .on_click(move || clicked.set(true)),
+                    )),
                 ));
             }
             for review in self.pending_controls.review() {
@@ -1920,9 +1924,15 @@ impl HistoryHost {
             .as_ref()
             .filter(|_| !self.app_presents_status && self.bar_status.text().is_none())
         {
-            toolbar = toolbar.push(Box::new(
-                Text::new(status).with_live(crate::a11y::Politeness::Polite),
-            ));
+            let mut row = Row::new()
+                .with_align_items(taffy::AlignItems::Center)
+                .push(Box::new(
+                    Text::new(&status.text).with_live(crate::a11y::Politeness::Polite),
+                ));
+            if let Some(action) = &status.action {
+                row = row.push(Box::new(action.button()));
+            }
+            toolbar = toolbar.push(Box::new(row));
         }
         self.toolbar = toolbar;
         self.toolbar_dirty = false;

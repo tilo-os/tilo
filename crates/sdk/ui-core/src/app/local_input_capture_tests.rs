@@ -809,29 +809,52 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
     assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
 }
 
-/// An input whose published surface cannot be pinned (it moved under the
-/// input) has nothing to confirm unless it edits: a click that changes
-/// nothing never says an edit went unconfirmed, and an edit still does.
+/// A click that edits nothing never says anything, whatever the state of
+/// the published surface.
 #[test]
-fn an_input_that_edits_nothing_has_no_edit_to_confirm() {
+fn a_click_that_edits_nothing_never_says_anything() {
     let mut fixture = ActionFixture::broker();
     let sent = Rc::new(RefCell::new(Vec::new()));
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
     fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
     fixture.app.publish_action_surface();
-    // Every input from here finds the surface moved under it.
+    for stale in [false, true] {
+        if stale && let Some((_, revision)) = fixture.app.actions.action_directory_stamp.as_mut() {
+            revision.clear();
+        }
+        let scope = fixture.app.begin_local_input_capture();
+        drop(scope);
+        fixture.app.drain_local_input_capture();
+        assert_eq!(
+            fixture.app.document_sync_status(),
+            None,
+            "stale surface: {stale}"
+        );
+    }
+    assert!(capture_reports(&sent).is_empty());
+}
+
+/// An edit made while the published surface had moved under its input is
+/// applied at once, said nothing about while it waits, and recorded with
+/// the broker once a surface it can be reported against is published.
+#[test]
+fn an_edit_during_a_stale_surface_is_recorded_after_the_refresh_quietly() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.publish_action_surface();
+    // The surface moves under the next input: it cannot be pinned.
     if let Some((_, revision)) = fixture.app.actions.action_directory_stamp.as_mut() {
         revision.clear();
     }
-    let scope = fixture.app.begin_local_input_capture();
-    drop(scope);
-    fixture.app.drain_local_input_capture();
-    assert!(
-        fixture.app.local_input_capture.failure.is_none(),
-        "a click that changes nothing is no edit to confirm"
-    );
-
+    let record = fixture.bindings[0].checkout.id.clone();
+    let before = fixture
+        .records
+        .read(&record, |doc| doc.clone().get_heads())
+        .unwrap();
     let scope = fixture.app.begin_local_input_capture();
     let target = fixture.target(0, "apply");
     let actor = fixture.bindings[0].author.0.clone();
@@ -844,8 +867,71 @@ fn an_input_that_edits_nothing_has_no_edit_to_confirm() {
         .unwrap();
     drop(scope);
     fixture.app.drain_local_input_capture();
-    assert!(
-        fixture.app.local_input_capture.failure.is_some(),
-        "an edit nothing could report says so"
+    assert_ne!(
+        fixture
+            .records
+            .read(&record, |doc| doc.clone().get_heads())
+            .unwrap(),
+        before,
+        "the edit is applied at once"
     );
+    assert_eq!(
+        fixture.app.document_sync_status(),
+        None,
+        "on its way: nothing to say"
+    );
+
+    // The surface refreshes.
+    fixture.app.actions.action_directory_stamp = None;
+    fixture.app.drain_local_input_capture();
+    let reports = capture_reports(&sent);
+    assert_eq!(reports.len(), 1, "recorded after the refresh");
+    assert!(!reports[0].1.revision.is_empty());
+    assert_eq!(fixture.app.document_sync_status(), None);
+}
+
+/// A change the broker definitively refuses is said in plain words, with
+/// the person's Retry, which reports it again and says nothing while that
+/// is on its way.
+#[test]
+fn a_change_that_cannot_be_saved_says_so_and_can_be_retried() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let address = capture_address(&mut fixture);
+    fixture
+        .app
+        .invoke_local_resource_action(&address, &serde_json::Map::new())
+        .unwrap();
+    let (request_id, _) = capture_reports(&sent).pop().unwrap();
+    fixture
+        .app
+        .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
+            request_id,
+            result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                "policy refused".into(),
+            )),
+        });
+    assert_eq!(
+        fixture.app.document_sync_status().as_deref(),
+        Some(crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved").as_str())
+    );
+    assert!(fixture.app.has_unsaved_changes_to_retry());
+    // The header shows Retry beside the message: the window's own action.
+    let status = fixture.app.window_status().expect("the header says so");
+    let retry = status.action.expect("with Retry beside it");
+    assert_eq!(
+        retry.label,
+        crate::i18n::I18nManager::lookup_plain("history-local-action-retry")
+    );
+    fixture
+        .app
+        .invoke_local_resource_action(retry.binding.address(), &serde_json::Map::new())
+        .unwrap();
+    assert_eq!(fixture.app.document_sync_status(), None);
+    assert_eq!(fixture.app.window_status(), None);
+    fixture.app.drain_local_input_capture();
+    assert_eq!(capture_reports(&sent).len(), 2, "reported again");
+    assert!(!fixture.app.has_unsaved_changes_to_retry());
 }
