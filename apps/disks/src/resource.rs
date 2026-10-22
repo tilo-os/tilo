@@ -170,24 +170,35 @@ fn row_operation(kind: ActionKind, device: &str) -> ui::tilo_actions::ActionSpec
     spec
 }
 
-/// The row of one partition: select it, and the operations that apply.
+/// The row of one partition: select it, and the operations that apply. A
+/// locked encrypted partition has nothing to mount yet, and an encrypted one
+/// is not offered for formatting (it would lose its encryption).
 fn partition_row(part: &Partition) -> LiveRow {
     let mount = if part.mountpoint.is_some() {
         ActionKind::Unmount
     } else {
         ActionKind::Mount
     };
-    LiveRow::new(
+    let locked = part
+        .encryption
+        .as_ref()
+        .is_some_and(|encryption| encryption.unlocked_as.is_none());
+    let mut row = LiveRow::new(
         partition_row_id(&part.name),
         "disks.partition",
         part.name.clone(),
     )
     .effect(&DisksEffect::Select {
         device: part.name.clone(),
-    })
-    .operation(row_operation(mount, &part.name))
-    .operation(row_operation(ActionKind::Benchmark, &part.name))
-    .operation(row_operation(ActionKind::Format, &part.name))
+    });
+    if !locked {
+        row = row.operation(row_operation(mount, &part.name));
+    }
+    row = row.operation(row_operation(ActionKind::Benchmark, &part.name));
+    if part.encryption.is_none() {
+        row = row.operation(row_operation(ActionKind::Format, &part.name));
+    }
+    row
 }
 
 /// The row of one drive, with its partitions beneath it.
@@ -216,9 +227,13 @@ pub(crate) fn drive_row(drive: &Drive, names: &BTreeMap<String, String>) -> Live
 /// The framework app.
 pub struct DisksShell;
 
-/// Screenshot scenarios: the sample machine, staged. A phone-sized capture
-/// stages the same state as its wide twin.
+/// Screenshot scenarios: the sample machine, staged, and (`laptop*`) a real
+/// laptop's captured storage. A phone-sized capture stages the same state as
+/// its wide twin.
 const SCENARIOS: &[&str] = &[
+    "laptop",
+    "laptop-partitions",
+    "laptop-health",
     "health",
     "partitions",
     "partition",
@@ -264,10 +279,13 @@ impl ResourceApp for DisksShell {
     }
 
     fn fixture(fixture: &mut Fixture<Disks>) {
-        let topology = if fixture.scenario() == Some("empty") {
-            Topology::default()
-        } else {
-            Topology::sample()
+        let topology = match fixture.scenario() {
+            Some("empty") => Topology::default(),
+            #[cfg(target_os = "linux")]
+            Some(name) if name.starts_with("laptop") => {
+                crate::probe::captured::yoga().unwrap_or_default()
+            }
+            _ => Topology::sample(),
         };
         fixture.provide(topology);
     }

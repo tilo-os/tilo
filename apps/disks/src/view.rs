@@ -107,11 +107,19 @@ pub(crate) fn rescan_button(intents: &Intents) -> Button {
 }
 
 /// Nothing to show: the system reported no block devices.
-pub(crate) fn empty_state(intents: &Intents) -> Element {
-    Box::new(
-        EmptyState::new("No drives found")
+/// No drives to show: none attached, or (with `unreadable`, the reason) the
+/// machine's storage could not be read.
+pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Element {
+    let state = match unreadable {
+        Some(reason) => EmptyState::new("Storage can't be read")
             .with_icon(Icon::HardDrive)
-            .with_message("Attach a drive, then rescan.")
+            .with_message(reason),
+        None => EmptyState::new("No drives found")
+            .with_icon(Icon::HardDrive)
+            .with_message("Attach a drive, then rescan."),
+    };
+    Box::new(
+        state
             .with_action("Rescan")
             .on_effect(intents.sender(Intent::Rescan)),
     )
@@ -448,7 +456,7 @@ fn attribute_table(attrs: &[SmartAttr]) -> DataTable<SmartAttr> {
     let mut table = DataTable::new(vec![
         ColumnDef::new("id", "ID", ColumnWidth::Auto)
             .with_kind(TextKind::Numeric)
-            .with_text(|attr: &SmartAttr| attr.id.to_string()),
+            .with_text(|attr: &SmartAttr| attr.id.map(|id| id.to_string()).unwrap_or_default()),
         ColumnDef::new("name", "Attribute", ColumnWidth::Flex(1.0))
             .with_text(|attr: &SmartAttr| attr.name.clone()),
         ColumnDef::new("value", "Value", ColumnWidth::Auto)
@@ -481,6 +489,18 @@ fn partition_summary(part: &Partition, labelled: bool) -> String {
         facts.push(part.name.clone());
     }
     facts.extend(part.fstype.clone().filter(|fs| !fs.is_empty()));
+    if let Some(encryption) = &part.encryption {
+        let locked = encryption.unlocked_as.is_none();
+        facts.push(match (facts.is_empty(), locked) {
+            (true, true) => format!("Encrypted with {}, locked", encryption.scheme),
+            (false, true) => format!("encrypted with {}, locked", encryption.scheme),
+            (true, false) => format!("Encrypted with {}", encryption.scheme),
+            (false, false) => format!("encrypted with {}", encryption.scheme),
+        });
+        if locked {
+            return facts.join(", ");
+        }
+    }
     let sentence_start = facts.is_empty();
     facts.push(match (part.mount_display(), sentence_start) {
         (Some(mount), true) if mount == "Swap" => "In use".to_owned(),

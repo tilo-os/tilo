@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 
 use crate::protocol::{
-    Grants, Handoff, PROTOCOL, Refusal, Reply, Request, SERVICE, Snapshot, read_message,
+    Grants, Handoff, PROTOCOL, Refusal, Reply, Request, SERVICE, Snapshot, Storage, read_message,
     write_handoff, write_message,
 };
 
@@ -311,6 +311,21 @@ impl Client {
             force,
         })?)
     }
+
+    /// The machine's storage: every block device, its partitions,
+    /// filesystems and encryption, and each drive's health.
+    ///
+    /// # Errors
+    /// The service's refusal.
+    pub fn storage(&self) -> Result<Storage, Refusal> {
+        match self.call(|request| Request::Storage { request })? {
+            Reply::Storage { storage, .. } => Ok(*storage),
+            Reply::Refused { refusal, .. } => Err(refusal),
+            _ => Err(Refusal::Failed {
+                detail: "unexpected answer".into(),
+            }),
+        }
+    }
 }
 
 fn ended(reply: Reply) -> Result<u32, Refusal> {
@@ -347,7 +362,8 @@ fn deliver(inner: &Inner, reply: Reply) {
         }
         Reply::Grants { request, .. }
         | Reply::Ended { request, .. }
-        | Reply::Refused { request, .. } => {
+        | Reply::Refused { request, .. }
+        | Reply::Storage { request, .. } => {
             let waiter = lock(&inner.pending).remove(&request);
             if let Some(waiter) = waiter {
                 let _ = waiter.send(reply);
