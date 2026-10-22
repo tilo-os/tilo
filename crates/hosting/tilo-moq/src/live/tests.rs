@@ -1137,3 +1137,50 @@ async fn a_revoked_member_receives_nothing_after_revocation() {
     );
     drop((a, viewer));
 }
+
+/// A page follows a member through withdrawal: a host-fed namespace idle past
+/// [`HOST_SLOT_IDLE`] is withdrawn, the host's next frame announces it
+/// afresh, and [`super::peer::MemberPresence`] reads on from the new
+/// broadcast instead of the ended one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn member_presence_follows_a_withdrawn_host_fed_member_to_its_new_broadcast() {
+    let f = fixture();
+    let viewer = connect(&f, b"grant-b", B).await;
+    let mut member = super::peer::MemberPresence::follow(&viewer, &path(C));
+    let mut seq = 0;
+    hear_injected(&f, &mut member, &mut seq, b"before").await;
+
+    // The namespace goes quiet past its idle bound and is collected.
+    let slot = f.live.relay.0.slot(&path(C), false).unwrap();
+    slot.state.lock_recover().host_active = None;
+    drop(slot);
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&path(C), false).is_none(),
+        "the idle host-fed namespace is withdrawn"
+    );
+
+    hear_injected(&f, &mut member, &mut seq, b"after").await;
+    drop(viewer);
+}
+
+/// Inject the host-fed member C's presence until `member` hears this frame.
+async fn hear_injected(
+    f: &Fixture,
+    member: &mut super::peer::MemberPresence,
+    seq: &mut u64,
+    tail: &[u8],
+) {
+    tilo_test_env::within("the member's presence", async {
+        loop {
+            *seq += 1;
+            assert!(f.live.relay.inject_presence(ROOM, C, &presence(*seq, tail)));
+            if let Some(frame) = member.next(Duration::from_millis(50)).await
+                && frame[8..] == *tail
+            {
+                return;
+            }
+        }
+    })
+    .await;
+}

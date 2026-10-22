@@ -281,7 +281,7 @@ async fn every_web_app_over_the_session() {
         .unwrap();
     let agent_namespace =
         tilo_moq::live::namespace_path(&grant.room, &hex::encode(agent_key)).unwrap();
-    let mut track = None;
+    let mut agent_presence = tilo_moq::live::peer::MemberPresence::follow(&live, &agent_namespace);
 
     let mut received: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = BTreeMap::new();
     let mut table = String::from(
@@ -355,24 +355,9 @@ async fn every_web_app_over_the_session() {
                 break None;
             }
             agent.pump();
-            let Some(subscribed) = track.as_mut() else {
-                if let Ok(Some(broadcast)) =
-                    tokio::time::timeout(Duration::from_millis(200), live.member(&agent_namespace))
-                        .await
-                {
-                    track = broadcast
-                        .track(tilo_moq::live::PRESENCE_TRACK)
-                        .unwrap()
-                        .subscribe(None)
-                        .await
-                        .ok();
-                }
-                continue;
-            };
-            if let Ok(Ok(Some(datagram))) =
-                tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
+            if let Some(datagram) = agent_presence.next(Duration::from_millis(200)).await
                 && let Some(LiveFrame::Presence(presence)) =
-                    open_live(&browser, datagram.payload.to_vec()).await
+                    open_live(&browser, datagram.to_vec()).await
                 && presence
                     .focus
                     .as_ref()

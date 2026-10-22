@@ -544,31 +544,15 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         tilo_moq::live::namespace_path(&grant.room, &hex::encode(agent_cert.device_public_key))
             .unwrap();
     let deadline = tilo_test_env::hang_deadline();
-    let mut track = None;
+    let mut agent_presence = tilo_moq::live::peer::MemberPresence::follow(&live, &agent_namespace);
     let presence = loop {
         assert!(
             Instant::now() < deadline,
             "the agent's presence never reached the browser"
         );
         agent.pump();
-        let Some(subscribed) = track.as_mut() else {
-            if let Ok(Some(broadcast)) =
-                tokio::time::timeout(Duration::from_millis(200), live.member(&agent_namespace))
-                    .await
-            {
-                track = broadcast
-                    .track(tilo_moq::live::PRESENCE_TRACK)
-                    .unwrap()
-                    .subscribe(None)
-                    .await
-                    .ok();
-            }
-            continue;
-        };
-        if let Ok(Ok(Some(datagram))) =
-            tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
-        {
-            let Some(frame) = open_live(&browser, datagram.payload.to_vec()).await else {
+        if let Some(datagram) = agent_presence.next(Duration::from_millis(200)).await {
+            let Some(frame) = open_live(&browser, datagram.to_vec()).await else {
                 continue;
             };
             match frame {

@@ -470,25 +470,17 @@ impl Browser {
         let (frames, rx) = tokio::sync::mpsc::unbounded_channel();
         let peer = self.peer.clone();
         let task = tokio::spawn(async move {
-            let mut track = loop {
-                if let Ok(Some(broadcast)) =
-                    tokio::time::timeout(Duration::from_millis(200), live.member(&namespace)).await
-                    && let Ok(track) = broadcast
-                        .track(tilo_moq::live::PRESENCE_TRACK)
-                        .unwrap()
-                        .subscribe(None)
-                        .await
-                {
-                    break track;
-                }
-            };
-            while let Ok(Some(datagram)) = track.recv_datagram().await {
+            let mut member = tilo_moq::live::peer::MemberPresence::follow(&live, &namespace);
+            loop {
+                let Some(datagram) = member.next(Duration::from_secs(1)).await else {
+                    continue;
+                };
                 // Live frames arrive sealed: the page opens them with its keys.
                 let (tx, opened) = tokio::sync::oneshot::channel();
                 if peer
                     .open_live_then(
                         workspace(),
-                        datagram.payload.to_vec(),
+                        datagram.to_vec(),
                         Box::new(move |frame| {
                             let _ = tx.send(frame);
                         }),
