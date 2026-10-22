@@ -550,10 +550,7 @@ async fn enroll_device(
             MemberRole::Editor,
             Some(certificate.user_public_key),
             Some(certificate.device_label.clone()),
-            now_ns(SystemTime::now())
-                .unwrap()
-                .checked_add(60_000_000_000)
-                .unwrap(),
+            invitation_expiry_ns(),
         )
     };
     // The device's one workspace is the room's own, joining it (as in
@@ -630,10 +627,7 @@ fn inspect_while_ui_caller_is_blocked(context: &Context<'_>, authority: &ActualA
             MemberRole::Viewer,
             None,
             None,
-            now_ns(SystemTime::now())
-                .unwrap()
-                .checked_add(60_000_000_000)
-                .unwrap(),
+            invitation_expiry_ns(),
         )
     };
     let client = WorkspaceJoinClient::new(context.endpoint.clone());
