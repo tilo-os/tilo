@@ -236,7 +236,10 @@ pub fn configured_font_system() -> FontSystem {
         database.set_sans_serif_family(UI_SANS_FAMILY);
         database.set_serif_family(UI_SERIF_FAMILY);
         database.set_monospace_family(UI_MONOSPACE_FAMILY);
-        (font_system.locale().to_owned(), font_system.db().clone())
+        (
+            font_system.locale().to_owned(),
+            crate::font_catalog::mapped(font_system.db()),
+        )
     });
     FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
