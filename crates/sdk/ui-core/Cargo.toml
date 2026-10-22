@@ -206,7 +206,9 @@ tilo-spellcheck = { version = "0.1.0", path = "../../text/spellcheck" }
 tilo-highlight = { version = "0.1.0", path = "../../text/highlight" }
 tilo-highlight-grammars = { version = "0.1.0", path = "../../text/highlight-grammars" }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+# The app log reads RUST_LOG (`launch::app_log`): an app built outside this
+# workspace gets no env-filter from the workspace-hack.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zeroize.workspace = true
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
