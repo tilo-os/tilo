@@ -8203,6 +8203,15 @@ impl FrameHarness {
             if on_behalf_of.is_none() && self.take_component_search_invocation(&target, &intent) {
                 continue;
             }
+            // The window's own component's History control (the History
+            // button in a framework app's header row) opens this window's
+            // History, as the shortcut does; it is no app action.
+            if on_behalf_of.is_none()
+                && self.component_instance_id() == Some(target.binding.instance_id)
+                && self.take_history_invocation(&intent, None)
+            {
+                continue;
+            }
             self.dispatch_bound_control(target, &intent, on_behalf_of);
         }
 

@@ -3680,6 +3680,19 @@ impl App {
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
+            // The window's own component's History control (the History
+            // button in a framework app's header row) opens this window's
+            // History, as the shortcut does; it is no app action.
+            if on_behalf_of.is_none()
+                && self
+                    .root_widget
+                    .callback_binding()
+                    .is_some_and(|binding| binding.instance_id == target.binding.instance_id)
+                && self.take_history_invocation(&intent, None)
+            {
+                dispatched = dispatched.saturating_add(1);
+                continue;
+            }
             if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of) {
                 dispatched = dispatched.saturating_add(1);
             }
