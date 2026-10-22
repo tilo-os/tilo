@@ -14,7 +14,10 @@
 // `.parse()`/`?` handling through every call site for no behavioural
 // benefit, so the name collision is accepted here rather than exempted
 // call-by-call.
-#![allow(clippy::should_implement_trait)]
+#![allow(
+    clippy::should_implement_trait,
+    reason = "the infallible from_str parsers fall back to a default; FromStr would force a Result through every call site"
+)]
 
 use serde::{Deserialize, Serialize};
 use ui::paint::with_alpha;
@@ -961,14 +964,26 @@ fn seed_slide_goals() -> Slide {
             e.radius = 4.0;
         }),
     );
-    s.add(Element::text(
-        "• Reconnect the waterfront path\n\n• Add shade, seating and lighting\n\n• Protect the existing wetland\n\n• Keep the budget under review",
-        96.0,
-        210.0,
-        720.0,
-        440.0,
-        34.0,
-    ));
+    // The goals are a bulleted list, as a person makes one in the editor.
+    s.add(
+        Element::text("", 96.0, 210.0, 720.0, 440.0, 34.0).with(|e| {
+            e.set_blocks(
+                [
+                    "Reconnect the waterfront path",
+                    "Add shade, seating and lighting",
+                    "Protect the existing wetland",
+                    "Keep the budget under review",
+                ]
+                .into_iter()
+                .map(|goal| {
+                    let mut item = BlockContent::paragraph("", goal);
+                    item.kind = ui::widget::BlockKind::Bullet { indent: 0 };
+                    item
+                })
+                .collect(),
+            );
+        }),
+    );
     // A small decorative figure block on the right.
     s.add(
         Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
