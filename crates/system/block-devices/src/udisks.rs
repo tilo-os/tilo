@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 pub const SERVICE: &str = "org.freedesktop.UDisks2";
 pub const IFACE_BLOCK: &str = "org.freedesktop.UDisks2.Block";
 pub const IFACE_FILESYSTEM: &str = "org.freedesktop.UDisks2.Filesystem";
+pub const IFACE_DRIVE: &str = "org.freedesktop.UDisks2.Drive";
 
 /// The `UDisks2` `block_devices` object path for a kernel device name (`sda1`,
 /// `/dev/nvme0n1p2`, `dm-0`). Every byte outside `[A-Za-z0-9]` becomes
@@ -54,7 +55,9 @@ mod client {
     use zbus::blocking::{Connection, Proxy};
     use zbus::zvariant::Value;
 
-    use super::{IFACE_BLOCK, IFACE_FILESYSTEM, ReadOnlyFilesystem, SERVICE, object_path};
+    use super::{
+        IFACE_BLOCK, IFACE_DRIVE, IFACE_FILESYSTEM, ReadOnlyFilesystem, SERVICE, object_path,
+    };
 
     /// Empty `a{sv}` options: `UDisks2` picks its defaults (automatic mount
     /// point, default mkfs options).
@@ -224,6 +227,23 @@ mod client {
         /// Returns an error when the call fails or is not authorised.
         pub fn format(&self, device: &str, fstype: &str) -> zbus::Result<()> {
             self.block(device)?.call("Format", &(fstype, no_options()))
+        }
+
+        /// `Drive.PowerOff` on the drive `device` is on (its `Block.Drive`):
+        /// the drive is detached and powered down, ready to be pulled out.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when `device` is on no drive, or the call fails
+        /// or is not authorised.
+        pub fn power_off(&self, device: &str) -> zbus::Result<()> {
+            let drive: zbus::zvariant::OwnedObjectPath =
+                self.block(device)?.get_property("Drive")?;
+            if drive.as_str() == "/" {
+                return Err(zbus::Error::Failure(format!("{device} is on no drive")));
+            }
+            Proxy::new(&self.connection, SERVICE, drive, IFACE_DRIVE)?
+                .call("PowerOff", &(no_options(),))
         }
     }
 }

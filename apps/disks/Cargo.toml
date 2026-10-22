@@ -24,12 +24,12 @@ thin = ["dep:runtime-dylib"]
 # the machine's storage needs neither: the session describes it
 # (`tilo-system-info`).
 default = ["live"]
-# The CLI fallback and read benchmark are always available.
+# Without it the app changes no devices; the read benchmark is always
+# available.
 live = ["block-devices/udisks"]
 
 [dependencies]
 block-devices = { path = "../../crates/system/block-devices" }
-bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # vello / taffy / winit / automerge are reached through `ui::` — the toolkit
 # re-exports its own stack so there is exactly one copy of each in the binary,
