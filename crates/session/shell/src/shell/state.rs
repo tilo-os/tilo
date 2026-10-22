@@ -925,6 +925,11 @@ pub struct WorkspaceTree {
     /// per serial. Local and transient: never saved or replicated.
     #[serde(skip)]
     pub brought_forward: Option<crate::shell::tab_binding::BroughtForward>,
+    /// Maximized windows stepped back for a window the person was taken
+    /// to, given back when that window goes away
+    /// ([`crate::shell::stepped_back::SteppedBack`]). Local and transient.
+    #[serde(skip)]
+    pub stepped_back: Vec<crate::shell::stepped_back::SteppedBack>,
 }
 
 impl Default for WorkspaceTree {
@@ -961,6 +966,7 @@ impl Default for WorkspaceTree {
             personal_device_choices: HashMap::new(),
             personal_device_requests: Vec::new(),
             brought_forward: None,
+            stepped_back: Vec::new(),
         }
     }
 }

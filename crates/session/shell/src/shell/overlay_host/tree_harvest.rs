@@ -186,6 +186,15 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        // The expanded slot is the tree's maximized window, not a second
+        // record of it: a window given back its place when the window it
+        // stepped back for went away, or one maximized before a restart,
+        // takes the display again as the person's own maximize does.
+        {
+            let mut st = chrome.borrow_mut();
+            let expanded = expanded_group(&st.tree(), st.maximized_group());
+            st.set_maximized_group(expanded);
+        }
         // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
         // group if both are set.
         let (fs_group, single, client_fullscreen) = {
@@ -1145,17 +1154,8 @@ impl ShellOverlayHost {
             if let Some(expanded) = st.maximized_group().filter(|g| *g != request.group) {
                 st.set_maximized_group(None);
                 let mut tree = st.tree_mut();
-                if let Some(group) = tree
-                    .desktop
-                    .workspaces
-                    .iter_mut()
-                    .flat_map(|workspace| workspace.strips.iter_mut())
-                    .flat_map(|strip| strip.window_groups.iter_mut())
-                    .find(|group| group.id == expanded)
-                {
-                    group.maximized = false;
-                    tree.queue_save();
-                }
+                crate::shell::stepped_back::step_back_for(&mut tree, expanded, request.tab);
+                tree.queue_save();
             }
         }
         self.brought_forward_reveal = Some(request.strip);
@@ -1501,4 +1501,28 @@ impl ShellOverlayHost {
         // Durable like a width change: a split survives the next restart.
         tree.queue_save();
     }
+}
+
+/// The window expanded over the display: `held` while it is still
+/// maximized, else the focused window of the active strip if that one is.
+fn expanded_group(
+    tree: &crate::shell::state::WorkspaceTree,
+    held: Option<GroupId>,
+) -> Option<GroupId> {
+    let maximized = |id: GroupId| {
+        tree.desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .any(|group| group.id == id && group.maximized)
+    };
+    if held.is_some_and(maximized) {
+        return held;
+    }
+    let workspace = tree.desktop.active_workspace()?;
+    let strip = tree.desktop.active_strip.get(&workspace.id).copied()?;
+    tree.desktop
+        .active_group_for(strip)
+        .filter(|group| maximized(*group))
 }

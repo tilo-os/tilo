@@ -21,6 +21,9 @@ pub struct BroughtForward {
     pub workspace: WorkspaceId,
     pub strip: StripId,
     pub group: GroupId,
+    /// The window itself: a window maximized elsewhere that steps back for
+    /// it is lent to it ([`crate::shell::stepped_back::SteppedBack`]).
+    pub tab: TabId,
 }
 
 impl BroughtForward {
@@ -44,7 +47,9 @@ static BROUGHT_FORWARD_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// group the focused one of its strip, the strip the active one of its
 /// workspace and the workspace the active one, so the view goes there
 /// across strips, workspaces and displays. A window maximized over that
-/// strip steps back so the strip can scroll to it, and the request left in
+/// strip steps back so the strip can scroll to it, and is maximized again
+/// when this window goes away
+/// ([`crate::shell::stepped_back::SteppedBack`]); the request left in
 /// [`WorkspaceTree::brought_forward`] has the compositor end a full screen
 /// elsewhere and the desktop move the view with standard motion.
 ///
@@ -75,12 +80,16 @@ pub fn bring_forward(
     {
         return false;
     }
+    let mut stepping_back = Vec::new();
     for other in &mut target_strip.window_groups {
         if other.id == group {
             other.activate_tab(tab);
         } else if other.maximized {
-            other.maximized = false;
+            stepping_back.push(other.id);
         }
+    }
+    for other in stepping_back {
+        crate::shell::stepped_back::step_back_for(tree, other, tab);
     }
     tree.desktop.active = workspace;
     tree.desktop.active_strip.insert(workspace, strip);
@@ -90,6 +99,7 @@ pub fn bring_forward(
         workspace,
         strip,
         group,
+        tab,
     });
     true
 }
@@ -97,7 +107,7 @@ pub fn bring_forward(
 /// Notify the retained chrome that a protocol-side tree mutation landed.
 /// Native protocol callbacks and chrome share this tree, so there is no
 /// rendered-tree diff left to provide the repaint signal.
-fn mark_tree_changed(tree: &mut WorkspaceTree) {
+pub(crate) fn mark_tree_changed(tree: &mut WorkspaceTree) {
     tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
 }
 
@@ -1267,11 +1277,34 @@ pub fn withdraw_provisional_tab(
                 .map(|_| (workspace.id, strip.id))
         })
     });
-    if !close_tab_back_to_previous(tree, tab_id) {
+    // What stepped back for this window is given back once focus is where
+    // it was, not to whatever the removal alone leaves focused.
+    let lent: Vec<crate::shell::stepped_back::SteppedBack> = tree
+        .stepped_back
+        .iter()
+        .filter(|held| held.for_tab == tab_id)
+        .copied()
+        .collect();
+    tree.stepped_back.retain(|held| held.for_tab != tab_id);
+    let withdrawn = close_tab_back_to_previous(tree, tab_id);
+    tree.stepped_back.extend(lent);
+    if !withdrawn {
         return false;
     }
+    restore_focus_before(tree, held, before);
+    crate::shell::stepped_back::give_back_place(tree, tab_id);
+    true
+}
+
+/// Focus back on the group and strip `before` had, where the withdrawn
+/// window held its strip's focus (`held`).
+fn restore_focus_before(
+    tree: &mut WorkspaceTree,
+    held: Option<(crate::shell::state::WorkspaceId, StripId)>,
+    before: &FocusBefore,
+) {
     let Some((workspace_id, strip_id)) = held else {
-        return true;
+        return;
     };
     let exists = |tree: &WorkspaceTree, strip: StripId, group: Option<GroupId>| {
         tree.desktop
@@ -1292,7 +1325,6 @@ pub fn withdraw_provisional_tab(
     {
         tree.desktop.active_strip.insert(workspace_id, strip);
     }
-    true
 }
 
 /// Remove `tab_id` from wherever it is in the tree, repairing its group's selection if it was in
@@ -1384,6 +1416,7 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
         registry.forget_local_tab(crate::shell::personal_continuity::AppInstanceId(removed.id));
     }
     mark_tree_changed(tree);
+    crate::shell::stepped_back::give_back_place(tree, tab_id);
     true
 }
 
