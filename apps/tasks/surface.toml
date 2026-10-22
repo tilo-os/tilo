@@ -22,6 +22,7 @@ fields = [
   { path = "issues.*.links.*.app", type = "String" },
   { path = "issues.*.links.*.kind", type = "String" },
   { path = "issues.*.links.*.resource", type = "String" },
+  { path = "issues.*.links.*.record", type = "Option<String>" },
   { path = "issues.*.comments", type = "Collection<Message>", readonly = true, stored = "collection" },
   { path = "issues.*.comments.*.author", type = "String", readonly = true },
   { path = "issues.*.comments.*.by_agent", type = "bool", readonly = true },
@@ -156,6 +157,7 @@ params = [
   { name = "kind", required = true, schema = { type = "string" } },
   { name = "resource", required = true, schema = { type = "string" } },
   { name = "label", required = true, schema = { type = "string" } },
+  { name = "record", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
