@@ -115,6 +115,15 @@ pub trait RemoteSource: Send + Sync + 'static {
     ) -> Result<(), RemoteError>;
 }
 
+/// An index of the app's own that answers with the local items, in the
+/// same frame: matches in what this device does not hold yet, such as a
+/// library's synced index of books whose text is elsewhere. It answers on
+/// the UI thread, so within the frame's budget.
+pub trait LocalSource: Send + Sync + 'static {
+    /// The items `query` finds, best first, at most `limit`.
+    fn search(&self, query: &QuerySpec, limit: usize) -> Vec<Item>;
+}
+
 /// The items of one type in a list of results, best first.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResultGroup {
@@ -688,6 +697,8 @@ pub struct QueryEngine {
     prose_builds: u64,
     prose_send: Sender<ProseIndex>,
     prose_built: Receiver<ProseIndex>,
+    /// The app's own index, answering with the local items.
+    source: Option<Arc<dyn LocalSource>>,
 }
 
 impl QueryEngine {
@@ -714,7 +725,39 @@ impl QueryEngine {
             prose_builds: 0,
             prose_send,
             prose_built,
+            source: None,
         }
+    }
+
+    /// Answer with `source` too, beside the local items; `None` stops. What
+    /// it finds for the open query joins the rows after those shown.
+    pub fn set_local_source(&mut self, source: Option<Arc<dyn LocalSource>>) {
+        self.source = source;
+        if self.open {
+            self.add_found();
+        }
+    }
+
+    /// What the local items and the app's own index find for `query`, the
+    /// items first, each once.
+    fn found_locally(&self, query: &QuerySpec) -> Vec<Item> {
+        let mut found = self.local.search(&self.kinds, query);
+        if let Some(source) = &self.source
+            && !query.text.trim().is_empty()
+        {
+            let mut seen: HashSet<(&'static str, String)> = found
+                .iter()
+                .map(|item| (item.kind, item.id.clone()))
+                .collect();
+            found.extend(
+                source
+                    .search(query, LOCAL_CANDIDATES)
+                    .into_iter()
+                    .filter(|item| query.admits(item))
+                    .filter(|item| seen.insert((item.kind, item.id.clone()))),
+            );
+        }
+        found
     }
 
     /// Ask `source` too, in a section below the local results.
@@ -775,8 +818,7 @@ impl QueryEngine {
             return;
         }
         let fresh: HashMap<(&'static str, String), Item> = self
-            .local
-            .search(&self.kinds, &self.results.query)
+            .found_locally(&self.results.query)
             .into_iter()
             .map(|item| ((item.kind, item.id.clone()), item))
             .collect();
@@ -815,6 +857,12 @@ impl QueryEngine {
         if !self.local.land_prose(prose) || !self.open {
             return false;
         }
+        self.add_found()
+    }
+
+    /// Add what the open query finds now and did not before after the rows
+    /// shown: a row the person sees never moves for it.
+    fn add_found(&mut self) -> bool {
         let shown: HashSet<(&'static str, String)> = self
             .results
             .local
@@ -823,8 +871,7 @@ impl QueryEngine {
             .map(|item| (item.kind, item.id.clone()))
             .collect();
         let found: Vec<Item> = self
-            .local
-            .search(&self.kinds, &self.results.query)
+            .found_locally(&self.results.query)
             .into_iter()
             .filter(|item| !shown.contains(&(item.kind, item.id.clone())))
             .collect();
@@ -929,7 +976,7 @@ impl QueryEngine {
             let mut wider = query.clone();
             wider.chips.retain(|chip| chip.key != key);
             let mut rows = if query.chips.iter().any(|chip| chip.key == key) {
-                self.local.search(&self.kinds, &wider)
+                self.found_locally(&wider)
             } else {
                 super::chips::result_rows(&self.results)
                     .into_iter()
@@ -1019,7 +1066,7 @@ impl QueryEngine {
     }
 
     fn answer_locally(&mut self) {
-        let found = self.local.search(&self.kinds, &self.results.query);
+        let found = self.found_locally(&self.results.query);
         self.results.local = grouped(&self.kinds, found, GROUP_LIMIT);
     }
 
