@@ -171,7 +171,7 @@ rights, malformed packets and delivery uncertainty retire the channel. Neither
 a configured shell nor an unsupported runtime is replaced.
 
 Terminal retains ephemeral lease/history metadata, never the private field
-buffer. Its device-only Inspect editor and secret-parameter Replace editor
+buffer. Its Inspect editor and secret-parameter Replace editor
 selection effects use the existing resource route. The original caller is
 rechecked immediately before dispatch; permission and focus changes revoke
 captures. Qualified ordinary IME and dictation use the same literal request.

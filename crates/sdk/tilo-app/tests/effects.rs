@@ -1414,83 +1414,34 @@ fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "test.mailbox.device")]
 pub enum DeviceEffect {
-    /// Read the mail folder on this computer.
-    #[effect(device_only)]
-    ReadLocalFolder,
+    /// Choose a mail folder on this computer.
+    #[effect(attended)]
+    ChooseFolder,
     /// Empty the mail folder on this computer.
-    #[effect(device_only = true)]
+    #[effect(destructive)]
     EmptyLocalFolder,
-    /// Count the messages.
-    Count,
 }
 
 #[test]
-fn a_device_only_effect_is_published_as_device_only() {
-    let decl = DeviceEffect::declarations()
-        .into_iter()
-        .map(|decl| (decl.id, decl.spec("test.mailbox.device")))
-        .collect::<Vec<_>>();
-    let tagged = |id: &str| {
-        decl.iter()
-            .find(|(declared, _)| *declared == id)
-            .unwrap()
-            .1
-            .contract
-            .tags
-            .iter()
-            .any(|tag| tag == tilo_app::tilo_actions::LOCAL_DEVICE_ONLY)
-    };
-    assert!(tagged("read-local-folder"));
-    assert!(tagged("empty-local-folder"));
-    assert!(!tagged("count"));
-    assert!(
-        LocalFolders::declarations()
-            .iter()
-            .all(|decl| decl.device_only),
-        "a vocabulary marked device-only marks every effect"
-    );
-    let exempt = |id: &str| {
-        FolderView::declarations()
+fn an_attended_effect_is_published_as_attended() {
+    let attended = |id: &str| {
+        let decl = DeviceEffect::declarations()
             .into_iter()
             .find(|decl| decl.id == id)
-            .unwrap()
-            .spec("test.mailbox.folder-view")
-            .contract
-            .tags
-            .iter()
-            .any(|tag| tag == tilo_app::tilo_actions::LOCAL_DEVICE_ONLY)
+            .unwrap();
+        let spec = decl.spec("test.mailbox.device");
+        assert_eq!(decl.attended, spec.contract.is_attended(), "{id}");
+        assert_eq!(
+            spec.contract.kind,
+            tilo_app::tilo_actions::ActionKind::Outside
+        );
+        decl.attended
     };
-    assert!(exempt("open-folder"), "the vocabulary's marking stands");
+    assert!(attended("choose-folder"));
     assert!(
-        !exempt("sort-by-date"),
-        "an effect exempted from its device-only vocabulary is not"
+        !attended("empty-local-folder"),
+        "an ordinary outside effect is decided by its kind alone"
     );
-    assert!(
-        !FolderView::declarations()
-            .iter()
-            .find(|decl| decl.id == "sort-by-date")
-            .unwrap()
-            .device_only
-    );
-}
-
-#[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.folders", device_only)]
-pub enum LocalFolders {
-    /// Watch a folder.
-    Watch { path: String },
-    /// Forget a folder.
-    Forget { path: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.folder-view", device_only)]
-pub enum FolderView {
-    /// Open a folder on this computer.
-    OpenFolder,
-    /// Sort by date, a preference of the person.
-    #[effect(device_only = false)]
-    SortByDate,
 }
 
 /// The mailbox, opened on a folder: `mailbox sent` shows the sent folder.

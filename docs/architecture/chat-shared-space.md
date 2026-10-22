@@ -29,7 +29,7 @@ selected input, issues and verified stream inventory. Call state never becomes d
 microphone consent. This increment changes no media transport and has not been tested
 with two physical devices or microphones.
 
-The device-only `open-slack-channel(workspace, channel)` and
+The `open-slack-channel(workspace, channel)` and
 `open-discord-channel(server, channel)` effects validate service ids and hand an HTTPS
 link to the host URI opener on a worker. They use the existing optional `open-uri`
 capability. The service's browser app owns sign-in and channel permissions. These are
@@ -42,7 +42,7 @@ the token and the socket, and Chat still holds neither.
 
 Chat now contributes opt-in channel, thread and scroll state to the SDK's existing
 viewport presence. `share-live-context`, `stop-sharing-live-context` and
-`live-context-status` are local, device-only effects. Sharing begins off and never
+`live-context-status` are local effects. Sharing begins off and never
 survives relaunch or becomes microphone consent. The conversation header shows sharing
 or following status, with a shared Stop sharing button while publication is active. The shell's existing `presence.follow` and `presence.follow.stop`
 actions choose/release the target, with its existing visible follow chip and roster.

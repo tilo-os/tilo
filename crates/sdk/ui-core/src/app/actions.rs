@@ -2820,22 +2820,15 @@ impl App {
             )?;
         }
         let kind = resolved.kind;
-        if resolved
-            .contract
-            .tags
-            .iter()
-            .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
-            && !crate::bound_dispatch::runs_device_only(
+        if resolved.contract.is_own_device()
+            && !crate::bound_dispatch::runs_own_device(
                 actor,
                 &self.collaboration.local_author.0,
                 broker_admitted,
                 ambient_context,
             )
         {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "local_device_only".into(),
-                reason: "This action uses private files on the host participant's device".into(),
-            });
+            return Err(crate::bound_dispatch::own_device_refusal());
         }
         if kind == tilo_actions::OperationKind::View
             && !crate::invocation_scope::view_operation_permitted(

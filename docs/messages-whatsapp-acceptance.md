@@ -110,7 +110,7 @@ service requests remain part of the separately blocked transport qualification.
 ## Private group text and membership changes
 
 `ReadGroupHistory`, `SendGroupText`, `AddGroupMember`, `RemoveGroupMember` and
-`LeaveGroup` are device-only registered actions, backed by the default account
+`LeaveGroup` are registered outside effects, backed by the default account
 supervisor's real SDK client. Read and send require sensitive review; membership
 changes require destructive confirmation. The member view returns an opaque,
 short-lived review tied to the exact service/account, authenticated self PN/LID,

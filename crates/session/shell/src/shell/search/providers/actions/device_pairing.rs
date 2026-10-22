@@ -123,13 +123,6 @@ mod tests {
                 "{id} has its own contract arm"
             );
             assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
-            assert!(
-                contract
-                    .tags
-                    .iter()
-                    .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY),
-                "{id} runs only for the person at this device"
-            );
         }
         let approve = super::super::shell_action_contract(APPROVE_ID);
         assert_eq!(approve.risk, tilo_actions::RiskLevel::Privileged);

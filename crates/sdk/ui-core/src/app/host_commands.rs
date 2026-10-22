@@ -55,10 +55,11 @@ impl App {
                 action.contract.execution =
                     tilo_actions::ExecutionMode::Background { cancellable: false };
                 action.contract.result = tilo_actions::ResultSpec::Job;
+                // The page's own editing history on this device.
                 action
                     .contract
                     .tags
-                    .push(tilo_actions::LOCAL_DEVICE_ONLY.into());
+                    .push(tilo_actions::OWN_DEVICE_SCOPE.into());
                 action.description = Some(crate::i18n::I18nManager::lookup_plain(
                     "host-native-page-history-scope",
                 ));

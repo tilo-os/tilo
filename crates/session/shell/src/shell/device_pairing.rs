@@ -109,12 +109,10 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
         ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec, RetryPolicy,
         RiskLevel,
     };
-    // Pairing listens on this machine's LAN and asks its administrator: it
-    // runs for the person at this device, never for a remote participant.
+    // Pairing listens on this machine's LAN and asks its administrator.
     let base = ActionContract {
         kind: ActionKind::Outside,
         retry: RetryPolicy::AtMostOnce,
-        tags: vec![tilo_actions::LOCAL_DEVICE_ONLY.into()],
         ..ActionContract::default()
     };
     match step {

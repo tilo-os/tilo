@@ -1298,14 +1298,14 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
-    // Case `a_device_only_effect_runs_for_the_person_at_the_device_alone`.
+    // Case `an_own_device_effect_runs_for_the_person_at_the_device_alone`.
     {
         /// A typed effect vocabulary as an app declares it.
         #[derive(Clone, Debug, tilo_resource::Effect)]
         #[effect(operation = "test.counter")]
         enum Folder {
-            /// Copy a folder on this computer.
-            #[effect(device_only)]
+            /// Copy the folder to this computer's clipboard.
+            #[effect(own_device)]
             CopyLocalFolder,
             /// Count the copies.
             Count,
@@ -1327,7 +1327,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         };
         assert!(matches!(
             invoke(&mut app, "copy-local-folder", "person:guest"),
-            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
+            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "own_device"
         ));
         assert!(
             invoke(&mut app, "count", "person:guest").is_ok(),
@@ -1335,51 +1335,6 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
         let me = app.collaboration.local_author.0.clone();
         assert!(invoke(&mut app, "copy-local-folder", &me).is_ok());
-    }
-
-    // Case `directed_local_device_effect_cannot_run_for_a_remote_writer`.
-    {
-        let action = ActionSpec::operation(
-            "copy-private-folder",
-            "Copy private folder",
-            OperationKind::Effect,
-            COUNTER_TYPE,
-            &CounterAction::Bump,
-        )
-        .unwrap()
-        .with_contract(tilo_actions::ActionContract {
-            tags: vec!["tilo.local-device-only".into()],
-            ..tilo_actions::ActionContract::default()
-        });
-        let mut app = lazy_app(
-            Resource::new(
-                "test.private-folder",
-                "test.private-folder",
-                "Private folder",
-            )
-            .with_action(action),
-        );
-        let address =
-            tilo_actions::ActionAddress::new("test.private-folder", "copy-private-folder");
-        let remote = app.invoke_resource_action(
-            ResourceInvocation::new(&address, "agent:Scribe")
-                .broker_admitted(true)
-                .invocation(Some(tilo_actions::InvocationId::new())),
-        );
-        assert!(matches!(
-            remote,
-            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
-        ));
-
-        let actor = app.collaboration.local_author.0.clone();
-        assert!(
-            app.invoke_resource_action(
-                ResourceInvocation::new(&address, &actor)
-                    .broker_admitted(true)
-                    .invocation(Some(tilo_actions::InvocationId::new())),
-            )
-            .is_ok()
-        );
     }
 }
 

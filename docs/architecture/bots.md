@@ -540,7 +540,7 @@ the reviewed bot decides when it is used.
   and the one the AI settings hub uses for provider keys (a non-secret
   reference in the profile, resolved by the process that owns the store). A
   headless host keeps that store in `TILO_SECRETS_DIR` on an encrypted volume.
-  The host's administrator sets a credential through a device-only effect the
+  The host's administrator sets a credential through an effect the
   connector publishes, such as `set-bot-token(token: Secret)`, invoked on the
   host. A `ParamType::Secret` argument is redacted wherever an invocation is
   shown or recorded, and an effect writes no change, so the secret never

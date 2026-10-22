@@ -5931,9 +5931,6 @@ impl CapnpBrokerState {
         // A certified local origin retains its original registered clock and
         // exact person/room through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.
-        // Whether the actor is an agent the person's own device handed the
-        // session to here: the only agent a device-only action runs for.
-        let mut device_delegate = false;
         let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
             let admitted = self.current_action_caller(caller)?;
             // The person the admission certifies, or the one agent it admitted
@@ -5950,10 +5947,6 @@ impl CapnpBrokerState {
             if caller.room != offered.0.route.cluster_id || !admitted_actor {
                 return Err("original caller does not match the invocation route or actor".into());
             }
-            // A certified origin is a connection admitted on this device; a
-            // foreign device is one whose operating system Tilo does not
-            // control, still this device.
-            device_delegate = actor.is_agent && admitted.session_delegated;
             Some(
                 caller
                     .policy_time
@@ -5982,24 +5975,6 @@ impl CapnpBrokerState {
         };
         if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
             return Err("duplicate original invocation custody".into());
-        }
-        // A device-only action runs for the person at this device, and for
-        // the agent their own device handed the session; never for an agent
-        // admitted anywhere else. The app refuses everyone but its person
-        // and the agents acting for them.
-        if actor.is_agent
-            && !device_delegate
-            && offered
-                .1
-                .contract
-                .tags
-                .iter()
-                .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
-        {
-            return Err(
-                "a device-only action runs only for the person at this device or the agent their device handed the session"
-                    .into(),
-            );
         }
         let local_time = if let Some(InvocationCaller::Local { time, .. }) = &origin {
             self.checked_policy_time(time.as_ref())?;

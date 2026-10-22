@@ -99,14 +99,8 @@ impl syn::parse::Parse for Param {
     }
 }
 
-struct EnumOptions {
-    operation: String,
-    device_only: bool,
-}
-
-fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
+fn enum_operation(input: &DeriveInput) -> syn::Result<String> {
     let mut operation = None;
-    let mut device_only = false;
     for attr in input
         .attrs
         .iter()
@@ -116,23 +110,16 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             if meta.path.is_ident("operation") {
                 operation = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 Ok(())
-            } else if meta.path.is_ident("device_only") {
-                device_only = true;
-                Ok(())
             } else {
-                Err(meta.error("expected `operation = \"...\"` or `device_only`"))
+                Err(meta.error("expected `operation = \"...\"`"))
             }
         })?;
     }
-    let operation = operation.ok_or_else(|| {
+    operation.ok_or_else(|| {
         syn::Error::new(
             input.ident.span(),
             "name the effects' operation type: `#[effect(operation = \"app.effects\")]`",
         )
-    })?;
-    Ok(EnumOptions {
-        operation,
-        device_only,
     })
 }
 
@@ -153,11 +140,8 @@ struct VariantOptions {
     destructive: bool,
     privileged: bool,
     sensitive: bool,
-    /// `device_only` (or `device_only = true`) marks this effect device-only;
-    /// `device_only = false` exempts it from a vocabulary marked so.
-    device_only: Option<bool>,
     /// `own_device`: the effect's whole scope is the invoking person's own
-    /// device, touching nothing shared and no one else; device-only too.
+    /// device, touching nothing shared and no one else.
     own_device: bool,
     /// `attended`: the effect needs its person attending (a chooser, a
     /// credential, something only they may see): anyone acting for them is
@@ -264,12 +248,6 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.privileged = true;
             } else if meta.path.is_ident("sensitive") {
                 options.sensitive = true;
-            } else if meta.path.is_ident("device_only") {
-                options.device_only = Some(if meta.input.peek(syn::Token![=]) {
-                    meta.value()?.parse::<syn::LitBool>()?.value
-                } else {
-                    true
-                });
             } else if meta.path.is_ident("own_device") {
                 options.own_device = true;
             } else if meta.path.is_ident("attended") {
@@ -305,7 +283,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
-                     `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
+                     `destructive`, `privileged`, `sensitive`, `idempotent`, \
                      `own_device`, `attended`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)` or `kind`",
                 ));
@@ -341,10 +319,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "an effect vocabulary names at least one effect",
         ));
     }
-    let EnumOptions {
-        operation,
-        device_only: all_device_only,
-    } = enum_options(input)?;
+    let operation = enum_operation(input)?;
     let any_arguments = data
         .variants
         .iter()
@@ -508,7 +483,6 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         let idempotent = options.idempotent;
         let own_device = options.own_device;
         let attended = options.attended;
-        let device_only = own_device || options.device_only.unwrap_or(all_device_only);
         let risk_of = if let Some(classify) = &options.risk {
             quote! {
                 ::std::option::Option::Some(
@@ -558,11 +532,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let offload = match &options.offload {
             None => quote!(::core::option::Option::None),
-            Some(_) if !reads || device_only || !options.content => {
+            Some(_) if !reads || !options.content => {
                 return Err(syn::Error::new(
                     variant.span(),
                     "an `offload` effect is a content transform any device may run: declare it \
-                     `content` and `kind = \"read\"`, and not `device_only`",
+                     `content` and `kind = \"read\"`",
                 ));
             }
             Some(OffloadOption {
@@ -613,7 +587,6 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 risk: #krate::__private::RiskLevel::#risk,
                 idempotent: #idempotent,
                 action_kind: #krate::__private::ActionKind::#action_kind,
-                device_only: #device_only,
                 own_device: #own_device,
                 attended: #attended,
                 risk_of: #risk_of,

@@ -124,25 +124,21 @@ pub(crate) fn params(step: &str) -> &'static [ActionParam] {
 }
 
 /// What `step` may do and answers, the same through every door. Every step
-/// is this device's own identity store: it runs for the person at it, never
-/// for a remote participant. Changing the store is privileged and asked
-/// first. Delivering the home-server removals still pending signs nothing
+/// is this device's own identity store. Changing the store is privileged and
+/// asked first. Delivering the home-server removals still pending signs nothing
 /// new — each was signed when it was confirmed — so it asks nothing.
 pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec, RetryPolicy,
         RiskLevel,
     };
-    let tags = vec![tilo_actions::LOCAL_DEVICE_ONLY.into()];
     let json = |schema: serde_json::Value| ResultSpec::Json { schema };
     match step {
         LIST => ActionContract {
-            tags,
             result: json(serde_json::json!({ "type": "array", "items": { "type": "object" } })),
             ..ActionContract::view()
         },
         DEVICES => ActionContract {
-            tags,
             result: json(serde_json::json!({
                 "type": "array",
                 "items": {
@@ -157,7 +153,6 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
             risk: RiskLevel::Privileged,
             confirmation: ConfirmationPolicy::Confirm,
             retry: RetryPolicy::Idempotent,
-            tags,
             result: json(serde_json::json!({ "type": "object" })),
             ..ActionContract::default()
         },
@@ -167,7 +162,6 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
             confirmation: ConfirmationPolicy::Confirm,
             retry: RetryPolicy::AtMostOnce,
             execution: ExecutionMode::Background { cancellable: false },
-            tags,
             result: json(serde_json::json!({ "type": "object" })),
             ..ActionContract::default()
         },
@@ -176,7 +170,6 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
             risk: RiskLevel::Low,
             retry: RetryPolicy::Idempotent,
             execution: ExecutionMode::Background { cancellable: false },
-            tags,
             result: json(serde_json::json!({ "type": "object" })),
             ..ActionContract::default()
         },
@@ -185,7 +178,6 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
             risk: RiskLevel::Privileged,
             confirmation: ConfirmationPolicy::Confirm,
             retry: RetryPolicy::AtMostOnce,
-            tags,
             result: json(serde_json::json!({ "type": "object" })),
             ..ActionContract::default()
         },

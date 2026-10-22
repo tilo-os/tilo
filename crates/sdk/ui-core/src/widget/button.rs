@@ -293,10 +293,9 @@ impl Button {
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
                 .expect("a control id is always JSON serializable");
         if own_device {
-            spec.contract.tags.extend([
-                tilo_actions::LOCAL_DEVICE_ONLY.to_owned(),
-                tilo_actions::OWN_DEVICE_SCOPE.to_owned(),
-            ]);
+            spec.contract
+                .tags
+                .push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
         }
         let resource =
             tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);

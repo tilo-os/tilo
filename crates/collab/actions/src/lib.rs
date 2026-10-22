@@ -165,10 +165,10 @@ pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
     Audience, Availability, COMPENSATED_UNDO_TAG, ConfirmationPolicy, DOCUMENT_READ_TAG,
     ExecutionMode, HOUSEKEEPING_TAG, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
-    LOCAL_DEVICE_ONLY, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES,
-    MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG,
-    OWN_DEVICE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, ResultSpec, RetryPolicy, RiskLevel,
-    UNTRUSTED_CONTENT_TAG, action_node,
+    MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG,
+    MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, OWN_DEVICE_SCOPE,
+    Offload, PEOPLE_AUDIENCE_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
+    action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};

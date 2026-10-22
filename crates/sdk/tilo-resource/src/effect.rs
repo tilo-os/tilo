@@ -37,20 +37,19 @@
 //! operation (any reader may invoke it, a collaborator may not move someone
 //! else's view, repeating it is harmless), answered by the same handler.
 //!
-//! An effect that reaches the files, hardware or services of the device it
+//! Who may run an effect is decided by its kind alone, like any action: an
+//! effect that reaches the files, hardware or services of the device it
 //! runs on — set this computer up, kill a process here, read a local
-//! folder — is `device_only`: the door runs it for the person at that
-//! device and refuses collaborators and remote participants. Mark one
-//! variant, or the whole vocabulary (`#[effect(operation = "…",
-//! device_only)]`).
+//! folder — reaches outside the record, so the person's Allow, Ask first or
+//! Deny for outside effects decides it.
 //!
 //! An effect whose whole scope is the invoking person's own device —
 //! copy to their clipboard, apply their own appearance, measure their own
 //! connection — and that touches nothing shared and no one else is
-//! `own_device` (device-only too): a room's grants have nothing to consent
-//! to, so a guest invokes it as the room's owner does
-//! ([`tilo_actions::OWN_DEVICE_SCOPE`]). A device-only effect that reaches
-//! other people (a direct message, a call) is not.
+//! `own_device`: a room's grants have nothing to consent to, so a guest
+//! invokes it as the room's owner does, and it runs only for the person at
+//! the device it acts on ([`tilo_actions::OWN_DEVICE_SCOPE`]). An effect
+//! that reaches other people (a direct message, a call) is not.
 //!
 //! An effect that needs its person attending — it opens a chooser for
 //! them, asks them for a credential or a sign-in, or shows something only
@@ -80,7 +79,8 @@
 //! credential, such as copying a one-time
 //! code: asks for confirmation too), `sensitive` (discloses a copy of private
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
-//! uncertain outcome), `device_only` (only the person at this device),
+//! uncertain outcome), `own_device` (its scope is the invoker's own device),
+//! `attended` (needs its person attending: anyone acting for them asks),
 //! `audience = "agents"` (listed for agents and programs, never in the
 //! palette; `"people"` lists it for people only),
 //! `untrusted` (answers with content from outside the user's data, such as a
@@ -410,7 +410,6 @@ pub struct EffectRow {
     pub risk: RiskLevel,
     pub idempotent: bool,
     pub action_kind: ActionKind,
-    pub device_only: bool,
     pub own_device: bool,
     pub attended: bool,
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
@@ -491,13 +490,9 @@ pub struct EffectDecl {
     /// What it is able to do: reach outside the record by default, read for
     /// a view or an effect declared `kind = "read"`.
     pub action_kind: ActionKind,
-    /// Reaches files, hardware or services of the device it runs on: only
-    /// the person at that device may invoke it, never a collaborator or a
-    /// remote participant.
-    pub device_only: bool,
     /// Its whole scope is the invoking person's own device: it touches
     /// nothing shared and no one else, so a room's grants have nothing to
-    /// consent to ([`tilo_actions::OWN_DEVICE_SCOPE`]). Device-only too.
+    /// consent to ([`tilo_actions::OWN_DEVICE_SCOPE`]).
     pub own_device: bool,
     /// Needs its person attending: it opens a chooser, asks for a credential
     /// or a sign-in, or shows what only they may see, so whoever acts for
@@ -594,7 +589,6 @@ impl EffectDecl {
             risk: row.risk,
             idempotent: row.idempotent,
             action_kind: row.action_kind,
-            device_only: row.device_only || row.own_device,
             own_device: row.own_device,
             attended: row.attended,
             risk_of: row.risk_of,
@@ -683,11 +677,7 @@ impl EffectDecl {
                 base.retry
             },
             tags: {
-                let mut tags = if self.device_only {
-                    ::std::vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]
-                } else {
-                    base.tags.clone()
-                };
+                let mut tags = base.tags.clone();
                 if self.own_device {
                     tags.push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
                 }
