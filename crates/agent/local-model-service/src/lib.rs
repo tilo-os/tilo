@@ -6,6 +6,10 @@
 //! become eligible for a typed vLLM launch. There is no generic
 //! command, URL, tag, or package-install API.
 //!
+//! A person's own models ([`hub`]) take the same path from the other end:
+//! each file of a Hugging Face pick is verified against the hash the Hub
+//! publishes before it is promoted, and the signed runtimes serve it.
+//!
 //! Some signed models run in the process that uses them instead (an ONNX
 //! graph a per-user service loads on the CPU). They go through the same
 //! verified download and licence record, but nothing is started: once
@@ -21,6 +25,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub use agent_provider_config::local::InProcessCapability;
+use agent_provider_config::local::hub::UserModel;
 use agent_provider_config::local::{
     LocalEndpoint, LocalModelRelease, LocalModelStatus, ModelArtifactFormat, PinnedArtifact,
     RuntimeExecution, RuntimeRelease,
@@ -32,6 +37,7 @@ use thiserror::Error;
 
 pub mod catalog;
 pub mod developer;
+pub mod hub;
 pub mod ownership;
 pub mod run_observation;
 #[cfg(target_os = "linux")]
@@ -266,6 +272,10 @@ pub struct ServiceState {
     /// license id and artifact identity make an old acceptance unusable for a
     /// different release.
     pub accepted_licenses: BTreeMap<String, LicenseAcceptance>,
+    /// Models a person picked from Hugging Face or added from a file, by
+    /// id: what the signed catalog would otherwise say about them.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub user_models: BTreeMap<String, UserModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +288,10 @@ pub struct ManagedModel {
     /// copied from the release that was installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_process: Option<InProcessRecord>,
+    /// The content-addressed objects a person's own model was assembled
+    /// from, so removal deletes exactly those no other model still uses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<String>,
 }
 
 /// The installed facts of an in-process model, recorded with its state.
@@ -305,6 +319,7 @@ impl ManagedModel {
                 capabilities: model.in_process_capabilities(),
                 recorded_at_unix_ms: tilo_clock::unix_now_ms(),
             }),
+            objects: Vec::new(),
         }
     }
 }
@@ -400,6 +415,101 @@ pub struct LicenseAcceptance {
 enum TransferEvent {
     Received(u64),
     Verifying,
+}
+
+/// A background install's progress, published into the state file a
+/// status reader polls. The first offset, completion and phase changes are
+/// published at once; intermediate byte counts at most every 16 MiB or once
+/// a second, so a fast transfer does not fsync per chunk.
+struct Progress {
+    state_path: PathBuf,
+    published: ServiceState,
+    persisted: ServiceState,
+    model_id: String,
+    total: u64,
+    last_received: Option<u64>,
+    last_publication: Instant,
+    error: Option<ServiceError>,
+}
+
+impl Progress {
+    /// Start from `service`'s state as `prepare` leaves it.
+    fn new<T, P>(
+        service: &LocalModelService<T, P>,
+        model_id: &str,
+        total: u64,
+        prepare: impl FnOnce(&mut ServiceState),
+    ) -> Self {
+        let mut published = service.state.clone();
+        prepare(&mut published);
+        Self {
+            state_path: service.root.join(STATE_FILE),
+            published,
+            persisted: service.persisted.clone(),
+            model_id: model_id.to_owned(),
+            total,
+            last_received: None,
+            last_publication: Instant::now(),
+            error: None,
+        }
+    }
+
+    fn event(&mut self, event: TransferEvent) {
+        if let Some(managed) = self.published.models.get_mut(&self.model_id) {
+            managed.status = match event {
+                TransferEvent::Received(received) => LocalModelStatus::Downloading {
+                    received_bytes: received,
+                    total_bytes: self.total,
+                },
+                TransferEvent::Verifying => LocalModelStatus::Verifying,
+            };
+        }
+        let publish = match event {
+            TransferEvent::Received(received) => {
+                self.last_received.is_none()
+                    || received == self.total
+                    || received.saturating_sub(self.last_received.unwrap_or(0)) >= 16 * 1024 * 1024
+                    || self.last_publication.elapsed() >= Duration::from_secs(1)
+            }
+            TransferEvent::Verifying => true,
+        };
+        if !publish || self.error.is_some() {
+            return;
+        }
+        match persist_state(&self.state_path, &self.persisted, &self.published) {
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+            Ok(merged) => {
+                self.published = merged;
+                self.persisted = self.published.clone();
+            }
+        }
+        if let TransferEvent::Received(received) = event {
+            self.last_received = Some(received);
+        }
+        self.last_publication = Instant::now();
+    }
+
+    /// Hand the published state back to `service`. An interrupted transfer
+    /// can end between publication thresholds: its last actual byte count
+    /// is kept for a resumed worker or status reader before the transfer's
+    /// error is returned.
+    fn settle<T, P>(
+        mut self,
+        service: &mut LocalModelService<T, P>,
+        transfer: Result<(), ServiceError>,
+    ) -> Result<(), ServiceError> {
+        if transfer.is_err() && self.error.is_none() {
+            self.published = persist_state(&self.state_path, &self.persisted, &self.published)?;
+            self.persisted = self.published.clone();
+        }
+        service.persisted = self.persisted;
+        service.state = self.published;
+        transfer?;
+        self.error.map_or(Ok(()), Err)
+    }
 }
 
 /// Concrete filesystem service. All storage paths are derived from verified
@@ -541,15 +651,49 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         Ok(self.root.join("snapshots").join(sha256))
     }
 
-    fn model_path(&self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
+    /// Where the runtime finds installed `model`: the host path it mounts
+    /// read-only, the mount's place in the container, and the path the
+    /// runtime is told to load.
+    fn runtime_mount(
+        &self,
+        model: &LocalModelRelease,
+    ) -> Result<(PathBuf, &'static str, String), ServiceError> {
+        let missing = || ServiceError::ModelNotInstalled(model.id.clone());
+        if let Some(user) = self.state.user_models.get(&model.id) {
+            // A person's own model is a directory of verified files, named
+            // as in the repository, so shards find each other.
+            let path = self.snapshot_path(&model.artifact.sha256)?;
+            if !path.is_dir() {
+                return Err(missing());
+            }
+            let target = if model.artifact_format == ModelArtifactFormat::HfSnapshotFiles {
+                validate_snapshot_layout(&path)?;
+                "/models/model".to_owned()
+            } else {
+                format!(
+                    "/models/model/{}",
+                    user.files.first().ok_or_else(missing)?.path
+                )
+            };
+            return Ok((path, "/models/model", target));
+        }
         match model.artifact_format {
-            ModelArtifactFormat::HfSnapshotTarZst => self.snapshot_path(&model.artifact.sha256),
-            ModelArtifactFormat::VllmGguf
-            | ModelArtifactFormat::LlamaCppGguf
-            | ModelArtifactFormat::OnnxFile
-            | ModelArtifactFormat::WhisperGgml
-            | ModelArtifactFormat::WhistleCact
-            | ModelArtifactFormat::SileroGgml => self.object_path(&model.artifact.sha256),
+            ModelArtifactFormat::HfSnapshotTarZst => {
+                let path = self.snapshot_path(&model.artifact.sha256)?;
+                if !path.is_dir() {
+                    return Err(missing());
+                }
+                validate_snapshot_layout(&path)?;
+                Ok((path, "/models/model", "/models/model".into()))
+            }
+            ModelArtifactFormat::VllmGguf | ModelArtifactFormat::LlamaCppGguf => {
+                let path = self.object_path(&model.artifact.sha256)?;
+                if !path.is_file() {
+                    return Err(missing());
+                }
+                Ok((path, "/models/model.gguf", "/models/model.gguf".into()))
+            }
+            _ => Err(missing()),
         }
     }
 
@@ -567,41 +711,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             verify_file(&final_path, artifact)?;
             return Ok(final_path);
         }
-        let partial = self
-            .root
-            .join("partial")
-            .join(format!("{}.part", artifact.sha256));
-        let start = fs::metadata(&partial).map_or(0, |metadata| metadata.len());
-        if start > artifact.size_bytes {
-            return Err(ServiceError::PartialTooLarge);
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&partial)?;
-        let maximum = artifact
-            .size_bytes
-            .checked_sub(start)
-            .ok_or(ServiceError::PartialTooLarge)?;
-        let mut ignored_progress = |_| {};
-        let received = self.transport.resume(
-            &artifact.url,
-            start,
-            maximum,
-            &mut ignored_progress,
-            &mut file,
-        )?;
-        file.sync_all()?;
-        let total = start
-            .checked_add(received)
-            .ok_or(ServiceError::PartialTooLarge)?;
-        if total != artifact.size_bytes {
-            return Err(ServiceError::IncompleteDownload {
-                expected: artifact.size_bytes,
-                actual: total,
-            });
-        }
+        let partial = self.partial_path(&artifact.sha256);
+        self.resume_into(&artifact.url, &partial, artifact.size_bytes, &mut |_| {})?;
         verify_file(&partial, artifact)?;
         // `rename` is atomic within this service root. A concurrent successful
         // fetch wins; re-verify its final object instead of overwriting it.
@@ -616,13 +727,75 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         }
     }
 
+    fn partial_path(&self, name: &str) -> PathBuf {
+        self.root.join("partial").join(format!("{name}.part"))
+    }
+
+    /// Append `url`'s remaining bytes to the private `partial` file until it
+    /// holds exactly `size` bytes, reporting each confirmed byte count. The
+    /// caller verifies the bytes before they leave the partial store.
+    fn resume_into(
+        &mut self,
+        url: &str,
+        partial: &Path,
+        size: u64,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<(), ServiceError> {
+        let start = fs::metadata(partial).map_or(0, |metadata| metadata.len());
+        if start > size {
+            return Err(ServiceError::PartialTooLarge);
+        }
+        progress(start);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(partial)?;
+        let maximum = size
+            .checked_sub(start)
+            .ok_or(ServiceError::PartialTooLarge)?;
+        let mut reported = start;
+        let mut relay = |written: u64| {
+            reported = start.saturating_add(written);
+            progress(reported);
+        };
+        let received = if maximum == 0 {
+            0
+        } else {
+            self.transport
+                .resume(url, start, maximum, &mut relay, &mut file)?
+        };
+        file.sync_all()?;
+        let total = start
+            .checked_add(received)
+            .ok_or(ServiceError::PartialTooLarge)?;
+        if total != size {
+            return Err(ServiceError::IncompleteDownload {
+                expected: size,
+                actual: total,
+            });
+        }
+        if reported != total {
+            progress(total);
+        }
+        Ok(())
+    }
+
     /// Turn a verified compressed Hugging Face snapshot into a private,
     /// content-addressed directory. Archive paths, links, special files,
     /// unexpected expansion, and duplicate names are refused before any
     /// directory becomes visible to Podman.
     fn materialize_model(&mut self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
+        // A per-file layout has no single artifact to fetch: only a
+        // person's pick has one, installed through [`hub`].
+        if model.artifact_format.is_per_file() {
+            return Err(ServiceError::InvalidArtifact);
+        }
         let object = self.fetch_verified(&model.artifact)?;
         match model.artifact_format {
+            ModelArtifactFormat::HfSnapshotFiles | ModelArtifactFormat::LlamaCppGgufShards => {
+                Err(ServiceError::InvalidArtifact)
+            }
             ModelArtifactFormat::VllmGguf
             | ModelArtifactFormat::LlamaCppGguf
             | ModelArtifactFormat::OnnxFile
@@ -761,91 +934,29 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
         self.require_process_absent(&model.id)?;
-        let mut published = self.state.clone();
-        let mut persisted = self.persisted.clone();
-        let state_path = self.root.join(STATE_FILE);
-        let model_id = model.id.clone();
-        let total = model.artifact.size_bytes;
-        published.models.entry(model_id.clone()).or_insert_with(|| {
-            ManagedModel::for_release(
-                model,
-                LocalModelStatus::Downloading {
-                    received_bytes: 0,
-                    total_bytes: total,
-                },
-            )
+        let mut progress = Progress::new(self, &model.id, model.artifact.size_bytes, |state| {
+            state.models.entry(model.id.clone()).or_insert_with(|| {
+                ManagedModel::for_release(
+                    model,
+                    LocalModelStatus::Downloading {
+                        received_bytes: 0,
+                        total_bytes: model.artifact.size_bytes,
+                    },
+                )
+            });
         });
-        let mut progress_error = None;
-        let mut last_received = None;
-        let mut last_publication = Instant::now();
-        let transfer = {
-            let mut progress = |event: TransferEvent| {
-                if let Some(managed) = published.models.get_mut(&model_id) {
-                    managed.status = match event {
-                        TransferEvent::Received(received) => LocalModelStatus::Downloading {
-                            received_bytes: received,
-                            total_bytes: total,
-                        },
-                        TransferEvent::Verifying => LocalModelStatus::Verifying,
-                    };
-                }
-                // State reflects only written bytes. Publish the initial
-                // resume offset, completion and phase transition immediately;
-                // bound intermediate fsyncs by bytes or elapsed time.
-                let publish = match event {
-                    TransferEvent::Received(received) => {
-                        last_received.is_none()
-                            || received == total
-                            || received.saturating_sub(last_received.unwrap_or(0))
-                                >= 16 * 1024 * 1024
-                            || last_publication.elapsed() >= Duration::from_secs(1)
-                    }
-                    TransferEvent::Verifying => true,
-                };
-                if !publish || progress_error.is_some() {
-                    return;
-                }
-                match persist_state(&state_path, &persisted, &published) {
-                    Err(error) => {
-                        progress_error = Some(error);
-                        return;
-                    }
-                    Ok(merged) => {
-                        published = merged;
-                        persisted = published.clone();
-                    }
-                }
-                if let TransferEvent::Received(received) = event {
-                    last_received = Some(received);
-                }
-                last_publication = Instant::now();
-            };
-            self.fetch_verified_with_progress(&model.artifact, &mut progress)
-        };
-        // An interrupted transfer can end between publication thresholds.
-        // Retain its last actual byte count for a resumed worker or status
-        // reader before propagating the transfer error.
-        if transfer.is_err() && progress_error.is_none() {
-            published = persist_state(&state_path, &persisted, &published)?;
-            persisted = published.clone();
-        }
-        self.persisted = persisted.clone();
-        self.state = published.clone();
-        transfer?;
-        if let Some(error) = progress_error {
-            return Err(error);
-        }
+        let transfer =
+            self.fetch_verified_with_progress(&model.artifact, &mut |event| progress.event(event));
+        progress.settle(self, transfer.map(|_| ()))?;
         if matches!(model.artifact_format, ModelArtifactFormat::HfSnapshotTarZst) {
             let archive = self.object_path(&model.artifact.sha256)?;
             self.extract_snapshot(&archive, model)?;
         }
-        published.models.insert(
-            model_id,
+        self.state.models.insert(
+            model.id.clone(),
             ManagedModel::for_release(model, LocalModelStatus::Installed),
         );
-        published = persist_state(&state_path, &persisted, &published)?;
-        self.persisted = published.clone();
-        self.state = published;
+        self.persist()?;
         Ok(LocalModelStatus::Installed)
     }
 
@@ -862,47 +973,17 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             verify_file(&final_path, artifact)?;
             return Ok(final_path);
         }
-        let partial = self
-            .root
-            .join("partial")
-            .join(format!("{}.part", artifact.sha256));
-        let start = fs::metadata(&partial).map_or(0, |metadata| metadata.len());
-        if start > artifact.size_bytes {
-            return Err(ServiceError::PartialTooLarge);
-        }
-        progress(TransferEvent::Received(start));
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&partial)?;
-        let maximum = artifact
-            .size_bytes
-            .checked_sub(start)
-            .ok_or(ServiceError::PartialTooLarge)?;
-        let mut reported = start;
-        let mut relay = |written: u64| {
-            reported = start.saturating_add(written);
-            progress(TransferEvent::Received(reported));
-        };
-        let received =
-            self.transport
-                .resume(&artifact.url, start, maximum, &mut relay, &mut file)?;
-        file.sync_all()?;
-        let total = start
-            .checked_add(received)
-            .ok_or(ServiceError::PartialTooLarge)?;
-        if total != artifact.size_bytes {
-            return Err(ServiceError::IncompleteDownload {
-                expected: artifact.size_bytes,
-                actual: total,
-            });
-        }
-        if reported != total {
-            progress(TransferEvent::Received(total));
-        }
+        let partial = self.partial_path(&artifact.sha256);
+        self.resume_into(&artifact.url, &partial, artifact.size_bytes, &mut |bytes| {
+            progress(TransferEvent::Received(bytes));
+        })?;
         progress(TransferEvent::Verifying);
-        verify_file(&partial, artifact)?;
+        if let Err(error) = verify_file(&partial, artifact) {
+            // Bytes that do not match can never complete: the next try
+            // starts over instead of resuming them forever.
+            let _ = fs::remove_file(&partial);
+            return Err(error);
+        }
         fs::rename(&partial, &final_path).map_err(ServiceError::Io)?;
         Ok(final_path)
     }
@@ -1034,22 +1115,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         if port == 0 {
             return Err(ServiceError::InvalidPort);
         }
-        let model_path = self.model_path(model)?;
-        let model_container_path = match model.artifact_format {
-            ModelArtifactFormat::HfSnapshotTarZst if model_path.is_dir() => "/models/model",
-            ModelArtifactFormat::VllmGguf | ModelArtifactFormat::LlamaCppGguf
-                if model_path.is_file() =>
-            {
-                "/models/model.gguf"
-            }
-            _ => return Err(ServiceError::ModelNotInstalled(model.id.clone())),
-        };
-        if matches!(model.artifact_format, ModelArtifactFormat::HfSnapshotTarZst) {
-            validate_snapshot_layout(&model_path)?;
-        }
-        if !model_path.exists() {
-            return Err(ServiceError::ModelNotInstalled(model.id.clone()));
-        }
+        let (model_path, model_container_path, target) = self.runtime_mount(model)?;
         let runtime_path = self.object_path(&runtime.release.artifact.sha256)?;
         if !runtime_path.exists() {
             return Err(ServiceError::RuntimeNotInstalled);
@@ -1064,7 +1130,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let command = VllmCommand {
             runtime_image: runtime.release.oci_image.clone(),
             runtime_kind: runtime.release.kind,
-            args: runtime_arguments(&runtime.release, model, model_container_path, port)?,
+            args: runtime_arguments(&runtime.release, model, &target, port)?,
             model_path,
             model_container_path: model_container_path.into(),
             endpoint: endpoint.clone(),
@@ -1216,6 +1282,20 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         if snapshot.exists() {
             remove_private_directory(&snapshot)?;
         }
+        for object in &managed.objects {
+            let shared = self.state.models.iter().any(|(id, other)| {
+                id != model_id && (other.model_sha256 == *object || other.objects.contains(object))
+            });
+            let path = self.object_path(object)?;
+            if !shared && path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+        if let Some(user) = self.state.user_models.remove(model_id) {
+            self.remove_partials(&user, &managed.model_sha256);
+            // The acceptance was of this pick; adding it again asks again.
+            self.state.accepted_licenses.remove(model_id);
+        }
         self.state.models.remove(model_id);
         self.persist()
     }
@@ -1280,6 +1360,11 @@ fn transact_state(
         &mut current.accepted_licenses,
         &before.accepted_licenses,
         &after.accepted_licenses,
+    )?;
+    merge_changes(
+        &mut current.user_models,
+        &before.user_models,
+        &after.user_models,
     )?;
     let mut bytes = serde_json::to_vec_pretty(&current)?;
     bytes.push(b'\n');
@@ -1811,7 +1896,10 @@ mod tests {
         assert_eq!(endpoint.url, "http://127.0.0.1:9000/v1");
         let command = service.supervisor.command.as_ref().unwrap();
         assert_eq!(command.runtime_image, runtime.release.oci_image);
-        assert_eq!(command.model_path, service.model_path(&release).unwrap());
+        assert_eq!(
+            command.model_path,
+            service.object_path(&release.artifact.sha256).unwrap()
+        );
         assert!(
             command
                 .args
@@ -1879,7 +1967,7 @@ mod tests {
         );
     }
 
-    fn signed_fixture_runtime(bytes: &[u8]) -> SignedRuntime {
+    pub(crate) fn signed_fixture_runtime(bytes: &[u8]) -> SignedRuntime {
         let item = artifact(bytes);
         let manifest = system_extension::ExtensionManifest {
             schema_version: system_extension::SCHEMA_VERSION,
@@ -2204,7 +2292,7 @@ mod tests {
         assert_eq!(observed.models["other"].status, LocalModelStatus::Installed);
     }
 
-    fn artifact(bytes: &[u8]) -> PinnedArtifact {
+    pub(crate) fn artifact(bytes: &[u8]) -> PinnedArtifact {
         PinnedArtifact {
             url: "https://catalog.example.invalid/object".into(),
             sha256: hex::encode(Sha256::digest(bytes)),
@@ -2448,9 +2536,9 @@ mod tests {
             Ok(tail.len() as u64)
         }
     }
-    struct Supervisor {
-        command: Option<VllmCommand>,
-        stopped: Vec<String>,
+    pub(crate) struct Supervisor {
+        pub(crate) command: Option<VllmCommand>,
+        pub(crate) stopped: Vec<String>,
     }
     impl ProcessSupervisor for Supervisor {
         fn install_runtime_image(&mut self, _: &Path, _: &str) -> Result<(), ServiceError> {
@@ -2590,7 +2678,7 @@ mod tests {
             )
             .unwrap();
             service.install_model(&release).unwrap();
-            let materialized = service.model_path(&release).unwrap();
+            let materialized = service.snapshot_path(&release.artifact.sha256).unwrap();
             assert!(materialized.is_dir());
             assert_eq!(fs::read(materialized.join("config.json")).unwrap(), b"{}");
             assert!(
@@ -2639,7 +2727,8 @@ mod tests {
                 service.install_model(&release),
                 Err(ServiceError::SnapshotTooLarge)
             ));
-            assert!(!service.model_path(&release).unwrap().exists());
+            let snapshot = service.snapshot_path(&release.artifact.sha256).unwrap();
+            assert!(!snapshot.exists());
         }
 
         // Phase: snapshot_refuses_symlinks_before_promotion.
@@ -2665,7 +2754,8 @@ mod tests {
                 service.install_model(&release),
                 Err(ServiceError::UnsafeSnapshot)
             ));
-            assert!(!service.model_path(&release).unwrap().exists());
+            let snapshot = service.snapshot_path(&release.artifact.sha256).unwrap();
+            assert!(!snapshot.exists());
         }
     }
 
