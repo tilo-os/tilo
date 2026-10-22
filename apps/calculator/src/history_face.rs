@@ -18,6 +18,7 @@ use std::rc::Rc;
 
 use ui::charts::ChartPalette;
 use ui::paint::PaintCtx;
+use ui::theme::Theme;
 use ui::tilo_actions::{Did, EditOp, FieldEdit, PathStep};
 use ui::tokens::TextRole;
 use ui::widget::{EntryBody, EntryFace, HistoryEntry, HistoryEntryPresenter};
@@ -28,13 +29,8 @@ use crate::draw::{self, Align};
 use crate::engine;
 use crate::mathfield::{self, MathField};
 
-/// A calculation row: the expression over its result, as the display sets
-/// them.
-const CALCULATION_HEIGHT: f64 = 60.0;
-/// A graph row: one formula, tall enough for a fraction or a root.
-const GRAPH_HEIGHT: f64 = 64.0;
-/// The x range a curve's thumbnail plots.
-const THUMBNAIL_SPAN: f64 = 5.0;
+/// The x range a curve's thumbnail plots, in the graph's own units.
+const THUMBNAIL_X: std::ops::RangeInclusive<f64> = -5.0..=5.0;
 /// Samples across a thumbnail.
 const THUMBNAIL_SAMPLES: usize = 48;
 
@@ -238,8 +234,11 @@ impl CalculationBody {
 }
 
 impl EntryBody for CalculationBody {
-    fn height(&self) -> f64 {
-        CALCULATION_HEIGHT
+    /// The expression's line over the result's, between the row's padding.
+    fn height(&self, theme: &Theme) -> f64 {
+        let pad_y = f64::from(theme.tokens.spacing.s1);
+        let result = f64::from(theme.text(TextRole::Title).numeric().line_height_px());
+        2.0 * pad_y + formula_line(theme) + result
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
@@ -277,6 +276,12 @@ impl EntryBody for CalculationBody {
     }
 }
 
+/// One line of a formula in a History row: a body line, with room above
+/// and below it for an exponent or an index.
+fn formula_line(theme: &Theme) -> f64 {
+    f64::from(theme.text(TextRole::Body).line_height_px()) + f64::from(theme.tokens.spacing.s2)
+}
+
 /// The size a formula is set at in a History row: the body face, so a row
 /// keeps the display's typesetting at the list's scale.
 fn formula_size(ctx: &PaintCtx<'_>) -> f32 {
@@ -310,7 +315,8 @@ impl GraphBody {
                     (0..=THUMBNAIL_SAMPLES)
                         .map(|i| {
                             let t = i as f64 / THUMBNAIL_SAMPLES as f64;
-                            let y = curve.eval1(-THUMBNAIL_SPAN + 2.0 * THUMBNAIL_SPAN * t);
+                            let (low, high) = (*THUMBNAIL_X.start(), *THUMBNAIL_X.end());
+                            let y = curve.eval1(low + (high - low) * t);
                             y.is_finite().then_some(y)
                         })
                         .collect()
@@ -328,7 +334,7 @@ impl GraphBody {
 
     /// The colour the curve is drawn in now: its series colour while it is
     /// listed, the dim text colour once it is gone.
-    fn ink(&self, theme: &ui::theme::Theme) -> vello::peniko::Color {
+    fn ink(&self, theme: &Theme) -> vello::peniko::Color {
         let listed = self
             .curve
             .as_ref()
@@ -372,8 +378,11 @@ impl GraphBody {
 }
 
 impl EntryBody for GraphBody {
-    fn height(&self) -> f64 {
-        GRAPH_HEIGHT
+    /// Two formula lines between the row's padding: room for a fraction
+    /// (a line over a line) or a root over its radicand.
+    fn height(&self, theme: &Theme) -> f64 {
+        let pad_y = f64::from(theme.tokens.spacing.s1);
+        2.0 * pad_y + 2.0 * formula_line(theme)
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
