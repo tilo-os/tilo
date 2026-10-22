@@ -87,13 +87,11 @@ impl SessionEnd {
 /// The reader thread's view of its session's lease: whether the supervisor
 /// still holds the session open, and how it said the session ended.
 pub(crate) struct ReaderLease {
-    #[cfg(unix)]
     lease: Option<runtime_portal::pending_connection::ReaderLifetime>,
     report: std::cell::RefCell<Option<Vec<u8>>>,
 }
 
 impl ReaderLease {
-    #[cfg(unix)]
     pub(crate) fn new(lease: Option<runtime_portal::pending_connection::ReaderLifetime>) -> Self {
         Self {
             lease,
@@ -101,17 +99,9 @@ impl ReaderLease {
         }
     }
 
-    #[cfg(not(unix))]
-    pub(crate) fn new() -> Self {
-        Self {
-            report: std::cell::RefCell::new(None),
-        }
-    }
-
     /// Whether the supervisor still holds the session open; a report of
     /// how it ended is kept, never taken for an open session.
     pub(crate) fn open(&self) -> bool {
-        #[cfg(unix)]
         if let Some(lease) = &self.lease {
             use runtime_portal::pending_connection::LeaseState;
             return match lease.state() {
