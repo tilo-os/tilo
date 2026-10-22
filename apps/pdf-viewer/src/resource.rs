@@ -931,6 +931,9 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
             PdfEffect::ReadText { from_page, to_page } => self
                 .read_text(from_page, to_page)
                 .map(ui::framework::Effected::value),
+            PdfEffect::LookPage { page, size } => self
+                .look_page(page, size)
+                .map(ui::framework::Effected::Done),
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }
