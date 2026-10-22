@@ -3875,14 +3875,8 @@ mod tests {
                 app.harness().set_theme(Theme::named(theme).unwrap());
                 for (width, height) in [(1472, 920), (420, 860)] {
                     app.harness().resize((width, height)).unwrap();
-                    let control = app
-                        .harness()
-                        .controls()
-                        .into_iter()
-                        .find(|control| control.name.as_deref() == Some(action))
-                        .unwrap_or_else(|| panic!("{scenario}: missing {action}"));
                     assert!(
-                        !control.disabled,
+                        owner_can_use(&mut app, action),
                         "{scenario}: the ordinary owner can use {action} at {width} in {theme}"
                     );
                     let additional = match scenario {
@@ -3894,14 +3888,8 @@ mod tests {
                         _ => &[][..],
                     };
                     for name in additional {
-                        let control = app
-                            .harness()
-                            .controls()
-                            .into_iter()
-                            .find(|control| control.name.as_deref() == Some(name))
-                            .unwrap_or_else(|| panic!("{scenario}: missing {name}"));
                         assert!(
-                            !control.disabled,
+                            owner_can_use(&mut app, name),
                             "{scenario}: {name} unavailable in {theme}/{width}"
                         );
                     }
@@ -3926,6 +3914,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The catalogue's actions, which are the window bar's slots
+    /// ([`super::window_bar`]), not controls the Store draws.
+    const BAR_ACTIONS: [&str; 3] = [
+        "Review package",
+        "Flatpak repositories",
+        "Trust and moderation",
+    ];
+
+    /// Whether the ordinary owner can use `name` where it lives: an enabled
+    /// slot in the window's bar for the catalogue's actions (and no control
+    /// of the window's own), else an enabled control on screen.
+    fn owner_can_use(
+        app: &mut ui::framework::testing::TestApp<crate::resource::StoreShell>,
+        name: &str,
+    ) -> bool {
+        let drawn = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(name));
+        if BAR_ACTIONS.contains(&name) {
+            assert!(
+                drawn.is_none(),
+                "{name} is the window bar's, not a row the Store draws"
+            );
+            let toolbar =
+                ui::window_toolbar::declared().expect("the Store declares its window bar");
+            let slot = toolbar
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("missing {name} in the window's bar: {toolbar:?}"));
+            return slot.enabled;
+        }
+        !drawn.unwrap_or_else(|| panic!("missing {name}")).disabled
     }
 
     fn review_store_interactions(

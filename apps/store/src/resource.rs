@@ -1040,7 +1040,9 @@ mod tests {
     /// Every control on screen invokes an action the published tree has: a
     /// binding the tree does not resolve withholds the window's whole action
     /// surface. Checked on the running Store (whose effects are published),
-    /// on the catalogue, its remotes and its trust page.
+    /// on the catalogue, its remotes and its trust page. The catalogue's
+    /// actions are the window bar's slots: each is enabled there, and a
+    /// press on one runs its published action as a control's would.
     #[test]
     fn every_control_binds_a_published_action() {
         let _offline = offline();
@@ -1048,16 +1050,50 @@ mod tests {
         app.settle();
         for (page, effect) in [
             ("catalogue", None),
-            ("remotes", Some(StoreEffect::ShowRemotes)),
+            ("remotes", None),
             ("trust", Some(StoreEffect::ShowTrust)),
         ] {
             if let Some(effect) = effect {
                 app.effect(&effect).unwrap();
                 app.settle();
             }
+            if page == "catalogue" {
+                let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
+                for name in ["Flatpak repositories", "Trust and moderation"] {
+                    let slot = toolbar
+                        .actions
+                        .iter()
+                        .find(|action| action.name == name)
+                        .unwrap_or_else(|| panic!("catalogue: missing bar slot {name}"));
+                    assert!(slot.enabled, "catalogue: live owner slot {name}");
+                }
+            }
+            if page == "remotes" {
+                // Reached through the bar's slot: its action resolves.
+                ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                    id: "remotes".into(),
+                });
+                app.settle();
+                let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
+                assert_eq!(
+                    toolbar
+                        .location
+                        .as_ref()
+                        .map(|location| location.label.as_str()),
+                    Some("Flatpak repositories"),
+                    "the bar's remotes slot opens the repositories"
+                );
+                // Back is the window bar's slot, not a row the page draws.
+                assert!(
+                    toolbar
+                        .leading
+                        .iter()
+                        .any(|action| action.name == "Back" && action.enabled),
+                    "remotes: the window bar's Back returns to the catalogue: {toolbar:?}"
+                );
+            }
             for name in match page {
-                "catalogue" => &["Flatpak repositories", "Trust and moderation"][..],
-                "remotes" => &["Back", "Refresh repositories"][..],
+                "remotes" => &["Refresh repositories"][..],
                 _ => &[],
             } {
                 let control = app
@@ -2578,7 +2614,16 @@ mod tests {
             let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
             let shown = frame(&mut app);
             assert!(!shown.contains("Use Flathub for my apps"));
-            assert!(shown.contains(control), "{scenario} exposes {control}");
+            if scenario == "account-setup" {
+                // The catalogue's actions are the window bar's slots.
+                let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
+                assert!(
+                    toolbar.actions.iter().any(|action| action.name == control),
+                    "{scenario} exposes {control} in the window's bar: {toolbar:?}"
+                );
+            } else {
+                assert!(shown.contains(control), "{scenario} exposes {control}");
+            }
             if scenario == "account-remotes" {
                 assert!(shown.contains("Flathub"));
             }
