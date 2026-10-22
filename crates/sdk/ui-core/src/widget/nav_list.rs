@@ -53,6 +53,8 @@ pub struct NavSection {
     pub trailing_action: Option<NavAction>,
     /// The one quiet line the section shows while it has no items.
     pub empty_caption: Option<String>,
+    /// Rows standing in, while it has no items, for items still being read.
+    pub pending: u8,
     /// The window's filter narrows this section's items.
     pub filterable: bool,
     pub items: Vec<NavItem>,
@@ -68,6 +70,7 @@ impl NavSection {
             collapsed: false,
             trailing_action: None,
             empty_caption: None,
+            pending: 0,
             filterable: false,
             items,
         }
@@ -104,6 +107,17 @@ impl NavSection {
     #[must_use]
     pub fn empty_caption(mut self, caption: impl Into<String>) -> Self {
         self.empty_caption = Some(caption.into());
+        self
+    }
+
+    /// While the section has no items because they are still being read,
+    /// `rows` rows stand in for them: the shape of a row (its icon and its
+    /// label), in the skeleton tone, so nothing moves when the items arrive.
+    /// They are not destinations: nothing selects them, the arrow keys pass
+    /// over them, and assistive technology hears "Loading".
+    #[must_use]
+    pub fn pending(mut self, rows: u8) -> Self {
+        self.pending = rows;
         self
     }
 
@@ -490,6 +504,8 @@ enum NavNodeKind {
     },
     /// An empty section's caption.
     Caption,
+    /// A row standing in for an item still being read.
+    Pending,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -652,7 +668,25 @@ impl NavModel {
                 id
             };
             first_row = false;
+            if section.items.is_empty() {
+                for row in 0..section.pending {
+                    let key = format!("pending:{}:{row}", section.id);
+                    let id = keys.id(&key);
+                    model.attach(
+                        parent,
+                        id,
+                        NavNode {
+                            key,
+                            label: "Loading".to_owned(),
+                            kind: NavNodeKind::Pending,
+                            parent: Some(parent),
+                            children: Vec::new(),
+                        },
+                    );
+                }
+            }
             if section.items.is_empty()
+                && section.pending == 0
                 && let Some(caption) = &section.empty_caption
             {
                 let id = keys.id(&format!("caption:{}", section.id));
@@ -811,6 +845,7 @@ impl NavModel {
             }),
             NavNodeKind::Item { spec, .. } => Some(NavRowSpec::Item(spec.clone())),
             NavNodeKind::Caption => Some(NavRowSpec::Caption),
+            NavNodeKind::Pending => Some(NavRowSpec::Pending),
         }
     }
 }
@@ -832,7 +867,7 @@ impl TreeModel for NavModel {
         self.nodes.get(&id).is_some_and(|node| match node.kind {
             NavNodeKind::Root | NavNodeKind::Section { .. } => true,
             NavNodeKind::Item { .. } => !node.children.is_empty(),
-            NavNodeKind::Caption => false,
+            NavNodeKind::Caption | NavNodeKind::Pending => false,
         })
     }
 
@@ -851,7 +886,7 @@ impl TreeModel for NavModel {
     fn semantic_key(&self, id: NodeId) -> Option<String> {
         let node = self.nodes.get(&id)?;
         match &node.kind {
-            NavNodeKind::Root | NavNodeKind::Caption => None,
+            NavNodeKind::Root | NavNodeKind::Caption | NavNodeKind::Pending => None,
             NavNodeKind::Section { .. } => Some(format!("nav:section:{}", node.key)),
             NavNodeKind::Item { semantic_key, .. } => Some(
                 semantic_key
@@ -882,7 +917,7 @@ impl TreeModel for NavModel {
     fn can_collapse(&self, id: NodeId) -> bool {
         // A section folds only when it says it does.
         self.nodes.get(&id).is_some_and(|node| match node.kind {
-            NavNodeKind::Root | NavNodeKind::Caption => false,
+            NavNodeKind::Root | NavNodeKind::Caption | NavNodeKind::Pending => false,
             NavNodeKind::Section { collapsible, .. } => collapsible,
             NavNodeKind::Item { .. } => true,
         })
