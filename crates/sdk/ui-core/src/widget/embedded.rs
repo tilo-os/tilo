@@ -274,12 +274,17 @@ impl<W: Widget + 'static> Embedded<W> {
                 device_id,
                 position,
             } if self.transform != Affine::IDENTITY => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
-                let local = self.transform.inverse() * logical;
                 mapped = WindowEvent::CursorMoved {
                     device_id: *device_id,
-                    position: PhysicalPosition::new(local.x * scale_factor, local.y * scale_factor),
+                    position: self.to_child(*position, scale_factor),
                 };
+                &mapped
+            }
+            WindowEvent::Touch(touch) if self.transform != Affine::IDENTITY => {
+                mapped = WindowEvent::Touch(winit::event::Touch {
+                    location: self.to_child(touch.location, scale_factor),
+                    ..*touch
+                });
                 &mapped
             }
             _ => event,
@@ -303,6 +308,55 @@ impl<W: Widget + 'static> Embedded<W> {
         if focus.is_some() {
             self.focus_request = true;
         }
+    }
+
+    /// A physical position in the owner's space, in the child's.
+    fn to_child(
+        &self,
+        position: PhysicalPosition<f64>,
+        scale_factor: f64,
+    ) -> PhysicalPosition<f64> {
+        let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+        let local = self.transform.inverse() * logical;
+        PhysicalPosition::new(local.x * scale_factor, local.y * scale_factor)
+    }
+
+    /// Write what the child took up in the sync pass or left to do after
+    /// its last event ([`Widget::settle`]): the formatting a keystroke
+    /// closed, a toolbar's change made outside an input event. Call from
+    /// the owner's own `settle`, which the host runs every frame; a child
+    /// that is never settled writes those only with its next event.
+    pub fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &ObjId) {
+        self.widget.settle(edits, path);
+    }
+
+    /// When the child next needs a sync with no input
+    /// ([`Widget::next_wake_deadline`]): a spelling squiggle settling, the
+    /// suggestion for the word under the caret. The owner reports it as its
+    /// own.
+    pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.widget.next_wake_deadline()
+    }
+
+    /// Whether the child is animating ([`Widget::needs_animation_frame`]).
+    pub fn needs_animation_frame(&self) -> bool {
+        self.widget.needs_animation_frame()
+    }
+
+    /// The pointer shape the child shows at `point`, in the owner's space
+    /// (the text beam over a text box drawn scaled onto a canvas).
+    pub fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.widget.cursor_shape(self.transform.inverse() * point)
+    }
+
+    /// What the child holds for the input method ([`Widget::ime_content`]).
+    pub fn ime_content(&self) -> Option<crate::ime::InputContent> {
+        self.widget.ime_content()
+    }
+
+    /// Whether the child takes line feeds as text ([`Widget::ime_multiline`]).
+    pub fn ime_multiline(&self) -> bool {
+        self.widget.ime_multiline()
     }
 
     /// Whether the child asked for keyboard focus (a press on a field)
