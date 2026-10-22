@@ -609,6 +609,75 @@ fn an_app_sees_and_does_only_what_it_was_granted() {
     );
 }
 
+/// An app holding `system-info` is told the machine's storage, as the hub's
+/// source describes it; one without it is refused, and no prompt is shown
+/// for a read the launcher already decided.
+#[test]
+fn storage_is_answered_to_system_info_and_refused_without_it() {
+    use crate::protocol::{DriveHealth, Storage, StorageDevice};
+    let root = tempfile::tempdir().unwrap();
+    machine(root.path(), 100);
+    let storage = Storage {
+        devices: vec![StorageDevice {
+            name: "nvme0n1".into(),
+            kind: "disk".into(),
+            size: 1_024_209_543_168,
+            children: vec![StorageDevice {
+                name: "nvme0n1p7".into(),
+                kind: "part".into(),
+                fstype: Some("crypto_LUKS".into()),
+                children: vec![StorageDevice {
+                    name: "root".into(),
+                    kernel_name: Some("dm-0".into()),
+                    kind: "crypt".into(),
+                    fstype: Some("ext4".into()),
+                    mountpoint: Some("/sysroot".into()),
+                    ..StorageDevice::default()
+                }],
+                ..StorageDevice::default()
+            }],
+            health: Some(DriveHealth {
+                supported: true,
+                ..DriveHealth::default()
+            }),
+            ..StorageDevice::default()
+        }],
+    };
+    let hub = Hub::with_storage(
+        Box::new(KernelProbe::at(root.path())),
+        EndPolicy::for_user(UID, std::process::id()),
+        Box::new(PidfdSignaller),
+        Box::new(crate::storage::FixedStorage(storage.clone())),
+    );
+
+    let mut granted = connect(
+        &hub,
+        Grants {
+            system_info: true,
+            ..Grants::default()
+        },
+        std::sync::Arc::new(NoPrompter),
+    );
+    assert_eq!(
+        ask(&mut granted, &Request::Storage { request: 1 }),
+        Reply::Storage {
+            request: 1,
+            storage: Box::new(storage),
+        }
+    );
+
+    let mut ungranted = connect(&hub, Grants::default(), std::sync::Arc::new(NoPrompter));
+    assert_eq!(
+        ask(&mut ungranted, &Request::Storage { request: 2 }),
+        Reply::Refused {
+            request: 2,
+            refusal: Refusal::NotGranted {
+                grant: Grant::SystemInfo
+            },
+        }
+    );
+}
+
 /// A real process, described in the fake `/proc` as living in `cgroup` and
 /// owned by `uid`.
 fn real_child(root: &Path, cgroup: &str, uid: u32) -> (std::process::Child, u64) {

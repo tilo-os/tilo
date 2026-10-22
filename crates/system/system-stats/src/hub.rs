@@ -15,7 +15,8 @@ use crate::apps::EndPolicy;
 use crate::collect::Collector;
 use crate::end::{PidfdSignaller, Signaller};
 use crate::probe::{KernelProbe, Probe, Want};
-use crate::protocol::{Grants, MAX_INTERVAL_MS, MIN_INTERVAL_MS, Refusal, Snapshot};
+use crate::protocol::{Grants, MAX_INTERVAL_MS, MIN_INTERVAL_MS, Refusal, Snapshot, Storage};
+use crate::storage::{MachineStorage, StorageSource};
 
 /// Where a subscription's snapshots go. Called on the hub's thread; it must
 /// not block.
@@ -71,6 +72,7 @@ struct Inner {
     changed: Condvar,
     collector: Mutex<Collector>,
     signaller: Box<dyn Signaller + Sync>,
+    storage: Box<dyn StorageSource>,
 }
 
 /// The session's one source of system readings.
@@ -131,11 +133,24 @@ impl Hub {
         SHARED.get_or_init(Self::kernel)
     }
 
+    /// Readings from `probe`, ending through `signaller` under `policy`,
+    /// and this machine's storage.
     #[must_use]
     pub fn new(
         probe: Box<dyn Probe>,
         policy: EndPolicy,
         signaller: Box<dyn Signaller + Sync>,
+    ) -> Self {
+        Self::with_storage(probe, policy, signaller, Box::new(MachineStorage))
+    }
+
+    /// [`Self::new`], with storage described by `storage`.
+    #[must_use]
+    pub fn with_storage(
+        probe: Box<dyn Probe>,
+        policy: EndPolicy,
+        signaller: Box<dyn Signaller + Sync>,
+        storage: Box<dyn StorageSource>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -143,8 +158,19 @@ impl Hub {
                 changed: Condvar::new(),
                 collector: Mutex::new(Collector::new(probe, policy)),
                 signaller,
+                storage,
             }),
         }
+    }
+
+    /// Describe the machine's storage now. Read on the asking connection's
+    /// thread, outside every lock: a slow device answers one app late and
+    /// holds up no reading.
+    ///
+    /// # Errors
+    /// Why it could not be described.
+    pub fn storage(&self) -> Result<Storage, Refusal> {
+        self.inner.storage.read()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

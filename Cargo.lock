@@ -3678,6 +3678,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-history",
+ "tilo-system-info",
  "workspace-hack",
 ]
 
@@ -19865,6 +19866,7 @@ dependencies = [
 name = "tilo-system-stats"
 version = "0.1.0"
 dependencies = [
+ "block-devices",
  "libc",
  "rustix 1.1.4",
  "serde",
@@ -19874,6 +19876,7 @@ dependencies = [
  "tracing",
  "wire-frame",
  "workspace-hack",
+ "zbus",
 ]
 
 [[package]]

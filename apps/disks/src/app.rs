@@ -193,8 +193,8 @@ struct ViewKey {
 /// Where a [`DisksApp`]'s devices come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
-    /// This machine: probed with `lsblk` + `smartctl`, operated through
-    /// udisks2.
+    /// This machine: described by the session's system information service,
+    /// operated through udisks2.
     System,
     /// A fixed sample machine: operations report what they would run.
     Sample,
@@ -205,6 +205,8 @@ pub struct DisksApp {
     intents: Intents,
     /// This machine's block devices, as last probed (or the sample machine).
     topo: Topology,
+    /// Why the last probe found nothing, when it could not read the machine.
+    unreadable: Option<String>,
     /// Bumped whenever `topo` is replaced.
     topo_rev: u64,
     /// Where the topology comes from and where operations run.
@@ -257,6 +259,7 @@ impl DisksApp {
             shell,
             intents,
             topo,
+            unreadable: None,
             topo_rev: 0,
             backend,
             names: BTreeMap::new(),
@@ -284,11 +287,7 @@ impl DisksApp {
     ) {
         self.dispatcher = Some(dispatcher);
         match mode {
-            RunMode::Live => {
-                if self.backend == Backend::System {
-                    self.replace_topology(crate::probe::probe().unwrap_or_default());
-                }
-            }
+            RunMode::Live => self.reprobe(),
             RunMode::Capture => {
                 self.backend = Backend::Sample;
                 self.replace_topology(fixture.unwrap_or_else(Topology::sample));
@@ -370,16 +369,28 @@ impl DisksApp {
     /// actions render disabled rather than silently no-op'ing.
     fn action_enabled(&self, drive: &Drive, action: ActionKind) -> bool {
         match action {
+            // A locked encrypted partition has no filesystem to mount yet.
             ActionKind::Mount => self
                 .mount_target_part(drive)
                 .and_then(|i| drive.partitions.get(i))
-                .is_some_and(|p| p.mountpoint.is_none()),
+                .is_some_and(|p| {
+                    p.mountpoint.is_none()
+                        && p.encryption
+                            .as_ref()
+                            .is_none_or(|e| e.unlocked_as.is_some())
+                }),
             ActionKind::Unmount => self
                 .mount_target_part(drive)
                 .and_then(|i| drive.partitions.get(i))
                 .is_some_and(|p| p.mountpoint.is_some()),
-            // Format works on either the selected partition or the whole disk.
-            ActionKind::Format | ActionKind::Benchmark => true,
+            // Format works on either the selected partition or the whole
+            // disk, but not on an encrypted partition (it would drop the
+            // encryption).
+            ActionKind::Format => self
+                .part_index()
+                .and_then(|i| drive.partitions.get(i))
+                .is_none_or(|p| p.encryption.is_none()),
+            ActionKind::Benchmark => true,
             ActionKind::Eject => drive.removable,
         }
     }
@@ -417,7 +428,8 @@ impl DisksApp {
         }
         let Some(drive) = self.topo.drives.get(self.selected) else {
             self.shell.set_content_title("");
-            self.shell.set_content(view::empty_state(&self.intents));
+            self.shell
+                .set_content(view::empty_state(self.unreadable.as_deref(), &self.intents));
             return;
         };
         let mut enabled = [false; 5];
@@ -528,7 +540,7 @@ impl DisksApp {
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         let base = scenario.map(|name| name.strip_prefix("phone-").unwrap_or(name));
         match base {
-            Some("health") => self.set_tab(Tab::Smart),
+            Some("health" | "laptop-health") => self.set_tab(Tab::Smart),
             Some("partitions") => {
                 self.set_tab(Tab::Partitions);
                 self.select_part(Some(1));
@@ -542,6 +554,11 @@ impl DisksApp {
             Some("failing") => {
                 self.select(2);
                 self.set_tab(Tab::Smart);
+            }
+            Some("laptop-partitions") => {
+                // The LUKS2 home, unlocked.
+                self.set_tab(Tab::Partitions);
+                self.select_part(Some(3));
             }
             Some("toast") => self.report("Mounted /dev/sdc1".into(), StatusTone::Success),
             Some("toast-error") => {
@@ -588,7 +605,7 @@ impl DisksApp {
             DisksEffect::Benchmark { device } => (ActionKind::Benchmark, device),
             DisksEffect::Eject { device } => (ActionKind::Eject, device),
         };
-        self.run_operation(operation.0, operation.1, cx)
+        self.run_operation(operation.0, &operation.1, cx)
     }
 
     /// Select the drive or partition named `device`.
@@ -613,7 +630,7 @@ impl DisksApp {
     fn run_operation(
         &mut self,
         kind: ActionKind,
-        device: String,
+        device: &str,
         cx: &mut EffectCx<Disks, Self>,
     ) -> EffectAnswer {
         if self.running.is_some() {
@@ -621,7 +638,7 @@ impl DisksApp {
         }
         // A caller's device name is no authority to touch an arbitrary
         // `/dev` node, and the filesystem type comes from the probe.
-        let fstype = self.revalidate_operation_target(kind, &device)?;
+        let (device, fstype) = self.revalidate_operation_target(kind, device)?;
         let dev = format!("/dev/{device}");
         if self.backend == Backend::Sample {
             self.report(kind.plan(&dev), StatusTone::Info);
@@ -657,14 +674,19 @@ impl DisksApp {
     /// exists. The sample machine stays as it is.
     fn reprobe(&mut self) {
         if self.backend == Backend::System {
-            self.replace_topology(crate::probe::probe().unwrap_or_default());
+            let probed = crate::probe::probe();
+            self.unreadable = probed.as_ref().err().cloned();
+            self.replace_topology(probed.unwrap_or_default());
         }
     }
 
     /// Rescan storage devices: the Rescan button, `r`, and the effect.
     fn rescan(&mut self) {
         self.reprobe();
-        self.report(found_message(self.topo.drives.len()), StatusTone::Success);
+        match self.unreadable.clone() {
+            Some(reason) => self.report(reason, StatusTone::Danger),
+            None => self.report(found_message(self.topo.drives.len()), StatusTone::Success),
+        }
     }
 
     /// Resolve an operation's target against the latest locally-probed
@@ -672,18 +694,20 @@ impl DisksApp {
     /// agent's view has gone stale, so a device name is never authority to
     /// touch an arbitrary `/dev/*` node.
     ///
-    /// The return value derives the filesystem type from the current probe
-    /// instead of trusting the caller.
+    /// The return value is the device the operation runs on (an unlocked
+    /// encrypted partition mounts and unmounts through its mapping) and the
+    /// filesystem type from the current probe, never the caller's word.
     fn revalidate_operation_target(
         &self,
         action: ActionKind,
         leaf: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<(String, Option<String>), String> {
         for drive in &self.topo.drives {
             if drive.name == leaf {
+                let whole = || (leaf.to_owned(), None);
                 return match action {
-                    ActionKind::Format | ActionKind::Benchmark => Ok(None),
-                    ActionKind::Eject if drive.removable => Ok(None),
+                    ActionKind::Format | ActionKind::Benchmark => Ok(whole()),
+                    ActionKind::Eject if drive.removable => Ok(whole()),
                     ActionKind::Eject => Err(format!("/dev/{leaf} is not removable")),
                     ActionKind::Mount | ActionKind::Unmount => Err(format!(
                         "/dev/{leaf} is a whole disk; select one of its filesystems"
@@ -694,13 +718,32 @@ impl DisksApp {
                 if part.name != leaf {
                     continue;
                 }
-                return match action {
-                    ActionKind::Mount if part.mountpoint.is_none() => Ok(part.fstype.clone()),
-                    ActionKind::Unmount if part.mountpoint.is_some() => Ok(part.fstype.clone()),
-                    ActionKind::Mount => Err(format!("/dev/{leaf} is already mounted")),
-                    ActionKind::Unmount => Err(format!("/dev/{leaf} is not mounted")),
-                    ActionKind::Format | ActionKind::Benchmark => Ok(part.fstype.clone()),
-                    ActionKind::Eject => Err("eject targets a whole removable drive".into()),
+                let filesystem = part
+                    .encryption
+                    .as_ref()
+                    .map_or(Some(leaf), |encryption| encryption.unlocked_as.as_deref());
+                return match (action, filesystem) {
+                    (ActionKind::Mount | ActionKind::Unmount, None) => Err(format!(
+                        "/dev/{leaf} is encrypted and locked; unlock it first"
+                    )),
+                    (ActionKind::Mount, Some(device)) if part.mountpoint.is_none() => {
+                        Ok((device.to_owned(), part.fstype.clone()))
+                    }
+                    (ActionKind::Unmount, Some(device)) if part.mountpoint.is_some() => {
+                        Ok((device.to_owned(), part.fstype.clone()))
+                    }
+                    (ActionKind::Mount, _) => Err(format!("/dev/{leaf} is already mounted")),
+                    (ActionKind::Unmount, _) => Err(format!("/dev/{leaf} is not mounted")),
+                    // Formatting re-creates the filesystem the probe found;
+                    // on an encrypted partition that would silently drop its
+                    // encryption, so it is not offered there.
+                    (ActionKind::Format, _) if part.encryption.is_some() => Err(format!(
+                        "/dev/{leaf} is encrypted; formatting it here would remove its encryption"
+                    )),
+                    (ActionKind::Format | ActionKind::Benchmark, _) => {
+                        Ok((leaf.to_owned(), part.fstype.clone()))
+                    }
+                    (ActionKind::Eject, _) => Err("eject targets a whole removable drive".into()),
                 };
             }
         }
@@ -946,6 +989,24 @@ mod tests {
                 .unwrap_err()
                 .contains("no longer present")
         );
+
+        // An unlocked LUKS2 home unmounts through its mapping, and is never
+        // formatted out of its encryption.
+        let mut app = sample_app();
+        app.replace_topology(crate::probe::captured::yoga().unwrap());
+        assert_eq!(
+            app.revalidate_operation_target(ActionKind::Unmount, "nvme0n1p4"),
+            Ok(("dm-1".to_owned(), Some("ext4".to_owned())))
+        );
+        assert!(
+            app.revalidate_operation_target(ActionKind::Format, "nvme0n1p4")
+                .unwrap_err()
+                .contains("encrypted")
+        );
+        app.selected_part = Some(3);
+        let drive = app.drive().unwrap().clone();
+        assert!(!app.action_enabled(&drive, ActionKind::Format));
+        assert!(app.action_enabled(&drive, ActionKind::Unmount));
     }
 
     /// A result shows as a toast, and the window announces it.
@@ -1074,15 +1135,13 @@ mod tests {
         }
     }
 
-    /// A real probed topology drives the app end to end; an empty probe shows an honest empty state rather than a sample.
+    /// A real machine's storage drives the app end to end; an empty probe shows an honest empty state rather than a sample.
     #[test]
     fn probed_topology_drives_the_app_or_an_honest_empty_state() {
         // --- phase: drives_real_or_sample_topology_end_to_end ---
         {
             let mut app = sample_app();
-            if let Some(topo) = crate::probe::probe() {
-                app.replace_topology(topo);
-            }
+            app.replace_topology(crate::probe::captured::yoga().unwrap());
             for i in 0..app.topo.drives.len() {
                 app.select(i);
                 let d = app.drive().unwrap().clone();

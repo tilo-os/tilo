@@ -15,8 +15,11 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockDevice {
     /// `NAME`: the kernel name (`sda1`), or the full path (`/dev/sda1`) when
-    /// listed with [`Lsblk::full_paths`].
+    /// listed with [`Lsblk::full_paths`]. A device-mapper device is listed by
+    /// its mapping's name (`home`), not its kernel name.
     pub name: String,
+    /// `KNAME`: the kernel's own name (`dm-1` for the mapping `home`).
+    pub kname: Option<String>,
     /// `TYPE`: `disk`, `part`, `crypt`, `lvm`, `loop`, `rom`, ...
     pub kind: String,
     /// `SIZE` in bytes.
@@ -35,6 +38,8 @@ pub struct BlockDevice {
     /// `RO`.
     pub read_only: bool,
     pub fstype: Option<String>,
+    /// `FSVER`: the filesystem's (or container's) version, `2` for LUKS2.
+    pub fsver: Option<String>,
     pub label: Option<String>,
     pub uuid: Option<String>,
     /// `FSUSED` in bytes.
@@ -59,6 +64,7 @@ impl BlockDevice {
     pub fn from_json(value: &Value) -> Self {
         Self {
             name: string(value, "name").unwrap_or_default(),
+            kname: string(value, "kname"),
             kind: string(value, "type").unwrap_or_default(),
             size: number(value, "size").unwrap_or(0),
             start: number(value, "start"),
@@ -70,6 +76,7 @@ impl BlockDevice {
             removable: flag(value, "rm"),
             read_only: flag(value, "ro"),
             fstype: string(value, "fstype"),
+            fsver: string(value, "fsver"),
             label: string(value, "label"),
             uuid: string(value, "uuid"),
             fsused: number(value, "fsused"),
