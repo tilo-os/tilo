@@ -4,6 +4,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use vello::kurbo::{Point, Rect};
+
 use super::{NavList, NavSection};
 
 /// The app's side of a [`NavList`] that stands in a shell around it: the
@@ -24,6 +26,8 @@ struct Feed {
     chosen: Vec<String>,
     /// The section actions the person ran, as (section id, action id).
     section_actions: Vec<(String, String)>,
+    /// Where the list's rows stood when it last painted, by place id.
+    rows: Vec<(String, Rect)>,
 }
 
 impl NavFeed {
@@ -63,6 +67,23 @@ impl NavFeed {
         std::mem::take(&mut self.0.borrow_mut().section_actions)
     }
 
+    /// The place whose row is at `point` (window coordinates) and its row,
+    /// as the list last painted them: where a drag the app runs from its
+    /// own content would be let go ("onto this playlist").
+    #[must_use]
+    pub fn place_at(&self, point: Point) -> Option<(String, Rect)> {
+        self.0
+            .borrow()
+            .rows
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+            .cloned()
+    }
+
+    pub(super) fn publish_rows(&self, rows: Vec<(String, Rect)>) {
+        self.0.borrow_mut().rows = rows;
+    }
+
     /// What the list has not read yet.
     fn pull(&self) -> Option<(Vec<NavSection>, Option<String>)> {
         let mut feed = self.0.borrow_mut();
@@ -78,13 +99,16 @@ impl NavList {
     #[must_use]
     pub fn fed_by(self, feed: &NavFeed) -> Self {
         let (reads, chooses, acts) = (feed.clone(), feed.clone(), feed.clone());
-        self.follow(move || reads.pull())
+        let mut list = self
+            .follow(move || reads.pull())
             .on_select(move |id| chooses.0.borrow_mut().chosen.push(id))
             .on_section_action(move |section, action| {
                 acts.0
                     .borrow_mut()
                     .section_actions
                     .push((section.to_owned(), action.to_owned()));
-            })
+            });
+        list.feed = Some(feed.clone());
+        list
     }
 }

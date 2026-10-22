@@ -618,7 +618,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
                     };
                     slider.set_value(fraction);
                 }
-                before != (slider.value(), slider.is_enabled())
+                (before.0 - slider.value()).abs() > f64::EPSILON || before.1 != slider.is_enabled()
             },
         )),
         Box::new(caption(
@@ -665,7 +665,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
                 if !slider.is_held() {
                     slider.set_value(state.volume.clamp(0.0, 1.0));
                 }
-                before != slider.value()
+                (before - slider.value()).abs() > f64::EPSILON
             },
         )),
         Box::new({

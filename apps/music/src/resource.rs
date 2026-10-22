@@ -297,7 +297,29 @@ impl ResourceApp for MusicShell {
         // A search hit, or an agent's `open`, plays the song or shows the
         // page the row it names does.
         cx.on_open(app.opener());
-        cx.surface(app)
+        // The shell keeps the sidebar (the destinations, kept views and
+        // playlists as a list), its width, its drawer in a narrow window
+        // and its keys, and the transport across the window's foot: what
+        // plays belongs to the window, whatever page is open.
+        let places = ui::widget::NavFeed::new();
+        let transport = ui::widget::TransportFeed::new();
+        let pane = ui::LocalState::new(ui::widget::NavPane::Content);
+        let shell = ui::widget::NavShell::new()
+            .with_id("music-shell")
+            .content_kind(ui::widget::ContentKind::List)
+            .with_window_toolbar()
+            .with_pane_state(&pane);
+        let app = app.in_shell(&places, &transport, shell.window_bar_link(), &pane);
+        let sidebar = ui::widget::NavList::new(Vec::new())
+            .with_id("music.places")
+            .with_accessible_name("Music navigation")
+            .fed_by(&places);
+        Box::new(
+            shell
+                .sidebar(Box::new(sidebar))
+                .content(cx.surface(app))
+                .bottom_band(Box::new(ui::widget::MediaTransport::new(&transport))),
+        )
     }
 
     fn label(state: &Library) -> String {

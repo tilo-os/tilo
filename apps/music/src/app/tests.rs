@@ -1387,12 +1387,11 @@ fn home_fetches_nothing_until_a_source_is_connected() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn assistive_routes_use_the_same_reducers_and_actions() {
-    // Phase `accessibility_transport_routes_to_the_same_playback_reducer`.
+    // Phase `the_player_group_says_what_plays_and_leaves_its_controls_to_the_band`.
     {
-        use ui::a11y::Action as A11yAction;
         use ui::widget::Widget as _;
 
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, _doc) = app_with_doc();
         app.pb.current = Some("tk_g1".into());
         let tree = app.accessibility().expect("music semantics");
         assert_eq!(tree.name.as_deref(), Some("Music"));
@@ -1400,22 +1399,18 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             .children
             .iter()
             .find(|node| node.name.as_deref() == Some("Music player"))
-            .expect("transport has its own semantic group");
+            .expect("what plays has its own semantic group");
+        let title = app.lib.track("tk_g1").unwrap().title.clone();
         assert!(
             player
-                .children
-                .iter()
-                .any(|node| node.action_target.as_deref() == Some("music.toggle-play"))
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains(&title)),
+            "it says what plays"
         );
-        assert!(app.perform_semantic_action(
-            "music.toggle-play",
-            &A11yAction::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
         assert!(
-            app.pb.playing,
-            "semantic action uses the live transport path"
+            player.children.is_empty(),
+            "its controls are the transport's own, in the shell's band"
         );
     }
 
@@ -1793,164 +1788,92 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
     }
 }
 
+/// A destination and an album open over each other, and Back returns.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn sidebar_docks_overlays_collapses_and_follows_navigation() {
-    // Phase `nav_and_back`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.dispatch(
-            Action::Nav(View::Albums),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.view, View::Albums);
-        app.dispatch(
-            Action::Nav(View::Album("al_glasslight".into())),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.view, View::Album("al_glasslight".into()));
-        app.dispatch(Action::Back, &mut ui::widget::Edits::lend(&mut doc));
-        assert_eq!(app.view, View::Albums);
-    }
+fn navigation_walks_the_view_stack() {
+    let (mut app, mut doc) = app_with_doc();
+    app.dispatch(
+        Action::Nav(View::Albums),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert_eq!(app.view, View::Albums);
+    app.dispatch(
+        Action::Nav(View::Album("al_glasslight".into())),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert_eq!(app.view, View::Album("al_glasslight".into()));
+    app.dispatch(Action::Back, &mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(app.view, View::Albums);
+}
 
-    // Phase `layout_docks_when_wide_overlays_when_narrow`.
-    {
-        let mut app = MusicApp::new();
-        sized(&mut app, 1280.0);
-        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-        sized(&mut app, 480.0);
-        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
-        // Boundary is inclusive at the drawer's breakpoint → docked.
-        let breakpoint = app.drawer.resolved_breakpoint();
-        sized(&mut app, breakpoint);
-        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-        sized(&mut app, breakpoint - 1.0);
-        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
+/// The rect of the widget `id` under `root`, when it is laid out.
+fn widget_rect(root: &dyn Widget, id: &str) -> Option<Rect> {
+    if root.test_id() == Some(id) {
+        return Some(root.get_rect()).filter(|rect| rect.width() > 0.0);
     }
+    root.children()
+        .into_iter()
+        .find_map(|child| widget_rect(child, id))
+}
 
-    // Phase `sidebar_open_docked_closed_overlay_by_default`.
-    {
-        let mut app = MusicApp::new();
-        sized(&mut app, 1280.0);
-        assert!(app.drawer.is_open(), "wide: docked + open");
-        assert!(
-            app.content_inset() > 0.0,
-            "wide content is inset by the sidebar"
-        );
+/// The shell's sidebar shows the destinations, then the playlists with
+/// their "New playlist" action; the band's transport shows the song. What
+/// the person chooses in either comes back as the window's own actions.
+#[test]
+fn the_shell_shows_musics_places_and_transport_and_runs_what_is_chosen() {
+    let (mut app, mut doc) = app_with_doc();
+    app.disconnect();
+    app.playback_loaded = true;
+    app.pb.current = Some("tk_g1".into());
+    app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+    app.pb.playing = false;
+    app.show_shell();
+    let (sections, selected) = app.places.shown().expect("the places are shown");
+    assert_eq!(sections[0].items.len(), 8, "the library's destinations");
+    assert_eq!(sections[0].items[0].label, "Home");
+    assert_eq!(selected, shell_place(&View::Home));
+    let playlists = sections.last().expect("the playlists");
+    assert_eq!(playlists.title, "Playlists");
+    assert!(playlists.trailing_action.is_some(), "with New playlist");
+    assert!(
+        playlists
+            .items
+            .iter()
+            .any(|item| item.label == app.lib.playlist("pl_drive").unwrap().name),
+        "the playlists are rows"
+    );
+    let shown = app.transport.shown();
+    assert_eq!(shown.title, app.lib.track("tk_g1").unwrap().title);
+    assert!(!shown.idle && !shown.playing);
 
-        sized(&mut app, 480.0);
-        assert!(!app.drawer.is_open(), "narrow: overlay + closed");
-        assert_eq!(app.content_inset(), 0.0, "narrow content is full-width");
+    let shell = ui::widget::NavShell::new()
+        .sidebar(Box::new(
+            ui::widget::NavList::new(Vec::new()).fed_by(&app.places),
+        ))
+        .content(Box::new(ui::widget::Spacer::new()))
+        .bottom_band(Box::new(ui::widget::MediaTransport::new(&app.transport)));
+    let size = (1280, 800);
+    let mut harness =
+        ui::headless::FrameHarness::for_root(ui::State::new(), shell, size, Theme::dark());
+    for _ in 0..2 {
+        harness.relayout_at(size).expect("the shell lays out");
     }
-
-    // Phase `hamburger_toggles_overlay_sidebar`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 480.0); // overlay
-        assert!(!app.drawer.is_open());
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(app.drawer.is_open(), "hamburger opens the flap");
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(!app.drawer.is_open(), "toggling again closes it");
-    }
-
-    // Phase `navigating_dismisses_overlay_sidebar`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 480.0); // overlay
-        app.drawer.open();
-        assert!(app.drawer.is_open());
-        // Selecting a destination from the open flap closes it.
-        app.dispatch(
-            Action::Nav(View::Albums),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.view, View::Albums);
-        assert!(!app.drawer.is_open(), "selection dismisses the flap");
-    }
-
-    // Phase `navigating_keeps_docked_sidebar`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 1280.0); // docked
-        app.dispatch(
-            Action::Nav(View::Albums),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(app.drawer.is_open(), "docked sidebar persists across nav");
-    }
-
-    // Phase `close_action_dismisses_sidebar`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 480.0);
-        app.drawer.open();
-        app.dispatch(Action::CloseSidebar, &mut ui::widget::Edits::lend(&mut doc));
-        assert!(!app.drawer.is_open());
-    }
-
-    // Phase `docked_collapse_toggles_and_reexpands`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 1280.0); // docked, open by default
-        assert!(app.drawer.is_open());
-        // Collapse via the (docked) toggle.
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(!app.drawer.is_open(), "docked sidebar collapses");
-        // Once collapsed, the window bar's toggle re-expands it.
-        app.declare_window_toolbar();
-        assert_eq!(
-            ui::window_toolbar::declared().and_then(|toolbar| toolbar.sidebar),
-            Some(false),
-            "collapsed docked sidebar offers a re-expand affordance"
-        );
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(app.drawer.is_open(), "toggling again re-expands it");
-    }
-
-    // Phase `collapsed_docked_sidebar_clears_to_zero_width`.
-    // Collapsing the docked sidebar clears it: after a settled collapse the
-    // resolved sidebar rect has zero width (nothing left to paint), so no
-    // stale sidebar pixels remain under the content.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 1280.0);
-        assert!(
-            app.sidebar_rect().width() > 100.0,
-            "open docked sidebar has width"
-        );
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        // Settle the collapse animation.
-        app.drawer.snap(false);
-        app.drawer.resolve(app.rect);
-        assert!(
-            app.sidebar_rect().width() < 0.5,
-            "collapsed sidebar clears to zero width"
-        );
-        assert_eq!(
-            app.content_inset(),
-            0.0,
-            "collapsed content reclaims the full width"
-        );
-    }
+    let place = shell_place(&View::Playlist("pl_drive".into())).unwrap();
+    let row = harness
+        .root::<ui::widget::NavShell>()
+        .sidebar_ref::<ui::widget::NavList>()
+        .and_then(|list| list.row_rect(&place))
+        .expect("the playlist is a row");
+    harness.click_at(row.center().x, row.center().y);
+    let play = widget_rect(harness.root::<ui::widget::NavShell>(), "transport.play")
+        .expect("the transport is in the band");
+    harness.click_at(play.center().x, play.center().y);
+    app.take_shell_events(&mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(app.view, View::Playlist("pl_drive".into()));
+    assert!(app.pb.playing, "play reached the player");
+    let (_, selected) = app.places.shown().expect("the places are shown");
+    assert_eq!(selected, Some(place), "the chosen place is the open one");
+    assert!(app.transport.shown().playing, "and the transport shows it");
 }
 
 // ---- text truncation --------------------------------------------------
@@ -2187,15 +2110,6 @@ fn a_live_catalogue_like_uses_the_admitted_effect_and_one_undo() {
         !app.state().tracks.contains_key("yt:vid_one"),
         "undo restores the entire effect"
     );
-}
-
-// ---- responsive sidebar -----------------------------------------------
-
-/// Set the app's allocated width directly (normally done by `apply_layout`)
-/// and resolve the sidebar drawer against it, as a real frame would.
-fn sized(app: &mut MusicApp, w: f64) {
-    app.rect = Rect::new(0.0, 0.0, w, 800.0);
-    app.drawer.resolve(app.rect);
 }
 
 // ---- 1. sidebar collapse ----------------------------------------------
@@ -3982,75 +3896,6 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
         );
     }
 
-    // Phase `dragging_the_scrubber_seeks`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.playback_loaded = true;
-        app.pb.queue = vec!["tk_g1".into()];
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue_index = 0;
-        draw_once(&mut app, &mut doc); // registers the scrubber rect at real geometry
-        let sr = app.scrubber_rect;
-        assert!(sr.width() > 10.0, "the full transport drew a scrubber bar");
-        send(
-            &mut app,
-            &cursor_at(Point::new(sr.x0 + 4.0, sr.center().y)),
-            &mut doc,
-        );
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        assert_eq!(
-            app.drag,
-            Some(Drag::Scrubber),
-            "pressing the bar begins a scrub drag"
-        );
-        let near_start = app.playhead_ms;
-        send(
-            &mut app,
-            &cursor_at(Point::new(sr.x1 - 4.0, sr.center().y)),
-            &mut doc,
-        );
-        let near_end = app.playhead_ms;
-        send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert!(app.drag.is_none(), "releasing ends the drag");
-        assert!(
-            near_end > near_start + 100_000.0,
-            "dragging right seeks forward ({near_start} -> {near_end})"
-        );
-    }
-
-    // Phase `dragging_the_volume_bar_sets_volume`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.playback_loaded = true;
-        draw_once(&mut app, &mut doc);
-        let vr = app.volume_rect;
-        assert!(vr.width() > 10.0, "the full transport drew a volume bar");
-        send(
-            &mut app,
-            &cursor_at(Point::new(vr.x0 + 2.0, vr.center().y)),
-            &mut doc,
-        );
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        assert_eq!(app.drag, Some(Drag::Volume));
-        let low = app.pb.volume;
-        send(
-            &mut app,
-            &cursor_at(Point::new(vr.x1 - 2.0, vr.center().y)),
-            &mut doc,
-        );
-        let high = app.pb.volume;
-        send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert!(
-            high > low,
-            "dragging the volume bar right raises volume ({low} -> {high})"
-        );
-        assert!(high >= 95, "the far right is near max volume");
-        assert!(
-            (app.audio.volume() - f32::from(app.pb.volume) / 100.0).abs() < 1e-6,
-            "the audio engine tracks the dragged volume"
-        );
-    }
-
     // Phase `wheel_scrolls_and_clamps_to_content`.
     {
         let (mut app, mut doc) = app_with_doc();
@@ -4094,47 +3939,6 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
         assert_eq!(app.pb.volume, 76, "unmute restores the pre-mute level");
         assert!((app.audio.volume() - 0.76).abs() < 1e-6);
     }
-
-    // Phase `speaker_icon_click_toggles_mute`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        draw_once(&mut app, &mut doc);
-        assert!(app.pb.volume > 0);
-        let c =
-            hit_center(&app, &Action::ToggleMute).expect("the speaker icon is a wired mute toggle");
-        send(&mut app, &cursor_at(c), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        assert_eq!(app.pb.volume, 0, "clicking the speaker mutes");
-    }
-
-    // Phase `swiping_the_bar_left_plays_next`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.dispatch(
-            Action::Play {
-                queue: vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()].into(),
-                index: 0,
-            },
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.disconnect();
-        // Phone width: the library list is a screen of its own, so the
-        // compact bar spans the window.
-        draw_at(&mut app, &mut doc, 420.0, 800.0);
-        let bar = app.nowplaying_rect();
-        // Start on the bar's empty title area (left of the transport buttons).
-        let start = Point::new(bar.x0 + bar.width() * 0.35, bar.center().y);
-        let endp = Point::new(start.x - 130.0, start.y);
-        send(&mut app, &cursor_at(start), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        send(&mut app, &cursor_at(endp), &mut doc);
-        send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert_eq!(
-            app.pb.queue_index, 1,
-            "a leftward swipe skips to the next track"
-        );
-        assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
-    }
 }
 
 // ---- 12. drag-to-seek / drag-volume gestures ---------------------------
@@ -4176,93 +3980,15 @@ fn queue_view_and_volume_controls_are_responsive() {
         );
     }
 
-    // Phase `queue_button_hover_opens_preview`.
-    // Hovering the now-playing bar's queue button opens the up-next preview,
-    // which lists the next few queued songs.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        // Keep the in-memory queue authoritative across the draw's `sync` (which
-        // would otherwise re-adopt the seeded playback snapshot).
-        app.playback_loaded = true;
-        app.pb.queue = vec![
-            "tk_g1".into(),
-            "tk_a1".into(),
-            "tk_h1".into(),
-            "tk_p1".into(),
-        ];
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue_index = 0;
-        draw_once(&mut app, &mut doc); // registers the queue button rect
-        assert!(
-            app.queue_btn_rect.width() > 0.0,
-            "the wide transport drew a queue button"
-        );
-
-        // The preview lists the upcoming (not-current) tracks.
-        assert_eq!(
-            app.queue_preview_tracks(),
-            vec![
-                "tk_a1".to_string(),
-                "tk_h1".to_string(),
-                "tk_p1".to_string()
-            ],
-        );
-
-        // Not hovering yet → closed; hovering the button → open.
-        app.mouse = Point::new(-10.0, -10.0);
-        assert!(!app.queue_preview_active(), "no preview when not hovering");
-        app.mouse = app.queue_btn_rect.center();
-        assert!(
-            app.queue_preview_active(),
-            "hovering the queue button opens the preview"
-        );
-    }
-
-    // Phase `volume_control_is_responsive_by_bar_width`.
+    // Phase `more_offers_what_the_narrow_transport_folds`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.disconnect();
         app.playback_loaded = true;
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
-        // Wide bar (docked sidebar, ~1044px content): inline slider.
-        draw_at(&mut app, &mut doc, 1280.0, 800.0);
-        assert!(
-            app.volume_rect.width() > 0.0,
-            "wide bar shows an inline volume slider"
-        );
-        assert_eq!(
-            app.volume_btn_rect,
-            Rect::ZERO,
-            "wide bar has no collapsed button"
-        );
-        // Mid bar (~764px content): slider collapses to a button.
-        draw_at(&mut app, &mut doc, 1000.0, 800.0);
-        assert_eq!(
-            app.volume_rect,
-            Rect::ZERO,
-            "mid bar drops the inline slider"
-        );
-        assert!(
-            app.volume_btn_rect.width() > 0.0,
-            "mid bar shows a volume button"
-        );
-        // Very small (compact bar): volume stays a button with its popover.
         draw_at(&mut app, &mut doc, 520.0, 800.0);
-        assert_eq!(app.volume_rect, Rect::ZERO);
-        assert!(
-            app.volume_btn_rect.width() > 0.0,
-            "the compact bar keeps the volume button"
-        );
-        // The rest of the wide bar's controls live in its More menu.
-        let more = app
-            .hits
-            .iter()
-            .find_map(|hit| match hit.action {
-                Action::OpenPlayerMenu(rect) => Some(rect),
-                _ => None,
-            })
-            .expect("the compact bar offers a More menu");
+        let more = Rect::new(400.0, 760.0, 432.0, 792.0);
         app.dispatch(
             Action::OpenPlayerMenu(more),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -4283,92 +4009,6 @@ fn queue_view_and_volume_controls_are_responsive() {
         assert!(
             labels.contains(&"Like") || labels.contains(&"Unlike"),
             "the More menu offers like: {labels:?}"
-        );
-    }
-
-    // Phase `volume_button_opens_a_slider_popover`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.disconnect();
-        app.playback_loaded = true;
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue = vec!["tk_g1".into()];
-        draw_at(&mut app, &mut doc, 1000.0, 800.0); // collapsed-to-button width
-        assert!(app.volume_btn_rect.width() > 0.0);
-        app.dispatch(
-            Action::ToggleVolumePopover,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        draw_at(&mut app, &mut doc, 1000.0, 800.0);
-        assert!(
-            app.volume_popover_open,
-            "the volume button opens the popover"
-        );
-        assert!(
-            app.volume_popover_slider.width() > 0.0,
-            "the popover hosts a volume slider"
-        );
-        let (panel, button) = (app.volume_popover_rect, app.volume_btn_rect);
-        assert!(
-            panel.y1 < button.y0 && (panel.x1 - button.x1).abs() < 0.5,
-            "the popover opens above the button, on its trailing edge ({panel:?} over {button:?})"
-        );
-        assert!(
-            panel.x0 >= 0.0 && panel.x1 <= 1000.0,
-            "the popover stays in the window: {panel:?}"
-        );
-        let (track, slider) = (app.volume_rect, app.volume_popover_slider);
-        assert!(
-            track.width() > 0.0
-                && track.x0 >= slider.x0
-                && track.x1 <= slider.x1
-                && (track.y0 - slider.y0).abs() < 0.5
-                && (track.y1 - slider.y1).abs() < 0.5,
-            "the popover slider is the active volume drag target ({track:?} in {slider:?})"
-        );
-    }
-
-    // Phase `compact_bar_renders_progress_below_the_song`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.disconnect();
-        app.playback_loaded = true;
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue = vec!["tk_g1".into()];
-        // Phone width: the compact bar spans the window.
-        draw_at(&mut app, &mut doc, 420.0, 800.0);
-        assert!(
-            app.scrubber_rect.y0 > app.nowplaying_rect().center().y,
-            "the progress bar runs along the bottom of the bar, under the song"
-        );
-        assert!(
-            app.scrubber_rect.width() > 300.0,
-            "the progress spans the bar width"
-        );
-    }
-
-    // Phase `compact_scrubber_is_grabbable_not_a_hairline`.
-    {
-        // At narrow width the scrub bar must be a real, grabbable track — not a
-        // 1-2px hairline glued to the window edge.
-        let (mut app, mut doc) = app_with_doc();
-        app.disconnect();
-        app.playback_loaded = true;
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue = vec!["tk_g1".into()];
-        // Phone width: the compact bar spans the window.
-        draw_at(&mut app, &mut doc, 420.0, 800.0);
-        let sr = app.scrubber_rect;
-        assert!(
-            sr.height() >= 16.0,
-            "the narrow scrub bar has a grabbable hit height (was {})",
-            sr.height()
-        );
-        assert!(sr.width() > 300.0, "the scrub bar spans the bar width");
-        // Its top clears the transport row, so a play/pause press never seeks.
-        assert!(
-            sr.y0 > app.rect.y1 - app.bar_h / 2.0,
-            "the scrub strip stays below the transport buttons"
         );
     }
 
@@ -4476,7 +4116,6 @@ fn every_view_renders_and_now_playing_falls_back_to_album_art() {
             app.view = v.clone();
             draw_once(&mut app, &mut doc);
             assert!(app.content_height > 0.0, "{v:?} produced a frame");
-            assert!(!app.hits.is_empty(), "{v:?} registered interactive hits");
         }
     }
 
@@ -4567,10 +4206,10 @@ fn scaled_player_and_detail_keep_content_above_the_fold() {
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
         app.render_frame(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let bar = app.nowplaying_rect();
-        assert_eq!(bar.x0, app.rect.x0, "the sidebar cannot squeeze the song");
-        assert!(app.sidebar_rect().y1 <= bar.y0);
-        assert!(app.body_rect.y1 <= bar.y0);
+        // The shell's band holds the transport; the content column ends
+        // above it.
+        let foot = app.rect.y1;
+        assert!(app.body_rect.y1 <= foot);
         assert_eq!(
             app.body_rect.y0, app.rect.y0,
             "the toolbar is the window bar's: the page starts at the top"
@@ -4582,30 +4221,7 @@ fn scaled_player_and_detail_keep_content_above_the_fold() {
         let rows = app.track_tables.first().expect("album tracks");
         let first = rows.table.row_rect(0).expect("first track");
         let third = rows.table.row_rect(2).expect("third track");
-        assert!(third.y1 <= bar.y0, "three complete rows fit below the hero");
-        let art = app
-            .hits
-            .iter()
-            .find(|hit| {
-                matches!(
-                    &hit.action, Action::Nav(View::Album(id)) if id == "al_glasslight"
-                )
-            })
-            .expect("player artwork")
-            .rect;
-        assert!(art.y0 >= bar.y0 && art.y1 <= bar.y1);
-        assert!(
-            art.height() < bar.height(),
-            "art must not consume the whole bar"
-        );
-        let lyrics = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::Nav(View::Lyrics))
-            .expect("lyrics shortcut")
-            .rect;
-        assert!(lyrics.x1 < app.scrubber_rect.x0);
-        assert!(app.scrubber_rect.width() > 2.0 * art.width());
+        assert!(third.y1 <= foot, "three complete rows fit below the hero");
         assert!(first.y0 > app.body_rect.y0);
     }
 }
@@ -4688,9 +4304,7 @@ fn scaled_playlist_shows_four_complete_rows_with_transport_padding() {
         for i in 0..table.rows().len() {
             if let Some(rect) = table.row_rect(i) {
                 assert!(
-                    rect.y1
-                        <= app.nowplaying_rect().y0
-                            - f64::from(theme.tokens.spacing.rhythm.related),
+                    rect.y1 <= app.rect.y1 - f64::from(theme.tokens.spacing.rhythm.related),
                     "visible row {i} must fit completely with bottom padding: {rect:?}"
                 );
             }
