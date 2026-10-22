@@ -752,6 +752,7 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::mark("app-launch-start");
     tilo_process::raise_open_file_limit();
     init_app_log();
+    crate::collaboration::install_channel_settings();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
 }
