@@ -511,6 +511,23 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["tags"], ["1.2.3"])
 
+    def test_final_tags_move_only_for_a_final_version(self):
+        self.signed()
+        result = self.publish("release:{version}", "release:final:latest", ref="tag:v1.2.3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], ["1.2.3", "latest"])
+        result = self.publish("release:{version}", "release:final:latest", ref="tag:v1.2.4-rc.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], ["1.2.4-rc.1"])
+
+    def test_the_relay_s_latest_follows_final_releases(self):
+        relay = next(p for p in tomllib.loads((ROOT / "tools/ci/products.toml").read_text())["product"]
+                     if p["name"] == "relay")
+        self.assertIn("final:latest", relay["release"])
+        for compose in ("os/containers/tilo-relay/compose.yaml", "os/containers/tilo-agent-host/compose.yaml"):
+            with self.subTest(compose=compose):
+                self.assertIn("registry.tilo.so/tilo/tilo-relay:latest", (ROOT / compose).read_text())
+
     def test_rust_tags_name_the_pinned_toolchain(self):
         self.signed()
         channel = re.search(r'^channel\s*=\s*"([^"]+)"', (ROOT / "rust-toolchain.toml").read_text(), re.M)[1]

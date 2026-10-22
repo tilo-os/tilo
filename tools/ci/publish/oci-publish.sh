@@ -137,8 +137,14 @@ fill() {
 # A tag written `once:TAG` never moves: where TAG exists already, nothing is published and the
 # receipt names the image TAG holds. The RPM snapshot is published once per fingerprint, and a
 # rebuild of the same package set would otherwise replace what earlier OS builds verified.
+# A tag written `final:TAG` is pushed only for a final version tag (v1.2.3, not v1.2.3-rc.1), so
+# a moving tag deployments follow by default, such as `latest`, never names a pre-release.
 tags=()
 for tag; do
+  if [[ $tag == final:* ]]; then
+    [[ ${T_REF:-} =~ ^tag:v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    tag=${tag#final:}
+  fi
   if [[ $tag == once:* ]]; then
     tag=$(fill "${tag#once:}")
     if skopeo inspect --raw --authfile "$auth" "$(target "$tag")" > "$scratch/held-manifest" 2>/dev/null; then
