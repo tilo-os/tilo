@@ -139,7 +139,7 @@ impl WorkspaceTreeReplica {
     }
 
     /// [`Self::request_sync`] for `rooms` alone.
-    fn request_sync_of(&self, rooms: &[RoomId]) {
+    pub fn request_sync_of(&self, rooms: &[RoomId]) {
         let mut tree = self.tree.write();
         let mut msgs = Vec::with_capacity(rooms.len());
         for &room in rooms {

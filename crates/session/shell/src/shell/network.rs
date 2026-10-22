@@ -5301,7 +5301,10 @@ impl ShellNetwork {
                 }
             }
         }
-        replica.request_sync();
+        // Ask only the room just joined: the guest's other workspaces are
+        // rooms of their own, and accepting this invitation is no reason to
+        // ask each of them for a catch-up again.
+        replica.request_sync_of(&[room]);
         let outgoing = replica.drain_outgoing();
         drop(replica);
         for msg in outgoing {
