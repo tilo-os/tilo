@@ -198,6 +198,13 @@
       "module": "speed_test"
     },
     {
+      "id": "so.tilo.tasks",
+      "name": "Tasks",
+      "category": "Office",
+      "version": "0.1.0",
+      "module": "tasks"
+    },
+    {
       "id": "so.tilo.themes",
       "name": "Theme Studio",
       "category": "System",

@@ -16178,6 +16178,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
+name = "tasks"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-document",
+ "tilo-rich-text",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16594,6 +16607,7 @@ dependencies = [
  "slides",
  "snippets",
  "speed-test",
+ "tasks",
  "tempfile",
  "themes",
  "tilo-actions",
@@ -20358,6 +20372,7 @@ dependencies = [
  "slides",
  "snippets",
  "speed-test",
+ "tasks",
  "themes",
  "tilo-app",
  "tilo-browser-runtime",

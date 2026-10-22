@@ -56,6 +56,7 @@ shortcuts = { path = "../../../apps/shortcuts" }
 slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }
 speed-test = { path = "../../../apps/speed-test" }
+tasks = { path = "../../../apps/tasks" }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
 tube = { path = "../../../apps/tube", default-features = false, features = ["media"] }

@@ -262,6 +262,11 @@ aarch64 = 720896
 x86_64 = 3145728
 aarch64 = 2883584
 
+# New, not measured yet: the KPI's max target until the first measurement.
+[apps."so.tilo.tasks"]
+x86_64 = 6000000
+aarch64 = 6000000
+
 [apps."so.tilo.terminal"]
 x86_64 = 1507328
 aarch64 = 1310720
