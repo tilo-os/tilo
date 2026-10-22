@@ -225,9 +225,8 @@ room-sync-host-needs-update = This workspace’s host needs to update
 room-sync-host-needs-update-body = Nothing here syncs until it has. Your changes stay on this device and reach it then.
 room-sync-device-needs-update = Tilo needs to update to sync this workspace
 room-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
-history-local-action-unconfirmed = Sharing this edit was not confirmed.
-history-local-action-unsigned = This edit has no authenticated sharing history.
-history-local-action-pending = Action history is waiting for confirmation.
+history-local-action-not-saved = Couldn't save this change to your history.
+history-local-action-retry = Retry
 
 history-sync-refused = Syncing stopped: this workspace didn't accept a change. Your edits stay on this device.
 history-sync-remote-waiting = Remote updates will apply when the current edit finishes.

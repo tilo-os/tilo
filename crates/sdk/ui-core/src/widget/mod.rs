@@ -3013,8 +3013,8 @@ pub use nav_shell::{
     SidebarPlacement,
 };
 pub use window_header::{
-    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowBar, WindowBarSlot,
-    WindowHeader, WindowHistory,
+    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
+    StatusAction, WindowBar, WindowBarSlot, WindowHeader, WindowHistory, WindowStatus,
 };
 mod nav_list;
 pub use nav_list::{

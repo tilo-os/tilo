@@ -1027,6 +1027,69 @@ fn history_is_one_glyph_in_the_window_top_trailing_corner() {
 }
 
 #[test]
+fn a_status_the_person_can_act_on_has_its_button_beside_it_in_the_row() {
+    const NOT_SAVED: &str = "Couldn't save this change to your history";
+    let mut resource = tilo_actions::Resource::new("test.unsaved", "test.unsaved", NOT_SAVED);
+    resource.actions.push(
+        tilo_actions::ActionSpec::operation(
+            "retry",
+            "Retry",
+            tilo_actions::OperationKind::Effect,
+            "test.unsaved.retry",
+            &(),
+        )
+        .unwrap(),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&resource, "retry").unwrap();
+    let status =
+        crate::widget::WindowStatus::says(NOT_SAVED).with_action(crate::widget::StatusAction {
+            label: "Retry".into(),
+            binding,
+        });
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    h.root_mut::<NavShell>()
+        .set_history_control(Some(HistoryControl::Closed));
+    assert!(h.root_mut::<NavShell>().set_sync_status(Some(&status)));
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    let button = h
+        .root::<NavShell>()
+        .children()
+        .into_iter()
+        .find(|child| child.test_id() == Some(crate::widget::STATUS_ACTION_ID))
+        .map(|child| (child.get_rect(), child.name()))
+        .expect("a button beside the status");
+    let (button, name) = button;
+    assert_eq!(name, "Button", "a design-system button, not painted text");
+    assert!(button.width() > 0.0 && button.y1 <= g.header_height);
+    assert!(button.x1 <= g.history.x0, "{button:?} before History {g:?}");
+    let text = h
+        .root::<NavShell>()
+        .children()
+        .into_iter()
+        .find(|child| child.name() == "HeaderStatus")
+        .map(|child| child.get_rect())
+        .unwrap();
+    assert!(text.width() > 0.0, "the message still shows");
+    assert!(
+        text.x1 <= button.x0,
+        "the message {text:?} reads before its button {button:?}"
+    );
+
+    // Saying something else with no button takes the button away.
+    let offline = crate::widget::WindowStatus::says("Working offline");
+    assert!(h.root_mut::<NavShell>().set_sync_status(Some(&offline)));
+    settle(&mut h, 1280, 800);
+    assert!(
+        h.root::<NavShell>()
+            .children()
+            .into_iter()
+            .all(|child| child.test_id() != Some(crate::widget::STATUS_ACTION_ID)),
+        "no button without something to do"
+    );
+}
+
+#[test]
 fn sync_status_reads_as_quiet_text_before_the_rows_trailing_controls() {
     const OFFLINE: &str = "Working offline. Changes will sync when you're back.";
     let status = |h: &FrameHarness| {
@@ -1037,7 +1100,8 @@ fn sync_status_reads_as_quiet_text_before_the_rows_trailing_controls() {
             .map(|child| (child.get_rect(), child.accessibility()))
     };
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
-    assert!(h.root_mut::<NavShell>().set_sync_status(Some(OFFLINE)));
+    let offline = crate::widget::WindowStatus::says(OFFLINE);
+    assert!(h.root_mut::<NavShell>().set_sync_status(Some(&offline)));
     h.root_mut::<NavShell>()
         .set_history_control(Some(HistoryControl::Closed));
     settle(&mut h, 1280, 800);

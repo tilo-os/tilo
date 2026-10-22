@@ -212,6 +212,7 @@ impl App {
             if self.document_history.has_search() {
                 resources.push(crate::search::search_resource());
             }
+            resources.extend(self.unsaved_changes_resources());
             return resources;
         }
         let revision = self.document_history.revision();
@@ -232,6 +233,7 @@ impl App {
         self.history_changed(revision, open);
         let mut resources = resources;
         resources.extend(self.close_admission.resources());
+        resources.extend(self.unsaved_changes_resources());
         resources
     }
 
@@ -267,6 +269,9 @@ impl App {
     ) -> Result<(), String> {
         if encoded.type_id == crate::close_admission::OPERATION {
             return self.invoke_close_encoded(encoded);
+        }
+        if encoded.type_id == super::local_input_capture::UNSAVED_OPERATION {
+            return self.retry_unsaved_changes();
         }
         if encoded.type_id == SEARCH_OPERATION {
             if !self.document_history.has_search() {
@@ -466,14 +471,12 @@ impl App {
 
         let width = self.layout.last_layout_logical.map_or(900.0, |size| size.0);
         self.refresh_framework_history(width);
-        let status = self
-            .document_sync_status()
-            .map(std::borrow::Cow::into_owned);
+        let status = self.window_status();
         crate::history_mode::embedded::refresh(
             self.root_widget.as_mut(),
             &self.state.doc,
             width,
-            status.as_deref(),
+            status.as_ref(),
         );
         // The palette owns its measured overlay geometry. Admit its absolute
         // leaf as a separate presentation root so app/legacy authority and

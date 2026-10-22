@@ -4013,7 +4013,7 @@ pub(crate) mod ordinary_confirmation_tests {
     }
 
     #[test]
-    fn ordinary_confirmation_unsigned_history_stays_visible_without_moving_content() {
+    fn ordinary_confirmation_history_outcome_stays_visible_without_moving_content() {
         let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
         let mut host = Host::new(true, root);
         let Host::Native(app) = &mut host else {
@@ -4029,28 +4029,32 @@ pub(crate) mod ordinary_confirmation_tests {
         assert_eq!(app.document_sync_status(), None);
         assert_eq!(app.root_widget.get_rect(), original);
         // An edit actually recorded without an authenticated publication is
-        // unsigned history, and that is shown in the existing History bar.
+        // still the person's change, saved here: nothing to say.
         let input = app.begin_local_input_capture();
         crate::action_host::ActionHost::new()
             .try_dispatch(&mut app.state.doc, "fixture.edit", &FixtureEdit)
             .unwrap();
         drop(input);
         app.drain_local_input_capture();
+        assert_eq!(app.document_sync_status(), None);
+        // A change that definitively could not be saved to the history says
+        // so, in the existing History bar.
+        app.local_input_capture_failed("refused for the test");
         layout(app);
         let status = app
             .document_sync_status()
-            .expect("an unmanaged edit is unsigned history")
+            .expect("a change not saved to the history says so")
             .into_owned();
         assert_eq!(
             status,
-            crate::i18n::I18nManager::lookup_plain("history-local-action-unsigned")
+            crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved")
         );
         let tree = app.build_a11y_tree_update(1.0);
         let (_, node) = tree
             .nodes
             .iter()
             .find(|(_, node)| node.label() == Some(status.as_str()))
-            .expect("unsigned history is published in the existing History bar");
+            .expect("the outcome is published in the existing History bar");
         assert!(node.bounds().is_some_and(|bounds| bounds.width() > 0.0));
         assert_eq!(app.root_widget.get_rect(), original);
         assert!(ledger.borrow().is_empty());

@@ -33,9 +33,7 @@ impl HistoryHost {
             .is_some_and(|live| crate::widget::window_header::offer_history_control(live, control));
         // Closed, the sync status reads as quiet text in the same row; open,
         // it stays with this bar.
-        let status = (!self.open)
-            .then_some(self.sync_status.as_deref())
-            .flatten();
+        let status = (!self.open).then_some(self.sync_status.as_ref()).flatten();
         let presents_status = live
             .as_deref_mut()
             .is_some_and(|live| crate::widget::window_header::offer_sync_status(live, status));
@@ -561,7 +559,9 @@ impl Widget for HistoryHost {
         }
         if self.bar_status.text().is_some()
             && let Some(row) = self.toolbar.children().first()
-            && let Some(control) = row.children().last()
+            // The status ends before the row's first control: its Retry,
+            // when it has one, or the History control.
+            && let Some(control) = row.children().first()
         {
             let row = row.get_rect();
             self.bar_status.paint(

@@ -304,6 +304,18 @@ impl OwnerDocumentRoutes {
         self.tree = held;
     }
 
+    /// Whether `entry` syncs only records held for a live owner's tree
+    /// ([`Self::hold_trees`]): no view shows them and no published action
+    /// names them, so the window's published surface never waits for them.
+    pub(crate) fn holds_only_tree_records(&self, entry: &OwnerRoute) -> bool {
+        entry.owners.iter().all(|owner| {
+            let (store, checkout) = owner.store_checkout();
+            self.tree
+                .iter()
+                .any(|held| held.store.same_owner(store) && &held.checkout == checkout)
+        })
+    }
+
     pub(crate) fn retired_route(&self, route: &RouteSpec) -> bool {
         self.retired.contains(route)
     }

@@ -864,7 +864,7 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
 pub(crate) struct RoutedOwners {
     pub(crate) app: App,
     pub(crate) records: crate::RecordStore,
-    bindings: Vec<crate::bound_dispatch::CallbackBinding>,
+    pub(crate) bindings: Vec<crate::bound_dispatch::CallbackBinding>,
     _owners: crate::record::RecordOwners,
     _temp: tempfile::TempDir,
 }

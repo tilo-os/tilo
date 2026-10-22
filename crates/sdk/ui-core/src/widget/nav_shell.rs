@@ -93,11 +93,13 @@ use crate::widget::{
 mod header_parts;
 mod notices;
 mod sidebar_resize;
+mod status_action;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
 use crate::widget::toast::ToastStack;
 use header_parts::{HeaderTitle, MoreActions};
 use notices::TOAST_ACTION;
+use status_action::place_status_action;
 
 /// What the sidebar becomes when the window is too narrow to dock it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -288,6 +290,8 @@ enum Part {
     /// The window's History control; `true` is the one shown while History
     /// is open.
     History(bool),
+    /// The button beside the window's sync status (Retry), while it has one.
+    StatusAction,
 }
 
 /// A column's header: a title the shell paints and actions the app owns.
@@ -456,6 +460,8 @@ struct Inputs {
     has_controls: bool,
     /// The window's History control, where the host gave the shell one.
     history: Option<HistoryControl>,
+    /// The window's sync status has a button beside it.
+    status_action: bool,
     /// Room for the window's controls at the trailing end of the row, while
     /// the host merged the window's bar into it (a maximized window).
     window_controls: Option<f64>,
@@ -530,6 +536,7 @@ fn reaches(room: f64, threshold: f64, held: Option<bool>, band: f64) -> bool {
 impl Default for Inputs {
     fn default() -> Self {
         Self {
+            status_action: false,
             mode: NavMode::Push,
             kind: ContentKind::default(),
             page_lines: None,
@@ -767,10 +774,19 @@ impl NavGeometry {
         {
             parts.push(Part::History(control.is_open()));
         }
+        if inputs.status_action && shows(self.header(self.status_column())) {
+            parts.push(Part::StatusAction);
+        }
         if shows(self.toggle) {
             parts.push(Part::Toggle);
         }
         parts
+    }
+
+    /// The column whose header row carries the window's sync status: the one
+    /// History stands in, reaching the window's trailing edge.
+    fn status_column(&self) -> Column {
+        self.history_column.unwrap_or(Column::Content)
     }
 
     /// Whether `p` is on the header row, which stays live beside a drawer.
@@ -1565,6 +1581,12 @@ pub struct NavShell {
     /// The span of the header row the status was last painted into; empty
     /// until the shell has painted, when where the status goes is unknown.
     status_span: Rect,
+    /// The button beside the sync status (Retry), and what it was made from.
+    status_action: Option<Button>,
+    status_action_spec: Option<crate::widget::StatusAction>,
+    /// Buttons replaced since the host last built its tree, which may still
+    /// point at them.
+    retired_status_actions: Vec<Button>,
 }
 
 impl Default for NavShell {
@@ -1659,6 +1681,9 @@ impl NavShell {
             status_dirty: false,
             status_drawn: Rect::ZERO,
             status_span: Rect::ZERO,
+            status_action: None,
+            status_action_spec: None,
+            retired_status_actions: Vec::new(),
         }
     }
 
@@ -2688,6 +2713,7 @@ impl NavShell {
             Part::InspectorToggle => Some(&self.inspector_toggle),
             Part::History(false) => Some(&self.history_open),
             Part::History(true) => Some(&self.history_close),
+            Part::StatusAction => self.status_action.as_ref().map(|b| b as &dyn Widget),
         }
     }
 
@@ -2722,6 +2748,10 @@ impl NavShell {
             Part::InspectorToggle => Some(&mut self.inspector_toggle),
             Part::History(false) => Some(&mut self.history_open),
             Part::History(true) => Some(&mut self.history_close),
+            Part::StatusAction => self
+                .status_action
+                .as_mut()
+                .map(|b| b as &mut (dyn Widget + 'static)),
         }
     }
 
@@ -2760,6 +2790,7 @@ impl NavShell {
             Part::InspectorToggle,
             Part::History(false),
             Part::History(true),
+            Part::StatusAction,
         ]);
         parts
     }
@@ -2891,6 +2922,7 @@ impl NavShell {
             Part::Back => self.geometry.back_column,
             Part::InspectorToggle => self.geometry.inspector_toggle_column,
             Part::History(_) => self.geometry.history_column,
+            Part::StatusAction => Some(self.geometry.status_column()),
         }
     }
 
@@ -3427,7 +3459,21 @@ impl NavShell {
         {
             self.paint_part(f, part);
         }
+        self.paint_status_action(f);
         self.paint_sync_status(f);
+    }
+
+    /// The button beside the sync status, where layout found it room.
+    fn paint_status_action(&mut self, f: &mut Frame<'_>) {
+        if !self.built_has(Part::StatusAction) || self.part_hidden(Part::StatusAction) {
+            return;
+        }
+        let local = self.column_theme(f.theme, self.part_column(Part::StatusAction));
+        if let Some(button) = self.status_action.as_mut()
+            && !button.get_rect().is_zero_area()
+        {
+            f.draw(Some(button as &mut dyn Widget), &local);
+        }
     }
 
     /// The sync status, in the header of the column History stands in (the
@@ -3437,7 +3483,7 @@ impl NavShell {
         self.status_slot = Rect::ZERO;
         self.status_span = Rect::ZERO;
         let g = &self.geometry;
-        let column = g.history_column.unwrap_or(Column::Content);
+        let column = g.status_column();
         let row = g.header(column);
         if row.width() <= 0.0 || row.height() <= 0.0 || g.column(column).width() <= 0.0 {
             self.sync_status
@@ -3451,7 +3497,7 @@ impl NavShell {
         let actions = at(&self.headers, column).actions.len();
         let mut trailing: Vec<Rect> = (0..actions)
             .map(|i| Part::Action(column, i))
-            .chain([Part::More(column)])
+            .chain([Part::More(column), Part::StatusAction])
             .filter(|part| self.built_has(*part) && !self.part_hidden(*part))
             .filter_map(|part| self.exposed(part).map(|widget| widget.get_rect()))
             .collect();
@@ -3713,7 +3759,13 @@ fn place_parts(
                     Some(Rect::new(band.x0, y0, band.x0 + w, y0 + h))
                 }
             }
-            Part::Title(_) | Part::Leading(_) | Part::Action(..) | Part::More(_) => None,
+            // Placed with the header rows; the status action once they are
+            // ([`place_status_action`]).
+            Part::Title(_)
+            | Part::Leading(_)
+            | Part::Action(..)
+            | Part::More(_)
+            | Part::StatusAction => None,
         };
         if let (Some(slot), Some(rect)) = (placed.get_mut(index), rect) {
             *slot = Some(rect);
@@ -3722,6 +3774,7 @@ fn place_parts(
     for column in Column::ALL {
         place_header(inputs, &g, column, ctx, &mut placed)?;
     }
+    place_status_action(inputs, &g, ctx, &mut placed)?;
     for (index, rect) in placed.into_iter().enumerate() {
         let rect = rect.unwrap_or(Rect::ZERO);
         let rect = if rect.width() < 0.0 || rect.height() < 0.0 {
@@ -4028,6 +4081,7 @@ impl Widget for NavShell {
             .collect();
         self.host_parts = parts;
         self.built = true;
+        self.retired_status_actions.clear();
         self.structure_dirty = false;
         self.invalidation.invalidate();
         let style = Style {
@@ -4212,6 +4266,7 @@ impl Widget for NavShell {
             inert_parts,
             toasts,
             sync_status,
+            status_action,
             ..
         } = self;
         let mut stubs = inert_parts.iter_mut();
@@ -4246,6 +4301,7 @@ impl Widget for NavShell {
         let mut inspector_toggle = Some(inspector_toggle as &mut dyn Widget);
         let mut history_open = Some(history_open as &mut dyn Widget);
         let mut history_close = Some(history_close as &mut dyn Widget);
+        let mut status_action = status_action.as_mut().map(|b| b as &mut dyn Widget);
         let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(parts.len());
         for (part, inert) in parts.into_iter().zip(inert) {
             let stub = stubs.next();
@@ -4279,6 +4335,7 @@ impl Widget for NavShell {
                 Part::InspectorToggle => inspector_toggle.take(),
                 Part::History(false) => history_open.take(),
                 Part::History(true) => history_close.take(),
+                Part::StatusAction => status_action.take(),
             };
             if let Some(widget) = next {
                 out.push(widget);
@@ -4525,10 +4582,26 @@ impl WindowHeader for NavShell {
         self.invalidate();
     }
 
-    fn set_sync_status(&mut self, status: Option<&str>) -> bool {
-        if self.sync_status.set(status) {
+    fn set_sync_status(&mut self, status: Option<&crate::widget::WindowStatus>) -> bool {
+        if self
+            .sync_status
+            .set(status.map(|status| status.text.as_str()))
+        {
             self.status_dirty = true;
             self.invalidation.invalidate();
+        }
+        let action = status.and_then(|status| status.action.as_ref());
+        if self.status_action_spec.as_ref() != action {
+            self.status_action_spec = action.cloned();
+            let next = action.map(crate::widget::StatusAction::button);
+            // The host's tree may still point at the button it replaces
+            // until it builds again.
+            if let Some(old) = std::mem::replace(&mut self.status_action, next) {
+                self.retired_status_actions.push(old);
+            }
+            self.inputs.borrow_mut().status_action = self.status_action.is_some();
+            self.structure_dirty = true;
+            self.invalidate();
         }
         true
     }
@@ -4790,6 +4863,10 @@ impl NavShell {
             Part::Back => g.back,
             Part::InspectorToggle => g.inspector_toggle,
             Part::History(_) => g.history,
+            Part::StatusAction => self
+                .status_action
+                .as_ref()
+                .map_or(Rect::ZERO, Widget::get_rect),
             Part::Filter => g.filter,
             Part::Controls => g.controls,
             Part::Rail => g.rail,
