@@ -449,6 +449,19 @@ impl Widget for PhotosApp {
             }
             thumbnail_sources.truncate(40);
         }
+        // The sidebar shows each album by its cover, whatever is open.
+        for cover in self
+            .library_albums
+            .iter()
+            .filter_map(|(id, _, _)| self.library_album_covers.get(id)?.first())
+            .take(24)
+        {
+            if thumbnail_sources.iter().all(|photo| &photo.id != cover)
+                && let Some(photo) = library.photo(cover).cloned()
+            {
+                thumbnail_sources.push(photo);
+            }
+        }
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
         self.refresh_chrome_text(doc);

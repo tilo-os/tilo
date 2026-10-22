@@ -1359,3 +1359,34 @@ fn a_short_flat_set_of_places_starts_as_a_rail_and_anything_more_as_a_list() {
     assert!(list.set_rail(false));
     assert_eq!(list.selected_id().as_deref(), Some("queue"));
 }
+
+/// A row that starts expanded but has nothing under it yet (Photos'
+/// Albums before the library loads) opens as asked when its first children
+/// arrive: the person never had a chance to fold it.
+#[test]
+fn a_row_asked_open_opens_when_its_first_children_arrive() {
+    let parent = |children: Vec<NavItem>| {
+        vec![NavSection::untitled(
+            "places",
+            vec![
+                NavItem::new("albums", "Albums")
+                    .icon(Icon::Folder)
+                    .children(children)
+                    .expanded(),
+            ],
+        )]
+    };
+    let mut list = NavList::new(parent(Vec::new()));
+    assert!(!list.is_expanded("albums"), "nothing to open yet");
+    list.set_sections(parent(vec![NavItem::new("trip", "Trip")]));
+    assert!(list.is_expanded("albums"), "the albums show as they arrive");
+    list.set_expanded("albums", false);
+    list.set_sections(parent(vec![
+        NavItem::new("trip", "Trip"),
+        NavItem::new("home", "Home"),
+    ]));
+    assert!(
+        !list.is_expanded("albums"),
+        "what the person folded stays folded"
+    );
+}

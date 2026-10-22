@@ -709,7 +709,8 @@ impl PhotosApp {
         self.declare_window_toolbar();
     }
 
-    /// Hand the shell's sidebar the library's destinations and its albums.
+    /// Hand the shell's sidebar the library's destinations; the albums
+    /// nest under Albums, each by its cover.
     fn show_places(&self) {
         let entries = self.nav_entries();
         let selected = entries
@@ -721,26 +722,43 @@ impl PhotosApp {
             if let Some(icon) = entry.icon {
                 item = item.icon(icon);
             }
+            if let NavTarget::Album(id) = &entry.target {
+                let cover = self
+                    .library_album_covers
+                    .get(id)
+                    .and_then(|covers| covers.first())
+                    .and_then(|cover| self.thumbnail_for(cover))
+                    .cloned();
+                item = item.art(entry.label.clone(), cover);
+            }
             if let Some(count) = entry.count {
                 item = item.count(u32::try_from(count).unwrap_or(u32::MAX));
             }
             item
         };
-        let (albums, library): (Vec<_>, Vec<_>) = entries
+        let (albums, places): (Vec<_>, Vec<_>) = entries
             .iter()
             .partition(|entry| matches!(entry.target, NavTarget::Album(_)));
-        let mut sections = vec![NavSection::untitled(
-            "library",
-            library.into_iter().map(item).collect(),
-        )];
-        if !albums.is_empty() {
-            sections.push(NavSection::new(
-                "albums",
-                tr("photos-albums"),
-                albums.into_iter().map(item).collect(),
-            ));
-        }
-        self.chrome.places.show(sections, selected);
+        let albums: Vec<NavItem> = albums.into_iter().map(item).collect();
+        let mut albums = Some(albums).filter(|albums| !albums.is_empty());
+        let places = places
+            .into_iter()
+            .map(|entry| {
+                let place = item(entry);
+                match (&entry.target, albums.take()) {
+                    (NavTarget::Destination(LibraryDestination::Albums), Some(albums)) => {
+                        place.children(albums).expanded()
+                    }
+                    (_, unused) => {
+                        albums = unused;
+                        place
+                    }
+                }
+            })
+            .collect();
+        self.chrome
+            .places
+            .show(vec![NavSection::untitled("library", places)], selected);
     }
 
     /// Open the places the person chose in the shell's sidebar.
