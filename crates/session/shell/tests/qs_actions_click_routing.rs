@@ -416,7 +416,7 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
 
         // Edit leads the footer: four Shift+Tabs from no focus reach it.
         // Space enters edit mode with no hidden selection. Two Tabs then
-        // select Bluetooth. Move it below Night Light with Ctrl+Down.
+        // select Bluetooth. Move it below Night light with Ctrl+Down.
         for _ in 0..4 {
             assert!(press_key(
                 &mut host,
@@ -463,7 +463,7 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
             .collect::<Vec<_>>();
         assert_eq!(
             names[..3],
-            ["Wi-Fi", "Night Light", "Bluetooth"],
+            ["Wi-Fi", "Night light", "Bluetooth"],
             "Ctrl+Down must reorder the semantic and visual row order"
         );
 
@@ -487,7 +487,7 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
             .collect::<Vec<_>>();
         assert_eq!(
             names[..3],
-            ["Wi-Fi", "Bluetooth", "Night Light"],
+            ["Wi-Fi", "Bluetooth", "Night light"],
             "Ctrl+Up must reverse a keyboard reorder"
         );
     }
@@ -901,7 +901,7 @@ fn tab_through_every_quick_settings_stop_focuses_exactly_one_node() {
         "Wi-Fi",
         "Bluetooth",
         "Wi-Fi networks",
-        "Night Light",
+        "Night light",
         "Devices",
         "Clipboard",
         "Notifications",

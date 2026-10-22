@@ -31,3 +31,7 @@ de = { use = "Tastenkürzel", avoid = ["Tastaturhilfe", "Desktop-Hilfe", "Tastat
 reason = "The display the desktop's panel and new windows start on is the main display in Settings, the arrangement and screen capture alike; \"primary\" is kept for mouse buttons."
 en = { use = "Main display", avoid = ["Primary display", "primary"], keys = "^(?:display-|portal-capture-.*display)" }
 de = { use = "Hauptbildschirm", avoid = ["Primärbildschirm", "primär"], keys = "^(?:display-|portal-capture-.*display)" }
+
+[[term]]
+reason = "The warm evening colour is one setting, in Displays and Quick Settings alike; it is written as ordinary words, so a sentence never reads it as a second, branded feature."
+en = { use = "Night light", avoid = ["Night Light"], case_sensitive = true }

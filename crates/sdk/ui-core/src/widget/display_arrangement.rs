@@ -2,19 +2,21 @@
 //!
 //! Each attached, enabled display is drawn at its size on the shared desktop
 //! (mode, rotation and scale), numbered the way the compositor numbers it
-//! when asked to identify screens. Pressing or tapping a display selects it
-//! (the pane shares that selection with its display picker); dragging one
-//! moves it 1:1 under the pointer or finger, by transform alone: nothing is
-//! laid out or stored while it moves. Within a small threshold its edges
-//! and centre snap magnetically onto another display's, and an alignment
-//! guide shows each line it lines up with ([`placement::snap_with_guides`]).
-//! On release it settles into the nearest place where it touches another
-//! display and covers none ([`placement::settle`]) with the paged-strip
-//! settle spring (`motion::Snap`), carrying the hand's velocity; the drop is
-//! sent once, as the output's exported `move` action, so a drag is exactly
-//! what an agent or script can do. The per-display position menus stay the
-//! keyboard and assistive alternative. At rest the canvas asks for no
-//! frames.
+//! when asked to identify screens. The canvas is the page's one display
+//! selection: pressing or tapping a display chooses it, as do the arrow
+//! keys once the canvas has focus and a screen reader's activation of a
+//! display's tile. Dragging one moves it 1:1 under the pointer or finger,
+//! by transform alone: nothing is laid out or stored while it moves. Within
+//! a small threshold its edges and centre snap magnetically onto another
+//! display's, and an alignment guide shows each line it lines up with
+//! ([`placement::snap_with_guides`]). On release it settles into the
+//! nearest place where it touches another display and covers none
+//! ([`placement::settle`]) with the paged-strip settle spring
+//! (`motion::Snap`), carrying the hand's velocity; the drop is sent once, as
+//! the output's exported `move` action, so a drag is exactly what an agent
+//! or script can do. Ctrl with an arrow key moves the chosen display to the
+//! next place that way ([`placement::step`]), settling as a drop does. At
+//! rest the canvas asks for no frames.
 
 pub use settings_store::display_placement as placement;
 use tilo_sort::CompactSort as _;
@@ -25,7 +27,7 @@ use crate::motion::{Direction, MotionValue, Snap, Transient};
 use crate::num::f32_of_f64;
 use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
-use crate::widget::TaffyTreeExt;
+use crate::widget::{ModelPath, TaffyTreeExt};
 
 use std::collections::HashMap;
 
@@ -43,6 +45,10 @@ use super::finger_path::FingerPath;
 use placement::{Guide, Placement};
 
 use crate::i18n::widget_format;
+
+/// The action target of a display's tile, before its output key: a screen
+/// reader activating it chooses that display.
+const CHOOSE_TARGET: &str = "display:";
 
 fn t(key: &str) -> String {
     widget_format(key, &[])
@@ -268,7 +274,7 @@ pub struct DisplayArrangement {
     displays: Vec<ArrangedDisplay>,
     moves: Vec<(String, ActionEmitter<(i32, i32)>)>,
     gesture: ui::LocalState<ArrangementGesture>,
-    /// The display chosen here and in the pane's display picker.
+    /// The page's one display selection, chosen here.
     selection: Option<ui::LocalState<String>>,
     /// The display under the pointer, for the pane to flash its number on.
     pointed: Option<ui::LocalState<Option<String>>>,
@@ -727,6 +733,98 @@ impl DisplayArrangement {
         true
     }
 
+    /// A key on the focused canvas: an arrow chooses the next display that
+    /// way; with Ctrl it moves the chosen display instead (as Ctrl+arrow
+    /// moves a Quick Settings tile). Whether the canvas took the key: an
+    /// arrow with nowhere to go is still the canvas's, so focus does not
+    /// wander off on it.
+    fn key(&mut self, key: &Key, control: bool) -> bool {
+        let way = match key {
+            Key::Named(NamedKey::ArrowLeft) => placement::Step::Left,
+            Key::Named(NamedKey::ArrowRight) => placement::Step::Right,
+            Key::Named(NamedKey::ArrowUp) => placement::Step::Up,
+            Key::Named(NamedKey::ArrowDown) => placement::Step::Down,
+            _ => return false,
+        };
+        if control {
+            self.step(way);
+        } else {
+            self.select_toward(way);
+        }
+        true
+    }
+
+    /// Choose the display nearest the chosen one's centre that way (the
+    /// first display when none is chosen). Whether the choice changed.
+    fn select_toward(&mut self, way: placement::Step) -> bool {
+        let Some(selection) = self.selection.clone() else {
+            return false;
+        };
+        let centre = |placement: Placement| {
+            (
+                f64::from(placement.x) + f64::from(placement.width) / 2.0,
+                f64::from(placement.y) + f64::from(placement.height) / 2.0,
+            )
+        };
+        let current = self.selected().and_then(|connector| {
+            self.displays
+                .iter()
+                .find(|display| display.connector == connector)
+                .map(|display| (connector, centre(display.placement)))
+        });
+        let next = match current {
+            None => self
+                .displays
+                .first()
+                .map(|display| display.connector.clone()),
+            Some((connector, (cx, cy))) => self
+                .displays
+                .iter()
+                .filter(|display| display.connector != connector)
+                .filter_map(|display| {
+                    let (x, y) = centre(display.placement);
+                    let (along, across) = match way {
+                        placement::Step::Left => (cx - x, y - cy),
+                        placement::Step::Right => (x - cx, y - cy),
+                        placement::Step::Up => (cy - y, x - cx),
+                        placement::Step::Down => (y - cy, x - cx),
+                    };
+                    // Ahead that way; straight ahead before off to a side.
+                    (along > 0.0).then(|| (along + 2.0 * across.abs(), display))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, display)| display.connector.clone()),
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        if selection.with(|selected| *selected == next) {
+            return false;
+        }
+        selection.set(next);
+        self.dirty = true;
+        true
+    }
+
+    /// Choose `connector`, as a screen reader's activation of its tile does.
+    fn choose(&mut self, connector: &str) -> bool {
+        let Some(selection) = &self.selection else {
+            return false;
+        };
+        if !self
+            .displays
+            .iter()
+            .any(|display| display.connector == connector)
+        {
+            return false;
+        }
+        if selection.with(|selected| selected != connector) {
+            selection.set(connector.to_owned());
+            self.dirty = true;
+        }
+        true
+    }
+
     /// An arrow key moves the selected display to the next place that way
     /// ([`placement::step`]), settling there as a drop does. Whether it
     /// moved.
@@ -1166,10 +1264,26 @@ impl Widget for DisplayArrangement {
         }
     }
 
-    /// Focusable when there is a display to move: arrow keys move the
-    /// selected one.
+    /// A screen reader's action on a display's tile: activating or focusing
+    /// it chooses that display.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        let Some(connector) = target.strip_prefix(CHOOSE_TARGET) else {
+            return false;
+        };
+        matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
+            && self.choose(connector)
+    }
+
+    /// Focusable when there is a display to choose or move: arrow keys
+    /// choose, and with Ctrl move, the chosen one.
     fn is_focusable(&self) -> bool {
-        self.displays.len() > 1 && !self.moves.is_empty()
+        self.displays.len() > 1 && (self.selection.is_some() || !self.moves.is_empty())
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -1291,17 +1405,8 @@ impl Widget for DisplayArrangement {
             WindowEvent::KeyboardInput { event, .. }
                 if self.focused && event.state == ElementState::Pressed =>
             {
-                let way = match &event.logical_key {
-                    Key::Named(NamedKey::ArrowLeft) => Some(placement::Step::Left),
-                    Key::Named(NamedKey::ArrowRight) => Some(placement::Step::Right),
-                    Key::Named(NamedKey::ArrowUp) => Some(placement::Step::Up),
-                    Key::Named(NamedKey::ArrowDown) => Some(placement::Step::Down),
-                    _ => None,
-                };
-                // An arrow that way with nowhere to go is still the canvas's:
-                // focus does not wander off on it.
-                if let Some(way) = way {
-                    self.step(way);
+                let modifiers = ctx.modifiers.state();
+                if self.key(&event.logical_key, modifiers.control_key()) {
                     *ctx.handled = true;
                 }
             }
@@ -1323,43 +1428,53 @@ impl Widget for DisplayArrangement {
             } else {
                 "display-arrangement-item"
             };
-            let node = AccessNode::new(Role::Image)
-                .with_name(widget_format(
-                    key,
-                    &[
-                        (
-                            "number",
-                            ui::i18n::ArgValue::Text(display.number.to_string()),
-                        ),
-                        ("name", ui::i18n::ArgValue::Text(display.label.clone())),
-                    ],
-                ))
-                .with_description(widget_format(
-                    "display-arrangement-item-position",
-                    &[
-                        (
-                            "x",
-                            ui::i18n::ArgValue::Text(display.placement.x.to_string()),
-                        ),
-                        (
-                            "y",
-                            ui::i18n::ArgValue::Text(display.placement.y.to_string()),
-                        ),
-                        (
-                            "width",
-                            ui::i18n::ArgValue::Text(display.placement.width.to_string()),
-                        ),
-                        (
-                            "height",
-                            ui::i18n::ArgValue::Text(display.placement.height.to_string()),
-                        ),
-                    ],
-                ))
-                .with_bounds(mapping.to_canvas(display.placement))
-                .with_state(
-                    ui::a11y::AccessState::new()
-                        .selected(selected.as_deref() == Some(display.connector.as_str())),
-                );
+            let chosen = selected.as_deref() == Some(display.connector.as_str());
+            let node = AccessNode::new(if self.selection.is_some() {
+                Role::RadioButton
+            } else {
+                Role::Image
+            })
+            .with_name(widget_format(
+                key,
+                &[
+                    (
+                        "number",
+                        ui::i18n::ArgValue::Text(display.number.to_string()),
+                    ),
+                    ("name", ui::i18n::ArgValue::Text(display.label.clone())),
+                ],
+            ))
+            .with_description(widget_format(
+                "display-arrangement-item-position",
+                &[
+                    (
+                        "x",
+                        ui::i18n::ArgValue::Text(display.placement.x.to_string()),
+                    ),
+                    (
+                        "y",
+                        ui::i18n::ArgValue::Text(display.placement.y.to_string()),
+                    ),
+                    (
+                        "width",
+                        ui::i18n::ArgValue::Text(display.placement.width.to_string()),
+                    ),
+                    (
+                        "height",
+                        ui::i18n::ArgValue::Text(display.placement.height.to_string()),
+                    ),
+                ],
+            ))
+            .with_bounds(mapping.to_canvas(display.placement))
+            .with_state(ui::a11y::AccessState::new().selected(chosen));
+            // A screen reader chooses a display by activating its tile.
+            let node = if self.selection.is_some() {
+                let node = node.with_action_target(format!("{CHOOSE_TARGET}{}", display.connector));
+                let state = node.state.clone().checked(chosen);
+                node.with_state(state)
+            } else {
+                node
+            };
             let mut node = if let Some(status) = display.status() {
                 let position = node.description.clone().unwrap_or_default();
                 node.with_description(widget_format(
@@ -1699,9 +1814,9 @@ mod tests {
 
     // USER REQUIREMENT (2026-10-22): the arrangement canvas is the one place
     // a display's position is set, and it works from the keyboard as well as
-    // by hand: with the canvas focused, an arrow key moves the selected
-    // display to the next place that way, sent once as its move, with the
-    // focus ring on that display.
+    // by hand: with the canvas focused, Ctrl with an arrow key moves the
+    // selected display to the next place that way, sent once as its move,
+    // with the focus ring on that display.
     #[test]
     fn arrow_keys_move_the_selected_display_from_the_keyboard() {
         let (mut canvas, selection) = selected_canvas();
@@ -1735,16 +1850,86 @@ mod tests {
         assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
     }
 
+    // USER REQUIREMENT (2026-10-22): the canvas is the page's one display
+    // selection, with no second picker: every display can be chosen from
+    // the keyboard (Tab reaches the canvas, an arrow chooses the next
+    // display that way, Ctrl with an arrow moves the chosen one) and by a
+    // screen reader through the canvas's display tiles.
+    #[test]
+    fn every_display_is_chosen_and_moved_from_the_keyboard() {
+        let (canvas, selection) = selected_canvas();
+        let mut host = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            canvas,
+            (800, 400),
+            ui::theme::Theme::dark(),
+        );
+        host.profile_frame();
+        assert!(host.tab(false).is_some(), "Tab reaches the canvas");
+        host.key("ArrowRight");
+        assert_eq!(selection.with(Clone::clone), "HDMI-A-1", "an arrow chooses");
+        host.key("ArrowRight");
+        assert_eq!(
+            selection.with(Clone::clone),
+            "HDMI-A-1",
+            "nothing further that way keeps the choice"
+        );
+        assert!(
+            ui::widget::controls::take_control_invocation(host.root_mut::<DisplayArrangement>())
+                .is_none(),
+            "choosing moves nothing"
+        );
+        host.key("ArrowLeft");
+        assert_eq!(selection.with(Clone::clone), "eDP-1");
+        host.set_modifiers(&["ctrl".to_owned()]);
+        host.key("ArrowRight");
+        let moved =
+            ui::widget::controls::take_control_invocation(host.root_mut::<DisplayArrangement>())
+                .expect("Ctrl+arrow moves the chosen display");
+        assert_eq!(moved.address.action, "move-display");
+        assert_eq!(
+            (moved.arguments["x"].as_i64(), moved.arguments["y"].as_i64()),
+            (Some(3840), Some(0)),
+            "the panel moves past the monitor's right side"
+        );
+        assert_eq!(selection.with(Clone::clone), "eDP-1", "and stays chosen");
+
+        // A screen reader: each display's tile is a choice it can activate.
+        let canvas = host.root_mut::<DisplayArrangement>();
+        let tiles = canvas.accessibility().unwrap().children;
+        assert_eq!(tiles.len(), 2);
+        for tile in &tiles {
+            assert_eq!(tile.role, ui::a11y::Role::RadioButton);
+            assert!(
+                tile.action_target.is_some(),
+                "{:?} can be activated",
+                tile.name
+            );
+        }
+        let monitor = tiles
+            .iter()
+            .find(|tile| !tile.state.selected)
+            .and_then(|tile| tile.action_target.clone())
+            .unwrap();
+        assert_eq!(monitor, format!("{CHOOSE_TARGET}HDMI-A-1"));
+        assert!(canvas.choose("HDMI-A-1"));
+        assert_eq!(selection.with(Clone::clone), "HDMI-A-1");
+        assert!(
+            !canvas.choose("Virtual-1"),
+            "never a display it does not show"
+        );
+    }
+
     fn selected_canvas() -> (DisplayArrangement, ui::LocalState<String>) {
         let selection = ui::LocalState::new("eDP-1".to_owned());
         let canvas = canvas().with_selection(selection.clone());
         (canvas, selection)
     }
 
-    // USER REQUIREMENT (2026-10-21): there is one display selection, shared
-    // by the arrangement canvas and the display picker; clicking, tapping or
-    // starting to drag a display on the canvas selects it, and the selected
-    // display is drawn with the design system's selection.
+    // USER REQUIREMENT (2026-10-21): there is one display selection, the
+    // arrangement canvas's; clicking, tapping or starting to drag a display
+    // on the canvas selects it, and the selected display is drawn with the
+    // design system's selection.
     #[test]
     fn pressing_a_display_selects_it_in_the_shared_selection() {
         let (mut canvas, selection) = selected_canvas();
@@ -1756,7 +1941,7 @@ mod tests {
         assert!(!node.children[0].state.selected);
         assert!(canvas.release(), "a press without a drag is just a choice");
         assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
-        // The picker choosing another display shows on the canvas.
+        // A choice made another way (keys, a screen reader) shows too.
         selection.set("eDP-1".into());
         assert!(canvas.accessibility().unwrap().children[0].state.selected);
     }

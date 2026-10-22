@@ -512,6 +512,11 @@ impl SettingsApp {
                 self.select(category);
                 self.search(crate::scenarios::SEARCH_QUERY);
             }
+            Staged::Setting(setting) => {
+                if let Err(error) = self.request_setting(setting) {
+                    tracing::warn!(%error, "the capture's setting is not one Settings shows");
+                }
+            }
         }
     }
 

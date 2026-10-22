@@ -245,6 +245,7 @@ pub const SETTINGS: &[Setting] = &[
     // Bluetooth
     s("bluetooth.enabled", "bluetooth", "bluetooth.toggle"),
     // Displays
+    s("display.arrangement", "displays", "display.arrangement"),
     s("display.brightness", "displays", "display.brightness"),
     s(
         "display.auto_brightness",

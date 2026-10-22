@@ -1037,8 +1037,8 @@ pub struct DisplayModel {
     /// composition is rebuilt between frames.
     arrangement_drag: LocalState<super::display_arrangement::ArrangementGesture>,
     device_arrangement_drag: LocalState<super::display_arrangement::ArrangementGesture>,
-    /// The one selected display, by output key: chosen on the canvas or in
-    /// the display picker, which share it. Its settings are the page's.
+    /// The one selected display, by output key: chosen on the canvas (by
+    /// pointer, touch, keys or screen reader). Its settings are the page's.
     selected: LocalState<String>,
     /// The revision of [`Self::selected`] the page shows.
     selected_seen: u64,
@@ -1049,7 +1049,7 @@ pub struct DisplayModel {
     last_flash: Option<String>,
     /// While Identify shows the numbers: when it showed and goes.
     identify_window: Option<(Instant, Instant)>,
-    /// What the capture shows of the canvas and picker, for screenshots.
+    /// What the capture shows of the canvas, for screenshots.
     sample: Option<crate::scenarios::DisplaysSample>,
     changed: bool,
 }
@@ -1326,7 +1326,7 @@ impl DisplayModel {
         self.sample = Some(sample);
         match sample {
             DisplaysSample::Default => {}
-            DisplaysSample::PickedInList | DisplaysSample::PickedOnCanvas => {
+            DisplaysSample::ChosenByKeyboard | DisplaysSample::PickedOnCanvas => {
                 self.selected.set(SAMPLE_MONITOR.into());
             }
             DisplaysSample::Dragging => {
@@ -1413,8 +1413,8 @@ impl DisplayModel {
         self
     }
 
-    /// The selected display, by output key: the one chosen on the canvas or
-    /// in the picker while it is connected, else the primary display, else
+    /// The selected display, by output key: the one chosen on the canvas
+    /// while it is connected, else the primary display, else
     /// the built-in panel, else the first.
     fn selected_output(&self) -> Option<&DisplayOutput> {
         let connected = self.connected_outputs();
@@ -1449,7 +1449,7 @@ impl DisplayModel {
         }
     }
 
-    /// Take in a choice made on the canvas or in the picker, and the
+    /// Take in a choice made on the canvas, and the
     /// display the pointer came to rest on: the page shows the chosen
     /// display's settings, and each such display flashes its number on
     /// itself, so the person always knows which screen is which.
@@ -2460,7 +2460,7 @@ impl DisplayModel {
     fn build_composition(&self) -> Box<dyn Widget> {
         let connected = self.connected_outputs();
         // What is being tried, or waits to be, leads: its countdown must be
-        // seen. Then the arrangement with its display picker, and below it
+        // seen. Then the arrangement, which is the selection, and below it
         // the one selected display's settings: never a list of every
         // display, and no brightness outside the selected display's. Then
         // the comforts that are not one display's, and the displays of
@@ -2584,9 +2584,9 @@ impl DisplayModel {
         ))
     }
 
-    /// The arrangement card: the canvas of the connected displays and,
-    /// directly under it, the display picker; they share one selection.
-    /// Identify sits in the card's header. See [`Self::connected_outputs`]
+    /// The arrangement card: the canvas of the connected displays, which is
+    /// also where a display is chosen (by pointer, touch, keyboard or screen
+    /// reader). Identify sits in the card's header. See [`Self::connected_outputs`]
     /// for why disconnected ports aren't enumerated.
     fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> SettingsSection {
         if connected.is_empty() {
@@ -2618,20 +2618,13 @@ impl DisplayModel {
         crate::widgets::section_with(
             &t("display-card-title"),
             Box::new(identify),
-            rows(vec![
-                note(&caption),
-                block(Box::new(canvas)),
-                setting_row(
-                    &t("display-picker"),
-                    Box::new(self.display_picker(connected)),
-                ),
-            ]),
+            rows(vec![note(&caption), block(Box::new(canvas))]),
         )
     }
 
-    /// The arrangement canvas over `connected`, sharing the selection with
-    /// the display picker and telling the model which display the pointer
-    /// is over.
+    /// The arrangement canvas over `connected`: it holds the page's one
+    /// display selection and tells the model which display the pointer is
+    /// over.
     fn arrangement_canvas(
         &self,
         connected: &[&DisplayOutput],
@@ -2658,37 +2651,6 @@ impl DisplayModel {
         .with_selection(self.selected.clone())
         .with_pointed(self.pointed.clone())
         .identifying(self.identify_window)
-    }
-
-    /// The display picker: each connected display by the number Identify
-    /// shows and its name. Choosing one selects it on the canvas too.
-    fn display_picker(&self, connected: &[&DisplayOutput]) -> Dropdown {
-        let mut picker = Dropdown::from_state(Vec::new(), &self.selected);
-        picker.set_value_options(Self::picker_choices(connected));
-        picker
-            .with_id("display.picker")
-            .open_if(self.sample == Some(crate::scenarios::DisplaysSample::PickedInList))
-    }
-
-    /// The picker's entries: each display's output key, and its number and
-    /// name as a person reads them.
-    fn picker_choices(connected: &[&DisplayOutput]) -> Vec<(String, String)> {
-        connected
-            .iter()
-            .zip(Self::display_numbers(connected))
-            .map(|(output, number)| {
-                (
-                    output.connector.clone(),
-                    t_args(
-                        "display-picker-choice",
-                        &[
-                            ("number", number.to_string().into()),
-                            ("name", output_title(output).into()),
-                        ],
-                    ),
-                )
-            })
-            .collect()
     }
 
     /// The number each of `connected` is known by, the one Identify shows
@@ -2800,7 +2762,7 @@ impl DisplayModel {
                         crate::prefs::DisplayPrefs::paths().night_light_temperature,
                         |label: String| {
                             temperature_from_label(&label)
-                                .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
+                                .ok_or_else(|| format!("`{label}` is not a night light warmth"))
                         },
                     ),
                 note(&t("display-night-light-caption")),
