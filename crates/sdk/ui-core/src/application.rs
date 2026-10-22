@@ -2035,6 +2035,9 @@ impl crate::search::SearchProvider for ComponentProvider {
         self.invoke(|provider| provider.facets())
             .unwrap_or_default()
     }
+    fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        self.invoke(|provider| provider.open_action()).flatten()
+    }
     fn search_scopes(&self) -> Vec<crate::search::ScopeDecl> {
         self.invoke(|provider| provider.search_scopes())
             .unwrap_or_default()

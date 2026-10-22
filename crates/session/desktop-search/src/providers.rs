@@ -1,9 +1,11 @@
 //! Portable sources: everything a desktop can search without a compositor.
 //! Each takes a snapshot the host collects when search opens.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use tilo_actions::{ActionAddress, Availability, Resource};
+use ui::search::{PagePoll, PendingToken, SearchQuery};
 
 use crate::model::{ActionTarget, Hit, Source, Target};
 use crate::rank;
@@ -227,6 +229,7 @@ fn action_target(resource: &Resource, action: &str) -> Option<ActionTarget> {
         resource_kind: resource.kind.clone(),
         resource_label: resource.label.clone(),
         spec: spec.clone(),
+        preset: None,
     })
 }
 
@@ -272,6 +275,7 @@ impl Source for Actions {
                         resource_kind: flat.resource_kind.clone(),
                         resource_label: flat.resource_label.clone(),
                         spec: flat.action.clone(),
+                        preset: None,
                     })),
                 })
             })
@@ -301,10 +305,20 @@ const CONTENT_MATCH_SCORE: i32 = 10;
 /// notebook's pages, a mailbox's messages). Only hits addressing an action
 /// the application currently exports are offered: a provider discovers,
 /// it never grants.
+///
+/// An application may answer a query later than it is asked (a video
+/// service's results, a row offering to search the service for what was
+/// typed): its provider hands back a pending token, and [`Self::poll`] tells
+/// the palette once the answer is in, so the rows are built again.
 pub struct Content {
     providers: Vec<Box<dyn ui::search::SearchProvider>>,
     resources: Vec<Resource>,
+    /// The part of the application a search it opened is narrowed to (a
+    /// [`ui::search::ScopeDecl`] anchor).
+    scope: Option<String>,
     limit: usize,
+    /// The answers still coming, by provider.
+    pending: RefCell<Vec<(usize, PendingToken)>>,
 }
 
 impl Content {
@@ -315,8 +329,41 @@ impl Content {
         Self {
             providers,
             resources,
+            scope: None,
             limit: 16,
+            pending: RefCell::default(),
         }
+    }
+
+    /// Narrow every query to `scope`, one part of the application.
+    #[must_use]
+    pub fn within(mut self, scope: Option<String>) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// Ask the providers whose answers were still coming. Returns whether
+    /// one arrived, so the query should run again.
+    pub fn poll(&self) -> bool {
+        let waiting = std::mem::take(&mut *self.pending.borrow_mut());
+        let mut arrived = false;
+        let mut still = Vec::new();
+        for (at, token) in waiting {
+            let Some(provider) = self.providers.get(at) else {
+                continue;
+            };
+            match provider.poll_page(&token) {
+                PagePoll::Pending => still.push((at, token)),
+                PagePoll::Ready(_) | PagePoll::Answered(_) => arrived = true,
+            }
+        }
+        *self.pending.borrow_mut() = still;
+        arrived
+    }
+
+    /// Whether an answer is still coming.
+    pub fn waiting(&self) -> bool {
+        !self.pending.borrow().is_empty()
     }
 }
 
@@ -330,11 +377,27 @@ impl Source for Content {
             return Vec::new();
         }
         let resources = index(&self.resources);
+        let mut query = SearchQuery::new(needle);
+        if let Some(scope) = &self.scope {
+            query = query.within(scope.clone());
+        }
+        let mut pending = Vec::new();
         let mut hits = Vec::new();
-        for provider in &self.providers {
-            for result in provider.search_limited(needle, self.limit) {
-                let Some(address) = result.action_address() else {
-                    continue;
+        for (at, provider) in self.providers.iter().enumerate() {
+            let page = provider.search_page(&query, None, self.limit, self.limit);
+            if let Some(token) = page.pending {
+                pending.push((at, token));
+            }
+            for result in &page.results {
+                // A hit naming no action of its own (a video, a search of
+                // the app's service) opens through the app's `open`, at the
+                // hit's anchor, as picking it inside the app does.
+                let (address, anchor) = match result.action_address() {
+                    Some(address) => (address, None),
+                    None => match provider.open_action() {
+                        Some(open) => (open, Some(result.action_id.clone())),
+                        None => continue,
+                    },
                 };
                 let resolved;
                 let resource = if let Some(resource) = resources.get(&address.resource) {
@@ -346,16 +409,24 @@ impl Source for Content {
                     resolved = found;
                     &resolved
                 };
-                let Some(target) = action_target(resource, &address.action) else {
+                let Some(mut target) = action_target(resource, &address.action) else {
                     continue;
                 };
+                let mut id = key(&address);
+                if let Some(anchor) = anchor {
+                    let Some(param) = target.spec.params().first() else {
+                        continue;
+                    };
+                    id = format!("{id}\u{1f}{anchor}");
+                    target.preset = Some((param.name.to_string(), anchor));
+                }
                 let score = rank::record_match_score(needle, &result.title, &address.resource)
                     .unwrap_or(CONTENT_MATCH_SCORE)
                     .min(MAX_PROVIDER_SCORE);
                 hits.push(Hit {
                     kind: content_kind(&result.kind),
                     provider: self.id().into(),
-                    id: key(&address),
+                    id,
                     title: result.title.clone(),
                     subtitle: result.subtitle.clone(),
                     facts: Vec::new(),
@@ -364,6 +435,7 @@ impl Source for Content {
                 });
             }
         }
+        *self.pending.borrow_mut() = pending;
         hits
     }
 }
@@ -716,6 +788,155 @@ mod tests {
         );
         // A hit whose address the application no longer exports is dropped.
         assert!(content.query("hidden").is_empty());
+    }
+
+    /// An app whose rows for a query arrive after it is asked, as a
+    /// framework app's do: it takes the query in on its next frame, then
+    /// offers to search its service for it ("Search `YouTube` for …").
+    /// Each query the app was asked, with the part of it it was narrowed to.
+    type Asked = std::rc::Rc<RefCell<Vec<(String, Option<String>)>>>;
+
+    struct Service {
+        arrived: std::rc::Rc<std::cell::Cell<bool>>,
+        asked: Asked,
+    }
+    impl ui::search::SearchProvider for Service {
+        fn name(&self) -> &'static str {
+            "Videos"
+        }
+        fn search(&self, _: &str) -> Vec<ui::search::SearchResult> {
+            Vec::new()
+        }
+        fn search_page(
+            &self,
+            query: &SearchQuery,
+            _: Option<&ui::search::SearchCursor>,
+            _: usize,
+            _: usize,
+        ) -> ui::search::SearchPage {
+            self.asked
+                .borrow_mut()
+                .push((query.text().to_owned(), query.scope().map(str::to_owned)));
+            if !self.arrived.get() {
+                let mut page = ui::search::SearchPage::empty();
+                page.pending = Some(PendingToken::new(1));
+                return page;
+            }
+            let row = ui::search::SearchResult::for_action(
+                "Videos",
+                format!("Search the service for “{}”", query.text()),
+                ActionAddress::new("videos", "search"),
+            );
+            ui::search::SearchPage::of(vec![row], None)
+        }
+        fn poll_page(&self, _: &PendingToken) -> PagePoll {
+            if self.arrived.get() {
+                PagePoll::Answered(ui::search::SearchPage::empty())
+            } else {
+                PagePoll::Pending
+            }
+        }
+    }
+
+    #[test]
+    fn an_apps_answer_that_comes_later_is_shown_once_it_arrives() {
+        let arrived = std::rc::Rc::new(std::cell::Cell::new(false));
+        let asked = std::rc::Rc::default();
+        let service = Service {
+            arrived: std::rc::Rc::clone(&arrived),
+            asked: std::rc::Rc::clone(&asked),
+        };
+        let resources = vec![resource_with_action("videos", "Videos", "search", "Search")];
+        let content =
+            Content::new(vec![Box::new(service)], resources).within(Some("library:videos".into()));
+        assert!(content.query("lofi").is_empty(), "nothing has arrived yet");
+        assert!(content.waiting());
+        assert!(!content.poll(), "still coming");
+        arrived.set(true);
+        assert!(content.poll(), "the answer is in");
+        let hits = content.query("lofi");
+        assert_eq!(
+            hits.first().map(|hit| hit.title.as_str()),
+            Some("Search the service for “lofi”")
+        );
+        assert!(!content.waiting());
+        assert!(
+            asked
+                .borrow()
+                .iter()
+                .all(|(text, scope)| text == "lofi" && scope.as_deref() == Some("library:videos")),
+            "the app is asked within the part of it the search was opened for: {asked:?}"
+        );
+    }
+
+    /// An app whose hits name no action: it opens them at their anchor
+    /// through its `open`.
+    struct Library;
+    impl ui::search::SearchProvider for Library {
+        fn name(&self) -> &'static str {
+            "Videos"
+        }
+        fn search(&self, query: &str) -> Vec<ui::search::SearchResult> {
+            vec![ui::search::SearchResult::new(
+                "Videos",
+                format!("Search the service for “{query}”"),
+                format!("videos.search:{query}"),
+            )]
+        }
+        fn open_action(&self) -> Option<ActionAddress> {
+            Some(ActionAddress::new("videos", "open"))
+        }
+    }
+
+    #[test]
+    fn a_hit_naming_no_action_opens_through_the_apps_open_at_its_anchor() {
+        struct Closed;
+        impl ui::search::SearchProvider for Closed {
+            fn name(&self) -> &'static str {
+                "Closed"
+            }
+            fn search(&self, query: &str) -> Vec<ui::search::SearchResult> {
+                Library.search(query)
+            }
+        }
+        let mut library = Resource::new("videos", "videos.library", "Videos");
+        // As the framework publishes it: a view taking the anchor.
+        library.actions = vec![
+            tilo_actions::ActionSpec::typed_operation(
+                "open",
+                "Open",
+                "Item to open",
+                tilo_actions::OperationKind::View,
+                "test.open",
+                vec![tilo_actions::ActionParam::required(
+                    "anchor",
+                    tilo_actions::ParamType::Text,
+                    "Item to open",
+                )],
+                |_| tilo_actions::EncodedAction {
+                    type_id: "test.open".into(),
+                    payload: Vec::new(),
+                },
+            )
+            .of_kind(tilo_actions::ActionKind::Read),
+        ];
+        let content = Content::new(vec![Box::new(Library)], vec![library]);
+        let hits = content.query("lofi");
+        let Some(Target::Action(target)) = hits.first().map(|hit| &hit.target) else {
+            panic!("the hit opens through an action: {hits:?}");
+        };
+        assert_eq!(hits[0].title, "Search the service for “lofi”");
+        assert_eq!(target.address(), ActionAddress::new("videos", "open"));
+        assert_eq!(
+            target.preset,
+            Some(("anchor".to_owned(), "videos.search:lofi".to_owned()))
+        );
+        // Without an `open`, such a hit is not offered: nothing could open it.
+        assert!(
+            Content::new(vec![Box::new(Closed)], Vec::new())
+                .query("lofi")
+                .is_empty()
+        );
     }
 
     #[test]

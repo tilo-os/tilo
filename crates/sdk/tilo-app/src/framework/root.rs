@@ -1570,6 +1570,9 @@ pub(crate) struct ResourceSearch {
     /// Where a search that waits on the surfaces' answers finds them: none
     /// for a fixed set of entries.
     live: Option<LiveSearch>,
+    /// The resource's `open`, where a view shows its items: how a host
+    /// searching from outside the app opens a hit at its anchor.
+    opens: Option<tilo_actions::ActionAddress>,
 }
 
 /// The resource's index as it moves on, for a search that waits on its
@@ -1650,6 +1653,7 @@ impl ResourceSearch {
             scopes: Vec::new(),
             queries: Vec::new(),
             live: None,
+            opens: None,
         }
     }
 
@@ -1804,6 +1808,10 @@ impl SearchProvider for ResourceSearch {
 
     fn search_scopes(&self) -> Vec<ScopeDecl> {
         self.scopes.clone()
+    }
+
+    fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        self.opens.clone()
     }
 }
 
@@ -2358,6 +2366,10 @@ impl RootSearch for ResourceRoot {
             cache: Rc::clone(&self.search),
             answered: std::cell::RefCell::new(None),
         });
+        source.opens = self
+            .stages
+            .opens()
+            .then(|| tilo_actions::ActionAddress::new(self.dispatch.resource_id(), "open"));
         vec![Box::new(source)]
     }
 
@@ -3585,6 +3597,7 @@ mod tests {
             scopes: Vec::new(),
             queries: Vec::new(),
             live: None,
+            opens: None,
         };
         let groceries = search.search("groceries");
         assert_eq!(groceries.len(), 1);
@@ -3615,6 +3628,7 @@ mod tests {
             scopes: Vec::new(),
             queries: Vec::new(),
             live: None,
+            opens: None,
         };
         let hits = search.search("sunset");
         let marker = hits

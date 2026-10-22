@@ -32,6 +32,12 @@ pub struct SearchData {
     /// the app's actions (named for automation, not for finding things)
     /// would otherwise crowd out.
     pub content_only: bool,
+    /// The part of the application a search it opened is narrowed to (a
+    /// [`ui::search::ScopeDecl`] anchor): one mailbox, one folder.
+    pub scope: Option<String>,
+    /// What the empty field says it searches, where that is not
+    /// everything ("Search Tube…").
+    pub placeholder: Option<String>,
 }
 
 struct Sources {
@@ -48,7 +54,7 @@ impl Sources {
             applications: Applications::new(data.applications),
             windows: Windows(data.windows),
             commands: Commands(data.commands),
-            content: Content::new(data.providers, data.resources.clone()),
+            content: Content::new(data.providers, data.resources.clone()).within(data.scope),
             actions: Actions(if data.content_only {
                 Vec::new()
             } else {
@@ -110,8 +116,19 @@ impl DesktopSearch {
         self.sources.is_some()
     }
 
+    /// Whether an application's answer to the query is still coming: the
+    /// host keeps calling [`Self::refresh`] until it arrives.
+    pub fn waiting(&self) -> bool {
+        self.sources
+            .as_ref()
+            .is_some_and(|sources| sources.content.waiting())
+    }
+
     /// Open over `data` with an empty query.
-    pub fn open(&mut self, data: SearchData) {
+    pub fn open(&mut self, mut data: SearchData) {
+        let placeholder = data.placeholder.take();
+        self.palette
+            .set_query_placeholder(placeholder.as_deref().unwrap_or(PLACEHOLDER));
         self.sources = Some(Sources::new(data));
         self.dismissed = false;
         self.choice = None;
@@ -156,15 +173,18 @@ impl DesktopSearch {
     }
 
     /// Run the query again when the palette's text changed since the rows
-    /// were built, or the index's code arrived since. Returns whether the
-    /// rows changed.
+    /// were built, the index's code arrived since, or an application's
+    /// answer that was still coming arrived. Returns whether the rows
+    /// changed.
     pub fn refresh(&mut self) -> bool {
-        if self.sources.is_none() {
+        let Some(sources) = &self.sources else {
             return false;
-        }
+        };
+        let answered = sources.content.poll();
         let query = self.palette.query().to_owned();
         let generation = ui::search::engine_generation();
-        if self.shown_query.as_deref() == Some(query.as_str())
+        if !answered
+            && self.shown_query.as_deref() == Some(query.as_str())
             && self.shown_generation == generation
         {
             return false;
@@ -316,6 +336,13 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                 action: &action.spec,
             };
             let mut entry = CommandEntry::from_flat_action(&flat);
+            if let Some((param, value)) = &action.preset {
+                entry = entry.with_action_preset(param.clone(), value.clone());
+                // The row is the hit (a video, a search of the service), not
+                // the generic `open` it runs through: only the hit's own
+                // subtitle describes it.
+                entry.description = None;
+            }
             entry.id = id;
             entry.label.clone_from(&hit.title);
             (entry, ui::search::system::icon_for_kind(&hit.kind))

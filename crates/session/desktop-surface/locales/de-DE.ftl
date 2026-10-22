@@ -551,6 +551,7 @@ search-window-move-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich versc
 search-window-copy-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich kopieren
 search-window-group-untitled = Unbenanntes Fenster
 search-window-nth = { $nth } von { $count }
+search-window-placeholder = { $searched } durchsuchen…
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
 search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · { $count ->
     [one] 1 Tab

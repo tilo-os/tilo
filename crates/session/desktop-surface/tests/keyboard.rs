@@ -129,6 +129,11 @@ struct Root {
 }
 
 impl Widget for Root {
+    ui::provides!(
+        dyn ui::search::capability::SearchSource,
+        dyn ui::resources::PublishesResources
+    );
+
     fn name(&self) -> &'static str {
         "KeyboardApp"
     }
@@ -216,6 +221,113 @@ impl Widget for Root {
     }
 }
 
+impl ui::search::capability::SearchSource for Root {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(Service)]
+    }
+}
+
+/// The resource the app publishes its `open` on.
+const VIDEOS: &str = "keyboard/videos";
+/// The operation type of the app's `open`.
+const OPEN_TYPE: &str = "keyboard.open";
+
+/// The app's `open`, as a framework app publishes it: show the item at an
+/// anchor, as picking one of its search hits does.
+impl ui::resources::PublishesResources for Root {
+    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        let open = tilo_actions::ActionSpec::typed(
+            "open",
+            "Open",
+            "Item to open",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            vec![tilo_actions::ActionParam::required(
+                "anchor",
+                tilo_actions::ParamType::Text,
+                "Item to open: the anchor of a search hit",
+            )],
+            |args| {
+                tilo_actions::EncodedAction::encode(
+                    OPEN_TYPE,
+                    &Open {
+                        anchor: args.text("anchor").unwrap_or_default().to_owned(),
+                    },
+                )
+                .unwrap()
+            },
+        );
+        vec![tilo_actions::Resource::new(VIDEOS, "keyboard.videos", "Videos").with_action(open)]
+    }
+}
+
+/// What the app's `open` shows: it notes the anchor it was opened at.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Open {
+    anchor: String,
+}
+
+impl tilo_actions::Action for Open {
+    fn apply(&self, doc: &mut ui::automerge::AutoCommit) -> Result<(), tilo_actions::ActionError> {
+        SEARCH.with_borrow_mut(|search| search.opened.push(self.anchor.clone()));
+        doc.put(ROOT, "opened", self.anchor.as_str())?;
+        Ok(())
+    }
+}
+
+/// The app's search: like a framework app's, it takes a query in on a later
+/// frame and only then answers with a row for it ("Search `YouTube` for …"),
+/// a hit naming no action that opens through the app's `open`.
+struct Service;
+
+impl ui::search::SearchProvider for Service {
+    fn name(&self) -> &'static str {
+        "Videos"
+    }
+    fn search(&self, _: &str) -> Vec<ui::search::SearchResult> {
+        Vec::new()
+    }
+    fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        Some(tilo_actions::ActionAddress::new(VIDEOS, "open"))
+    }
+    fn search_page(
+        &self,
+        query: &ui::search::SearchQuery,
+        _: Option<&ui::search::SearchCursor>,
+        _: usize,
+        _: usize,
+    ) -> ui::search::SearchPage {
+        SEARCH.with_borrow_mut(|search| search.asked.push(query.text().to_owned()));
+        let mut page = ui::search::SearchPage::empty();
+        if SEARCH.with_borrow(|search| search.answered) {
+            page.results.push(ui::search::SearchResult::new(
+                "Videos",
+                format!("Search the service for “{}”", query.text()),
+                format!("videos.search:{}", query.text()),
+            ));
+        } else {
+            page.pending = Some(ui::search::PendingToken::new(1));
+        }
+        page
+    }
+    fn poll_page(&self, _: &ui::search::PendingToken) -> ui::search::PagePoll {
+        if SEARCH.with_borrow(|search| search.answered) {
+            ui::search::PagePoll::Answered(ui::search::SearchPage::empty())
+        } else {
+            ui::search::PagePoll::Pending
+        }
+    }
+}
+
+#[derive(Default)]
+struct SearchLog {
+    /// Each query the desktop's search asked the app.
+    asked: Vec<String>,
+    /// The app has taken the query in.
+    answered: bool,
+    /// The anchors the app's `open` ran at.
+    opened: Vec<String>,
+}
+
 impl AppWidget for Root {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
@@ -235,6 +347,8 @@ thread_local! {
     static PRESSED: RefCell<HashMap<u64, Rc<std::cell::Cell<usize>>>> = RefCell::new(HashMap::new());
     /// Whether the next built app takes typing that is not its own.
     static GREEDY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// What the apps' search was asked, and whether it has answered.
+    static SEARCH: RefCell<SearchLog> = RefCell::default();
 }
 
 fn factory(
@@ -274,11 +388,9 @@ fn factory(
         dirty_late: false,
         rect: Rect::ZERO,
     };
-    Ok(AppComponent::new(
-        context,
-        Box::new(root),
-        tilo_actions::ActionRegistry::new(),
-    ))
+    let mut registry = tilo_actions::ActionRegistry::new();
+    registry.register::<Open>(OPEN_TYPE);
+    Ok(AppComponent::new(context, Box::new(root), registry))
 }
 
 struct Source {
@@ -537,6 +649,59 @@ fn an_apps_own_search_button_opens_search_over_its_window() {
     assert!(
         desk.handle.search_open(),
         "the app's search button opens the desktop's search"
+    );
+}
+
+#[test]
+fn search_an_app_opened_asks_it_and_follows_its_answer_once_it_is_in() {
+    let mut desk = Desk::new(1, 450);
+    desk.driver.click_named("search-open").unwrap();
+    desk.settle();
+    assert!(desk.handle.search_open());
+    desk.driver.type_text("lofi");
+    desk.settle();
+    let asked = SEARCH.with_borrow(|search| search.asked.clone());
+    assert_eq!(
+        asked.last().map(String::as_str),
+        Some("lofi"),
+        "the app is asked what was typed: {asked:?}"
+    );
+    // The app answers on a later frame: search asks again then, so what it
+    // offers for the query (a row searching its service) shows.
+    let before = asked.len();
+    SEARCH.with_borrow_mut(|search| search.answered = true);
+    desk.settle();
+    let asked = SEARCH.with_borrow(|search| search.asked.clone());
+    assert!(
+        asked.len() > before && asked.last().map(String::as_str) == Some("lofi"),
+        "search asks the app again once its answer is in: {asked:?}"
+    );
+}
+
+/// What an app's search offers for the query ("Search `YouTube` for …") is
+/// a row of the search over its window, and choosing it runs inside the
+/// app, at the hit's anchor, through the app's `open`.
+#[test]
+fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
+    SEARCH.with_borrow_mut(|search| search.answered = true);
+    let mut desk = Desk::new(1, 450);
+    desk.driver.click_named("search-open").unwrap();
+    desk.settle();
+    desk.driver.type_text("lofi");
+    desk.settle();
+    desk.driver.key("Enter");
+    desk.settle();
+    assert_eq!(
+        SEARCH.with_borrow(|search| search.opened.clone()),
+        ["videos.search:lofi"],
+        "the app opens at the hit chosen"
+    );
+    assert!(!desk.handle.search_open());
+    assert_eq!(desk.driver.refusal_shown(), None);
+    assert!(
+        desk.driver.control_failures().is_empty(),
+        "{:?}",
+        desk.driver.control_failures()
     );
 }
 
