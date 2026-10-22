@@ -98,6 +98,7 @@ use tokio::sync::mpsc;
 use crate::network::actor::{Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent};
 use crate::network::actor::{PersonalFabricPayload, WorkspaceControlRoute};
 use crate::network::behaviour::load_or_create_keypair;
+use crate::network::governor_join::GoverningRooms;
 use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
@@ -2121,12 +2122,15 @@ impl ShellNetwork {
         });
         let private_chat_endpoint = Some(endpoint.clone());
         let discovery_endpoint = endpoint.clone();
-        let (cmd_tx, _join) = Actor::spawn_deferring_relays(
+        // A device answers the workspace-join exchange for the rooms it governs.
+        let governing = GoverningRooms::of(&tree, host_identity.as_ref());
+        let (cmd_tx, _join) = Actor::spawn_governing(
             endpoint,
             lookup,
             host_identity.clone(),
             Arc::clone(&listen_addrs),
             reachability.clone(),
+            governing,
         );
         let lan_discovery = host_identity
             .as_ref()

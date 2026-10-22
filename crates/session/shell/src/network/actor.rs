@@ -1053,6 +1053,30 @@ impl Actor {
             listen_addrs,
             HEARTBEAT_INTERVAL,
             reachability,
+            None,
+        )
+    }
+
+    /// [`Self::spawn_deferring_relays`] for a device that may govern rooms:
+    /// with `governing`, its endpoint also answers the workspace-join
+    /// exchange for them ([`super::governor_join::GoverningRooms`]), as a
+    /// relay's does.
+    pub fn spawn_governing(
+        endpoint: Endpoint,
+        lookup: MemoryLookup,
+        host_identity: Option<HostIdentity>,
+        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
+        reachability: Reachability,
+        governing: Option<super::governor_join::GoverningRooms>,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_with_heartbeat(
+            endpoint,
+            lookup,
+            host_identity,
+            listen_addrs,
+            HEARTBEAT_INTERVAL,
+            reachability,
+            governing,
         )
     }
 
@@ -1066,6 +1090,7 @@ impl Actor {
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
         reachability: Reachability,
+        governing: Option<super::governor_join::GoverningRooms>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -1079,6 +1104,7 @@ impl Actor {
             cmd_rx,
             heartbeat,
             reachability,
+            governing,
         ));
         (cmd_tx, task)
     }
@@ -3986,6 +4012,7 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
     reachability: Reachability,
+    governing: Option<super::governor_join::GoverningRooms>,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
@@ -4011,8 +4038,17 @@ async fn run(
                 next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
-        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
-        .spawn();
+        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol);
+    // Answered only where this device may govern rooms; a dial elsewhere
+    // finds no such protocol, as at any device that governs none.
+    let router = match governing {
+        Some(governing) => router.accept(
+            tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
+            tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(governing),
+        ),
+        None => router,
+    }
+    .spawn();
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
     let mut state = ActorState {
         private_messages: super::private_messages::Transport::new(
@@ -5694,6 +5730,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             tick,
             Reachability::default(),
+            None,
         );
         let (events, rx) = mpsc::channel(64);
         cmd.send(NetCmd::JoinWorkspace {
@@ -6889,6 +6926,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
             Reachability::default(),
+            None,
         );
         let (cmd_b, _task_b) = Actor::spawn_with_heartbeat(
             b,
@@ -6897,6 +6935,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             heartbeat,
             Reachability::default(),
+            None,
         );
         let (event_a, mut rx_a) = mpsc::channel(16);
         let (event_b, mut rx_b) = mpsc::channel(16);
