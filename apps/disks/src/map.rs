@@ -28,6 +28,10 @@ use ui::widget::{ChipFace, ChipLead, EventCtx, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::window::CursorIcon;
 
+/// The legend a pending map measures: a few partitions' names and sizes,
+/// one line of it on any window wide enough for a sidebar.
+const PENDING_LEGEND: [&str; 3] = ["System 000.0 MB", "Partition 000.0 GB", "Home 000.0 GB"];
+
 /// Opacity of the outline that marks space no partition claims.
 const OUTLINE_ALPHA: u8 = 0x59;
 
@@ -58,6 +62,8 @@ enum Hover {
 #[derive(Clone, Debug, Default)]
 struct Geometry {
     chip: Rect,
+    /// The whole bar the blocks tile.
+    track: Rect,
     segments: Vec<Rect>,
     legend: Vec<Rect>,
     height: f64,
@@ -67,6 +73,8 @@ struct Geometry {
 /// partition") reports through `on_select`.
 pub struct PartitionMap {
     entries: Vec<MapEntry>,
+    /// The drive is still being read: the map's shape stands in.
+    pending: bool,
     selected: Option<usize>,
     on_select: Box<dyn FnMut(Option<usize>)>,
     theme: Theme,
@@ -84,6 +92,7 @@ impl PartitionMap {
     ) -> Self {
         Self {
             entries,
+            pending: false,
             selected,
             on_select: Box::new(on_select),
             theme: Theme::dark(),
@@ -91,6 +100,15 @@ impl PartitionMap {
             cursor: Point::ZERO,
             hover: None,
             geometry: Geometry::default(),
+        }
+    }
+
+    /// The map of a drive still being read: its chip, its bar and a line of
+    /// legend in the skeleton tone, at the sizes the map will take.
+    pub fn pending() -> Self {
+        Self {
+            pending: true,
+            ..Self::new(Vec::new(), None, |_| {})
         }
     }
 
@@ -148,10 +166,16 @@ impl PartitionMap {
             .collect();
 
         let legend_top = track.y1 + gap;
-        let legend = self.lay_out_legend(width, legend_top, text, theme);
+        let legend = if self.pending {
+            let stand_in = legend::measure(text, theme, PENDING_LEGEND);
+            legend::wrap(&stand_in, 0.0, width, legend_top, theme)
+        } else {
+            self.lay_out_legend(width, legend_top, text, theme)
+        };
         let height = legend.iter().map(|r| r.y1).fold(track.y1, f64::max);
         Geometry {
             chip,
+            track,
             segments,
             legend,
             height,
@@ -216,7 +240,34 @@ impl PartitionMap {
         }
     }
 
+    /// Paint the pending map's shapes in the skeleton tone.
+    fn paint_pending(ctx: &mut PaintCtx<'_>, geometry: &Geometry, origin: ui::vello::kurbo::Vec2) {
+        let theme = ctx.theme;
+        let tone = ui::widget::skeleton_tone(theme.tokens.colors.surfaces.content);
+        let chip = geometry.chip + origin;
+        ctx.fill_round(chip, chip.height() / 2.0, tone);
+        ctx.fill_round(
+            geometry.track + origin,
+            f64::from(theme.tokens.radii.item),
+            tone,
+        );
+        for line in &geometry.legend {
+            // A legend line's x-height band, as a skeleton's text is.
+            let line = *line + origin;
+            let bar = (line.height() * 0.6).round();
+            let top = line.y0 + (line.height() - bar) / 2.0;
+            ctx.fill_round(
+                Rect::new(line.x0, top, line.x1, top + bar),
+                f64::from(theme.tokens.radii.detail),
+                tone,
+            );
+        }
+    }
+
     fn hit(&self, p: Point) -> Option<Hover> {
+        if self.pending {
+            return None;
+        }
         let g = &self.geometry;
         let local = Point::new(p.x - self.rect.x0, p.y - self.rect.y0);
         if g.chip.contains(local) {
@@ -299,6 +350,10 @@ impl Widget for PartitionMap {
         let at = |r: Rect| r + origin;
         let colors = &theme.tokens.colors;
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        if self.pending {
+            Self::paint_pending(&mut ctx, &geometry, origin);
+            return;
+        }
 
         // "Whole disk": a chip, lifted while it is what the actions target.
         ChipFace::new(at(geometry.chip), "Whole disk")
@@ -370,6 +425,9 @@ impl Widget for PartitionMap {
             .with_name("Partition map")
             .with_hashed_key("disks.partition-map")
             .with_bounds(self.rect);
+        if self.pending {
+            return Some(group.with_description("Loading"));
+        }
         group.children.push(
             AccessNode::new(Role::Button)
                 .with_name("Select whole disk")
