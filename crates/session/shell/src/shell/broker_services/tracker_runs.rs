@@ -1,16 +1,20 @@
 //! The Tasks app's tracker, read from the room's committed record for the
-//! runs of its issues. Nothing here writes it: runs move only by the
-//! tracker's own actions.
+//! runs of its issues, and from each private issue's record this device
+//! reads. Nothing here writes them: runs move only by the tracker's own
+//! actions.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tasks::model::{ConfirmationState, Issue, MessageKind, RunPhase, Tracker, issue_resource};
+use tasks::model::{
+    ConfirmationState, Issue, MessageKind, RunPhase, Tracker, issue_resource, private,
+};
 use tilo_action_broker::services::{
     NativeTaskActionRequirement, TRACKER_APP, TrackerAnswer, TrackerDirection, TrackerQuestion,
     TrackerRun, TrackerRuns,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_resource::children::ChildList as _;
 use tilo_resource::{Id, Reader};
 
 use super::NativeOwnerCommitService;
@@ -24,12 +28,14 @@ const MAX_TRACKER_BYTES: usize = 16 * 1024 * 1024;
 type Read = ([u8; 32], Arc<TrackerView>);
 
 /// What the shell reads of a room's tracker: its runs, as the broker and as
-/// the composer read them, and the room tasks it imported.
+/// the composer read them, the room tasks it imported, and the private
+/// issues it lists.
 #[derive(Debug, Default)]
 pub(crate) struct TrackerView {
     pub runs: Vec<TrackerRun>,
     pub followed: Vec<FollowedRun>,
     pub imported: std::collections::BTreeSet<String>,
+    pub private: Vec<Id>,
 }
 
 impl TrackerView {
@@ -38,15 +44,21 @@ impl TrackerView {
             runs: runs_of(tracker),
             followed: followed_runs(tracker),
             imported: tracker.imported.iter().cloned().collect(),
+            private: tracker
+                .private
+                .listed_of(tasks::model::KIND)
+                .into_iter()
+                .cloned()
+                .collect(),
         }
     }
 }
 
-/// The room's tracker, read through its owner, as last read at each room's
-/// revision.
+/// The room's tracker and the private issues' trackers, read through its
+/// owner, as last read at each revision, by room and record.
 pub(crate) struct NativeTrackerRuns {
     pub(crate) owner: NativeOwnerCommitService,
-    read: Mutex<HashMap<String, Read>>,
+    read: Mutex<HashMap<(String, String), Read>>,
 }
 
 /// A run of an issue as whoever follows it sees it: the composer that asked
@@ -139,18 +151,26 @@ impl NativeTrackerRuns {
 
     /// The room's tracker as committed now; `None` in a room with none yet.
     pub(crate) fn tracker(&self, room: &str) -> Result<Option<Arc<TrackerView>>, String> {
+        self.record(room, TRACKER_RECORD)
+    }
+
+    /// Tracker record `record` of `room` as committed now: `None` while
+    /// nothing was written to it (or nothing this device may read, for a
+    /// private issue's).
+    fn record(&self, room: &str, record: &str) -> Result<Option<Arc<TrackerView>>, String> {
         use super::super::native_workspace_owner::DocumentRead;
         let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
+        let key = (room.to_owned(), record.to_owned());
         let known = self
             .read
             .lock_recover()
-            .get(room)
+            .get(&key)
             .map(|(revision, _)| *revision);
         let owner = &self.owner.opened_owner("tracker owner unavailable")?;
         let read = owner.with_current(room_id, |view| {
             view.read_document_with_history(
                 view.device().device_public_key,
-                (TRACKER_APP, TRACKER_RECORD),
+                (TRACKER_APP, record),
                 known,
                 MAX_TRACKER_BYTES,
                 std::time::SystemTime::now(),
@@ -174,18 +194,89 @@ impl NativeTrackerRuns {
                         .map_err(|error| format!("the tracker does not read: {error}"))?
                         .state(),
                 ));
-                held.insert(room.to_owned(), (document.revision, tracker.clone()));
+                held.insert(key, (document.revision, tracker.clone()));
                 Ok(Some(tracker))
             }
             Ok(DocumentRead::Unchanged(_)) => {
-                Ok(held.get(room).map(|(_, tracker)| tracker.clone()))
+                Ok(held.get(&key).map(|(_, tracker)| tracker.clone()))
             }
-            // A room with no tracker yet holds no runs.
+            // A record nothing was written to yet holds no runs.
             Ok(DocumentRead::CheckpointPending) | Err(_) if known.is_none() => Ok(None),
             Ok(DocumentRead::CheckpointPending) => Err("the tracker is between checkpoints".into()),
             Err(error) => Err(error),
         }
     }
+
+    /// The room's policy, as its committed room document holds it now.
+    fn policy(&self, room: &str) -> Result<tilo_action_policy::RoomPolicy, String> {
+        let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
+        let owner = &self.owner.opened_owner("tracker owner unavailable")?;
+        owner.with_current(room_id, |view| {
+            let doc = view
+                .peer()
+                .admitted_room()
+                .ok_or("tracker read policy unavailable")?;
+            Ok(tilo_desktop_model::projection::room_policy_of(doc, room))
+        })
+    }
+
+    /// The runs of the private issues `tracker` lists whose records this
+    /// device reads, each while its agent, acting for its approver, reads
+    /// it too.
+    fn private_runs(&self, room: &str, tracker: &TrackerView) -> Result<Vec<TrackerRun>, String> {
+        if tracker.private.is_empty() {
+            return Ok(Vec::new());
+        }
+        let policy = self.policy(room)?;
+        let mut runs = Vec::new();
+        for issue in &tracker.private {
+            let Some(record) = private::private_record(issue) else {
+                continue;
+            };
+            // One that does not read just now holds what it held.
+            let held = self.record(room, record.route()).unwrap_or_else(|_| {
+                self.read
+                    .lock_recover()
+                    .get(&(room.to_owned(), record.route().to_owned()))
+                    .map(|(_, tracker)| tracker.clone())
+            });
+            let Some(held) = held else {
+                continue;
+            };
+            runs.extend(
+                held.runs
+                    .iter()
+                    .filter(|run| readable(&policy, room, record.route(), run))
+                    .cloned(),
+            );
+        }
+        Ok(runs)
+    }
+}
+
+/// Whether `run`'s agent, acting for the person who approved it, reads the
+/// tracker record `record` of `room`: both must, so a private issue's run
+/// reaches only an agent named among its readers, approved by a reader.
+fn readable(
+    policy: &tilo_action_policy::RoomPolicy,
+    room: &str,
+    record: &str,
+    run: &TrackerRun,
+) -> bool {
+    use tilo_action_policy::{ActionKind, Answer, Context, roles};
+    let node = collab_types::document_node(room, TRACKER_APP, record);
+    let foreign = roles::foreign_device_bound();
+    let delegation = roles::agent_delegation(room, &run.agent, &run.starter);
+    policy
+        .person_on_device(&run.starter, false, &foreign)
+        .bounded_by(delegation.party(&policy.grants))
+        .decide(
+            &node,
+            ActionKind::Read,
+            &Context::at_time(std::time::SystemTime::now()),
+        )
+        .answer
+        == Answer::Allow
 }
 
 /// The runs `tracker` holds: every issue with a run, as the broker reads it.
@@ -266,10 +357,12 @@ impl TrackerRuns for NativeTrackerRuns {
     }
 
     fn runs(&self, room: &str) -> Result<Vec<TrackerRun>, String> {
-        Ok(self
-            .tracker(room)?
-            .map(|tracker| tracker.runs.clone())
-            .unwrap_or_default())
+        let Some(tracker) = self.tracker(room)? else {
+            return Ok(Vec::new());
+        };
+        let mut runs = tracker.runs.clone();
+        runs.extend(self.private_runs(room, &tracker)?);
+        Ok(runs)
     }
 
     fn authorize_action(
@@ -302,7 +395,7 @@ mod tests {
     use tasks::model::{Tracker, tracker};
     use tilo_resource::Replica;
 
-    use super::runs_of;
+    use super::{readable, runs_of};
 
     #[test]
     fn an_issue_assigned_to_an_agent_is_a_run_once_a_person_approves_it() {
@@ -356,5 +449,62 @@ mod tests {
         assert!(run.instruction.contains("Keep the headings"));
         assert_eq!(run.directions.len(), 1);
         assert_eq!((run.applied_revision(), run.latest_revision()), (0, 1));
+    }
+
+    #[test]
+    fn a_private_issues_run_is_read_only_for_a_named_agent_and_an_approver_who_reads_it() {
+        use tasks::model::private::{private_record, reader};
+        use tilo_action_policy::{Role, RoomPolicy, Subject, roles};
+        let mut ada = Replica::<Tracker>::new().as_author("ada");
+        ada.apply(Tracker::CREATE.with(tracker::Create {
+            title: "Payroll".into(),
+            parent: None,
+            body: None,
+            status: None,
+            assignee: Some("agent:claude".into()),
+        }))
+        .unwrap();
+        let issue = ada.state().unwrap().issues.ids().next().cloned().unwrap();
+        ada.apply(Tracker::APPROVE_RUN.with(tracker::ApproveRun {
+            issue: issue.clone(),
+        }))
+        .unwrap();
+        let [run] = runs_of(&ada.state().unwrap()).try_into().unwrap();
+        let record = private_record(&issue).unwrap();
+        let mut policy = RoomPolicy::new("room", "owner");
+        policy.members.insert("ada".into(), Role::Editor);
+        policy.members.insert("cal".into(), Role::Editor);
+        let kept = |readers: &[&str]| {
+            let mut policy = policy.clone();
+            let mut subjects = vec![Subject::person("ada")];
+            subjects.extend(readers.iter().map(|name| reader(name).unwrap()));
+            policy.grants.push(roles::readers_grant(
+                "room",
+                tasks::model::APP_ID,
+                record.route(),
+                subjects,
+                Subject::person("ada"),
+            ));
+            policy
+        };
+        assert!(readable(
+            &kept(&["agent:claude"]),
+            "room",
+            record.route(),
+            &run
+        ));
+        assert!(!readable(&kept(&[]), "room", record.route(), &run));
+        let by_cal = super::TrackerRun {
+            starter: "cal".into(),
+            ..run.clone()
+        };
+        assert!(!readable(
+            &kept(&["agent:claude"]),
+            "room",
+            record.route(),
+            &by_cal
+        ));
+        // The tracker itself reads as before.
+        assert!(readable(&kept(&[]), "room", "", &run));
     }
 }
