@@ -2805,9 +2805,10 @@ impl FrameHarness {
         &mut self,
         name: &str,
         bytes: Vec<u8>,
+        sha256: &str,
     ) -> Result<bool, crate::font_catalog::FontCatalogError> {
         self.invalidate_local();
-        let changed = self.text.install_browser_font(name, bytes)?;
+        let changed = self.text.install_browser_font(name, bytes, sha256)?;
         if changed {
             self.request_layout();
         }
@@ -10884,6 +10885,9 @@ mod tests {
                 .install_browser_font(
                     "NotoSansArabic[wght].ttf",
                     std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                    &crate::font_catalog::test_sha256(
+                        &std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap()
+                    )
                 )
                 .unwrap()
         );

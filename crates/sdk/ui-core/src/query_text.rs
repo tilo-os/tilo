@@ -999,6 +999,9 @@ mod tests {
             .install_browser_font(
                 "NotoSansArabic[wght].ttf",
                 std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                &crate::font_catalog::test_sha256(
+                    &std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                ),
             )
             .unwrap();
         draw(&mut composition, &mut renderer);

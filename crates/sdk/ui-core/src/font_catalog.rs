@@ -476,13 +476,20 @@ impl FontCatalog {
 
     /// Validate and add one canonical optional browser asset to a live font
     /// system. Returns `false` when the exact asset faces are already present.
+    ///
+    /// `sha256` is the lowercase hex SHA-256 of `data` as the page computed it
+    /// with the browser's native, asynchronous digest; it is checked against
+    /// the digest compiled into this build. Hashing the bytes again here held
+    /// the page's main thread for about 350 ms a font.
     /// # Errors
-    /// Rejects unknown names, corrupt bytes, or mismatched face metadata.
+    /// Rejects unknown names, a size or digest other than the pinned one, or
+    /// mismatched face metadata.
     pub fn install_browser_asset(
         &self,
         system: &mut FontSystem,
         name: &str,
         data: Vec<u8>,
+        sha256: &str,
     ) -> Result<bool, FontCatalogError> {
         let manifest = parse_manifest(Path::new("canonical-browser-fonts/manifest.toml"))?;
         let asset = manifest
@@ -490,7 +497,9 @@ impl FontCatalog {
             .iter()
             .find(|asset| asset.scope == Scope::Product && asset.file == name)
             .ok_or_else(|| FontCatalogError::at(name, "unknown canonical font asset"))?;
-        verify_asset_bytes(asset, &data)?;
+        let path = Path::new(&asset.file);
+        asset.check_len(path, data.len())?;
+        asset.check_digest(path, sha256)?;
         if asset.faces.iter().all(|expected| {
             system.db().faces().any(|face| {
                 face.index == expected.index
@@ -679,6 +688,15 @@ fn face_style(face: &Face) -> fontdb::Style {
 /// The compiled-in catalog manifest, reported against `path` on failure.
 fn parse_manifest(path: &Path) -> Result<&'static Manifest, FontCatalogError> {
     tilo_font_catalog::manifest().map_err(|error| FontCatalogError::at(path, error.problem))
+}
+
+/// The lowercase hex SHA-256 a browser page reports for `bytes`, for tests
+/// that install browser fonts the way the page does.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn test_sha256(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(bytes))
 }
 
 fn verify_asset_bytes(asset: &Asset, data: &[u8]) -> Result<(), FontCatalogError> {

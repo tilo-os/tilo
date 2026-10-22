@@ -3399,16 +3399,21 @@ pub fn font_demands(id: u64) -> Result<String, JsValue> {
     })
 }
 
-/// Install one fetched optional font; the runtime verifies it against the
-/// canonical manifest.
+/// Install one fetched optional font. `sha256` is the page's lowercase hex
+/// digest of `bytes` from `crypto.subtle.digest`, which runs natively off the
+/// main thread; the runtime checks it and the size against the canonical
+/// manifest compiled into this build instead of hashing the font again.
 ///
 /// # Errors
 ///
 /// Rejects a closed mount or bytes that fail verification.
 #[wasm_bindgen]
-pub fn install_font(id: u64, name: &str, bytes: Vec<u8>) -> Result<bool, JsValue> {
+pub fn install_font(id: u64, name: &str, bytes: Vec<u8>, sha256: &str) -> Result<bool, JsValue> {
     let (changed, wake) = with_mount(id, |m| {
-        let changed = m.frame.install_browser_font(name, bytes).map_err(error)?;
+        let changed = m
+            .frame
+            .install_browser_font(name, bytes, sha256)
+            .map_err(error)?;
         let wake = changed && !m.hidden;
         if wake {
             m.pending = true;

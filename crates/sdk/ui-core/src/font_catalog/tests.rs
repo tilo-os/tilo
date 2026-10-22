@@ -280,26 +280,37 @@ fn incremental_browser_asset_install_is_idempotent_and_integrity_checked() {
         .unwrap();
     let name = "NotoSansArabic[wght].ttf";
     let bytes = std::fs::read(root.join(name)).unwrap();
+    let digest = super::test_sha256(&bytes);
     assert!(
         catalog
-            .install_browser_asset(&mut fonts, name, bytes.clone())
+            .install_browser_asset(&mut fonts, name, bytes.clone(), &digest)
             .unwrap()
     );
     assert!(
         !catalog
-            .install_browser_asset(&mut fonts, name, bytes.clone())
+            .install_browser_asset(&mut fonts, name, bytes.clone(), &digest)
             .unwrap()
     );
     let mut corrupt = bytes;
     *corrupt.last_mut().unwrap() ^= 1;
     assert!(
         catalog
-            .install_browser_asset(&mut fonts, "NotoSansThai[wght].ttf", corrupt)
+            .install_browser_asset(
+                &mut fonts,
+                "NotoSansThai[wght].ttf",
+                corrupt.clone(),
+                &super::test_sha256(&corrupt)
+            )
             .is_err()
     );
     assert!(
         catalog
-            .install_browser_asset(&mut fonts, "../font.ttf", vec![1])
+            .install_browser_asset(
+                &mut fonts,
+                "../font.ttf",
+                vec![1],
+                &super::test_sha256(&[1])
+            )
             .is_err()
     );
 }

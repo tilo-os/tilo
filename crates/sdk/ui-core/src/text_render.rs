@@ -2063,13 +2063,16 @@ impl TextRenderer {
     /// cached metric/layout identity before another frame can be drawn.
     /// # Errors
     /// Propagates canonical manifest, hash, size, and face validation errors.
+    /// `sha256` is the page's digest of `bytes`
+    /// ([`crate::font_catalog::FontCatalog::install_browser_asset`]).
     pub fn install_browser_font(
         &mut self,
         name: &str,
         bytes: Vec<u8>,
+        sha256: &str,
     ) -> Result<bool, crate::font_catalog::FontCatalogError> {
         let catalog = crate::font_catalog::FontCatalog::product("", self.font_system.locale());
-        let changed = catalog.install_browser_asset(&mut self.font_system, name, bytes)?;
+        let changed = catalog.install_browser_asset(&mut self.font_system, name, bytes, sha256)?;
         self.browser_font_assets.insert(name.to_owned());
         if changed {
             share_host_font_database(&self.font_system);
@@ -3877,7 +3880,13 @@ mod tests {
             let old_generation = renderer.generation;
             assert!(
                 renderer
-                    .install_browser_font(expected, std::fs::read(root.join(expected)).unwrap())
+                    .install_browser_font(
+                        expected,
+                        std::fs::read(root.join(expected)).unwrap(),
+                        &crate::font_catalog::test_sha256(
+                            &std::fs::read(root.join(expected)).unwrap()
+                        )
+                    )
                     .unwrap()
             );
             assert_ne!(
@@ -3894,6 +3903,52 @@ mod tests {
             );
             assert!(renderer.take_browser_font_demands().is_empty());
         }
+    }
+
+    #[test]
+    fn a_browser_font_whose_page_digest_differs_from_the_build_is_refused() {
+        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+        let root = crate::font_catalog::checkout_root();
+        let fonts = catalog
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let name = "NotoSansMath-Regular.ttf";
+        let bytes = std::fs::read(root.join(name)).unwrap();
+        let has_math = |renderer: &TextRenderer| {
+            renderer.font_system.db().faces().any(|face| {
+                face.families
+                    .iter()
+                    .any(|family| family.0 == UI_MATH_FAMILY)
+            })
+        };
+        let generation = renderer.generation;
+        let mut wrong = crate::font_catalog::test_sha256(&bytes);
+        wrong.replace_range(..1, if wrong.starts_with('0') { "1" } else { "0" });
+        let error = renderer
+            .install_browser_font(name, bytes.clone(), &wrong)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("SHA-256 mismatch"), "{error}");
+        let short = bytes[..bytes.len() - 1].to_vec();
+        let error = renderer
+            .install_browser_font(
+                name,
+                short.clone(),
+                &crate::font_catalog::test_sha256(&short),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("bytes, found"), "{error}");
+        assert_eq!(
+            renderer.generation, generation,
+            "a refused font changes nothing"
+        );
+        assert!(!has_math(&renderer), "a refused font is not installed");
+
+        let digest = crate::font_catalog::test_sha256(&bytes);
+        assert!(renderer.install_browser_font(name, bytes, &digest).unwrap());
+        assert!(has_math(&renderer));
     }
 
     #[test]
@@ -3931,6 +3986,9 @@ mod tests {
             .install_browser_font(
                 "NotoSansMath-Regular.ttf",
                 std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
+                &crate::font_catalog::test_sha256(
+                    &std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
+                ),
             )
             .unwrap();
         let after = renderer.shape_buffer("x", None, &math).buffer;
@@ -3976,6 +4034,9 @@ mod tests {
             .install_browser_font(
                 "Noto-COLRv1.ttf",
                 std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
+                &crate::font_catalog::test_sha256(
+                    &std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
+                ),
             )
             .unwrap();
         for emoji in ["‼️", "✈️", "⌚"] {
