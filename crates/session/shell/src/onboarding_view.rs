@@ -7224,7 +7224,10 @@ mod tests {
             } else {
                 assert!(navigation.contains("Super+Space"));
             }
-            assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
+            // The palette opened empty shows tabs, apps and actions; the tour
+            // names those, never categories the palette doesn't have.
+            assert!(navigation.contains("see your tabs, apps and actions"));
+            assert!(!navigation.contains("Everyday"));
             assert!(navigation.contains("Super+Tab"));
             assert!(navigation.contains("Super+Tab or pinch"));
             assert!(navigation.contains("Super+arrow keys"));
