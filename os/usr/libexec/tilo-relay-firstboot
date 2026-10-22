@@ -63,11 +63,11 @@ if [[ -s "$token" ]] && ! grep -q '^# Replace' "$token"; then
         echo "tilo-relay-firstboot: enrollment token must be mode 0600" >&2
         exit 1
     fi
-    /usr/bin/tilo-enroll join --token-file "$token" --identity-root /var/lib/tilo \
+    /usr/libexec/tilo/tilo-enroll join --token-file "$token" --identity-root /var/lib/tilo \
         --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
     shred -u -- "$token" 2>/dev/null || rm -f -- "$token"
 else
-    /usr/bin/tilo-enroll pair --identity-root /var/lib/tilo \
+    /usr/libexec/tilo/tilo-enroll pair --identity-root /var/lib/tilo \
         --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
 fi
 valid_device_certificate \

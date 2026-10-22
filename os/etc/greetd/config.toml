@@ -31,5 +31,5 @@
 vt = 1
 
 [default_session]
-command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"
+command = "/usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-greeter"
 user = "greetd"

@@ -25,7 +25,7 @@ use crate::onboarding::MintedIdentity;
 use crate::shell::i18n::{t, t_args};
 
 /// The enrollment helper the image installs.
-const ENROLL: &str = "/usr/bin/tilo-enroll";
+const ENROLL: &str = "/usr/libexec/tilo/tilo-enroll";
 
 /// Each enrollment window the helper may wait through, in seconds.
 const PAIRING_WINDOW_SECS: u64 = 270;

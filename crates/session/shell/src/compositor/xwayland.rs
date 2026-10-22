@@ -1905,7 +1905,7 @@ mod tests {
         let command = |x11: Option<&X11Session>| {
             crate::shell::host_apps::build_launch_command(
                 &app,
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-1"),
                 None,
                 x11,

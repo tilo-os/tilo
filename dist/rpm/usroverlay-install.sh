@@ -24,7 +24,7 @@ rpms_dir=$repo_root/dist/rpm/build/RPMS/$rpm_arch
 
 runtime_files=(
     /usr/bin/tilo-shell
-    /usr/bin/tilo-launcher
+    /usr/libexec/tilo/tilo-launcher
     /usr/libexec/tilo-session
     /usr/libexec/tilo-unlock-helper
     /usr/lib/systemd/user/tilo-graphical-session.target

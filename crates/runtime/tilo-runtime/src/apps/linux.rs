@@ -146,7 +146,15 @@ fn service_directory(root: &Path, sockets: &Sockets) -> io::Result<PathBuf> {
 fn resolve_launcher(candidates: &[PathBuf]) -> Result<PathBuf, String> {
     candidates
         .iter()
-        .find(|candidate| candidate.is_file())
+        // On Tilo OS the old name beside a program in /usr/bin is a link to
+        // `tilo`, not the launcher; the real one is in /usr/libexec/tilo.
+        .find(|candidate| {
+            candidate.is_file()
+                && !(candidate.is_symlink()
+                    && std::fs::canonicalize(candidate)
+                        .ok()
+                        .is_some_and(|target| target.file_name() != candidate.file_name()))
+        })
         .cloned()
         .ok_or_else(|| {
             format!(

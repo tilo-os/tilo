@@ -188,7 +188,7 @@ def stage(root, output, pins, cohort, qualification=False):
         recipe += ('RUN --mount=type=bind,source=rootfs/usr/share/tilo/browser-runtime-publisher.hex,'
                    'target=/usr/share/tilo/browser-runtime-publisher.hex,ro,relabel=shared '
                    'TILO_APPS_DATA_DIR=/usr/share/tilo-apps TILO_RUNTIME_BUNDLE_DIR=/usr/lib/tilo-runtime '
-                   '/usr/bin/tilo-install install /qualification-packages/' + name
+                   '/usr/libexec/tilo/tilo-install install /qualification-packages/' + name
                    + ' --force --pinned --require-publisher ' + ledger['app_publisher']
                    + (' --allow-self-signed' if qualification else '') + '\n')
     # This tree contains public installed payloads, never signing identities or

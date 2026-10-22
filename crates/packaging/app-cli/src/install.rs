@@ -185,7 +185,8 @@ pub const INSTALL_BIN_ENV: &str = "TILO_INSTALL_BIN";
 
 /// The installer binary. [`INSTALL_BIN_ENV`] overrides it in a developer
 /// build only (see [`package_store::dev_env`]), matching the compositor's
-/// launcher resolution; a release build runs `tilo-install` from `PATH`.
+/// launcher resolution; a release build runs Tilo OS's own, else the one on
+/// `PATH`.
 pub fn tilo_install_bin() -> String {
     tilo_install_bin_from(package_store::dev_env::dev_override(INSTALL_BIN_ENV))
 }
@@ -194,7 +195,18 @@ pub fn tilo_install_bin() -> String {
 fn tilo_install_bin_from(allowed_override: Option<std::ffi::OsString>) -> String {
     allowed_override
         .and_then(|value| value.into_string().ok())
-        .unwrap_or_else(|| "tilo-install".to_string())
+        .unwrap_or_else(installed_install_bin)
+}
+
+/// Where Tilo OS keeps `tilo-install`; elsewhere (another distribution, a
+/// development build) it is found on `PATH`.
+fn installed_install_bin() -> String {
+    const INSTALLED: &str = "/usr/libexec/tilo/tilo-install";
+    if Path::new(INSTALLED).is_file() {
+        INSTALLED.to_owned()
+    } else {
+        "tilo-install".to_owned()
+    }
 }
 
 /// The exact `tilo-install` invocation [`install`] runs. Split out so a
@@ -1180,7 +1192,7 @@ mod tests {
         {
             use package_store::dev_env::dev_override_from;
             let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
-            assert_eq!(tilo_install_bin_from(gated), "tilo-install");
+            assert_eq!(tilo_install_bin_from(gated), installed_install_bin());
             let honoured =
                 dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
             assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");

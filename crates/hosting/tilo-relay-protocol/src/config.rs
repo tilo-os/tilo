@@ -212,7 +212,7 @@ impl Default for LegacyAppsConfig {
 }
 
 fn default_tilo_legacy_binary() -> PathBuf {
-    PathBuf::from("/usr/bin/tilo-legacy")
+    PathBuf::from("/usr/libexec/tilo/tilo-legacy")
 }
 
 fn default_shell_binary() -> PathBuf {

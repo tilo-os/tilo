@@ -36,5 +36,9 @@ tilo-control = { path = "../../session/control-cli" }
 tempfile.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
 [lints]
 workspace = true

@@ -840,7 +840,7 @@ mod tests {
                 "b".repeat(64),
                 "33333333-3333-4333-8333-333333333333",
                 request.resource_record(),
-                "/usr/bin/tilo-launcher",
+                "/usr/libexec/tilo/tilo-launcher",
                 vec!["--open", "/run/tilo/retained-selected/notes.txt"],
                 Vec::<(String, String)>::new(),
             ))

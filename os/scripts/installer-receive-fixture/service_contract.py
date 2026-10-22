@@ -212,7 +212,7 @@ def admit_request(raw, candidate, hash_file, log, deadline):
             and package.get('runtime') == 'tilo-runtime/' + request['sdk_runtime_version'],
             'selected signed receiving graph differs from request')
     bounded_command(['/usr/bin/env', 'TILO_APPS_DATA_DIR=/usr/share/tilo-apps',
-                     '/usr/bin/tilo-install', 'verify', 'so.tilo.browser'], deadline, log)
+                     '/usr/libexec/tilo/tilo-install', 'verify', 'so.tilo.browser'], deadline, log)
     for kind, bundle, publisher in (
             ('cef', cef, request['cef_runtime_publisher']),
             ('sdk', Path('/usr/lib/tilo-runtime') / request['sdk_runtime_version'], None)):
@@ -224,7 +224,7 @@ def admit_request(raw, candidate, hash_file, log, deadline):
             regular(chosen, 1024)
             publisher = chosen.read_text().strip()
             require(re.fullmatch('[0-9a-f]{64}', publisher), 'installed SDK publisher differs')
-        bounded_command(['/usr/bin/tilo-runtime-bundle', 'verify', str(bundle),
+        bounded_command(['/usr/libexec/tilo/tilo-runtime-bundle', 'verify', str(bundle),
                          '--require-publisher', publisher, '--require-signature',
                          '--require-arch', os.uname().machine], deadline, log)
         metadata = bundle / 'bundle.toml'

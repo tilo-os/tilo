@@ -215,7 +215,7 @@ fi
 # path like /out/tilo-launcher that does not exist on the booted system, so
 # every shimmed command would fail with "no such file". Name where the
 # launcher will actually be.
-export TILO_LAUNCHER_PATH="${TILO_LAUNCHER_PATH:-/usr/bin/tilo-launcher}"
+export TILO_LAUNCHER_PATH="${TILO_LAUNCHER_PATH:-/usr/libexec/tilo/tilo-launcher}"
 
 export TILO_APPS_DATA_DIR="$STORE"
 

@@ -122,7 +122,7 @@ class ImageInterpreterTests(unittest.TestCase):
         )
 
     def test_ported_script_is_stale(self) -> None:
-        self.write("os/usr/libexec/tilo-legacy", "#!/bin/sh\nexec /usr/bin/tilo-legacy\n")
+        self.write("os/usr/libexec/tilo-legacy", "#!/bin/sh\nexec /usr/libexec/tilo/tilo-legacy\n")
         self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-legacy"]))
 
     def test_build_and_ci_scripts_outside_the_overlay_are_ignored(self) -> None:

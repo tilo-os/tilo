@@ -592,8 +592,8 @@ fn launcher_candidates() -> Vec<PathBuf> {
     {
         out.push(dir.join("tilo-launcher"));
     }
+    out.push(PathBuf::from("/usr/libexec/tilo/tilo-launcher"));
     out.push(PathBuf::from("/usr/libexec/tilo-launcher"));
-    out.push(PathBuf::from("/usr/bin/tilo-launcher"));
     out
 }
 

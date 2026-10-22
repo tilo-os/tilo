@@ -66,7 +66,7 @@ pub const SCHEMA: u32 = 1;
 /// A recipe is a small control document, not a payload.
 pub const MAX_RECIPE_BYTES: u64 = 64 * 1024;
 
-const ROLLBACK_BIN: &str = "/usr/bin/tilo-rollback";
+const ROLLBACK_BIN: &str = "/usr/libexec/tilo/tilo-rollback";
 const VERIFIED_BOOT_PREFLIGHT: &str = "/usr/libexec/tilo-verified-boot-install-preflight";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 

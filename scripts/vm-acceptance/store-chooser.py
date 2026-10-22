@@ -23,7 +23,7 @@ class OwnerVm(TiloVm):
     def control_json(self, *args, timeout=60):
         uid = self.slot_uid()
         command = ["env", "-u", "TILO_TEST_CONTROL", f"XDG_RUNTIME_DIR=/run/user/{uid}",
-                   "/usr/bin/tilo-control", "--socket", f"/run/user/{uid}/tilo-session/admin-control.sock", *args]
+                   "/usr/libexec/tilo/tilo-control", "--socket", f"/run/user/{uid}/tilo-session/admin-control.sock", *args]
         return first_json(self.run("slot", "exec", "--", *command, timeout=timeout))
 
 

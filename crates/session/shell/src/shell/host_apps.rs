@@ -837,7 +837,7 @@ mod tests {
             };
             let cmd = build_launch_command(
                 &app,
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-2"),
                 None,
                 Some(&x11),
@@ -1089,7 +1089,7 @@ mod unavailable_provider_tests {
         };
         let command = build_autostart_command(
             &start.entry,
-            Path::new("/usr/bin/tilo-launcher"),
+            Path::new("/usr/libexec/tilo/tilo-launcher"),
             Path::new("/run/user/1000/wayland-1"),
             None,
             Some("room".to_string()),

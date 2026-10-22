@@ -459,7 +459,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     );
 }
 
-/// The polkit helper deliberately has a fixed `/usr/bin/tilo-enroll` route.
+/// The polkit helper deliberately has a fixed `/usr/libexec/tilo/tilo-enroll` route.
 /// Exercise that route only where CI provides the mount capability needed to
 /// put the freshly-built binary at the production path without touching the
 /// runner's mount namespace.
@@ -524,7 +524,7 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
         assert!(ownership.success(), "prepare non-root identity ownership");
 
         // Keep the bind mount private. The helper itself retains its hardened,
-        // non-configurable `/usr/bin/tilo-enroll` path.
+        // non-configurable `/usr/libexec/tilo/tilo-enroll` path.
         let script = r#"
 set -eu
 exec 9</usr/bin/mount
@@ -538,8 +538,8 @@ printf '%s\n' 'tiloaccept:x:42424:42424::/home/tiloaccept:/sbin/nologin' >/etc/p
 mkdir -p /home/tiloaccept
 /proc/self/fd/9 --bind "$TILO_SCOPE" /home/tiloaccept
 /proc/self/fd/9 -t tmpfs tmpfs /usr/bin
-: > /usr/bin/tilo-enroll
-/proc/self/fd/9 --bind "$TILO_ENROLL_BIN" /usr/bin/tilo-enroll
+: > /usr/libexec/tilo/tilo-enroll
+/proc/self/fd/9 --bind "$TILO_ENROLL_BIN" /usr/libexec/tilo/tilo-enroll
 export PKEXEC_UID=42424
 /proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /proc/self/fd/7 300 &
 requester=$!
@@ -561,7 +561,7 @@ requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
 "$TILO_HELPER" approve-device --identity-root "$TILO_APPROVER_ROOT" --identity-dir "$TILO_APPROVER_IDENTITIES" --expected-device "$TILO_RECIPIENT_ID" --expected-service "$TILO_RECIPIENT_SERVICE" &
 approval=$!
 # The joining device runs as the person, never through the broker.
-/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /usr/bin/tilo-enroll pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
+/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /usr/libexec/tilo/tilo-enroll pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
 wait "$approval"
 "#;
         let output = Command::new("unshare")

@@ -178,7 +178,7 @@ mod tests {
         let runner: Runner = Arc::new(move |command: &HostCommand, _| {
             assert_eq!(
                 command.program,
-                std::path::Path::new("/usr/bin/tilo-enroll")
+                std::path::Path::new("/usr/libexec/tilo/tilo-enroll")
             );
             gate.lock().expect("gate").recv().expect("released");
             Ok(Finished {

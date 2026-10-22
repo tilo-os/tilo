@@ -53,7 +53,7 @@ image_crypto() {
     esac
   done
   podman run --rm -v "$work:/work:ro,Z" \
-    --entrypoint /usr/bin/tilo-crypto "$image" "$command" "${arguments[@]}"
+    --entrypoint /usr/libexec/tilo/tilo-crypto "$image" "$command" "${arguments[@]}"
 }
 
 # Copy through a container so no image mount (and no root storage access) is
@@ -97,12 +97,12 @@ verify_signed_efi() {
   [ -f "$signed" ] && [ ! -L "$signed" ] \
     || die "broker did not return a regular signed $label"
   count="$(podman run --rm -v "$work:/work:ro,Z" \
-    --entrypoint /usr/bin/tilo-crypto "$image" efi-signature-count \
+    --entrypoint /usr/libexec/tilo/tilo-crypto "$image" efi-signature-count \
     "/work/${signed#"$work/"}")" \
     || die "broker did not return a structurally valid signed $label"
   case "$count" in ''|*[!0-9]*|0) die "broker returned an unsigned $label" ;; esac
   podman run --rm -v "$work:/work:ro,Z" \
-    --entrypoint /usr/bin/tilo-crypto "$image" verify-efi /work/efi-signing.crt \
+    --entrypoint /usr/libexec/tilo/tilo-crypto "$image" verify-efi /work/efi-signing.crt \
     "/work/${signed#"$work/"}" >/dev/null \
     || die "broker signed $label with an identity other than the pinned EFI certificate"
 

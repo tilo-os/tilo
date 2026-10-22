@@ -263,7 +263,7 @@ fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<
         operation,
         program,
         args,
-        binary: host_root.join("usr/bin").join(program),
+        binary: host_root.join(host_program_dir(program)).join(program),
         mutating,
         time_limit,
     })
@@ -271,6 +271,16 @@ fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<
 
 /// The host side of every legacy app shim.
 const LEGACY_PROGRAM: &str = "tilo-legacy";
+
+/// Where the host keeps `program`, relative to its root: Tilo's own programs
+/// live off PATH in /usr/libexec/tilo, the commands people type in /usr/bin.
+fn host_program_dir(program: &str) -> &'static str {
+    if program == LEGACY_PROGRAM {
+        "usr/libexec/tilo"
+    } else {
+        "usr/bin"
+    }
+}
 
 /// `tilo-legacy launch <app> --cwd <cwd> [--share-cwd] -- <args…>`.
 ///
@@ -1933,7 +1943,10 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(command.binary, PathBuf::from("/usr/bin/tilo-legacy"));
+            assert_eq!(
+                command.binary,
+                PathBuf::from("/usr/libexec/tilo/tilo-legacy")
+            );
             assert!(!command.mutating);
             // A legacy app runs for as long as the person keeps it open.
             assert_eq!(command.time_limit, None);

@@ -174,14 +174,14 @@ else
     # Running from inside the image, where the Rust sources are absent. The
     # invariant still has to be checked against something observable, so
     # check the shipped launcher binary instead of quietly passing.
-    if [ -x "$OS_ROOT/usr/bin/tilo-launcher" ]; then
-        if strings "$OS_ROOT/usr/bin/tilo-launcher" 2>/dev/null | grep -q '/run/cups'; then
+    if [ -x "$OS_ROOT/usr/libexec/tilo/tilo-launcher" ]; then
+        if strings "$OS_ROOT/usr/libexec/tilo/tilo-launcher" 2>/dev/null | grep -q '/run/cups'; then
             fail "the shipped launcher binary references /run/cups"
         else
             ok
         fi
     else
-        fail "neither the launcher sources nor /usr/bin/tilo-launcher is present — cannot check that the cups socket stays out of sandboxes"
+        fail "neither the launcher sources nor /usr/libexec/tilo/tilo-launcher is present — cannot check that the cups socket stays out of sandboxes"
     fi
 fi
 

@@ -103,7 +103,7 @@ need "$model" 'PrivateDevices=yes' 'local-model runtime has ambient device acces
 need "$model" 'ReadOnlyPaths=/var/lib/tilo/system-extensions /var/lib/tilo/local-models /usr/share/tilo/system-extensions' 'local-model runtime can replace verified packs'
 [ "$fail" -ne 0 ] || ok 'future local-model service is unprivileged and condition-gated'
 
-need "$user_model" 'ExecStart=/usr/bin/tilo-model-manager serve --socket %t/tilo/services/models.sock' 'per-user model service does not publish the launcher service socket'
+need "$user_model" 'ExecStart=/usr/libexec/tilo/tilo-model-manager serve --socket %t/tilo/services/models.sock' 'per-user model service does not publish the launcher service socket'
 need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the immutable root'
 need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
 need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'

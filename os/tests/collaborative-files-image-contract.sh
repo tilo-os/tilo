@@ -62,9 +62,9 @@ PY
 echo "== collaborative Files shipped-image contract ($mode) =="
 
 # Executables and the host FUSE prerequisite must be in the immutable image.
-for path in /usr/bin/fs /usr/bin/tilo-launcher \
-            /usr/bin/tilo-runtime-mcp \
-            /usr/bin/tilo-install /usr/bin/tilo-runtime-bundle \
+for path in /usr/bin/fs /usr/libexec/tilo/tilo-launcher \
+            /usr/libexec/tilo/tilo-runtime-mcp \
+            /usr/libexec/tilo/tilo-install /usr/libexec/tilo/tilo-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage \
             /usr/libexec/tilo-session /usr/libexec/tilo-account-credential \
             /usr/libexec/tilo-flight-recorder /usr/libexec/tilo-session-report \
@@ -251,11 +251,11 @@ if [ "$root" = / ]; then
   fs_help="$(/usr/bin/fs --help)" || die "shipped fs --help failed"
   grep -Fq 'serve' <<<"$fs_help" || die "shipped fs lacks serve"
   grep -Fq 'recipient-service' <<<"$fs_help" || die "shipped fs lacks recipient-service"
-  /usr/bin/tilo-launcher --help >/dev/null || die "shipped launcher CLI failed"
+  /usr/libexec/tilo/tilo-launcher --help >/dev/null || die "shipped launcher CLI failed"
   TILO_APPS_DATA_DIR=/usr/share/tilo-apps \
-    /usr/bin/tilo-install verify so.tilo.file-explorer >/dev/null \
+    /usr/libexec/tilo/tilo-install verify so.tilo.file-explorer >/dev/null \
     || die "installed Files payload failed its recorded integrity check"
-  /usr/bin/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$runtime_version" \
+  /usr/libexec/tilo/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$runtime_version" \
     --require-publisher "$(cat /usr/share/tilo/runtime-bundle-publisher.hex)" >/dev/null \
     || die "shipped runtime bundle signature or content check failed"
   # Everything the store volume helper runs, at install and at boot.

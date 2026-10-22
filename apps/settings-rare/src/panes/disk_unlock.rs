@@ -160,7 +160,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DiskUnlockArea> {
 }
 
 /// The sibling-unlock client; polkit's `org.tilo.disk-unlock.manage` names it.
-pub const HELPER: &str = "/usr/bin/tilo-sibling-unlock";
+pub const HELPER: &str = "/usr/libexec/tilo/tilo-sibling-unlock";
 const PKEXEC: &str = "pkexec";
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Long enough for the person to answer the authentication dialog.

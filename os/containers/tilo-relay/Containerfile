@@ -171,12 +171,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         \( -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl \) \
         -print -quit | /usr/bin/busybox grep -q .
 
-COPY --from=builder /out/tilo-relay /usr/bin/tilo-relay
-COPY --from=builder /out/tilo-relay-admin /usr/bin/tilo-relay-admin
-COPY --from=builder /out/tilo-enroll /usr/bin/tilo-enroll
+COPY --from=builder /out/tilo-relay /usr/libexec/tilo/tilo-relay
+COPY --from=builder /out/tilo-relay-admin /usr/libexec/tilo/tilo-relay-admin
+COPY --from=builder /out/tilo-enroll /usr/libexec/tilo/tilo-enroll
 COPY --from=builder /out/fs /usr/bin/fs
 COPY os/containers/tilo-relay/tilo-home-peer /usr/bin/tilo-home-peer
-RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer
+RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer \
+    && for name in tilo-relay tilo-relay-admin tilo-enroll; do \
+         /usr/bin/busybox ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
+       done
 COPY os/usr/lib/systemd/system/tilo-relay.service /usr/lib/systemd/system/tilo-relay.service
 
 # Where the daemon writes state + reads config. The container

@@ -4,7 +4,7 @@
 // Modes:
 //   * default — build an `InstallerApp`, hand it to `ui::App`, run the
 //     live winit event loop. Launched off the live media under `cage`:
-//         cage -s -- /usr/bin/tilo-installer
+//         cage -s -- /usr/libexec/tilo/tilo-installer
 //   * `--unattended-file PATH` or `--unattended-fd N` — explicit unattended
 //     installation from a private recipe through the same published actions.
 //     The one-time recovery key goes to `--unattended-recovery-fd N`,

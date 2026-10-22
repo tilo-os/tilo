@@ -52,7 +52,7 @@ class EngineRuntimeNameTests(unittest.TestCase):
         guard = rootfs.split('if [ "${TILO_WITH_BROWSER}" != 0 ]; then', 1)[1].split("fi; }", 1)[0]
         self.assertIn('test -x "$engine/tilo-chromium-host"', guard)
         self.assertIn('test -s "$engine/libcef.so"', guard)
-        self.assertIn("/usr/bin/tilo-runtime-bundle verify", guard)
+        self.assertIn("/usr/libexec/tilo/tilo-runtime-bundle verify", guard)
         self.assertIn('--require-publisher "$(cat /usr/share/tilo/browser-runtime-publisher.hex)"', guard)
 
     def test_the_browser_install_link_requests_the_exact_declared_runtime(self):

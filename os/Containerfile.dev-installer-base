@@ -14,7 +14,7 @@ RUN mkdir -p /kernel && bootc container split-kernel-and-rootfs --rootfs / --out
 
 FROM ${BASE_IMAGE} AS split
 RUN test "$(cat /usr/lib/tilo/image-flavour)" = dev \
-    && test -x /usr/bin/tilo-installer \
+    && test -x /usr/libexec/tilo/tilo-installer \
     && test ! -e /usr/lib/tilo/hardware-profile.json \
     && mkdir -p /kernel \
     && bootc container split-kernel-and-rootfs --rootfs / --output /kernel

@@ -19,10 +19,10 @@ mkdir "$3"
 out=$(realpath "$3")
 rootfs=$out/rootfs
 mkdir -p "$rootfs"/{usr/bin,proc,dev,tmp,denied,lib,lib64}
-cp "$launcher" "$rootfs/usr/bin/tilo-launcher"
+cp "$launcher" "$rootfs/usr/libexec/tilo/tilo-launcher"
 "${CC:-cc}" -O2 -Wall -Wextra -Werror "$fixture" -o "$rootfs/init"
 cp "$rootfs/init" "$rootfs/usr/bin/tmp-probe"
-for binary in "$rootfs/init" "$rootfs/usr/bin/tilo-launcher"; do
+for binary in "$rootfs/init" "$rootfs/usr/libexec/tilo/tilo-launcher"; do
     ldd "$binary" > "$out/dependencies.txt"
     if grep -q 'not found' "$out/dependencies.txt"; then
         cat "$out/dependencies.txt" >&2

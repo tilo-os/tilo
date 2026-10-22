@@ -39,7 +39,7 @@ name = "greeter"
 kind = "userspace"
 scope = "vm"
 units = ["greetd.service"]
-files = [{ from = "tilo-greeter", to = "/usr/bin/tilo-greeter", mode = "0755" }]
+files = [{ from = "tilo-greeter", to = "/usr/libexec/tilo/tilo-greeter", mode = "0755" }]
 
 [[component]]
 name = "kernel"
@@ -386,7 +386,7 @@ fn machine() -> (tempfile::TempDir, Layout, Fake) {
         &[
             ("usr/bin/fs", "fs 1"),
             ("usr/bin/shell", "shell 1"),
-            ("usr/bin/tilo-greeter", "greeter 1"),
+            ("usr/libexec/tilo/tilo-greeter", "greeter 1"),
             ("usr/lib/old-lib.so", "old"),
         ],
     );
@@ -395,7 +395,7 @@ fn machine() -> (tempfile::TempDir, Layout, Fake) {
         &[
             ("usr/bin/fs", "fs 2"),
             ("usr/bin/shell", "shell 2"),
-            ("usr/bin/tilo-greeter", "greeter 2"),
+            ("usr/libexec/tilo/tilo-greeter", "greeter 2"),
             ("usr/lib/modules/6.18/vmlinuz", "kernel"),
             ("usr/share/tilo/components.toml", MANIFEST),
         ],
@@ -513,7 +513,7 @@ fn a_newer_image_over_an_applied_one_restarts_only_what_changed_since() {
         &[
             ("usr/bin/fs", "fs 2"),
             ("usr/bin/shell", "shell 2"),
-            ("usr/bin/tilo-greeter", "greeter 3"),
+            ("usr/libexec/tilo/tilo-greeter", "greeter 3"),
             ("usr/lib/old-lib.so", "old"),
             ("usr/lib/modules/6.18/vmlinuz", "kernel"),
             ("usr/share/tilo/components.toml", MANIFEST),
@@ -542,7 +542,7 @@ fn a_newer_image_over_an_applied_one_restarts_only_what_changed_since() {
         "the system phase keeps the compositor the desktop already runs"
     );
     assert_eq!(
-        fs::read_to_string(layer.join("usr/bin/tilo-greeter")).unwrap(),
+        fs::read_to_string(layer.join("usr/libexec/tilo/tilo-greeter")).unwrap(),
         "greeter 3"
     );
     assert!(
