@@ -90,6 +90,15 @@ impl PartialEq for ActionDirectorySnapshot {
 impl Eq for ActionDirectorySnapshot {}
 
 const MAX_PINNED_REVISIONS: usize = 64;
+
+/// Why a published surface could not be pinned for local input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PinRefused {
+    /// The surface moved under the input: a later one can carry its actions.
+    Moved,
+    /// As many surfaces as may be retained are held by changes on their way.
+    Full,
+}
 const MAX_PINNED_BYTES: usize = 4 * 1024 * 1024;
 
 /// A pre-event inert directory retained only for local mutation admission.
@@ -162,16 +171,18 @@ impl App {
         Some(pin)
     }
 
-    pub(super) fn pin_local_document_action_directory(
+    /// Pin `revision` for local mutation admission, or say why not: the
+    /// published surface moved, or the bound on retained surfaces is reached.
+    pub(super) fn try_pin_local_document_action_directory(
         &mut self,
         revision: &str,
-    ) -> Option<std::rc::Rc<LocalDocumentDirectoryPin>> {
+    ) -> Result<std::rc::Rc<LocalDocumentDirectoryPin>, PinRefused> {
         if revision.is_empty() {
-            return None;
+            return Err(PinRefused::Moved);
         }
         if self.collaboration.manager.is_connected() {
-            if self.try_action_directory_revision().ok()? != revision {
-                return None;
+            if self.try_action_directory_revision().ok().as_deref() != Some(revision) {
+                return Err(PinRefused::Moved);
             }
         } else if self
             .actions
@@ -182,15 +193,20 @@ impl App {
         {
             // Disconnection must not recompute a revision against a now-absent
             // primary witness. Only the previously frozen surface is usable.
-            return None;
+            return Err(PinRefused::Moved);
         }
-        let snapshot = self.actions.action_directory_snapshot.as_ref()?.clone();
+        let snapshot = self
+            .actions
+            .action_directory_snapshot
+            .as_ref()
+            .ok_or(PinRefused::Moved)?
+            .clone();
         let pins = &mut self.actions.local_document_directory_pins;
         pins.retain(|pin| pin.strong_count() > 0);
         let mut retained_bytes = 0usize;
         for pin in pins.iter().filter_map(std::rc::Weak::upgrade) {
             if pin.revision == revision {
-                return Some(pin);
+                return Ok(pin);
             }
             retained_bytes = retained_bytes.saturating_add(pin.retained_bytes);
         }
@@ -203,7 +219,7 @@ impl App {
         if pins.len() >= MAX_PINNED_REVISIONS
             || retained_bytes.saturating_add(bytes) > MAX_PINNED_BYTES
         {
-            return None;
+            return Err(PinRefused::Full);
         }
         let pin = std::rc::Rc::new(LocalDocumentDirectoryPin {
             revision: revision.to_owned(),
@@ -211,7 +227,7 @@ impl App {
             retained_bytes: bytes,
         });
         pins.push(std::rc::Rc::downgrade(&pin));
-        Some(pin)
+        Ok(pin)
     }
 
     pub(super) fn resolve_local_document_action_directory(
