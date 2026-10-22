@@ -1970,9 +1970,10 @@ fn compact_styles_accessibility_tracks_scrolled_foreground_controls() {
         .harness()
         .a11y_node_named(&t("panel-align-left"))
         .unwrap();
+    // The panel's last control starts below the fold.
     assert!(
         app.harness()
-            .a11y_node_named(&t("panel-num-indent"))
+            .a11y_node_named(&t("panel-new-style"))
             .is_none()
     );
     let before = app.peer_document().get_heads();
@@ -4572,8 +4573,8 @@ fn first_block_start_point(wp: &WordProcessorWidget) -> Point {
     Point::new(l.text_x + 1.0, l.y_top + l.height / 2.0)
 }
 
-/// Right-click preserves selected text and clipboard actions, open menus capture editing keys and
-/// keyboard activation, and context actions stay in the viewport.
+/// Right-click preserves selected text and clipboard actions, and open menus capture editing
+/// keys and keyboard activation.
 #[test]
 fn context_menus_preserve_the_selection_and_capture_editing_keys() {
     // Phase: menu_ux_right_click_preserves_selected_text_and_clipboard_actions.
@@ -4657,8 +4658,11 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
             );
         }
     }
+}
 
-    // Phase: menu_ux_context_actions_stay_in_the_viewport.
+/// The context menu's actions stay inside a small window at large text.
+#[test]
+fn context_actions_stay_in_the_viewport() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut()

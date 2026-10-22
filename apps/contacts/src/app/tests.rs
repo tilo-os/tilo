@@ -3706,7 +3706,7 @@ fn form_choice_semantics() {
         Some(date),
         "calendar choice remains a cancellable draft"
     );
-    act_named(&mut app, "Cancel", &ui::a11y::Action::Activate);
+    press_bar(&mut app, BAR_CANCEL);
     act_named(&mut app, "Friends", &ui::a11y::Action::Activate);
     assert_eq!(app.group_filter.as_deref(), Some("Friends"));
     let controls = app.harness_mut().controls();
