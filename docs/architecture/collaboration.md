@@ -263,7 +263,14 @@ what is held. The queue is bounded (`MAX_HELD_INPUTS`, `MAX_HELD_BYTES`) and
 never refuses the input being admitted: when it is full, the message held
 longest is decided again, applied if it now can be, and otherwise let go
 unapplied with what it waited for (`ReceiveOutcome::dropped`, logged by the
-room owner). Nothing is applied without being authorized.
+room owner). Nothing is applied without being authorized, and nothing let go
+is lost: the peer remembers what each message let go waited for (an author's
+certificate, a record's state), and once one of those lands it reports
+`replay_wanted`, on which the device asks the room's host to replay what it
+retains (`NetCmd::NativeReplay`, a fresh subscription), and the message is
+decided again. The shell's own hold for app surfaces does the same: a room
+whose held inputs were let go is replayed once a surface is named. A device
+that restarts subscribes afresh, and its host replays everything anyway.
 
 ### Write authority on a room's governance
 

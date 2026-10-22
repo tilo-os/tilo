@@ -7167,6 +7167,9 @@ impl ShellNetwork {
             native_admission::Lane::Finished(admitted) => self.complete_native_input(*admitted),
             native_admission::Lane::Idle => {}
         }
+        for room in self.native_admission.take_replays() {
+            self.request_native_replay(room);
+        }
         // Inputs held for an app surface that is here now go first, one
         // admission at a time, as they arrived.
         if let Some(input) = self.native_admission.next_again() {

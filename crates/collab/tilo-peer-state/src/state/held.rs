@@ -1,10 +1,12 @@
 //! The prerequisite queue: app messages held while what they wait for is
 //! still in flight, bounded, and never a refusal of the input being admitted.
+use super::Route;
 use super::{
     AdmissionError, AdmissionReport, DocumentAdmission, DroppedInput, InputDisposition,
     MissingPrerequisite, NeighbourMsg, ReceiveOutcome, StatePeer, SystemTime, VecDeque, err,
 };
 use crate::admission::DropReason;
+use automerge::transaction::Transactable as _;
 
 /// Most app messages one room holds for a prerequisite at once.
 pub const MAX_HELD_INPUTS: usize = 64;
@@ -17,6 +19,33 @@ pub(super) struct Held {
     pub(super) retained_replay: bool,
     pub(super) prerequisite: MissingPrerequisite,
     pub(super) now: SystemTime,
+}
+
+/// Most distinct prerequisites [`Missed`] keeps apart; past them any change
+/// that lands asks for a replay.
+const MAX_MISSED: usize = 1024;
+
+/// What the app messages this peer let go waited for. A message let go is
+/// not lost: once something it waited for lands here, the room's host is
+/// asked to replay what it retains ([`ReceiveOutcome::replay_wanted`]), and
+/// the message is decided again. Not persisted: a device that restarts
+/// subscribes afresh, and its host replays everything it retains anyway.
+#[derive(Clone, Default)]
+pub(super) struct Missed {
+    /// Authors whose certificate was missing.
+    authors: std::collections::BTreeSet<[u8; 32]>,
+    /// Records whose checkpoint, coverage or earlier changes were missing,
+    /// each as this peer held it then.
+    routes: std::collections::BTreeMap<Route, Option<Vec<automerge::ChangeHash>>>,
+    /// Something else was missing, or too much to tell apart: any change
+    /// that lands asks for a replay.
+    anything: bool,
+}
+
+impl Missed {
+    fn is_empty(&self) -> bool {
+        self.authors.is_empty() && self.routes.is_empty() && !self.anything
+    }
 }
 
 /// A held message decided again when its place was needed.
@@ -96,12 +125,14 @@ impl StatePeer {
             return Err("app prerequisite queue full; fresh checkpoint required".into());
         }
         if bytes > MAX_HELD_BYTES {
-            let mut report = deferred(vec![dropped_input(
+            let input = dropped_input(
                 &source,
                 &message,
                 Some(prerequisite.clone()),
                 DropReason::TooLarge,
-            )]);
+            );
+            self.remember_missed(&input);
+            let mut report = deferred(vec![input]);
             report.summary.deferred = false;
             return Ok(report);
         }
@@ -115,7 +146,10 @@ impl StatePeer {
             self.core.pending_bytes = self.core.pending_bytes.saturating_sub(size);
             match self.decide_held(author, &oldest, replayed, now) {
                 Decided::Admitted(admitted) => settled.extend(admitted),
-                Decided::LetGo(input) => dropped.push(input),
+                Decided::LetGo(input) => {
+                    self.remember_missed(&input);
+                    dropped.push(input);
+                }
             }
         }
         self.core.pending_bytes = self.core.pending_bytes.saturating_add(bytes);
@@ -161,5 +195,76 @@ impl StatePeer {
                 DropReason::Refused(error.to_string()),
             )),
         }
+    }
+    /// Note what `input`, let go unapplied, waited for.
+    fn remember_missed(&mut self, input: &DroppedInput) {
+        if matches!(input.reason, DropReason::Refused(_)) {
+            // Decided, not waiting: refused as any delivery of it would be.
+            return;
+        }
+        let route = Route {
+            app: input.app.clone(),
+            record: input.record.clone(),
+        };
+        match input.waiting_for {
+            Some(MissingPrerequisite::Certificate) => {
+                self.missed.authors.insert(input.author);
+            }
+            Some(
+                MissingPrerequisite::RecordCheckpoint
+                | MissingPrerequisite::CheckpointCoverage
+                | MissingPrerequisite::CausalDependencies,
+            ) => {
+                let held = self.route_heads(&route);
+                self.missed.routes.entry(route).or_insert(held);
+            }
+            _ => self.missed.anything = true,
+        }
+        if self
+            .missed
+            .authors
+            .len()
+            .saturating_add(self.missed.routes.len())
+            > MAX_MISSED
+        {
+            self.missed = Missed {
+                anything: true,
+                ..Missed::default()
+            };
+        }
+    }
+    fn route_heads(&self, route: &Route) -> Option<Vec<automerge::ChangeHash>> {
+        self.core
+            .documents
+            .get(route)
+            .map(|document| document.doc.base_heads())
+    }
+    /// Whether something a message let go waited for has landed since,
+    /// forgetting what did: the room's host should replay what it retains.
+    /// `landed` is whether the input just admitted changed anything.
+    pub(super) fn missed_landed(&mut self, landed: bool) -> bool {
+        if self.missed.is_empty() {
+            return false;
+        }
+        let mut due = false;
+        if self.missed.anything && landed {
+            self.missed.anything = false;
+            due = true;
+        }
+        let certificates = &self.core.certificates;
+        let before = self.missed.authors.len();
+        self.missed
+            .authors
+            .retain(|author| !certificates.contains_key(author));
+        due |= self.missed.authors.len() != before;
+        let routes = std::mem::take(&mut self.missed.routes);
+        for (route, held) in routes {
+            if self.route_heads(&route) == held {
+                self.missed.routes.insert(route, held);
+            } else {
+                due = true;
+            }
+        }
+        due
     }
 }
