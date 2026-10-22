@@ -439,10 +439,12 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         Seed::New,
     )
     .unwrap();
+    // Scratchpad keeps the workspace's one record: its package primary,
+    // which travels as the route without a record id.
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
         cluster_id: ROOM.into(),
-        record: page.record().to_owned(),
+        record: page.wire_record().to_owned(),
     };
     browser
         .publish(route.clone(), &page.take_mutation().unwrap())

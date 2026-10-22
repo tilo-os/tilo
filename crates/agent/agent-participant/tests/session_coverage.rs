@@ -131,6 +131,13 @@ fn body(app: &impl common::Body) -> String {
 
 /// The browser's copy of `route`: its own mount, seeded from every change
 /// it received.
+/// Record a coverage failure, and say it at once: a run the harness ends
+/// for time still names every app that failed before it.
+fn note(failures: &mut Vec<String>, failure: String) {
+    eprintln!("session coverage: {failure}");
+    failures.push(failure);
+}
+
 fn page(
     catalogue: &tilo_agent_participant::AppCatalogue,
     route: &DocumentRoute,
@@ -293,7 +300,7 @@ async fn every_web_app_over_the_session() {
         );
         let local = common::LOCAL_STATE.iter().any(|(id, _)| *id == app_id);
         if edit.is_none() && !local {
-            failures.push(format!("{app_id}: no edit: {refused:#?}"));
+            note(&mut failures, format!("{app_id}: no edit: {refused:#?}"));
         }
         let expected = body(agent.app(&route).unwrap());
 
@@ -328,9 +335,15 @@ async fn every_web_app_over_the_session() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
         if !merged {
-            failures.push(format!(
-                "{app_id}: the browser never converged on the agent's record"
-            ));
+            let seen = received
+                .get(&route)
+                .map(|changes| page(&catalogue, &route, changes));
+            note(
+                &mut failures,
+                format!(
+                    "{app_id}: the browser never converged on the agent's record\n  agent: {expected}\n  browser: {seen:?}"
+                ),
+            );
         }
 
         // The browser sees the agent on this record: the first presence
@@ -376,9 +389,10 @@ async fn every_web_app_over_the_session() {
                 "yes".to_owned()
             }
             None => {
-                failures.push(format!(
-                    "{app_id}: the browser never saw the agent on the record"
-                ));
+                note(
+                    &mut failures,
+                    format!("{app_id}: the browser never saw the agent on the record"),
+                );
                 "no".to_owned()
             }
         };

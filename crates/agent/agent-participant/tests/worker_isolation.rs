@@ -43,9 +43,12 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 /// A record a host creates under the room's default route is the record
 /// every member's first window opens: its genesis names that id, not one
 /// of its own, or a member's store refuses it as not matching its binding.
+/// Only an app whose windows each show a resource of their own (Sheets)
+/// keeps such records; Scratchpad keeps the workspace's one record, its
+/// package primary, like Notes.
 #[test]
 fn a_confined_record_created_under_a_room_route_names_that_route() {
-    assert_seed_route("so.tilo.scratchpad", ui::record::RecordId::room_default());
+    assert_seed_route("so.tilo.sheets", ui::record::RecordId::room_default());
 }
 
 #[test]
