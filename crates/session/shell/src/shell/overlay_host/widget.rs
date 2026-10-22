@@ -1192,6 +1192,12 @@ impl ShellOverlayHost {
         {
             return;
         }
+        // The capture tool and the screenshot editor take a finger as the
+        // pointer held down, which the compositor sends them through the
+        // pointer path; their raw touch is left unclaimed for it to do so.
+        if matches!(event, WindowEvent::Touch(_)) && self.touch_works_as_held_pointer() {
+            return;
+        }
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed

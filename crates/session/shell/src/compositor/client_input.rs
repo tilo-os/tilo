@@ -130,10 +130,12 @@ pub struct ClientInput {
     /// Saving copies the whole workspace tree, so it runs after
     /// latency-sensitive Wayland input has been queued/flushed.
     focus_persistence_pending: bool,
-    /// Whether the latest direct-touch down was delivered to a client over
-    /// `wl_touch`. That client owns the whole tap, so the compositor must not
-    /// also synthesise a pointer click for it.
-    touch_down_reached_client: bool,
+    /// Whether the latest direct-touch down was taken whole before any
+    /// pointer translation: delivered to a client over `wl_touch` (that
+    /// client owns the whole tap), or spent closing a client popup it landed
+    /// outside of, as a click there only closes it. Either way the
+    /// compositor must not also synthesise a pointer click for it.
+    touch_down_taken: bool,
     /// Who the input being routed belongs to, when it is not the person at
     /// this machine: an agent's seat. Its key and button edges are then
     /// attributed to that participant on the shared-seat ledger.
@@ -915,16 +917,17 @@ impl State {
     }
 
     /// Record a direct-touch down that the compositor kept away from every
-    /// client (a locked session, or chrome capturing input).
+    /// client (a contact the shell's gesture arena owns).
     pub fn note_touch_down_withheld_from_clients(&mut self) {
-        self.client_input.touch_down_reached_client = false;
+        self.client_input.touch_down_taken = false;
     }
 
-    /// Whether the latest touch-down reached a client that takes touch over
-    /// `wl_touch`. Such a contact is that client's alone; any other is turned
-    /// into pointer input (see [`crate::compositor::touch_pointer`]).
-    pub fn touch_down_reached_client(&self) -> bool {
-        self.client_input.touch_down_reached_client
+    /// Whether the latest touch-down was taken whole: by a client that takes
+    /// touch over `wl_touch`, or by closing a client popup it landed outside
+    /// of. Any other contact is turned into pointer input (see
+    /// [`crate::compositor::touch_pointer`]).
+    pub fn touch_down_taken(&self) -> bool {
+        self.client_input.touch_down_taken
     }
 
     /// Forward one touch point to the focused client over `wl_touch`.
@@ -952,7 +955,7 @@ impl State {
         if matches!(touch, BackendTouchEvent::Down { .. }) {
             // A client that never asked for a `wl_touch` would receive
             // nothing; it gets the contact as pointer input instead.
-            self.client_input.touch_down_reached_client = handle.is_some()
+            self.client_input.touch_down_taken = handle.is_some()
                 && focus.as_ref().is_some_and(|(surface, _)| {
                     surface.client().is_some_and(|client| {
                         client
@@ -1002,7 +1005,61 @@ impl State {
     }
 }
 
-/// Which client (if any) a touch point should be delivered to — only a `Down` establishes touch focus; the rest of the sequence belongs to whatever the down landed on.
+/// Route one direct-touch edge to clients over `wl_touch`: the one place a
+/// finger reaches a client, for the DRM backend and test control alike.
+///
+/// Touch equals pointer. A `Down` goes to the client under it only when a
+/// pointer press there would: never while the session is locked (except on
+/// the on-screen keyboard), never where the shell takes the pointer (an
+/// overlay holding input, a bar or banner over the window; see
+/// [`chrome_captures_touch_at`]), and never past a client popup it lands
+/// outside of, which it closes as a click does and nothing more. A withheld
+/// contact reaches the shell as raw touch and, unless a shell widget reads
+/// raw touch there, as pointer input through the pointer path, which hands
+/// it to the overlay. The rest of a sequence belongs to whatever its `Down`
+/// landed on: Wayland latches touch focus per contact at `down`, so later
+/// edges carry no target and never re-hit-test.
+pub fn route_client_touch(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    touch: BackendTouchEvent,
+    session_locked: bool,
+    on_keyboard: bool,
+) {
+    let target = match touch {
+        BackendTouchEvent::Down { x, y, .. } => {
+            let shell_takes = !on_keyboard
+                && (session_locked || chrome_captures_touch_at(fb, vello::kurbo::Point::new(x, y)));
+            if shell_takes {
+                state.note_touch_down_withheld_from_clients();
+                return;
+            }
+            let target = touch_target(state, fb, &touch);
+            if !on_keyboard
+                && state.dismiss_popup_grab_outside(target.map(|(surface_id, _)| surface_id))
+            {
+                // Like a click outside a popup, the touch only closes it.
+                state.client_input.touch_down_taken = true;
+                return;
+            }
+            if let Some((surface_id, _)) = target {
+                focus_touch_target(state, fb, surface_id);
+            }
+            target
+        }
+        BackendTouchEvent::Motion { .. } | BackendTouchEvent::Up { .. }
+            if session_locked && !on_keyboard =>
+        {
+            return;
+        }
+        _ => None,
+    };
+    state.forward_client_touch(touch, target);
+}
+
+/// The client a touch-down at the point would land on, before the shell
+/// decides whether it takes the contact itself ([`route_client_touch`]).
+/// `None` for every edge but `Down`.
 pub fn touch_target(
     state: &State,
     fb: &FrameBuilder,

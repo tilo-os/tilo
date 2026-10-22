@@ -134,6 +134,26 @@ impl ShellOverlayHost {
             || self.bar_popovers.any_open()
     }
 
+    /// How many marks the open screenshot editor holds, if it is open.
+    pub fn screenshot_markup_strokes(&self) -> Option<usize> {
+        self.screenshot_markup
+            .as_ref()
+            .map(|markup| markup.strokes().len())
+    }
+
+    /// Whether a finger works the shell surface in front as the pointer held
+    /// down: press where it lands, drag with it, release where it lifts. The
+    /// capture tool choosing a selection or the screen and the screenshot
+    /// editor read only the pointer (a tap on a control is a press and
+    /// release, a drag selects or draws), so their raw touch is never theirs:
+    /// the compositor hands it to them as that pointer (touch equals
+    /// pointer), through the same path a mouse takes.
+    pub fn touch_works_as_held_pointer(&self) -> bool {
+        self.screenshot_markup.is_some()
+            || (self.capture_studio.modal_capture().is_some()
+                && !self.capture_studio.lets_desktop_navigation_through())
+    }
+
     /// Whether the pointer is over the shell-owned bar a maximized window
     /// shows over its client when the person reaches for it. The client
     /// fills the window, so ordinary foreign hit-testing would otherwise
@@ -141,11 +161,15 @@ impl ShellOverlayHost {
     /// those controls can see them. Pointer only: the keyboard stays with the
     /// client.
     pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
+        self.last_cursor
+            .is_some_and(|p| self.maximized_chrome_captures_pointer_at(p))
+    }
+
+    /// Whether `p` is on that bar, for a finger landing there as for the
+    /// pointer standing there.
+    pub(crate) fn maximized_chrome_captures_pointer_at(&self, p: Point) -> bool {
         // Local input controls are above window chrome and preserve its seat.
-        if self
-            .last_cursor
-            .is_some_and(|point| self.dictation_pointer_at((point.x, point.y)))
-        {
+        if self.dictation_pointer_at((p.x, p.y)) {
             return false;
         }
         let Some(chrome) = self.chrome.as_ref() else {
@@ -158,12 +182,9 @@ impl ShellOverlayHost {
             // SAFETY: same stable boxed-row contract as the other
             // `group_row_ptrs` accessors; this is a read-only query.
             let row: &GroupRow = unsafe { &*ptr };
-            row.groups.iter().any(|group| {
-                group.id == group_id
-                    && self
-                        .last_cursor
-                        .is_some_and(|p| group.maximized_chrome_captures(p))
-            })
+            row.groups
+                .iter()
+                .any(|group| group.id == group_id && group.maximized_chrome_captures(p))
         })
     }
 

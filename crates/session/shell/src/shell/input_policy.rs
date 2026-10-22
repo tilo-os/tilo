@@ -769,12 +769,15 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
 /// client, or on a notification banner over a window. That bar takes only the pointer — the client keeps the keyboard,
 /// so typing never stops because the pointer rests near the window's top.
 pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
-    chrome_captures_input(fb)
-        || fb.host().maximized_chrome_captures_pointer()
-        || fb.host().strip_switcher_captures_pointer()
-        || fb.host().top_bar_captures_pointer()
-        || fb.host().notification_banner_captures_pointer()
-        || fb.host().presence_notice_captures_pointer()
+    chrome_captures_input(fb) || fb.host().chrome_band_captures_pointer()
+}
+
+/// Whether the shell takes a finger landing at `point` (global, as drawn):
+/// exactly when it would take the pointer standing there
+/// ([`chrome_captures_pointer`]). Touch equals pointer: a contact on an
+/// overlay is the overlay's, never also the window's beneath.
+pub fn chrome_captures_touch_at(fb: &FrameBuilder, point: vello::kurbo::Point) -> bool {
+    chrome_captures_input(fb) || fb.host().chrome_band_captures_pointer_at(Some(point))
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.
