@@ -138,7 +138,7 @@ qcms.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-gossip.workspace = true
-iroh-mdns-address-lookup.workspace = true
+tilo-lan-discovery = { path = "../../collab/tilo-lan-discovery" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 bytes.workspace = true
 blake3.workspace = true

@@ -620,7 +620,9 @@ operation, which also checks committed Store evidence and configured registries.
 
 The app catalogue (`apps.tilo.so`) is fetched only when the Store opens, and
 owner-opted extension refresh only after the owner opts in. LAN discovery
-(mDNS) is off unless `TILO_COLLAB_LAN_DISCOVERY` is set.
+finds only the person's own devices: its probes are sealed to the devices
+asked for and carry nothing an observer can tie to the person or count
+(`crates/collab/tilo-lan-discovery`).
 
 ## Private file contents from the session chooser
 

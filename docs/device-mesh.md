@@ -33,6 +33,10 @@ device. From then on every device of theirs finds and trusts the others:
   certificate, the enrolment list and a later hello of the revoked device.
 - Another person's device is never admitted this way; it joins through an
   invitation to a workspace.
+- On the local network the devices find each other's addresses with sealed
+  probes only the person's devices can read (`crates/collab/tilo-lan-discovery`).
+  A device that asks for an older one also introduces itself to it, so a device
+  enrolled later is found even by devices that never heard of it.
 
 ## One replication substrate
 

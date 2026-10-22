@@ -65,10 +65,9 @@ at the configured `identity_root`. Home-server first-boot enrollment belongs to
 the provisioning-image flow, while a hosted service supplies its provider
 identity through its control plane.
 
-LAN discovery is deliberately opt-in because it advertises the device's Iroh
-endpoint id and local addresses on the current network. Set
-`TILO_COLLAB_LAN_DISCOVERY=1` to enable the Tilo-specific
-`_tilo-collab-v1._udp.local` service. Invite addresses work without it.
+A desktop session finds the person's own devices on the local network with
+sealed probes only those devices can read (`tilo-lan-discovery`); nothing on
+the network learns the endpoint id. Invite addresses work without it.
 
 ## Wire protocol
 
