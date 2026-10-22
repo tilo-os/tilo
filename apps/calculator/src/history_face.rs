@@ -78,21 +78,37 @@ impl HistoryEntryPresenter for CalculatorEntries {
             .map(|row| (row, Rc::clone(&self.series)));
         Some(EntryFace::new(spoken).with_body(Rc::new(GraphBody::new(kind, &formula, curve))))
     }
-    /// A band reads as what was done in it: its functions and its
-    /// calculations, and how many other changes beside them.
+    /// A band reads as what was done in it: the functions written in it
+    /// (each once, however many keystrokes wrote it), its calculations, and
+    /// how many other changes beside them. A change to a row of a function
+    /// written in the band, such as adding the row, is part of that function.
     fn group_summary(&self, entries: &[HistoryEntry]) -> Option<String> {
         let calculations = entries
             .iter()
             .filter(|entry| calculation(entry).is_some())
             .count();
-        let functions = entries
-            .iter()
-            .filter(|entry| plotted(entry).is_some())
-            .count();
+        let mut rows = std::collections::BTreeSet::new();
+        let mut unrowed = 0_usize;
+        for entry in entries.iter().filter(|entry| plotted(entry).is_some()) {
+            match row_of(entry) {
+                Some(row) => {
+                    rows.insert(row);
+                }
+                None => unrowed += 1,
+            }
+        }
+        let functions = rows.len() + unrowed;
         if calculations + functions == 0 {
             return None;
         }
-        let others = entries.len().saturating_sub(calculations + functions);
+        let others = entries
+            .iter()
+            .filter(|entry| {
+                calculation(entry).is_none()
+                    && plotted(entry).is_none()
+                    && row_of(entry).is_none_or(|row| !rows.contains(&row))
+            })
+            .count();
         let count = |key: &str, count: usize| {
             crate::resource::CATALOG
                 .t_args(key, &[("count", ui::i18n::ArgValue::Number(count as f64))])
@@ -151,10 +167,10 @@ fn plotted(entry: &HistoryEntry) -> Option<(GraphKind, String)> {
                 .as_ref()
                 .and_then(|new| new.as_str())
                 .map(str::to_owned)
-                .or_else(|| context.item.as_ref().map(|item| item.label.clone())),
+                .or_else(|| written_formula(context)),
             // A row added with its formula: the item's label is its formula.
             EditOp::Insert if graph_kind(edit).is_some() && edit.new.is_none() => {
-                context.item.as_ref().map(|item| item.label.clone())
+                written_formula(context)
             }
             _ => None,
         },
@@ -165,6 +181,16 @@ fn plotted(entry: &HistoryEntry) -> Option<(GraphKind, String)> {
         return None;
     }
     Some((graph_kind(edit_of(context)?)?, formula))
+}
+
+/// The formula a change's row reads as: its item's label. A row with no
+/// formula yet is offered under its id, which is not a formula.
+fn written_formula(context: &ui::tilo_actions::ActionContext) -> Option<String> {
+    context
+        .item
+        .as_ref()
+        .filter(|item| item.label != item.id)
+        .map(|item| item.label.clone())
 }
 
 /// The graph row a change is about: the item its edit names, or the item
@@ -542,6 +568,43 @@ mod tests {
         );
     }
 
+    /// A function added with no formula yet has nothing to show: its row is
+    /// offered under its id, and the id is not a formula.
+    #[test]
+    fn a_blank_function_row_is_not_read_as_its_id() {
+        let added = Did::Edit(FieldEdit {
+            ty: "plot-fn".into(),
+            field: "funcs".into(),
+            path: vec![
+                PathStep::Field("funcs".into()),
+                PathStep::Item("row".into()),
+            ],
+            op: EditOp::Insert,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        });
+        assert!(
+            CalculatorEntries::default()
+                .face(&entry(added.clone(), Some("row")))
+                .is_none(),
+            "a blank row has no formula to show"
+        );
+        let face = CalculatorEntries::default()
+            .face(&entry(added, Some("x^2")))
+            .expect("a row added with its formula shows it");
+        assert_eq!(face.spoken, "y = x^2");
+        assert!(
+            CalculatorEntries::default()
+                .face(&entry(
+                    formula_edit("funcs", EditOp::Replace, None),
+                    Some("row")
+                ))
+                .is_none(),
+            "a formula cleared to nothing is not read as the row's id"
+        );
+    }
+
     /// A band reads as the functions and calculations in it, and any other
     /// changes beside them; a band of neither keeps the default.
     #[test]
@@ -563,6 +626,35 @@ mod tests {
         );
         let none = [entry(verb("clear-history", &[]), None)];
         assert_eq!(CalculatorEntries::default().group_summary(&none), None);
+    }
+
+    /// A function typed a keystroke at a time is one function in its band,
+    /// and adding its row is part of writing it.
+    #[test]
+    fn a_band_counts_a_function_once_however_it_was_typed() {
+        let added = entry(
+            Did::Edit(FieldEdit {
+                ty: "plot-fn".into(),
+                field: "funcs".into(),
+                path: vec![
+                    PathStep::Field("funcs".into()),
+                    PathStep::Item("row".into()),
+                ],
+                op: EditOp::Insert,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            }),
+            Some("row"),
+        );
+        let typed = |text: &str| entry(formula_edit("funcs", EditOp::Replace, Some(text)), None);
+        let entries = [added, typed("x"), typed("x^"), typed("x^2")];
+        assert_eq!(
+            CalculatorEntries::default()
+                .group_summary(&entries)
+                .as_deref(),
+            Some("1 function")
+        );
     }
 
     /// Removing, clearing and hiding read as their sentences.
