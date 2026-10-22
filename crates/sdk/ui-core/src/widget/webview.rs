@@ -357,7 +357,7 @@ impl WebView {
     /// The device scale the page is rendered at.
     #[must_use]
     pub fn device_scale(&self) -> f32 {
-        self.engine_scale()
+        self.scale_factor
     }
 
     /// The density the engine renders the page at: the device's, lowered
