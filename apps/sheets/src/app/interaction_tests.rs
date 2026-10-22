@@ -55,16 +55,11 @@ fn bar_item(app: &SheetsApp, menu: &str, name: &str) -> String {
         .into_iter()
         .find(|action| action.id == menu)
         .and_then(|action| action.items.into_iter().find(|item| item.name == name))
-        .map(|item| item.id)
-        .unwrap_or_else(|| panic!("{menu} offers {name}"))
+        .map_or_else(|| panic!("{menu} offers {name}"), |item| item.id)
 }
 
 /// The commands, the menus and the sheet tabs act on pointer and keyboard.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
 fn painted_chrome_answers_pointer_and_keyboard() {
     // Case `format_menu_applies_the_chosen_format`.
     {

@@ -2194,11 +2194,11 @@ fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() 
             .resize_accessibility()
             .is_some()
     }));
-    // The open panel's own close control takes the keyboard.
-    let people = driver
-        .a11y_node_named("Show people or thread")
-        .expect("the people panel's close control");
-    driver.perform_a11y_action(people, &Action::Focus).unwrap();
+    // One of the app's own controls takes the keyboard first.
+    let attach = driver
+        .a11y_node_named("Share a file")
+        .expect("the composer's Share a file control");
+    driver.perform_a11y_action(attach, &Action::Focus).unwrap();
     assert!(driver.root::<ChatApp>().keyboard_target.is_some());
     let sidebar = driver.a11y_node_named("Resize sidebar").unwrap();
     driver.perform_a11y_action(sidebar, &Action::Focus).unwrap();

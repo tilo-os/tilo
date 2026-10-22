@@ -182,7 +182,7 @@ pub(crate) fn bar_items(state: &MailState, first_run: bool) -> Vec<BarItem> {
         "add-account",
         "user-plus",
         "Add account",
-        Command::AccountSettings(None),
+        Command::AccountSettings,
     );
     // Before any account the empty window's own Add account is the one
     // place to start.

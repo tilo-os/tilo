@@ -2708,10 +2708,10 @@ mod tests {
     }
 
     /// Calculator-mode pointer path: keycaps append, a history row recalls,
-    /// Clear empties history, memory keys accumulate/clear, and the angle-unit
-    /// toggle changes trig output. Fresh app + state per phase.
+    /// Clear empties history, and memory keys accumulate/clear. Fresh app +
+    /// state per phase.
     #[test]
-    fn calc_pointer_clicks_drive_keypad_history_memory_and_angle() {
+    fn calc_pointer_clicks_drive_keypad_history_and_memory() {
         // phase calc_keypad_click_appends_to_expression
         {
             // handle_event → on_press → on_press_calc → key_at → apply_key on the
@@ -2797,8 +2797,12 @@ mod tests {
             tap(&mut app, &mut st, m_clr);
             assert_eq!(app.model.memory, 0.0, "MC must clear memory");
         }
+    }
 
-        // phase deg_toggle_click_changes_angle_mode_and_trig_output
+    /// The window bar's Degrees and Radians switch the angle unit, and trig
+    /// evaluates in the unit chosen.
+    #[test]
+    fn the_bars_angle_unit_changes_trig_output() {
         {
             // The bar's Degrees and Radians → model.deg, and the change must
             // flow through model.ctx() so trig actually evaluates
