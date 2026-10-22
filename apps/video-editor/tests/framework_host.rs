@@ -261,3 +261,61 @@ fn edits_bound_to_the_playhead_reach_the_door() {
         .is_err()
     );
 }
+
+/// What an agent's answer is for an action of the project, by its id.
+fn agent_answer(app: &mut HeadlessApp<VideoEditor>, action: &str) -> ui::permissions::Answer {
+    let descriptor = app
+        .actions()
+        .unwrap()
+        .into_iter()
+        .find(|descriptor| {
+            descriptor.address.action == action && descriptor.resource_kind == Project::KIND
+        })
+        .unwrap();
+    assert!(
+        !descriptor
+            .contract
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY),
+        "`{action}` has no rule of its own about who may run it"
+    );
+    let need = descriptor.contract.need();
+    let node = tilo_actions::action_node(
+        &ui::permissions::TreePath::root(),
+        VideoEditor::ID,
+        Project::KIND,
+        &descriptor.address.resource,
+        need.field.as_deref(),
+        action,
+    );
+    app.permissions().answer(&node, need.kind)
+}
+
+#[test]
+fn an_agent_is_asked_first_before_export_writes_a_file() {
+    use ui::permissions::{Answer, LOCAL_ROOM, LOCAL_USER, PermissionContext, Role, policy};
+    const AGENT: &str = "renderer";
+
+    let mut app = with_sample();
+    // An agent admitted as an Operator, with no answer of the person's yet.
+    let grants = policy::roles::AgentPreset::Operator.grants(
+        LOCAL_ROOM,
+        AGENT,
+        &policy::Subject::person(LOCAL_USER),
+    );
+    app.set_permissions(
+        PermissionContext::member(LOCAL_USER, Role::Owner)
+            .acting_as(policy::Subject::agent(AGENT), grants),
+    );
+    // Writing a file is an outside effect: it asks first, like any other.
+    assert_eq!(agent_answer(&mut app, "export"), Answer::Ask);
+    // Rendering into content reads.
+    assert_eq!(agent_answer(&mut app, "render"), Answer::Allow);
+    // The window's door never runs an ask for someone acting for the
+    // person; the broker pauses the agent's run to ask them.
+    let asked = app.effect(&video_editor::actions::VideoEditorEffect::Export {
+        path: Some("/nonexistent/out.mp4".into()),
+    });
+    assert!(asked.is_err(), "{asked:?}");
+}

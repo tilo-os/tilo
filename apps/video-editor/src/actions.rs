@@ -76,7 +76,10 @@ pub enum VideoEditorEffect {
         path: Option<String>,
     },
     /// Export video.
-    #[effect(cancellable, device_only)]
+    ///
+    /// Writes the rendered timeline to a file, an outside effect like any
+    /// other.
+    #[effect(cancellable)]
     Export {
         #[param("Direct export path; omit to use the system picker")]
         path: Option<String>,
