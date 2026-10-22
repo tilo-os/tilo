@@ -12,6 +12,8 @@ pub enum Told<T> {
     Was(T),
 }
 
+// Only the native event-loop runner tells the shell anything.
+#[cfg(feature = "native")]
 impl<T: PartialEq> Told<T> {
     fn was(&self, value: &T) -> bool {
         matches!(self, Self::Was(told) if told == value)
