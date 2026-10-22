@@ -251,13 +251,9 @@ fn runtime_arguments(
             }
             args
         }
+        // vLLM's images run `vllm serve`, which takes the model first.
         execution => {
-            let mut args = vec![
-                "serve".into(),
-                path.into(),
-                "--served-model-name".into(),
-                model.id.clone(),
-            ];
+            let mut args = vec![path.into(), "--served-model-name".into(), model.id.clone()];
             if let Some(RuntimeExecution::Vllm {
                 max_context_tokens,
                 cpu_offload_gib,
@@ -1884,6 +1880,8 @@ mod tests {
         });
         release.artifact_format = ModelArtifactFormat::VllmGguf;
         let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
+        // The image's entrypoint is `vllm serve`: the model comes first.
+        assert_eq!(args.first().map(String::as_str), Some("/models/model.gguf"));
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--served-model-name", "tiny"])
