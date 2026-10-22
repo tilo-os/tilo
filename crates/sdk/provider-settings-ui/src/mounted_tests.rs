@@ -507,14 +507,19 @@ fn mounted_agent_models_are_chosen_and_sent_back_to_the_default() {
     let mut profile = ProviderProfile::google_vertex("project-a", "global", "gemini-2.5-pro");
     profile
         .models
-        .push(agent_provider_config::ModelDescriptor::new("gemini-2.5-flash"));
+        .push(agent_provider_config::ModelDescriptor::new(
+            "gemini-2.5-flash",
+        ));
     let provider = profile.id.clone();
     backend.state.lock_recover().config.upsert(profile);
     let mut app = mount(backend.clone());
     app.harness().resize((1800, 6000)).unwrap();
     app.settle();
     let use_default = format!("agent-model-default-{}", hex::encode("writer"));
-    assert_eq!(rendered_enabled(app.harness().root_widget(), &use_default), None);
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &use_default),
+        None
+    );
     assert!(
         app.effect(&ProviderEffect::SetAgentModel {
             agent: "writer".into(),
