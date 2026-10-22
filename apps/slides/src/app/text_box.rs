@@ -82,16 +82,6 @@ impl TextBoxEditor {
     }
 }
 
-/// One finger on the canvas, driving it as the pointer.
-#[derive(Clone, Copy)]
-pub(super) struct Finger {
-    pub(super) id: u64,
-    /// Where it landed, in physical pixels.
-    pub(super) start: winit::dpi::PhysicalPosition<f64>,
-    /// It travelled past a tap's slop: its moves now drag.
-    pub(super) moving: bool,
-}
-
 impl SlidesApp {
     /// Start editing the selected text box's words; `select_all` selects
     /// them all once the editor opens.
@@ -431,7 +421,8 @@ impl SlidesApp {
 
     /// Whether a finger landing at `p` grabs something on the canvas: an
     /// element, a handle of the selection, the words being edited. Nothing
-    /// modal is open over it.
+    /// modal is open over it. Its drag then moves, resizes or selects as
+    /// the mouse's does ([`ui::widget::Widget::drags_by_touch`]).
     pub(super) fn canvas_takes_finger(&self, p: Point) -> bool {
         if self.mode != Mode::Edit
             || self.help_overlay.is_visible()
@@ -462,90 +453,6 @@ impl SlidesApp {
                 .any(|(_, rect)| rect.contains(p))
         });
         on_handle || self.element_at(&chrome, p).is_some()
-    }
-
-    /// A finger that landed on the canvas ([`Self::canvas_takes_finger`])
-    /// is the pointer, so touch does what the mouse does: a drag moves or
-    /// resizes the box under it, a tap selects, a second tap opens a text
-    /// box at the word tapped, and in the words being edited a tap places
-    /// the caret and a drag selects. Until it travels past a tap's slop the
-    /// finger only taps, so a tap never nudges a box. Other fingers wait
-    /// while it is down. Returns whether the event was such a finger's.
-    pub(super) fn touch_as_pointer(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        use winit::event::TouchPhase;
-        let WindowEvent::Touch(touch) = event else {
-            return false;
-        };
-        let at = ui::synthetic_input::cursor_moved(touch.location.x, touch.location.y);
-        let events = match (self.finger, touch.phase) {
-            (None, TouchPhase::Started) => {
-                let p = Point::new(
-                    touch.location.x / ctx.scale_factor,
-                    touch.location.y / ctx.scale_factor,
-                );
-                if !self.canvas_takes_finger(p) {
-                    return false;
-                }
-                self.finger = Some(Finger {
-                    id: touch.id,
-                    start: touch.location,
-                    moving: false,
-                });
-                vec![at, ui::synthetic_input::mouse_press()]
-            }
-            (None, _) => return false,
-            (Some(finger), TouchPhase::Moved) if finger.id == touch.id => {
-                let travel = (touch.location.x - finger.start.x)
-                    .hypot(touch.location.y - finger.start.y)
-                    / ctx.scale_factor;
-                if !finger.moving && travel <= ui::gesture::TouchGestureArena::TAP_SLOP {
-                    *ctx.handled = true;
-                    return true;
-                }
-                self.finger = Some(Finger {
-                    moving: true,
-                    ..finger
-                });
-                vec![at]
-            }
-            (Some(finger), TouchPhase::Ended | TouchPhase::Cancelled) if finger.id == touch.id => {
-                let release = if finger.moving {
-                    vec![at, ui::synthetic_input::mouse_release()]
-                } else {
-                    // A tap releases where it pressed.
-                    vec![ui::synthetic_input::mouse_release()]
-                };
-                self.replay_pointer(&release, ctx);
-                self.finger = None;
-                *ctx.handled = true;
-                return true;
-            }
-            // Another finger, while this one holds the canvas.
-            (Some(_), _) => {
-                *ctx.handled = true;
-                return true;
-            }
-        };
-        self.replay_pointer(&events, ctx);
-        *ctx.handled = true;
-        true
-    }
-
-    /// Run the pointer events a finger stands for, each as its own event:
-    /// one consumed move must not swallow the press that follows it.
-    pub(super) fn replay_pointer(
-        &mut self,
-        events: &[WindowEvent],
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        for event in events {
-            *ctx.handled = false;
-            Widget::handle_event(self, event, ctx);
-        }
     }
 }
 
