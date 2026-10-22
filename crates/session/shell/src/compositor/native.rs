@@ -8482,11 +8482,25 @@ fn start_recording_audio_probe(
 fn start_session_peer_sync(
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
     wake: crate::session_runtime::Wake,
-) -> crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork> {
+) -> crate::session_runtime::PendingStart<Arc<crate::shell::network::ShellNetwork>> {
     match crate::session_runtime::runtime() {
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
-            crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
-                .map_err(|error| error.to_string())
+            let net = Arc::new(
+                crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
+                    .map_err(|error| error.to_string())?,
+            );
+            // Joining reads the enrolled rooms, this device's identities and
+            // the community configuration, and redeems a boot invitation:
+            // here, before the loop has the network. Invitations,
+            // redemptions, enrollments and sync rounds run on the network's
+            // worker from the first join on.
+            net.start_peer_sync_worker();
+            let _ = net.join_default_workspace();
+            tracing::info!("peer-sync: actor spawned, default workspace joined");
+            net.join_at_boot();
+            net.follow_host_rooms();
+            net.follow_community();
+            Ok(net)
         }),
         Err(error) => crate::session_runtime::PendingStart::finished(Err(format!(
             "the session runtime is unavailable: {error}"
@@ -8529,20 +8543,14 @@ fn install_legacy_streams(state: &mut State, net: &Arc<crate::shell::network::Sh
     }));
 }
 
-/// Join the default workspace with a freshly started network and install
-/// the chrome commands that use it.
+/// Install the chrome commands that use a freshly started network, which
+/// joined its rooms before it reached the loop ([`start_session_peer_sync`]).
 fn install_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
     tree_handle: &crate::shell::state::WorkspaceTreeHandle,
-    handle: crate::shell::network::ShellNetwork,
+    net: Arc<crate::shell::network::ShellNetwork>,
 ) -> Arc<crate::shell::network::ShellNetwork> {
-    let _ = handle.join_default_workspace();
-    tracing::info!("peer-sync: actor spawned, default workspace joined");
-    let net = Arc::new(handle);
-    net.join_at_boot();
-    net.follow_host_rooms();
-    net.follow_community();
     crate::shell::link_open::attach_network(&net);
     net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
@@ -8564,9 +8572,6 @@ fn install_session_peer_sync(
         ));
     });
     install_legacy_streams(state, &net);
-    // Invitations, redemptions and enrollments wait on relays and the
-    // disk: chrome's requests run on the network's worker, never here.
-    net.start_peer_sync_worker();
     frame_builder.host_mut().set_peer_sync_worker(
         crate::shell::overlay_host::PeerSyncWorker::for_network(&net),
     );
@@ -10441,7 +10446,7 @@ pub fn run() {
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
-        crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork>,
+        crate::session_runtime::PendingStart<Arc<crate::shell::network::ShellNetwork>>,
     > = boot_network
         .then(|| start_session_peer_sync(tree_handle.clone(), Arc::clone(&session_wake)));
     let mut recording_audio_probe = start_recording_audio_probe(Arc::clone(&session_wake));
