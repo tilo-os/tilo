@@ -28,7 +28,7 @@ framework in a different persistence location. A blank new workspace is not proo
 that an old draft was absent. Keep the old snapshot and its backups; do not delete
 or overwrite them on upgrade.
 
-For those snapshots, open a new, untouched API workspace and invoke the device-only
+For those snapshots, open a new, untouched API workspace and invoke the
 `ImportLegacy` effect (`import-legacy` in the action listing), supplying `snapshot`
 as the base64 encoding of the old raw Automerge file. Discover its provider and
 operation with `tilo-control actions list`, then use the normal action invocation

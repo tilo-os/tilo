@@ -40,7 +40,7 @@ class ExplicitAgentStart(unittest.TestCase):
 
     def test_semantic_effect_is_explicit_not_a_chat_record_mutation(self):
         effects = source("effects.rs")
-        self.assertRegex(effects, r"#\[effect\(device_only\)\]\s+StartAgentTask,")
+        self.assertRegex(effects, r"#\[effect\(attended\)\]\s+StartAgentTask,")
         self.assertRegex(effects, r"ChatEffect::StartAgentTask => \{\s+if !self.start_agent_task\(\)")
         self.assertIn("ChatEffect::START_AGENT_TASK", function(effects, "effect_statuses"))
         # surface.toml describes kept record verbs, not device effects.

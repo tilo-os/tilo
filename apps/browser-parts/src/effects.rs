@@ -16,7 +16,7 @@ const PAGE_SETTLE_QUIET_MS: u32 = 500;
 const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "browser.effect", device_only)]
+#[effect(operation = "browser.effect")]
 pub enum BrowserEffect {
     /// Read browser migration progress
     #[effect(row, returns, kind = "read")]

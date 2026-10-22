@@ -50,7 +50,7 @@ use crate::model::{ChangeArea, FileChange, RepoModel};
 /// stash or remote it acts on, named by path, id or name and resolved again
 /// when invoked.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
-#[effect(operation = "git_client.effect", device_only)]
+#[effect(operation = "git_client.effect")]
 pub enum GitClientEffect {
     /// Open repository
     ///
@@ -63,10 +63,10 @@ pub enum GitClientEffect {
     ///
     /// Pick the repository's folder with the system's file chooser, then
     /// open it.
-    #[effect(job)]
+    #[effect(attended, job)]
     ChooseRepository,
     /// Run approved project check
-    #[effect(job, cancellable, returns, untrusted, device_only = false)]
+    #[effect(job, cancellable, returns, untrusted)]
     RunApprovedCheck {
         #[param("Check ID approved by this exact project host")]
         check_id: String,
@@ -187,25 +187,25 @@ pub enum GitClientEffect {
     ///
     /// Between unified and side-by-side: a preference of this person, which
     /// follows them to their other devices.
-    #[effect(kind = "read", device_only = false)]
+    #[effect(kind = "read")]
     DiffLayout,
     /// Turn syntax highlighting on or off
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(kind = "read", device_only = false)]
+    #[effect(kind = "read")]
     SyntaxHighlight,
     /// Show or hide whitespace
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(kind = "read", device_only = false)]
+    #[effect(kind = "read")]
     ShowWhitespace,
     /// Wrap long lines or stop wrapping them
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(kind = "read", device_only = false)]
+    #[effect(kind = "read")]
     WrapLines,
 }
 

@@ -6,9 +6,9 @@
 //! conversation, a category, a message, a call), so the palette, an agent
 //! or a script reaches the same handler a click does. What an effect changes
 //! in the document — the message a shared file becomes — it changes through
-//! the record's verbs and field edits. Sharing a file and
-//! the call controls reach this device's files and voice service, so only
-//! the person at the device runs them.
+//! the record's verbs and field edits. Sharing a file and the call controls
+//! reach this device's files and voice service: outside effects, decided by
+//! the person's answers like any other.
 
 use ui::framework::{EffectAnswer, EffectStatus, Effected, LiveRow};
 use ui::native_media::Command;
@@ -63,7 +63,7 @@ pub(crate) fn item_views(field: &str, _item: &tilo_resource::Id) -> Vec<Resource
 #[effect(operation = "chat.effects")]
 pub enum ChatEffect {
     /// Ask the device's model about the latest message.
-    #[effect(device_only, row, returns, item = channels)]
+    #[effect(row, returns, item = channels)]
     ModelControl {
         channel: String,
         #[param("Model command", choices = ["ask", "stop", "retry", "continue"])]
@@ -101,16 +101,16 @@ pub enum ChatEffect {
     #[effect(view, row, item = people)]
     OpenPerson { user: String },
     /// Open a private conversation with a certified person public key.
-    #[effect(view, device_only, audience = "agents")]
+    #[effect(view, audience = "agents")]
     OpenDirectConversation { public_key: String },
     /// Expand an unsent private editor using its ephemeral native handoff token.
-    #[effect(view, device_only, returns, audience = "agents")]
+    #[effect(view, returns, audience = "agents")]
     AdoptPrivateDraft { token: String },
     /// Send privately through the native person-only host door.
-    #[effect(device_only, returns, audience = "agents")]
+    #[effect(returns, audience = "agents")]
     SendDirectMessage { public_key: String, text: String },
     /// Read a private conversation on this device.
-    #[effect(device_only, returns, audience = "agents")]
+    #[effect(returns, audience = "agents")]
     ReadDirectConversation { public_key: String },
     /// Open a direct conversation with an Agent authenticated by this room.
     #[effect(view, row)]
@@ -129,7 +129,7 @@ pub enum ChatEffect {
     ///
     /// Saving a message never invokes this action: the caller must consciously
     /// approve starting the selected task in the open Agent conversation.
-    #[effect(device_only)]
+    #[effect(attended)]
     StartAgentTask,
     /// Read message
     ///
@@ -173,7 +173,6 @@ pub enum ChatEffect {
     /// Shares a file from this device in a conversation: its bytes go to
     /// this device's attachment store and the message carries them by
     /// reference.
-    #[effect(device_only)]
     AttachFile {
         #[param("Id of the conversation")]
         channel: String,
@@ -183,83 +182,74 @@ pub enum ChatEffect {
     /// Share live Chat context
     ///
     /// Opt in to publishing the open conversation, thread and scroll position.
-    #[effect(device_only, idempotent)]
+    #[effect(idempotent)]
     ShareLiveContext,
     /// Stop sharing live Chat context
-    #[effect(device_only, idempotent)]
+    #[effect(idempotent)]
     StopSharingLiveContext,
     /// Live context status
-    #[effect(device_only, idempotent, returns, audience = "agents")]
+    #[effect(idempotent, returns, audience = "agents")]
     LiveContextStatus,
     /// Open Slack channel in browser
-    #[effect(device_only)]
     OpenSlackChannel { workspace: String, channel: String },
     /// Open Discord channel in browser
-    #[effect(device_only)]
     OpenDiscordChannel { server: String, channel: String },
     /// Join call
     ///
     /// Joins the channel's call muted, listening: being in a room's call is
     /// for whoever may read the room, as the channel itself is.
-    #[effect(row, device_only, kind = "read")]
+    #[effect(row, kind = "read")]
     JoinCall { channel: String },
     /// Leave call
-    #[effect(row, idempotent, device_only, kind = "read")]
+    #[effect(row, idempotent, kind = "read")]
     LeaveCall { channel: String },
     /// Mute
-    #[effect(row, idempotent, device_only, kind = "read")]
+    #[effect(row, idempotent, kind = "read")]
     Mute { channel: String },
     /// Unmute
     ///
     /// Speaks into the call: for whoever may write in the room. The
     /// microphone itself is asked for through the device's own prompt.
-    #[effect(row, device_only, kind = "undoable")]
+    #[effect(row, kind = "undoable")]
     Unmute { channel: String },
     /// Turn camera on
     ///
     /// Shows this person's camera to everyone in the call; asked for
     /// through the normal permission prompt.
-    #[effect(row, device_only, kind = "undoable")]
+    #[effect(row, kind = "undoable")]
     CameraOn { channel: String },
     /// Turn camera off
-    #[effect(row, idempotent, device_only, kind = "read")]
+    #[effect(row, idempotent, kind = "read")]
     CameraOff { channel: String },
     /// Share screen
     ///
     /// Shows this person's screen to everyone in the call; asked for
     /// through the normal permission prompt.
-    #[effect(row, device_only, kind = "undoable")]
+    #[effect(row, kind = "undoable")]
     ShareScreen { channel: String },
     /// Stop sharing screen
-    #[effect(row, idempotent, device_only, kind = "read")]
+    #[effect(row, idempotent, kind = "read")]
     StopSharingScreen { channel: String },
     /// Call status
     ///
     /// Requests a refresh and returns the last reported service state.
     /// The response is explicitly a cached report, never microphone consent.
-    #[effect(
-        row,
-        idempotent,
-        device_only,
-        returns,
-        kind = "read",
-        audience = "agents"
-    )]
+    #[effect(row, idempotent, returns, kind = "read", audience = "agents")]
     CallStatus { channel: String },
     /// Start a call
     ///
     /// Joins the room's voice channel, making one when the room has none,
     /// or reveals the call already running.
-    #[effect(idempotent, device_only, kind = "read")]
+    #[effect(idempotent, kind = "read")]
     StartCall,
     /// Start a video call
     ///
     /// Starts a call as Start a call does, with the camera on once it is
     /// live.
-    #[effect(idempotent, device_only, kind = "undoable")]
+    #[effect(idempotent, kind = "undoable")]
     StartVideoCall,
     /// Select microphone
-    #[effect(device_only, kind = "read")]
+    #[effect(kind = "read")]
     SelectInput {
         #[param("Id of the voice channel")]
         channel: String,

@@ -29,7 +29,7 @@ pub struct Messages {}
 impl Messages {}
 
 #[derive(Clone, Effect)]
-#[effect(operation = "tilo.messages.view", device_only)]
+#[effect(operation = "tilo.messages.view")]
 pub enum MessagesEffect {
     /// Inspect private service groups for one explicitly selected sender account.
     #[effect(
@@ -117,7 +117,7 @@ pub enum MessagesEffect {
     #[effect(view, idempotent)]
     SelectSetupAccount { service: String, account: String },
     /// Show the native host's short-lived private linking code.
-    #[effect(job, sensitive, cancellable, label = "messages-start-link")]
+    #[effect(attended, job, sensitive, cancellable, label = "messages-start-link")]
     BeginLink { service: String, account: String },
     /// Confirm the displayed attempt on the explicitly selected account.
     #[effect(job, sensitive, cancellable, label = "messages-finish-link")]
@@ -127,10 +127,23 @@ pub enum MessagesEffect {
         attempt: String,
     },
     /// Link a first account without manufacturing a configured account row.
-    #[effect(job, sensitive, cancellable, label = "messages-first-account-prepare")]
+    #[effect(
+        attended,
+        job,
+        sensitive,
+        cancellable,
+        label = "messages-first-account-prepare"
+    )]
     BeginFirstEnrollment { service: String },
     /// Open the host's private SIM chooser without granting modem access.
-    #[effect(job, sensitive, cancellable, idempotent, label = "messages-first-sms")]
+    #[effect(
+        attended,
+        job,
+        sensitive,
+        cancellable,
+        idempotent,
+        label = "messages-first-sms"
+    )]
     ListSmsSims,
     /// Review one opaque host choice; bus paths and SIM identifiers are not inputs.
     #[effect(job, sensitive, cancellable, label = "messages-select-sim")]

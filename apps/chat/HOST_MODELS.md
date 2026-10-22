@@ -6,7 +6,7 @@ backend. No provider credentials or ambient model client are read by Chat.
 
 Sending a message remains person-to-person. **Ask assistant** explicitly asks the
 injected backend about the latest nonempty message authored by the local person
-in that conversation. The channel resource exports the device-only
+in that conversation. The channel resource exports the
 `model-control` effect with an `ask`, `retry`, `continue` or `stop` command.
 The handler checks which commands are currently applicable.
 The painted shared buttons expose the same controls to accessibility.

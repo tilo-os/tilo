@@ -30,7 +30,7 @@ impl Draft {}
 
 /// The same local operator door for controls, accessibility and agents.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.registry-review.effects", device_only)]
+#[effect(operation = "so.tilo.registry-review.effects")]
 pub enum Review {
     /// Refresh the pending publisher applications.
     #[effect(job, returns)]

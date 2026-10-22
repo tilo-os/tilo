@@ -35,7 +35,7 @@ impl std::fmt::Debug for ApiTesterEffect {
 
 /// Work that reaches outside the document.
 #[derive(Clone, PartialEq, Effect)]
-#[effect(operation = "api_tester.effects", device_only)]
+#[effect(operation = "api_tester.effects")]
 pub enum ApiTesterEffect {
     /// Import an old Automerge snapshot into an empty workspace
     #[effect(job)]
