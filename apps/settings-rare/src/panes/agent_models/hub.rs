@@ -44,7 +44,6 @@ use crate::widgets::{
 pub(crate) struct HubBrowser {
     query: LocalState<String>,
     reference: LocalState<String>,
-    file: LocalState<String>,
     token: LocalState<String>,
     /// The last search's results, or why it failed.
     pub(crate) results: Option<Result<Vec<HubSearchResult>, String>>,
@@ -65,7 +64,6 @@ impl HubBrowser {
         Self {
             query: LocalState::new(String::new()),
             reference: LocalState::new(String::new()),
-            file: LocalState::new(String::new()),
             token: LocalState::new(String::new()),
             results: None,
             offer: None,
@@ -306,13 +304,16 @@ impl HubBrowser {
             ),
             AgentModelsEffect::SHOW_HUB_MODEL,
         );
-        Self::push_field(
-            cx,
-            &mut body,
-            ("file", "agent-hub-file", "agent-hub-file-hint"),
-            (&self.file, "agent-hub-add-file", available),
-            AgentModelsEffect::ADD_MODEL_FILE,
-        );
+        // The person chooses the file in the file chooser, which hands it
+        // over open: neither Settings nor the model service takes a path.
+        body.push(note(&t("agent-hub-file")));
+        body.push(row(Box::new(
+            cx.bind_invocation(
+                Button::new("agent-models-hub-file-go", &t("agent-hub-add-file"))
+                    .with_enabled(available),
+                AgentModelsEffect::AddModelFile,
+            ),
+        )));
         if self.working {
             body.push(row(Box::new(
                 ProgressBar::indeterminate().with_label(t("agent-hub-working")),
@@ -827,6 +828,51 @@ pub(crate) fn manager_answer<T: serde::de::DeserializeOwned>(args: &[&str]) -> R
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("model service returned an invalid answer: {error}"))
+}
+
+/// Ask the person for a GGUF model file in the file chooser: its name and
+/// the file it opened, or `None` when they cancelled.
+pub(crate) fn choose_model_file() -> Result<Option<(String, std::fs::File)>, String> {
+    let result =
+        ui::portal::PickRequest::open(&t("agent-hub-file-choose"), &t("agent-hub-add-file"))
+            .filter(ui::portal::FileFilter::new(&t("agent-hub-file-filter")).glob("*.gguf"))
+            .thread_name("settings-model-file")
+            .send_open_file()
+            .recv();
+    match result {
+        Ok(ui::portal::OpenFileOutcome::Opened(file)) => {
+            let name = file.display_name().to_owned();
+            Ok(Some((name, file.into_file())))
+        }
+        Ok(ui::portal::OpenFileOutcome::Cancelled) => Ok(None),
+        Ok(ui::portal::OpenFileOutcome::Failed(error)) => Err(error),
+        Err(_) => Err(t("agent-hub-file-chooser-gone")),
+    }
+}
+
+/// Hand the model manager `file`, called `name`, as its standard input; the
+/// model service receives it as a descriptor and copies it into the store.
+pub(crate) fn manager_import(name: &str, file: std::fs::File) -> Result<(), String> {
+    crate::device_read::off_ui_thread();
+    let mut command = std::process::Command::new("tilo-model-manager");
+    command.args(["import-file", &format!("--name={name}")]);
+    let output = bounded_command::run_prepared_with_stdin(
+        command,
+        file,
+        super::MANAGER_OUTPUT_LIMIT,
+        std::time::Duration::from_secs(2 * 60),
+    )
+    .map_err(|error| {
+        t_args(
+            "agent-manager-unavailable",
+            &[("error", error.to_string().into())],
+        )
+    })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(output.stderr_diagnostic())
+    }
 }
 
 /// Ask the model manager to change something, with its reason when it

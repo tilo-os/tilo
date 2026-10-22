@@ -1018,8 +1018,13 @@ impl HubModelOffer {
 pub enum UserModelSource {
     /// A Hub repository at a pinned commit.
     Hub { repo: String, revision: String },
-    /// A GGUF file on this device, copied into the store.
-    File { path: String },
+    /// A GGUF file the person chose on this device, copied into the store
+    /// from the handle the file chooser gave. `name` is its file name, for
+    /// display: the service never opens a path it was told.
+    File {
+        #[serde(alias = "path")]
+        name: String,
+    },
 }
 
 /// A model a person picked themselves, as the model manager records it.
@@ -1062,28 +1067,25 @@ impl UserModel {
         Ok(model)
     }
 
-    /// A GGUF file on this device of `size_bytes`, whose bytes are hashed
-    /// as they are copied in: `sha256` is filled in then.
+    /// A GGUF file the person chose, called `name`, of `size_bytes`, whose
+    /// bytes are hashed as they are copied in: `sha256` is filled in then.
     ///
     /// # Errors
-    /// [`HubError::Invalid`] for a path that is not an absolute `.gguf` file.
-    pub fn from_file(path: &str, size_bytes: u64, sha256: &str) -> Result<Self, HubError> {
-        let name = path.rsplit('/').next().unwrap_or(path);
-        if !path.starts_with('/')
-            || path.len() > 4096
-            || path.chars().any(char::is_control)
+    /// [`HubError::Invalid`] for a name that is not a `.gguf` file name.
+    pub fn from_file(name: &str, size_bytes: u64, sha256: &str) -> Result<Self, HubError> {
+        if name.contains('/')
+            || name.len() > 255
+            || name.chars().any(char::is_control)
             || !has_extension(name, "gguf")
             || size_bytes == 0
         {
-            return Err(HubError::Invalid(
-                "a model file is an absolute path to a .gguf file",
-            ));
+            return Err(HubError::Invalid("a model file is a .gguf file"));
         }
         let stem = without_gguf(name);
         let model = Self {
             id: format!("file/{}", slug(stem, 96)),
             label: stem.to_owned(),
-            source: UserModelSource::File { path: path.into() },
+            source: UserModelSource::File { name: name.into() },
             format: ModelArtifactFormat::LlamaCppGguf,
             files: vec![HubFile {
                 path: name.into(),
@@ -1168,12 +1170,12 @@ impl UserModel {
         }
     }
 
-    /// The model's page, or its file's path, for display.
+    /// The model's page, or its file's name, for display.
     #[must_use]
     pub fn source_label(&self) -> String {
         match &self.source {
             UserModelSource::Hub { repo, .. } => model_page_url(repo),
-            UserModelSource::File { path } => path.clone(),
+            UserModelSource::File { name } => name.clone(),
         }
     }
 

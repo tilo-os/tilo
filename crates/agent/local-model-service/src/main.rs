@@ -125,10 +125,12 @@ enum Action {
         #[arg(long)]
         accept_license: bool,
     },
-    /// Copy a GGUF file on this device into the model store.
+    /// Copy a GGUF file, given as standard input, into the model store. The
+    /// person chose it in the file chooser; `name` is its file name. The
+    /// service only ever reads the handle it is given, never a path.
     ImportFile {
         #[arg(long)]
-        path: String,
+        name: String,
     },
     /// The Hugging Face token or sign-in stored here, as JSON, renewing a
     /// sign-in that is due.
@@ -201,8 +203,9 @@ enum RpcAction {
         variant: String,
         accept_license: bool,
     },
+    /// The file itself follows the request, as a descriptor.
     ImportFile {
-        path: String,
+        name: String,
     },
     HubAccount,
 }
@@ -694,10 +697,13 @@ fn main() {
         // Interactive: it waits for the person in this terminal.
         Action::HubSignIn => hub_client::sign_in_with_code(),
         Action::Worker { .. } | Action::WorkerStart { .. } | Action::WorkerUser { .. } => {
-            run_local(cli)
+            run_local(cli, None, FileCopy::Here)
         }
         _ if service_fd().is_some() => forward_to_service(&cli),
-        _ => run_local(cli),
+        Action::ImportFile { .. } => {
+            standard_input().and_then(|file| run_local(cli, Some(file), FileCopy::Here))
+        }
+        _ => run_local(cli, None, FileCopy::Here),
     };
     match result {
         Ok(Some(output)) => println!("{output}"),
@@ -775,7 +781,7 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
             variant: variant.clone(),
             accept_license: *accept_license,
         }),
-        Action::ImportFile { path } => Ok(RpcAction::ImportFile { path: path.clone() }),
+        Action::ImportFile { name } => Ok(RpcAction::ImportFile { name: name.clone() }),
         Action::HubAccount => Ok(RpcAction::HubAccount),
         Action::RecoverOrphan { .. }
         | Action::HubSignIn
@@ -837,6 +843,12 @@ fn forward_to_service(cli: &Cli) -> Result<Option<String>, String> {
             action: rpc_action(&cli.command)?,
         },
     )?;
+    if matches!(cli.command, Action::ImportFile { .. }) {
+        // The chosen file is this process's standard input; the service
+        // receives the handle itself.
+        runtime_portal::fd_transport::send_with_fd(&stream, b"f", std::io::stdin())
+            .map_err(|error| format!("could not hand the model file over: {error}"))?;
+    }
     let response: RpcResponse = read_rpc(&mut stream).map_err(|error| match error {
         RpcReadError::Closed => "model service closed the RPC connection".into(),
         RpcReadError::Invalid(error) => error,
@@ -903,7 +915,7 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
             variant,
             accept_license,
         },
-        RpcAction::ImportFile { path } => Action::ImportFile { path },
+        RpcAction::ImportFile { name } => Action::ImportFile { name },
         RpcAction::HubAccount => Action::HubAccount,
     };
     Cli {
@@ -917,7 +929,7 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
 
 fn serve_requests(
     stream: &mut UnixStream,
-    handler: impl Fn(RpcAction) -> Result<Option<String>, String>,
+    handler: impl Fn(RpcAction, Option<File>) -> Result<Option<String>, String>,
 ) {
     // The launcher holds the other endpoint for the Settings lifetime; every
     // small CLI child inherits a duplicate. Keep this connection alive across
@@ -925,18 +937,20 @@ fn serve_requests(
     // service disconnect.
     loop {
         let response = match read_rpc::<RpcRequest>(stream) {
-            Ok(request) if request.version == RPC_VERSION => match handler(request.action) {
-                Ok(output) => RpcResponse {
-                    ok: true,
-                    output,
-                    error: None,
-                },
-                Err(error) => RpcResponse {
-                    ok: false,
-                    output: None,
-                    error: Some(error),
-                },
-            },
+            Ok(request) if request.version == RPC_VERSION => {
+                match handed_file(stream, &request).and_then(|file| handler(request.action, file)) {
+                    Ok(output) => RpcResponse {
+                        ok: true,
+                        output,
+                        error: None,
+                    },
+                    Err(error) => RpcResponse {
+                        ok: false,
+                        output: None,
+                        error: Some(error),
+                    },
+                }
+            }
             Ok(_) => RpcResponse {
                 ok: false,
                 output: None,
@@ -955,6 +969,18 @@ fn serve_requests(
     }
 }
 
+/// The descriptor a request that hands a file over sends after it.
+fn handed_file(stream: &UnixStream, request: &RpcRequest) -> Result<Option<File>, String> {
+    if !matches!(request.action, RpcAction::ImportFile { .. }) {
+        return Ok(None);
+    }
+    match runtime_portal::fd_transport::recv_with_fd(stream) {
+        Ok((_, Some(fd))) => Ok(Some(File::from(fd))),
+        Ok((_, None)) => Err("the model file was not handed over".into()),
+        Err(error) => Err(format!("could not receive the model file: {error}")),
+    }
+}
+
 fn serve_client(mut stream: UnixStream) {
     if !same_user(&stream) {
         let _ = write_rpc(
@@ -967,7 +993,9 @@ fn serve_client(mut stream: UnixStream) {
         );
         return;
     }
-    serve_requests(&mut stream, |action| run_local(cli_for_rpc(action)));
+    serve_requests(&mut stream, |action, file| {
+        run_local(cli_for_rpc(action), file, FileCopy::Beside)
+    });
 }
 
 fn serve(socket: &Path) -> Result<Option<String>, String> {
@@ -1204,7 +1232,27 @@ fn run_without_store(command: &Action, root: &Path) -> Option<Result<Option<Stri
     })
 }
 
-fn run_local(cli: Cli) -> Result<Option<String>, String> {
+/// Where a handed-over file is copied into the store.
+#[derive(Clone, Copy)]
+enum FileCopy {
+    /// Before answering: a direct command that exits when it is done.
+    Here,
+    /// Beside the service's other requests, which a long copy must not hold
+    /// up; its progress shows in the snapshot as a download's does.
+    Beside,
+}
+
+/// This process's standard input, as the file it is.
+fn standard_input() -> Result<File, String> {
+    use std::os::fd::AsFd as _;
+    std::io::stdin()
+        .as_fd()
+        .try_clone_to_owned()
+        .map(File::from)
+        .map_err(|error| error.to_string())
+}
+
+fn run_local(cli: Cli, file: Option<File>, copy: FileCopy) -> Result<Option<String>, String> {
     let (root, catalog_path, key_path) = paths(&cli)?;
     if let Some(answer) = run_without_store(&cli.command, &root) {
         return answer;
@@ -1258,10 +1306,8 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             let model = pick_from_hub(&catalog, &hardware, (&repo, &revision, &variant))?;
             queue_user_model(&mut service, &workers, model)?;
         }
-        Action::ImportFile { path } => {
-            let size = gguf_file_size(&path)?;
-            let model = UserModel::from_file(&path, size, "").map_err(|error| error.to_string())?;
-            queue_user_model(&mut service, &workers, model)?;
+        Action::ImportFile { name } => {
+            return import_file(service, catalog, root, (&name, file), copy).map(|()| None);
         }
         Action::Start { model } => {
             let release = release_for(&catalog, &service, &model)?;
@@ -1292,7 +1338,9 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             run_install_worker(&mut service, &catalog, &model, revision.as_ref(), &root)?;
         }
         Action::WorkerStart { model } => run_start_worker(&mut service, &catalog, &model, &root)?,
-        Action::WorkerUser { model } => run_user_worker(&mut service, &catalog, &model, &root)?,
+        Action::WorkerUser { model } => {
+            run_user_worker(&mut service, &catalog, &model, &root, None)?;
+        }
         // The dispatcher answers these itself and never hands them over.
         Action::RecoverOrphan { .. }
         | Action::Snapshot { .. }
@@ -1430,13 +1478,39 @@ fn pick_from_hub(
     Ok(model)
 }
 
-/// The size of the GGUF file at `path`, after checking it is one.
-fn gguf_file_size(path: &str) -> Result<u64, String> {
-    let mut file = File::open(path).map_err(|error| format!("{path}: {error}"))?;
+/// Add the GGUF file the person chose, called `name`, from its handle, and
+/// start it when a signed runtime here serves it.
+fn import_file(
+    mut service: LocalModelService<ManagerTransport, SystemdSupervisor>,
+    catalog: CatalogPayload,
+    root: PathBuf,
+    (name, file): (&str, Option<File>),
+    copy: FileCopy,
+) -> Result<(), String> {
+    let file = file.ok_or("the model file was not handed over")?;
+    let size = gguf_file_size(&file)?;
+    let model = UserModel::from_file(name, size, "").map_err(|error| error.to_string())?;
+    let id = model.id.clone();
+    service
+        .queue_user_model(model)
+        .map_err(|error| error.to_string())?;
+    let import = move || run_user_worker(&mut service, &catalog, &id, &root, Some(file));
+    match copy {
+        FileCopy::Here => import(),
+        FileCopy::Beside => {
+            drop(std::thread::spawn(import));
+            Ok(())
+        }
+    }
+}
+
+/// The size of the handed-over GGUF file, after checking it is one.
+fn gguf_file_size(file: &File) -> Result<u64, String> {
+    use std::os::unix::fs::FileExt as _;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
     let mut magic = [0_u8; 4];
-    if !metadata.is_file() || file.read_exact(&mut magic).is_err() || &magic != b"GGUF" {
-        return Err(format!("{path} is not a GGUF model file"));
+    if !metadata.is_file() || file.read_exact_at(&mut magic, 0).is_err() || &magic != b"GGUF" {
+        return Err("the chosen file is not a GGUF model".into());
     }
     Ok(metadata.len())
 }
@@ -1466,8 +1540,9 @@ fn run_user_worker(
     catalog: &CatalogPayload,
     model: &str,
     root: &Path,
+    chosen: Option<File>,
 ) -> Result<(), String> {
-    if let Err(error) = service.install_user_model(model) {
+    if let Err(error) = service.install_user_model(model, chosen) {
         let _ = service.record_failure(model, error.to_string());
         return Err(error.to_string());
     }
@@ -2232,11 +2307,45 @@ mod tests {
             ));
         }
 
+        // Phase: a_chosen_file_arrives_as_a_descriptor_after_its_request.
+        {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                serve_requests(&mut server, |action, file| match (action, file) {
+                    (RpcAction::ImportFile { name }, Some(mut file)) => {
+                        let mut bytes = String::new();
+                        file.read_to_string(&mut bytes).unwrap();
+                        Ok(Some(format!("{name}:{bytes}")))
+                    }
+                    _ => Err("no file".into()),
+                });
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let chosen = dir.path().join("chosen");
+            std::fs::write(&chosen, "GGUF bytes").unwrap();
+            write_rpc(
+                &mut client,
+                &RpcRequest {
+                    version: RPC_VERSION,
+                    action: RpcAction::ImportFile {
+                        name: "tune.gguf".into(),
+                    },
+                },
+            )
+            .unwrap();
+            runtime_portal::fd_transport::send_with_fd(&client, b"f", File::open(&chosen).unwrap())
+                .unwrap();
+            let answer: RpcResponse = read_rpc(&mut client).unwrap_or_else(|_| panic!("answer"));
+            assert_eq!(answer.output.as_deref(), Some("tune.gguf:GGUF bytes"));
+            drop(client);
+            worker.join().unwrap();
+        }
+
         // Phase: service_connection_serves_two_sequential_requests.
         {
             let (mut client, mut server) = UnixStream::pair().unwrap();
             let worker = std::thread::spawn(move || {
-                serve_requests(&mut server, |action| match action {
+                serve_requests(&mut server, |action, _| match action {
                     RpcAction::Snapshot => Ok(Some("snapshot".into())),
                     RpcAction::Start { model } => Ok(Some(format!("started:{model}"))),
                     _ => Err("unexpected test action".into()),
@@ -2405,8 +2514,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("x.gguf");
         std::fs::write(&file, b"not a model").unwrap();
-        assert!(gguf_file_size(file.to_str().unwrap()).is_err());
+        assert!(gguf_file_size(&File::open(&file).unwrap()).is_err());
         std::fs::write(&file, b"GGUF weights").unwrap();
-        assert_eq!(gguf_file_size(file.to_str().unwrap()).unwrap(), 12);
+        assert_eq!(gguf_file_size(&File::open(&file).unwrap()).unwrap(), 12);
     }
 }

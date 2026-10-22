@@ -123,7 +123,9 @@ including their own fine-tunes and private repositories, or add a GGUF file
 from the device. The model manager answers all of it; Settings only shows
 the answers and asks through typed effects (`search-hub-models`,
 `show-hub-model`, `install-hub-model`, `add-model-file`), which agents reach
-through the same action system.
+through the same action system. A file from the device is chosen in the file
+chooser, which hands Settings the open file; Settings passes that handle on and
+the model service copies from it. Neither ever opens a path it was given.
 
 What a person sees before anything downloads, for every runnable variant of
 the model at the commit it resolved to:

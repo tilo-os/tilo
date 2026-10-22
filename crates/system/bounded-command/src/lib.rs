@@ -361,7 +361,7 @@ fn spawn_prepared_inner(
     let worker = std::thread::spawn(move || {
         let outcome = run_prepared_inner(
             command,
-            input,
+            input.map_or(Stdin::Null, Stdin::Bytes),
             output_limit,
             output_limit,
             timeout,
@@ -533,7 +533,9 @@ pub fn run_prepared_with_input_limit(
     }
     run_prepared_inner(
         command,
-        input.map(|bytes| Zeroizing::new(bytes.to_vec())),
+        input.map_or(Stdin::Null, |bytes| {
+            Stdin::Bytes(Zeroizing::new(bytes.to_vec()))
+        }),
         stdout_limit,
         stderr_limit,
         timeout,
@@ -542,21 +544,56 @@ pub fn run_prepared_with_input_limit(
     )
 }
 
+/// Run a prepared command reading `file` as its standard input: a handle the
+/// caller holds (a file the person chose) given to the program as it is,
+/// rather than a path it would open itself.
+///
+/// # Errors
+///
+/// Returns the same bounded process, output, and timeout failures as
+/// [`run_prepared`].
+pub fn run_prepared_with_stdin(
+    command: Command,
+    file: std::fs::File,
+    output_limit: usize,
+    timeout: Duration,
+) -> Result<Output, Error> {
+    run_prepared_inner(
+        command,
+        Stdin::File(file),
+        output_limit,
+        output_limit,
+        timeout,
+        None,
+        None,
+    )
+}
+
+/// What a bounded command reads as its standard input.
+enum Stdin {
+    Null,
+    /// Bytes written to it through a pipe.
+    Bytes(Zeroizing<Vec<u8>>),
+    /// A file it reads itself.
+    File(std::fs::File),
+}
+
 fn run_prepared_inner(
     mut command: Command,
-    input: Option<Zeroizing<Vec<u8>>>,
+    input: Stdin,
     stdout_limit: usize,
     stderr_limit: usize,
     timeout: Duration,
     cancel: Option<&AtomicBool>,
     stderr_capture: Option<StderrCapture>,
 ) -> Result<Output, Error> {
+    let (stdin, input) = match input {
+        Stdin::Null => (Stdio::null(), None),
+        Stdin::Bytes(bytes) => (Stdio::piped(), Some(bytes)),
+        Stdin::File(file) => (Stdio::from(file), None),
+    };
     command
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     own_process_tree(&mut command);
@@ -639,6 +676,22 @@ mod tests {
     /// For tests of anything but the timeout: long enough that a loaded
     /// machine never turns the expected error into `Error::Timeout`.
     const UNTESTED_TIMEOUT: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn a_file_given_as_stdin_is_what_the_program_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("chosen");
+        fs::write(&path, b"chosen bytes").unwrap();
+        let output = run_prepared_with_stdin(
+            Command::new("cat"),
+            fs::File::open(&path).unwrap(),
+            64,
+            UNTESTED_TIMEOUT,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"chosen bytes");
+    }
 
     #[test]
     fn input_and_output_limits_are_enforced_independently() {

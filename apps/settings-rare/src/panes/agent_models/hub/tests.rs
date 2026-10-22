@@ -104,29 +104,19 @@ fn a_model_without_a_signed_runtime_is_not_offered_start() {
     assert!(!names.iter().any(|name| name == "Start"), "{names:?}");
 }
 
-/// A file is added by its absolute path to a GGUF file, nothing else.
+/// A file is added as the person chose it in the file chooser: the model
+/// store receives the open file and its name, never a path.
 #[test]
-fn a_model_file_is_an_absolute_gguf_path() {
+fn a_model_file_is_handed_over_as_chosen() {
     let control = mock(snapshot(None));
     let pane = model_over(control.clone());
-    for refused in ["", "model.gguf", "/home/me/model.safetensors"] {
-        assert!(
-            pane.manager_work(&AgentModelsEffect::AddModelFile {
-                path: refused.into()
-            })
-            .is_err(),
-            "{refused}"
-        );
-    }
-    pane.manager_work(&AgentModelsEffect::AddModelFile {
-        path: " /home/me/Tune.Q4_K_M.gguf ".into(),
-    })
-    .unwrap()
-    .run(control.as_ref())
-    .unwrap();
+    pane.manager_work(&AgentModelsEffect::AddModelFile)
+        .unwrap()
+        .run(control.as_ref())
+        .unwrap();
     assert_eq!(
         control.calls.lock().unwrap().as_slice(),
-        ["import:/home/me/Tune.Q4_K_M.gguf"]
+        ["import:Tune.Q4_K_M.gguf"]
     );
 }
 
