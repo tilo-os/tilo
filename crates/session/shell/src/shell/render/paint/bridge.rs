@@ -1191,7 +1191,7 @@ impl VelloDrmBridge {
     #[inline]
     pub(super) fn mark_retained_complete(&mut self, revision: Option<u64>) {
         self.target.retained_target_valid = true;
-        self.target.finished_frames = true;
+        self.target.finished_frames = self.target.finished_frames.saturating_add(1);
         self.retained_staging_valid = true;
         self.staging_content = Some((self.target.geometry_generation, revision));
         self.target.last_successful_revision = revision;
@@ -1521,7 +1521,7 @@ impl VelloDrmBridge {
 
     /// Whether this bridge's device finished at least one frame.
     pub fn finished_frames(&self) -> bool {
-        self.target.finished_frames
+        self.target.finished_frames > 0
     }
 
     /// The adapter this bridge renders on.

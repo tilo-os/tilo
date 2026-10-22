@@ -708,9 +708,9 @@ pub struct RetainedGpuTarget {
     base_color: Color,
     /// The target contains a complete settled frame, independent of CPU staging validity.
     retained_target_valid: bool,
-    /// The device finished at least one frame on this target: a later loss of it is a GPU
-    /// reset, not a GPU that cannot draw at all (`ui::gpu::recover`).
-    finished_frames: bool,
+    /// Frames the device finished on this target since its warm-up. A later loss of a device
+    /// that finished any is a GPU reset, not a GPU that cannot draw at all (`ui::gpu::recover`).
+    finished_frames: u64,
     /// Revision associated with the complete retained frame. Legacy full-render APIs do not
     /// carry a revision, so they intentionally clear this even though their target is complete.
     last_successful_revision: Option<u64>,
