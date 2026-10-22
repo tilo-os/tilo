@@ -265,6 +265,7 @@ const SCENARIOS: &[&str] = &[
     "toast",
     "toast-error",
     "empty",
+    "loading",
     "narrow",
     "drawer",
     "phone",
@@ -305,7 +306,7 @@ impl ResourceApp for DisksShell {
 
     fn fixture(fixture: &mut Fixture<Disks>) {
         let topology = match fixture.scenario() {
-            Some("empty") => Topology::default(),
+            Some("empty" | "loading") => Topology::default(),
             Some(name) if name.starts_with("laptop") => {
                 crate::probe::captured::yoga().unwrap_or_default()
             }
@@ -333,7 +334,7 @@ impl ResourceSurface<Disks, DisksEffect> for DisksApp {
 
     fn attach(&mut self, cx: SurfaceCx<Disks>) {
         let fixture = cx.fixture::<Topology>().map(|topology| (*topology).clone());
-        self.attach_framework(cx.dispatcher(), cx.mode(), fixture);
+        self.attach_framework(cx.dispatcher(), cx.mode(), fixture, cx.waker());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -637,7 +638,11 @@ mod tests {
             let mut app = TestApp::<DisksShell>::capture(scenario).unwrap();
             let resources = app.harness().resources();
             let sample = find(&resources, "disk:nvme0n1").is_some();
-            assert_eq!(sample, scenario != Some("empty"), "{scenario:?}");
+            assert_eq!(
+                sample,
+                !matches!(scenario, Some("empty" | "loading")),
+                "{scenario:?}"
+            );
             let audit = app.harness().native_app_audit();
             assert!(audit.is_certified(), "{scenario:?}: {audit:#?}");
         }

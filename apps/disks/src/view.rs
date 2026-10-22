@@ -18,7 +18,7 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Chip, ChipStyle, ContextMenuArea, Element, EmptyState, ListRow, MenuEntry, NavItem, NavList,
     NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section, SegmentedStyle,
-    StatGroup, StatTile, Text, ToggleGroup, Tone,
+    Skeleton, StatGroup, StatTile, Text, ToggleGroup, Tone,
 };
 use ui::window_toolbar::{LocationSegment, ToolbarAction, ToolbarLocation, WindowToolbar};
 
@@ -241,6 +241,35 @@ pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Elemen
     )
 }
 
+/// The page while this machine's storage is being read: the detail page's
+/// own layout, with the drive's state saying so and the sections' contents
+/// standing in, so nothing moves when the drives arrive.
+pub(crate) fn loading(tab: Tab, intents: &Intents, offset: &Rc<Cell<(f32, f32)>>) -> Element {
+    let sections = ui::widget::Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Group)
+        .push(Box::new(Section::titled(
+            "Partition map",
+            vec![Box::new(Skeleton::text(3))],
+        )))
+        .push(Box::new(Section::titled(
+            "Filesystems",
+            vec![Box::new(Skeleton::row())],
+        )))
+        .push(Box::new(Section::titled(
+            "Details",
+            vec![Box::new(Skeleton::text(4))],
+        )));
+    page(
+        Row::new().push(Box::new(Chip::new("Reading drives…"))),
+        tab,
+        Box::new(sections),
+        intents,
+        offset,
+    )
+}
+
 /// The detail of the selected drive: its state at a glance and one tab of
 /// detail. Its operations are in the window bar (or the content header) and
 /// each row's context menu.
@@ -250,22 +279,34 @@ pub(crate) fn detail(
     offset: &Rc<Cell<(f32, f32)>>,
 ) -> Element {
     let drive = model.drive;
-    // The drive's state, its actions and the tabbed detail are groups of
-    // the page, a group apart; a tab sits a sibling step over its content.
-    let tab = ui::widget::Column::new()
+    let content = match model.tab {
+        Tab::Overview => overview(model, intents),
+        Tab::Smart => health(drive),
+        Tab::Partitions => partitions(model, intents),
+    };
+    page(badges(drive), model.tab, content, intents, offset)
+}
+
+/// The detail page's layout: the drive's state at a glance, then the tabs
+/// over `content`. The drive's state and the tabbed detail are groups of the
+/// page, a group apart; a tab sits a sibling step over its content.
+fn page(
+    state: Row,
+    tab: Tab,
+    content: Element,
+    intents: &Intents,
+    offset: &Rc<Cell<(f32, f32)>>,
+) -> Element {
+    let tabbed = ui::widget::Column::new()
         .with_intrinsic_height()
         .with_no_padding()
-        .push(Box::new(tabs(model.tab, intents)))
-        .push(match model.tab {
-            Tab::Overview => overview(model, intents),
-            Tab::Smart => health(drive),
-            Tab::Partitions => partitions(model, intents),
-        });
+        .push(Box::new(tabs(tab, intents)))
+        .push(content);
     let page = ui::widget::Column::new()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Group)
-        .push(Box::new(badges(drive)))
-        .push(Box::new(tab));
+        .push(Box::new(state))
+        .push(Box::new(tabbed));
     Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
