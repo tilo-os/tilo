@@ -845,7 +845,13 @@ impl TubeModel {
             let keep_comments = std::mem::take(&mut slot.comments);
             let keep_dearrow = slot.dearrow_title.take();
             let keep_thumb = std::mem::take(&mut slot.thumbnail_url);
+            let keep_likes = slot.likes;
             *slot = v;
+            // Search and related items carry no like count; keep the one a
+            // detail fetch or the votes answer already gave.
+            if slot.likes == 0 {
+                slot.likes = keep_likes;
+            }
             if slot.sponsor.is_empty() {
                 slot.sponsor = keep_sponsor;
             }
