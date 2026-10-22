@@ -25,8 +25,10 @@ pub trait StorageSource: Send + Sync {
 }
 
 /// The columns [`from_block_devices`] reads, for `lsblk --output`.
-pub const LSBLK_COLUMNS: &str =
-    "NAME,KNAME,MODEL,SERIAL,SIZE,TYPE,ROTA,TRAN,RM,RO,FSTYPE,FSVER,LABEL,MOUNTPOINT,FSUSED,UUID";
+pub const LSBLK_COLUMNS: &str = concat!(
+    "NAME,KNAME,MODEL,SERIAL,SIZE,TYPE,ROTA,TRAN,RM,RO,FSTYPE,FSVER,",
+    "LABEL,MOUNTPOINT,FSUSED,UUID,PARTTYPE,PARTTYPENAME"
+);
 
 /// Storage as the session serves it from `lsblk --json --bytes --output
 /// LSBLK_COLUMNS` output, with `health` asked of every whole disk: what a
@@ -87,6 +89,8 @@ fn device_from(
         read_only: device.read_only,
         fstype: device.fstype.clone(),
         fs_version: device.fsver.clone(),
+        part_type: device.parttype.clone(),
+        part_type_name: device.parttypename.clone(),
         label: device.label.clone(),
         uuid: device.uuid.clone(),
         fs_used: device.fsused,

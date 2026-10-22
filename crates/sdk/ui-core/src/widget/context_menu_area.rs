@@ -42,6 +42,15 @@ impl MenuEntry {
         }
     }
 
+    /// A line of secondary text about the entries around it (why the one
+    /// above is unavailable): read, never chosen.
+    pub fn caption(text: impl Into<String>) -> Self {
+        Self {
+            item: MenuItem::Caption(text.into()),
+            run: None,
+        }
+    }
+
     /// A rule between groups of commands.
     pub fn separator() -> Self {
         Self {

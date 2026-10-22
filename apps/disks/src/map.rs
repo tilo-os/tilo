@@ -5,8 +5,9 @@
 //! "Whole disk" chip is a [`ChipFace`], the legend is the charts' shared
 //! legend (a swatch per block, measured and wrapped), and every colour, radius
 //! and gap comes from the theme. Like any chart, each partition takes a series
-//! colour: the block is a wash of it, the part of the filesystem in use is the
-//! full colour, and the unallocated tail is an outline.
+//! colour, the same as its legend swatch: a block whose use is known is a wash
+//! of it with the part in use in the full colour, a block whose use is
+//! unknown is the full colour, and the unallocated tail is an outline.
 
 use std::collections::HashMap;
 
@@ -194,9 +195,17 @@ impl PartitionMap {
             return;
         }
         let colour = Self::colour(entry, theme);
+        // A block whose use is unknown is its colour, as its legend swatch
+        // is; one whose use is known washes the free part, so the full
+        // colour is what is in use.
+        let Some(used) = entry.used else {
+            let fill = if hovered { colour.multiply_alpha(0.8) } else { colour };
+            ctx.fill_round(rect, radius, fill);
+            return;
+        };
         let wash = if hovered { 0.55 } else { 0.4 };
         ctx.fill_round(rect, radius, colour.multiply_alpha(wash));
-        let used = entry.used.unwrap_or(0.0).clamp(0.0, 1.0);
+        let used = used.clamp(0.0, 1.0);
         if used > 0.0 {
             let share = Rect::new(rect.x0, rect.y0, rect.x0 + rect.width() * used, rect.y1);
             ctx.fill_round(share, radius, colour);

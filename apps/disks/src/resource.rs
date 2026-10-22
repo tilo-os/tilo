@@ -23,6 +23,7 @@ use ui::widget::Element;
 
 use crate::app::{ActionKind, DisksApp};
 use crate::model::{Drive, Partition, Topology};
+use crate::offer::{self, Offer};
 
 /// What the person authors about their storage devices.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -158,32 +159,46 @@ pub(crate) fn partition_row_id(leaf: &str) -> String {
     format!("partition:{leaf}")
 }
 
-/// `kind` on `device`, as a row offers it. Formatting asks the caller to
-/// type the device's name, as erasing it deserves.
-fn row_operation(kind: ActionKind, device: &str) -> ui::tilo_actions::ActionSpec {
+/// `kind` on `device`, as a row offers it: unavailable, with the reason,
+/// when `offer` says so. Formatting asks the caller to type the device's
+/// name, as erasing it deserves.
+fn row_operation(kind: ActionKind, device: &str, offer: Offer) -> ui::tilo_actions::ActionSpec {
     let mut spec = DisksEffect::operation(kind, device).bound();
     if kind.destructive() {
         spec.contract.confirmation = ConfirmationPolicy::Phrase {
             phrase: device.to_owned(),
         };
     }
+    if let Offer::Unavailable(reason) = offer {
+        spec.contract.availability = ui::tilo_actions::Availability::Unavailable {
+            code: "disks_target_in_use".into(),
+            reason: reason.into(),
+        };
+    }
     spec
 }
 
-/// The row of one partition: select it, and the operations that apply. A
-/// locked encrypted partition has nothing to mount yet, and an encrypted one
-/// is not offered for formatting (it would lose its encryption).
-fn partition_row(part: &Partition) -> LiveRow {
-    let mount = if part.mountpoint.is_some() {
-        ActionKind::Unmount
-    } else {
-        ActionKind::Mount
-    };
-    let locked = part
-        .encryption
-        .as_ref()
-        .is_some_and(|encryption| encryption.unlocked_as.is_none());
-    let mut row = LiveRow::new(
+/// Each of `actions` that `part` of `drive` shows, as row operations.
+fn operations(
+    mut row: LiveRow,
+    drive: &Drive,
+    part: Option<&Partition>,
+    device: &str,
+    actions: &[ActionKind],
+) -> LiveRow {
+    for &action in actions {
+        let offer = offer::offer(drive, part, action);
+        if offer.is_shown() {
+            row = row.operation(row_operation(action, device, offer));
+        }
+    }
+    row
+}
+
+/// The row of one partition: select it, and the operations it shows, the
+/// same ones its context menu offers.
+fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
+    let row = LiveRow::new(
         partition_row_id(&part.name),
         "disks.partition",
         part.name.clone(),
@@ -191,14 +206,18 @@ fn partition_row(part: &Partition) -> LiveRow {
     .effect(&DisksEffect::Select {
         device: part.name.clone(),
     });
-    if !locked {
-        row = row.operation(row_operation(mount, &part.name));
-    }
-    row = row.operation(row_operation(ActionKind::Benchmark, &part.name));
-    if part.encryption.is_none() {
-        row = row.operation(row_operation(ActionKind::Format, &part.name));
-    }
-    row
+    operations(
+        row,
+        drive,
+        Some(part),
+        &part.name,
+        &[
+            ActionKind::Mount,
+            ActionKind::Unmount,
+            ActionKind::Benchmark,
+            ActionKind::Format,
+        ],
+    )
 }
 
 /// The row of one drive, with its partitions beneath it.
@@ -209,17 +228,20 @@ pub(crate) fn drive_row(drive: &Drive, names: &BTreeMap<String, String>) -> Live
         .and_then(|serial| names.get(serial))
         .cloned()
         .unwrap_or_else(|| drive.model.clone());
-    let mut row = LiveRow::new(drive_row_id(&drive.name), "disks.drive", label)
-        .effect(&DisksEffect::Select {
+    let row = LiveRow::new(drive_row_id(&drive.name), "disks.drive", label).effect(
+        &DisksEffect::Select {
             device: drive.name.clone(),
-        })
-        .operation(row_operation(ActionKind::Format, &drive.name))
-        .operation(row_operation(ActionKind::Benchmark, &drive.name));
-    if drive.removable {
-        row = row.operation(row_operation(ActionKind::Eject, &drive.name));
-    }
+        },
+    );
+    let mut row = operations(
+        row,
+        drive,
+        None,
+        &drive.name,
+        &[ActionKind::Format, ActionKind::Benchmark, ActionKind::Eject],
+    );
     for part in &drive.partitions {
-        row = row.row(partition_row(part));
+        row = row.row(partition_row(drive, part));
     }
     row
 }

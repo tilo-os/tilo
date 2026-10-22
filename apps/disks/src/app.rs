@@ -22,7 +22,10 @@ use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 use ui::winit::event::{ElementState, KeyEvent, WindowEvent};
 use ui::winit::keyboard::Key;
 
-use crate::model::{Drive, Topology};
+use crate::model::{Drive, Partition, Topology};
+use crate::offer;
+#[cfg(test)]
+use crate::offer::Offer;
 use crate::ops::{self, Op};
 use crate::resource::{Disks, DisksEffect};
 use crate::view::{self, DetailModel, Intent, Intents};
@@ -49,7 +52,7 @@ impl ActionKind {
         }
     }
     /// The action's name, for a status.
-    fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         self.label().trim_end_matches('…')
     }
     /// What the action would run on `dev`, reported on the sample machine.
@@ -229,6 +232,10 @@ pub struct DisksApp {
     /// The detail page's scroll offset, kept across rebuilds.
     scroll: Rc<Cell<(f32, f32)>>,
     built: Option<ViewKey>,
+    /// The header is in the window's bar (the desktop hosts its slots).
+    header_in_bar: bool,
+    /// The slots last declared to the bar.
+    declared_bar: Option<ui::window_toolbar::WindowToolbar>,
 }
 
 impl Default for DisksApp {
@@ -273,6 +280,8 @@ impl DisksApp {
             dirty: true,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
             built: None,
+            header_in_bar: false,
+            declared_bar: None,
         }
     }
 
@@ -350,49 +359,21 @@ impl DisksApp {
         self.selected_part.filter(|&i| i < n)
     }
 
-    /// Which partition Mount / Unmount act on: the explicitly-selected one,
-    /// or — when the whole disk is selected and it carries exactly one
-    /// filesystem — that sole partition, so single-fs drives (USB sticks,
-    /// data disks) mount without first drilling into the map.
-    fn mount_target_part(&self, drive: &Drive) -> Option<usize> {
-        if let Some(i) = self.part_index() {
-            return Some(i);
-        }
-        if drive.partitions.len() == 1 {
-            Some(0)
-        } else {
-            None
-        }
+    /// The selected partition of `drive`, or `None` for the whole drive.
+    fn selected_partition<'a>(&self, drive: &'a Drive) -> Option<&'a Partition> {
+        self.part_index().and_then(|i| drive.partitions.get(i))
     }
 
-    /// Whether an action applies to the current selection. Inapplicable
-    /// actions render disabled rather than silently no-op'ing.
+    /// What `action` can do for the current selection.
+    #[cfg(test)]
+    fn offer(&self, drive: &Drive, action: ActionKind) -> Offer {
+        offer::offer(drive, self.selected_partition(drive), action)
+    }
+
+    /// Whether an action can run on the current selection now.
+    #[cfg(test)]
     fn action_enabled(&self, drive: &Drive, action: ActionKind) -> bool {
-        match action {
-            // A locked encrypted partition has no filesystem to mount yet.
-            ActionKind::Mount => self
-                .mount_target_part(drive)
-                .and_then(|i| drive.partitions.get(i))
-                .is_some_and(|p| {
-                    p.mountpoint.is_none()
-                        && p.encryption
-                            .as_ref()
-                            .is_none_or(|e| e.unlocked_as.is_some())
-                }),
-            ActionKind::Unmount => self
-                .mount_target_part(drive)
-                .and_then(|i| drive.partitions.get(i))
-                .is_some_and(|p| p.mountpoint.is_some()),
-            // Format works on either the selected partition or the whole
-            // disk, but not on an encrypted partition (it would drop the
-            // encryption).
-            ActionKind::Format => self
-                .part_index()
-                .and_then(|i| drive.partitions.get(i))
-                .is_none_or(|p| p.encryption.is_none()),
-            ActionKind::Benchmark => true,
-            ActionKind::Eject => drive.removable,
-        }
+        self.offer(drive, action).is_available()
     }
 
     // ---- the shell's content ------------------------------------------
@@ -432,20 +413,99 @@ impl DisksApp {
                 .set_content(view::empty_state(self.unreadable.as_deref(), &self.intents));
             return;
         };
-        let mut enabled = [false; 5];
-        for (slot, kind) in enabled.iter_mut().zip(ActionKind::bar()) {
-            *slot = self.action_enabled(drive, kind);
-        }
+        let location = self.location(drive);
         let model = DetailModel {
             drive,
             tab: self.tab,
             partition: key.partition,
-            enabled,
+            drive_line: location
+                .partition
+                .as_ref()
+                .filter(|_| !self.header_in_bar)
+                .map(|_| location.drive.clone()),
         };
         let content = view::detail(&model, &self.intents, &self.scroll);
-        let title = self.display_name(drive).to_owned();
-        self.shell.set_content_title(title);
+        let offers = offer::shown(drive, self.selected_partition(drive));
+        if self.header_in_bar {
+            self.shell.set_content_header("", Vec::new());
+        } else {
+            self.shell.set_content_header(
+                location.title(),
+                view::header_actions(&offers, &self.intents),
+            );
+        }
         self.shell.set_content(content);
+    }
+
+    /// What the window shows as where it is: the drive, and the partition
+    /// when one is chosen.
+    fn location(&self, drive: &Drive) -> view::Location {
+        view::Location {
+            drive: self.display_name(drive).to_owned(),
+            partition: self.selected_partition(drive).map(Partition::display_label),
+        }
+    }
+
+    /// Hand the header to the window's bar while the desktop hosts it, and
+    /// take it back when it does not: the location, Rescan and the
+    /// selection's operations become the bar's slots. Returns whether
+    /// anything changed.
+    fn sync_window_toolbar(&mut self) -> bool {
+        let hosted = ui::window_toolbar::is_hosted();
+        let mut changed = false;
+        if hosted != self.header_in_bar {
+            self.header_in_bar = hosted;
+            self.shell.set_sidebar_toggle_in_window_bar(hosted);
+            let rescan: Vec<ui::widget::Element> = if hosted {
+                Vec::new()
+            } else {
+                vec![Box::new(view::rescan_button(&self.intents))]
+            };
+            self.shell.set_sidebar_header("Drives", rescan);
+            if !hosted {
+                ui::window_toolbar::declare(None);
+                self.declared_bar = None;
+            }
+            self.built = None;
+            changed = true;
+        }
+        if !hosted {
+            return changed;
+        }
+        let bar = view::window_toolbar(
+            self.drive().map(|drive| {
+                (
+                    self.location(drive),
+                    offer::shown(drive, self.selected_partition(drive)),
+                )
+            }),
+            self.shell.is_sidebar_open(),
+        );
+        if self.declared_bar.as_ref() != Some(&bar) {
+            ui::window_toolbar::declare(Some(bar.clone()));
+            self.declared_bar = Some(bar);
+        }
+        for event in ui::window_toolbar::take_events() {
+            match event {
+                ui::window_toolbar::ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
+                // The location's drive level: back to the whole drive.
+                ui::window_toolbar::ToolbarEvent::Commit { text } if text == view::WHOLE_DRIVE => {
+                    self.select_part(None);
+                }
+                ui::window_toolbar::ToolbarEvent::Action { id } => {
+                    if id == view::RESCAN {
+                        self.rescan();
+                    } else if let Some(action) =
+                        ActionKind::bar().into_iter().find(|action| action.key() == id)
+                    {
+                        self.trigger_action(action, self.part_index());
+                    }
+                }
+                _ => continue,
+            }
+            changed = true;
+        }
+        changed
     }
 
     /// Apply what the window's controls asked for.
@@ -455,7 +515,8 @@ impl DisksApp {
                 Intent::SelectDrive(index) => self.select(index),
                 Intent::SelectPartition(part) => self.select_part(part),
                 Intent::SetTab(tab) => self.set_tab(tab),
-                Intent::Run(action) => self.trigger_action(action),
+                Intent::Run(action) => self.trigger_action(action, self.part_index()),
+                Intent::RunOn { action, partition } => self.trigger_action(action, partition),
                 Intent::Rescan => self.rescan(),
             }
         }
@@ -473,22 +534,24 @@ impl DisksApp {
 
     // ---- interaction ---------------------------------------------------
 
-    /// An action button: invoke the operation on the drive or partition it
-    /// targets, as that row offers it — formatting asks for the device's
+    /// An action from the bar, a header button or a row's menu: invoke the
+    /// operation on partition `partition` of the selected drive (`None`: the
+    /// whole drive), as that row offers it. Formatting asks for the device's
     /// name before anything runs.
-    fn trigger_action(&mut self, action: ActionKind) {
+    fn trigger_action(&mut self, action: ActionKind, partition: Option<usize>) {
         let Some(drive) = self.drive() else { return };
-        if !self.action_enabled(drive, action) {
-            return; // inapplicable buttons are inert
+        let chosen = partition.and_then(|i| drive.partitions.get(i));
+        if !offer::offer(drive, chosen, action).is_available() {
+            return; // unavailable actions are inert
         }
         // Resolve what the action targets: Mount/Unmount snap to a filesystem;
-        // Eject always the whole device; Format/Benchmark follow the selection.
+        // Eject always the whole device; Format/Benchmark follow the choice.
         let part = match action {
-            ActionKind::Mount | ActionKind::Unmount => self.mount_target_part(drive),
+            ActionKind::Mount | ActionKind::Unmount => offer::mount_target(drive, chosen),
             ActionKind::Eject => None,
-            ActionKind::Format | ActionKind::Benchmark => self.part_index(),
+            ActionKind::Format | ActionKind::Benchmark => chosen,
         };
-        let (row, leaf) = match part.and_then(|i| drive.partitions.get(i)) {
+        let (row, leaf) = match part {
             Some(part) => (
                 crate::resource::partition_row_id(&part.name),
                 part.name.clone(),
@@ -704,6 +767,9 @@ impl DisksApp {
     ) -> Result<(String, Option<String>), String> {
         for drive in &self.topo.drives {
             if drive.name == leaf {
+                if let (ActionKind::Format, Some(reason)) = (action, drive.system_use()) {
+                    return Err(format!("Can't format /dev/{leaf}: {reason}"));
+                }
                 let whole = || (leaf.to_owned(), None);
                 return match action {
                     ActionKind::Format | ActionKind::Benchmark => Ok(whole()),
@@ -717,6 +783,13 @@ impl DisksApp {
             for part in &drive.partitions {
                 if part.name != leaf {
                     continue;
+                }
+                // What the running system stands on is never formatted or
+                // detached, whoever asks.
+                if let (ActionKind::Format | ActionKind::Unmount, Some(reason)) =
+                    (action, drive.partition_use(part))
+                {
+                    return Err(format!("Can't {} /dev/{leaf}: {reason}", action.key()));
                 }
                 let filesystem = part
                     .encryption
@@ -772,15 +845,17 @@ impl ui::widget::Decorator for DisksApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.sync_window_toolbar();
         self.drain_intents();
         self.refresh_view();
         self.shell.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let bar = self.sync_window_toolbar();
         self.drain_intents();
         self.refresh_view();
-        self.shell.update(state, path) || self.dirty
+        self.shell.update(state, path) || self.dirty || bar
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -990,10 +1065,27 @@ mod tests {
                 .contains("no longer present")
         );
 
-        // An unlocked LUKS2 home unmounts through its mapping, and is never
-        // formatted out of its encryption.
+        // What the running system stands on is refused whoever asks: an
+        // agent's invocation reaches this check as the window's buttons do.
         let mut app = sample_app();
-        app.replace_topology(crate::probe::captured::yoga().unwrap());
+        let yoga = crate::probe::captured::yoga().unwrap();
+        app.replace_topology(yoga.clone());
+        for (action, leaf, reason) in [
+            (ActionKind::Format, "nvme0n1", crate::model::HOLDS_SYSTEM),
+            (ActionKind::Unmount, "nvme0n1p4", "Holds the home folders"),
+            (ActionKind::Format, "nvme0n1p4", "Holds the home folders"),
+            (ActionKind::Unmount, "nvme0n1p7", crate::model::HOLDS_SYSTEM),
+            (ActionKind::Format, "nvme0n1p6", "Starts this device"),
+        ] {
+            let refusal = app.revalidate_operation_target(action, leaf).unwrap_err();
+            assert!(refusal.contains(reason), "{action:?} {leaf}: {refusal}");
+        }
+
+        // An unlocked LUKS2 volume that serves no running system unmounts
+        // through its mapping, and is never formatted out of its encryption.
+        let mut data = yoga;
+        data.drives[0].partitions[3].mountpoint = Some("/mnt/data".into());
+        app.replace_topology(data);
         assert_eq!(
             app.revalidate_operation_target(ActionKind::Unmount, "nvme0n1p4"),
             Ok(("dm-1".to_owned(), Some("ext4".to_owned())))
@@ -1067,9 +1159,10 @@ mod tests {
         // --- phase: a_disabled_action_does_nothing ---
         {
             let mut app = at_width(1280.0);
-            // The whole multi-partition disk has no filesystem to mount.
+            // Formatting the drive the running system lives on is shown,
+            // and unavailable.
             Framed::harness_mut(&mut app)
-                .click_named("disks-action-mount")
+                .click_named("disks-action-format")
                 .unwrap();
             assert!(app.status.is_empty());
         }
@@ -1093,6 +1186,15 @@ mod tests {
             app.intents.push(Intent::SelectPartition(Some(1)));
             app.drain_intents();
             assert_eq!(app.selected_part, Some(1));
+            let drive = app.drive().unwrap();
+            assert_eq!(
+                app.offer(drive, ActionKind::Unmount),
+                Offer::Unavailable(crate::model::HOLDS_SYSTEM),
+                "the root filesystem stays mounted"
+            );
+            app.select(1); // SATA SSD
+            app.intents.push(Intent::SelectPartition(Some(0)));
+            app.drain_intents();
             let drive = app.drive().unwrap();
             assert!(
                 app.action_enabled(drive, ActionKind::Unmount),
