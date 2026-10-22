@@ -1149,10 +1149,12 @@ mod tests {
             gst::init().expect("gstreamer init");
             let dir = std::env::temp_dir();
             let f = dir.join(format!("tilo-ve-realdec-{}.mp4", std::process::id()));
+            let encoder = media_stack::h264_encoder_with_keyframes_every(30)
+                .expect("the media stack has an H.264 encoder");
             let desc = format!(
                 "videotestsrc pattern=smpte num-buffers=60 ! \
              video/x-raw,width=192,height=108,framerate=30/1 ! videoconvert ! \
-             openh264enc ! h264parse ! mp4mux ! filesink location={}",
+             {encoder} ! h264parse ! mp4mux ! filesink location={}",
                 f.display()
             );
             let pipeline = gst::parse::launch(&desc)
