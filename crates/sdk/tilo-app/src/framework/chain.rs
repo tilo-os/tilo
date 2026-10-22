@@ -1051,6 +1051,7 @@ impl Chains {
         &self,
         me: Option<&str>,
         payload: &[u8],
+        live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let request: super::record::RecordAction =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
@@ -1064,6 +1065,6 @@ impl Chains {
         let invoker = ui_core::invocation_scope::current_invoker()
             .or_else(|| me.map(ActionInvoker::actor))
             .ok_or("nobody changes a past version")?;
-        door.apply_answering(&request.action, &invoker)
+        door.apply_in(&request.action, &invoker, live)
     }
 }

@@ -49,6 +49,7 @@ pub(crate) struct RecordAction {
 
 type Apply<P> = Box<dyn Fn(&<P as Resource>::Action, &ActionInvoker) -> Result<(), ActionError>>;
 type Sync<P> = Box<dyn Fn(&Live<P>)>;
+type Route = Box<dyn Fn(tilo_actions::Resource) -> tilo_actions::Resource>;
 
 /// A record held for the views that edit it: its state as they read it and
 /// how an action applies to it.
@@ -59,6 +60,10 @@ pub struct Held<P: Resource> {
     live: Live<P>,
     sync: Sync<P>,
     apply: Apply<P>,
+    /// How its actions are published: carried out on it for its person, or
+    /// for a record in the room ([`Self::in_room`]) as the room's roles say.
+    route: Route,
+    in_room: bool,
     /// The last publication, at the record's and the locale's revision it
     /// was built at: published again only when either moved.
     published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
@@ -73,6 +78,7 @@ impl<P: Resource> Held<P> {
         sync: impl Fn(&Live<P>) + 'static,
         apply: impl Fn(&P::Action, &ActionInvoker) -> Result<(), ActionError> + 'static,
     ) -> Self {
+        let record = id.clone();
         Self {
             id,
             label,
@@ -80,8 +86,22 @@ impl<P: Resource> Held<P> {
             live,
             sync: Box::new(sync),
             apply: Box::new(apply),
+            route: Box::new(move |published| route(published, &record, editable)),
+            in_room: false,
             published: RefCell::new(None),
         }
+    }
+
+    /// A record in the room the app's record lives in (a child it lists):
+    /// changed as the participant's roles there say, its actions published
+    /// as `route` carries them out.
+    pub(crate) fn in_room(
+        mut self,
+        route: impl Fn(tilo_actions::Resource) -> tilo_actions::Resource + 'static,
+    ) -> Self {
+        self.route = Box::new(route);
+        self.in_room = true;
+        self
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -134,11 +154,7 @@ impl<P: Resource> Held<P> {
             return published.clone();
         }
         let state = self.live.get();
-        let published = route(
-            tilo_resource::publish::<P>(&self.id, &self.label, &state),
-            &self.id,
-            self.editable,
-        );
+        let published = (self.route)(tilo_resource::publish::<P>(&self.id, &self.label, &state));
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
@@ -210,6 +226,32 @@ pub(crate) trait RecordDoor {
     ) -> Result<tilo_actions::ActionOutput, String> {
         self.apply_encoded(action, invoker)
             .map(|()| tilo_actions::ActionOutput::default())
+    }
+    /// [`Self::apply_answering`] in the window's pass over the record it
+    /// shows, lent as `live`: what a door that writes that record too (a
+    /// container listing a new child) writes it through.
+    fn apply_in(
+        &self,
+        action: &EncodedAction,
+        invoker: &ActionInvoker,
+        live: &mut ui_core::widget::Edits<'_>,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let _ = live;
+        self.apply_answering(action, invoker)
+    }
+    /// Carry out what waited for the window's pass over the record it
+    /// shows, lent as `live`.
+    fn settle(&self, live: &mut ui_core::widget::Edits<'_>) {
+        let _ = live;
+    }
+    /// The door's own client of the session's action door, once it asked
+    /// the host something: the window's root carries its requests.
+    fn remote(&self) -> Option<ui_core::RemoteActions> {
+        None
+    }
+    /// What search finds in the record beside the app's own.
+    fn search(&self) -> Vec<tilo_resource::SearchEntry> {
+        Vec::new()
     }
 }
 
@@ -316,6 +358,9 @@ pub struct Records<'a> {
     /// The app's own record, as `Live` of its resource: what the actions of
     /// a chain kept beside it read where they are invoked.
     base: Option<Rc<dyn std::any::Any>>,
+    /// The door of the app's own record, as the `Dispatcher` of its
+    /// resource: what a container of children it lists writes it through.
+    dispatch: Option<Rc<dyn std::any::Any>>,
     /// The resource types of the chains declared, while declaring.
     chains: Vec<tilo_resource::ResourceKind>,
     /// Where a host without a window keeps the settings sections declared,
@@ -328,6 +373,7 @@ impl<'a> Records<'a> {
         Self {
             storage: Some(storage),
             base: None,
+            dispatch: None,
             chains: Vec::new(),
             sections: None,
         }
@@ -340,6 +386,7 @@ impl<'a> Records<'a> {
         Self {
             storage: None,
             base: None,
+            dispatch: None,
             chains: Vec::new(),
             sections: None,
         }
@@ -351,6 +398,7 @@ impl<'a> Records<'a> {
         Self {
             storage: None,
             base: None,
+            dispatch: None,
             chains: Vec::new(),
             sections: Some((app_id, Vec::new())),
         }
@@ -366,8 +414,9 @@ impl<'a> Records<'a> {
         self.chains
     }
 
-    pub(crate) fn with_base<R: Resource>(mut self, live: Live<R>) -> Self {
+    pub(crate) fn with_base<R: Resource>(mut self, live: Live<R>, dispatch: Dispatcher<R>) -> Self {
         self.base = Some(Rc::new(live));
+        self.dispatch = Some(Rc::new(dispatch));
         self
     }
 
@@ -412,7 +461,15 @@ impl<'a> Records<'a> {
             );
             return self;
         };
-        let _ = storage.children::<C>(move || parent.get());
+        let children = storage.children::<C>(move || parent.get());
+        if let (Some(children), Some(door)) = (
+            children,
+            self.dispatch
+                .clone()
+                .and_then(|door| door.downcast::<Dispatcher<C::Parent>>().ok()),
+        ) {
+            children.write_parent_through((*door).clone());
+        }
         self
     }
 
@@ -576,7 +633,7 @@ fn record_dispatch<R: Resource, P: Resource>(
 ) -> Dispatcher<P> {
     let applying = Rc::downgrade(held);
     let me = parent.me().map(str::to_owned);
-    parent.for_record(held.id(), !held.editable(), move |action| {
+    let apply = move |action: &P::Action| {
         let held = applying
             .upgrade()
             .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
@@ -584,5 +641,10 @@ fn record_dispatch<R: Resource, P: Resource>(
             .as_deref()
             .ok_or_else(|| ActionError::Refused("nobody edits a past version".into()))?;
         held.apply(action, &ActionInvoker::actor(me))
-    })
+    };
+    if held.in_room {
+        parent.for_room_record(held.id(), !held.editable(), apply)
+    } else {
+        parent.for_record(held.id(), !held.editable(), apply)
+    }
 }

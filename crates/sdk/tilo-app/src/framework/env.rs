@@ -124,7 +124,7 @@ impl<R: Resource> RecordEnv<R> {
         let live = self.live.clone();
         let state = self.storage.children::<C>(move || live.get())?;
         let me = self.dispatch.me()?.to_owned();
-        Some(super::Children::new(state, me))
+        Some(super::Children::new(state, me).dispatching(&self.dispatch))
     }
 
     /// Who this view is for: the participant reading and editing through

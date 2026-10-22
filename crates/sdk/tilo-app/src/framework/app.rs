@@ -626,7 +626,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     // A window someone uses opens the records the app keeps beside its own,
     // so they are published before any view shows them.
     if permissions.is_some() {
-        A::records(&mut super::Records::new(&storage).with_base(live.clone()));
+        A::records(&mut super::Records::new(&storage).with_base(live.clone(), dispatch.clone()));
     }
     let effects = runs_effects.then(|| Effects::live(dispatch.clone(), live.clone()));
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);

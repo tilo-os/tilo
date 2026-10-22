@@ -1331,6 +1331,22 @@ impl<R: Resource> Dispatcher<R> {
         self.apply_now_as(edits, action, self.core.context(), true)
     }
 
+    /// Apply `action` now to the document `edits` lends, for `invoker`: a
+    /// step a door carries out for whoever invoked it that writes this
+    /// record too (a container listing a new child), attributed to them.
+    ///
+    /// # Errors
+    /// As [`apply_now`](Self::apply_now).
+    pub(crate) fn apply_now_for(
+        &self,
+        edits: &mut Edits<'_>,
+        action: &R::Action,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<(), ActionError> {
+        let context = self.core.context().with_invoker(invoker.clone());
+        self.apply_now_as(edits, action, context, true)
+    }
+
     fn apply_now_as(
         &self,
         edits: &mut Edits<'_>,
