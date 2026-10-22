@@ -53,6 +53,8 @@ use tilo_actions::task_step::TaskStep;
 /// of public notes per run; the rest are for its outcome and its questions.
 const MOST_STEPS_TOLD: usize = 64;
 
+mod pictures;
+use pictures::MOST_PICTURES;
 mod resume;
 
 /// Most model turns one task may take. Turns are cheap (well under two
@@ -304,6 +306,9 @@ pub(super) struct LoopState {
     /// number of times per run.
     told_step: Option<String>,
     steps_told: usize,
+    /// Content addresses of pictures this turn's invokes answered with, to
+    /// show a model that sees once the turn's results are in.
+    pictures: Vec<String>,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -473,6 +478,29 @@ fn app_matches(declared: &str, app_id: &str) -> bool {
 }
 
 impl LoopState {
+    fn new() -> Self {
+        Self {
+            revealed: Revealed::new(),
+            step_index: 0,
+            previous: None,
+            completed: 0,
+            actions: Vec::new(),
+            parts: Vec::new(),
+            done_apps: HashMap::new(),
+            unable: Vec::new(),
+            refusals: 0,
+            discovery_turns: 0,
+            turn: 0,
+            failures: HashSet::new(),
+            in_flight: Vec::new(),
+            settled: Vec::new(),
+            pages: crate::pages::Pages::new(),
+            told_step: None,
+            steps_told: 0,
+            pictures: Vec::new(),
+        }
+    }
+
     /// Parts with no successful operation in their application that were
     /// not explained as impossible.
     /// Each successful operation satisfies one part in its application, in
@@ -837,25 +865,7 @@ impl Session {
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
     ) -> Result<LoopEnd> {
-        let mut state = LoopState {
-            revealed: Revealed::new(),
-            step_index: 0,
-            previous: None,
-            completed: 0,
-            actions: Vec::new(),
-            parts: Vec::new(),
-            done_apps: HashMap::new(),
-            unable: Vec::new(),
-            refusals: 0,
-            discovery_turns: 0,
-            turn: 0,
-            failures: HashSet::new(),
-            in_flight: Vec::new(),
-            settled: Vec::new(),
-            pages: crate::pages::Pages::new(),
-            told_step: None,
-            steps_told: 0,
-        };
+        let mut state = LoopState::new();
         self.task_deadline = run.execution_budget.map(|budget| {
             ui::time::now()
                 .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
@@ -1468,6 +1478,7 @@ impl Session {
         conversation
             .push(assistant, ordered)
             .map_err(anyhow::Error::msg)?;
+        self.show_pictures(conversation, state);
         match finish {
             Some(Finishing { said, .. }) if !failed => {
                 self.chooser
@@ -1676,6 +1687,16 @@ impl Session {
         report: InvokeReport,
         failed: &mut bool,
     ) -> Handled {
+        if report.succeeded && self.chooser.sees() {
+            for address in &report.resources {
+                if tilo_actions::content_hash(address).is_some()
+                    && !state.pictures.contains(address)
+                    && state.pictures.len() < MOST_PICTURES
+                {
+                    state.pictures.push(address.clone());
+                }
+            }
+        }
         if !report.succeeded {
             tracing::info!(
                 turn = state.turn,
@@ -3806,6 +3827,7 @@ mod tests {
     }
 
     mod native_pipeline;
+    mod pictures;
 
     fn native_fixture(latest: u64) -> Fixture {
         let control = runtime_collab::TaskRunControl {

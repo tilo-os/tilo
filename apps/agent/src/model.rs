@@ -97,6 +97,12 @@ impl Chooser {
         self.provider.as_ref().map(|provider| &provider.selection)
     }
 
+    /// Whether the model this chooser asks sees pictures.
+    pub fn sees(&self) -> bool {
+        self.selection()
+            .is_some_and(|selection| selection.model.vision)
+    }
+
     /// `enabled` false forces the keyword vocabulary — for a run that must be
     /// reproducible, and for proving the fallback works.
     pub fn new(enabled: bool, timeout: Duration) -> Self {
@@ -1134,7 +1140,9 @@ impl TurnTransport for GatewayTurns {
 #[derive(Clone, Debug)]
 pub struct Conversation {
     history: agent_provider_config::protocol::Conversation,
-    directions: Vec<(usize, String)>,
+    /// Turns of the person's (directions, pictures shown) placed after the
+    /// history message at each index.
+    directions: Vec<(usize, agent_provider_config::protocol::Message)>,
     first: Option<FirstTurn>,
     #[cfg(test)]
     legacy: Option<LegacyConversation>,
@@ -1192,14 +1200,8 @@ impl Conversation {
         if let Some(first) = &self.first {
             first.apply_to(&mut request);
         }
-        for (offset, (index, text)) in self.directions.iter().enumerate() {
-            request.messages.insert(
-                index + offset,
-                agent_provider_config::protocol::Message::text(
-                    agent_provider_config::protocol::Role::User,
-                    text,
-                ),
-            );
+        for (offset, (index, message)) in self.directions.iter().enumerate() {
+            request.messages.insert(index + offset, message.clone());
         }
         serde_json::json!(request)
     }
@@ -1262,8 +1264,41 @@ impl Conversation {
             legacy.push_user(text);
             return;
         }
-        self.directions
-            .push((self.history.messages().len(), text.into()));
+        self.directions.push((
+            self.history.messages().len(),
+            agent_provider_config::protocol::Message::text(
+                agent_provider_config::protocol::Role::User,
+                text,
+            ),
+        ));
+    }
+
+    /// Show the model `pictures` (media type, bytes), introduced by `note`,
+    /// after the results that answered with them.
+    pub fn push_pictures(&mut self, note: &str, pictures: Vec<(String, Vec<u8>)>) {
+        use agent_provider_config::protocol::{Content, Message, Role};
+        use base64::Engine as _;
+        #[cfg(test)]
+        if let Some(legacy) = &mut self.legacy {
+            legacy.push_user(note);
+            return;
+        }
+        let mut content = vec![Content::Text { text: note.into() }];
+        content.extend(
+            pictures
+                .into_iter()
+                .map(|(media_type, bytes)| Content::Image {
+                    media_type,
+                    base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                }),
+        );
+        self.directions.push((
+            self.history.messages().len(),
+            Message {
+                role: Role::User,
+                content,
+            },
+        ));
     }
 
     pub fn len(&self) -> usize {
@@ -2328,8 +2363,9 @@ mod tests {
     }
 }
 
-/// Decode only the launcher's explicit nonsecret profile/model/protocol tuple.
-/// Endpoint, bearer credentials and vault references never enter this contract.
+/// Decode only the launcher's explicit nonsecret profile/model/protocol tuple,
+/// and whether the model sees pictures. Endpoint, bearer credentials and
+/// vault references never enter this contract.
 ///
 /// # Errors
 ///
@@ -2339,10 +2375,18 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
     let object = value
         .as_object()
         .ok_or("managed provider must be an object")?;
-    if object.len() != 3
-        || !object
-            .keys()
-            .all(|key| matches!(key.as_str(), "profile_id" | "model_id" | "protocol"))
+    let vision = match object.get("vision") {
+        None => false,
+        Some(Value::Bool(vision)) => *vision,
+        Some(_) => return Err("invalid managed provider field".into()),
+    };
+    if object.len() != 3 + usize::from(object.contains_key("vision"))
+        || !object.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "profile_id" | "model_id" | "protocol" | "vision"
+            )
+        })
     {
         return Err("unsupported managed provider fields".into());
     }
@@ -2366,7 +2410,10 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
         profile_id,
         endpoint: String::new(),
         protocol,
-        model: agent_provider_config::ModelDescriptor::new(field("model_id")?),
+        model: agent_provider_config::ModelDescriptor {
+            vision,
+            ..agent_provider_config::ModelDescriptor::new(field("model_id")?)
+        },
         credential: None,
     })
 }
@@ -2382,6 +2429,12 @@ mod managed_tests {
         assert_eq!(selected.model.id, "claude-1");
         assert!(selected.credential.is_none());
         assert!(selected.endpoint.is_empty());
+        assert!(!selected.model.vision);
+        let mut seeing = value.clone();
+        seeing["vision"] = serde_json::json!(true);
+        assert!(managed_provider_selection(&seeing).unwrap().model.vision);
+        seeing["vision"] = serde_json::json!("yes");
+        assert!(managed_provider_selection(&seeing).is_err());
         for extra in ["api_key", "endpoint", "credential"] {
             let mut changed = value.clone();
             changed[extra] = serde_json::json!("disallowed");

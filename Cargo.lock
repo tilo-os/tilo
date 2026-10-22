@@ -298,6 +298,7 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "anyhow",
+ "base64",
  "blake3",
  "collab-types",
  "ed25519-dalek 3.0.0",
