@@ -792,8 +792,8 @@ fn write_file(
     Ok(())
 }
 
-/// Move `path` to Trash, noting the Trash entry it became when exactly one
-/// appeared.
+/// Move `path` to Trash, noting the Trash entry it became: the one the host
+/// names, else the one that appeared when exactly one did.
 pub(crate) fn trash(path: &Path) -> Result<Change, String> {
     // A Trash that does not exist yet holds nothing: the entry the first
     // move to it makes is still found, so that move can be undone too.
@@ -802,7 +802,12 @@ pub(crate) fn trash(path: &Path) -> Result<Change, String> {
             .filter(|dir| !dir.exists())
             .map(|_| Vec::new())
     });
-    fileops::delete_to_trash(&[path.to_path_buf()])?;
+    if let Some(entry) = fileops::move_to_trash(path)? {
+        return Ok(Change::Trashed {
+            from: text(path),
+            entry: Some(text(&entry)),
+        });
+    }
     let entry = before.and_then(|before| {
         let created: Vec<PathBuf> = fileops::trash_entries_snapshot()?
             .into_iter()
@@ -962,6 +967,40 @@ mod tests {
 
         let nothing = execute(&revert, None);
         assert!(!nothing.is_done());
+    }
+
+    /// Move to Trash records the entry the item became and its undo puts the
+    /// item back, on the freedesktop Trash managed without the mount table a
+    /// sandboxed Files cannot read.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn move_to_trash_records_its_entry_and_undo_restores_it() {
+        let home = tilo_test_env::TestHome::new().expect("private Trash for undo");
+        let downloads = home.home().join("Downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        let film = downloads.join("film.mkv");
+        std::fs::write(&film, b"frames").unwrap();
+        let film = film.canonicalize().unwrap();
+
+        let trashed = execute(
+            &FileOp::Trash {
+                paths: vec![text(&film)],
+            },
+            None,
+        );
+        let [Change::Trashed { from, entry }] = done(&trashed) else {
+            panic!("{trashed:?}");
+        };
+        assert_eq!(from, &text(&film));
+        let entry = PathBuf::from(entry.as_deref().expect("the entry it became"));
+        assert_eq!(entry.file_name(), film.file_name());
+        assert_eq!(std::fs::read(&entry).unwrap(), b"frames");
+        assert!(!film.exists());
+
+        let revert = FileOp::Revert { op: "trash".into() };
+        done(&execute(&revert, Some(trashed.result().as_slice())));
+        assert_eq!(std::fs::read(&film).unwrap(), b"frames");
+        assert!(!entry.exists());
     }
 
     /// Only a mounted import makes the independent destination editable.
