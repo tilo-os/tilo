@@ -327,10 +327,40 @@ export function randomDisplayName(random = Math.random) {
  * visit showed one person under two names, to the room and to what it is
  * bridged with. Random only for a page that has no key yet.
  */
-export function defaultDisplayName(userPublicKey, random = Math.random) {
+export function defaultDisplayName(userPublicKey, random = Math.random, taken = []) {
   if (!/^[0-9a-f]{4}/i.test(userPublicKey ?? '')) return randomDisplayName(random);
-  const [adjective, animal] = [0, 2].map(at => parseInt(userPublicKey.slice(at, at + 2), 16));
-  return `${ADJECTIVES[adjective % ADJECTIVES.length]} ${ANIMALS[animal % ANIMALS.length]}`;
+  const used = new Set(taken.map(name => String(name).toLowerCase()));
+  const free = name => !used.has(name.toLowerCase());
+  // The key's bytes, read two at a time: the first pair is the person's
+  // name; the next ones stand in when someone in the room already goes by
+  // it, so two people are never told apart only by "(1)" and "(2)" on each
+  // screen while what they are bridged with shows one name for both.
+  const bytes = userPublicKey.match(/[0-9a-f]{2}/gi).map(byte => parseInt(byte, 16));
+  let first = null;
+  for (let at = 0; at + 2 < bytes.length || at === 0; at += 4) {
+    const adjective = bytes[at] ?? 0;
+    const animal = bytes[at + 2] ?? bytes[at + 1] ?? 0;
+    const name = `${ADJECTIVES[adjective % ADJECTIVES.length]} ${ANIMALS[animal % ANIMALS.length]}`;
+    first ??= name;
+    if (free(name)) return name;
+  }
+  // Every name the key draws is taken: the first, numbered.
+  for (let n = 2; ; n += 1) if (free(`${first} ${n}`)) return `${first} ${n}`;
+}
+
+/**
+ * The name the person `userPublicKey`, who has not chosen one, takes when the
+ * room's `lines` (from `/here`: `[{user, label}]`) show someone else already
+ * going by `current`; `null` when they keep it. Of two people who drew the
+ * same name the one with the greater key draws again, so both never do.
+ */
+export function redrawnDisplayName(userPublicKey, current, lines) {
+  if (!userPublicKey || !current || !Array.isArray(lines)) return null;
+  const others = lines.filter(line => line?.user && line.user !== userPublicKey && typeof line.label === 'string');
+  const same = others.filter(line => line.label.toLowerCase() === current.toLowerCase());
+  if (!same.length || same.every(line => line.user > userPublicKey)) return null;
+  const name = defaultDisplayName(userPublicKey, Math.random, others.map(line => line.label));
+  return name === current ? null : name;
 }
 
 const NAMES = 'tilo-display-names';

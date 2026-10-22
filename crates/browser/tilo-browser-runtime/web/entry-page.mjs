@@ -34,7 +34,7 @@ import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
   hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
-  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, rememberEntered,
+  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedRoom, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
@@ -840,6 +840,15 @@ export async function startEntryPage({mode}) {
       }});
     identityActions = attachIdentity();
     void followProfile(page, name => { displayName = name; });
+    // A drawn name someone else here already goes by is drawn again; a
+    // name the person chose stays theirs.
+    page.peer.setNameDrawer?.((current, lines) => {
+      const key = page.peer.userPublicKey;
+      if (chosenDisplayName(key)) return null;
+      const redrawn = redrawnDisplayName(key, current, lines);
+      if (redrawn) displayName = redrawn;
+      return redrawn;
+    });
     setUp = async (details = {}) => {
       const machine = await machineCard({details, run: (values, onPhase) => setUpMachine({
         details: values, person: () => rootOfThisPage(page.peer), runtime, onProgress: event => onPhase(event.phase)})});

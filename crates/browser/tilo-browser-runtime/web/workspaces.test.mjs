@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -263,6 +263,40 @@ test('a person goes by the same name at every visit until they choose one', () =
   assert.equal(defaultDisplayName(key, () => 0.99), name);
   assert.notEqual(defaultDisplayName('07'.repeat(32)), name);
   assert.match(defaultDisplayName(undefined, () => 0), /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+});
+
+// Two keys whose first bytes draw the same name, as two visitors' did.
+const drawsAlike = rest => `0d000d${rest}`.padEnd(64, '0');
+const early = drawsAlike('00' + '01'.repeat(29));
+const late = drawsAlike('00' + 'f3'.repeat(29));
+
+test('a name someone in the room already goes by is drawn again from the key', () => {
+  const name = defaultDisplayName(early);
+  assert.equal(defaultDisplayName(late), name, 'the two keys draw alike');
+  const other = defaultDisplayName(late, Math.random, [name]);
+  assert.notEqual(other, name);
+  assert.match(other, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  assert.equal(defaultDisplayName(late, Math.random, [name]), other, 'the same room draws the same name again');
+  assert.equal(defaultDisplayName(late, Math.random, [name.toUpperCase()]), other, 'names collide whatever their case');
+});
+
+test('of two people who drew one name, the one with the greater key takes another', () => {
+  const name = defaultDisplayName(early);
+  const lines = [{user: early, label: name}, {user: late, label: name}];
+  assert.equal(redrawnDisplayName(early, name, lines), null, 'the lesser key keeps it');
+  const redrawn = redrawnDisplayName(late, name, lines);
+  assert.ok(redrawn && redrawn !== name);
+  // Once they differ, neither draws again; nor does a person alone, nor the
+  // same person's other device.
+  assert.equal(redrawnDisplayName(late, redrawn, [{user: early, label: name}, {user: late, label: redrawn}]), null);
+  assert.equal(redrawnDisplayName(late, name, [{user: late, label: name}, {user: late, label: name}]), null);
+});
+
+test('when every name a key draws is taken, the first is numbered', () => {
+  const key = '0a'.repeat(32);
+  const first = defaultDisplayName(key);
+  assert.equal(defaultDisplayName(key, Math.random, [first]), `${first} 2`);
+  assert.equal(defaultDisplayName(key, Math.random, [first, `${first} 2`]), `${first} 3`);
 });
 
 test('the home workspace is listed first, then the person\u2019s own, each host once', () => {

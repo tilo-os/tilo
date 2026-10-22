@@ -772,6 +772,14 @@ async function connect({
   let actions;
   let voice;
   let disposed = false;
+  let drawName = null;
+  // The person's name, as history and presence show it from now on.
+  const rename = name => {
+    displayName = fitDisplayName(name);
+    peer?.setDisplayName?.(displayName);
+    live?.publishPresence({participant: {kind: 'person', label: (displayName || label).slice(0, 32),
+      color: ownColor(), activity: null}});
+  };
   let snapshot = {phase: 'authenticating', records: []};
   // The session's remote-action events are taken once per change and read
   // by every consumer: agents' and the room's actions share the path.
@@ -1083,12 +1091,7 @@ async function connect({
       // Asked after a failure too, when the session may be gone.
       try { return peer?.workspaceName?.() ?? undefined; } catch { return undefined; }
     },
-    setDisplayName(name) {
-      displayName = fitDisplayName(name);
-      peer?.setDisplayName?.(displayName);
-      live?.publishPresence({participant: {kind: 'person', label: (displayName || label).slice(0, 32),
-        color: ownColor(), activity: null}});
-    },
+    setDisplayName: name => rename(name),
     /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
     createInvitation: options => membership.createInvitation(options),
     /** The room's members, waiting people and invitations, for its owner
@@ -1128,8 +1131,16 @@ async function connect({
     async here(window, actions = []) {
       // A watching page is not listed: it would only post for itself.
       if (!room || !peer || watching) return [];
-      return JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
+      const lines = JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
+      // Someone else here already goes by this person's drawn name: they
+      // take another, so the room and what it is bridged with tell them apart.
+      const redrawn = drawName?.(displayName, lines);
+      if (redrawn && redrawn !== displayName) rename(redrawn);
+      return lines;
     },
+    /** Who draws this person's name again when it collides in the room:
+     * `(current, lines) => name | null`, or `null` once they chose one. */
+    setNameDrawer(draw) { drawName = typeof draw === 'function' ? draw : null; },
     /** The host's fetch proxy for this page's apps (`fetch-proxy.mjs`):
      * `{endpoint, session}` while the host serves one over the current
      * session, else `null`. Read for each request: the session follows
