@@ -157,6 +157,8 @@ mod lock_screen_visual;
 mod main_loop_watchdog;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
+#[path = "maximized_stays_maximized.rs"]
+mod maximized_stays_maximized;
 #[path = "multi_output.rs"]
 mod multi_output;
 #[path = "notification_center.rs"]
