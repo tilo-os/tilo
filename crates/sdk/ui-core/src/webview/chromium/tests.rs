@@ -548,6 +548,37 @@ fn protocol_frames_reject_malformed_and_oversized_input() {
                 .is_ok()
         );
     }
+    // phase: every_event_the_host_sends_is_well_formed
+    // A malformed known event ends the engine and every tab with it, so what
+    // the host really sends must pass: a page can cause each of these.
+    {
+        // The request filter's own trouble names no page.
+        let filter =
+            json!({"event":"error","message":"Native request matcher failed to check a resource"});
+        assert!(validate_event(&filter).is_ok());
+        assert_eq!(
+            decode_event(&filter),
+            None,
+            "a diagnostic, not a failed page"
+        );
+        // A page's export: its whole file is the download's address.
+        let export = json!({"event":"download", "id":1, "state":"progress",
+        "path":"", "name":"export.csv", "url":format!("data:text/csv,{}", "a".repeat(20_000)),
+        "retryable":true, "received":0.0, "total":20_000.0, "error":""});
+        assert!(validate_event(&export).is_ok());
+        assert!(matches!(
+            decode_event(&export),
+            Some(WebViewEvent::DownloadUpdated { url, retryable: false, .. }) if url.is_empty()
+        ));
+        // A page that made its own address long, then reloaded.
+        let long = format!("https://example.test/?{}", "a".repeat(70_000));
+        let outcome = json!({"event":"navigation_outcome","request_id":1,"url":long});
+        assert!(validate_event(&outcome).is_ok());
+        assert!(matches!(
+            decode_event(&outcome),
+            Some(WebViewEvent::NavigationOutcome { uri, .. }) if uri == long
+        ));
+    }
     // phase: large_commands_are_rejected_before_encoding
     {
         assert!(!command_within_limits(&WebViewCommand::Navigate(
@@ -2005,7 +2036,7 @@ fn owned_navigation_protocol_preserves_identity_and_bounds() {
         ("request_id", json!(-1)),
         ("request_id", json!("7")),
         ("url", json!(false)),
-        ("url", json!("x".repeat(65537))),
+        ("url", json!("x".repeat(MAX_PAGE_URL + 1))),
         ("error", json!(null)),
         ("error", json!("")),
         ("error", json!("x".repeat(4097))),
