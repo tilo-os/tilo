@@ -1023,7 +1023,6 @@ impl ShellOverlayHost {
                     Some(
                         DeviceFabricPaneRow::RemoteAudioConsent(_)
                             | DeviceFabricPaneRow::SpeakerConsent(_)
-                            | DeviceFabricPaneRow::RemoteCaptureConsent(_)
                             | DeviceFabricPaneRow::RealtimeConsent(_)
                             | DeviceFabricPaneRow::GamepadAuthorization(_)
                     )

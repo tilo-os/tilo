@@ -360,6 +360,7 @@ qs-wifi-problem-hardware-switch = Off with the hardware switch
 qs-wifi-problem-stayed-off = Couldn't turn on
 qs-wifi-problem-failed = Couldn't change Wi-Fi
 qs-power-mode = Power mode
+qs-power-mode-unavailable = This computer offers no power modes
 qs-power = Power mode
 qs-lock-description = Lock the screen; apps keep running
 qs-notifications = Notifications
@@ -655,10 +656,6 @@ host-fabric-asked-tethering = Asked { $device } to share its connection
 host-fabric-asked-controller = Asked { $device } to allow this controller once for the focused app
 host-fabric-media-preparing = Preparing media for { $device }; this device stays active until it opens
 host-fabric-bluetooth-moving = Moving { $accessory } to { $device }; it stays here until that device confirms its pairing
-host-fabric-place-left = { $device } will sit left of this display after it confirms
-host-fabric-place-right = { $device } will sit right of this display after it confirms
-host-fabric-place-above = { $device } will sit above this display after it confirms
-host-fabric-place-below = { $device } will sit below this display after it confirms
 host-fabric-control-granted = { $device } may control this device for 15 minutes
 
 # Accessibility tree: workspace overlays
@@ -708,8 +705,6 @@ a11y-speaker-membership-description = This device plays in this speaker group; a
 a11y-remote-audio-play-here = Play { $media } here
 a11y-remote-audio-allow = Allow this remote audio once
 a11y-remote-audio-decline = Decline this remote audio
-a11y-remote-capture-allow = Allow this remote input once
-a11y-remote-capture-decline = Decline this remote input
 a11y-remote-capture-session = Remote { $input }
 a11y-remote-capture-provisioning = Preparing a private local endpoint
 a11y-remote-capture-unavailable = Remote { $input } unavailable
@@ -724,8 +719,6 @@ a11y-controller-use = Use { $controller }
 a11y-controller-allow = Allow this controller once
 a11y-controller-decline = Decline this controller
 a11y-media-handoff = { $media } on { $target }
-a11y-input-lower = Lower input level
-a11y-input-raise = Raise input level
 a11y-tethering-allow = Allow tethering once
 a11y-tethering-decline = Decline tethering
 a11y-control-revoke = Revoke control of this device
@@ -874,8 +867,6 @@ qs-devices-audio-streaming = Streaming to { $peer }
 qs-devices-audio-interrupted = Interrupted on { $peer }
 qs-devices-audio-syncing = Syncing with { $peer }…
 qs-devices-audio-clock-failed = Can't keep time with { $peer }: { $reason }
-qs-devices-capture-share = Share this device's { $input }
-qs-devices-capture-requested = { $source } asked for this for { $app }
 qs-devices-capture-use-remote = Use remote { $input }
 qs-devices-capture-source-note = Choose a device below. It asks for approval there.
 qs-devices-capture-waiting-on = Waiting for approval on { $peer }
@@ -907,9 +898,6 @@ qs-devices-media-opened = Opened on destination
 qs-devices-media-failed = Couldn't move it: { $reason }
 qs-devices-media-playing = Playing
 qs-devices-media-paused = Paused
-qs-devices-output-default = In use
-qs-devices-output-route = Not in use
-qs-devices-output-bluetooth = Bluetooth { $codec }
 qs-devices-tether-requesting = Waiting for phone approval
 qs-devices-tether-consent = Allow once or decline
 qs-devices-tether-preparing = Starting this phone's hotspot
@@ -934,10 +922,6 @@ qs-devices-use-controller = Use the controller here
 qs-devices-use-input = Use this device's { $input }
 qs-devices-play-audio-here = Play the audio here
 qs-devices-no-audio = This device has no audio output
-qs-devices-place-this-left = Place this display to the left
-qs-devices-place-this-right = Place this display to the right
-qs-devices-place-this-above = Place this display above
-qs-devices-place-this-below = Place this display below
 
 # Quick Settings: clipboard history
 qs-clipboard-search-matches = { $count ->
@@ -1241,6 +1225,9 @@ speaker-group-summary-waiting = { $total ->
 remote-input-camera = camera
 remote-input-microphone = microphone
 remote-input-scanner = scanner
+remote-capture-consent-title = Share this device's { $input }?
+remote-capture-consent-detail = { $source } asks to use it for { $app }.
+remote-capture-consent-allow = Share
 
 
 # Why moving media to another device failed, as the $reason of a sentence

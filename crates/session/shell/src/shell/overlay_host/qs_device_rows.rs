@@ -21,8 +21,9 @@ impl ShellOverlayHost {
             .unwrap_or(Rect::ZERO)
     }
 
-    pub(super) fn qs_device_row_actions(row: Rect) -> ([Rect; 4], Rect) {
-        crate::shell::quick_settings::hosted::placement_rects(row)
+    /// A device row's control button.
+    pub(super) fn qs_device_control_rect(row: Rect) -> Rect {
+        crate::shell::quick_settings::hosted::control_rect(row)
     }
 
     /// The Devices row text for a local input: whether it is the one in
@@ -500,29 +501,6 @@ impl ShellOverlayHost {
                     true,
                 )
             }
-            DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
-                let source_label = view
-                    .devices
-                    .iter()
-                    .find(|device| device.id == consent.peer)
-                    .map_or_else(|| t("qs-devices-another-certified"), |device| device.label.clone());
-                (
-                    t_args(
-                        "qs-devices-capture-share",
-                        &[("input", t(remote_capture_kind_key(consent.profile.kind())).into())],
-                    ),
-                    t_args(
-                        "qs-devices-capture-requested",
-                        &[
-                            ("source", source_label.into()),
-                            ("app", consent.app_label.as_str().into()),
-                        ],
-                    ),
-                    ui::icons::Icon::Camera,
-                    false,
-                    true,
-                )
-            }
             DeviceFabricPaneRow::RemoteCaptureSource(kind) => (
                 t_args(
                     "qs-devices-capture-use-remote",
@@ -767,22 +745,6 @@ impl ShellOverlayHost {
                 input.is_default,
                 true,
             ),
-            DeviceFabricPaneRow::LocalOutput(output) => (
-                output.label.clone(),
-                output.bluetooth_codec.as_ref().map_or_else(
-                    || {
-                        if output.is_default {
-                            t("qs-devices-output-default")
-                        } else {
-                            t("qs-devices-output-route")
-                        }
-                    },
-                    |codec| t_args("qs-devices-output-bluetooth", &[("codec", codec.as_str().into())]),
-                ),
-                ui::icons::Icon::Volume2,
-                output.is_default,
-                !output.is_default,
-            ),
             DeviceFabricPaneRow::Tethering(status) => {
                 use crate::shell::personal_tethering_runtime::{
                     TetheringDirection, TetheringPhase,
@@ -901,9 +863,6 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::SpeakerConsent(consent) => {
                 vec![consent.allow_label(), consent.decline_label()]
             }
-            DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
-                pair("a11y-remote-capture-allow", "a11y-remote-capture-decline")
-            }
             DeviceFabricPaneRow::RealtimeConsent(_) => pair("a11y-call-allow", "a11y-call-decline"),
             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                 pair("a11y-controller-allow", "a11y-controller-decline")
@@ -916,20 +875,11 @@ impl ShellOverlayHost {
             {
                 pair("a11y-tethering-allow", "a11y-tethering-decline")
             }
-            DeviceFabricPaneRow::LocalInput(input) if input.is_default => {
-                pair("a11y-input-lower", "a11y-input-raise")
-            }
-            DeviceFabricPaneRow::Device(device) => vec![
-                t("qs-devices-place-this-left"),
-                t("qs-devices-place-this-right"),
-                t("qs-devices-place-this-above"),
-                t("qs-devices-place-this-below"),
-                if device.controls_local {
-                    t("a11y-control-revoke")
-                } else {
-                    t("a11y-control-allow")
-                },
-            ],
+            DeviceFabricPaneRow::Device(device) => vec![if device.controls_local {
+                t("a11y-control-revoke")
+            } else {
+                t("a11y-control-allow")
+            }],
             _ => Vec::new(),
         }
     }

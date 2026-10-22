@@ -294,3 +294,41 @@ fn super_v_into_a_wayland_window_is_pasted_by_the_compositor() {
     let _ = host.take_in_process_pastes();
     assert_eq!(host.take_in_process_pastes(), 0);
 }
+
+// USER REQUIREMENT (2026-10-21): "Clipboard's row and section read one
+// source, so the count is right."
+#[test]
+fn the_clipboard_row_counts_the_copies_its_section_lists() {
+    let store = Arc::new(Mutex::new(SelectionStore::default()));
+    for text in ["one", "two", "three"] {
+        assert!(set_mirror_text(&store, Target::Clipboard, text));
+    }
+    let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    host.set_clipboard_manager_bridge(bridge(store.clone()));
+    chrome
+        .borrow_mut()
+        .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
+    host.refresh_quick_settings_summaries();
+    host.refresh_qs_hosted_rows();
+    let view = chrome.borrow().quick_settings.clipboard.clone();
+    assert_eq!(view.total, 3, "the row counts every copy");
+    assert_eq!(
+        view.rows.len(),
+        view.total,
+        "the section lists the same copies"
+    );
+
+    // A copy made while the section is open reaches the row as well.
+    assert!(set_mirror_text(&store, Target::Clipboard, "four"));
+    host.refresh_qs_hosted_rows();
+    let view = chrome.borrow().quick_settings.clipboard.clone();
+    assert_eq!((view.total, view.rows.len()), (4, 4));
+
+    // Clearing the history empties both at once.
+    let _ = host.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
+    host.refresh_qs_hosted_rows();
+    let view = chrome.borrow().quick_settings.clipboard.clone();
+    assert_eq!((view.total, view.rows.len()), (0, 0));
+}
