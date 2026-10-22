@@ -398,6 +398,7 @@ members = [
     "crates/system/cloud-source-icloud",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
+    "crates/system/documents",
     "crates/system/content",
     "crates/system/content-device",
     "crates/system/content-types",
@@ -589,6 +590,7 @@ tilo-wake = { version = "0.1.0", path = "crates/platform/tilo-wake" }
 tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
 tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
+tilo-documents = { version = "0.1.0", path = "crates/system/documents" }
 tilo-notify = { version = "0.1.0", path = "crates/platform/tilo-notify" }
 tilo-location = { version = "0.1.0", path = "crates/platform/tilo-location" }
 tilo-secrets = { version = "0.1.0", path = "crates/platform/tilo-secrets" }

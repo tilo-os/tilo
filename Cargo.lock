@@ -17660,6 +17660,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-documents"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "fuser",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [

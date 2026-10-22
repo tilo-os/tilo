@@ -1,0 +1,539 @@
+//! The files a person chose for an app in the system file chooser.
+//!
+//! Choosing a file in the session shell's chooser is the person's consent,
+//! and it gives the app that asked exactly what was chosen: the file to read
+//! for an Open, the file to write (created if it is new) for a Save, the
+//! folder and everything under it for a folder. Nothing else.
+//!
+//! A sandboxed app's mount namespace is fixed when its sandbox starts, so a
+//! choice made while it runs cannot add a bind to it. Instead the shell keeps
+//! one filesystem, mounted before any app starts, and the launcher binds each
+//! app's own view of it into the app's sandbox at [`SANDBOX_DIR`]. The view
+//! starts empty; a choice adds a document to it, visible inside at once
+//! (`/run/tilo/documents/<token>/<name>`). This is how `xdg-document-portal`
+//! solves the same problem; `docs/architecture/security.md` ("Filesystem")
+//! records why it is this and not a launch-time grant or a live re-bind.
+//!
+//! An app's view is keyed by the room it was launched into and its package
+//! ([`AppKey`]), so the same app in another workspace sees none of it, and no
+//! app can reach another's view: only its own subtree is bound. Documents
+//! stay private to this device ([`Documents::kept_in`] keeps them across
+//! sessions in a private file, so a recent file reopens where it was): they
+//! are never written into the room's shared capability list, which would
+//! replicate a private choice to every peer and widen the app's next launch.
+//!
+//! [`Documents`] is the table both sides share; [`host`] turns a path inside
+//! an app's view into the host file it names, refusing anything a choice did
+//! not cover; `mount` (feature `mount`, Linux) serves the table over FUSE.
+
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::{OsStr, OsString};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, RwLock};
+
+#[cfg(unix)]
+pub mod host;
+#[cfg(all(target_os = "linux", any(feature = "mount", test)))]
+pub mod mount;
+
+/// Where an app finds its documents inside its sandbox.
+pub const SANDBOX_DIR: &str = "/run/tilo/documents";
+
+/// The directory under the session's runtime directory the shell mounts
+/// the documents filesystem on.
+const MOUNT_SUBDIR: &str = "tilo/documents";
+
+/// Where the session's documents filesystem is mounted on the host:
+/// `$XDG_RUNTIME_DIR/tilo/documents`. `None` without an absolute runtime
+/// directory, where no session shell serves one.
+pub fn mountpoint() -> Option<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)?;
+    runtime.is_absolute().then(|| runtime.join(MOUNT_SUBDIR))
+}
+
+/// The host directory that is `key`'s view, under the filesystem mounted at
+/// `mountpoint`: what the launcher binds at [`SANDBOX_DIR`].
+pub fn app_view(mountpoint: &Path, key: &AppKey) -> PathBuf {
+    mountpoint.join(&key.room).join(&key.app)
+}
+
+/// Whose documents: the room an app was launched into and its package.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AppKey {
+    room: String,
+    app: String,
+}
+
+impl AppKey {
+    /// The key for `app` launched into `room`, or `None` when either is not
+    /// a name the documents filesystem can carry as one path component (a
+    /// room id is letters, digits and `-`; a package id adds `.` and `_`,
+    /// and does not start with `.`).
+    pub fn new(room: &str, app: &str) -> Option<Self> {
+        (is_room(room) && is_app(app)).then(|| Self {
+            room: room.to_owned(),
+            app: app.to_owned(),
+        })
+    }
+
+    pub fn room(&self) -> &str {
+        &self.room
+    }
+
+    pub fn app(&self) -> &str {
+        &self.app
+    }
+}
+
+pub(crate) fn is_room(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+pub(crate) fn is_app(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 255
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+/// What a choice gave the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    /// An existing file, to read: an Open.
+    Read,
+    /// One file to write, created if it does not exist yet: a Save. Its
+    /// save sibling (`.<name>.tilo-save`, `tilo_dialogs::portal::save_sibling`)
+    /// may be written and renamed over it, so a save replaces the file
+    /// whole or not at all.
+    Save,
+    /// A folder and everything under it: to read, or (`write`) to change.
+    Folder { write: bool },
+}
+
+impl Kind {
+    fn of_tag(tag: &str) -> Option<Self> {
+        Some(match tag {
+            "read" => Self::Read,
+            "save" => Self::Save,
+            "folder" => Self::Folder { write: false },
+            "folder-write" => Self::Folder { write: true },
+            _ => return None,
+        })
+    }
+
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Save => "save",
+            Self::Folder { write: false } => "folder",
+            Self::Folder { write: true } => "folder-write",
+        }
+    }
+
+    /// Whether the document may be changed.
+    pub fn writes(self) -> bool {
+        matches!(self, Self::Save | Self::Folder { write: true })
+    }
+}
+
+/// One choice: the host file or folder, and what the app may do with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Document {
+    /// The chosen file or folder on the host, resolved when it was chosen.
+    /// For a [`Kind::Save`] of a new file, the resolved folder joined with
+    /// the chosen name.
+    pub host: PathBuf,
+    pub kind: Kind,
+}
+
+impl Document {
+    /// The name the app sees it by: the chosen file's or folder's own.
+    pub fn name(&self) -> &OsStr {
+        self.host
+            .file_name()
+            .unwrap_or_else(|| OsStr::new("document"))
+    }
+
+    /// The names a [`Kind::Save`] may write besides its own: its save
+    /// sibling.
+    pub fn save_sibling(&self) -> Option<OsString> {
+        (self.kind == Kind::Save).then(|| {
+            let mut sibling = OsString::from(".");
+            sibling.push(self.name());
+            sibling.push(".tilo-save");
+            sibling
+        })
+    }
+}
+
+/// Why a choice could not be given to the app.
+#[derive(Debug)]
+pub enum GrantError {
+    /// What was chosen is not what the chooser asked for (a folder for a
+    /// file, a missing file for an Open, a symbolic link for a Save).
+    NotThatKind,
+    /// What was chosen could not be resolved on the host.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for GrantError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotThatKind => f.write_str("the chosen item is not what was asked for"),
+            Self::Io(error) => write!(f, "the chosen item cannot be reached: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for GrantError {}
+
+type Views = HashMap<AppKey, BTreeMap<String, Document>>;
+
+/// Every app's documents. Cheap to clone: clones share the table.
+#[derive(Clone, Default)]
+pub struct Documents {
+    views: Arc<RwLock<Views>>,
+    /// Where the table is kept between sessions, when it is.
+    record: Option<Arc<PathBuf>>,
+}
+
+/// The kept table: what each app in each room was given.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Record {
+    documents: Vec<Kept>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Kept {
+    room: String,
+    app: String,
+    kind: String,
+    host: PathBuf,
+}
+
+impl Documents {
+    /// A table for this session only.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A table kept in `record`, a private file on this device, so a file
+    /// chosen in an earlier session reopens where it was. Like the
+    /// person's other portal answers it stays on this device: it is never
+    /// written into a room, which would replicate a private choice to every
+    /// peer and widen what the app is given at launch. A kept item that is
+    /// gone or no longer what it was chosen as is dropped when read.
+    pub fn kept_in(record: PathBuf) -> Self {
+        let mut views = Views::new();
+        let kept = std::fs::read(&record)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok())
+            .unwrap_or_default();
+        for kept in kept.documents {
+            let (Some(key), Some(kind)) =
+                (AppKey::new(&kept.room, &kept.app), Kind::of_tag(&kept.kind))
+            else {
+                continue;
+            };
+            let Ok(host) = resolve_choice(&kept.host, kind) else {
+                continue;
+            };
+            let document = Document { host, kind };
+            let token = token(&key, &document);
+            views.entry(key).or_default().insert(token, document);
+        }
+        Self {
+            views: Arc::new(RwLock::new(views)),
+            record: Some(Arc::new(record)),
+        }
+    }
+
+    /// Write the table to its record, when it is kept.
+    fn keep(&self) {
+        let Some(record) = self.record.as_deref() else {
+            return;
+        };
+        let Some(snapshot) = self.views.read().ok().map(|views| Record {
+            documents: views
+                .iter()
+                .flat_map(|(key, view)| {
+                    view.values().map(|document| Kept {
+                        room: key.room.clone(),
+                        app: key.app.clone(),
+                        kind: document.kind.tag().to_owned(),
+                        host: document.host.clone(),
+                    })
+                })
+                .collect(),
+        }) else {
+            return;
+        };
+        // A record that cannot be written leaves this session's table as
+        // it is; only the next session forgets.
+        let _ = write_private(record, &snapshot);
+    }
+
+    /// Give `key` the item the person chose at `chosen`, as `kind`, and
+    /// answer the path the app reaches it by inside its sandbox. Choosing
+    /// the same item again answers the same path, so a recent file reopens
+    /// where it was.
+    ///
+    /// # Errors
+    ///
+    /// [`GrantError::NotThatKind`] when `chosen` is not what `kind` needs;
+    /// [`GrantError::Io`] when it cannot be resolved.
+    pub fn grant(&self, key: &AppKey, chosen: &Path, kind: Kind) -> Result<PathBuf, GrantError> {
+        let host = resolve_choice(chosen, kind)?;
+        let document = Document { host, kind };
+        let token = token(key, &document);
+        let path = Path::new(SANDBOX_DIR).join(&token).join(document.name());
+        let added = self.views.write().is_ok_and(|mut views| {
+            views
+                .entry(key.clone())
+                .or_default()
+                .insert(token, document)
+                .is_none()
+        });
+        if added {
+            self.keep();
+        }
+        Ok(path)
+    }
+
+    /// The document `token` of `key`'s view, while it is given.
+    pub fn document(&self, key: &AppKey, token: &str) -> Option<Document> {
+        self.views
+            .read()
+            .ok()?
+            .get(key)
+            .and_then(|view| view.get(token))
+            .cloned()
+    }
+
+    /// The tokens of `key`'s view.
+    pub fn tokens(&self, key: &AppKey) -> Vec<String> {
+        self.views
+            .read()
+            .ok()
+            .and_then(|views| views.get(key).map(|view| view.keys().cloned().collect()))
+            .unwrap_or_default()
+    }
+
+    /// Take back everything given to `key`.
+    pub fn revoke(&self, key: &AppKey) {
+        let removed = self
+            .views
+            .write()
+            .is_ok_and(|mut views| views.remove(key).is_some());
+        if removed {
+            self.keep();
+        }
+    }
+}
+
+/// Write `record` to `path` readable by this user only, whole or not at
+/// all: a sibling written, flushed and renamed over it.
+fn write_private(path: &Path, record: &Record) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let folder = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("the record names no folder"))?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(folder)?;
+    let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+    let mut sibling = path.as_os_str().to_owned();
+    sibling.push(".new");
+    let sibling = PathBuf::from(sibling);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&sibling)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    std::fs::rename(&sibling, path)
+}
+
+/// What a choice resolves to on the host, checked against what it is for.
+fn resolve_choice(chosen: &Path, kind: Kind) -> Result<PathBuf, GrantError> {
+    match kind {
+        Kind::Read => {
+            let host = chosen.canonicalize().map_err(GrantError::Io)?;
+            let meta = std::fs::metadata(&host).map_err(GrantError::Io)?;
+            if meta.is_file() {
+                Ok(host)
+            } else {
+                Err(GrantError::NotThatKind)
+            }
+        }
+        Kind::Folder { .. } => {
+            let host = chosen.canonicalize().map_err(GrantError::Io)?;
+            if std::fs::metadata(&host).map_err(GrantError::Io)?.is_dir() {
+                Ok(host)
+            } else {
+                Err(GrantError::NotThatKind)
+            }
+        }
+        Kind::Save => {
+            let name = plain_name(chosen).ok_or(GrantError::NotThatKind)?;
+            let parent = chosen
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .ok_or(GrantError::NotThatKind)?
+                .canonicalize()
+                .map_err(GrantError::Io)?;
+            if !std::fs::metadata(&parent).map_err(GrantError::Io)?.is_dir() {
+                return Err(GrantError::NotThatKind);
+            }
+            let host = parent.join(name);
+            match std::fs::symlink_metadata(&host) {
+                Ok(meta) if meta.is_file() => Ok(host),
+                Ok(_) => Err(GrantError::NotThatKind),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(host),
+                Err(error) => Err(GrantError::Io(error)),
+            }
+        }
+    }
+}
+
+/// The last component of `path` when it is an ordinary name.
+fn plain_name(path: &Path) -> Option<&OsStr> {
+    match path.components().next_back()? {
+        Component::Normal(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// A document's token: the same for the same choice by the same app in the
+/// same room, and unguessable from outside without knowing all three.
+fn token(key: &AppKey, document: &Document) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"tilo-documents/1\0");
+    hasher.update(key.room.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(key.app.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(document.kind.tag().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(document.host.as_os_str().as_encoded_bytes());
+    let hex = hasher.finalize().to_hex();
+    hex.chars().take(24).collect()
+}
+
+/// The token and the path inside the document of a path an app was given
+/// (`/run/tilo/documents/<token>/<name>/…`): `None` for any other path.
+pub fn split_sandbox_path(path: &Path) -> Option<(String, PathBuf)> {
+    let rest = path.strip_prefix(SANDBOX_DIR).ok()?;
+    let mut components = rest.components();
+    let Component::Normal(token) = components.next()? else {
+        return None;
+    };
+    let inner: PathBuf = components.collect();
+    let token = token.to_str()?.to_owned();
+    (!inner.as_os_str().is_empty()).then_some((token, inner))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> AppKey {
+        AppKey::new("5ba25f73-87c5-447f-a5a6-880dc4249a81", "so.tilo.totp").unwrap()
+    }
+
+    #[test]
+    fn keys_carry_only_names_one_path_component_can_hold() {
+        assert!(AppKey::new("room-1", "so.tilo.files").is_some());
+        for (room, app) in [
+            ("", "so.tilo.files"),
+            ("../x", "so.tilo.files"),
+            ("room", ".."),
+            ("room", "a/b"),
+            ("room", ".hidden"),
+        ] {
+            assert!(AppKey::new(room, app).is_none(), "{room:?} {app:?}");
+        }
+    }
+
+    #[test]
+    fn a_choice_answers_a_stable_path_in_the_apps_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("report.pdf");
+        std::fs::write(&file, b"pdf").unwrap();
+        let documents = Documents::new();
+        let path = documents.grant(&key(), &file, Kind::Read).unwrap();
+        assert_eq!(documents.grant(&key(), &file, Kind::Read).unwrap(), path);
+        let (token, inner) = split_sandbox_path(&path).unwrap();
+        assert_eq!(inner, Path::new("report.pdf"));
+        assert_eq!(
+            documents.document(&key(), &token).unwrap().host,
+            file.canonicalize().unwrap()
+        );
+        let other = AppKey::new("other-room", "so.tilo.totp").unwrap();
+        assert!(documents.document(&other, &token).is_none());
+        assert_ne!(documents.grant(&other, &file, Kind::Read).unwrap(), path);
+    }
+
+    #[test]
+    fn a_kept_table_reopens_a_chosen_file_where_it_was_and_forgets_what_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("state/documents.json");
+        let kept = dir.path().join("kept.pdf");
+        let gone = dir.path().join("gone.pdf");
+        std::fs::write(&kept, b"kept").unwrap();
+        std::fs::write(&gone, b"gone").unwrap();
+        let documents = Documents::kept_in(record.clone());
+        let path = documents.grant(&key(), &kept, Kind::Read).unwrap();
+        documents.grant(&key(), &gone, Kind::Read).unwrap();
+        #[cfg(unix)]
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(
+                &std::fs::metadata(&record).unwrap().permissions()
+            ) & 0o777,
+            0o600,
+            "the record is this user's only"
+        );
+        std::fs::remove_file(&gone).unwrap();
+
+        let next = Documents::kept_in(record);
+        let (token, _) = split_sandbox_path(&path).unwrap();
+        assert_eq!(
+            next.document(&key(), &token).unwrap().host,
+            kept.canonicalize().unwrap()
+        );
+        assert_eq!(next.tokens(&key()).len(), 1, "what is gone is forgotten");
+        assert_eq!(next.grant(&key(), &kept, Kind::Read).unwrap(), path);
+    }
+
+    #[test]
+    fn a_choice_must_be_what_the_chooser_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let documents = Documents::new();
+        assert!(matches!(
+            documents.grant(&key(), dir.path(), Kind::Read),
+            Err(GrantError::NotThatKind)
+        ));
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        assert!(matches!(
+            documents.grant(&key(), &file, Kind::Folder { write: false }),
+            Err(GrantError::NotThatKind)
+        ));
+        assert!(
+            documents
+                .grant(&key(), &dir.path().join("new.txt"), Kind::Save)
+                .is_ok()
+        );
+        assert!(matches!(
+            documents.grant(&key(), &dir.path().join("missing.txt"), Kind::Read),
+            Err(GrantError::Io(_))
+        ));
+    }
+}
