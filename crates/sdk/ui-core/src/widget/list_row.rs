@@ -1090,10 +1090,22 @@ impl<'a> ListRowFace<'a> {
 
         let geo = self.geometry(row, &m, ctx.text, theme);
         let extra = self.extra_lines() > 0;
-        let block = self.text_block(ctx.text, &m);
-        let text_top = row.center().y - block / 2.0;
         let title_style = self.title_style(&m);
         let title_line = RowMetrics::line(ctx.text, &title_style);
+        let room = self.title_room(&geo, ctx.text, theme, &m);
+        let lines = ctx.text.clamp_to_lines(
+            self.title,
+            &title_style,
+            room,
+            usize::from(self.title_lines),
+        );
+        // The row keeps the height of every title line it allows, so rows
+        // do not jump as titles change; the text it draws is centred in it,
+        // beside the leading icon, however many lines the title takes.
+        let title_drawn = lines.len().clamp(1, usize::from(self.title_lines));
+        let unused = usize::from(self.title_lines).saturating_sub(title_drawn);
+        let block = self.text_block(ctx.text, &m) - title_line * crate::num::f64_of_usize(unused);
+        let text_top = row.center().y - block / 2.0;
         let title_cy = text_top + title_line / 2.0;
 
         self.paint_leading(ctx, &m, geo.leading, under);
@@ -1176,7 +1188,7 @@ impl<'a> ListRowFace<'a> {
                     } else {
                         RowMetrics::line(ctx.text, &m.secondary)
                     };
-                    text_top + title_line * f64::from(self.title_lines) + second / 2.0
+                    text_top + title_line * crate::num::f64_of_usize(title_drawn) + second / 2.0
                 } else {
                     row.center().y
                 };
@@ -1196,13 +1208,6 @@ impl<'a> ListRowFace<'a> {
         // Title (with its mark and tags), subtitle and secondary text.
         let text_x = geo.text_x;
         let mut y = text_top;
-        let room = self.title_room(&geo, ctx.text, theme, &m);
-        let lines = ctx.text.clamp_to_lines(
-            self.title,
-            &title_style,
-            room,
-            usize::from(self.title_lines),
-        );
         let mut last_end = text_x;
         for line in &lines {
             for span in found_spans(line, self.found) {
@@ -1227,7 +1232,7 @@ impl<'a> ListRowFace<'a> {
             y += title_line;
         }
         if lines.is_empty() {
-            y += title_line * f64::from(self.title_lines);
+            y += title_line;
         }
         let line_cy = y - title_line / 2.0;
         let mut x = last_end + m.tag_gap;
