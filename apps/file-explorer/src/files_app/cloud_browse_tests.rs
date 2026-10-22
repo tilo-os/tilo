@@ -428,7 +428,7 @@ fn a_cloud_folder_capture_shows_its_place_in_the_bar() {
         let root = tempfile::tempdir().unwrap();
         let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
         let mut harness =
-            ui::headless::FrameHarness::for_root(ui::State::new(), files, (1200, 720), theme);
+            ui::headless::FrameHarness::for_app(ui::State::new(), files, (1200, 720), theme);
         harness.present_in_window_bar();
         harness
             .root_mut::<FileExplorerWidget>()

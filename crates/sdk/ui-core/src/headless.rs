@@ -319,6 +319,9 @@ pub struct FrameHarness {
     /// search and History are hosted there and every capture paints it over
     /// the app's frame ([`Self::present_in_window_bar`]).
     window_bar: bool,
+    /// The app a concrete root stands for ([`Self::for_app`]): its kind and
+    /// title, which its window's bar wears as a desktop window's tab does.
+    window_app: Option<(crate::widget::AppKind, String)>,
     /// What each frame's control refresh discovered, as the live App keeps
     /// it: a component publishing a shared forest is filtered and surveyed
     /// only where its forest changed.
@@ -1555,6 +1558,7 @@ impl FrameHarness {
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             window_bar: false,
+            window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
             local_epoch: 0,
@@ -1655,6 +1659,21 @@ impl FrameHarness {
                 ..FrameOptions::default()
             },
         )
+    }
+
+    /// [`Self::for_root`] for an app: its window's bar
+    /// ([`Self::present_in_window_bar`]) wears the app's icon and title, as
+    /// a desktop window's tab does.
+    pub fn for_app<W: crate::widget::AppWidget + 'static>(
+        state: State,
+        root: W,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> Self {
+        let app = (root.app_kind(), root.app_title().to_owned());
+        let mut harness = Self::for_root(state, root, viewport, theme);
+        harness.window_app = Some(app);
+        harness
     }
 
     /// [`Self::for_root`] with every construction option spelled out.
