@@ -80,6 +80,10 @@ struct Shared {
     /// exits or its bell rings.
     #[cfg(test)]
     supervisor_untimed_waits: AtomicU32,
+    /// The kernel's id for the supervisor's thread, so a test watches this
+    /// host's supervisor and not another engine's of the same name.
+    #[cfg(test)]
+    supervisor_thread: std::sync::OnceLock<u32>,
     /// Set on the owner for another process's tab: its host events and
     /// frames go to that process instead of this endpoint.
     remote: Option<Arc<shared::Outbox>>,
@@ -514,6 +518,8 @@ impl UnavailableEngine {
                 supervisor_checks: AtomicU32::new(0),
                 #[cfg(test)]
                 supervisor_untimed_waits: AtomicU32::new(0),
+                #[cfg(test)]
+                supervisor_thread: std::sync::OnceLock::new(),
                 remote: None,
             },
         })
@@ -679,6 +685,10 @@ fn supervise_child(
     supervisor_queue: &CommandQueue,
     supervisor_private_root: Option<&Path>,
 ) -> bool {
+    #[cfg(test)]
+    if let Ok(tid) = tilo_test_env::idle::current_thread_id() {
+        let _ = supervisor_shared.supervisor_thread.set(tid);
+    }
     // The bell hangs before the first look, so a change after it rings.
     let (watch, bell) = tilo_process::child::ExitWatch::new(&child);
     supervisor_shared.supervisor_bell.hang(bell);
@@ -717,7 +727,7 @@ fn supervise_child(
         if deadline.is_none() {
             supervisor_shared
                 .supervisor_untimed_waits
-                .fetch_add(1, Ordering::Relaxed);
+                .fetch_add(1, Ordering::Release);
         }
         watch.wait(deadline);
     };

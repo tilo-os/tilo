@@ -638,6 +638,13 @@ fn protocol_frames_reject_malformed_and_oversized_input() {
     }
 }
 
+/// Sets `$profile` in a helper script from its `--profile=` argument,
+/// wherever the engine put it: a governed process, as any test process is
+/// once one of its tests governs audio, passes its audio switch first.
+#[cfg(target_os = "linux")]
+const PROFILE_FROM_ARGUMENTS: &str =
+    "for argument; do case $argument in --profile=*) profile=${argument#--profile=};; esac; done\n";
+
 #[cfg(unix)]
 fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
@@ -726,18 +733,24 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
         engine
             .shared
             .supervisor_untimed_waits
-            .load(Ordering::Relaxed)
+            .load(Ordering::Acquire)
     }
     // phase: an_idle_host_is_looked_at_once
     {
         // Keeps its output open (fd 3) while it idles on its input.
         let (dir, host) = helper_fixture("exec 3>&1\nexec cat >/dev/null");
-        let (engine, supervisor) = tilo_test_env::idle::spawned_thread("chromium-superv", || {
-            ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap()
-        });
+        let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         wait_for("the supervisor to wait on the ready host", || {
             untimed_waits(&engine) >= 1
         });
+        // This engine's own supervisor: in a test process shared with other
+        // engines, a thread found by name may be another's, gone by now.
+        let supervisor = engine
+            .shared
+            .supervisor_thread
+            .get()
+            .expect("the supervisor names its thread before it waits")
+            .to_string();
         tilo_test_env::idle::assert_stays_asleep(&supervisor, "the idle host's supervisor");
         assert_eq!(checks(&engine), 1, "an idle host woke its supervisor");
         assert_eq!(untimed_waits(&engine), 1);
@@ -747,12 +760,12 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
     {
         // A process the host started holds its output until `released`,
         // and the host exits on `go`.
-        let (dir, host) = helper_fixture(
-            "profile=${1#--profile=}\n\
+        let (dir, host) = helper_fixture(&format!(
+            "{PROFILE_FROM_ARGUMENTS}\
              (while [ -d \"$profile\" ] && [ ! -e \"$profile/released\" ]; do sleep 0.05; done) &\n\
              while [ ! -e \"$profile/go\" ]; do sleep 0.01; done\n\
              exit 0",
-        );
+        ));
         let profile = dir.path().join("profile");
         let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
         wait_for("the supervisor to wait on the ready host", || {
