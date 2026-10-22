@@ -3,12 +3,12 @@ pub use crate::theme_document::{
     ThemeShape, ThemeType,
 };
 pub use crate::theme_layers::{
-    AccessibilityLayer, CUSTOM_THEMES_KEY, ContentSurface, DARK_THEME_KEY, DENSITY_KEY,
-    DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION, DISTRIBUTION_LAYER_ID,
-    DistributionDefaults, DistributionPolicy, LIGHT_THEME_KEY, MODE_KEY, PIN_DENSITY, PIN_EMPHASIS,
-    PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE, PIN_TYPE, PINNABLE,
-    ThemeLayerStack, WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document,
-    workspace_temperature_override,
+    APPEARANCE_SECTION, AccessibilityLayer, CUSTOM_THEMES_KEY, ContentSurface, DARK_THEME_KEY,
+    DENSITY_KEY, DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION,
+    DISTRIBUTION_LAYER_ID, DistributionDefaults, DistributionPolicy, LIGHT_THEME_KEY, MODE_KEY,
+    PIN_DENSITY, PIN_EMPHASIS, PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE,
+    PIN_TYPE, PINNABLE, ThemeLayerStack, WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers,
+    user_document, workspace_temperature_override,
 };
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{Colors, PresenceHue, Tokens};
