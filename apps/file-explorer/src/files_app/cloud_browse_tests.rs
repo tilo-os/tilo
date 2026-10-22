@@ -390,3 +390,30 @@ fn legacy_cloud_links_do_not_offer_document_import() {
     }
     assert!(files.importable_cloud_entry(&root.path().join("Document.docx")));
 }
+
+/// USER REQUIREMENT: "the app's controls live in the window bar". A cloud
+/// folder is named by the window's bar as the account and the folder in it,
+/// and the window draws no header of its own while the bar hosts it.
+#[test]
+fn the_window_bar_names_the_cloud_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+    files.header_in_bar = true;
+    files.debug_show_cloud_folder();
+    files.refresh_cloud_header();
+    assert!(
+        !files.cloud.header_shown,
+        "no cloud title in the window while the bar names the place"
+    );
+    let location = files.window_toolbar().location.expect("a location");
+    assert_eq!(location.label, "Trip to Lisbon");
+    assert_eq!(
+        location
+            .segments
+            .iter()
+            .map(|segment| segment.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Drive", "Trip to Lisbon"]
+    );
+    assert!(!location.editable, "a cloud folder has no path to type");
+}
