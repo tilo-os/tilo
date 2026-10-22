@@ -155,12 +155,29 @@ mod tests {
         }
     }
 
+    /// The service's socket, in a runtime directory of its own: a temporary
+    /// directory can be too long a path for a local socket address.
+    struct ServiceSocket {
+        path: PathBuf,
+        _runtime: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for ServiceSocket {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.path
+        }
+    }
+
     fn server(
-        root: &Path,
         mut reply: impl FnMut(ImportRequest) -> ImportReply + Send + 'static,
-    ) -> (PathBuf, std::thread::JoinHandle<()>) {
-        let socket = root.join(format!("cloud-{}.sock", uuid::Uuid::new_v4()));
-        let listener = UnixListener::bind(&socket).unwrap();
+    ) -> (ServiceSocket, std::thread::JoinHandle<()>) {
+        let runtime = tilo_test_env::runtime_tempdir().unwrap();
+        let path = runtime
+            .path()
+            .join(format!("cloud-{}.sock", uuid::Uuid::new_v4()));
+        let listener = UnixListener::bind(&path).unwrap();
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             while let Some(request) = CLOUD_FRAMING
@@ -176,7 +193,13 @@ mod tests {
                     .unwrap();
             }
         });
-        (socket, handle)
+        (
+            ServiceSocket {
+                path,
+                _runtime: runtime,
+            },
+            handle,
+        )
     }
 
     fn bytes_reply(request: ImportRequest, closed: &Mutex<Vec<String>>) -> ImportReply {
@@ -214,7 +237,7 @@ mod tests {
         std::os::unix::fs::symlink(temp.path().join("outside"), dest.join("file")).unwrap();
         let closed = Arc::new(Mutex::new(Vec::new()));
         let observed = closed.clone();
-        let (socket, server) = server(temp.path(), move |request| bytes_reply(request, &observed));
+        let (socket, server) = server(move |request| bytes_reply(request, &observed));
         let status = Mutex::new(TransferProgress::default());
         let outcome = execute_at(
             &socket,
@@ -299,7 +322,7 @@ mod tests {
         }
         let bytes = office.finish().unwrap().into_inner();
         let exported = bytes.clone();
-        let (socket, server) = server(temp.path(), move |request| match request {
+        let (socket, server) = server(move |request| match request {
             ImportRequest::StartRead { id, .. } => ImportReply::Preparing { session: id },
             ImportRequest::ReadStatus { .. } => ImportReply::ReadState(ImportReadState::Ready {
                 size: exported.len() as u64,
@@ -379,7 +402,7 @@ mod tests {
             let first = expected.replace(" (2)", " (1)");
             std::fs::write(dest.join(&first), b"first collision").unwrap();
             let closed = Mutex::new(Vec::new());
-            let (socket, server) = server(temp.path(), move |request| match request {
+            let (socket, server) = server(move |request| match request {
                 ImportRequest::Browse { folder, .. } => ImportReply::Page {
                     folder: folder.unwrap(),
                     entries: Vec::new(),
@@ -424,8 +447,7 @@ mod tests {
             let dest = temp.path().join("dest");
             std::fs::create_dir(&dest).unwrap();
             let closed = Mutex::new(Vec::new());
-            let (socket, server) =
-                server(temp.path(), move |request| bytes_reply(request, &closed));
+            let (socket, server) = server(move |request| bytes_reply(request, &closed));
             let outcome = execute_at(
                 &socket,
                 "account",
@@ -483,7 +505,7 @@ mod tests {
     fn compensation_preserves_user_edits_to_the_imported_inode() {
         let temp = tempfile::tempdir().unwrap();
         let closed = Mutex::new(Vec::new());
-        let (socket, server) = server(temp.path(), move |request| bytes_reply(request, &closed));
+        let (socket, server) = server(move |request| bytes_reply(request, &closed));
         let outcome = execute_at(
             &socket,
             "account",
@@ -519,7 +541,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let closed = Arc::new(Mutex::new(Vec::new()));
         let observed = closed.clone();
-        let (socket, server) = server(temp.path(), move |request| bytes_reply(request, &observed));
+        let (socket, server) = server(move |request| bytes_reply(request, &observed));
         let cancel = AtomicBool::new(false);
         let outcome = execute_at(
             &socket,
@@ -546,7 +568,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let closed = Arc::new(Mutex::new(Vec::new()));
         let observed = closed.clone();
-        let (socket, server) = server(temp.path(), move |request| {
+        let (socket, server) = server(move |request| {
             if matches!(&request, ImportRequest::ReadStatus { session } if session == "bad") {
                 return ImportReply::ReadState(ImportReadState::Failed(ImportError {
                     kind: ImportErrorKind::SourceChanged,
@@ -581,7 +603,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let closed = Arc::new(Mutex::new(Vec::new()));
         let observed = closed.clone();
-        let (socket, server) = server(temp.path(), move |request| match request {
+        let (socket, server) = server(move |request| match request {
             ImportRequest::Browse { folder, offset } => {
                 let folder = folder.unwrap();
                 let (entries, next_offset) = match (folder.as_str(), offset) {
@@ -624,7 +646,7 @@ mod tests {
     #[test]
     fn invalid_remote_names_remove_the_incomplete_folder() {
         let temp = tempfile::tempdir().unwrap();
-        let (socket, server) = server(temp.path(), |request| match request {
+        let (socket, server) = server(|request| match request {
             ImportRequest::Browse { .. } => ImportReply::Page {
                 folder: "folder".into(),
                 entries: vec![entry("../escape", ImportKind::File)],
@@ -683,7 +705,7 @@ mod tests {
         std::fs::create_dir(&dest).unwrap();
         let receiving = dest.clone();
         let closed = Mutex::new(Vec::new());
-        let (socket, server) = server(temp.path(), move |request| {
+        let (socket, server) = server(move |request| {
             if matches!(request, ImportRequest::ReadChunk { .. }) {
                 assert!(
                     !receiving.join("file").exists(),
@@ -720,7 +742,7 @@ mod tests {
         let dest = temp.path().join("dest");
         std::fs::create_dir(&dest).unwrap();
         let closed = Mutex::new(Vec::new());
-        let (socket, server) = server(temp.path(), move |request| match request {
+        let (socket, server) = server(move |request| match request {
             ImportRequest::Browse { folder, .. } => ImportReply::Page {
                 folder: folder.unwrap(),
                 entries: vec![
@@ -766,7 +788,7 @@ mod tests {
         retain_uncommitted("account", &mut remaining, outcome.result());
         assert_eq!(remaining.len(), 1);
         let closed = Mutex::new(Vec::new());
-        let (socket, server) = self::server(temp.path(), move |request| match request {
+        let (socket, server) = self::server(move |request| match request {
             ImportRequest::Browse { folder, .. } => ImportReply::Page {
                 folder: folder.unwrap(),
                 entries: vec![entry("copied-child", ImportKind::File)],
@@ -800,8 +822,7 @@ mod tests {
             let dest = temp.path().join("dest");
             std::fs::create_dir(&dest).unwrap();
             let closed = Mutex::new(Vec::new());
-            let (socket, server) =
-                server(temp.path(), move |request| bytes_reply(request, &closed));
+            let (socket, server) = server(move |request| bytes_reply(request, &closed));
             let cancel = AtomicBool::new(false);
             let touched = AtomicBool::new(false);
             let outcome = execute_at(
@@ -842,7 +863,7 @@ mod tests {
             let dest = temp.path().join("dest");
             std::fs::create_dir(&dest).unwrap();
             let closed = Mutex::new(Vec::new());
-            let (socket, server) = server(temp.path(), move |request| match request {
+            let (socket, server) = server(move |request| match request {
                 ImportRequest::Browse { folder, .. } => ImportReply::Page {
                     folder: folder.unwrap(),
                     entries: vec![entry("file", ImportKind::File)],
@@ -944,7 +965,7 @@ mod tests {
         std::fs::create_dir(&unrelated).unwrap();
         std::fs::write(unrelated.join("file"), b"user data").unwrap();
         let closed = Mutex::new(Vec::new());
-        let (socket, server) = server(temp.path(), move |request| bytes_reply(request, &closed));
+        let (socket, server) = server(move |request| bytes_reply(request, &closed));
         let changed = AtomicBool::new(false);
         let outcome = execute_at(
             &socket,

@@ -368,7 +368,7 @@ mod tests {
     fn share_requests_send_exact_roots_and_redemptions() {
         // --- phase: named_share_sends_the_human_root_and_no_display_name ---
         {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tilo_test_env::runtime_tempdir().unwrap();
             let socket = dir.path().join("share.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let record_id = FileRecordId(Uuid::from_u128(41));
@@ -436,7 +436,7 @@ mod tests {
 
         // --- phase: one_time_link_explicitly_requests_exactly_one_redemption ---
         {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = tilo_test_env::runtime_tempdir().unwrap();
             let socket = dir.path().join("share.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let record_id = FileRecordId(Uuid::from_u128(51));
