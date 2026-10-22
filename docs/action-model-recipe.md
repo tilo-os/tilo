@@ -76,9 +76,13 @@ applies at its path without reading the rest of the record. The model's
 `#[model(trust = "sensitive")]` makes every edit of a field ask for
 confirmation first, whoever makes it (a change can expose the person);
 `#[model(trust = "weakening")]` also marks it privileged, so an agent or script
-acting for the person needs their own grant (a change can weaken their
-security, such as the screen lock's delay). Every door reads the confirmation
-from the published field edit, without the app's code.
+acting for the person needs their own grant (any change can weaken their
+security). `#[model(weaker = ..)]` does so only for a change making the field
+weaker than it is now: `weaker = "higher", weakest = 0` for the screen lock's
+delay (longer or never asks, shorter does not), `weaker = true` for a switch
+that exposes when on, a list from the strongest to the weakest value for a
+choice. Every door reads the confirmation from the published field edit,
+without the app's code.
 
 ## 3. Verbs
 

@@ -360,6 +360,15 @@ pub trait Resource: Sized + 'static {
         None
     }
 
+    /// The state as its record's JSON ([`Model::to_json`](crate::Model::to_json)):
+    /// what a field that weakens one way holds now. `#[resource]` returns
+    /// the record's; the default knows none, so any change of such a field
+    /// counts as weakening.
+    fn state_json(state: &Self::State) -> Option<serde_json::Value> {
+        let _ = state;
+        None
+    }
+
     /// The storage version documents of this resource are written at;
     /// `#[resource(version = N)]` raises it with each incompatible change
     /// and [`Self::migrate`] brings older documents up to it.
@@ -753,6 +762,10 @@ fn edit_paths(
         match field.trust {
             crate::Trust::Ordinary => {}
             crate::Trust::Sensitive => flags.push("changing it asks for confirmation".to_owned()),
+            crate::Trust::Weakens(_) => flags.push(
+                "making it weaker can weaken security: such a change asks for confirmation and needs the person's own grant; making it stricter does not"
+                    .to_owned(),
+            ),
             crate::Trust::Weakening => flags.push(
                 "changing it can weaken security: it asks for confirmation and needs the person's own grant"
                     .to_owned(),
@@ -847,8 +860,9 @@ fn edit_paths(
     }
 }
 
-/// The published spec of [`FIELD_EDIT`].
-fn field_edit_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
+/// The published spec of [`FIELD_EDIT`], where `now` holds the values of
+/// the fields that weaken one way ([`weakening_now`]).
+fn field_edit_spec(vocabulary: &'static Vocabulary, now: Vec<(String, String)>) -> ActionSpec {
     // Built once per type: it describes every editable path, which only
     // the type decides.
     let schema = per_type(vocabulary, TypeSchema::Edit, &|| {
@@ -861,7 +875,41 @@ fn field_edit_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
         schema,
         format!("Edit a {} field", vocabulary.label),
         "The path of the field from the record's root, and the operation",
+        now,
     )
+}
+
+/// The values now, as JSON text by dotted path, of `R`'s fields that weaken
+/// one way ([`Trust::Weakens`](crate::Trust::Weakens)) outside any item:
+/// whether a change of one weakens depends on them.
+fn weakening_now<R: Resource>(state: &R::State) -> Vec<(String, String)> {
+    let Some(shape) = R::shape() else {
+        return Vec::new();
+    };
+    let fields: Vec<String> = shape
+        .guarded_fields()
+        .into_iter()
+        .filter(|(path, trust)| {
+            matches!(trust, crate::Trust::Weakens(_)) && !path.split('.').any(|key| key == "*")
+        })
+        .map(|(path, _)| path)
+        .collect();
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let Some(json) = R::state_json(state) else {
+        return Vec::new();
+    };
+    fields
+        .into_iter()
+        .filter_map(|path| {
+            let value = path
+                .split('.')
+                .try_fold(&json, |value, key| value.get(key))?
+                .to_string();
+            Some((path, value))
+        })
+        .collect()
 }
 
 /// The field edit offered on the item `item` of the collection `field`:
@@ -943,6 +991,7 @@ pub(crate) fn field_edit_spec_at_of(
         schema,
         "Edit a field of this item".to_owned(),
         "The path of the field from the item, and the operation",
+        Vec::new(),
     ))
 }
 
@@ -953,36 +1002,51 @@ fn rooted_edit_spec(
     schema: Arc<serde_json::Value>,
     label: String,
     description: &'static str,
+    now: Vec<(String, String)>,
 ) -> ActionSpec {
-    let mut spec = edit_spec(vocabulary, prefix, schema, label, description);
-    // Any door reads the edit without this record's code: it is a field
-    // edit, and these collections' removals ask nothing.
-    spec.contract
-        .tags
-        .push(tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned());
+    let mut tags = vec![tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned()];
     if let Some(root) = root {
-        spec.contract.tags.extend(
+        // Any door reads the edit without this record's code: it is a field
+        // edit, these collections' removals ask nothing, these fields' every
+        // edit asks, and these fields' edits making them weaker than they
+        // are now.
+        tags.extend(
             root.quiet_removals()
                 .into_iter()
                 .map(|path| format!("{}{path}", tilo_action_policy::edits::QUIET_REMOVAL_TAG)),
         );
-        // ...and these fields' every edit asks.
-        spec.contract.tags.extend(
-            root.guarded_fields()
-                .into_iter()
-                .map(|(path, _)| format!("{}{path}", tilo_action_policy::edits::GUARDED_FIELD_TAG)),
-        );
+        tags.extend(root.guarded_fields().into_iter().map(|(path, trust)| {
+            if let crate::Trust::Weakens(weaker) = trust {
+                let at = now.iter().find(|(field, _)| *field == path);
+                tilo_action_policy::edits::weakening_tag(
+                    &path,
+                    at.map(|(_, now)| now.as_str()),
+                    weaker,
+                )
+            } else {
+                format!("{}{path}", tilo_action_policy::edits::GUARDED_FIELD_TAG)
+            }
+        }));
     }
+    let judged = root.map(|root| (root, FieldValues::from(now)));
+    let mut spec = edit_spec(vocabulary, prefix, schema, label, description, judged);
+    spec.contract.tags.extend(tags);
     spec
 }
 
-/// The field edit at paths under `prefix`, described by `schema`.
+/// The values of fields, as JSON text by dotted path.
+type FieldValues = Arc<[(String, String)]>;
+
+/// The field edit at paths under `prefix`, described by `schema`; with
+/// `judged`, the shape at `prefix` and the values now of its fields that
+/// weaken one way, by which an edit's risk is judged.
 fn edit_spec(
     vocabulary: &'static Vocabulary,
     prefix: Vec<crate::Segment>,
     schema: Arc<serde_json::Value>,
     label: String,
     description: &'static str,
+    judged: Option<(crate::Shape, FieldValues)>,
 ) -> ActionSpec {
     let read = move |value: &serde_json::Map<String, serde_json::Value>| {
         let edit = Edit::<()>::from_json(serde_json::Value::Object(value.clone()))?;
@@ -1028,14 +1092,21 @@ fn edit_spec(
     // History records the edit itself, not `field-edit`.
     .carrying()
     // Removing a collection item asks, as a delete verb does, and so does
-    // any edit of a field that is not ordinary.
+    // any edit of a field that is not ordinary, but an edit of one that
+    // weakens one way only when it makes it weaker than it is now.
     .with_risk(move |args| {
         let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
             return tilo_actions::RiskLevel::Low;
         };
-        match risk_read(value) {
-            Ok(action) => action.risk(),
-            Err(_) => tilo_actions::RiskLevel::Low,
+        let Ok(action) = risk_read(value) else {
+            return tilo_actions::RiskLevel::Low;
+        };
+        let Some((shape, now)) = judged.as_ref().filter(|(_, now)| !now.is_empty()) else {
+            return action.risk();
+        };
+        match Edit::<()>::from_json(serde_json::Value::Object(value.clone())) {
+            Ok(edit) => crate::path::edit_risk(*shape, edit.path(), edit.op(), Some(now)),
+            Err(_) => action.risk(),
         }
     })
 }
@@ -2449,6 +2520,7 @@ pub fn publish_head<R: Resource>(
         availability: Some(&|action| R::availability(state, action)),
         views: R::views(state),
         local_operations: R::local_operations(),
+        now: weakening_now::<R>(state),
     };
     publish_own(vocabulary::<R>(), id, label, own, &|decl| {
         offered.contains(&decl.id)
@@ -2469,6 +2541,7 @@ pub(crate) fn publish_parts<R: Resource>(
             availability: None,
             views: Vec::new(),
             local_operations: R::local_operations(),
+            now: Vec::new(),
         };
         return publish_own(vocabulary, id, label, own, &|_| false);
     };
@@ -2477,6 +2550,7 @@ pub(crate) fn publish_parts<R: Resource>(
         availability: Some(&|action| R::availability(state, action)),
         views: R::views(state),
         local_operations: R::local_operations(),
+        now: weakening_now::<R>(state),
     };
     publish_own(vocabulary, id, label, own, &|decl| {
         crate::items::offered_bound(&children, decl)
@@ -2491,6 +2565,8 @@ struct Own<'a> {
     availability: Option<&'a dyn Fn(&str) -> tilo_actions::Availability>,
     views: Vec<tilo_actions::ResourceViewSpec>,
     local_operations: Vec<ActionSpec>,
+    /// The values now of the fields that weaken one way ([`weakening_now`]).
+    now: Vec<(String, String)>,
 }
 
 /// The resource's own part of [`publish_parts`]: everything but its
@@ -2535,7 +2611,7 @@ fn publish_own(
         .with_action(apply_spec(vocabulary))
         .with_action(group_spec(vocabulary));
     if vocabulary.edits {
-        resource = resource.with_action(field_edit_spec(vocabulary));
+        resource = resource.with_action(field_edit_spec(vocabulary, own.now));
     }
     resource
 }

@@ -711,9 +711,23 @@ impl ActionContract {
         };
         let quiet = tagged(tilo_action_policy::edits::QUIET_REMOVAL_TAG);
         let guarded = tagged(tilo_action_policy::edits::GUARDED_FIELD_TAG);
+        let weakening: Vec<_> = tagged(tilo_action_policy::edits::WEAKENING_FIELD_TAG)
+            .into_iter()
+            .filter_map(tilo_action_policy::edits::WeakeningField::parse)
+            .collect();
+        let value = edit
+            .as_ref()
+            .and_then(|edit| edit.get("value"))
+            .map(serde_json::Value::to_string);
         match edit.as_ref().and_then(edit_parts) {
             Some((op, path))
-                if !tilo_action_policy::edits::field_edit_asks(op, &path, &quiet, &guarded) =>
+                if !tilo_action_policy::edits::field_edit_asks(op, &path, &quiet, &guarded)
+                    && !tilo_action_policy::edits::weakening_edit(
+                        op,
+                        &path,
+                        value.as_deref(),
+                        &weakening,
+                    ) =>
             {
                 ConfirmationPolicy::None
             }

@@ -463,8 +463,9 @@ pub struct PowerPrefs {
     pub blank_minutes: u32,
     /// Idle minutes before the session locks; `0` is the explicit "Never"
     /// choice. Manual lock and the mandatory pre-suspend lock remain active.
+    /// A longer delay or never weakens the lock; a shorter one does not.
     #[serde(default = "default_lock_minutes")]
-    #[model(trust = "weakening")]
+    #[model(weaker = "higher", weakest = 0)]
     pub lock_minutes: u32,
     /// What to do when the lid closes.
     #[serde(default = "default_lid_action")]
@@ -1030,8 +1031,9 @@ pub struct NotificationPrefs {
     #[serde(default = "default_true")]
     pub play_sounds: bool,
     /// Mirror notifications onto the lock screen. Off by default — the lock
-    /// screen is the most exposed surface.
+    /// screen is the most exposed surface, so turning it on weakens it.
     #[serde(default)]
+    #[model(weaker = true)]
     pub show_on_lock_screen: bool,
     /// Whether applications may show an unread-count badge.
     #[serde(default = "default_true")]

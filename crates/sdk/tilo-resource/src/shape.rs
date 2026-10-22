@@ -41,10 +41,15 @@ pub enum Trust {
     /// A change can expose the person (what others see of them, where their
     /// data goes): it asks for confirmation first, from whoever makes it.
     Sensitive,
-    /// A change can weaken the person's security (the screen lock, who may
-    /// control this machine): it asks for confirmation and crosses a
-    /// security boundary, so a caller acting for the person (an agent, a
-    /// script) needs their own grant for it.
+    /// A change one way can weaken the person's security (a longer lock
+    /// delay, notifications shown on the lock screen): a change that way is
+    /// [`Self::Weakening`], any other is ordinary. Which way the value is
+    /// now decides it, so without it every change counts as weakening.
+    Weakens(tilo_action_policy::edits::Weaker<'static>),
+    /// Any change can weaken the person's security (who may control this
+    /// machine): it asks for confirmation and crosses a security boundary,
+    /// so a caller acting for the person (an agent, a script) needs their
+    /// own grant for it.
     Weakening,
 }
 
@@ -55,7 +60,7 @@ impl Trust {
         match self {
             Self::Ordinary => tilo_actions::RiskLevel::Low,
             Self::Sensitive => tilo_actions::RiskLevel::Destructive,
-            Self::Weakening => tilo_actions::RiskLevel::Privileged,
+            Self::Weakens(_) | Self::Weakening => tilo_actions::RiskLevel::Privileged,
         }
     }
 }
