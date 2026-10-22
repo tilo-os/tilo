@@ -512,6 +512,8 @@ pub struct BrowserWidget {
     next_navigation_request: u32,
     explicit_navigation_requested: bool,
     resource_navigation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    /// Navigations a later one replaced, settled and not yet read.
+    replaced_navigations: Vec<ui::tilo_actions::InvocationUpdate>,
     resource_navigation_deadline: Option<ui::time::Instant>,
     resource_pip_invocation: Option<ui::tilo_actions::InvocationId>,
     resource_pip_request: Option<u64>,
@@ -1295,6 +1297,7 @@ impl BrowserWidget {
             next_navigation_request: 0,
             explicit_navigation_requested: false,
             resource_navigation_result: None,
+            replaced_navigations: Vec::new(),
             resource_navigation_deadline: None,
             resource_pip_invocation: None,
             resource_pip_request: None,
@@ -5585,6 +5588,13 @@ impl BrowserWidget {
         {
             return self.resource_navigation_result.take();
         }
+        if let Some(index) = self
+            .replaced_navigations
+            .iter()
+            .position(|update| update.invocation() == invocation)
+        {
+            return Some(self.replaced_navigations.swap_remove(index));
+        }
         if self
             .resource_pip_result
             .as_ref()
@@ -5872,11 +5882,25 @@ impl BrowserWidget {
             };
             return Ok(ui::framework::Effected::Done(output));
         }
-        if self.resource_navigation_invocation.is_some()
-            || self.resource_navigation_result.is_some()
-        {
-            return Err("another browser navigation is already running".into());
+        // A navigation while another still loads replaces it, as in every
+        // browser: the engine stops the old one when the new one arrives, and
+        // the old one's outcome no longer matches a request of ours.
+        if let Some(previous) = self.resource_navigation_invocation.take() {
+            self.resource_navigation_request = None;
+            self.resource_navigation_deadline = None;
+            self.replaced_navigations
+                .push(ui::tilo_actions::InvocationUpdate::Failed {
+                    invocation: previous,
+                    error: ui::tilo_actions::ActionFailure {
+                        code: "browser.navigation_replaced".into(),
+                        message: "Another navigation replaced this one.".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                });
         }
+        self.replaced_navigations
+            .extend(self.resource_navigation_result.take());
         let request = self
             .next_navigation_request
             .checked_add(1)
@@ -6285,6 +6309,89 @@ mod architecture_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_navigation_while_a_page_loads_replaces_it() {
+        struct Events(
+            std::sync::Mutex<Vec<WebViewEvent>>,
+            std::sync::Arc<TestEngine>,
+        );
+        impl WebViewEngine for Events {
+            fn send(&self, command: WebViewCommand) {
+                self.1.send(command);
+            }
+            fn navigate_owned(
+                &self,
+                request_id: u32,
+                command: NavigationCommand,
+            ) -> Result<(), String> {
+                self.1.navigate_owned(request_id, command)
+            }
+            fn frames(&self) -> ui::webview::FrameSlot {
+                self.1.frames()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.0.lock().unwrap())
+            }
+        }
+        let engine =
+            std::sync::Arc::new(Events(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
+        let mut widget = BrowserWidget::with_engine(engine.clone(), false);
+        let slow = ui::tilo_actions::InvocationId::new();
+        widget
+            .admit(
+                slow,
+                BrowserOperation::Navigate {
+                    url: "https://slow.test/".into(),
+                },
+            )
+            .unwrap();
+        let slow_request = widget.resource_navigation_request.unwrap();
+        // Still loading: the person types another address, then goes back.
+        let next = ui::tilo_actions::InvocationId::new();
+        assert!(matches!(
+            widget.admit(
+                next,
+                BrowserOperation::Navigate {
+                    url: "https://next.test/".into(),
+                },
+            ),
+            Ok(ui::framework::Effected::Pending)
+        ));
+        let back = ui::tilo_actions::InvocationId::new();
+        assert!(matches!(
+            widget.admit(back, BrowserOperation::Back),
+            Ok(ui::framework::Effected::Pending)
+        ));
+        let back_request = widget.resource_navigation_request.unwrap();
+        // The engine reports the replaced loads as such, and the last one.
+        engine.0.lock().unwrap().extend([
+            WebViewEvent::NavigationOutcome {
+                request_id: slow_request,
+                uri: "https://slow.test/".into(),
+                error: Some("Navigation was superseded".into()),
+            },
+            WebViewEvent::NavigationOutcome {
+                request_id: back_request,
+                uri: "https://before.test/".into(),
+                error: None,
+            },
+        ]);
+        widget.apply_engine_events();
+        assert!(matches!(
+            widget.poll_invocation(back),
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        for replaced in [slow, next] {
+            let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+                widget.poll_invocation(replaced)
+            else {
+                panic!("a replaced navigation settles");
+            };
+            assert_eq!(error.code, "browser.navigation_replaced");
+        }
+        assert!(widget.replaced_navigations.is_empty());
     }
 
     #[test]
