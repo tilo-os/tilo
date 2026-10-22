@@ -71,7 +71,7 @@ glyph-join 2 apps/pdf-viewer/src/scenarios.rs
 glyph-join 1 apps/pdf-viewer/src/search.rs
 glyph-join 1 apps/photos/src/app/accessibility.rs
 glyph-join 4 apps/settings/src/input_sources.rs
-glyph-join 3 apps/slides/src/model.rs
+glyph-join 2 apps/slides/src/model.rs
 glyph-join 2 apps/store/src/app.rs
 glyph-join 1 apps/store/src/app/runtime.rs
 glyph-join 5 apps/terminal/src/main_body.rs
