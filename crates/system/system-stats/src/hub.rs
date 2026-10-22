@@ -22,6 +22,20 @@ use crate::storage::{MachineStorage, StorageSource};
 /// not block.
 pub type Sink = Box<dyn FnMut(Snapshot) + Send>;
 
+/// Where a storage reading goes. Called on the storage thread; it must not
+/// block.
+pub type StorageAnswer = Box<dyn FnOnce(Result<Storage, Refusal>) + Send>;
+
+/// The thread that reads the machine's storage.
+pub const STORAGE_THREAD: &str = "tilo-system-stats-storage";
+
+/// Who waits for a storage reading, and whether one is being taken.
+#[derive(Default)]
+struct StorageQueue {
+    waiting: Vec<StorageAnswer>,
+    reading: bool,
+}
+
 /// What a subscription asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Spec {
@@ -73,6 +87,7 @@ struct Inner {
     collector: Mutex<Collector>,
     signaller: Box<dyn Signaller + Sync>,
     storage: Box<dyn StorageSource>,
+    storage_queue: Mutex<StorageQueue>,
 }
 
 /// The session's one source of system readings.
@@ -159,18 +174,66 @@ impl Hub {
                 collector: Mutex::new(Collector::new(probe, policy)),
                 signaller,
                 storage,
+                storage_queue: Mutex::new(StorageQueue::default()),
             }),
         }
     }
 
-    /// Describe the machine's storage now. Read on the asking connection's
-    /// thread, outside every lock: a slow device answers one app late and
-    /// holds up no reading.
-    ///
-    /// # Errors
-    /// Why it could not be described.
-    pub fn storage(&self) -> Result<Storage, Refusal> {
-        self.inner.storage.read()
+    /// Describe the machine's storage to `answer` once it is read. The
+    /// reading is taken on the hub's storage thread ([`STORAGE_THREAD`]),
+    /// never on the asker's: a slow device (a busy udisks2, a drive waking
+    /// up) answers late and holds up neither the asking connection nor the
+    /// process that serves it. Askers who come while a reading is being
+    /// taken share the next one, so each sees storage as it was after they
+    /// asked. The thread exists only while someone waits.
+    pub fn read_storage(&self, answer: StorageAnswer) {
+        let mut queue = self.storage_queue();
+        queue.waiting.push(answer);
+        if queue.reading {
+            return;
+        }
+        queue.reading = true;
+        drop(queue);
+        let hub = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name(STORAGE_THREAD.into())
+            .spawn(move || hub.serve_storage());
+        if let Err(error) = spawned {
+            let waiting = {
+                let mut queue = self.storage_queue();
+                queue.reading = false;
+                std::mem::take(&mut queue.waiting)
+            };
+            for answer in waiting {
+                answer(Err(Refusal::Failed {
+                    detail: format!("storage could not be read: {error}"),
+                }));
+            }
+        }
+    }
+
+    fn serve_storage(&self) {
+        loop {
+            let waiting = {
+                let mut queue = self.storage_queue();
+                if queue.waiting.is_empty() {
+                    queue.reading = false;
+                    return;
+                }
+                std::mem::take(&mut queue.waiting)
+            };
+            let reading = self.inner.storage.read();
+            for answer in waiting {
+                answer(reading.clone());
+            }
+        }
+    }
+
+    fn storage_queue(&self) -> MutexGuard<'_, StorageQueue> {
+        self.inner
+            .storage_queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

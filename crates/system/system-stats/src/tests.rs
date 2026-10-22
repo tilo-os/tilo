@@ -678,6 +678,139 @@ fn storage_is_answered_to_system_info_and_refused_without_it() {
     );
 }
 
+/// Storage that waits for the test to let it answer, and notes which
+/// thread read it.
+struct HeldStorage {
+    started: std::sync::Mutex<mpsc::Sender<()>>,
+    release: std::sync::Mutex<mpsc::Receiver<()>>,
+    readers: std::sync::Mutex<Vec<(std::thread::ThreadId, Option<String>)>>,
+}
+
+impl crate::storage::StorageSource for HeldStorage {
+    fn read(&self) -> Result<crate::protocol::Storage, Refusal> {
+        let thread = std::thread::current();
+        self.readers
+            .lock()
+            .unwrap()
+            .push((thread.id(), thread.name().map(str::to_owned)));
+        let _ = self.started.lock().unwrap().send(());
+        self.release
+            .lock()
+            .unwrap()
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the test releases the reading");
+        Ok(crate::protocol::Storage::default())
+    }
+}
+
+/// A slow storage read (a busy udisks2, a drive waking up) holds up nothing
+/// but its own answer. It is never taken on the thread that started the
+/// service, which in the session is the compositor's main loop, nor on the
+/// asking connection's: the hub's storage thread reads, and the connection
+/// answers the app's other requests meanwhile.
+#[test]
+fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
+    let root = tempfile::tempdir().unwrap();
+    machine(root.path(), 100);
+    let (release, released) = mpsc::channel();
+    let (start, started) = mpsc::channel();
+    let storage = std::sync::Arc::new(HeldStorage {
+        started: std::sync::Mutex::new(start),
+        release: std::sync::Mutex::new(released),
+        readers: std::sync::Mutex::new(Vec::new()),
+    });
+    struct Shared(std::sync::Arc<HeldStorage>);
+    impl crate::storage::StorageSource for Shared {
+        fn read(&self) -> Result<crate::protocol::Storage, Refusal> {
+            self.0.read()
+        }
+    }
+    let hub = Hub::with_storage(
+        Box::new(KernelProbe::at(root.path())),
+        EndPolicy::for_user(UID, std::process::id()),
+        Box::new(PidfdSignaller),
+        Box::new(Shared(std::sync::Arc::clone(&storage))),
+    );
+    // This thread stands for the compositor's: it starts the service.
+    let socket = root.path().join("system-stats.sock");
+    let _server =
+        crate::server::Server::bind(&socket, hub, std::sync::Arc::new(NoPrompter)).unwrap();
+    let mut app = UnixStream::connect(&socket).unwrap();
+    app.set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    crate::protocol::write_handoff(
+        &mut app,
+        &Handoff {
+            protocol: PROTOCOL,
+            app_id: "so.tilo.disks".into(),
+            workspace_id: Some("room".into()),
+            grants: Grants {
+                system_info: true,
+                ..Grants::default()
+            },
+            ceiling: Grants::ALL,
+        },
+    )
+    .unwrap();
+
+    let reading_started = || {
+        started
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the storage thread starts reading");
+    };
+    write_message(&mut app, &Request::Storage { request: 1 }).unwrap();
+    reading_started();
+    // While the reading waits, the connection answers what else the app asks.
+    assert_eq!(
+        ask(
+            &mut app,
+            &Request::EndProcess {
+                request: 2,
+                pid: 4242,
+                started_at: 5000,
+                force: false,
+            }
+        ),
+        Reply::Refused {
+            request: 2,
+            refusal: Refusal::NotGranted {
+                grant: Grant::Processes
+            },
+        },
+        "the connection answered while the storage read was held"
+    );
+    release.send(()).unwrap();
+    assert_eq!(
+        read_message::<_, Reply>(&mut app).unwrap(),
+        Some(Reply::Storage {
+            request: 1,
+            storage: Box::default(),
+        })
+    );
+    // A later ask is a fresh reading, again off this thread.
+    write_message(&mut app, &Request::Storage { request: 3 }).unwrap();
+    reading_started();
+    release.send(()).unwrap();
+    assert_eq!(
+        read_message::<_, Reply>(&mut app).unwrap(),
+        Some(Reply::Storage {
+            request: 3,
+            storage: Box::default(),
+        })
+    );
+
+    let readers = storage.readers.lock().unwrap().clone();
+    assert_eq!(readers.len(), 2);
+    for (thread, name) in readers {
+        assert_ne!(
+            thread,
+            std::thread::current().id(),
+            "never on the thread that started the service"
+        );
+        assert_eq!(name.as_deref(), Some(crate::hub::STORAGE_THREAD));
+    }
+}
+
 /// A real process, described in the fake `/proc` as living in `cgroup` and
 /// owned by `uid`.
 fn real_child(root: &Path, cgroup: &str, uid: u32) -> (std::process::Child, u64) {
