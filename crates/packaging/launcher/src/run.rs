@@ -5665,18 +5665,14 @@ mod app_dir_tests {
 
         splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
         let host = config.path().join("tilo");
-        for writable in ["accounts"] {
-            assert!(
-                host.join(writable).is_dir(),
-                "{writable} must exist to bind read-write"
-            );
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--bind"
-                    && w[1] == host.join(writable).to_string_lossy()
-                    && w[2] == format!("/run/tilo/app/.config/tilo/{writable}")),
-                "Settings must bind {writable} over remapped XDG: {argv:?}"
-            );
-        }
+        let accounts = host.join("accounts");
+        assert!(accounts.is_dir(), "accounts must exist to bind read-write");
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--bind"
+                && w[1] == accounts.to_string_lossy()
+                && w[2] == "/run/tilo/app/.config/tilo/accounts"),
+            "Settings must bind accounts over remapped XDG: {argv:?}"
+        );
         assert!(
             !argv.iter().any(|arg| arg == host.to_string_lossy().as_ref()
                 || arg == crate::appdir::SANDBOX_SESSION_CONFIG),

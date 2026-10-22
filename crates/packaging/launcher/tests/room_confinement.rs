@@ -803,16 +803,16 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         r#"{"workspaces":[]}"#
     );
 
-    // Phase `the_settings_document_is_not_there`: a write where the session
-    // keeps it lands in the app's own directory, never on the host.
+    // Phase `the_settings_document_is_not_there`: Settings writes through
+    // the shell's settings service, so a write where the session keeps the
+    // document never reaches the host's.
     let session = format!("{config}/session/settings.json");
     let line = run(&["read", &session]);
     assert!(
         line.starts_with("ERR "),
         "the session's settings document must not reach the Settings sandbox: {line}"
     );
-    let wrote = run(&["writeabs", &session, r#"{"region":{"units":"imperial"}}"#]);
-    assert!(wrote.starts_with("WROTE "), "{wrote}");
+    let _ = run(&["writeabs", &session, r#"{"region":{"units":"imperial"}}"#]);
     assert_eq!(
         std::fs::read_to_string(&settings).expect("settings"),
         r#"{"region":{"units":"metric"}}"#,
