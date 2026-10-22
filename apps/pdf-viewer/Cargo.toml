@@ -61,6 +61,8 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 serial_test.workspace = true
 # Two distinct files for the multi-document test.
 tempfile.workspace = true
+# The zoom test looks at every frame's pixels as the CPU renderer draws them.
+tilo-cpu-raster = { path = "../../crates/sdk/tilo-cpu-raster" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

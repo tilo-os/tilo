@@ -616,6 +616,42 @@ impl PdfApp {
         self.draw_toast(scene, base, tr, theme);
 
         self.sidebar_hits = hits;
+        self.canvas_drawing = Some(self.canvas_shown(base, theme));
+    }
+
+    /// What this frame shows of the document and what floats over it, for
+    /// [`Widget::collect_damage`] to tell a scroll-only frame from the rest.
+    fn canvas_shown(&self, base: Affine, theme: &Theme) -> CanvasShown {
+        CanvasShown {
+            scroll: (self.scroll_x(), self.scroll_y()),
+            zoom: self.zoom(),
+            canvas: self.canvas_rect,
+            rect: self.rect,
+            transform: ui::scroll_copy::on_screen(base),
+            current_page: self.current_page,
+            thumbs: [
+                self.viewport.v_scrollbar_thumb(),
+                self.viewport.h_scrollbar_thumb(),
+            ],
+            // The pill's soft shadow paints past its rect: every pixel it
+            // touches stays put on screen while the pages scroll under it.
+            bubble: if self.bubble_rect.area() > 0.0 {
+                ui::widget::floating_surface::painted_bounds(self.bubble_rect, theme)
+            } else {
+                Rect::ZERO
+            },
+            floating: self
+                .status_note
+                .as_deref()
+                .is_some_and(|note| !note.is_empty())
+                || self.tooltip.is_visible()
+                || self.search_active
+                || self.selection.is_some()
+                || self.editing.is_some()
+                || self.context_menu.is_some()
+                || self.marker_colours.is_some()
+                || (self.overlay_mode && (self.show_rail || self.show_sidebar)),
+        }
     }
 
     /// Screenshot hook: open the delete menu of the first markup, as a
@@ -694,10 +730,13 @@ impl PdfApp {
     }
 
     /// The bitmaps for every page (and thumbnail) currently on screen, keyed
-    /// by 1-based page number, from what the PDF worker has delivered; the
-    /// missing ones are asked for. Cached results make scrolling and panning
-    /// allocation-free; only a zoom change or a page scrolling into view
-    /// triggers real work. Empty when no PDF is open.
+    /// by 1-based page number, from what the PDF worker has delivered, and
+    /// the worker's next renders asked for. Nothing here waits: a page is
+    /// drawn from the best bitmap held for it (another width scaled, while
+    /// the sharp one renders), and the worker's queue is replaced by what
+    /// this frame wants, most important first: the pages on screen, the
+    /// pages the scroll is heading into, then rail thumbnails. Empty when no
+    /// PDF is open.
     fn rasterize_visible(&mut self) -> RasterFrame {
         let mut page_imgs = std::collections::HashMap::new();
         let mut thumb_imgs = std::collections::HashMap::new();
@@ -707,122 +746,231 @@ impl PdfApp {
         let Some(document_id) = self.raster_document.as_ref().map(|document| document.id) else {
             return (page_imgs, thumb_imgs, page_tiles);
         };
+        self.raster_images.begin_frame();
 
         let canvas = self.canvas_rect;
-        let pageh = self.ph() * self.zoom();
+        let scroll_y = self.scroll_y();
+        if (scroll_y - self.last_raster_scroll_y).abs() > f64::EPSILON {
+            self.scroll_heading = (scroll_y - self.last_raster_scroll_y).signum();
+            self.last_raster_scroll_y = scroll_y;
+        }
         let card_w_px = (self.pw() * self.zoom()).max(1.0);
         // Render a little above display resolution so pages stay crisp when
         // the compositor scales the surface.
-        let page_bucket = ((card_w_px * RASTER_SS).round() as u32).clamp(96, 4096);
-        let mut want_pages = Vec::new();
-        // Pages drawn too large for one bitmap are drawn from tiles; each
-        // still gets a lower-resolution whole-page placeholder underneath.
-        let mut tiled: Vec<crate::tiles::PagePlacement> = Vec::new();
-        for (i, o) in self.page_origins().iter().enumerate() {
-            if o.y > canvas.y1 || o.y + pageh < canvas.y0 {
-                continue;
-            }
-            match self.tile_placement(i, *o) {
-                Some(placement) => tiled.push(placement),
-                None => want_pages.push((i, page_bucket)),
-            }
-        }
+        let page_bucket = crate::source::RasterBackend::bucket_for(
+            ((card_w_px * RASTER_SS).round() as u32).clamp(96, 4096),
+        );
+        // What the scroll reaches next: a screen ahead in the direction it
+        // last moved, half a screen behind.
+        let reach = canvas.height();
+        let (ahead, behind) = if self.scroll_heading < 0.0 {
+            (reach * 0.5, reach)
+        } else {
+            (reach, reach * 0.5)
+        };
+        let PagesInReach {
+            visible,
+            prefetch,
+            tiled,
+        } = self.pages_in_reach(ahead, behind);
+
         let placeholder_bucket =
             crate::source::RasterBackend::bucket_for(crate::tiles::PLACEHOLDER_PAGE_PX);
         let wanted_tiles =
             crate::tiles::wanted_tiles(&tiled, (canvas.x0, canvas.y0, canvas.x1, canvas.y1));
+
+        // Whole-page renders this frame wants, most important first.
+        let mut wanted: Vec<(usize, u32)> = Vec::new();
+        for (i, _) in &visible {
+            match self.raster_images.best(*i, page_bucket) {
+                Some((bucket, image)) => {
+                    page_imgs.insert(i + 1, image);
+                    if bucket != page_bucket {
+                        wanted.push((*i, page_bucket));
+                    }
+                }
+                None => wanted.push((*i, page_bucket)),
+            }
+        }
         for placement in &tiled {
+            let i = placement.page;
+            let best = self.raster_images.best(i, u32::MAX);
+            let best_bucket = best.as_ref().map_or(0, |(bucket, _)| *bucket);
+            if let Some((_, image)) = best {
+                page_imgs.insert(i + 1, image);
+            }
+            // A thumbnail is only a stand-in; ask for the real placeholder.
+            if best_bucket < placeholder_bucket {
+                wanted.push((i, placeholder_bucket));
+            }
             page_tiles.insert(
-                placement.page + 1,
+                i + 1,
                 render::PageTiles {
                     placement: *placement,
+                    under: Vec::new(),
                     tiles: Vec::new(),
                 },
             );
         }
+        self.pending_visuals = !wanted.is_empty();
 
-        let mut want_thumbs: Vec<(usize, u32)> = Vec::new();
-        if self.show_rail {
-            let rail = self.rail_rect;
-            // 0-based display indices + widths, from the shared rail's geometry.
-            for (i, r) in self.page_sidebar.thumb_rects() {
-                if r.y0 > rail.y1 || r.y1 < rail.y0 {
-                    continue;
-                }
-                let tw = ((r.width() * 2.0).round() as u32).clamp(96, 600);
-                want_thumbs.push((i, tw));
+        let thumbs = self.rail_thumbnails(&mut thumb_imgs);
+        let mut ahead_of_scroll = Vec::new();
+        for (i, _) in &prefetch {
+            if !self.raster_images.contains_key(&(*i, page_bucket)) {
+                // Marked drawn so the bitmap the scroll is about to need is
+                // not the one evicted for it.
+                let _ = self.raster_images.best(*i, page_bucket);
+                ahead_of_scroll.push((*i, page_bucket));
             }
         }
+        // Order: the screen first, then thumbnails, then what lies ahead.
+        let mut order = wanted;
+        order.extend(thumbs);
+        order.extend(ahead_of_scroll);
+        self.submit_page_renders(document_id, &order);
+        // Renders still in flight (prefetch included) keep a capture waiting.
+        self.pending_visuals |= !self.raster_render_pending.is_empty();
 
-        // Full-page renders are the expensive part of a frame (a real page can
-        // take tens to hundreds of ms). Rasterise only a small budget of *new*
-        // (uncached) pages per frame so the open→first-paint path pays for the
-        // single top page and lets the rest — a page's bottom sliver peeking in,
-        // pages scrolling into view — fill in over the following frames. Cached
-        // pages always draw (a cache hit is ~free).
-        self.pending_visuals = want_pages.iter().chain(&want_thumbs).any(|(i, width)| {
-            !self
-                .raster_images
-                .contains_key(&(*i, crate::source::RasterBackend::bucket_for(*width)))
-        });
-        // Never ask PDFium to rasterise from the draw pass. A cache miss
-        // becomes bounded owner work and this frame simply paints the
-        // existing placeholder; the result wakes a later frame.
-        self.request_page_images(
-            document_id,
-            want_pages,
-            MAX_NEW_PAGE_RASTERS_PER_FRAME,
-            &mut page_imgs,
-        );
-        self.request_page_images(
-            document_id,
-            want_thumbs,
-            MAX_NEW_THUMB_RASTERS_PER_FRAME,
-            &mut thumb_imgs,
-        );
-        self.request_tiled_pages(
-            document_id,
-            &tiled,
-            &wanted_tiles,
-            placeholder_bucket,
-            &mut page_imgs,
-            &mut page_tiles,
-        );
-        // The worker completion itself marks the widget dirty, so no frame
-        // spins while it is parsing/rasterising: that would waste a core on a
-        // static loading surface and make a hostile page feel worse.
+        self.request_tiled_pages(document_id, &wanted_tiles, &mut page_tiles);
+        // The worker wakes the window when a result is queued, so no frame
+        // spins while it is rasterising.
         (page_imgs, thumb_imgs, page_tiles)
     }
 
-    /// Collect the worker bitmaps already here for `wanted` (0-based page,
-    /// target width) into `out`, keyed by 1-based page, and ask the worker
-    /// for at most `budget` of the missing ones.
-    fn request_page_images(
-        &mut self,
-        document_id: u64,
-        wanted: Vec<(usize, u32)>,
-        mut budget: usize,
-        out: &mut std::collections::HashMap<usize, PenikoImage>,
-    ) {
-        for (i, width) in wanted {
-            let key = (i, crate::source::RasterBackend::bucket_for(width));
-            if let Some(image) = self.raster_images.get(&key) {
-                out.insert(i + 1, image.clone());
-            } else if budget > 0 && self.raster_render_pending.insert(key) {
-                budget -= 1;
-                if !self.raster_handle.as_ref().is_some_and(|handle| {
-                    handle
-                        .request_render(crate::source::RenderRequest {
-                            document_id,
-                            page: i,
-                            target_width: width,
-                        })
-                        .is_ok()
-                }) {
-                    self.raster_render_pending.remove(&key);
-                    self.status_note = Some("PDF render worker is unavailable".to_string());
+    /// The pages within reach of the canvas, from the page stack's geometry
+    /// alone (never a walk over the whole document): those on screen with
+    /// their distance from its centre, those `ahead`/`behind` of it with
+    /// their distance from its edge, each nearest first, and the on-screen
+    /// pages drawn too large for one bitmap, which are drawn from tiles.
+    fn pages_in_reach(&self, ahead: f64, behind: f64) -> PagesInReach {
+        let canvas = self.canvas_rect;
+        let (mut visible, mut prefetch, mut tiled) = (Vec::new(), Vec::new(), Vec::new());
+        let count = self.doc.page_count();
+        let unit = self.stack_unit();
+        if count == 0 || unit <= 0.0 {
+            return PagesInReach {
+                visible,
+                prefetch,
+                tiled,
+            };
+        }
+        let pageh = self.ph() * self.zoom();
+        let content_y = |y: f64| self.viewport.screen_to_content(Point::new(canvas.x0, y)).y;
+        let first = (content_y(canvas.y0 - behind) / unit).floor().max(0.0) as usize;
+        let last = ((content_y(canvas.y1 + ahead) / unit).floor().max(0.0) as usize).min(count - 1);
+        let centre = canvas.center().y;
+        for i in first..=last {
+            let o = self
+                .viewport
+                .content_point_to_screen(Point::new(0.0, i as f64 * unit));
+            let (top, bottom) = (o.y, o.y + pageh);
+            if top <= canvas.y1 && bottom >= canvas.y0 {
+                match self.tile_placement(i, o) {
+                    Some(placement) => tiled.push(placement),
+                    None => visible.push((i, (f64::midpoint(top, bottom) - centre).abs())),
                 }
+            } else if top <= canvas.y1 + ahead && bottom >= canvas.y0 - behind {
+                let distance = if top > canvas.y1 {
+                    top - canvas.y1
+                } else {
+                    canvas.y0 - bottom
+                };
+                prefetch.push((i, distance));
             }
+        }
+        visible.sort_by(|a, b| a.1.total_cmp(&b.1));
+        prefetch.sort_by(|a, b| a.1.total_cmp(&b.1));
+        PagesInReach {
+            visible,
+            prefetch,
+            tiled,
+        }
+    }
+
+    /// The rail thumbnails on screen, drawn from the best bitmap held for
+    /// each (`thumb_imgs`, 1-based), and the renders they still want.
+    fn rail_thumbnails(
+        &mut self,
+        thumb_imgs: &mut std::collections::HashMap<usize, PenikoImage>,
+    ) -> Vec<(usize, u32)> {
+        let mut thumbs = Vec::new();
+        if !self.show_rail {
+            return thumbs;
+        }
+        let rail = self.rail_rect;
+        // 0-based display indices + widths, from the shared rail's geometry.
+        for (i, r) in self.page_sidebar.thumb_rects() {
+            if r.y0 > rail.y1 || r.y1 < rail.y0 {
+                continue;
+            }
+            let tw = crate::source::RasterBackend::bucket_for(
+                ((r.width() * 2.0).round() as u32).clamp(96, crate::tiles::THUMB_MAX_PX),
+            );
+            let held = self.raster_images.best(i, tw);
+            if let Some((_, image)) = &held {
+                thumb_imgs.insert(i + 1, image.clone());
+            } else {
+                self.pending_visuals = true;
+            }
+            if held.is_none_or(|(bucket, _)| bucket < tw) {
+                thumbs.push((i, tw));
+            }
+        }
+        thumbs
+    }
+
+    /// Hand the worker this frame's page renders as one batch replacing its
+    /// queue, most important first. A render already asked for keeps its
+    /// place; at most [`MAX_NEW_PAGE_RASTERS_PER_FRAME`] new pages and
+    /// [`MAX_NEW_THUMB_RASTERS_PER_FRAME`] new thumbnails join per frame,
+    /// so the open→first-paint path pays for the top page alone and the rest
+    /// follow as results wake later frames.
+    fn submit_page_renders(&mut self, document_id: u64, order: &[(usize, u32)]) {
+        let mut new_pages = MAX_NEW_PAGE_RASTERS_PER_FRAME;
+        let mut new_thumbs = MAX_NEW_THUMB_RASTERS_PER_FRAME;
+        let mut batch: Vec<(usize, u32)> = Vec::new();
+        for key in order {
+            if batch.contains(key) {
+                continue;
+            }
+            if self.raster_render_pending.contains(key) {
+                batch.push(*key);
+                continue;
+            }
+            let budget = if key.1 > crate::tiles::THUMB_MAX_PX {
+                &mut new_pages
+            } else {
+                &mut new_thumbs
+            };
+            if *budget > 0 {
+                *budget -= 1;
+                batch.push(*key);
+            }
+        }
+        if batch == self.raster_render_batch {
+            return;
+        }
+        let submitted = self.raster_handle.as_ref().is_some_and(|handle| {
+            handle
+                .request_renders(crate::source::RenderBatch {
+                    document_id,
+                    renders: batch
+                        .iter()
+                        .map(|(page, target_width)| crate::source::RenderRequest {
+                            document_id,
+                            page: *page,
+                            target_width: *target_width,
+                        })
+                        .collect(),
+                })
+                .is_ok()
+        });
+        if submitted {
+            self.raster_render_pending = batch.iter().copied().collect();
+            self.raster_render_batch = batch;
+        } else if !batch.is_empty() {
+            self.status_note = Some("PDF render worker is unavailable".to_string());
         }
     }
 
@@ -854,52 +1002,20 @@ impl PdfApp {
         self.raster_document.as_ref()?.page_sizes.get(i).copied()
     }
 
-    /// Worker mode for zoomed pages: draw the tiles already here over the
-    /// best whole-page bitmap available, and hand the worker the missing
-    /// tiles as one batch, most important first. The batch replaces the
-    /// previous one, so tiles that scrolled out of view are never rendered
-    /// ahead of the ones now on screen.
+    /// Worker mode for zoomed pages: draw the tiles already here, over the
+    /// tiles of other zoom levels still held for the page (scaled, so a zoom
+    /// keeps showing the last sharp pixels until the new level's arrive),
+    /// and hand the worker the missing tiles as one batch, most important
+    /// first. The batch replaces the previous one, so tiles that scrolled
+    /// out of view are never rendered ahead of the ones now on screen.
     fn request_tiled_pages(
         &mut self,
         document_id: u64,
-        tiled: &[crate::tiles::PagePlacement],
         wanted: &[crate::tiles::WantedTile],
-        placeholder_bucket: u32,
-        page_imgs: &mut std::collections::HashMap<usize, PenikoImage>,
         page_tiles: &mut std::collections::HashMap<usize, render::PageTiles>,
     ) {
-        for placement in tiled {
-            let i = placement.page;
-            let best = self
-                .raster_images
-                .iter()
-                .filter(|((page, _), _)| *page == i)
-                .max_by_key(|((_, bucket), _)| *bucket)
-                .map(|((_, bucket), image)| (*bucket, image.clone()));
-            let best_bucket = best.as_ref().map_or(0, |(bucket, _)| *bucket);
-            if let Some((_, image)) = best {
-                page_imgs.insert(i + 1, image);
-            }
-            // A thumbnail is only a stopgap; ask for the real placeholder.
-            if best_bucket < placeholder_bucket {
-                let key = (i, placeholder_bucket);
-                if self.raster_render_pending.insert(key)
-                    && !self.raster_handle.as_ref().is_some_and(|handle| {
-                        handle
-                            .request_render(crate::source::RenderRequest {
-                                document_id,
-                                page: i,
-                                target_width: placeholder_bucket,
-                            })
-                            .is_ok()
-                    })
-                {
-                    self.raster_render_pending.remove(&key);
-                }
-                self.pending_visuals = true;
-            }
-        }
         let mut batch = Vec::new();
+        let mut missing_on: HashSet<usize> = HashSet::new();
         for tile in wanted {
             let key = UiTileKey {
                 page: tile.page,
@@ -914,7 +1030,10 @@ impl PdfApp {
                     entry.tiles.push((tile.region, image));
                 }
             } else {
-                self.pending_visuals |= tile.visible;
+                if tile.visible {
+                    self.pending_visuals = true;
+                    missing_on.insert(tile.page);
+                }
                 if batch.len() < crate::tiles::MAX_TILE_BATCH {
                     batch.push(crate::source::TileRequest {
                         document_id,
@@ -923,6 +1042,43 @@ impl PdfApp {
                         col: tile.col,
                         row: tile.row,
                     });
+                }
+            }
+        }
+        // Pages still missing tiles at this level paint what other levels
+        // left, nearest level last (on top).
+        for page in missing_on {
+            let Some(entry) = page_tiles.get_mut(&(page + 1)) else {
+                continue;
+            };
+            let current = entry.placement.level;
+            let mut held: Vec<UiTileKey> = self
+                .raster_tiles
+                .keys()
+                .filter(|key| key.page == page && key.level != current)
+                .copied()
+                .collect();
+            held.sort_by_key(|key| std::cmp::Reverse((key.level - current).abs()));
+            let canvas = self.canvas_rect;
+            for key in held {
+                let Some(region) =
+                    crate::tiles::tile_region(entry.placement.size, key.level, key.col, key.row)
+                else {
+                    continue;
+                };
+                let placement = crate::tiles::PagePlacement {
+                    level: key.level,
+                    screen_per_px: entry.placement.screen_per_px
+                        * f64::from(crate::tiles::level_scale(current))
+                        / f64::from(crate::tiles::level_scale(key.level)),
+                    ..entry.placement
+                };
+                let (x0, y0, x1, y1) = placement.screen_rect(region);
+                if x1 < canvas.x0 || x0 > canvas.x1 || y1 < canvas.y0 || y0 > canvas.y1 {
+                    continue;
+                }
+                if let Some(image) = self.raster_tiles.get(&key) {
+                    entry.under.push((placement.screen_per_px, region, image));
                 }
             }
         }
@@ -3007,4 +3163,16 @@ fn draw_inline_editor(
 ) {
     input.apply_layout_external(rect);
     input.draw(scene, base, tr, theme, &PresenceCtx::empty());
+}
+
+/// The pages within reach of the canvas this frame (0-based indices).
+struct PagesInReach {
+    /// On screen, drawn from one bitmap, with the distance from the canvas
+    /// centre; nearest first.
+    visible: Vec<(usize, f64)>,
+    /// Ahead of or behind the canvas, with the distance from its edge;
+    /// nearest first.
+    prefetch: Vec<(usize, f64)>,
+    /// On screen, drawn from tiles.
+    tiled: Vec<crate::tiles::PagePlacement>,
 }

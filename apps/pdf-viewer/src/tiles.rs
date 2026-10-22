@@ -24,6 +24,10 @@ pub const TILE_MIN_PAGE_PX: f64 = 2048.0; // bitmap device pixels, not UI spacin
 /// that have not arrived yet.
 pub const PLACEHOLDER_PAGE_PX: u32 = 1024;
 
+/// Rail thumbnails are rendered at most this wide; anything wider is a
+/// page.
+pub const THUMB_MAX_PX: u32 = 600;
+
 /// At most this many tiles are queued for one viewer at a time. A viewport
 /// needs far fewer; the bound keeps a hostile page size from flooding the
 /// owner worker.

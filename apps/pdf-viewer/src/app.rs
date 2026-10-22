@@ -87,10 +87,6 @@ const RASTER_SS: f64 = 2.0;
 /// asked for as results wake later frames. Cached pages are always drawn (a
 /// cache hit is ~free), so steady-state scrolling is unaffected.
 const MAX_NEW_PAGE_RASTERS_PER_FRAME: usize = 1;
-/// A second, UI-side bound after the owner worker's result bound.  This keeps
-/// a rapid scroll/zoom sequence from retaining an unbounded history of owned
-/// bitmap results in one viewer window.
-const MAX_UI_RASTER_IMAGES: usize = 12;
 
 /// One frame's page imagery, keyed by 1-based page: whole-page bitmaps
 /// (placeholders under tiles for zoomed pages), rail thumbnails, and the
@@ -475,13 +471,33 @@ pub struct PdfApp {
     pending_open: Option<OpenRequest>,
     /// Bounded in-flight/cached UI-safe worker results.  Keys are the
     /// zero-based display page and the worker's snapped width bucket.
-    raster_images: HashMap<(usize, u32), PenikoImage>,
+    raster_images: crate::page_images::PageImages,
     raster_render_pending: HashSet<(usize, u32)>,
     /// Tiles of zoomed pages the worker has returned, per zoom level.
     raster_tiles: crate::tiles::TileCache<UiTileKey>,
     /// The tile batch last handed to the worker, most important first;
     /// entries leave it as their results arrive.
     raster_tile_batch: Vec<crate::source::TileRequest>,
+    /// The page renders last handed to the worker, most important first.
+    raster_render_batch: Vec<(usize, u32)>,
+    /// The scroll offset the last frame rasterised for, and the direction
+    /// the scroll last moved in (-1 up, +1 down): prefetch reaches ahead.
+    last_raster_scroll_y: f64,
+    scroll_heading: f64,
+    /// Whether the worker wakes this window when its results arrive.
+    raster_wake_bound: bool,
+    /// The view scrolled since the last presented frame, and nothing else
+    /// asked for a repaint: what stays on screen is copied, not redrawn.
+    scrolled: bool,
+    /// Pages (0-based) whose bitmap or tiles arrived since the last
+    /// presented frame, and whether a rail thumbnail did: repainted in
+    /// place.
+    delivered_pages: Vec<usize>,
+    delivered_thumbs: bool,
+    /// How the canvas was shown by the frame being drawn and by the frame
+    /// last presented.
+    canvas_drawing: Option<CanvasShown>,
+    canvas_presented: Option<CanvasShown>,
     raster_text_pending: HashSet<usize>,
     /// Link areas per displayed page (1-based), in the page's display space;
     /// mapped into card space when hit-tested so they follow the current
@@ -1064,10 +1080,21 @@ impl PdfApp {
             raster_handle: RasterHandle::new(content.clone()).ok(),
             raster_document: None,
             pending_open: None,
-            raster_images: HashMap::new(),
+            raster_images: crate::page_images::PageImages::new(
+                crate::page_images::MAX_PAGE_IMAGE_BYTES,
+            ),
             raster_render_pending: HashSet::new(),
             raster_tiles: crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES),
             raster_tile_batch: Vec::new(),
+            raster_render_batch: Vec::new(),
+            last_raster_scroll_y: 0.0,
+            scroll_heading: 1.0,
+            raster_wake_bound: false,
+            scrolled: false,
+            delivered_pages: Vec::new(),
+            delivered_thumbs: false,
+            canvas_drawing: None,
+            canvas_presented: None,
             raster_text_pending: HashSet::new(),
             raster_links: std::collections::HashMap::new(),
             raster_links_pending: HashSet::new(),
@@ -1660,6 +1687,7 @@ impl PdfApp {
         self.raster_render_pending.clear();
         self.raster_tiles.clear();
         self.raster_tile_batch.clear();
+        self.raster_render_batch.clear();
         self.dirty = true;
     }
 
@@ -2637,7 +2665,7 @@ impl PdfApp {
             .unwrap_or_else(|| (self.pw(), self.ph()));
         let bucket = ((pgw * 2.0).round() as u32).clamp(96, 4096);
         let image_key = (page_idx, crate::source::RasterBackend::bucket_for(bucket));
-        let Some(image) = self.raster_images.get(&image_key).cloned() else {
+        let Some(image) = self.raster_images.get(&image_key) else {
             if let Some(document) = self.raster_document.as_ref()
                 && self.raster_render_pending.insert(image_key)
                 && !self.raster_handle.as_ref().is_some_and(|handle| {
@@ -4300,6 +4328,7 @@ impl PdfApp {
                     self.raster_render_pending.clear();
                     self.raster_tiles.clear();
                     self.raster_tile_batch.clear();
+                    self.raster_render_batch.clear();
                     self.raster_text_pending.clear();
                     self.pending_worker_plan = None;
                     self.applied_worker_plan = None;
@@ -4381,6 +4410,7 @@ impl PdfApp {
                     self.raster_text_pending.clear();
                     self.raster_links_pending.clear();
                     self.raster_tile_batch.clear();
+                    self.raster_render_batch.clear();
                     self.dirty = true;
                 }
                 RasterEvent::Rendered { request, image }
@@ -4395,15 +4425,13 @@ impl PdfApp {
                     );
                     self.raster_render_pending.remove(&key);
                     if let Some(image) = image {
-                        if !self.raster_images.contains_key(&key)
-                            && self.raster_images.len() >= MAX_UI_RASTER_IMAGES
-                            && let Some(evicted) = self.raster_images.keys().next().copied()
-                        {
-                            self.raster_images.remove(&evicted);
-                        }
                         self.raster_images.insert(key, image);
                     }
-                    self.dirty = true;
+                    if request.target_width > crate::tiles::THUMB_MAX_PX {
+                        self.delivered_pages.push(request.page);
+                    } else {
+                        self.delivered_thumbs = true;
+                    }
                 }
                 RasterEvent::RenderFailed { request, error }
                     if self
@@ -4432,7 +4460,7 @@ impl PdfApp {
                     if let Some(image) = image {
                         self.raster_tiles.insert(UiTileKey::of(&request), image);
                     }
-                    self.dirty = true;
+                    self.delivered_pages.push(request.page);
                 }
                 RasterEvent::TileFailed { request, .. }
                     if self
@@ -4511,6 +4539,7 @@ impl PdfApp {
                     self.raster_render_pending.clear();
                     self.raster_tiles.clear();
                     self.raster_tile_batch.clear();
+                    self.raster_render_batch.clear();
                     self.raster_text.clear();
                     self.raster_links.clear();
                     self.raster_links_pending.clear();
@@ -4734,6 +4763,13 @@ impl Widget for PdfApp {
             self.dirty = true;
         }
         let (state, _) = ui::doc::document_ref(state, path);
+        if !self.raster_wake_bound
+            && let Some(handle) = self.raster_handle.as_ref()
+        {
+            // Bound from the frame, where the window's wake scope is current.
+            handle.set_wake(ui::wake::WakeHandle::new());
+            self.raster_wake_bound = true;
+        }
         // Drain the dedicated PDF owner before any portal/action work.  This
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
@@ -5626,7 +5662,18 @@ impl Widget for PdfApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.drag.is_some() || self.pan.is_some() || self.rail_drag.is_some()
+        self.dirty
+            || self.scrolled
+            || self.delivered_thumbs
+            || !self.delivered_pages.is_empty()
+            || self.drag.is_some()
+            || self.pan.is_some()
+            || self.rail_drag.is_some()
+    }
+
+    /// See [`PdfApp::scroll_damage`].
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.scroll_damage(regions);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -5665,6 +5712,10 @@ impl Widget for PdfApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.scrolled = false;
+        self.delivered_pages.clear();
+        self.delivered_thumbs = false;
+        self.canvas_presented = self.canvas_drawing.take();
     }
 }
 
@@ -5978,6 +6029,9 @@ impl PdfApp {
     }
 }
 
+mod scroll_damage;
+use scroll_damage::CanvasShown;
+
 #[cfg(test)]
 mod records_tests;
 
@@ -5986,6 +6040,9 @@ mod adopt_tests;
 
 #[cfg(test)]
 mod links_tests;
+
+#[cfg(test)]
+mod scroll_tests;
 
 #[cfg(test)]
 mod tests {
