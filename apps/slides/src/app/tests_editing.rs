@@ -793,3 +793,132 @@ fn collaborators_carets_show_in_the_boxes_they_are_in() {
         "this person's caret is published where it is"
     );
 }
+
+/// Drag the pointer from `from` by `by` over `moves` frames, as a hand
+/// does, and lift it; each move is its own frame. The frames' timings.
+fn drag_frames(
+    bench: &mut Bench,
+    from: Point,
+    by: (f64, f64),
+    moves: u32,
+) -> Vec<ui::profiling::FrameTiming> {
+    bench.move_to(from);
+    bench.press();
+    bench.app.harness().begin_profiling();
+    let _ = bench.app.harness().take_text_shape_stats();
+    for step in 1..=moves {
+        let t = f64::from(step) / f64::from(moves);
+        bench.move_to(Point::new(from.x + by.0 * t, from.y + by.1 * t));
+        let _ = bench.app.harness().poll_frame();
+    }
+    let samples = bench.app.harness().take_profile_samples();
+    bench.release();
+    samples
+}
+
+fn report(what: &str, samples: &[ui::profiling::FrameTiming], shapes: (u64, u64, u128)) {
+    let n = u64::try_from(samples.len().max(1)).unwrap();
+    let sum =
+        |field: fn(&ui::profiling::FrameTiming) -> u64| samples.iter().map(field).sum::<u64>() / n;
+    eprintln!(
+        "slides {what}: frames={} mean total_us={} layout_us={} draw_us={} event_us={} \
+         max total_us={}; shaping hits={} misses={} ns={}",
+        samples.len(),
+        sum(|f| f.total_us),
+        sum(|f| f.build_layout_us + f.apply_layout_us),
+        sum(|f| f.draw_us),
+        sum(|f| f.handle_event_us),
+        samples.iter().map(|f| f.total_us).max().unwrap_or(0),
+        shapes.0,
+        shapes.1,
+        shapes.2,
+    );
+}
+
+/// Once input stops, nothing asks for another frame: no queued work, no
+/// animation, and no timer left once the ones due have run, as the live
+/// window idles.
+fn assert_idle(bench: &mut Bench, what: &str) {
+    // What the input left runs out in a few wakes, each a frame of the live
+    // window: the save status moving along after the edit the gesture
+    // wrote (a step a tenth of a second), the woken component taken up.
+    // Then nothing wakes the window.
+    let mut wakes = Vec::new();
+    for _ in 0..12 {
+        bench.app.idle();
+        let schedule = bench.app.harness().frame_schedule();
+        if !schedule.queued_work
+            && !schedule.needs_animation_frame
+            && schedule.next_wake_deadline.is_none()
+        {
+            eprintln!("{what}: idle after {} wakes: {wakes:?}", wakes.len());
+            assert!(
+                wakes.len() <= 6,
+                "{what}: woke {} times: {wakes:?}",
+                wakes.len()
+            );
+            return;
+        }
+        wakes.push(format!(
+            "{:?} {:?}",
+            bench.app.harness().queued_work_sources(),
+            schedule
+                .next_wake_deadline
+                .map(|due| due.saturating_duration_since(ui::time::now()))
+        ));
+        if let Some(due) = schedule.next_wake_deadline {
+            let wait = due.saturating_duration_since(ui::time::now());
+            assert!(
+                wait < std::time::Duration::from_secs(1),
+                "{what}: a timer is due soon, not an idle wake: {schedule:?}"
+            );
+            std::thread::sleep(wait);
+        }
+    }
+    panic!("{what}: the window keeps waking: {wakes:?}");
+}
+
+// USER REQUIREMENT (2026-10-22): "measure dragging and resizing a text box at
+// native refresh with near-zero idle CPU": moving a text box shapes none of
+// its words again, resizing it only re-wraps them, and once the hand stops
+// no frame runs.
+#[test]
+fn moving_and_resizing_a_text_box_reshapes_nothing_and_idles_after() {
+    let words = "Quarterly goals: ship the new editor, grow the team, and keep \
+                 every frame at the display's own refresh rate";
+    let (mut bench, id) = box_of(words, 700.0, 120.0);
+    bench.frame();
+    let frame = frame_of(&mut bench, &id);
+    // Warm the words' shapes and the drag's own code once.
+    drag_frames(&mut bench, frame.center(), (8.0, 4.0), 2);
+    bench.app.idle();
+
+    let frame = frame_of(&mut bench, &id);
+    let moved = drag_frames(&mut bench, frame.center(), (240.0, 120.0), 60);
+    let shapes = bench.app.harness().take_text_shape_stats();
+    report("move", &moved, shapes);
+    assert!(moved.len() >= 60, "each move is a frame");
+    assert_eq!(shapes.1, 0, "moving a box shapes none of its words again");
+
+    assert_idle(&mut bench, "once the hand stops, no frame runs");
+
+    let corner = bench.read(|app| {
+        let chrome = app.compute_chrome();
+        let el = app.selected_element().expect("the box stays selected");
+        app.handles_of(chrome.slide_dest, chrome.scale, el)
+            .into_iter()
+            .find(|(handle, _)| *handle == Handle::Br)
+            .expect("a selected box has a corner handle")
+            .1
+            .center()
+    });
+    let resized = drag_frames(&mut bench, corner, (-160.0, 60.0), 60);
+    let shapes = bench.app.harness().take_text_shape_stats();
+    report("resize", &resized, shapes);
+    assert!(resized.len() >= 60, "each resize step is a frame");
+    let before = element(&bench, &id);
+    assert!(before.w < 700.0, "the drag resized the box");
+
+    assert_idle(&mut bench, "once the hand stops resizing, no frame runs");
+}
+

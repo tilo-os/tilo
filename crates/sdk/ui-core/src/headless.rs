@@ -2615,6 +2615,44 @@ impl FrameHarness {
         self.last_layout_viewport = None;
     }
 
+    /// What makes [`FrameSchedule::queued_work`] true, by name: what an idle
+    /// window would wake for. Diagnostics for a test that holds a window
+    /// idle; not part of scheduling.
+    pub fn queued_work_sources(&self) -> Vec<&'static str> {
+        self.drain_component_wakes();
+        [
+            ("layout requested", self.layout_requested),
+            ("input frame pending", self.input_frame_pending),
+            (
+                "owner service layout retired",
+                self.owner_service_layout_retired,
+            ),
+            (
+                "owner wake queued",
+                self.owner_wake_queue
+                    .as_ref()
+                    .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending),
+            ),
+            ("presence redraw", self.presence_redraw),
+            ("tooltip", self.tooltips.schedule().0),
+            ("search pending", self.search_pending),
+            ("bound invocations", !self.bound_invocations.is_empty()),
+            (
+                "control invocations",
+                !self.pending_control_invocations.is_empty(),
+            ),
+            (
+                "component wake",
+                self.component_wake
+                    .as_ref()
+                    .is_some_and(|wake| wake.dirty.get()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, queued)| queued.then_some(name))
+        .collect()
+    }
+
     /// Read wake demand without materializing document text or semantic nodes.
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
