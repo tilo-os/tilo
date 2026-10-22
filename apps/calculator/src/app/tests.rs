@@ -89,7 +89,6 @@ fn node(app: &mut TestApp<CalculatorShell>, target: &str) -> ui::a11y::AccessNod
     find(&calculator(app).1, target).unwrap_or_else(|| panic!("no semantic node {target}"))
 }
 
-/// Click the painted control `target`, as a pointer does.
 /// Press `id` in the window's bar, as the desktop hands the press to
 /// the app.
 fn press_bar(app: &mut TestApp<CalculatorShell>, id: &str) {
@@ -111,6 +110,7 @@ fn press_bar(app: &mut TestApp<CalculatorShell>, id: &str) {
     app.settle();
 }
 
+/// Click the painted control `target`, as a pointer does.
 fn click(app: &mut TestApp<CalculatorShell>, target: &str) {
     let bounds = node(app, target)
         .bounds
