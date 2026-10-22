@@ -292,6 +292,9 @@ pub enum ThawError {
     BindingMismatch,
     /// Local View storage failed.
     Io(std::io::Error),
+    /// Local View storage is still opening the View on a thread that does
+    /// not wait for the disk; it wakes that thread once it is ready.
+    Opening,
 }
 
 impl std::fmt::Display for ThawError {
@@ -305,6 +308,7 @@ impl std::fmt::Display for ThawError {
             ThawError::InvalidView(reason) => write!(f, "invalid local view: {reason}"),
             ThawError::BindingMismatch => f.write_str("local view binding does not match"),
             ThawError::Io(error) => write!(f, "local view storage failed: {error}"),
+            ThawError::Opening => f.write_str("local view storage is still opening"),
             ThawError::State(reason) => write!(f, "frozen-app state failed to load: {reason}"),
         }
     }

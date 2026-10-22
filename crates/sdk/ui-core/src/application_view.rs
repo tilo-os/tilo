@@ -120,7 +120,10 @@ pub(crate) fn validate_identity(identity: &str) -> Result<(), ThawError> {
     Ok(())
 }
 fn storage_error(error: StoreError) -> ThawError {
-    ThawError::Io(std::io::Error::other(error))
+    match error {
+        StoreError::Opening(_) => ThawError::Opening,
+        error => ThawError::Io(std::io::Error::other(error)),
+    }
 }
 impl InstanceViewStore {
     /// Views stored under a local profile directory.
@@ -284,6 +287,24 @@ impl InstanceViewStore {
         match self.store.flush_where_allowed(&key) {
             Ok(()) | Err(StoreError::Pending(_)) => Ok(()),
             Err(error) => Err(storage_error(error)),
+        }
+    }
+}
+
+impl crate::launch::LaunchError {
+    /// Whether the launch stopped only because the store's own thread is
+    /// still opening a document for a thread that may not wait on the disk
+    /// ([`crate::record::RecordOpenError::Opening`]): asked again once the
+    /// store wakes the caller, it goes on. Not a failure to show.
+    #[must_use]
+    pub fn is_opening(&self) -> bool {
+        match self {
+            Self::Record(crate::record::RecordOpenError::Opening)
+            | Self::Restore(crate::view::ThawError::Opening) => true,
+            Self::ComponentSetup { source, .. } | Self::ComponentCapture { source, .. } => {
+                source.is_opening()
+            }
+            _ => false,
         }
     }
 }

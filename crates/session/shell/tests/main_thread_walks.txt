@@ -2,14 +2,7 @@
 # (FileWalk::site: the innermost frame that is not std or libc).
 # Each is a freeze waiting for a busy disk. This list only shrinks; see
 # desktop_smoke::the_main_loop_walks_no_path_after_startup.
-<app_state::fs_store::FsStore as durable_store::DurableStore>::lease
-<app_state::fs_store::FsStore as durable_store::DurableStore>::read
 <file_explorer::files_app::FileExplorerWidget>::current_place
-advisory_lock::open_lock_file
-app_state::acquire_gate
-app_state::fs_store::open_owner
-app_state::open_directory
-app_state::same_file
 file_explorer::templates::list_templates
 rustix::backend::arch::asm::syscall4_readonly
 tilo_files::native::bounded::read

@@ -49,6 +49,7 @@ impl From<SeamError> for StoreError {
         match error {
             SeamError::Busy(path) => Self::WriterBusy { path: path.into() },
             SeamError::SourceChanged(path) => Self::SourceChanged { path: path.into() },
+            SeamError::Opening(key) => Self::Opening(key),
             other => Self::Io {
                 context: "durable storage".to_owned(),
                 source: io::Error::other(other),

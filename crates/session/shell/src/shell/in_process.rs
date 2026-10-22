@@ -152,6 +152,15 @@ impl InProcessApps {
         self.windows.remove(&tab);
     }
 
+    /// From now on, never wait on the disk to open or create a mounted app's
+    /// record, view or private history on this thread (the compositor's
+    /// loop): the store's own thread opens them and calls `wake`, and a tab
+    /// whose record is still opening holds its place meanwhile
+    /// ([`tilo_desktop::resolver::TileResolution::Opening`]).
+    pub(crate) fn open_records_without_waiting(&self, wake: durable_store::ReadyWake) {
+        self.store.decline_waiting(wake);
+    }
+
     /// Bind the existing compositor wake once; this opens no metadata/custody.
     pub(crate) fn bind_messaging_record_wake(&mut self, wake: crate::session_runtime::Wake) {
         if self.messaging_record_wake.is_none() {
@@ -855,6 +864,39 @@ mod tests {
         .unwrap();
         harness.relayout();
         harness
+    }
+
+    /// A terminal opened on the frame loop, whose store opens records on its own thread, is
+    /// still opening while its records are, and mounts once they are ready.
+    #[test]
+    fn a_terminal_mounted_without_waiting_on_the_disk_mounts_once_its_record_is_ready() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let (woken, wakes) = std::sync::mpsc::channel();
+        let woken = std::sync::Mutex::new(woken);
+        apps.open_records_without_waiting(std::sync::Arc::new(move || {
+            let _ = woken.lock().unwrap().send(());
+        }));
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            match apps.mount(
+                terminal::definition(),
+                ROOM,
+                TAB,
+                RecordId::for_tab(TAB),
+                |context| context.lend(terminal::HostedProcessServices::unavailable()),
+            ) {
+                Ok(_) => break,
+                Err(error) if error.is_opening() => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the terminal never stopped opening"
+                    );
+                    tilo_test_env::recv("the store to wake the frame loop", &wakes);
+                }
+                Err(error) => panic!("the terminal failed instead of opening: {error}"),
+            }
+        }
     }
 
     #[test]
