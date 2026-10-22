@@ -3424,6 +3424,7 @@ impl FrameHarness {
             history_invalidated = true;
             if let Some(history) = &mut self.history {
                 history.set_width(f64::from(self.viewport.0));
+                history.present_entries_of(self.root.as_ref());
                 history.refresh(&self.state.doc);
             }
         }
@@ -3448,6 +3449,7 @@ impl FrameHarness {
             if let Some(history) = &mut self.history {
                 history.finish_return_to_live();
                 history.flush_pending_toolbar();
+                let _ = history.deliver_opened_entry(self.root.as_mut());
             }
             self.discard_layout_tree();
             self.focused = None;

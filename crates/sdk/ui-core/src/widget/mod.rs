@@ -3274,6 +3274,7 @@ pub use selection_handles::{Handle as SelectionHandle, SelectionHandles};
 
 pub mod activity_timeline;
 pub mod history;
+pub mod history_face;
 pub mod history_group;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
@@ -3282,6 +3283,7 @@ pub use history::{
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
     hue_to_rgb,
 };
+pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
 // The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
 pub use collab_types::ArtifactKind;

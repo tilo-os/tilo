@@ -316,6 +316,7 @@ pub(crate) fn refresh(
         }
         let was_history = history.captures_input();
         history.set_width(width);
+        history.present_entries_of(live);
         history.refresh(doc);
         let returning_live = history.returning_live();
         if was_history || returning_live || history.captures_input() {
@@ -326,6 +327,7 @@ pub(crate) fn refresh(
         if returning_live {
             history.finish_return_to_live();
             history.flush_pending_toolbar();
+            let _ = history.deliver_opened_entry(live);
         }
     });
 }

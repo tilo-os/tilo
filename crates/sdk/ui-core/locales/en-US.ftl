@@ -197,6 +197,7 @@ history-band-rename = Rename
 history-band-undo = Undo
 history-band-restore = Restore
 history-entry-revert = Revert
+history-entry-copy = Copy
 history-band-open = still open
 history-band-shown = { $shown } of { $total } shown
 history-redacted = Removed by { $who } { $when }: { $reason }

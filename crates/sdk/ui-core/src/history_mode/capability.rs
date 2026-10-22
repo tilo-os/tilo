@@ -159,3 +159,50 @@ pub fn visit_framework_history_mut(
         visit_framework_history_mut(child, visitor);
     }
 }
+
+/// A live widget that presents its document's changes in the shared History
+/// view: the app says how each of its changes shows
+/// ([`crate::widget::HistoryEntryPresenter`]) and takes up the ones a person
+/// chooses to open. History stays the one service; this is only the app's
+/// word on what its changes look like.
+pub trait PresentsHistoryEntries {
+    /// How this app's changes show in History.
+    fn history_entry_presenter(
+        &self,
+    ) -> Option<std::rc::Rc<dyn crate::widget::HistoryEntryPresenter>>;
+
+    /// A person chose `entry` in History and its face opens it
+    /// ([`crate::widget::EntryFace::opens`]): History has closed, the app is
+    /// live again, and takes the change up (a calculation goes back into the
+    /// calculator). Returns whether it did.
+    fn open_history_entry(&mut self, entry: &crate::widget::HistoryEntry) -> bool {
+        let _ = entry;
+        false
+    }
+}
+
+/// The presenter of the first widget in `widget`'s tree that presents its
+/// History entries.
+pub fn history_entry_presenter(
+    widget: &dyn Widget,
+) -> Option<std::rc::Rc<dyn crate::widget::HistoryEntryPresenter>> {
+    if let Some(presents) = capability::<dyn PresentsHistoryEntries>(widget) {
+        return presents.history_entry_presenter();
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(history_entry_presenter)
+}
+
+/// Hand `entry` to the first widget in `widget`'s tree that presents History
+/// entries. Returns whether it took it up.
+pub fn open_history_entry(widget: &mut dyn Widget, entry: &crate::widget::HistoryEntry) -> bool {
+    if let Some(presents) = capability_mut::<dyn PresentsHistoryEntries>(&mut *widget) {
+        return presents.open_history_entry(entry);
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| open_history_entry(child, entry))
+}

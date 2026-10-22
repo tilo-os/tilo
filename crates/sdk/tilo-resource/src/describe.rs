@@ -238,6 +238,9 @@ fn edit_at(
         EditOp::Set { value } | EditOp::Insert { value } | EditOp::Remove { value } => {
             Scalar::from_json(value)
         }
+        // A text written whole (a formula, a title) is what it reads now:
+        // a reader names it without the document, cut to a scalar's length.
+        EditOp::Replace { text } => Some(Scalar::text(text)),
         EditOp::Add { by } => old
             .as_ref()
             .and_then(|old| crate::__private::json_via_bytes(old).ok())
