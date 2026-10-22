@@ -8173,6 +8173,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-clock",
  "tilo-desktop-entry",
+ "tilo-documents",
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
