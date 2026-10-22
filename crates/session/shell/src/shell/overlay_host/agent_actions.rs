@@ -165,8 +165,17 @@ struct Followed {
     ended: Option<RunPhase>,
     /// Whether what the agent said at the end has been read.
     said: bool,
-    /// The run of an issue in Tasks, whose page follows it.
-    on_issue: bool,
+    /// Where what the run says is read: here, or on its issue's page.
+    read_in: ReadIn,
+}
+
+/// Where a followed run's words are read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadIn {
+    /// The composer that follows it.
+    Composer,
+    /// The page of the issue it runs for, in Tasks.
+    Issue,
 }
 
 impl Followed {
@@ -180,7 +189,7 @@ impl Followed {
             frontier: None,
             ended: None,
             said: false,
-            on_issue: false,
+            read_in: ReadIn::Composer,
         }
     }
 
@@ -189,7 +198,7 @@ impl Followed {
     fn issue(task_id: String, title: String) -> Self {
         Self {
             started: true,
-            on_issue: true,
+            read_in: ReadIn::Issue,
             ..Self::new(task_id, title, true)
         }
     }
@@ -205,7 +214,7 @@ impl Followed {
         let phase = match &self.ended {
             Some(phase) if self.said || *phase == RunPhase::Stopped => phase.clone(),
             Some(_) => RunPhase::Working,
-            None if current.is_some() || self.on_issue => RunPhase::Working,
+            None if current.is_some() || self.read_in == ReadIn::Issue => RunPhase::Working,
             None => RunPhase::Starting,
         };
         ComposerRun {
@@ -322,7 +331,7 @@ impl AgentActions {
             ));
             return;
         };
-        if followed.on_issue {
+        if followed.read_in == ReadIn::Issue {
             return;
         }
         let task = format!("desktop:{}", followed.task_id);
