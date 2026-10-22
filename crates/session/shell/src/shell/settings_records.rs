@@ -79,7 +79,7 @@ pub(crate) fn change(
 }
 
 /// This session's door to the person's settings, for the broker.
-pub(crate) fn broker_door() -> Arc<dyn tilo_action_broker::services::SettingsRecordServices> {
+pub(crate) fn broker_door() -> Arc<dyn tilo_action_broker::services::HostStepServices> {
     Arc::new(BrokerDoor::default())
 }
 
@@ -105,7 +105,11 @@ fn arguments_of(argument: Option<&str>) -> Option<serde_json::Map<String, serde_
     serde_json::from_str(json).ok()
 }
 
-impl tilo_action_broker::services::SettingsRecordServices for BrokerDoor {
+impl tilo_action_broker::services::HostStepServices for BrokerDoor {
+    fn provider(&self) -> &'static str {
+        tilo_actions::remote::settings_records::PROVIDER
+    }
+
     fn app_id(&self) -> &str {
         <SettingsApp as tilo_app::framework::ResourceApp>::ID
     }
@@ -144,17 +148,21 @@ impl tilo_action_broker::services::SettingsRecordServices for BrokerDoor {
         Some(descriptor)
     }
 
-    fn apply(
+    fn start(
         &self,
-        request: &tilo_action_broker::services::SettingsRecordRequest<'_>,
-    ) -> Result<(), String> {
+        request: &tilo_action_broker::services::HostStepRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<tilo_action_broker::services::HostStepOutcome>, String>
+    {
         let arguments = arguments_of(request.argument).ok_or("the change carries no arguments")?;
         records().invoke(
             request.address,
             &arguments,
             &ActionInvoker::actor(request.actor.id()),
             None,
-        )
+        )?;
+        Ok(tilo_actions::remote::Pending::ready(Ok(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 }
 
@@ -221,7 +229,7 @@ mod tests {
                     tree.shared(),
                 )),
                 tilo_action_broker::services::HostServices {
-                    settings_records: Some(super::broker_door()),
+                    host_steps: vec![super::broker_door()],
                     ..Default::default()
                 },
             );

@@ -1986,14 +1986,22 @@ pub fn native_services(
         resource_views,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
         local_person,
-        device_pairing: membership.as_ref().map(|tree| {
-            Arc::new(super::device_pairing::BrokerDoor {
-                tree: tree.downgrade(),
-                pairing: super::device_pairing::Pairing::session(),
-            }) as Arc<dyn tilo_action_broker::services::DevicePairingServices>
-        }),
-        identity_admin: membership.as_ref().map(super::identity_admin::broker_door),
-        settings_records: Some(super::settings_records::broker_door()),
+        host_steps: membership
+            .as_ref()
+            .map(|tree| {
+                [
+                    Arc::new(super::device_pairing::BrokerDoor {
+                        tree: tree.downgrade(),
+                        pairing: super::device_pairing::Pairing::session(),
+                    })
+                        as Arc<dyn tilo_action_broker::services::HostStepServices>,
+                    super::identity_admin::broker_door(tree),
+                ]
+            })
+            .into_iter()
+            .flatten()
+            .chain([super::settings_records::broker_door()])
+            .collect(),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),

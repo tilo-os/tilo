@@ -896,118 +896,62 @@ pub trait KeyboardShortcutServices: Send + Sync {
     ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>>;
 }
 
-/// One pairing step the broker admitted: action `address` (on
-/// [`tilo_actions::remote::device_pairing::RESOURCE`]) for `actor` in
-/// `room`, with `argument` in its slot form.
-pub struct DevicePairingRequest<'a> {
+/// One step the broker admitted for the host to run: action `address`
+/// for `actor` in `room`, with `argument` in its slot form.
+pub struct HostStepRequest<'a> {
     pub room: &'a str,
     pub actor: &'a crate::collab_broker_capnp::BrokerActor,
     pub address: &'a tilo_actions::ActionAddress,
     pub argument: Option<&'a str>,
 }
 
-/// How a pairing step ended.
-pub type DevicePairingOutcome =
-    Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
+/// How a host step ended.
+pub type HostStepOutcome = Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
 
-/// Pairing a nearby device with the person's identity, run by the host:
-/// LAN discovery, and the approval an administrator authenticates through
-/// the host's polkit helper. The broker answers it under
-/// [`tilo_actions::remote::device_pairing::PROVIDER`], only to a caller on
-/// this machine confined to a room, and checks each step against the
-/// caller's policy under [`Self::app_id`] before the host decides whether
-/// the actor may pair at all.
-pub trait DevicePairingServices: Send + Sync {
-    /// The application whose controls pair devices. It reaches the steps as
+/// Steps the host itself runs for the person at this device: pairing a
+/// nearby device (LAN discovery, an administrator's approval through the
+/// host's polkit helper), administering the person's identities and the
+/// devices trusted under them (the root secret stays on the host), and
+/// changing the person's settings whether or not the app that shows them
+/// is open. The broker answers each service under its [`Self::provider`],
+/// only to a caller on this machine confined to a room, and checks each
+/// invocation against the caller's policy under [`Self::app_id`] before the
+/// host decides whether the actor may take it at all.
+pub trait HostStepServices: Send + Sync {
+    /// The provider the steps are answered under.
+    fn provider(&self) -> &'static str;
+    /// The application whose controls reach the steps. It reaches them as
     /// the person using it, as it does its own actions.
     fn app_id(&self) -> &str;
     /// Every step, described.
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
-    /// Start one admitted step. Its outcome arrives on the returned answer:
-    /// at once, or once the LAN window or the administrator's
-    /// authentication ends, completed from another thread.
-    ///
-    /// # Errors
-    ///
-    /// Why the step may not start: the actor does not administer the
-    /// room's identity, the arguments are malformed, or another step runs.
-    fn start(
-        &self,
-        request: &DevicePairingRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<DevicePairingOutcome>, String>;
-}
-
-/// One identity-administration step the broker admitted: action `address`
-/// (on [`tilo_actions::remote::identity_admin::RESOURCE`]) for `actor` in
-/// `room`, with `argument` in its slot form.
-pub struct IdentityAdminRequest<'a> {
-    pub room: &'a str,
-    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
-    pub address: &'a tilo_actions::ActionAddress,
-    pub argument: Option<&'a str>,
-}
-
-/// How an identity-administration step ended.
-pub type IdentityAdminOutcome = DevicePairingOutcome;
-
-/// The person's identities and the devices trusted under them, administered
-/// by the host that keeps the identity store: listing, activating, removing
-/// and protecting an identity, listing and revoking its devices, and
-/// removing a home server. The root secret stays on the host, which signs
-/// every revocation. The broker answers it under
-/// [`tilo_actions::remote::identity_admin::PROVIDER`], only to a caller on
-/// this machine confined to a room, and checks each step against the
-/// caller's policy under [`Self::app_id`] before the host decides whether
-/// the actor may administer the identity at all.
-pub trait IdentityAdminServices: Send + Sync {
-    /// The application whose controls administer identities. It reaches
-    /// the steps as the person using it, as it does its own actions.
-    fn app_id(&self) -> &str;
-    /// Every step, described.
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
-    /// Start one admitted step. Its outcome arrives on the returned answer:
-    /// at once, or once a step that reaches another device ends.
-    ///
-    /// # Errors
-    ///
-    /// Why the step may not start: the actor does not administer the
-    /// room's identity, or the arguments are malformed.
-    fn start(
-        &self,
-        request: &IdentityAdminRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<IdentityAdminOutcome>, String>;
-}
-
-/// The person's settings, kept by the host whether or not the app that
-/// shows them is open: each section a record whose field edits and verbs
-/// change it as that app's window does. The broker answers them under
-/// [`tilo_actions::remote::settings_records::PROVIDER`], only to a caller on
-/// this machine confined to a room, and admits each invocation against the
-/// caller's policy under [`Self::app_id`], as the value it carries makes it:
-/// a change that weakens the person's security asks first and needs their
-/// own grant.
-pub trait SettingsRecordServices: Send + Sync {
-    /// The application whose controls change the settings.
-    fn app_id(&self) -> &str;
-    /// Every section's actions, described as they stand now.
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
-    /// The action at `address` as one invocation with `argument` (its slot
-    /// form) is: its risk and confirmation as the value makes them.
+    /// The step at `address` as one invocation with `argument` (its slot
+    /// form) is: by default as described, or, for a setting, as risky as
+    /// the value it carries makes it.
     fn invocation(
         &self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> Option<tilo_actions::ActionDescriptor>;
-    /// Run one admitted change for `request.actor`.
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        let _ = argument;
+        self.descriptors()
+            .into_iter()
+            .find(|descriptor| &descriptor.address == address)
+    }
+    /// Start one admitted step. Its outcome arrives on the returned answer:
+    /// at once, or once the step ends (a LAN window, an administrator's
+    /// authentication, a step that reaches another device), completed from
+    /// another thread.
     ///
     /// # Errors
     ///
-    /// The arguments do not bind, or the section's model refused the change.
-    fn apply(&self, request: &SettingsRecordRequest<'_>) -> Result<(), String>;
+    /// Why the step may not start: the actor may not take it, the arguments
+    /// are malformed, or another step runs.
+    fn start(
+        &self,
+        request: &HostStepRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<HostStepOutcome>, String>;
 }
-
-/// One change of the person's settings the broker admitted.
-pub type SettingsRecordRequest<'a> = DevicePairingRequest<'a>;
 
 pub trait ContinuationServices: Send + Sync {
     /// Reports one application instance's continuation metadata.
@@ -1609,15 +1553,9 @@ pub struct HostServices {
     /// The device's keyboard shortcuts on the action door. Without it
     /// they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
-    /// Pairing a nearby device, run by the host. Without it no door offers
-    /// it.
-    pub device_pairing: Option<Arc<dyn DevicePairingServices>>,
-    /// The person's identities and their devices, administered by the
-    /// host. Without it no door offers them.
-    pub identity_admin: Option<Arc<dyn IdentityAdminServices>>,
-    /// The person's settings, kept by the host. Without it they are changed
-    /// only where the app that shows them is open.
-    pub settings_records: Option<Arc<dyn SettingsRecordServices>>,
+    /// The steps the host runs itself, each service under its own
+    /// provider. No door offers a step whose service is not installed.
+    pub host_steps: Vec<Arc<dyn HostStepServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     /// The session's persistent search index of applications' content.
     /// Without it apps' content is findable only while they run.
