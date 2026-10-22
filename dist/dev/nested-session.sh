@@ -19,7 +19,9 @@
 #                      means file-explorer): the set nested-session-build.sh
 #                      builds (the default) or a subset of it.
 #   --state DIR        state directory (default: $XDG_STATE_HOME/tilo-nested)
-#   --no-build         use the last build in target/nested-session
+#   --no-build         use the last build in target/nested-session (or in
+#                      $TILO_NESTED_SESSION_BUILD, where a check hands its
+#                      build over in a read-only tree)
 #   --prepare-only     build and install, then exit without starting the shell
 #   --reset-identity   discard the throwaway identity and mint a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
@@ -130,7 +132,7 @@ fi
 # --- 1. Build -------------------------------------------------------------------
 # One check builds the host programs, the thin apps and the runtime library
 # they link, on a t node; its outputs land in target/nested-session.
-build_out=$repo_root/target/nested-session
+build_out=${TILO_NESTED_SESSION_BUILD:-$repo_root/target/nested-session}
 bin=$build_out/bin
 thin=$build_out/thin-app
 if ((build)); then
