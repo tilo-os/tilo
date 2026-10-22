@@ -237,6 +237,8 @@ pub struct NavItem {
     pub status_label: Option<(String, Tone)>,
     pub badge: Option<String>,
     pub swatch: Option<Color>,
+    /// A picture in the icon's place (an album's cover).
+    pub art: Option<NavArt>,
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
@@ -248,6 +250,14 @@ pub struct NavItem {
     /// words people use for them. A row found by a term that has a name
     /// shows that name under its label.
     pub search_terms: Vec<NavSearchTerm>,
+}
+
+/// A picture in a row's icon place ([`NavItem::art`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavArt {
+    /// What the picture is of; its initials stand in while there is none.
+    pub name: String,
+    pub image: Option<vello::peniko::ImageData>,
 }
 
 /// A row's status dot, as [`NavItem::status`] keeps it.
@@ -282,6 +292,7 @@ impl NavItem {
             status_label: None,
             badge: None,
             swatch: None,
+            art: None,
             checked: None,
             level: None,
             presence: Vec::new(),
@@ -403,6 +414,18 @@ impl NavItem {
     #[must_use]
     pub fn swatch(mut self, color: Color) -> Self {
         self.swatch = Some(color);
+        self
+    }
+
+    /// A small rounded picture in the icon's place: what the destination
+    /// holds (an album's cover), or the initials of `name` while it has
+    /// none. The label lines up with the icons of the rows around it.
+    #[must_use]
+    pub fn art(mut self, name: impl Into<String>, image: Option<vello::peniko::ImageData>) -> Self {
+        self.art = Some(NavArt {
+            name: name.into(),
+            image,
+        });
         self
     }
 
@@ -689,6 +712,7 @@ impl NavModel {
             badge: item.badge.clone(),
             section_badges: Rc::clone(badges),
             swatch: item.swatch,
+            art: item.art.clone(),
             checked: item.checked,
             level: item.level,
             presence: item.presence.clone(),
@@ -1411,12 +1435,17 @@ impl NavList {
         let kept: Vec<NodeId> = self.tree.expanded_ids().collect();
         let ensured: HashSet<NodeId> = openings.ensured.iter().copied().collect();
         // What the person folded stays folded; what is new opens as the app
-        // asked, a section that does not fold is always open, and what the
-        // app ensures opens whatever the person did.
+        // asked (a row that could not fold before, as its first children
+        // arrive, too), a section that does not fold is always open, and
+        // what the app ensures opens whatever the person did.
+        let was_foldable = |id: NodeId| {
+            let before = self.tree.model();
+            self.keys_seen(id) && before.can_collapse(id) && before.child_count(id) > 0
+        };
         let open: Vec<NodeId> = openings
             .expanded
             .into_iter()
-            .filter(|id| !self.keys_seen(*id) || !model.can_collapse(*id) || ensured.contains(id))
+            .filter(|id| !was_foldable(*id) || !model.can_collapse(*id) || ensured.contains(id))
             .chain(kept)
             .chain(openings.ensured)
             .collect();
@@ -1732,6 +1761,7 @@ impl AdaptiveNav for NavList {
                 && item.status_label.is_none()
                 && item.badge.is_none()
                 && item.swatch.is_none()
+                && item.art.is_none()
                 && item.checked.is_none()
                 && item.level.is_none()
                 && item.presence.is_empty()

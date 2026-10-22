@@ -2945,9 +2945,23 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
         row("photos:library-favorites").count,
         Some(NavCount::Neutral(1))
     );
-    let albums = sections.last().expect("an albums section");
-    assert_eq!(albums.title, tr("photos-albums"));
-    assert_eq!(albums.items[0].label, "Trip");
+    // USER REQUIREMENT (2026-10-22): "the 'Albums' place is the parent row
+    // (selectable, it opens the albums grid), and the albums nest under it
+    // as children, collapsible like any NavList group. No separate
+    // heading." / "Give each album its cover as a small rounded thumbnail
+    // in the icon slot (the generated initials cover when empty), so the
+    // text aligns."
+    assert_eq!(sections.len(), 1, "one list of places, no albums heading");
+    let albums = row("photos:library:albums");
+    assert_eq!(albums.label, tr("photos-albums"));
+    assert_eq!(albums.children.len(), 1, "the albums nest under Albums");
+    let trip = &albums.children[0];
+    assert_eq!(trip.label, "Trip");
+    assert_eq!(
+        trip.art.as_ref().map(|art| art.name.as_str()),
+        Some("Trip"),
+        "an album stands in the icon's place by its cover or initials"
+    );
 
     // The person chooses the album in the shell's list.
     let shell = ui::widget::NavShell::new()

@@ -2901,7 +2901,7 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavDrop, NavFeed, NavItem, NavItemStatus, NavList, NavSearchTerm, NavSection,
+    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemStatus, NavList, NavSearchTerm, NavSection,
 };
 mod document_viewport;
 pub use document_viewport::{

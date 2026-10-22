@@ -70,6 +70,7 @@ pub(crate) struct NavItemSpec {
     /// Every badge code of the row's section, which share one column.
     pub section_badges: Rc<Vec<String>>,
     pub swatch: Option<Color>,
+    pub art: Option<crate::widget::nav_list::NavArt>,
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
@@ -98,6 +99,12 @@ impl NavItemSpec {
             ));
         }
         face.swatch = self.swatch;
+        face.avatar = self.art.as_ref().map(|art| {
+            crate::widget::AvatarFace::new(&art.name, &art.name)
+                .square()
+                .neutral()
+                .image(art.image.as_ref())
+        });
         face.checked = self.checked;
         face.level = self.level;
         face.presence = &self.presence;
