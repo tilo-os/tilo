@@ -15,7 +15,11 @@ use crate::headless::{self, FrameHarness};
 #[cfg(feature = "native")]
 mod app_log;
 #[cfg(feature = "native")]
+mod capture_settings;
+#[cfg(feature = "native")]
 use app_log::init_app_log;
+#[cfg(feature = "native")]
+pub use capture_settings::capture_appearance;
 mod shot_frame;
 pub use shot_frame::ShotFrame;
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
