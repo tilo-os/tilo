@@ -12,16 +12,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, ConfirmationPolicy, RiskLevel};
+use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, RiskLevel};
 use tilo_app::framework::SettingsRecords;
 
 use crate::shell::search::action_api::ActionError;
 
-/// The app whose sections they are, and whose controls change them.
-type SettingsApp = settings_core::resource::SettingsShell;
-
 fn records() -> SettingsRecords {
-    SettingsRecords::of::<SettingsApp>()
+    SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare)
 }
 
 /// The action `action` of the section `kind` (`settings.power`).
@@ -56,26 +53,19 @@ pub(crate) fn change(
     confirmed: bool,
     invoked_by: &settings_store::InvokingAction,
 ) -> Result<(), ActionError> {
-    let records = records();
-    let resources = records.resources();
-    let spec = tilo_actions::door::resolve(&resources, address).ok_or_else(|| {
-        ActionError::Refused(format!(
-            "Settings publishes no {} on {}",
-            address.action, address.resource
-        ))
-    })?;
-    if spec.confirmation_for_json(arguments) != ConfirmationPolicy::None && !confirmed {
-        return Err(ActionError::ConfirmationRequired);
-    }
     let person = crate::shell::state::local_user_id();
-    records
+    records()
         .invoke(
             address,
             arguments,
+            confirmed,
             &ActionInvoker::actor(person),
             Some(invoked_by),
         )
-        .map_err(ActionError::Refused)
+        .map_err(|error| match error {
+            tilo_actions::DoorError::ConfirmationRequired => ActionError::ConfirmationRequired,
+            error => ActionError::Refused(error.to_string()),
+        })
 }
 
 /// This session's door to the person's settings, for the broker.
@@ -111,7 +101,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
     }
 
     fn app_id(&self) -> &str {
-        <SettingsApp as tilo_app::framework::ResourceApp>::ID
+        settings_sections::APP_ID
     }
 
     fn descriptors(&self) -> Vec<ActionDescriptor> {
@@ -154,12 +144,16 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
     ) -> Result<tilo_actions::remote::Pending<tilo_action_broker::services::HostStepOutcome>, String>
     {
         let arguments = arguments_of(request.argument).ok_or("the change carries no arguments")?;
-        records().invoke(
-            request.address,
-            &arguments,
-            &ActionInvoker::actor(request.actor.id()),
-            None,
-        )?;
+        // The broker admitted it, its confirmation included.
+        records()
+            .invoke(
+                request.address,
+                &arguments,
+                true,
+                &ActionInvoker::actor(request.actor.id()),
+                None,
+            )
+            .map_err(|error| error.to_string())?;
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -217,7 +211,7 @@ mod tests {
         workspace.admit_agent("scribe", KindSet::READ);
         workspace.allow_app(
             Subject::agent("scribe"),
-            <super::SettingsApp as tilo_app::framework::ResourceApp>::ID,
+            settings_sections::APP_ID,
             KindSet::ALL,
         );
         let room = workspace.room().to_string();

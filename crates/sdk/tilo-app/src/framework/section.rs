@@ -593,24 +593,24 @@ impl SectionDoor {
     }
 }
 
-/// The settings sections an app keeps as records
-/// ([`ResourceApp::records`](super::ResourceApp::records)), held by a host
-/// without a window: the session, which keeps them for the palette and
-/// agents whether or not the app is open. Each is published and changed as
-/// the app's window does it, so a change checks the section's model and is
-/// recorded in the settings document with what made it and who; admitting
-/// an invocation (its confirmation, the invoker's grants) is the caller's,
-/// from the published action.
+/// The settings sections an app keeps as records, held by a host without a
+/// window: the session, which keeps them for the palette and agents whether
+/// or not the app is open. Each is published and changed as the app's
+/// window does it, so a change checks the section's model and is recorded
+/// in the settings document with what made it and who; admitting an
+/// invocation (the invoker's grants) is the caller's, from the published
+/// action.
 pub struct SettingsRecords {
     doors: Vec<Rc<SectionDoor>>,
 }
 
 impl SettingsRecords {
-    /// The settings sections `A` declares, as they are stored now.
+    /// The settings sections `declare` declares, of the app `app_id`, as
+    /// they are stored now.
     #[must_use]
-    pub fn of<A: super::ResourceApp>() -> Self {
-        let mut declared = super::Records::sections(A::ID);
-        A::records(&mut declared);
+    pub fn new(app_id: &'static str, declare: fn(&mut super::Records<'_>)) -> Self {
+        let mut declared = super::Records::sections(app_id);
+        declare(&mut declared);
         Self {
             doors: declared.into_sections(),
         }
@@ -625,28 +625,39 @@ impl SettingsRecords {
     /// Run the action at `address` with its typed `arguments` for `invoker`,
     /// on behalf of the action `invoked_by` when another action runs it
     /// (the palette's dark mode runs the appearance field edit). The change
-    /// is recorded with both, so its history tells them apart.
+    /// is recorded with both, so its history tells them apart. A change
+    /// whose published action asks first, for the value it carries (a later
+    /// lock), runs only once it is `confirmed`.
     ///
     /// # Errors
-    /// No section publishes the action, the arguments do not bind, or the
-    /// section's model refused the change.
+    /// No section publishes the action, the arguments do not bind, the
+    /// change is yet to be confirmed, or the section's model refused it.
     pub fn invoke(
         &self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
         invoker: &ActionInvoker,
         invoked_by: Option<&InvokingAction>,
-    ) -> Result<(), String> {
-        let encoded = tilo_actions::door::encode_json(&self.resources(), address, arguments)
-            .map_err(|error| error.to_string())?;
-        let request: super::record::RecordAction =
-            tilo_actions::decode_json(&encoded.payload).map_err(|error| error.to_string())?;
+    ) -> Result<(), tilo_actions::DoorError> {
+        let resources = self.resources();
+        let spec = tilo_actions::door::resolve(&resources, address)
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        if !confirmed
+            && spec.confirmation_for_json(arguments) != tilo_actions::ConfirmationPolicy::None
+        {
+            return Err(tilo_actions::DoorError::ConfirmationRequired);
+        }
+        let encoded = tilo_actions::door::encode_json(&resources, address, arguments)?;
+        let request: super::record::RecordAction = tilo_actions::decode_json(&encoded.payload)
+            .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
         let door = self
             .doors
             .iter()
             .find(|door| door.id() == request.record)
-            .ok_or_else(|| format!("no settings section `{}`", request.record))?;
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
         door.apply_invoked(&request.action, invoker, invoked_by)
+            .map_err(tilo_actions::DoorError::Failed)
     }
 }
 

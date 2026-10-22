@@ -1593,7 +1593,7 @@ impl DeviceMeshModel {
                 .take(6)
                 .map(|entry| {
                     let change = t("mesh-audit-change");
-                    value_row(&change, &entry.summary())
+                    value_row(&change, &crate::continuity::summary(entry))
                 })
                 .chain(std::iter::once(note(&t("mesh-audit-caption"))))
                 .collect()

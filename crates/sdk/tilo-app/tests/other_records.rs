@@ -614,7 +614,7 @@ fn a_section_is_published_and_changed_without_a_window() {
     let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "field-edit");
     let invoker = tilo_app::tilo_actions::ActionInvoker::actor("ada");
 
-    let records = tilo_app::framework::SettingsRecords::of::<LockApp>();
+    let records = tilo_app::framework::SettingsRecords::new(LockApp::ID, LockApp::records);
     let resources = records.resources();
     let spec = tilo_app::tilo_actions::door::resolve(&resources, &address)
         .expect("the section's field edit is published");
@@ -629,10 +629,20 @@ fn a_section_is_published_and_changed_without_a_window() {
         "never locking asks first"
     );
 
-    records.invoke(&address, &edit(1), &invoker, None).unwrap();
+    records
+        .invoke(&address, &edit(1), false, &invoker, None)
+        .unwrap();
+    assert_eq!(stored(), 1);
+    assert_eq!(
+        records.invoke(&address, &edit(0), false, &invoker, None),
+        Err(tilo_app::tilo_actions::DoorError::ConfirmationRequired),
+        "never locking runs only once confirmed"
+    );
     assert_eq!(stored(), 1);
     assert!(
-        records.invoke(&address, &edit(90), &invoker, None).is_err(),
+        records
+            .invoke(&address, &edit(90), true, &invoker, None)
+            .is_err(),
         "the model's check refuses"
     );
     assert_eq!(stored(), 1, "a refused change stores nothing");

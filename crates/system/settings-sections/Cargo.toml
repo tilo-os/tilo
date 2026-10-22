@@ -1,0 +1,26 @@
+[package]
+name = "settings-sections"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The person's and the device's settings sections as resource models: what Settings edits and the session keeps as records"
+
+[lib]
+name = "settings_sections"
+path = "src/lib.rs"
+
+[dependencies]
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+settings-store = { path = "../settings-store", features = ["model"] }
+tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings", features = ["model"] }
+tilo-locale = { path = "../../platform/tilo-locale" }
+# The shipped wallpapers a wallpaper choice is checked against.
+tilo-wallpapers = { version = "0.1.0", path = "../../platform/tilo-wallpapers" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
