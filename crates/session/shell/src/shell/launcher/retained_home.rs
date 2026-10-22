@@ -1053,6 +1053,7 @@ mod tests {
             service_identity: None,
             portal_workspace_id: None,
             managed_agent_id: None,
+            x11_workspace: None,
         };
         let projection = selection.attach_projection(&mut command).unwrap();
         let path = projection.path().join("locations.json");

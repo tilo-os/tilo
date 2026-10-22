@@ -1447,6 +1447,11 @@ pub struct LaunchCommand {
     /// Correlates launch events to one delegated agent without putting that
     /// identifier in ambient environment state.
     pub managed_agent_id: Option<String>,
+    /// The workspace whose X11 display a host app gets (`--x11-display`,
+    /// `--x11-authority`), looked up on the launch's own thread: a display
+    /// is bound on first use, which touches the disk, and a launch can be
+    /// started from the compositor thread.
+    pub x11_workspace: Option<String>,
 }
 
 static WAYLAND_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -2879,6 +2884,7 @@ fn build_launch_command_for(
         }),
         portal_workspace_id: None,
         managed_agent_id: None,
+        x11_workspace: None,
     }
 }
 
@@ -5116,6 +5122,7 @@ fn start_launch(
         tilo_startup_metrics::launch_phase(&app.package_id, "worker");
         let mut command = command;
         attach_browser_continuity(&app.package_id, &mut command);
+        super::host_apps::attach_x11_display(&mut command);
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
         apply_launch_env(&mut cmd, &command.env);
@@ -6545,6 +6552,7 @@ mod tests {
                 service_identity: None,
                 portal_workspace_id: None,
                 managed_agent_id: None,
+                x11_workspace: None,
             },
         }
     }
@@ -6638,6 +6646,7 @@ mod tests {
             service_identity: None,
             portal_workspace_id: None,
             managed_agent_id: None,
+            x11_workspace: None,
         };
         let _ = drain_events();
         let reported = std::thread::spawn(move || {
@@ -7291,6 +7300,7 @@ mod tests {
                 service_identity: None,
                 portal_workspace_id: None,
                 managed_agent_id: None,
+                x11_workspace: None,
             };
             let first = diagnostic_attempt_for("so.tilo.same-app", &command).unwrap();
             let second = diagnostic_attempt_for("so.tilo.same-app", &command).unwrap();
@@ -7476,6 +7486,7 @@ mod tests {
                 service_identity: None,
                 portal_workspace_id: None,
                 managed_agent_id: None,
+                x11_workspace: None,
             },
         )
         .unwrap();
@@ -7562,6 +7573,7 @@ mod tests {
                 service_identity: None,
                 portal_workspace_id: None,
                 managed_agent_id: None,
+                x11_workspace: None,
             },
         )
         .unwrap();
@@ -8900,6 +8912,7 @@ mod tests {
                 service_identity: None,
                 portal_workspace_id: Some("host-room".into()),
                 managed_agent_id: None,
+                x11_workspace: None,
             };
             spawn_launch("org.example.Flatpak".into(), "Example".into(), command)
                 .expect("launch worker");
@@ -9172,6 +9185,7 @@ mod tests {
             }),
             portal_workspace_id: None,
             managed_agent_id: None,
+            x11_workspace: None,
         };
         let mut other_room = command.clone();
         other_room.service_identity.as_mut().unwrap().workspace_id = "other-room".into();
@@ -9268,6 +9282,7 @@ mod tests {
             }),
             portal_workspace_id: None,
             managed_agent_id: None,
+            x11_workspace: None,
         };
         assert!(
             wait_for_retiring_app(&package, &command, std::time::Duration::from_millis(1)).is_err(),

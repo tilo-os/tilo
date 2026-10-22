@@ -323,6 +323,7 @@ fn start_child(fixture: &Fixture, protected_path: PathBuf) {
             }),
             portal_workspace_id: None,
             managed_agent_id: None,
+            x11_workspace: None,
         },
     )
     .expect("production launcher supervision");

@@ -17,6 +17,13 @@
 //! again when its workspace closes or no X client has been connected for
 //! [`IDLE_TIMEOUT`]; the socket stays, and the next client starts a fresh one.
 //!
+//! Binding a display touches the disk (the shared socket directory, the lock
+//! file, the socket, the authority file) and so does removing one. The
+//! compositor thread does neither: the `xwayland-displays` thread binds a
+//! display when the active workspace or a launch asks for one, and removes
+//! displays whose workspace closed. The compositor thread only adopts what
+//! it bound.
+//!
 //! Satellite hands Xwayland native output resolutions and announces the
 //! output scale over XSETTINGS, which GTK follows. Toolkits that size from
 //! the `Xft.dpi` resource instead (Qt, Xft and Xt clients, and the composing
@@ -36,7 +43,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::{
@@ -81,6 +88,10 @@ const RESOURCES_TIMEOUT: Duration = Duration::from_secs(3);
 /// The bridge's lifecycle lines go to the session log by default
 /// (`tilo_startup_metrics::log_directives`): they time an X11 app's open.
 const XWAYLAND_LOG: &str = tilo_startup_metrics::XWAYLAND_TARGET;
+/// How long a launch waits for the display thread to bind its workspace's
+/// display. Binding takes milliseconds; past this the disk is wedged, and the
+/// launch goes ahead Wayland-only as with any other X11 failure.
+const BIND_WAIT: Duration = Duration::from_secs(5);
 
 /// Every workspace display of this session, shared by the host-launch path
 /// (which creates displays) and the compositor-thread supervisor (which
@@ -102,30 +113,106 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
     REGISTRY.lock_recover()
 }
 
-/// The X11 connection for a host launch into `workspace`, creating that
-/// workspace's display on first use. `None` when X11 is unavailable there;
-/// the launch then proceeds Wayland-only.
+/// Signalled, with [`REGISTRY`], whenever the display thread delivers a
+/// display it bound (or failed to).
+static DELIVERED: Condvar = Condvar::new();
+
+/// The X11 connection for a host launch into `workspace`, its display bound
+/// on first use. `None` when X11 is unavailable there; the launch then
+/// proceeds Wayland-only.
+///
+/// A display not bound yet is bound by the display thread, and this waits
+/// for it (at most [`BIND_WAIT`]): call it from a launch's own thread, never
+/// from the compositor's.
 pub(crate) fn session_for_workspace(workspace: &str) -> Option<X11Session> {
+    let started = Instant::now();
     let mut registry = registry();
-    let Registry { displays, wake } = &mut *registry;
-    let result = displays.as_mut()?.session_for(workspace);
-    let wake = wake.clone();
-    drop(registry);
-    match result {
-        Ok((session, created)) => {
-            if created && let Some(wake) = wake {
-                wake.ping();
+    loop {
+        let displays = registry.displays.as_mut()?;
+        match displays.bound(workspace) {
+            Ok(Some(session)) => return Some(session),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps unavailable in this workspace");
+                return None;
             }
-            Some(session)
         }
-        Err(error) => {
-            tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps unavailable in this workspace");
-            None
+        if !displays.prepare(workspace) {
+            tracing::warn!(target: XWAYLAND_LOG, "X11 apps unavailable: no thread binds displays");
+            return None;
         }
+        let waited = started.elapsed();
+        if waited >= BIND_WAIT {
+            tracing::warn!(
+                target: XWAYLAND_LOG,
+                wait_ms = BIND_WAIT.as_millis(),
+                "X11 display not bound in time; launching Wayland-only"
+            );
+            return None;
+        }
+        registry = DELIVERED
+            .wait_timeout(registry, BIND_WAIT.saturating_sub(waited))
+            .map_or_else(|poisoned| poisoned.into_inner().0, |(guard, _)| guard);
     }
 }
 
+/// What the compositor thread hands the display thread: the work on a
+/// display that touches the disk.
+enum DisplayWork {
+    /// Bind a display for this workspace and deliver it.
+    Bind(String),
+    /// Stop and remove a display whose workspace no longer uses it.
+    Retire(Box<WorkspaceDisplay>),
+}
+
+/// Start the thread that binds and retires displays under `paths`, handing
+/// each bound display (or why it could not be bound) to `deliver`.
+fn spawn_display_thread(
+    paths: Paths,
+    deliver: impl Fn(String, Result<WorkspaceDisplay, String>) + Send + 'static,
+) -> Option<mpsc::Sender<DisplayWork>> {
+    let (sender, work) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("xwayland-displays".into())
+        .spawn(move || {
+            for job in work {
+                match job {
+                    DisplayWork::Bind(workspace) => {
+                        deliver(workspace, WorkspaceDisplay::bind(&paths));
+                    }
+                    DisplayWork::Retire(display) => drop(display),
+                }
+            }
+        })
+        .inspect_err(|error| {
+            tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps unavailable: cannot start the display thread");
+        })
+        .ok()?;
+    Some(sender)
+}
+
+/// Hand a display the display thread bound to the session's displays, and
+/// wake whoever waits for it: a launch, and the compositor loop, which
+/// watches the new socket.
+fn deliver_to_session(workspace: String, bound: Result<WorkspaceDisplay, String>) {
+    let mut registry = registry();
+    let Registry { displays, wake } = &mut *registry;
+    let refused = match displays.as_mut() {
+        Some(displays) => displays.adopt(workspace, bound),
+        None => bound.ok(),
+    };
+    let wake = wake.clone();
+    drop(registry);
+    DELIVERED.notify_all();
+    if let Some(wake) = wake {
+        wake.ping();
+    }
+    // Still on the display thread: removing it touches the disk.
+    drop(refused);
+}
+
 /// Where the X11 sockets, lock files and private authorities live.
+#[derive(Clone)]
 struct Paths {
     /// The shared X11 socket directory, `/tmp/.X11-unix`.
     sockets: PathBuf,
@@ -157,6 +244,14 @@ pub(crate) struct Displays {
     /// Workspaces whose bridge kept crashing. They stay Wayland-only until
     /// the workspace closes, so a broken helper cannot restart forever.
     unavailable: HashSet<String>,
+    /// Workspaces whose display the display thread is binding.
+    preparing: HashSet<String>,
+    /// Why a workspace's display could not be bound. It is not tried again
+    /// until the workspace closes.
+    bind_failed: HashMap<String, String>,
+    /// The display thread. Without one (tests) displays are retired in
+    /// place and none is bound on request.
+    worker: Option<mpsc::Sender<DisplayWork>>,
 }
 
 pub(crate) struct WorkspaceDisplay {
@@ -245,14 +340,27 @@ impl Displays {
             satellite,
             workspaces: HashMap::new(),
             unavailable: HashSet::new(),
+            preparing: HashSet::new(),
+            bind_failed: HashMap::new(),
+            worker: None,
         }
     }
 
-    /// The display of `workspace`, bound now if it has none yet. The second
-    /// value says whether it was just created and needs watching.
-    fn session_for(&mut self, workspace: &str) -> Result<(X11Session, bool), String> {
+    /// Bind and retire this session's displays on a thread of their own,
+    /// handing each bound display to `deliver`.
+    fn start_display_thread(
+        &mut self,
+        deliver: impl Fn(String, Result<WorkspaceDisplay, String>) + Send + 'static,
+    ) {
+        self.worker = spawn_display_thread(self.paths.clone(), deliver);
+    }
+
+    /// The display of `workspace` when it is bound; `Ok(None)` when it is
+    /// not yet ([`Self::prepare`] asks for it), an error when X11 is
+    /// unavailable there.
+    fn bound(&self, workspace: &str) -> Result<Option<X11Session>, String> {
         if let Some(display) = self.workspaces.get(workspace) {
-            return Ok((display.session(), false));
+            return Ok(Some(display.session()));
         }
         if let Err(reason) = &self.satellite {
             return Err(reason.clone());
@@ -260,23 +368,104 @@ impl Displays {
         if self.unavailable.contains(workspace) {
             return Err("the X11 compatibility service kept exiting in this workspace".into());
         }
+        if let Some(reason) = self.bind_failed.get(workspace) {
+            return Err(reason.clone());
+        }
+        Ok(None)
+    }
+
+    /// Have the display thread bind `workspace`'s display, once however
+    /// often it is asked. `false` when there is no display thread.
+    fn prepare(&mut self, workspace: &str) -> bool {
+        let Some(worker) = &self.worker else {
+            return false;
+        };
+        if self.workspaces.contains_key(workspace) || self.preparing.contains(workspace) {
+            return true;
+        }
+        if worker
+            .send(DisplayWork::Bind(workspace.to_string()))
+            .is_err()
+        {
+            return false;
+        }
+        self.preparing.insert(workspace.to_string());
+        true
+    }
+
+    /// Take in the display the display thread bound for `workspace`, or why
+    /// it could not. A display the workspace no longer takes (it has one, or
+    /// X11 became unavailable there) comes back for the caller to retire.
+    fn adopt(
+        &mut self,
+        workspace: String,
+        bound: Result<WorkspaceDisplay, String>,
+    ) -> Option<WorkspaceDisplay> {
+        self.preparing.remove(&workspace);
+        match bound {
+            Ok(display) => {
+                if !matches!(self.bound(&workspace), Ok(None)) {
+                    return Some(display);
+                }
+                let session = display.session();
+                tracing::info!(
+                    target: XWAYLAND_LOG,
+                    display = %session.display,
+                    "X11 display ready for a workspace"
+                );
+                self.workspaces.insert(workspace, display);
+                None
+            }
+            Err(error) => {
+                tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps unavailable in this workspace");
+                self.bind_failed.insert(workspace, error);
+                None
+            }
+        }
+    }
+
+    /// Stop and remove `display` on the display thread (in place without
+    /// one).
+    fn retire(&self, display: WorkspaceDisplay) {
+        if let Some(worker) = &self.worker
+            && let Err(mpsc::SendError(DisplayWork::Retire(display))) =
+                worker.send(DisplayWork::Retire(Box::new(display)))
+        {
+            drop(display);
+        }
+    }
+
+    /// Bind `workspace`'s display on this thread, for tests that drive
+    /// displays without a display thread. The second value says whether it
+    /// was just created.
+    #[cfg(test)]
+    fn session_for(&mut self, workspace: &str) -> Result<(X11Session, bool), String> {
+        if let Some(session) = self.bound(workspace)? {
+            return Ok((session, false));
+        }
         let display = WorkspaceDisplay::bind(&self.paths)?;
         let session = display.session();
-        tracing::info!(
-            target: XWAYLAND_LOG,
-            display = %session.display,
-            "X11 display ready for a workspace"
-        );
         self.workspaces.insert(workspace.to_string(), display);
         Ok((session, true))
     }
 
     /// Remove every display whose workspace closed, stopping its X server.
     fn retain_workspaces(&mut self, live: &HashSet<String>) {
-        self.workspaces
-            .retain(|workspace, _| live.contains(workspace));
+        let closed: Vec<String> = self
+            .workspaces
+            .keys()
+            .filter(|workspace| !live.contains(*workspace))
+            .cloned()
+            .collect();
+        for workspace in closed {
+            if let Some(display) = self.workspaces.remove(&workspace) {
+                self.retire(display);
+            }
+        }
         self.unavailable
             .retain(|workspace| live.contains(workspace));
+        self.bind_failed
+            .retain(|workspace, _| live.contains(workspace));
     }
 
     /// Advance every display: reap exited bridges, stop idle ones and start
@@ -309,7 +498,9 @@ impl Displays {
             }
         }
         for workspace in &exhausted {
-            self.workspaces.remove(workspace);
+            if let Some(display) = self.workspaces.remove(workspace) {
+                self.retire(display);
+            }
             self.unavailable.insert(workspace.clone());
         }
         exhausted
@@ -776,8 +967,10 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
                 if let Err(error) = &satellite {
                     tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps are unavailable");
                 }
+                let mut displays = Displays::new(paths, satellite);
+                displays.start_display_thread(deliver_to_session);
                 let mut registry = registry();
-                registry.displays = Some(Displays::new(paths, satellite));
+                registry.displays = Some(displays);
                 registry.wake = Some(wake);
             }
             Err(error) => tracing::warn!(target: XWAYLAND_LOG, %error, "X11 apps are unavailable"),
@@ -817,12 +1010,23 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         let live = live_workspaces(chrome);
         // D-Bus-activated X11 apps inherit the session environment. Bind
         // the active workspace's socket (satellite still starts on first
-        // connect) so DISPLAY exists before anyone clicks a host app.
+        // connect) so DISPLAY exists before anyone clicks a host app. The
+        // display thread binds it; a later tick exports it.
         if let Some(active) = active_workspace_room(chrome)
             && live.contains(&active)
-            && let Ok((session, _)) = displays.session_for(&active)
         {
-            crate::compositor::session_env::export_x11(&session.display, &session.authority);
+            match displays.bound(&active) {
+                Ok(Some(session)) => {
+                    crate::compositor::session_env::export_x11(
+                        &session.display,
+                        &session.authority,
+                    );
+                }
+                Ok(None) => {
+                    displays.prepare(&active);
+                }
+                Err(_) => {}
+            }
         }
         if displays.workspaces.is_empty()
             && displays.unavailable.is_empty()
@@ -1511,6 +1715,64 @@ mod tests {
                 "the display number is claimed machine-wide"
             );
         }
+    }
+
+    /// The compositor thread never binds or removes a display: it asks the
+    /// display thread, which binds once however often it is asked, and
+    /// adopts what it delivers. A closed workspace's display is removed
+    /// there too.
+    #[test]
+    fn the_display_thread_binds_and_removes_displays() {
+        let mut fixture = fixture();
+        let (delivered, received) = mpsc::channel();
+        fixture
+            .displays
+            .start_display_thread(move |workspace, bound| {
+                let _ = delivered.send((workspace, bound));
+            });
+        assert!(fixture.displays.worker.is_some());
+        assert_eq!(fixture.displays.bound("room-a"), Ok(None));
+        assert!(fixture.displays.prepare("room-a"));
+        assert!(fixture.displays.prepare("room-a"));
+        let (workspace, bound) = received.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(workspace, "room-a");
+        assert!(fixture.displays.adopt(workspace, bound).is_none());
+        let session = fixture.displays.bound("room-a").unwrap().unwrap();
+        let number = session.display.trim_start_matches(':').to_string();
+        let socket = fixture.displays.paths.sockets.join(format!("X{number}"));
+        let lock = fixture
+            .displays
+            .paths
+            .locks
+            .join(format!(".X{number}-lock"));
+        assert!(socket.exists() && lock.exists() && session.authority.exists());
+
+        // Asked twice, it bound once: the thread works in order, so the next
+        // delivery is the next request's.
+        assert!(fixture.displays.prepare("room-a"), "already bound");
+        assert!(fixture.displays.prepare("room-b"));
+        let (workspace, bound) = received.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(workspace, "room-b");
+        assert!(fixture.displays.adopt(workspace, bound).is_none());
+
+        // A display for a workspace that has one comes back to be retired.
+        let extra = WorkspaceDisplay::bind(&fixture.displays.paths).unwrap();
+        let extra = fixture
+            .displays
+            .adopt("room-a".into(), Ok(extra))
+            .expect("the workspace keeps its display");
+        assert_eq!(fixture.displays.bound("room-a"), Ok(Some(session.clone())));
+        fixture.displays.retire(extra);
+
+        fixture.displays.retain_workspaces(&live(&["room-b"]));
+        assert_eq!(fixture.displays.bound("room-a"), Ok(None));
+        // Once a later bind is delivered, the closed workspace's display is
+        // gone.
+        assert!(fixture.displays.prepare("room-c"));
+        let _ = received.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(!socket.exists(), "the socket is removed");
+        assert!(!lock.exists(), "the display number is released");
+        assert!(!session.authority.exists(), "the authority is removed");
     }
 
     #[test]

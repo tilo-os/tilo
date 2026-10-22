@@ -204,6 +204,24 @@ pub(crate) struct X11Session {
     pub authority: PathBuf,
 }
 
+fn push_x11_args(args: &mut Vec<String>, x11: &X11Session) {
+    args.push("--x11-display".to_string());
+    args.push(x11.display.clone());
+    args.push("--x11-authority".to_string());
+    args.push(x11.authority.display().to_string());
+}
+
+/// Give a host launch its workspace's X11 display, on the launch's own
+/// thread ([`launcher::LaunchCommand::x11_workspace`]).
+pub(crate) fn attach_x11_display(command: &mut launcher::LaunchCommand) {
+    let Some(workspace) = command.x11_workspace.take() else {
+        return;
+    };
+    if let Some(x11) = x11_session_for(Some(&workspace)) {
+        push_x11_args(&mut command.args, &x11);
+    }
+}
+
 /// The X11 connection a host launch into `workspace` may inherit: that
 /// workspace's own display, created on first use. A launch attributed to no
 /// workspace gets none, and callers never fall back to ambient
@@ -349,10 +367,7 @@ pub(crate) fn build_launch_command(
         args.push(path.display().to_string());
     }
     if let Some(x11) = x11 {
-        args.push("--x11-display".to_string());
-        args.push(x11.display.clone());
-        args.push("--x11-authority".to_string());
-        args.push(x11.authority.display().to_string());
+        push_x11_args(&mut args, x11);
     }
     let mut env = vec![(
         "XDG_RUNTIME_DIR".to_string(),
@@ -370,6 +385,7 @@ pub(crate) fn build_launch_command(
         service_identity: None,
         portal_workspace_id,
         managed_agent_id: None,
+        x11_workspace: None,
     }
 }
 
@@ -539,16 +555,17 @@ fn launch_resolved(
             return Err(error);
         }
     };
-    let x11 = x11_session_for(portal_workspace_id.as_deref());
+    let x11_workspace = portal_workspace_id.clone();
     let mut command = build_launch_command(
         &app,
         &launcher_bin,
         &socket,
         document,
-        x11.as_ref(),
+        None,
         portal_workspace_id,
         activation_token,
     );
+    command.x11_workspace = x11_workspace;
     if let Some(HostOpen::Url(url)) = open {
         command.args.push("--open-url".to_string());
         command.args.push(url.to_string());
@@ -640,7 +657,6 @@ pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, Laun
     for (path, reason) in &scan.skipped {
         tracing::info!(path = %path.display(), ?reason, "autostart entry not started");
     }
-    let x11 = x11_session_for(portal_workspace_id);
     let startable: Vec<&desktop_entry::autostart::Autostart> = scan
         .start
         .iter()
@@ -653,13 +669,14 @@ pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, Laun
         .collect();
     for start in &startable {
         let entry = &start.entry;
-        let command = build_autostart_command(
+        let mut command = build_autostart_command(
             entry,
             &launcher_bin,
             &socket,
-            x11.as_ref(),
+            None,
             portal_workspace_id.map(str::to_string),
         );
+        command.x11_workspace = portal_workspace_id.map(str::to_string);
         launcher::note_session_helper(&entry.id);
         if start.auto_restart {
             launcher::note_restartable_session_helper(&entry.id, &entry.name, command.clone());
