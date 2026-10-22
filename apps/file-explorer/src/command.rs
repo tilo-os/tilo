@@ -163,6 +163,10 @@ pub enum FileCommand {
     /// Open the NTFS drive with this id (chosen from the places list): the
     /// shell asks the person before it opens, unless they remembered it.
     OpenDrive(String),
+    /// Uninstall the selected apps in the Applications place (or, for a part
+    /// of the system, remove them from the person's apps). The shell asks the
+    /// person first, one app at a time.
+    Uninstall,
     /// Read the cloud account with this id again (after the person signed in
     /// elsewhere) and open its folder if it is now available.
     RecheckRemoteAccount(String),

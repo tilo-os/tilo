@@ -830,9 +830,48 @@ fn package_row_opens(result: &SearchResult, app_id: &str) -> bool {
         && crate::shell::launcher::app_id_matches_package(app_id, &result.id)
 }
 
+/// The row that uninstalls `result`'s app (or takes it off the person's
+/// apps), listed under "More actions" on an app's row. Choosing it asks the
+/// person in the shell's sheet, as Files and the Store do: one action from
+/// every door ([`crate::shell::app_list`]). `None` for an app that comes
+/// with the system and stays, or one the list has not read yet.
+pub(crate) fn uninstall_row(provider: &'static str, result: &SearchResult) -> Option<SearchResult> {
+    use os_actions::AppRemoval;
+    let item = crate::shell::app_list::find(&result.id)?;
+    let label = match item.removal() {
+        AppRemoval::Uninstall | AppRemoval::UninstallWithData => t("search-apps-uninstall"),
+        AppRemoval::RemoveFromApps => t("search-apps-remove-from-apps"),
+        AppRemoval::None => return None,
+    };
+    let id = item.id;
+    let mut row = SearchResult::nullary_fallible(
+        ResourceKind::Action,
+        provider,
+        format!("{UNINSTALL_PREFIX}{id}"),
+        label,
+        None,
+        result.score,
+        move |_doc, _root, _chrome: &Chrome| {
+            crate::shell::app_list::ask(&id);
+            Ok(())
+        },
+    );
+    row.operation_kind = tilo_actions::OperationKind::Effect;
+    Some(row)
+}
+
+/// The id prefix of [`uninstall_row`]'s rows.
+pub(crate) const UNINSTALL_PREFIX: &str = "uninstall:";
+
 impl SearchProvider for ApplicationsProvider {
     fn id(&self) -> &'static str {
         PROVIDER_ID
+    }
+    fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
+        if result.kind != ResourceKind::Application || result.id.contains(':') {
+            return Vec::new();
+        }
+        uninstall_row(PROVIDER_ID, result).into_iter().collect()
     }
     fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
         package_row_opens(result, app_id)

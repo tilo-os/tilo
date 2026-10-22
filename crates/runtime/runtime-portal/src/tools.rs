@@ -21,10 +21,18 @@ pub const TOOL_PROTOCOL_VERSION: u32 = crate::RUNTIME_INTERFACE_VERSION;
 pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
 pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
 const MAX_WIRE_BYTES: usize = 4 * 1024;
-/// A reply may carry the drive list, so it gets more room than a request.
-pub const MAX_REPLY_BYTES: usize = 16 * 1024;
+/// A reply may carry the drive list or the app list, so it gets more room
+/// than a request: the most apps one reply lists, each at its largest.
+pub const MAX_REPLY_BYTES: usize = MAX_LISTED_APPS * MAX_APP_ENTRY_BYTES + 16 * 1024;
 /// The most drives one reply lists.
 pub const MAX_LISTED_DRIVES: usize = 32;
+/// The most apps one reply lists ([`ToolIntent::Applications`]).
+pub const MAX_LISTED_APPS: usize = 1024;
+/// The most one listed app takes on the wire: its id, name, icon and
+/// program, each bounded by the shell before it is listed.
+pub const MAX_APP_ENTRY_BYTES: usize = 2 * 1024;
+/// The longest app id an app may name ([`ToolIntent::UninstallApplication`]).
+pub const MAX_APP_ID_BYTES: usize = 512;
 const MAX_DRIVE_ID_BYTES: usize = 64;
 const MAX_DIRECTORY_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
@@ -135,6 +143,92 @@ pub enum ToolIntent {
     /// asks the person first unless they chose to remember the drive; the
     /// app learns nothing more than that the request was taken.
     OpenDrive { drive: String },
+    /// List the person's apps, every kind in one list ([`ToolReply::applications`]).
+    /// The shell answers only Files: it is the person's own view of them.
+    Applications,
+    /// Open an app from [`ToolIntent::Applications`].
+    OpenApplication { app: String },
+    /// Uninstall an app from [`ToolIntent::Applications`], or take a part of
+    /// the system off the person's apps. The shell asks the person first, in
+    /// its own sheet; the app learns nothing more than that the request was
+    /// taken.
+    UninstallApplication { app: String },
+}
+
+/// What uninstalling a listed app does, as the person is asked about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppRemoval {
+    /// A Flatpak: uninstalled, and its data moved to the Trash unless the
+    /// person keeps it.
+    UninstallWithData,
+    /// Uninstalled; nothing of the person's is touched (a Tilo app), or the
+    /// program file goes to the Trash (a downloaded program).
+    Uninstall,
+    /// Part of the system: it can only be taken off the person's apps.
+    RemoveFromApps,
+    /// Neither: an app the system image ships.
+    None,
+}
+
+/// Where a listed app came from, as the person knows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppKind {
+    /// A Tilo package.
+    Tilo,
+    Flatpak,
+    /// A downloaded `AppImage`.
+    AppImage,
+    /// Another downloaded program, or a menu entry the person made.
+    Program,
+    /// A menu entry of the operating system.
+    #[default]
+    System,
+}
+
+/// One app as an app lists it ([`ToolIntent::Applications`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppEntry {
+    /// The id [`ToolIntent::OpenApplication`] and
+    /// [`ToolIntent::UninstallApplication`] take.
+    pub id: String,
+    pub name: String,
+    /// A Tilo app's package id, for its own glyph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// The icon file, an absolute path, when the app has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// The program file of a downloaded program, an absolute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    pub removal: AppRemoval,
+    #[serde(default)]
+    pub kind: AppKind,
+    /// What it takes on disk, in bytes, where that is known: a Flatpak's
+    /// installed files, a downloaded program's file, a Tilo app's bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+impl AppEntry {
+    /// Whether every field fits the bound [`MAX_APP_ENTRY_BYTES`] sets.
+    #[must_use]
+    pub fn fits(&self) -> bool {
+        let optional = |field: &Option<String>| field.as_ref().map_or(0, String::len);
+        let total = [
+            self.id.len(),
+            self.name.len(),
+            optional(&self.package),
+            optional(&self.icon),
+            optional(&self.program),
+            128,
+        ]
+        .into_iter()
+        .fold(0_usize, usize::saturating_add);
+        self.id.len() <= MAX_APP_ID_BYTES && total <= MAX_APP_ENTRY_BYTES
+    }
 }
 
 /// An NTFS drive as an app lists it: what to call it and whether it is open.
@@ -214,7 +308,17 @@ impl ToolIntent {
                 }
                 Ok(())
             }
+            Self::OpenApplication { app } | Self::UninstallApplication { app } => {
+                if app.is_empty()
+                    || app.len() > MAX_APP_ID_BYTES
+                    || app.chars().any(char::is_control)
+                {
+                    return Err("invalid app".into());
+                }
+                Ok(())
+            }
             Self::Drives
+            | Self::Applications
             | Self::Firewall { .. }
             | Self::Disks { .. }
             | Self::Backups { .. }
@@ -269,7 +373,10 @@ impl ToolIntent {
             Self::WorkspaceSettings { .. }
             | Self::IdentityBackup
             | Self::Drives
-            | Self::OpenDrive { .. } => None,
+            | Self::OpenDrive { .. }
+            | Self::Applications
+            | Self::OpenApplication { .. }
+            | Self::UninstallApplication { .. } => None,
         }
     }
 }
@@ -288,6 +395,9 @@ pub struct ToolReply {
     /// The answer to [`ToolIntent::Drives`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drives: Vec<DriveEntry>,
+    /// The answer to [`ToolIntent::Applications`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applications: Vec<AppEntry>,
 }
 
 /// Ask the current shell session to open a known tool at a typed context.
@@ -309,6 +419,15 @@ pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
 /// As [`open_tool`].
 pub fn list_drives() -> Result<Vec<DriveEntry>, String> {
     send_tool_request(ToolIntent::Drives).map(|reply| reply.drives)
+}
+
+/// The person's apps, for Files' Applications place.
+///
+/// # Errors
+///
+/// As [`open_tool`].
+pub fn list_applications() -> Result<Vec<AppEntry>, String> {
+    send_tool_request(ToolIntent::Applications).map(|reply| reply.applications)
 }
 
 #[cfg(not(unix))]
@@ -405,7 +524,7 @@ mod tests {
                 let reply = ToolReply {
                     accepted: true,
                     message: request.workspace_id,
-                    drives: Vec::new(),
+                    ..ToolReply::default()
                 };
                 let mut encoded = serde_json::to_vec(&reply).unwrap();
                 encoded.push(b'\n');

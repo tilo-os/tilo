@@ -78,6 +78,27 @@ pub fn install_commands(app_id: &str, remotes: &str) -> Result<Vec<Vec<String>>,
     ])
 }
 
+/// The `flatpak` argument lists that uninstall `app_id` from the person's
+/// own installation, in order: the app, then the runtimes no app of the
+/// person's uses any more (nothing else removes those, so each removed app
+/// would leave its runtime behind for good). The app's data
+/// (`~/.var/app/<id>`) is left for the caller, which moves it to the Trash
+/// when the person asks; Flatpak's own `--delete-data` would delete it.
+///
+/// # Errors
+///
+/// [`InstallRefusal::InvalidId`] when `app_id` is not an application id.
+pub fn uninstall_commands(app_id: &str) -> Result<Vec<Vec<String>>, InstallRefusal> {
+    if !valid_app_id(app_id) {
+        return Err(InstallRefusal::InvalidId);
+    }
+    let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    Ok(vec![
+        args(&["uninstall", "--user", "--noninteractive", "--", app_id]),
+        args(&["uninstall", "--user", "--unused", "--noninteractive"]),
+    ])
+}
+
 /// An account Flathub source must itself be trustworthy; otherwise an
 /// enabled, verifying official device source is enough.
 fn require_enabled_flathub(rows: &str) -> Result<(), InstallRefusal> {
@@ -188,6 +209,37 @@ pub fn other_processor_apps(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Uninstalling touches only the person's installation, never deletes
+    /// the app's data (`--delete-data`), and refuses anything that could be
+    /// read as an option.
+    #[test]
+    fn uninstalling_removes_the_users_app_and_keeps_its_data_for_the_caller() {
+        let commands = uninstall_commands("org.gnome.Chess").expect("valid id");
+        assert_eq!(
+            commands[0],
+            [
+                "uninstall",
+                "--user",
+                "--noninteractive",
+                "--",
+                "org.gnome.Chess"
+            ]
+        );
+        assert!(
+            commands
+                .iter()
+                .flatten()
+                .all(|arg| arg != "--delete-data" && arg != "--system")
+        );
+        for bad in ["--delete-data", "--all", "chess", "", "org.x/../y"] {
+            assert_eq!(
+                uninstall_commands(bad),
+                Err(InstallRefusal::InvalidId),
+                "{bad}"
+            );
+        }
+    }
 
     /// Flathub builds Steam for `x86_64` only. Listed from the other
     /// processor's summary it is an entry marked not built for this device;

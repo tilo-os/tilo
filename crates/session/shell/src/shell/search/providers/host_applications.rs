@@ -337,6 +337,14 @@ impl SearchProvider for HostApplicationsProvider {
     fn id(&self) -> &'static str {
         "host-applications"
     }
+    fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
+        if result.kind != ResourceKind::HostApplication {
+            return Vec::new();
+        }
+        super::applications::uninstall_row("host-applications", result)
+            .into_iter()
+            .collect()
+    }
     fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
         result.id.eq_ignore_ascii_case(app_id)
             || self.snapshot().is_some_and(|snapshot| {

@@ -870,6 +870,9 @@ pub struct Entry {
     pub rich_metadata: Option<MetadataProjectionV1>,
     /// Object observed by the listing, used only as a stale-view precondition.
     pub observed: Option<host_fs::ObservedObject>,
+    /// What an app in the Applications place is, beyond its name: its icon,
+    /// kind and size. `None` for every file and folder.
+    pub app: Option<crate::applications::AppFacts>,
 }
 
 impl Entry {
@@ -903,6 +906,10 @@ impl Entry {
 
 /// Human-readable byte size (e.g. `4.0 kB`). Directories show "—".
 pub fn human_size(entry: &Entry) -> String {
+    if let Some(app) = &entry.app {
+        // An app's size only where it is known; never a placeholder.
+        return app.size.map(crate::i18n::format_bytes).unwrap_or_default();
+    }
     if entry.is_dir {
         "—".to_string()
     } else {
@@ -1048,6 +1055,7 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             availability,
             share,
             history,
+            app: None,
             rich_metadata,
             observed: meta
                 .as_ref()

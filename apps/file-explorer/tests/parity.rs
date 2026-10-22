@@ -24,6 +24,7 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
         availability: None,
         share: None,
         history: None,
+        app: None,
         rich_metadata: None,
         observed: None,
     }
@@ -396,6 +397,7 @@ fn list_build_yields_a_file_view() {
         availability: None,
         share: None,
         history: None,
+        app: None,
         rich_metadata: None,
         observed: None,
     }];
@@ -433,6 +435,7 @@ fn grid_mode_uses_responsive_file_view() {
         availability: None,
         share: None,
         history: None,
+        app: None,
         rich_metadata: None,
         observed: None,
     }];

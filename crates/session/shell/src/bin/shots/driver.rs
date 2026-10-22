@@ -32,6 +32,8 @@ use taffy::prelude::NodeId;
 mod desktop_control;
 mod invite_scenes;
 mod search_seed;
+mod two_groups_scene;
+mod uninstall_scenes;
 mod window_menu_scene;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
@@ -2059,6 +2061,10 @@ impl ShellDriver {
             ),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
+            name @ ("app-uninstall-flatpak"
+            | "app-uninstall-tilo"
+            | "app-uninstall-downloaded"
+            | "app-uninstall-system") => self.scene_app_uninstall(name),
             "invite-empty" => self.scene_invite_empty(),
             "invite-typing" => self.scene_invite_typing(),
             "invite-error" => self.scene_invite_error(),
@@ -3707,71 +3713,6 @@ impl ShellDriver {
         Ok(())
     }
 
-    /// Two half-width windows, focus on the right-hand one — nothing about
-    /// the layout alone says which takes the next keystroke.
-    fn scene_two_groups_focus(&mut self) {
-        use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-        let half = WindowWidth::Fraction(500);
-        let mut placed = None;
-        self.with_chrome(|st| {
-            let mut tree = st.tree_mut();
-            let mut sibling = None;
-            let mut strip_id = None;
-            if let Some(strip) = tree
-                .desktop
-                .active_workspace_mut()
-                .and_then(|ws| ws.strips.first_mut())
-            {
-                for g in &mut strip.window_groups {
-                    g.width = half;
-                }
-                let gid = 9101u64;
-                let tid = 9111u64;
-                strip.window_groups.push(WindowGroup {
-                    id: gid,
-                    tabs: vec![Tab {
-                        id: tid,
-                        title: "Settings".to_string(),
-                        tile: TileContent::Stub {
-                            kind: shell::shell::state::AppKind::Settings,
-                            label: "Settings".to_string(),
-                        },
-                    }],
-                    active_tab: tid,
-                    width: half,
-                    maximized: false,
-                    focus_history: Vec::new(),
-                });
-                strip_id = Some(strip.id);
-                sibling = Some(gid);
-            }
-            // Focus the newly-added right-hand window, so the
-            // scene shows the signal moving off the default.
-            if let (Some(sid), Some(gid)) = (strip_id, sibling) {
-                tree.desktop.set_active_group(sid, gid);
-                placed = Some(sid);
-            }
-            drop(tree);
-            st.bump();
-        });
-        // Widths only reach the widget tree at construction, which
-        // ran before this; halve the live groups too or the scene
-        // renders one full-width window with its sibling off-edge.
-        if let Some(sid) = placed
-            && let Some(row) = self.host_mut().group_row_mut_for_tests(sid)
-        {
-            for g in &mut row.groups {
-                g.set_width(half);
-            }
-        }
-        // The pushed group latches its 420 ms arrival fade off the
-        // wall clock the moment it's spliced in; paint once so it
-        // becomes a widget, then wait the curve out before the
-        // caller's `paint_settled` captures the resting state.
-        let _ = self.paint_settled();
-        std::thread::sleep(std::time::Duration::from_millis(600));
-    }
-
     /// Three strips in the active workspace, focus on the middle one — the
     /// only scene exercising the strip ribbon.
     fn scene_multi_strip(&mut self) {
@@ -3882,6 +3823,10 @@ impl ShellDriver {
         "saved-window-reopen",
         "launchpad-notes-card",
         "peer-sync",
+        "app-uninstall-flatpak",
+        "app-uninstall-tilo",
+        "app-uninstall-downloaded",
+        "app-uninstall-system",
         "invite-empty",
         "invite-typing",
         "invite-error",

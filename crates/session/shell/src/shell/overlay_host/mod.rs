@@ -272,6 +272,7 @@ mod tab_menu_host;
 mod thing_menu;
 mod top_bar;
 mod tree_harvest;
+mod uninstall;
 mod wifi_password;
 mod window_focus;
 mod workspace_content;
@@ -994,6 +995,12 @@ pub struct ShellOverlayHost {
     person_quick_composer_node: Option<NodeId>,
     /// The invite, join and pairing sheet's node while it is up.
     peer_sync_node: Option<NodeId>,
+    /// "Uninstall <name>?" while it asks ([`uninstall`]).
+    uninstall_sheet: Option<crate::shell::uninstall_sheet::Asking>,
+    /// The sheet's window node and its own, while it is laid out.
+    uninstall_nodes: Option<(NodeId, NodeId)>,
+    /// The sheet opened or closed since the tree was last built.
+    uninstall_changed: bool,
     agent_actions:
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     /// The rooms' trackers, where the composer follows the runs it asked for.

@@ -348,6 +348,7 @@ widget-filepicker-name-not-allowed = Diese App kann nicht in „{ $folder }“ s
 widget-filetable-column-name = Name
 widget-filetable-column-size = Größe
 widget-filetable-column-modified = Geändert
+widget-filetable-column-kind = Art
 widget-filepicker-empty = Dieser Ordner ist leer
 widget-filepicker-place-home = Persönlicher Ordner
 widget-filepicker-place-documents = Dokumente
