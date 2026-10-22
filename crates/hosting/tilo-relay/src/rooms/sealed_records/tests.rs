@@ -556,6 +556,73 @@ async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
     relay.shutdown().await;
 }
 
+/// Copy what `from` holds into `to`, keeping files `to` has already.
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            std::fs::create_dir_all(&target).unwrap();
+            copy_dir(&entry.path(), &target);
+        } else if !target.exists() {
+            // A file removed since it was listed is not part of this state.
+            let _ = std::fs::copy(entry.path(), &target);
+        }
+    }
+}
+
+/// The node is stopped hard a moment after it took in members' sealed
+/// writes, with no governance change since. The room as it opens from disk,
+/// before anything is replayed, already holds them: replaying the relay's
+/// copy at a start may not bring a write back (the app surface it is
+/// decided against is not there yet), and a later write building on it
+/// would leave the record with a gap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn members_writes_the_node_took_in_survive_a_hard_stop() {
+    let Lounge {
+        _dir,
+        relay,
+        rooms,
+        room,
+        governor,
+        member,
+    } = lounge().await;
+    for line in ["graffiti", "more graffiti"] {
+        set_title(&member, &rooms, &room, line).await;
+    }
+    assert_eq!(
+        readable(&rooms, &room).await.as_deref(),
+        Some("more graffiti")
+    );
+    let path = rooms.room(&room).await.unwrap().lock().await.path.clone();
+    let key = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities()).0;
+
+    // What a hard stop leaves on disk, copied (the room file before the
+    // files it names) and opened as the next start opens it.
+    let deadline = std::time::Instant::now() + super::super::KEEP_FOLLOWED * 30;
+    loop {
+        let stopped = tempfile::tempdir().unwrap();
+        let copy = stopped.path().join(path.file_name().unwrap());
+        std::fs::copy(&path, &copy).unwrap();
+        copy_dir(path.parent().unwrap(), stopped.path());
+        let held = match GovernedRoom::open(copy, &governor, &key) {
+            Ok(reopened) => reopened.readable_document(APP, RECORD).await.unwrap(),
+            // Copied while the room wrote its next state.
+            Err(_) => None,
+        };
+        if held.as_deref().and_then(title).as_deref() == Some("more graffiti") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the members' writes never reached the room's own file"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    drop(rooms);
+    relay.shutdown().await;
+}
+
 /// A chat kept as a chain of parts starts each part with a member's sealed
 /// write, under keys the node stewards. The node takes in every part as it
 /// starts, however many there are, and reads each.
