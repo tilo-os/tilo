@@ -379,6 +379,40 @@ mod tests {
         );
     }
 
+    /// On a laptop-wide bar a wave still says who waved, in words, beside
+    /// the faces: the notice yields to the clock, not to the whole lane
+    /// kept for an activity.
+    #[test]
+    fn a_wave_is_worded_beside_the_faces_on_a_laptop_wide_bar() {
+        let tree = room(&[("gd", "Gentle Dolphin")]);
+        let (mut bar, chrome) = bar_over(&tree, true);
+        super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
+        let quiet = bar.people_left_x;
+        chrome.borrow_mut().waved = Some(crate::chrome::WaveNotice {
+            from: "Gentle Dolphin".into(),
+            at: ui::time::now(),
+        });
+        super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
+        let theme = Theme::default();
+        let mut text = TextRenderer::new();
+        let least = ui::widget::ChipFace::intrinsic_width(
+            "Gentle D\u{2026} waved at you",
+            ui::widget::ChipLead::Glyph(ui::icons::Icon::Hand),
+            false,
+            &mut text,
+            &theme,
+        );
+        assert!(
+            quiet - bar.people_left_x >= least,
+            "the notice takes room for its words: {quiet} -> {}",
+            bar.people_left_x
+        );
+        assert!(
+            bar.people_left_x > bar.center_rect.x1,
+            "and keeps off the clock"
+        );
+    }
+
     /// A count arriving on the bell, or growing, never moves a face: the
     /// pointer already on its way to someone still lands on them, on the
     /// web and on the desktop alike, from nothing unread on.
