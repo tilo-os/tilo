@@ -9,7 +9,7 @@
 //! Out:  `OUT_DIR` (default `target/look/web-bar`):
 //!       `bar-<dark|light|narrow>.png`, `workspace-menu.png`, `profile.png`,
 //!       `profile-linking.png`, `profile-linked.png`, `people.png`,
-//!       `people-pills.png`
+//!       `people-pills.png`, `bar-unread.png`, `bar-unread-2x.png`
 
 #![allow(
     clippy::expect_used,
@@ -53,6 +53,8 @@ const MY_NAME: &str = "Quinn Davis";
 /// called Ada), and this page's own person.
 struct Room {
     tree: RefCell<DesktopTree>,
+    /// Unread notifications, counted on the bell.
+    unread: u32,
 }
 
 impl DesktopChromeSource for Room {
@@ -74,6 +76,8 @@ impl DesktopChromeSource for Room {
                 rgb: (214, 140, 96),
             }),
             invite: tilo_desktop::chrome::Invite::Offered,
+            notification_badge: self.unread,
+            notifications_only: true,
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -217,9 +221,14 @@ impl Widget for Stage {
 }
 
 fn stage() -> Stage {
+    stage_with_unread(0)
+}
+
+fn stage_with_unread(unread: u32) -> Stage {
     let tree = tree();
     let room = Rc::new(Room {
         tree: RefCell::new(tree.clone()),
+        unread,
     });
     let bar = TopBarChrome::from_tree_with_local_user(&tree, ME.into())
         .with_chrome(room)
@@ -430,5 +439,21 @@ fn main() {
         stage.people_open = true;
         shoot(&mut harness, "people.png");
     }
+    // The count on the bell, whole inside the bar: on a 1440x900 page, and
+    // on a 2560x1440 screen at scale 2, with more than nine unread.
+    for (name, unread, viewport, scale) in [
+        ("bar-unread.png", 3, (1440, 900), 1),
+        ("bar-unread-2x.png", 120, (1280, 720), 2),
+    ] {
+        ui::offscreen::set_capture_device_scale(scale);
+        let mut harness = FrameHarness::for_root(
+            State::new(),
+            stage_with_unread(unread),
+            viewport,
+            Theme::dark(),
+        );
+        shoot(&mut harness, name);
+    }
+    ui::offscreen::set_capture_device_scale(1);
     pills(&out);
 }

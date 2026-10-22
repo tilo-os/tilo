@@ -641,6 +641,8 @@ pub struct TopBarChrome {
     /// Interaction geometry is deliberately larger than the painted pill:
     /// the screen's top-right edge must remain an easy Quick Settings target.
     tray_hit_rect: Rect,
+    /// Where the bell's unread count was painted, `Rect::ZERO` without one.
+    bell_badge_rect: Rect,
     media_indicator_rect: Rect,
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
@@ -953,6 +955,7 @@ impl TopBarChrome {
             app_tray: Vec::new(),
             app_tray_images: HashMap::new(),
             tray_hit_rect: Rect::ZERO,
+            bell_badge_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
             media_signature: Vec::new(),
             media_started: None,
@@ -2490,7 +2493,7 @@ impl TopBarChrome {
     /// over the person's work. Returns the x cursor position for the next
     /// slot.
     fn draw_tray_notification_badge(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -2519,6 +2522,7 @@ impl TopBarChrome {
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let next = sx + layout.tray_slot + layout.tray_gap;
+        self.bell_badge_rect = Rect::ZERO;
         if self.bell.unread == 0 {
             return next;
         }
@@ -2532,10 +2536,17 @@ impl TopBarChrome {
         // takes no room of its own: the cluster keeps its width whatever the
         // count, and the faces to its left never move under a pointer
         // already on its way to one.
+        // It stays inside the bar with a hair of air, so a tall count (a
+        // large text size) is nudged down rather than cut off at the bar's,
+        // and so the screen's, top edge.
         let (badge_w, badge_h) = Self::notification_badge_size(label_w, label_h, theme);
-        let right = glyph.x1 + badge_h / 2.0 - 1.0;
-        let top = glyph.y0 - badge_h / 2.0 + 2.0;
+        let inset = f64::from(theme.tokens.spacing.s1) / 2.0;
+        let right = glyph.x1 + badge_h / 2.0 + 1.0;
+        let top = (glyph.y0 - badge_h / 2.0 + 2.0)
+            .min(self.rect.y1 - inset - badge_h)
+            .max(self.rect.y0 + inset);
         let badge = Rect::new(right - badge_w, top, right, top + badge_h);
+        self.bell_badge_rect = badge;
         // A count badge is a capsule (Selector radius) in the danger hue;
         // its ink is whichever text tone stays legible on that fill, so a
         // light or high-contrast palette is not handed a fixed white.
@@ -2570,10 +2581,12 @@ impl TopBarChrome {
         next
     }
 
-    /// `99+` once the exact number no longer fits the compact badge.
+    /// `9+` once the count needs a second digit: the badge sits on the
+    /// bell's shoulder, and a wider one would hide the bell it counts for.
+    /// The exact number is in the bell's name and the notification centre.
     fn notification_badge_label(count: u32) -> String {
-        if count > 99 {
-            "99+".to_string()
+        if count > 9 {
+            "9+".to_string()
         } else {
             count.to_string()
         }
@@ -2750,7 +2763,7 @@ impl TopBarChrome {
     /// Settings/volume/network/battery glyphs in the already-sized and
     /// already-painted tray pill from [`Self::draw_tray_pill_body`].
     fn draw_tray_icons(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -5156,6 +5169,40 @@ mod tests {
                 .iter()
                 .any(|bell| bell.name.as_deref() == Some("Notifications silenced, 2 unread"))
         );
+    }
+
+    /// The unread count on the bell's shoulder stays whole inside the bar,
+    /// never cut off at its top edge, whatever the count and text size.
+    #[test]
+    fn the_unread_count_stays_inside_the_bar() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            for unread in [1, 42, 5000] {
+                let tree = DesktopTree {
+                    active: WorkspaceId(1),
+                    workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+                    ..DesktopTree::default()
+                };
+                let chrome = fixture::FixtureChrome::new(tree.clone());
+                chrome.borrow_mut().notifications_only = true;
+                chrome.borrow_mut().notification_badge = unread;
+                let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+                lay_out_and_draw_with_theme(&mut bar, 1440.0, &theme);
+                let badge = bar.bell_badge_rect;
+                assert!(
+                    !badge.is_zero_area(),
+                    "{unread} unread at {scale}x: a badge"
+                );
+                assert!(
+                    badge.y0 >= bar.rect.y0
+                        && badge.y1 <= bar.rect.y1
+                        && badge.x0 >= bar.rect.x0
+                        && badge.x1 <= bar.rect.x1,
+                    "{unread} unread at {scale}x: the badge {badge:?} is inside the bar {:?}",
+                    bar.rect
+                );
+            }
+        }
     }
 
     /// Every host draws the bell in the status cluster, quiet with nothing
