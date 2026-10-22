@@ -293,7 +293,9 @@ class Product:
         return out
 
     def own(self, fields: dict[str, Any], where: str) -> None:
-        clash = OWN_FIELDS & (set(fields) - {"needs"})
+        # A step names what it consumes (`needs`), and the checks it waits for only where they run
+        # (`optional_needs`: one holding credentials, which a working tree's run never starts).
+        clash = OWN_FIELDS & (set(fields) - {"needs", "optional_needs"})
         if clash:
             raise ProductError(f"{self.name}: {where} may not set {sorted(clash)}")
 
