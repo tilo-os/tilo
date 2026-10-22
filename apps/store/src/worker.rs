@@ -136,6 +136,9 @@ pub struct Snapshot {
     /// Enabled native repositories that have not answered the current
     /// refresh, so installed apps they list are described only locally.
     pub unanswered_repositories: Vec<String>,
+    /// Enabled native repositories whose catalogue is authentic but expired,
+    /// so the Store says so instead of calling them unreachable.
+    pub expired_repositories: Vec<String>,
     /// Who blocked which app, as the worker last read the block list.
     pub blocks: ui::registry::BlockList,
     /// The app Update all is updating now, so its row shows the progress.
@@ -325,6 +328,8 @@ struct State {
     catalogue_error: Option<String>,
     /// See [`Snapshot::unanswered_repositories`].
     unanswered_repositories: Vec<String>,
+    /// See [`Snapshot::expired_repositories`].
+    expired_repositories: Vec<String>,
     details: LruCache<String, StoreItem>,
     /// The current palette/action directory. Rebuilding it is linear in a
     /// catalogue snapshot, so it belongs on this serialized worker rather
@@ -371,6 +376,7 @@ fn initial_state(
         flatpak_error: None,
         catalogue_error: None,
         unanswered_repositories: Vec::new(),
+        expired_repositories: Vec::new(),
         details: LruCache::new(CACHE_CAP),
         blocks: ui::registry::BlockList::load(),
         directory,
@@ -569,6 +575,7 @@ fn poll_refresh(
             flatpak_error: state.flatpak_error.clone(),
             operation_error: state.catalogue_error.clone(),
             unanswered_repositories: state.unanswered_repositories.clone(),
+            expired_repositories: state.expired_repositories.clone(),
             blocks: state.blocks.clone(),
             updating: None,
         })
@@ -763,6 +770,7 @@ fn handle(
                 flatpak_error: state.flatpak_error.clone(),
                 operation_error: None,
                 unanswered_repositories: state.unanswered_repositories.clone(),
+                expired_repositories: state.expired_repositories.clone(),
                 blocks: state.blocks.clone(),
                 updating: None,
             };
@@ -1321,6 +1329,7 @@ fn update_all(
             flatpak_error: state.flatpak_error.clone(),
             operation_error: None,
             unanswered_repositories: state.unanswered_repositories.clone(),
+            expired_repositories: state.expired_repositories.clone(),
             blocks: state.blocks.clone(),
             updating: Some(item.id.clone()),
         };
@@ -1398,6 +1407,7 @@ fn send_tracked(
             .or_else(|| state.catalogue_error.clone())
             .or_else(|| state.flatpak_error.clone()),
         unanswered_repositories: state.unanswered_repositories.clone(),
+        expired_repositories: state.expired_repositories.clone(),
         blocks: state.blocks.clone(),
         updating: None,
     })
@@ -1526,6 +1536,7 @@ mod tests {
             flatpak_error: None,
             catalogue_error: None,
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             details: LruCache::new(CACHE_CAP),
             directory,
             blocks: ui::registry::BlockList::empty(),

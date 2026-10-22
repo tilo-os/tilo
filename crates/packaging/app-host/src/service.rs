@@ -641,7 +641,12 @@ fn registry_catalogue_from(
         .iter()
         .find(|registry| registry.name == name && registry.enabled)
         .ok_or_else(|| Error::failed("repository is not configured and enabled".into()))?;
-    let entries = fetch(registry).map_err(failed)?;
+    let entries = fetch(registry).map_err(|error| match error {
+        app_cli::client::RegistryError::Expired { expired_at_unix } => {
+            Error::failed(crate::client::expired_catalogue_error(expired_at_unix))
+        }
+        other => failed(other),
+    })?;
     let json = serde_json::to_string(&entries).map_err(failed)?;
     if json.len() > MAX_REGISTRY_CATALOGUE_BYTES {
         return Err(Error::failed(
@@ -1489,6 +1494,26 @@ mod command_tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn an_expired_catalogue_reaches_the_store_as_expired() {
+        let configured = catalogue_configuration();
+        let error = super::registry_catalogue_from(&configured, "Configured source", |_| {
+            Err(app_cli::client::RegistryError::Expired {
+                expired_at_unix: 1_792_587_897,
+            })
+        })
+        .unwrap_err();
+        // What the Store's pending read sees is the error's text.
+        assert!(crate::client::expired_catalogue(&error.to_string()));
+        let other = super::registry_catalogue_from(&configured, "Configured source", |_| {
+            Err(app_cli::client::RegistryError::Http(
+                "connection refused".into(),
+            ))
+        })
+        .unwrap_err();
+        assert!(!crate::client::expired_catalogue(&other.to_string()));
     }
 
     #[test]

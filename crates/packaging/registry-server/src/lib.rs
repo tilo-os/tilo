@@ -30,6 +30,7 @@ pub mod applications;
 pub mod bot_review;
 pub mod bundle_review;
 mod catalogue;
+mod metrics;
 pub mod moderation;
 pub mod moderation_api;
 pub mod serve;

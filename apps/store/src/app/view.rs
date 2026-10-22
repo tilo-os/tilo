@@ -251,6 +251,19 @@ impl StoreApp {
                     )),
             ));
         }
+        if let Some(name) = self.expired_repositories.first() {
+            // While a repository's catalogue is expired nothing from it can be
+            // installed or updated, so that is the one thing to say.
+            let mut refresh = Button::new("store.error.refresh", &ui::i18n!("store-error-refresh"));
+            if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
+                refresh = refresh.on_action(binding);
+            }
+            return Some(Box::new(
+                Banner::warning(ui::i18n!("store-catalogue-expired-title", "name" => name.clone()))
+                    .with_message(ui::i18n!("store-catalogue-expired", "name" => name.clone()))
+                    .with_action(refresh),
+            ));
+        }
         let source_error = self
             .remotes
             .iter()
@@ -480,6 +493,24 @@ impl StoreApp {
         }
     }
 
+    /// The empty state for a catalogue that couldn't be read, if it
+    /// couldn't. An expired catalogue is named as such: nothing is wrong with
+    /// the connection, and installed apps keep working.
+    fn catalogue_failure(&self) -> Option<EmptyState> {
+        if let Some(name) = self.expired_repositories.first() {
+            return Some(EmptyState::error(
+                ui::i18n!("store-catalogue-expired-title", "name" => name.clone()),
+                ui::i18n!("store-catalogue-expired", "name" => name.clone()),
+            ));
+        }
+        self.catalogue_unreachable().map(|error| {
+            EmptyState::error(
+                ui::i18n!("store-offline-title"),
+                visible_operation_status(error),
+            )
+        })
+    }
+
     /// Why the catalogue couldn't be read, if it couldn't.
     fn catalogue_unreachable(&self) -> Option<&String> {
         self.operation_error.as_ref().or_else(|| {
@@ -496,13 +527,9 @@ impl StoreApp {
         if ids.is_empty() {
             // Without the catalogue nobody knows whether updates wait:
             // "Every app is up to date" would be a guess.
-            let state = match self.catalogue_unreachable() {
-                Some(error) => EmptyState::error(
-                    ui::i18n!("store-offline-title"),
-                    visible_operation_status(error),
-                ),
-                None => EmptyState::new(ui::i18n!("store-updates-none")),
-            };
+            let state = self
+                .catalogue_failure()
+                .unwrap_or_else(|| EmptyState::new(ui::i18n!("store-updates-none")));
             children.push(Box::new(state));
             return self.page(theme, Measure::Catalogue, true, children);
         }
@@ -658,17 +685,14 @@ impl StoreApp {
                     )),
             );
         }
-        let empty = if let Some(error) = self.catalogue_unreachable() {
-            EmptyState::error(
-                ui::i18n!("store-offline-title"),
-                visible_operation_status(error),
-            )
-        } else {
-            EmptyState::new(ui::i18n!("store-empty-title"))
-                .with_message(ui::i18n!("store-empty-help"))
-        }
-        .with_action(ui::i18n!("store-error-refresh"))
-        .with_action_id("store.empty.refresh");
+        let empty = self
+            .catalogue_failure()
+            .unwrap_or_else(|| {
+                EmptyState::new(ui::i18n!("store-empty-title"))
+                    .with_message(ui::i18n!("store-empty-help"))
+            })
+            .with_action(ui::i18n!("store-error-refresh"))
+            .with_action_id("store.empty.refresh");
         Box::new(match bindings::effect(&StoreEffect::Refresh) {
             Some(binding) => empty.on_action(binding),
             None => empty,

@@ -60,6 +60,12 @@ pub enum RegistryError {
     Empty,
     #[error("registry snapshot proof failed: {0}")]
     Proof(#[from] registry_types::SnapshotError),
+    /// The registry's owner-signed catalogue is authentic but past its
+    /// expiry: the registry has not renewed it. Nothing in it is offered.
+    #[error(
+        "the registry's catalogue expired at {expired_at_unix} (Unix time) and has not been renewed"
+    )]
+    Expired { expired_at_unix: u64 },
     #[error("registry snapshot was rolled back or replayed")]
     Rollback,
     #[error("registry snapshot checkpoint could not be persisted: {0}")]
@@ -199,9 +205,28 @@ pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, Registr
     let snapshot =
         CatalogueSnapshot::from_json(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
     let now = tilo_clock::unix_now();
-    let _ = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)?;
+    if let Err(error) = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now) {
+        return Err(expired_or(error, &snapshot, &reg.owner_pubkey_hex, now));
+    }
     persist_checkpoint(reg, &snapshot, &bytes)?;
     Ok(snapshot)
+}
+
+/// `error`, unless `snapshot` failed only by having expired: then
+/// [`RegistryError::Expired`], so a device can say the catalogue expired
+/// rather than that the registry is unreachable.
+fn expired_or(
+    error: RegistryError,
+    snapshot: &CatalogueSnapshot,
+    owner_pubkey_hex: &str,
+    now_unix: u64,
+) -> RegistryError {
+    match (&error, snapshot.expired_at(owner_pubkey_hex, now_unix)) {
+        (RegistryError::Proof(registry_types::SnapshotError::Freshness), Some(expired_at_unix)) => {
+            RegistryError::Expired { expired_at_unix }
+        }
+        _ => error,
+    }
 }
 
 /// The catalogue this device last accepted from `reg`, read from disk without
@@ -550,6 +575,32 @@ mod tests {
         };
         registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
         snapshot
+    }
+
+    #[test]
+    fn an_authentic_expired_catalogue_is_told_apart_from_a_failed_one() {
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let classified = |snapshot: &CatalogueSnapshot, now| {
+            classify_snapshot(snapshot, &owner_hex, now)
+                .map(|_| ())
+                .map_err(|error| expired_or(error, snapshot, &owner_hex, now))
+        };
+        // Issued at 100, valid until 200.
+        let genuine = snapshot(&owner);
+        assert!(classified(&genuine, 150).is_ok());
+        assert!(matches!(
+            classified(&genuine, 250),
+            Err(RegistryError::Expired {
+                expired_at_unix: 200
+            })
+        ));
+        // Another owner's expired snapshot is a proof failure, not "expired".
+        let stranger = SigningKey::from_bytes(&[9; 32]);
+        assert!(matches!(
+            classified(&snapshot(&stranger), 250),
+            Err(RegistryError::Proof(_))
+        ));
     }
 
     #[test]

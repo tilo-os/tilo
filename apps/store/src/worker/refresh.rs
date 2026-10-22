@@ -94,6 +94,8 @@ pub(super) struct Refresh {
     /// Repositories that answered this refresh; their catalogue replaces the
     /// last verified one and is never replaced by it.
     answered: HashSet<String>,
+    /// Repositories whose catalogue this refresh found authentic but expired.
+    expired: Vec<String>,
     flatpak: HashMap<String, Vec<StoreItem>>,
     /// Flathub's catalogue: the one the last refresh read until this one's
     /// read answers.
@@ -156,6 +158,7 @@ impl Refresh {
             registries: None,
             native: HashMap::new(),
             answered: HashSet::new(),
+            expired: Vec::new(),
             flatpak: HashMap::new(),
             feed: feed.or_else(|| state.flathub.clone()),
             cached: state.base_items.clone(),
@@ -391,6 +394,15 @@ impl Refresh {
                 self.answered.insert(registry.name.clone());
                 self.native.insert(registry.name, entries);
             }
+            // An expired catalogue is the repository's to renew, not a
+            // connection to check: say which, and that installed apps run on.
+            Err(error) if app_host::client::expired_catalogue(&error) => {
+                self.errors.push((
+                    0,
+                    ui::i18n!("store-repository-expired", "name" => registry.name.clone()),
+                ));
+                self.expired.push(registry.name);
+            }
             Err(error) => self
                 .errors
                 .push((0, format!("Could not load {}: {error}", registry.name))),
@@ -547,6 +559,7 @@ impl Refresh {
         // screens and search list them nowhere.
         state.blocks = ui::registry::BlockList::load();
         // Pending or failed alike: what these list is not current yet.
+        state.expired_repositories.clone_from(&self.expired);
         state.unanswered_repositories = self
             .registries
             .iter()
@@ -649,6 +662,7 @@ mod tests {
         let mut app = crate::StoreApp::new();
         app.set_items(state.base_items.clone());
         app.set_unanswered_repositories(state.unanswered_repositories.clone());
+        app.set_expired_repositories(state.expired_repositories.clone());
         app.admit(crate::StoreEffect::ShowDetails {
             app: "so.tilo.mail".into(),
         })
@@ -816,6 +830,34 @@ mod tests {
                 .as_deref()
                 .is_some_and(|error| error.contains(MAIN))
         );
+    }
+
+    #[test]
+    fn an_expired_catalogue_is_reported_as_expired() {
+        let (mut state, mut refresh) = refresh_with_bundled_mail();
+        // As the host's error reaches the pending read, transport prefix included.
+        let error = format!(
+            "remote exception: Failed: {}",
+            app_host::client::expired_catalogue_error(1_792_587_897)
+        );
+        refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
+        refresh.rebuild(&mut state);
+        assert_eq!(state.expired_repositories, [MAIN]);
+        // Reported in the Store's words (the visible copy is pinned by
+        // app::tests::an_expired_catalogue_is_named_as_expired_not_as_unreachable),
+        // never as the host's raw text.
+        let reported = state.catalogue_error.as_deref().unwrap();
+        assert!(!reported.contains("[expired-catalogue]"), "{reported}");
+        assert!(!reported.contains("Could not load"), "{reported}");
+
+        // Any other failure is not called expired.
+        let (mut state, mut refresh) = refresh_with_bundled_mail();
+        refresh.apply(
+            &mut state,
+            Response::Native(main_registry(), Err("error sending request".into())),
+        );
+        refresh.rebuild(&mut state);
+        assert!(state.expired_repositories.is_empty());
     }
 
     #[test]
