@@ -848,13 +848,15 @@ impl SheetsApp {
             transform,
             &self.grid.body_rect(),
         );
+        let inset = self.metrics.s1;
+        let round = f64::from(theme.tokens.radii.full);
         for (cell, tone) in markers {
-            scene.fill(
-                Fill::NonZero,
+            ui::paint::fill_round(
+                scene,
                 transform,
+                comment_marker(cell, size, inset),
+                round,
                 tone.colour(theme),
-                None,
-                &comment_marker(cell, size),
             );
         }
         scene.pop_layer();
@@ -990,16 +992,18 @@ impl SheetsApp {
     }
 }
 
-/// The marker in a commented cell's top trailing corner: a small right
-/// triangle filling the corner, the shape spreadsheets mark a note with.
-fn comment_marker(cell: Rect, size: f64) -> vello::kurbo::BezPath {
+/// Where a commented cell's marker sits: a dot of `size` in the cell's top
+/// trailing corner, `inset` in from both edges, never more than half the
+/// cell so a narrow column still shows its text.
+fn comment_marker(cell: Rect, size: f64, inset: f64) -> Rect {
     let size = size.min(cell.width() / 2.0).min(cell.height() / 2.0);
-    let mut path = vello::kurbo::BezPath::new();
-    path.move_to((cell.x1 - size, cell.y0));
-    path.line_to((cell.x1, cell.y0));
-    path.line_to((cell.x1, cell.y0 + size));
-    path.close_path();
-    path
+    let inset = inset.min((cell.height() - size).max(0.0) / 2.0);
+    Rect::new(
+        cell.x1 - inset - size,
+        cell.y0 + inset,
+        cell.x1 - inset,
+        cell.y0 + inset + size,
+    )
 }
 
 /// One series of a chart: its name and its number at each category, `None`
