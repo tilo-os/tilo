@@ -122,6 +122,13 @@ impl VelloDrmBridge {
 
         let device_errors = DeviceErrorLatch::install(device);
         let mut loss_watch = ui::gpu::LossWatch::new(dev_handle.loss_monitor());
+        let opened_in_software = ui::gpu::software_fallback().is_some();
+        // A GPU that cannot be brought back loses every device opened on it, before its first
+        // frame.
+        #[cfg(target_os = "linux")]
+        if super::dead_gpu_injected(opened_in_software) {
+            apply_injected_fault(device, super::InjectedGpuFault::Dead);
+        }
         let mut target = match RetainedGpuTarget::new(dev_handle, width, height) {
             Ok(target) => target,
             Err(error) => {
@@ -137,7 +144,8 @@ impl VelloDrmBridge {
                         dev_handle.loss_monitor().reason()
                     }
                     _ => None,
-                };
+                }
+                .or_else(|| dev_handle.loss_monitor().reason());
                 if let Some(reason) = reason {
                     super::gpu_lost(&adapter_info, false, &reason);
                 }
@@ -160,7 +168,7 @@ impl VelloDrmBridge {
             device_errors,
             loss_watch,
             adapter: adapter_info,
-            opened_in_software: ui::gpu::software_fallback().is_some(),
+            opened_in_software,
             bgra_blitter,
             dispatch_stage_observer: std::env::var_os("TILO_PROFILE_GPU_STAGES")
                 .is_some_and(|value| value == "1")
@@ -1506,23 +1514,8 @@ impl VelloDrmBridge {
     /// ([`super::InjectedGpuFault`]), on this bridge's own device.
     #[cfg(target_os = "linux")]
     fn apply_injected_fault(&self) {
-        let Some(fault) = super::injected_gpu_fault(self.opened_in_software) else {
-            return;
-        };
-        // SAFETY: the hal device is only flagged; no raw handle leaves this block.
-        let Some(hal) = (unsafe { self.target.device.as_hal::<wgpu::hal::api::Vulkan>() }) else {
-            tracing::warn!(?fault, "an injected GPU fault needs a Vulkan device");
-            return;
-        };
-        tracing::warn!(
-            ?fault,
-            "applying an injected GPU fault to the renderer's device"
-        );
-        match fault {
-            super::InjectedGpuFault::Reset | super::InjectedGpuFault::Dead => {
-                hal.simulate_device_loss();
-            }
-            super::InjectedGpuFault::Hang => hal.simulate_hang(),
+        if let Some(fault) = super::injected_gpu_fault(self.opened_in_software) {
+            apply_injected_fault(&self.target.device, fault);
         }
     }
 
@@ -1857,5 +1850,26 @@ impl VelloDrmBridge {
         });
 
         (readback_buf, padded_bytes_per_row)
+    }
+}
+
+/// Have `device` suffer `fault` through the vendored HAL's switches
+/// (`vendor/wgpu-hal/TILO-PATCH.md`).
+#[cfg(target_os = "linux")]
+fn apply_injected_fault(device: &wgpu::Device, fault: super::InjectedGpuFault) {
+    // SAFETY: the hal device is only flagged; no raw handle leaves this block.
+    let Some(hal) = (unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }) else {
+        tracing::warn!(?fault, "an injected GPU fault needs a Vulkan device");
+        return;
+    };
+    tracing::warn!(
+        ?fault,
+        "applying an injected GPU fault to the renderer's device"
+    );
+    match fault {
+        super::InjectedGpuFault::Reset | super::InjectedGpuFault::Dead => {
+            hal.simulate_device_loss();
+        }
+        super::InjectedGpuFault::Hang => hal.simulate_hang(),
     }
 }

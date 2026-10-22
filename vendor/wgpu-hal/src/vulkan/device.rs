@@ -2304,6 +2304,7 @@ impl crate::Device for super::Device {
         &self,
         fence: &super::Fence,
     ) -> Result<crate::FenceValue, crate::DeviceError> {
+        self.check_simulated_loss()?;
         let latest = fence.get_latest(
             &self.shared.raw,
             self.shared.extension_fns.timeline_semaphore.as_ref(),
