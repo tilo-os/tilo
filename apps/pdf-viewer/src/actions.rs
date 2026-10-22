@@ -147,15 +147,27 @@ pub enum PdfEffect {
     },
     /// Read text
     ///
-    /// Answers with the text of the PDF's pages as its file holds them,
-    /// page by page, at most 50 pages at a time: read on from the `next` an
-    /// answer gives. Changes nothing.
+    /// Answers with the text of the PDF's pages, page by page, at most 50
+    /// pages at a time: read on from the `next` an answer gives. Reads the
+    /// PDF the record pinned, so a record opened from content reads with no
+    /// file. Changes nothing.
     #[effect(kind = "read", returns, idempotent)]
     ReadText {
         #[param("The first page to read, 1-based; the first page when omitted")]
         from_page: Option<usize>,
         #[param("The last page to read, 1-based; 50 pages on when omitted")]
         to_page: Option<usize>,
+    },
+    /// Look at a page
+    ///
+    /// Answers with a picture of one page as the PDF draws it, kept as
+    /// content: its address, width and height. Changes nothing.
+    #[effect(kind = "read", returns, idempotent)]
+    LookPage {
+        #[param("The page to look at, 1-based")]
+        page: usize,
+        #[param("The picture's longest side in pixels, 64 to 1536; 1024 when omitted")]
+        size: Option<u32>,
     },
     /// Open PDF
     ///

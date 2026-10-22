@@ -5724,7 +5724,10 @@ impl PdfApp {
                 index,
                 page,
             } => self.go_to_search_result(query, *whole_word, *case_sensitive, *index, *page),
-            PdfEffect::OpenPdf { .. } | PdfEffect::SaveAs { .. } | PdfEffect::ReadText { .. } => {
+            PdfEffect::OpenPdf { .. }
+            | PdfEffect::SaveAs { .. }
+            | PdfEffect::ReadText { .. }
+            | PdfEffect::LookPage { .. } => {
                 return false;
             }
         }
@@ -5810,22 +5813,40 @@ impl PdfApp {
         Err(error)
     }
 
-    /// The text of pages `from_page..=to_page` (1-based) of the PDF as its
-    /// file holds them, at most [`MOST_READ_PAGES`] of them.
+    /// The PDF the record marks up, read in this process, and its name: the
+    /// bytes the record pinned, from the content store, which every window
+    /// of the record reads alike, else the file this window opened.
+    fn reading_document(&self) -> Result<(String, tilo_pdf::Document), String> {
+        // The portable engine is memory-safe and runs in process; reading
+        // needs nothing only the sandboxed one draws.
+        let engine = tilo_pdf::Engine::portable();
+        let pinned = self
+            .record_source
+            .as_ref()
+            .and_then(|source| Some((source, self.content.read(&source.hash)?)));
+        let (file, document) = match (pinned, self.source_path.as_deref()) {
+            (Some((source, bytes)), _) => (source.name.clone(), engine.open_bytes(&bytes)),
+            (None, Some(path)) => (path.display().to_string(), engine.open_path(path)),
+            (None, None) => {
+                return Err(match &self.record_source {
+                    Some(source) => format!("{} is not on this device yet", source.name),
+                    None => "this record holds no PDF to read yet".to_owned(),
+                });
+            }
+        };
+        let document = document.map_err(|error| format!("the PDF cannot be read: {error}"))?;
+        Ok((file, document))
+    }
+
+    /// The text of pages `from_page..=to_page` (1-based) of the PDF the
+    /// record marks up ([`Self::reading_document`]), at most
+    /// [`MOST_READ_PAGES`] of them.
     pub(crate) fn read_text(
         &self,
         from_page: Option<usize>,
         to_page: Option<usize>,
     ) -> Result<serde_json::Value, String> {
-        let path = self
-            .source_path
-            .as_deref()
-            .ok_or("this PDF has no file to read its text from yet; save it first")?;
-        // The portable engine is memory-safe and runs in process; reading
-        // text needs nothing only the sandboxed one draws.
-        let document = tilo_pdf::Engine::portable()
-            .open_path(path)
-            .map_err(|error| format!("the PDF cannot be read: {error}"))?;
+        let (file, document) = self.reading_document()?;
         let count = document.page_count();
         let first = from_page.unwrap_or(1).max(1);
         if first > count {
@@ -5843,11 +5864,73 @@ impl PdfApp {
             pages.push(serde_json::json!({ "page": page, "text": text.text().trim_end() }));
         }
         Ok(serde_json::json!({
-            "file": path.display().to_string(),
+            "file": file,
             "page_count": count,
             "pages": pages,
             "next": (last < count).then_some(last + 1),
         }))
+    }
+
+    /// A picture of page `page` (1-based) of the PDF the record marks up,
+    /// its longest side `size` pixels, kept as content: the answer names
+    /// its address, which a caller that sees is shown.
+    pub(crate) fn look_page(
+        &self,
+        page: usize,
+        size: Option<u32>,
+    ) -> Result<ui::tilo_actions::ActionOutput, String> {
+        use image::ImageEncoder as _;
+        let size = size.unwrap_or(1024);
+        if !(64..=1536).contains(&size) {
+            return Err("size must be within 64..=1536".into());
+        }
+        let (_, document) = self.reading_document()?;
+        let count = document.page_count();
+        if page == 0 || page > count {
+            return Err(format!("the PDF has {count} pages"));
+        }
+        let page_size = document
+            .page_size(page - 1)
+            .ok_or_else(|| format!("page {page} cannot be read"))?;
+        let longest = page_size.width.max(page_size.height);
+        #[allow(clippy::cast_precision_loss, reason = "a picture side of at most 1536")]
+        let options = tilo_pdf::RenderOptions {
+            scale: if longest > 0.0 {
+                size as f32 / longest
+            } else {
+                1.0
+            },
+            ..tilo_pdf::RenderOptions::default()
+        };
+        let bitmap = document
+            .render(page - 1, &options)
+            .map_err(|error| format!("page {page} cannot be drawn: {error}"))?;
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(
+                bitmap.pixels(),
+                bitmap.width(),
+                bitmap.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|error| format!("page {page} cannot be encoded: {error}"))?;
+        let hash = self
+            .content
+            .put(&png)
+            .map_err(|error| format!("the picture could not be kept: {error}"))?;
+        let address = ui::tilo_actions::content_resource(&hash)
+            .ok_or("the picture has no content address")?;
+        Ok(ui::tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({
+                "content": address,
+                "page": page,
+                "page_count": count,
+                "width": bitmap.width(),
+                "height": bitmap.height(),
+                "format": "png",
+            })),
+            resources: vec![address],
+        })
     }
 
     pub(crate) fn answer_effect(
@@ -6008,6 +6091,56 @@ mod tests {
                 to_page: None,
             })
             .is_err()
+        );
+    }
+
+    /// A record whose PDF is pinned from the content store reads its text
+    /// with no file at all, as an agent's window does.
+    #[test]
+    fn a_pinned_pdf_reads_and_is_seen_from_the_content_store_without_a_file() {
+        let bytes = std::fs::read(concat!(env!("OUT_DIR"), "/sample.pdf")).expect("the fixture");
+        let content = ContentStore::memory();
+        let hash = content.put(&bytes).expect("the store keeps the PDF");
+        let mut app = PdfApp::empty_with_content(content);
+        assert_eq!(
+            app.read_text(None, None).unwrap_err(),
+            "this record holds no PDF to read yet"
+        );
+        app.record_source = Some(crate::markup::PinnedSource {
+            hash,
+            len: u64::try_from(bytes.len()).unwrap(),
+            name: "report.pdf".into(),
+        });
+        let read = app.read_text(None, Some(1)).expect("the pinned PDF reads");
+        assert_eq!(read["file"], "report.pdf");
+        assert_eq!(read["pages"][0]["page"], 1);
+        assert!(
+            !read["pages"][0]["text"].as_str().unwrap().trim().is_empty(),
+            "{read}"
+        );
+        let look = app.look_page(1, Some(200)).expect("the page draws");
+        let address = look.resources[0].clone();
+        let value = look.value.unwrap();
+        assert_eq!(value["content"], address.as_str());
+        assert_eq!(value["page"], 1);
+        assert_eq!(
+            value["width"]
+                .as_u64()
+                .unwrap()
+                .max(value["height"].as_u64().unwrap()),
+            200
+        );
+        let picture = app
+            .content
+            .read(ui::tilo_actions::content_hash(&address).unwrap())
+            .expect("the picture is kept as content");
+        assert!(picture.starts_with(b"\x89PNG"));
+        assert!(app.look_page(0, None).is_err());
+        assert!(app.look_page(1, Some(4000)).is_err());
+        app.record_source.as_mut().unwrap().hash = "0".repeat(64);
+        assert_eq!(
+            app.read_text(None, None).unwrap_err(),
+            "report.pdf is not on this device yet"
         );
     }
 
