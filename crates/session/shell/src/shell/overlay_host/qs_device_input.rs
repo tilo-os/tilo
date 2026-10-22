@@ -142,18 +142,6 @@ impl ShellOverlayHost {
                 },
                 String::new(),
             )),
-            DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
-                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
-                    return;
-                };
-                Some((
-                    DeviceFabricUiAction::AuthorizeRemoteCapture {
-                        request_id: consent.request_id,
-                        approved,
-                    },
-                    String::new(),
-                ))
-            }
             DeviceFabricPaneRow::RemoteCaptureSource(kind) => {
                 self.qs_selected_source = Some(QsDeviceSource::RemoteCapture(kind));
                 self.bump_chrome();
@@ -287,12 +275,6 @@ impl ShellOverlayHost {
                 self.bump_chrome();
                 return;
             }
-            DeviceFabricPaneRow::LocalOutput(output) if !output.is_default => Some((
-                DeviceFabricUiAction::RouteLocalAudio {
-                    node_id: output.node_id,
-                },
-                String::new(),
-            )),
             DeviceFabricPaneRow::LocalInput(input) if !input.is_default => Some((
                 DeviceFabricUiAction::SelectLocalInput {
                     node_id: input.node_id,
@@ -440,6 +422,17 @@ impl ShellOverlayHost {
                     )
                 })
             }
+            // Another device itself, with nothing chosen to send it: its
+            // settings pane, where its display is placed beside this one's
+            // (Displays) or the device managed (Devices & sync).
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local && self.qs_selected_source.is_none() =>
+            {
+                if let Some(chrome) = self.chrome.clone() {
+                    self.open_settings(&chrome, Some(device_settings_pane(&device)));
+                }
+                return;
+            }
             _ => None,
         };
         let Some((action, success)) = action else {
@@ -539,68 +532,10 @@ impl ShellOverlayHost {
         row_index: usize,
         item: &DeviceFabricPaneRow,
     ) -> Option<(DeviceFabricUiAction, String)> {
-        if let DeviceFabricPaneRow::LocalInput(input) = item {
-            if !input.is_default {
-                return None;
-            }
-            // The first button lowers, the second raises.
-            let raise = !self.qs_device_row_choice(row_index, point)?;
-            // A level step is its own feedback: the row's level updates.
-            return Some((
-                DeviceFabricUiAction::StepInputLevel {
-                    node_id: input.node_id,
-                    raise,
-                },
-                String::new(),
-            ));
-        }
         let DeviceFabricPaneRow::Device(device) = item else {
             return None;
         };
-        let (placements, control) =
-            Self::qs_device_row_actions(self.qs_devices_row_rect(row_index));
-        let edge = placements
-            .iter()
-            .position(|rect| rect.contains(point))
-            .and_then(|index| {
-                [
-                    crate::shell::device_fabric::DisplayEdge::Left,
-                    crate::shell::device_fabric::DisplayEdge::Right,
-                    crate::shell::device_fabric::DisplayEdge::Top,
-                    crate::shell::device_fabric::DisplayEdge::Bottom,
-                ]
-                .get(index)
-                .copied()
-            });
-        if let Some(edge) = edge
-            && !device.is_local
-            && device.online
-            && device.display
-        {
-            return Some((
-                DeviceFabricUiAction::Place {
-                    device: device.id.clone(),
-                    edge,
-                },
-                {
-                    let args = [("device", ui::i18n::ArgValue::from(device.label.clone()))];
-                    match edge {
-                        crate::shell::device_fabric::DisplayEdge::Left => {
-                            t_args("host-fabric-place-left", &args)
-                        }
-                        crate::shell::device_fabric::DisplayEdge::Right => {
-                            t_args("host-fabric-place-right", &args)
-                        }
-                        crate::shell::device_fabric::DisplayEdge::Top => {
-                            t_args("host-fabric-place-above", &args)
-                        }
-                        crate::shell::device_fabric::DisplayEdge::Bottom => {
-                            t_args("host-fabric-place-below", &args)
-                        }
-                    }
-                },
-            ));
-        }
+        let control = Self::qs_device_control_rect(self.qs_devices_row_rect(row_index));
         if !control.contains(point) || device.is_local || !device.online {
             return None;
         }
@@ -729,7 +664,6 @@ impl ShellOverlayHost {
             item,
             DeviceFabricPaneRow::RemoteAudioConsent(_)
                 | DeviceFabricPaneRow::SpeakerConsent(_)
-                | DeviceFabricPaneRow::RemoteCaptureConsent(_)
                 | DeviceFabricPaneRow::RealtimeConsent(_)
                 | DeviceFabricPaneRow::GamepadAuthorization(_)
         ) || matches!(
@@ -776,13 +710,10 @@ impl ShellOverlayHost {
                 if self.clipboard_manager_bridge.is_none() {
                     return;
                 }
-                let (caption, rows) = self.qs_clipboard_section_rows();
+                let view = self.qs_clipboard_view();
                 let mut st = chrome.borrow_mut();
-                if st.quick_settings.clipboard_rows != rows
-                    || st.quick_settings.clipboard_caption != caption
-                {
-                    st.quick_settings.clipboard_rows = rows;
-                    st.quick_settings.clipboard_caption = caption;
+                if st.quick_settings.clipboard != view {
+                    st.quick_settings.clipboard = view;
                     st.bump();
                 }
             }
@@ -814,26 +745,15 @@ impl ShellOverlayHost {
                     self.qs_device_row_face(&view, selected, item);
                 let names = Self::qs_device_row_button_names(item);
                 let actions = match (item, names.as_slice()) {
-                    (DeviceFabricPaneRow::Device(device), [l, r, a, b, control]) => {
-                        HostedActions::Placement {
-                            names: [l.clone(), r.clone(), a.clone(), b.clone()],
-                            control: control.clone(),
-                            controlling: device.controls_local,
-                            placeable: !device.is_local && device.online && device.display,
-                            controllable: !device.is_local && device.online,
-                        }
-                    }
-                    (_, [first, second]) => {
-                        let icons = if matches!(item, DeviceFabricPaneRow::LocalInput(_)) {
-                            [ui::icons::Icon::ArrowDown, ui::icons::Icon::ArrowUp]
-                        } else {
-                            [ui::icons::Icon::Check, ui::icons::Icon::X]
-                        };
-                        HostedActions::Pair {
-                            first: (icons[0], first.clone()),
-                            second: (icons[1], second.clone()),
-                        }
-                    }
+                    (DeviceFabricPaneRow::Device(device), [control]) => HostedActions::Control {
+                        name: control.clone(),
+                        controlling: device.controls_local,
+                        controllable: !device.is_local && device.online,
+                    },
+                    (_, [first, second]) => HostedActions::Pair {
+                        first: (ui::icons::Icon::Check, first.clone()),
+                        second: (ui::icons::Icon::X, second.clone()),
+                    },
                     _ => item
                         .select_action_key()
                         .map_or(HostedActions::None, |key| HostedActions::Select(t(key))),
@@ -851,18 +771,11 @@ impl ShellOverlayHost {
         Some(rows)
     }
 
-    /// The Clipboard section's caption and rows: the latest copies, or the
-    /// ones matching what was typed.
-    pub(super) fn qs_clipboard_section_rows(
-        &mut self,
-    ) -> (String, Vec<crate::shell::quick_settings::hosted::HostedRow>) {
-        use crate::shell::quick_settings::hosted::{HostedActions, HostedRow};
-        let history = self.filtered_clipboard_history();
-        let _ = self.clamp_qs_clipboard_history_start(history.len());
+    /// The line over the Clipboard section's copies: what was searched for
+    /// and how many match, or which of the copies are shown.
+    fn qs_clipboard_caption(&self, matches: usize, start: usize, shown: usize) -> String {
         let visible = QS_CLIPBOARD_ROWS;
-        let start = self.qs_clipboard_history_start;
-        let shown = visible.min(history.len().saturating_sub(start));
-        let caption = if history.is_empty() && !self.qs_clipboard_query.is_empty() {
+        if matches == 0 && !self.qs_clipboard_query.is_empty() {
             t_args(
                 "qs-clipboard-no-matches",
                 &[("query", self.qs_clipboard_query.as_str().into())],
@@ -872,26 +785,38 @@ impl ShellOverlayHost {
                 "qs-clipboard-search-matches",
                 &[
                     ("query", self.qs_clipboard_query.as_str().into()),
-                    ("count", history.len().into()),
+                    ("count", matches.into()),
                 ],
             )
-        } else if history.len() > visible {
+        } else if matches > visible {
             t_args(
                 "qs-clipboard-search-range",
                 &[
                     ("first", start.saturating_add(1).into()),
                     ("last", start.saturating_add(shown).into()),
-                    ("total", history.len().into()),
+                    ("total", matches.into()),
                 ],
             )
-        } else if history.is_empty() {
+        } else if matches == 0 {
             String::new()
         } else {
-            t_args(
-                "qs-clipboard-search-count",
-                &[("count", history.len().into())],
-            )
-        };
+            t_args("qs-clipboard-search-count", &[("count", matches.into())])
+        }
+    }
+
+    /// The clipboard history as Quick Settings shows it, from one snapshot:
+    /// the row's count is that snapshot's length and the section's copies
+    /// are its latest entries (or its matches while searching).
+    pub(super) fn qs_clipboard_view(&mut self) -> crate::shell::quick_settings::ClipboardView {
+        use crate::shell::quick_settings::hosted::{HostedActions, HostedRow};
+        let snapshot = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        let total = snapshot.len();
+        let history = self.filter_clipboard_history(snapshot);
+        let _ = self.clamp_qs_clipboard_history_start(history.len());
+        let visible = QS_CLIPBOARD_ROWS;
+        let start = self.qs_clipboard_history_start;
+        let shown = visible.min(history.len().saturating_sub(start));
+        let caption = self.qs_clipboard_caption(history.len(), start, shown);
         let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
         let now_unix_ms = unix_now_ms();
         let rows = history
@@ -952,6 +877,20 @@ impl ShellOverlayHost {
                 }
             })
             .collect();
-        (caption, rows)
+        crate::shell::quick_settings::ClipboardView {
+            total,
+            caption,
+            rows,
+        }
+    }
+}
+
+/// The settings pane a device row opens: Displays, where a device with a
+/// display is placed beside this one, else Devices & sync.
+pub(super) fn device_settings_pane(device: &FabricDeviceView) -> &'static str {
+    if device.display {
+        "settings://displays"
+    } else {
+        "settings://devices_sync"
     }
 }

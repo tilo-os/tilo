@@ -44,6 +44,8 @@ pub(crate) enum SectionStop {
     Profile(usize),
     /// One of the three power modes.
     Mode(PowerProfile),
+    /// The Battery section's way to the Power mode tile's section.
+    PowerMode,
     /// A sound output in `sound_outputs`: play sound there.
     Output(usize),
     /// A row the overlay host paints: a Devices row or a clipboard copy.
@@ -88,6 +90,9 @@ pub(crate) enum ItemKind {
     Battery,
     /// The three-way power mode.
     Modes,
+    /// The Battery section's row naming the power mode, leading to where it
+    /// is chosen.
+    PowerMode,
     /// The apps keeping the machine awake.
     Awake(String),
     /// A sound output.
@@ -213,6 +218,7 @@ pub(crate) fn layout(
         QsSection::Wifi => wifi(&mut builder, state, m),
         QsSection::Bluetooth => bluetooth(&mut builder, state, m),
         QsSection::Vpn => vpn(&mut builder, state, m),
+        QsSection::PowerMode => power_mode(&mut builder, state, m),
         QsSection::Battery => battery(&mut builder, state, m),
         QsSection::Sound => sound(&mut builder, state, m),
         QsSection::Devices => devices(&mut builder, state, m),
@@ -359,9 +365,10 @@ fn battery(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
         b.push(ItemKind::Battery, m.title + lines * m.caption + RELATED_GAP);
         b.gap();
     }
+    // The mode is chosen in one place, the Power mode tile's section; here
+    // it is named, and the row leads there.
     if !offered_modes(state).is_empty() {
-        b.push_inset(ItemKind::Modes, m.control);
-        b.gap();
+        b.push(ItemKind::PowerMode, m.row);
     }
     if let Some(awake) = awake_sentence(state) {
         b.push(ItemKind::Awake(awake), m.row);
@@ -374,6 +381,16 @@ fn battery(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
         })),
         m.row,
     );
+}
+
+fn power_mode(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
+    if offered_modes(state).is_empty() {
+        b.push(ItemKind::Message(t("qs-power-mode-unavailable")), m.row);
+    } else {
+        b.push_inset(ItemKind::Modes, m.control);
+        b.gap();
+    }
+    b.push(ItemKind::Settings(t("qs-power-settings")), m.row);
 }
 
 fn sound(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
@@ -396,20 +413,20 @@ fn devices(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
 }
 
 fn clipboard(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
-    if state.clipboard_rows.is_empty() {
+    if state.clipboard.rows.is_empty() {
         // Nothing copied, or nothing matching what was typed.
-        let message = if state.clipboard_caption.is_empty() {
+        let message = if state.clipboard.caption.is_empty() {
             t("qs-clipboard-empty-hint")
         } else {
-            state.clipboard_caption.clone()
+            state.clipboard.caption.clone()
         };
         b.push(ItemKind::Message(message), m.row);
         return;
     }
-    if !state.clipboard_caption.is_empty() {
-        b.push(ItemKind::Caption(state.clipboard_caption.clone()), m.row);
+    if !state.clipboard.caption.is_empty() {
+        b.push(ItemKind::Caption(state.clipboard.caption.clone()), m.row);
     }
-    for index in 0..state.clipboard_rows.len() {
+    for index in 0..state.clipboard.rows.len() {
         b.push(ItemKind::Hosted(index), m.two_line);
     }
     b.push(
@@ -425,7 +442,7 @@ pub(crate) fn hosted_rows(
 ) -> &[super::hosted::HostedRow] {
     match section {
         QsSection::Devices => &state.device_rows,
-        QsSection::Clipboard => &state.clipboard_rows,
+        QsSection::Clipboard => &state.clipboard.rows,
         _ => &[],
     }
 }
@@ -525,6 +542,7 @@ pub(crate) fn stops(
             ItemKind::Output(index) => out.push((SectionStop::Output(*index), item.rect)),
             ItemKind::Hosted(index) => out.push((SectionStop::Hosted(*index), item.rect)),
             ItemKind::ClearClipboard(_) => out.push((SectionStop::ClearClipboard, item.rect)),
+            ItemKind::PowerMode => out.push((SectionStop::PowerMode, item.rect)),
             ItemKind::Modes => out.extend(
                 mode_segments(state, item.rect)
                     .into_iter()
@@ -627,6 +645,24 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
             ItemKind::Output(index) => paint_output(&mut ctx, rect, p, *index),
             ItemKind::Battery => paint_battery(&mut ctx, rect, p.state, p.metrics),
             ItemKind::Modes => paint_modes(&mut ctx, rect, p),
+            ItemKind::PowerMode => {
+                let label = t("qs-power-mode");
+                let value = p.state.power_profile.label();
+                let mut face = ListRowFace::new(&label)
+                    .leading(RowLeading::Icon(ui::icons::Icon::Gauge))
+                    .value(&value);
+                if let Some(column) = column {
+                    face = face.leading_column(column);
+                }
+                face.disclosure()
+                    .interaction(Interaction {
+                        hovered: hovered(rect),
+                        focused: focused(SectionStop::PowerMode),
+                        ..Interaction::default()
+                    })
+                    .paint(&mut ctx, rect);
+                focus_ring(&mut ctx, rect, focused(SectionStop::PowerMode));
+            }
             ItemKind::Awake(text) => {
                 ListRowFace::new(text)
                     .leading(RowLeading::Icon(ui::icons::Icon::Monitor))
@@ -1140,8 +1176,10 @@ mod tests {
         assert!(laid.height >= laid.items.last().unwrap().rect.y1);
     }
 
+    // USER REQUIREMENT (2026-10-21): "Power mode lives in one place: the
+    // tile, with the Battery section linking to it."
     #[test]
-    fn the_battery_section_offers_only_the_modes_the_daemon_has() {
+    fn the_power_mode_is_chosen_under_its_tile_and_the_battery_section_links_to_it() {
         let mut state = QuickSettingsState::fixture();
         state.battery = tilo_power_mgmt::BatterySnapshot {
             present: true,
@@ -1151,28 +1189,38 @@ mod tests {
         state.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(190));
         state.power_profiles = vec![PowerProfile::Saver, PowerProfile::Balanced];
         state.awake_holders = vec!["Firefox".into()];
-        let laid = layout(QsSection::Battery, &state, 360.0, metrics());
-        let kinds: Vec<&ItemKind> = laid.items.iter().map(|item| &item.kind).collect();
+        let battery = layout(QsSection::Battery, &state, 360.0, metrics());
+        let kinds: Vec<&ItemKind> = battery.items.iter().map(|item| &item.kind).collect();
         assert_eq!(
             kinds,
             [
                 &ItemKind::Battery,
-                &ItemKind::Modes,
-                &ItemKind::Awake("Firefox keeps the screen on".into()),
+                &ItemKind::PowerMode,
+                &ItemKind::Awake("Firefox is keeping the screen on".into()),
                 &ItemKind::Settings("Battery settings".into()),
-            ]
+            ],
+            "the Battery section names the mode and leads to it, choosing none"
+        );
+        assert!(
+            !stops(&battery, &state, metrics())
+                .iter()
+                .any(|(stop, _)| matches!(stop, SectionStop::Mode(_))),
+            "no mode is chosen in the Battery section"
         );
         assert_eq!(
             battery_time_text(&state).as_deref(),
             Some("3 h 10 min left")
         );
-        let modes: Vec<SectionStop> = stops(&laid, &state, metrics())
+
+        // The tile's section offers only the modes the daemon has.
+        let modes = layout(QsSection::PowerMode, &state, 360.0, metrics());
+        let chosen: Vec<SectionStop> = stops(&modes, &state, metrics())
             .into_iter()
             .map(|(stop, _)| stop)
             .filter(|stop| matches!(stop, SectionStop::Mode(_)))
             .collect();
         assert_eq!(
-            modes,
+            chosen,
             [
                 SectionStop::Mode(PowerProfile::Saver),
                 SectionStop::Mode(PowerProfile::Balanced)
