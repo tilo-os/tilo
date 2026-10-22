@@ -85,6 +85,7 @@ store-search-clear = Suche löschen
 store-operation-failed = Der Vorgang konnte nicht abgeschlossen werden
 store-error-refresh = Apps aktualisieren
 store-repository-timeout = { $name } hat nicht geantwortet. Andere Apps bleiben verfügbar. Aktualisiere die Apps, um es erneut zu versuchen.
+store-repository-expired = Der App-Katalog von { $name } ist abgelaufen. Deine Apps funktionieren weiter.
 store-build-version = Vollständige Build-Version
 
 store-runtime-install = Laufzeit installieren
@@ -180,6 +181,8 @@ store-loading = Apps werden geladen
 store-empty-title = Keine Apps verfügbar
 store-empty-help = Füge eine Quelle hinzu, der du vertraust, oder aktiviere sie.
 store-offline-title = Der App-Katalog ist nicht erreichbar
+store-catalogue-expired-title = Der App-Katalog von { $name } ist abgelaufen
+store-catalogue-expired = Deine Apps funktionieren weiter. Neue Apps und Updates von { $name } gibt es wieder, sobald der Katalog erneuert ist.
 store-working-title = In Arbeit
 store-working = Wird im Hintergrund erledigt…
 store-trust-title = Vertrauen und Moderation

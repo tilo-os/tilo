@@ -15,6 +15,26 @@ use package_store::InstalledPackage;
 pub use pending::PendingRead;
 use tilo_app_package::PackageId;
 
+/// What a catalogue read's error starts with when the repository's catalogue
+/// is authentic but expired. Cap'n Proto carries errors as text, so the host
+/// writes this marker and [`expired_catalogue`] reads it back: the Store then
+/// says the catalogue expired instead of that the repository is unreachable.
+const EXPIRED_CATALOGUE: &str = "[expired-catalogue]";
+
+/// The catalogue read error the host sends for a catalogue that expired at
+/// `expired_at_unix`.
+pub fn expired_catalogue_error(expired_at_unix: u64) -> String {
+    format!(
+        "{EXPIRED_CATALOGUE} the repository's catalogue expired at {expired_at_unix} (Unix time) and has not been renewed"
+    )
+}
+
+/// Whether a catalogue read failed because the repository's catalogue is
+/// authentic but expired. The transport may prefix the host's text.
+pub fn expired_catalogue(error: &str) -> bool {
+    error.contains(EXPIRED_CATALOGUE)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlatpakAction {
     Install,

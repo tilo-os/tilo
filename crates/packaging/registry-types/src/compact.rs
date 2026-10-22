@@ -419,6 +419,20 @@ impl CatalogueSnapshot {
         }
     }
 
+    /// When an authentic snapshot ran out: `Some(expiry)` when everything but
+    /// freshness verifies (checked as of its own issue time, which passes
+    /// every time-dependent check) and `now_unix` is past its expiry. `None`
+    /// for a fresh snapshot and for one that fails anything else, so a device
+    /// can say "the catalogue expired" only when the owner's chain says so.
+    pub fn expired_at(&self, pinned_owner_pubkey_hex: &str, now_unix: u64) -> Option<u64> {
+        let (issued_at_unix, expires_at_unix) = match self {
+            Self::Full(full) => (full.issued_at_unix, full.expires_at_unix),
+            Self::Compact(compact) => (compact.issued_at_unix, compact.expires_at_unix),
+        };
+        (now_unix > expires_at_unix && self.verify(pinned_owner_pubkey_hex, issued_at_unix).is_ok())
+            .then_some(expires_at_unix)
+    }
+
     /// The snapshot's identity for anti-rollback checkpoints: the full
     /// snapshot's hash, whichever form was fetched.
     ///
@@ -565,6 +579,31 @@ mod tests {
         let (mut compact, indexes) = compact_snapshot(&full).unwrap();
         sign_compact_snapshot(&mut compact, owner).unwrap();
         (full, compact, indexes)
+    }
+
+    #[test]
+    fn only_an_authentic_snapshot_past_its_expiry_is_called_expired() {
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let (full, compact, _) = compact(&owner);
+        for snapshot in [
+            CatalogueSnapshot::Full(full.clone()),
+            CatalogueSnapshot::Compact(compact),
+        ] {
+            // Issued at 10, valid until 20.
+            assert_eq!(snapshot.expired_at(&owner_hex, 15), None, "fresh");
+            assert_eq!(snapshot.expired_at(&owner_hex, 21), Some(20), "expired");
+            assert!(snapshot.verify(&owner_hex, 21).is_err());
+            let stranger = hex::encode(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
+            assert_eq!(snapshot.expired_at(&stranger, 21), None, "another owner's");
+        }
+        // Moving the expiry without the owner's signature is tampering, not expiry.
+        let mut tampered = full;
+        tampered.expires_at_unix = 19;
+        assert_eq!(
+            CatalogueSnapshot::Full(tampered).expired_at(&owner_hex, 21),
+            None
+        );
     }
 
     #[test]

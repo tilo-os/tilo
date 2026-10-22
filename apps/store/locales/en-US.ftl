@@ -85,6 +85,7 @@ store-search-clear = Clear search
 store-operation-failed = Could not complete the operation
 store-error-refresh = Refresh apps
 store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
+store-repository-expired = The app catalogue from { $name } has expired. Apps you have keep working.
 store-build-version = Full build version
 
 store-runtime-install = Install runtime
@@ -180,6 +181,8 @@ store-loading = Loading apps
 store-empty-title = No apps available
 store-empty-help = Add or enable a repository you trust.
 store-offline-title = Can't reach the app catalogue
+store-catalogue-expired-title = The app catalogue from { $name } has expired
+store-catalogue-expired = Apps you have keep working. New apps and updates from { $name } return once it renews its catalogue.
 store-working-title = Working
 store-working = Working in the background…
 store-trust-title = Trust and moderation

@@ -123,7 +123,8 @@ and the length prefix on collections. See
 ```
 GET  /registry            → RegistryHandshake         (server identity)
 GET  /health              → { "ok": true }
-GET  /entries             → SignedRegistrySnapshot
+GET  /metrics             → Prometheus gauges: channel authorization and snapshot expiry
+GET  /entries             → SignedRegistrySnapshot      (expired or not; clients judge freshness)
 GET  /entries?format=compact → CompactRegistrySnapshot  (the full one until it exists)
 GET  /entries/<pkg-id>    → SignedRegistrySnapshot      (404 if not present)
 GET  /indexes/<blake3>.json → RegistryVersionIndex      (named by a compact snapshot)
@@ -624,6 +625,50 @@ tilo-registry-server authorize-channel \
   --publisher-pubkey "$FIRST_PARTY_PUBLISHER" \
   --generation 1
 ```
+
+#### Renewing the channel before it expires
+
+A channel authorization lives at most 31 days, and only the offline root can
+issue the next one, so renewal is a deliberate operation that no schedule
+performs. Once it lapses the signers refuse to sign (`registry channel
+authorization is invalid`) and the 24-hour snapshot runs out within a day: on
+2026-10-21 generation 1 expired unnoticed and every device lost the catalogue.
+
+Renew with the same owner, channel key, publisher and bounds, and the next
+generation, then sign once with the channel so the snapshot carries the new
+authorization:
+
+```text
+tilo-registry-server authorize-channel \
+  --owner-key-file /secure/registry-owner.seed \
+  --channel-pubkey "$CHANNEL_PUBKEY" \
+  --publisher-pubkey "$FIRST_PARTY_PUBLISHER" \
+  --generation "$((CURRENT + 1))" \
+  --valid-for-seconds 2592000 \
+  --max-snapshot-validity-seconds 86400 --max-snapshot-entries 10000
+tilo-registry-server sign-delegated-snapshot \
+  --channel-key-file /run/secrets/registry-channel/seed --valid-for-seconds 86400
+```
+
+The current generation is in `channel-authorization.json` in the data dir, in
+the `channel_authorization` of any published snapshot, and in `/metrics`.
+apps.tilo.so's operators render and apply exactly this as a one-off Job with
+`operations/registry-channel-renewal/renew.py` in the infrastructure
+repository.
+
+`GET /metrics` reports `tilo_registry_channel_authorization_expires_at_seconds`,
+`tilo_registry_channel_authorization_generation`,
+`tilo_registry_snapshot_expires_at_seconds` and `tilo_registry_snapshot_verified`
+from the catalogue the server already verified, so alerts can ask for the
+renewal days ahead and for the signer hours before the snapshot expires. The
+route is for the operator's monitoring and is not published at the public edge.
+
+`/entries` serves an authentic snapshot after it expires too. Freshness is the
+client's check, and with the signed bytes a device can tell an expired
+catalogue from an unreachable registry: the Store then says that the
+repository's app catalogue has expired and that installed apps keep working.
+Only a snapshot that fails its signatures or the active channel is refused
+(503), and only that should fail a readiness probe.
 
 Each recurring promotion has two security boundaries. A networked collector
 has no signing key and writes exact tapp bytes under their BLAKE3 names. A

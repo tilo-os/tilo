@@ -415,6 +415,53 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
     }
+    // phase: an_authentic_expired_snapshot_is_served_so_devices_can_say_it_expired
+    // On 2026-10-21 the channel authorization lapsed, the snapshot expired,
+    // and the server's 503 failed readiness on every replica: devices saw an
+    // unreachable registry instead of an expired catalogue. The signed bytes
+    // are served; the client refuses them by their expiry and says so.
+    {
+        let h = spawn_server(true).await;
+        let mut snapshot = h.storage.load_snapshot().unwrap().unwrap();
+        snapshot.issued_at_unix = 1_000;
+        snapshot.expires_at_unix = 2_000;
+        registry_types::sign_snapshot(&mut snapshot, &h.owner).unwrap();
+        std::fs::write(
+            h.storage.snapshot_path(),
+            serde_json::to_vec_pretty(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let client = tilo_net::http::client().build().expect("http client");
+        let response = client.get(url(h.addr, "/entries")).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let served =
+            registry_types::CatalogueSnapshot::from_json(&response.bytes().await.unwrap()).unwrap();
+        let owner = hex::encode(h.owner.verifying_key().to_bytes());
+        let now = tilo_clock::try_unix_now().unwrap();
+        assert!(served.verify(&owner, now).is_err());
+        assert_eq!(served.expired_at(&owner, now), Some(2_000));
+
+        let metrics = client
+            .get(url(h.addr, "/metrics"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            metrics
+                .lines()
+                .any(|line| line == "tilo_registry_snapshot_expires_at_seconds 2000"),
+            "{metrics}"
+        );
+        assert!(
+            metrics
+                .lines()
+                .any(|line| line == "tilo_registry_snapshot_verified 1"),
+            "{metrics}"
+        );
+    }
     // phase: registry_handshake_uses_stored_identity
     {
         let h = spawn_server(true).await;

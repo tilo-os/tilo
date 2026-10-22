@@ -514,6 +514,8 @@ pub struct StoreApp {
     /// refresh. An installed app none of the others lists says so once, on
     /// its details page.
     unanswered_repositories: Vec<String>,
+    /// See [`crate::worker::Snapshot::expired_repositories`].
+    expired_repositories: Vec<String>,
     /// Which item the user has expanded in the responsive detail sheet.
     /// Keyed by [`StoreItem::id`] and retained across window rebuilds so the
     /// document-backed route does not disappear during a responsive reflow.
@@ -600,6 +602,7 @@ impl StoreApp {
             flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
             flatpak_checking: true,
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             focused_detail: None,
             technical_details_open: false,
             structure_dirty: true,
@@ -1022,6 +1025,13 @@ impl StoreApp {
     pub fn set_unanswered_repositories(&mut self, repositories: Vec<String>) {
         if self.unanswered_repositories != repositories {
             self.unanswered_repositories = repositories;
+            self.structure_dirty = true;
+        }
+    }
+
+    pub fn set_expired_repositories(&mut self, repositories: Vec<String>) {
+        if self.expired_repositories != repositories {
+            self.expired_repositories = repositories;
             self.structure_dirty = true;
         }
     }
@@ -1716,6 +1726,7 @@ impl StoreApp {
         self.flatpak_error = snap.flatpak_error;
         self.set_remotes(snap.remotes);
         self.set_unanswered_repositories(snap.unanswered_repositories);
+        self.set_expired_repositories(snap.expired_repositories);
         self.set_blocks(snap.blocks);
         if let Some(app) = snap.updating
             && let Some((_, action)) = self.active_operation.as_ref()
@@ -3216,6 +3227,7 @@ mod tests {
                 flatpak_error: None,
                 operation_error: Some("Earlier detail request failed".into()),
                 unanswered_repositories: Vec::new(),
+                expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
             });
@@ -3270,6 +3282,7 @@ mod tests {
             flatpak_error: None,
             operation_error: error,
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             blocks: BlockList::empty(),
             updating: None,
         };
@@ -3326,6 +3339,7 @@ mod tests {
             flatpak_error: Some("App service unavailable.".into()),
             operation_error: Some("App service unavailable.".into()),
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             blocks: BlockList::empty(),
             updating: None,
         });
@@ -3357,6 +3371,7 @@ mod tests {
             flatpak_error: None,
             operation_error: error.map(str::to_owned),
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             blocks: BlockList::empty(),
             updating: None,
         };
@@ -3435,6 +3450,7 @@ mod tests {
                 flatpak_error: None,
                 operation_error: None,
                 unanswered_repositories: Vec::new(),
+                expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
             });
@@ -3547,6 +3563,7 @@ mod tests {
                 flatpak_error: None,
                 operation_error: None,
                 unanswered_repositories: Vec::new(),
+                expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
             });
@@ -3571,6 +3588,50 @@ mod tests {
         let visible = app.harness().inspection_json().unwrap();
         assert!(visible.contains("No apps available"));
         assert!(!visible.contains("No apps found"));
+    }
+
+    #[test]
+    fn an_expired_catalogue_is_named_as_expired_not_as_unreachable() {
+        // On 2026-10-21 Tilo main's catalogue expired and every device said
+        // the repository was unreachable; the outcome is that its catalogue
+        // expired and installed apps keep working.
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: String::new(),
+                query: None,
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: Some(
+                    "The app catalogue from Tilo main has expired. Apps you have keep working."
+                        .into(),
+                ),
+                unanswered_repositories: Vec::new(),
+                expired_repositories: vec!["Tilo main".into()],
+                blocks: BlockList::empty(),
+                updating: None,
+            });
+            store.set_worker_busy(false);
+        })
+        .unwrap();
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(
+            visible.contains("The app catalogue from Tilo main has expired"),
+            "{visible}"
+        );
+        assert!(visible.contains("Apps you have keep working"), "{visible}");
+        assert!(
+            !visible.contains("Can't reach the app catalogue"),
+            "{visible}"
+        );
+        assert!(
+            !visible.contains("Could not complete the operation"),
+            "{visible}"
+        );
     }
 
     #[test]
