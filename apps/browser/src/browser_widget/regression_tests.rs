@@ -331,3 +331,62 @@ fn a_jump_within_the_page_keeps_find_and_reader_view() {
     assert!(!widget.reader_view);
     assert!(widget.title.is_empty());
 }
+
+#[test]
+fn an_engine_download_is_kept_where_the_library_search_and_agents_read() {
+    let engine = TestEngine::new();
+    let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    let update = |state: &str, received: u64| WebViewEvent::DownloadUpdated {
+        id: 1,
+        state: state.into(),
+        path: "/home/person/Downloads/report.pdf".into(),
+        name: "report.pdf".into(),
+        url: "https://files.test/report.pdf".into(),
+        retryable: true,
+        received,
+        total: 100,
+        error: String::new(),
+    };
+    engine.push_event(update("progress", 40));
+    widget.apply_engine_events();
+    let key = widget.native_download_key(1);
+    assert_eq!(
+        widget.downloads.get(&key).map(|entry| entry.status.clone()),
+        Some(crate::downloads::DownloadStatus::Downloading)
+    );
+    // Cancelling it from its row, or by an agent, reaches the engine's download.
+    widget
+        .perform_browser_operation(BrowserOperation::CancelDownload { id: key.clone() })
+        .unwrap();
+    assert_eq!(
+        engine.commands().last(),
+        Some(&WebViewCommand::CancelNativeDownload { id: 1 })
+    );
+    engine.push_event(update("complete", 100));
+    widget.apply_engine_events();
+    let entry = widget.downloads.get(&key).unwrap();
+    assert_eq!(entry.status, crate::downloads::DownloadStatus::Completed);
+    assert_eq!(
+        entry.destination.as_deref(),
+        Some(std::path::Path::new("/home/person/Downloads/report.pdf"))
+    );
+    // A page's own export has no address to fetch again: not kept.
+    engine.push_event(WebViewEvent::DownloadUpdated {
+        id: 2,
+        state: "complete".into(),
+        path: "/home/person/Downloads/chart.png".into(),
+        name: "chart.png".into(),
+        url: String::new(),
+        retryable: false,
+        received: 10,
+        total: 10,
+        error: String::new(),
+    });
+    widget.apply_engine_events();
+    assert!(
+        widget
+            .downloads
+            .get(&widget.native_download_key(2))
+            .is_none()
+    );
+}
