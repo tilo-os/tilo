@@ -1,7 +1,7 @@
 //! Drive Send administration futures on the app's I/O runtime.
 use crate::transport::{AdministrationClient, FdTransport};
 use agent_provider_config::{
-    ProviderConfig,
+    ModelDescriptor, ProviderConfig,
     management::{AdminFuture, CredentialStatus, ProviderAdmin, ProviderSnapshot},
     protocol::{ErrorKind, ModelError},
 };
@@ -32,6 +32,9 @@ impl ProviderAdmin for NativeAdministration {
     }
     fn credential_status(&self, profile_id: String) -> AdminFuture<'_, CredentialStatus> {
         self.drive(self.client.credential_status(profile_id))
+    }
+    fn list_models(&self, profile_id: String) -> AdminFuture<'_, Vec<ModelDescriptor>> {
+        self.drive(self.client.list_models(profile_id))
     }
     fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()> {
         self.drive(self.client.set_api_key(profile_id, api_key))

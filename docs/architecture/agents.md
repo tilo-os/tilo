@@ -91,7 +91,8 @@ Agent profile / Task Center
 Tilo model gateway (native launcher or light authenticated HTTP host)
            |
            +-- common accounts credential broker (keys stay server-side)
-           +-- Rig provider adapters -> OpenAI, Anthropic, compatible APIs
+           +-- account custody (sign-in grants, refreshed server-side)
+           +-- Rig provider adapters -> OpenAI, Anthropic, ChatGPT, compatible APIs
            +-- compatible endpoint -> vLLM, LM Studio, Ollama, etc.
            |
            v
@@ -115,6 +116,46 @@ settings by agent id (`ProviderConfig::agent_models`), and is listed in
 Settings' providers with the way back to the default; it grants nothing. The
 desktop hands the agent its model when it starts it, as the nonsecret
 profile/model/protocol selection, so a change applies from its next start.
+
+### Setting up providers
+
+Settings adds a provider from a known one (`agent_provider_config::presets`):
+OpenAI, Anthropic, Google Gemini, Mistral, OpenRouter, Groq, xAI, DeepSeek,
+Together, Fireworks, Hugging Face, Ollama and LM Studio on this device, or any
+other OpenAI-compatible endpoint typed by hand. A preset fills the name,
+endpoint, protocol and location; nothing records which preset made a profile.
+**Test connection** asks the gateway to list the provider's models with the
+stored key or sign-in (`ListModels`): the answer proves the endpoint and
+credential work, and the person picks the model from it or still types any
+other id.
+
+A provider can also be set up by signing in instead of typing a key. Every
+sign-in is sealed in this device's vault under the profile's own grant id,
+apart from Mail's and Files' grants; the gateway mints request tokens from it
+and agents never see it.
+
+- **Google**: Vertex AI, or the Gemini API, billed to one of the person's
+  Cloud projects (`x-goog-user-project`).
+- **ChatGPT**: the person's OpenAI account, for their ChatGPT subscription.
+  Requests go to the ChatGPT backend in the OpenAI Responses format, always
+  streamed and never stored, through Rig's ChatGPT dialect. OpenAI offers this
+  sign-in to no other application, so it uses the public client of OpenAI's
+  Codex CLI the way Codex does; it can stop working whenever OpenAI changes
+  it, Settings says so, and the scheduled `nightly-live-sign-in` check watches
+  the client, its redirect and the backend.
+- **GitHub Copilot**: GitHub's device sign-in with the client of GitHub's own
+  Copilot extensions (unofficial in the same way); custody trades the GitHub
+  token for short-lived Copilot tokens as its refresh.
+- **OpenRouter**: OpenRouter's own PKCE flow for apps, which hands back an
+  ordinary API key, stored like a typed one.
+- **Hugging Face**: OAuth with the `inference-api` scope, once a distributor
+  registers a client (`TILO_OAUTH_HUGGINGFACE_CLIENT_ID`); until then a Hugging
+  Face access token is typed as the key.
+
+A Claude subscription (claude.ai account) is not offered: Anthropic's terms
+do not allow other applications to sign people in with their Claude account
+or to route requests through Free, Pro or Max plan credentials. Anthropic is
+set up with a Console API key.
 
 The native launcher authenticates a caller through its capability transport.
 The light HTTP adapter authenticates host-issued, expiring, revocable sessions;

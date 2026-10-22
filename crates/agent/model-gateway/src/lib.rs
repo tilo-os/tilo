@@ -226,6 +226,13 @@ pub enum Request {
     CredentialStatus {
         profile_id: String,
     },
+    /// The models a provider offers, asked with its stored key or sign-in:
+    /// Settings' model list and connection test. Answers the models as JSON
+    /// (`ModelDescriptor`s); a failure names its kind, never what the
+    /// provider wrote. Older gateways reject this verb.
+    ListModels {
+        profile_id: String,
+    },
     /// Confirm the original endpoint independently of editable profile details.
     MigrateApiKey {
         profile_id: String,
