@@ -757,6 +757,13 @@ impl Chip {
         self
     }
 
+    /// Whether the chip is drawn in the selected treatment: a toggle that is
+    /// on, a menu chip standing for a choice applied now
+    /// ([`Self::current`]), or any chip while it is pressed.
+    fn shows_chosen(&self) -> bool {
+        self.selected || self.activation.state.pressed
+    }
+
     /// Show a trailing "×" that removes the chip when clicked.
     #[must_use]
     pub fn removable(mut self) -> Self {
@@ -1007,14 +1014,13 @@ impl Widget for Chip {
         // `cursor_shape` test, so feedback and behaviour agree in the bands
         // above and below the glyph.
         let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
-        let pressed = self.activation.state.pressed;
         paint_pill(
             &PillPaint {
                 rect: self.rect,
                 label: &self.label,
                 lead: self.lead,
                 style: self.style,
-                selected: (self.selectable && self.selected) || pressed,
+                selected: self.shows_chosen(),
                 hovered: self.pressable() && self.hovered && !remove_hovered,
                 remove: self.removable.then_some(remove_hovered),
                 menu: self.menu,
@@ -1377,6 +1383,22 @@ mod tests {
                 crate::a11y::contrast_ratio(chosen.ink, chosen.fill) >= SMALL_TEXT_MIN_CONTRAST
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-21): an active chip uses the design
+    // system's selected treatment, clearly distinct from idle chips; a filter
+    // chip with a value chosen is active though its press opens its menu.
+    #[test]
+    fn a_menu_chip_with_a_choice_is_drawn_chosen() {
+        let chosen = ChipWidget::new("Book: Tideglass")
+            .menu()
+            .current(true)
+            .removable();
+        assert!(chosen.shows_chosen());
+        let idle = ChipWidget::new("Author").menu().current(false);
+        assert!(!idle.shows_chosen());
+        assert!(ChipWidget::new("Liked").selected(true).shows_chosen());
+        assert!(!ChipWidget::new("Liked").selected(false).shows_chosen());
     }
 
     fn draw(w: &mut dyn Widget) {
