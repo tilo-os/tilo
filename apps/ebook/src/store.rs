@@ -74,7 +74,7 @@ fn client() -> Result<&'static tilo_net::Client, RemoteError> {
                 .ok()
         })
         .as_ref()
-        .ok_or_else(|| RemoteError("Books can't reach the internet here.".into()))
+        .ok_or_else(|| RemoteError("Books can\u{2019}t reach the internet here.".into()))
 }
 
 /// GET `url` and read at most `limit` bytes of it, from this (non-UI)
@@ -110,15 +110,23 @@ pub(crate) fn download(url: &str, path: &Path) -> Result<(), String> {
     if path.is_file() {
         return Ok(());
     }
-    let bytes = fetch(url, &[], MAX_BOOK_BYTES)
-        .map_err(|error| format!("Couldn't get the book from {STORE_LABEL}: {error}"))?;
+    let bytes = fetch(url, &[], MAX_BOOK_BYTES).map_err(|error| {
+        tracing::debug!(%error, "books: the store's book did not arrive");
+        format!(
+            "Couldn\u{2019}t get the book from {STORE_LABEL}. Try again when you\u{2019}re online."
+        )
+    })?;
     let parent = path
         .parent()
-        .ok_or_else(|| "There's no place to keep the book.".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        .ok_or_else(|| "There\u{2019}s no place to keep the book.".to_string())?;
+    let keep = |error: std::io::Error| {
+        tracing::debug!(%error, "books: the store's book could not be kept");
+        "Couldn\u{2019}t keep the book on this device.".to_string()
+    };
+    std::fs::create_dir_all(parent).map_err(keep)?;
     let partial = path.with_extension("part");
-    std::fs::write(&partial, bytes).map_err(|error| error.to_string())?;
-    std::fs::rename(&partial, path).map_err(|error| error.to_string())
+    std::fs::write(&partial, bytes).map_err(keep)?;
+    std::fs::rename(&partial, path).map_err(keep)
 }
 
 /// The books in one page of the catalogue's OPDS answer, in its order.
@@ -211,9 +219,8 @@ impl RemoteSource for Gutenberg {
         let words = store_words(query);
         let body =
             fetch(SEARCH_URL, &[("query", words.as_str())], MAX_PAGE_BYTES).map_err(|error| {
-                RemoteError(format!(
-                    "{STORE_LABEL} can't be reached right now ({error})"
-                ))
+                tracing::debug!(%error, "books: the store did not answer");
+                RemoteError(format!("{STORE_LABEL} can\u{2019}t be reached right now."))
             })?;
         if cancel.is_cancelled() {
             return Ok(());

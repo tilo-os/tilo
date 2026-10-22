@@ -758,7 +758,7 @@ impl BooksApp {
     /// Stage a search for a capture or a test: `text` typed into the window
     /// bar's field over `from`, with the store's answer in and the
     /// library's prose indexed.
-    pub(crate) fn stage_query(&mut self, from: View, text: &str) {
+    pub(super) fn stage_query(&mut self, from: View, text: &str) {
         use ui::widget::Queryable as _;
         self.view = from;
         self.query_opened();
@@ -768,7 +768,7 @@ impl BooksApp {
 
     /// Take in what a capture's library and store answer the open query:
     /// its executor runs what was asked of it, and the answers land.
-    pub(crate) fn settle_query(&mut self) {
+    pub(super) fn settle_query(&mut self) {
         self.poll_query();
         self.poll_query();
     }
