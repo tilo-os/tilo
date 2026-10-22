@@ -53,7 +53,7 @@ fn adding_an_email_account_in_settings_lands_in_the_shared_store() {
     //    persists it to the shared store, and seals the password in the vault.
     pane.submit_form_for_test();
     assert!(
-        pane.finish_form_submission_for_test(),
+        pane.finish_form_submission_for_test(tilo_test_env::hang_bound()),
         "bounded account probe and disk transaction complete"
     );
     assert!(!pane.form_open(), "a successful save closes the form");

@@ -1247,14 +1247,19 @@ impl AccountsPane {
         self.command(AccountViewCommand::Submit);
     }
 
-    /// Drive the live host's nonblocking polling until the pending probe
-    /// finishes: either calendar selection is ready or the account is saved.
-    /// Returns false on failure; a ready calendar review is not a saved account.
-    /// Bounded by the probe's production deadline; unlike a fixed number of
-    /// scheduler yields this remains reliable when the test suite is busy.
+    /// Drive the live host's nonblocking polling until the pending
+    /// submission settles: either calendar selection is ready or the account
+    /// is saved. Returns false on failure; a ready calendar review is not a
+    /// saved account.
+    ///
+    /// A submission is three steps (opening the vault, the probe, the save),
+    /// and only the probe has a production deadline, so waiting out the
+    /// probe's deadline gave up on a busy machine while the vault was still
+    /// opening. `bound` is the caller's hang bound: the pane itself decides
+    /// whether the submission failed.
     #[doc(hidden)]
-    pub fn finish_form_submission_for_test(&mut self) -> bool {
-        let deadline = ui::time::now() + ProbeJob::<String>::DEADLINE;
+    pub fn finish_form_submission_for_test(&mut self, bound: std::time::Duration) -> bool {
+        let deadline = ui::time::now() + bound;
         while self.form_open() && ui::time::now() < deadline {
             let _ = self.poll();
             if !self.calendar_choices.is_empty() && !self.form_saving && self.lane.is_idle() {

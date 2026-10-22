@@ -166,7 +166,7 @@ fn pending_password_settings_activate_only_after_the_existing_secure_save() {
     assert!(tester.0.lock().unwrap().is_empty());
     pane.set_form_password_for_test("fixture-fresh-password");
     pane.submit_form_for_test();
-    assert!(pane.finish_form_submission_for_test());
+    assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
     let calls = tester.0.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);
     let (account, secret) = &calls[0];
