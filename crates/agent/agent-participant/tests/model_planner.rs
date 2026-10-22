@@ -46,7 +46,7 @@ fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     let route = DocumentRoute {
         app_id: app_id.into(),
         cluster_id: ROOM.into(),
-        record: app.record().to_owned(),
+        record: app.wire_record().to_owned(),
     };
     let context = PlanContext {
         open: vec![(route.clone(), app.survey())],

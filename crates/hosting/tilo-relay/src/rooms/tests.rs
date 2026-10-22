@@ -473,9 +473,9 @@ async fn a_seeded_room_default_record_names_the_default_id() {
     let rooms = relay.rooms().unwrap();
     let created = rooms.create("Seeded default record").await.unwrap();
     let catalogue = tilo_agent_participant::AppCatalogue::native();
-    // An app that keeps a record per window: one that keeps a room record
-    // seeds its package primary, not the default route.
-    let app = "so.tilo.scratchpad";
+    // An app whose windows each show a resource of their own: one that keeps
+    // a room record (Scratchpad, Notes) seeds its package primary instead.
+    let app = "so.tilo.sheets";
     let record = crate::room_bots::room_record(&catalogue, app);
     assert_eq!(record, ui::record::RecordId::room_default().as_str());
     assert!(

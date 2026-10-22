@@ -533,7 +533,7 @@ impl Rooms {
                 seed,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;
-            if record.is_empty() != (source.record() == "@tilo:package-primary") {
+            if record.is_empty() != source.record_id().is_package_primary() {
                 return Err(CollaborationError::new(
                     "factory primary route differs from its declaration",
                 ));

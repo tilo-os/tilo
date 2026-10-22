@@ -107,6 +107,30 @@ impl RecordId {
         self.0 == "@tilo:package-primary"
     }
 
+    /// The record a collaboration route's record id names: the empty id is
+    /// the [package primary](Self::package_primary), anything else must be a
+    /// record id. The package primary's custody key is not a route, so a
+    /// route spelling it names nothing: one record never has two routes.
+    #[must_use]
+    pub fn from_route(record: &str) -> Option<Self> {
+        if record.is_empty() {
+            Some(Self::package_primary())
+        } else {
+            Self::parse(record)
+        }
+    }
+
+    /// The record id this record travels under on the collaboration wire,
+    /// what [`Self::from_route`] reads back.
+    #[must_use]
+    pub fn route(&self) -> &str {
+        if self.is_package_primary() {
+            ""
+        } else {
+            &self.0
+        }
+    }
+
     /// The record a file *is*. Relative paths resolve against the cwd, so
     /// two spellings of one file are one record.
     ///

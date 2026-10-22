@@ -187,7 +187,7 @@ impl BotParticipant {
             let Some(Ok(saved)) = self.pending.seed(&route) else {
                 continue;
             };
-            let Some(record) = ui::record::RecordId::parse(&route.record) else {
+            let Some(record) = ui::record::RecordId::from_route(&route.record) else {
                 continue;
             };
             let opened = ConfinedReplica::open(
@@ -233,7 +233,7 @@ impl BotParticipant {
         for (route, app) in held {
             let saved = app.read_history(automerge::Automerge::save);
             let reopened = Some(saved).and_then(|saved| {
-                let record = ui::record::RecordId::parse(&route.record)?;
+                let record = ui::record::RecordId::from_route(&route.record)?;
                 ConfinedReplica::open(
                     &self.catalogue,
                     &route.app_id,
