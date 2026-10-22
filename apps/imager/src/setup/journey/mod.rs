@@ -6875,7 +6875,7 @@ mod tests {
             };
             belongings.source_selection = super::source_selection::SourceSelection::discover(
                 &belongings,
-                &super::source_selection::SourceSet::Home(source_home.clone()),
+                &super::source_selection::SourceSet::Home(source_home),
             );
             preview.belongings = belongings;
             preview.storage.set_application_minimum(minimum);
