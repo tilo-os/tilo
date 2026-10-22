@@ -24,6 +24,8 @@
 //! (`default_backends`): without OpenGL whenever OpenGL could not be
 //! chosen anyway, because wgpu initialises every backend it is asked for.
 
+mod loss;
+
 use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
@@ -49,7 +51,13 @@ pub struct DeviceHandle {
     shader_cache: Option<crate::dx12_shader_cache::CacheSession>,
 }
 
-/// Shared, read-only observation of the context-owned device loss callback.
+pub use loss::{
+    LossWatch, NOT_PROGRESSING_AFTER, Recovery, SubmittedWork, recover,
+    reset_software_fallback_for_test, software_fallback,
+};
+
+/// Shared observation of the context-owned device loss callback, and of a loss
+/// declared for a GPU that stopped finishing work ([`LossWatch`]).
 #[derive(Clone, Default)]
 pub struct DeviceLossMonitor(Arc<Mutex<Option<String>>>);
 
@@ -357,6 +365,12 @@ impl RenderContext {
         &mut self,
         compatible_surface: Option<&Surface<'_>>,
     ) -> Option<wgpu::Adapter> {
+        // The GPU could not be brought back after a loss: whatever the
+        // environment names, only a software rasteriser draws now.
+        if software_fallback().is_some() {
+            self.settle_backends().await;
+            return loss::software_adapter(&self.instance).await;
+        }
         if self.fallback.is_some()
             && self.devices.is_empty()
             && !adapter_named_by_env()

@@ -2791,6 +2791,8 @@ impl super::Adapter {
             texture_view_identity_factory: super::ResourceIdentityFactory::new(),
             empty_descriptor_set_layout,
             simulated_loss: core::sync::atomic::AtomicBool::new(false),
+            fence_value_seen: core::sync::atomic::AtomicU64::new(0),
+            hung_at: core::sync::atomic::AtomicU64::new(crate::FenceValue::MAX),
         });
 
         let relay_semaphores = super::RelaySemaphores::new(&shared)?;
