@@ -964,6 +964,14 @@ impl NotificationStack {
                 .any(|n| n.addressed() == Some(Addressed::IncomingCall))
     }
 
+    /// The notification whose banner is drawn at `p`.
+    pub fn banner_at(&self, p: Point) -> Option<u64> {
+        self.hit_rects
+            .iter()
+            .find(|(_, full, _)| full.contains(p))
+            .map(|(id, _, _)| *id)
+    }
+
     /// Activate a completed click at p. Interactive hosts forward the full
     /// pointer stream through `handle_pointer_event` so gestures remain cancellable.
     /// Returns whether the completed click landed on a banner.

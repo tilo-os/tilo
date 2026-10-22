@@ -81,7 +81,7 @@ pub use controller::{ControllerDelivery, ControllerKey};
 use layers::{
     Band, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, OverlayStack, ShellLayer as _,
 };
-use tab_menu::TabMenuTarget;
+use tab_menu::{MenuSubject, TabMenuTarget};
 
 pub(crate) use device_fabric::remote_capture_kind_key;
 pub use device_fabric::{
@@ -268,6 +268,7 @@ mod shortcut_config;
 mod shortcut_help;
 mod strip_rail;
 mod tab_menu_host;
+mod thing_menu;
 mod top_bar;
 mod tree_harvest;
 mod wifi_password;

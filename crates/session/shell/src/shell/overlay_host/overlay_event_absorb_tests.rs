@@ -2757,11 +2757,11 @@ fn anchored_overlays_stay_inside_the_window_at_every_size() {
         ] {
             let mut menu = super::tab_menu::TabMenuLayer::default();
             menu.open(
-                super::tab_menu::TabMenuTarget {
+                super::tab_menu::MenuSubject::Window(super::tab_menu::TabMenuTarget {
                     strip: crate::shell::state::StripId::new(),
                     group: 7001,
                     tab: 0xa1,
-                },
+                }),
                 crate::shell::window_menu::window_menu_rows(
                     &crate::shell::window_menu::WindowMenuFacts {
                         tab_count: 3,

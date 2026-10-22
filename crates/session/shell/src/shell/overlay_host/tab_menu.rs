@@ -1,5 +1,7 @@
 //! The window menu (a right-click or long press on a window's bar, or the
-//! window-menu shortcut) as a shell layer.
+//! window-menu shortcut) as a shell layer, and the menu a right-click on
+//! anything else the desktop draws opens (a strip, a notification, a search
+//! result): "Tell an agent…" about that thing.
 //!
 //! It lives in the overlay stack rather than the tab bar because it paints
 //! above every window (the bar is clipped to its group), and because its
@@ -30,13 +32,22 @@ pub(crate) struct TabMenuTarget {
     pub tab: u64,
 }
 
+/// What the open menu acts on.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MenuSubject {
+    /// A window, through its tab.
+    Window(TabMenuTarget),
+    /// Something else the desktop draws, as an agent is told of it.
+    Thing(Box<crate::shell::selection_agent::SelectionSeed>),
+}
+
 #[derive(Default)]
 pub(crate) struct TabMenuLayer {
     menu: ContextMenu,
     /// The menu's rows, index-aligned with `menu.items()` by
     /// [`build_window_menu`].
     items: Vec<WindowMenuRow>,
-    target: Option<TabMenuTarget>,
+    target: Option<MenuSubject>,
     /// Title of the tab the menu is for, for the accessible name.
     title: String,
     /// The pointer position the menu opened at, so a refused row can
@@ -55,7 +66,7 @@ impl TabMenuLayer {
     /// for the keyboard).
     pub(crate) fn open(
         &mut self,
-        target: TabMenuTarget,
+        target: MenuSubject,
         rows: Vec<WindowMenuRow>,
         at: Point,
         title: String,
@@ -102,16 +113,33 @@ impl TabMenuLayer {
     /// revision, a chord): there is nothing left to act on, and a stale
     /// selection would fire against whatever now carries that id.
     pub(crate) fn prune(&mut self, alive: impl FnOnce(TabMenuTarget) -> bool) {
-        let Some(target) = self.target else {
+        let Some(target) = &self.target else {
             return;
         };
         if !self.menu.is_open() {
             self.target = None;
             return;
         }
-        if !alive(target) {
+        if let MenuSubject::Window(target) = target
+            && !alive(*target)
+        {
             self.close();
         }
+    }
+
+    /// Whether the menu is open on something other than a window.
+    pub(crate) fn is_open_on_thing(&self) -> bool {
+        self.menu.is_open() && matches!(self.target, Some(MenuSubject::Thing(_)))
+    }
+
+    /// The thing the menu was opened on, for the agent to be told of: the
+    /// menu closes.
+    pub(crate) fn take_thing(&mut self) -> Option<crate::shell::selection_agent::SelectionSeed> {
+        let MenuSubject::Thing(seed) = self.target.take()? else {
+            return None;
+        };
+        self.menu.close();
+        Some(*seed)
     }
 
     /// The host's answer to a [`LayerIntent::TabMenu`]. Only a performed
@@ -133,7 +161,7 @@ impl TabMenuLayer {
         if self.menu.is_open() {
             return;
         }
-        self.target = Some(target);
+        self.target = Some(MenuSubject::Window(target));
         let anchor = self.anchor;
         self.menu
             .open_anchored(Rect::new(anchor.x, anchor.y, anchor.x, anchor.y), viewport);
@@ -167,8 +195,20 @@ impl TabMenuLayer {
             let (row, nested) = self.menu.take_submenu_selection()?;
             *self.items.get(row)?.actions().get(nested)?
         };
-        let target = self.target?;
-        Some(LayerIntent::TabMenu { target, action })
+        self.intent_for(action)
+    }
+
+    /// What choosing `action` asks of the host, for what the menu is on.
+    fn intent_for(&self, action: WindowMenuAction) -> Option<LayerIntent> {
+        match self.target.as_ref()? {
+            MenuSubject::Window(target) => Some(LayerIntent::TabMenu {
+                target: *target,
+                action,
+            }),
+            MenuSubject::Thing(_) => {
+                (action == WindowMenuAction::TellAgent).then_some(LayerIntent::TellAgent)
+            }
+        }
     }
 }
 
@@ -383,10 +423,7 @@ impl ShellLayer for TabMenuLayer {
     fn semantic_intent(&self, target: &str) -> Option<LayerIntent> {
         let action = WindowMenuAction::from_semantic_key(target)?;
         self.item_index_of(action)?;
-        Some(LayerIntent::TabMenu {
-            target: self.target?,
-            action,
-        })
+        self.intent_for(action)
     }
 
     fn dismiss(&mut self) -> bool {

@@ -72,6 +72,8 @@ pub(super) struct FloatingRuntime {
     pub paint_capable_sent: bool,
     /// The shell was told this app answers selection requests.
     pub selection_capable_sent: bool,
+    /// The window resource last told the shell on this connection.
+    pub window_resource_sent: Option<Option<tilo_actions::ActionResource>>,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
     /// The [`crate::window_toolbar::revision`] of the slots last sent to
@@ -133,6 +135,7 @@ impl FloatingRuntime {
             auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
             selection_capable_sent: false,
+            window_resource_sent: None,
             close_window_requested: false,
             toolbar_sent: None,
             window_bar: window_bar::WindowBarRuntime::default(),
@@ -582,6 +585,17 @@ impl App {
             self.floating.selection_capable_sent = true;
             crate::shared_selection::set_agent_host_available(true);
         }
+        // What this window shows, so the desktop's own menus for it (its
+        // window menu) attach it as the apps' menus do.
+        let window = self.window_resource();
+        if self.floating.window_resource_sent.as_ref() != Some(&window) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::WindowResource {
+                    resource: window.clone(),
+                },
+            )?;
+            self.floating.window_resource_sent = Some(window);
+        }
         for request in crate::shared_selection::take_agent_requests() {
             let (selection, bounds) = self.agent_reference(request);
             client.send(
@@ -966,6 +980,7 @@ impl App {
         // connection is told them afresh.
         crate::window_toolbar::set_hosted(false);
         self.floating.toolbar_sent = None;
+        self.floating.window_resource_sent = None;
         // Nothing presents the app's search and History any more: it shows
         // its own again.
         self.floating.window_bar.disconnected();
@@ -1090,7 +1105,7 @@ impl App {
     ) {
         request.resolve(
             crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
-            &crate::resources::resources(self.root_widget.as_ref(), &self.state.doc),
+            &self.collect_resources(),
         )
     }
 

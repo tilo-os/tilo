@@ -446,6 +446,15 @@ impl CollaborationLaunchpad {
         Self::card_geometry(self.presentation_rect())
     }
 
+    /// The card drawn at `p`.
+    pub fn action_at(&self, p: Point) -> Option<LaunchpadAction> {
+        LaunchpadAction::ALL
+            .iter()
+            .zip(self.card_rects)
+            .find(|(_, rect)| rect.contains(p))
+            .map(|(action, _)| *action)
+    }
+
     /// The cards and the "Open an app" button by stable name
     /// (`launchpad:notes`, `launchpad:open-app`, ...), as laid out in the
     /// last frame, so a driver can press them like a person would.

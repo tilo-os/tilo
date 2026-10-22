@@ -1621,6 +1621,15 @@ impl CommandPalette {
         None
     }
 
+    /// The id of the row drawn at `p`.
+    pub fn id_at(&self, p: Point) -> Option<&str> {
+        let row = self.row_at(p)?;
+        self.visible
+            .get(row)
+            .and_then(|&i| self.entries.get(i))
+            .map(|e| e.id.as_str())
+    }
+
     pub fn row_at(&self, p: Point) -> Option<usize> {
         if self.shows_field_only() {
             return None;

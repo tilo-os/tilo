@@ -461,6 +461,12 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bounds: Option<[f64; 4]>,
     },
+    /// The resource this window shows (the first it publishes), sent when it
+    /// changes: the desktop's own menus for the window (its window menu)
+    /// attach it, as the app's own menus do. `None` when it publishes none.
+    WindowResource {
+        resource: Option<tilo_actions::ActionResource>,
+    },
     /// The answer to [`FloatingSurfaceHostMessage::PointAt`] `request`: the
     /// control at that point, `None` where there is none.
     Pointed {

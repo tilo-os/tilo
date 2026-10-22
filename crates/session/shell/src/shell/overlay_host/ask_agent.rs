@@ -19,6 +19,17 @@ impl ShellOverlayHost {
         self.selection_requests.capable(connection, app_id);
     }
 
+    /// The window of `app_id` on shell-ui `connection` shows `resource`.
+    pub(crate) fn note_window_resource(
+        &mut self,
+        connection: u64,
+        app_id: &str,
+        resource: Option<tilo_actions::ActionResource>,
+    ) {
+        self.selection_requests
+            .window_resource(connection, app_id, resource);
+    }
+
     /// Shell-ui `connection` went away.
     pub(crate) fn forget_selection_capable(&mut self, connection: u64) {
         self.selection_requests.disconnected(connection);
@@ -81,10 +92,17 @@ impl ShellOverlayHost {
 
     /// "Tell an agent…" on a window of `app_id`, chosen at `at` on the
     /// desktop: the composer opens there about that app. Whether it opened.
+    /// It attaches the resource the app said its window shows, else names
+    /// the app alone.
     pub(super) fn tell_agent_about_app(&mut self, app_id: &str, at: Point) -> bool {
         let label = self.app_label(app_id);
+        let window = self.selection_requests.window_of(app_id).map(|resource| {
+            SharedSelection::of_text(&resource.label)
+                .at(tilo_actions::SelectionPlace::item(resource.id.as_str()))
+                .in_resource(resource.clone())
+        });
         self.open_ask_agent(
-            SelectionSeed::new(app_id, label, None)
+            SelectionSeed::new(app_id, label, window)
                 .drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0)))),
         )
     }
