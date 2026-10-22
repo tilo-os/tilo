@@ -8,7 +8,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ui::widget::{Button, ButtonRole, Column, Container, Decorator, Divider, Popover, PopoverSide};
+use ui::widget::{
+    Button, ButtonRole, Column, Container, Decorator, Divider, Dropdown, Popover, PopoverSide,
+};
 use ui::widget::{Row, Spinner, Text, TextInput, When, Widget};
 use ui::{LocalState, Theme};
 use vello::kurbo::Rect;
@@ -174,6 +176,10 @@ struct Submission {
 #[derive(Clone)]
 struct View {
     title: LocalState<String>,
+    /// The agent the person picked, among [`AgentQuickComposer::agents`].
+    agent: LocalState<String>,
+    /// Whether there is more than one agent to pick from.
+    picks_agent: LocalState<bool>,
     context: LocalState<String>,
     asked: LocalState<String>,
     answer: LocalState<String>,
@@ -200,6 +206,8 @@ impl Default for View {
     fn default() -> Self {
         Self {
             title: LocalState::new(t("agent-quick-accessible-name")),
+            agent: LocalState::new(String::new()),
+            picks_agent: LocalState::new(false),
             context: LocalState::new(String::new()),
             asked: LocalState::new(String::new()),
             answer: LocalState::new(String::new()),
@@ -292,6 +300,13 @@ pub(crate) struct AgentQuickComposer {
     glances: HashMap<ComposerOwner, tilo_desktop::activity::RunGlance>,
     /// The person's answer to a paused action, until the adapter takes it.
     draft_answer: Option<DraftAnswer>,
+    /// The agents the person may pick from, when opened about something.
+    agents: Vec<String>,
+    /// The agent the person picked instead, until the host takes it.
+    agent_switch: Option<String>,
+    /// Whether the picker has yet to list [`Self::agents`]: it does once it
+    /// is shown.
+    agents_unlisted: bool,
 }
 
 impl Default for AgentQuickComposer {
@@ -321,6 +336,9 @@ impl Default for AgentQuickComposer {
             about: None,
             glances: HashMap::new(),
             draft_answer: None,
+            agents: Vec::new(),
+            agent_switch: None,
+            agents_unlisted: false,
         };
         composer.popover = composer.controls();
         composer
@@ -338,9 +356,23 @@ impl AgentQuickComposer {
         let close = self.presses.close.clone();
         Row::new()
             .with_justify(taffy::JustifyContent::SpaceBetween)
-            .push(Box::new(
-                Text::from_state(&self.view.title, Clone::clone).with_role(ui::TextRole::Heading),
-            ))
+            .push(Box::new(When::from_state(
+                &self.view.picks_agent,
+                |picks| !*picks,
+                Box::new(
+                    Text::from_state(&self.view.title, Clone::clone)
+                        .with_role(ui::TextRole::Heading),
+                ),
+            )))
+            .push(Box::new(When::from_state(
+                &self.view.picks_agent,
+                |picks| *picks,
+                Box::new(
+                    Dropdown::from_state(Vec::new(), &self.view.agent)
+                        .with_id(AGENT_PICKER)
+                        .with_resolved_accessible_name(t("agent-quick-agent")),
+                ),
+            )))
             .push(Box::new(
                 Button::icon_only(
                     "agent-quick-close",
@@ -541,6 +573,10 @@ impl AgentQuickComposer {
     ) {
         self.save_draft();
         self.about = None;
+        self.agents.clear();
+        self.agent_switch = None;
+        self.view.picks_agent.set(false);
+        self.view.agent.set(owner.agent.clone());
         label.clone_into(&mut self.label);
         self.view
             .title
@@ -592,6 +628,26 @@ impl AgentQuickComposer {
     /// The selection the composer was opened about, if it was.
     pub(crate) fn about(&self) -> Option<&super::selection_agent::SelectionSeed> {
         self.about.as_ref()
+    }
+
+    /// Let the person pick which of `agents` to tell, in its header.
+    pub(crate) fn offer_agents(&mut self, agents: Vec<String>) {
+        self.view.picks_agent.set(agents.len() > 1);
+        self.agents_unlisted = agents.len() > 1;
+        self.agents = agents;
+        self.list_agents();
+    }
+
+    fn list_agents(&mut self) {
+        if self.agents_unlisted && set_agent_options(&mut self.popover, &self.agents) {
+            self.agents_unlisted = false;
+        }
+    }
+
+    /// The agent the person picked instead of the composer's own. The host
+    /// opens the composer again for it, about the same thing.
+    pub(crate) fn take_agent_switch(&mut self) -> Option<String> {
+        self.agent_switch.take()
     }
 
     /// Whether the composer is open about a selection rather than beside an
@@ -1063,6 +1119,15 @@ impl AgentQuickComposer {
         if take(&self.presses.close) {
             self.dismiss();
         }
+        let picked = self.view.agent.get();
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.agent != picked)
+            && self.agents.contains(&picked)
+        {
+            self.agent_switch = Some(picked);
+        }
         let answer = self.view.answer.get();
         if take(&self.presses.insert) && self.view.can_use_answer.get() {
             self.answer_use = Some(AnswerUse::Insert(answer.clone()));
@@ -1148,6 +1213,33 @@ fn editor_state(widget: &dyn Widget) -> Option<String> {
     widget.children().into_iter().find_map(editor_state)
 }
 
+/// The test id of the composer's agent picker.
+const AGENT_PICKER: &str = "agent-quick-agent";
+
+fn set_agent_options(widget: &mut dyn Widget, agents: &[String]) -> bool {
+    if widget.test_id() == Some(AGENT_PICKER)
+        && let Some(any) = widget.as_any_mut()
+    {
+        // The picker is shown only while there is a choice, so it is
+        // reached through the `When` that shows it.
+        let picker = match any.downcast_mut::<When>() {
+            Some(when) => when
+                .child_mut()
+                .as_any_mut()
+                .and_then(|child| child.downcast_mut::<Dropdown>()),
+            None => any.downcast_mut::<Dropdown>(),
+        };
+        if let Some(picker) = picker {
+            picker.set_options(agents.to_vec());
+            return true;
+        }
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| set_agent_options(child, agents))
+}
+
 fn set_placeholder(widget: &mut dyn Widget, placeholder: &str) -> bool {
     if widget.test_id() == Some("agent-quick-editor")
         && let Some(editor) = widget
@@ -1191,6 +1283,7 @@ impl Decorator for AgentQuickComposer {
         }
         self.tick();
         self.popover.sync(state, path);
+        self.list_agents();
         self.refresh_placeholder();
         if let Some((revision, editor)) = self.pending_editor.take()
             && revision == self.draft.revision()
@@ -1204,6 +1297,7 @@ impl Decorator for AgentQuickComposer {
         }
         self.tick();
         let changed = self.popover.update(state, path);
+        self.list_agents();
         self.refresh_placeholder();
         changed
     }
@@ -1806,9 +1900,59 @@ mod tests {
     }
 
     #[test]
+    fn the_person_picks_which_agent_to_tell_and_the_host_hears_it() {
+        use super::super::selection_agent::SelectionSeed;
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        let origin = AgentQuickComposerOrigin {
+            marker: Rect::new(400.0, 200.0, 401.0, 201.0),
+            protected: Rect::new(400.0, 200.0, 401.0, 201.0),
+            context: String::new(),
+        };
+        let seed = SelectionSeed::new("so.tilo.notes", "Notes", None);
+        composer.open_about(
+            owner("tide"),
+            "tide",
+            &origin,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            seed.clone(),
+        );
+        composer.offer_agents(vec!["tide".into()]);
+        assert!(
+            !shown(&mut composer, AGENT_PICKER),
+            "one agent: nothing to pick"
+        );
+        composer.offer_agents(vec!["tide".into(), "reed".into()]);
+        assert!(shown(&mut composer, AGENT_PICKER));
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert!(action(
+            &mut composer,
+            AGENT_PICKER,
+            &ui::a11y::Action::SetValue("reed".into()),
+            &mut doc
+        ));
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert_eq!(composer.take_agent_switch(), Some("reed".into()));
+        assert_eq!(composer.take_agent_switch(), None, "heard once");
+        // The host opens it again for the agent picked, about the same thing.
+        composer.open_about(
+            owner("reed"),
+            "reed",
+            &origin,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            seed.clone(),
+        );
+        composer.offer_agents(vec!["tide".into(), "reed".into()]);
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert_eq!(composer.take_agent_switch(), None);
+        assert_eq!(composer.about(), Some(&seed));
+    }
+
+    #[test]
     fn every_composer_string_is_in_every_catalogue() {
         const KEYS: &[&str] = &[
             "agent-quick-title",
+            "agent-quick-agent",
             "agent-quick-about-selection",
             "agent-quick-about-window",
             "agent-quick-accessible-name",

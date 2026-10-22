@@ -38,6 +38,9 @@ pub enum WindowMenuAction {
     CloseTab,
     /// Close the window and every tab in it, as one close a reopen undoes.
     CloseWindow,
+    /// Tell an agent to do something with this window: the agent composer
+    /// opens at the pointer about the window's app.
+    TellAgent,
 }
 
 const MOVE_TO_STRIP_KEY: &str = "tabmenu:move-to-strip";
@@ -60,6 +63,7 @@ impl WindowMenuAction {
             Self::MoveToNewGroup => "tabmenu:new-group".into(),
             Self::CloseTab => "tabmenu:close".into(),
             Self::CloseWindow => "tabmenu:close-window".into(),
+            Self::TellAgent => "tabmenu:tell-agent".into(),
         }
     }
 
@@ -88,6 +92,7 @@ impl WindowMenuAction {
             Self::MoveToNewGroup,
             Self::CloseTab,
             Self::CloseWindow,
+            Self::TellAgent,
         ]
         .into_iter()
         .find(|action| action.semantic_key() == key)
@@ -214,7 +219,8 @@ fn places<'a>(
 /// 1. Full screen and Maximize (or Exit full screen and Restore);
 /// 2. Move to strip and Move to workspace, each a nested menu of places;
 /// 3. New tab, and for a tabbed window Split right and Move to new group;
-/// 4. Close tab, for a tabbed window, then Close window.
+/// 4. Close tab, for a tabbed window, then Close window;
+/// 5. Tell an agent…, as every context menu ends.
 ///
 /// A window of one tab is offered Close window only: its tab is the window.
 pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec<WindowMenuRow> {
@@ -317,6 +323,13 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
             close,
         ));
     }
+    rows.push(WindowMenuRow::Separator);
+    rows.push(entry(
+        WindowMenuAction::TellAgent,
+        t("shell-window-menu-tell-agent"),
+        Icon::Sparkles,
+        None,
+    ));
     rows
 }
 
@@ -408,6 +421,7 @@ mod tests {
                 "Move to new group",
                 "Close tab",
                 "Close window",
+                "Tell an agent…",
             ]
         );
         let shortcut = |label: &str| {
@@ -505,7 +519,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!single.iter().any(|label| label == "Close tab"));
         assert!(!single.iter().any(|label| label == "Split right"));
-        assert_eq!(single.last().map(String::as_str), Some("Close window"));
+        assert_eq!(
+            single[single.len() - 2..],
+            ["Close window", "Tell an agent…"]
+        );
 
         let state = WindowMenuFacts {
             maximized: true,

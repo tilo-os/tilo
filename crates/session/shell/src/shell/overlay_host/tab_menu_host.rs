@@ -315,6 +315,23 @@ impl ShellOverlayHost {
             // and document first, then the widget's close animation.
             WindowMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
             WindowMenuAction::CloseWindow => self.close_window_from_menu(target),
+            WindowMenuAction::TellAgent => {
+                let app_id = self
+                    .chrome
+                    .as_ref()
+                    .and_then(|chrome| {
+                        chrome
+                            .borrow()
+                            .tab_app_id(target.strip, target.group, target.tab)
+                    })
+                    .map(|app| app.as_str().to_owned())
+                    .unwrap_or_default();
+                // Done either way: without an agent to tell, the desktop
+                // says so, and the menu has nothing more to offer.
+                let at = self.layers.tab_menu.anchor_point();
+                self.tell_agent_about_app(&app_id, at);
+                true
+            }
             WindowMenuAction::FullScreen => self.toggle_full_screen_from_menu(target),
             WindowMenuAction::Maximize => self.toggle_maximize_from_menu(target),
             WindowMenuAction::MoveToStrip(destination) => {

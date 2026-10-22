@@ -1,4 +1,4 @@
-//! The ask-agent chord and the "Ask agent…" requests Tilo apps send: both
+//! The ask-agent chord and the "Tell an agent…" requests Tilo apps send: both
 //! open the agent quick composer on the focused window's selection
 //! ([`crate::shell::selection_agent`]).
 
@@ -63,7 +63,7 @@ impl ShellOverlayHost {
 
     /// `app_id` (as the launcher vouched for it) asked an agent about its
     /// `selection`, drawn at `area` on the desktop when it said where: in
-    /// answer to the chord, or from an "Ask agent…" entry in its focused
+    /// answer to the chord, or from an "Tell an agent…" entry in its focused
     /// window. Whether the composer opened.
     pub(crate) fn receive_ask_agent(
         &mut self,
@@ -77,6 +77,16 @@ impl ShellOverlayHost {
         }
         let label = self.app_label(app_id);
         self.open_ask_agent(SelectionSeed::new(app_id, label, selection).drawn_at(area))
+    }
+
+    /// "Tell an agent…" on a window of `app_id`, chosen at `at` on the
+    /// desktop: the composer opens there about that app. Whether it opened.
+    pub(super) fn tell_agent_about_app(&mut self, app_id: &str, at: Point) -> bool {
+        let label = self.app_label(app_id);
+        self.open_ask_agent(
+            SelectionSeed::new(app_id, label, None)
+                .drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0)))),
+        )
     }
 
     /// The focused window offers no selection of its own: ask about the
@@ -146,7 +156,12 @@ impl ShellOverlayHost {
         }
         self.selection_requests.asked(&room, &agent);
         let viewport = self.overlay_area();
-        let window = self.focused_window_rect().unwrap_or(viewport);
+        // Where the thing is drawn was clipped to its window already when an
+        // app said; the desktop's own surfaces (a tab) are outside windows.
+        let window = match seed.area {
+            Some(_) => viewport,
+            None => self.focused_window_rect().unwrap_or(viewport),
+        };
         let (at, protected) = selection_area(window, self.text_caret, seed.area);
         self.agent_quick_composer.open_about(
             owner,
@@ -159,8 +174,25 @@ impl ShellOverlayHost {
             viewport,
             seed,
         );
+        self.agent_quick_composer.offer_agents(live);
         self.bump_chrome();
         true
+    }
+
+    /// The person picked another agent in the composer: open it again for
+    /// that one, about the same thing. Whether it opened.
+    pub(super) fn switch_composer_agent(&mut self) -> bool {
+        let Some(agent) = self.agent_quick_composer.take_agent_switch() else {
+            return false;
+        };
+        let (Some(owner), Some(seed)) = (
+            self.agent_quick_composer.owner().cloned(),
+            self.agent_quick_composer.about().cloned(),
+        ) else {
+            return false;
+        };
+        self.selection_requests.asked(&owner.room, &agent);
+        self.open_ask_agent(seed)
     }
 
     /// No agent of the focused workspace takes tasks: start the one asked

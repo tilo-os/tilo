@@ -1122,6 +1122,7 @@ shell-window-menu-move-to-workspace = In Arbeitsbereich verschieben
 shell-window-menu-new-tab = Neuer Tab
 shell-window-menu-close-window = Fenster schließen
 shell-window-menu-unnamed-strip = Leiste { $number }
+shell-window-menu-tell-agent = Einem Agenten sagen…
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Anwendung nicht verfügbar
 shell-activity-title = Aktivität
@@ -2873,6 +2874,7 @@ portal-chooser-file-grant-unavailable = Die ausgewählte Datei ist nicht mehr ve
 
 ## Der Agent-Verfasser: ein Feld, um einen Agenten zu fragen oder ihm zu sagen, was er tun soll
 agent-quick-title = { $agent }
+agent-quick-agent = Agent
 agent-quick-about-selection = Zu deiner Auswahl in { $app }: „{ $selection }“
 agent-quick-about-window = Zu { $app }; nichts ist ausgewählt
 agent-quick-accessible-name = Agent-Verfasser
