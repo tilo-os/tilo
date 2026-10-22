@@ -73,7 +73,7 @@ pub(super) fn start(
     peers: &Arc<Mutex<personal_device_peers::PersonalDevicePeers>>,
     state_dir: &Path,
     cmd_tx: &mpsc::Sender<NetCmd>,
-) {
+) -> Option<tilo_lan_discovery::LanDiscovery> {
     let trust = Arc::new(DiscoveryTrust {
         person: identity.device_cert.user_public_key,
         cert: identity.device_cert.clone(),
@@ -90,12 +90,12 @@ pub(super) fn start(
         Ok(started) => started,
         Err(error) => {
             tracing::warn!(%error, "LAN discovery of this person's devices could not start");
-            return;
+            return None;
         }
     };
     let Ok(address_lookup) = endpoint.address_lookup() else {
         tracing::warn!("LAN discovery: the endpoint has no address lookup registry");
-        return;
+        return None;
     };
     address_lookup.add(discovery.clone());
     discovery.probe(None);
@@ -121,4 +121,5 @@ pub(super) fn start(
         }
     });
     tracing::info!("peer-sync: private LAN discovery of this person's devices started");
+    Some(discovery)
 }
