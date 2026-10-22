@@ -29,7 +29,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 // Opening beneath a chosen item takes Linux's `openat2` (`RESOLVE_BENEATH`).
 #[cfg(target_os = "linux")]
@@ -236,6 +236,44 @@ pub struct Documents {
     views: Arc<RwLock<Views>>,
     /// Where the table is kept between sessions, when it is.
     record: Option<Arc<PathBuf>>,
+    /// Open while the kept table is still being read: every use of the
+    /// table waits for it, so none sees, or writes over, half a table.
+    loading: Arc<Loading>,
+}
+
+/// Whether the kept table is still being read.
+#[derive(Default)]
+struct Loading {
+    pending: Mutex<bool>,
+    done: Condvar,
+}
+
+impl Loading {
+    fn pending() -> Self {
+        Self {
+            pending: Mutex::new(true),
+            done: Condvar::new(),
+        }
+    }
+
+    fn wait(&self) {
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        while *pending {
+            match self.done.wait(pending) {
+                Ok(next) => pending = next,
+                Err(_) => return,
+            }
+        }
+    }
+
+    fn finish(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = false;
+        }
+        self.done.notify_all();
+    }
 }
 
 /// The kept table: what each app in each room was given, each app's
@@ -265,9 +303,35 @@ impl Documents {
     /// written into a room, which would replicate a private choice to every
     /// peer and widen what the app is given at launch. A kept item that is
     /// gone or no longer what it was chosen as is dropped when read.
+    ///
+    /// The record is read on a thread of its own, so a session starts
+    /// without waiting on the disk; anything that uses the table before it
+    /// is in waits for it.
     pub fn kept_in(record: PathBuf) -> Self {
-        let mut views = Views::new();
-        let kept = std::fs::read(&record)
+        let documents = Self {
+            views: Arc::default(),
+            record: Some(Arc::new(record)),
+            loading: Arc::new(Loading::pending()),
+        };
+        let loader = documents.clone();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-documents-load".into())
+            .spawn(move || loader.load());
+        if spawned.is_err() {
+            // No thread to read it on: read it here rather than lose it.
+            documents.load();
+        }
+        documents
+    }
+
+    /// Read the kept record into the table, behind anything chosen since.
+    fn load(&self) {
+        let Some(record) = self.record.as_deref() else {
+            self.loading.finish();
+            return;
+        };
+        let mut loaded = Vec::new();
+        let kept = std::fs::read(record)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok())
             .unwrap_or_default();
@@ -280,14 +344,15 @@ impl Documents {
             let Ok(host) = resolve_choice(&kept.host, kind) else {
                 continue;
             };
-            let document = Document { host, kind };
-            let token = token(&key, &document);
-            views.entry(key).or_default().keep_older(token, document);
+            loaded.push((key, Document { host, kind }));
         }
-        Self {
-            views: Arc::new(RwLock::new(views)),
-            record: Some(Arc::new(record)),
+        if let Ok(mut views) = self.views.write() {
+            for (key, document) in loaded {
+                let token = token(&key, &document);
+                views.entry(key).or_default().keep_older(token, document);
+            }
         }
+        self.loading.finish();
     }
 
     /// Write the table to its record, when it is kept.
@@ -295,6 +360,7 @@ impl Documents {
         let Some(record) = self.record.as_deref() else {
             return;
         };
+        self.loading.wait();
         let Some(snapshot) = self.views.read().ok().map(|views| Record {
             documents: views
                 .iter()
@@ -329,6 +395,7 @@ impl Documents {
         let document = Document { host, kind };
         let token = token(key, &document);
         let path = Path::new(SANDBOX_DIR).join(&token).join(document.name());
+        self.loading.wait();
         let changed = self.views.write().is_ok_and(|mut views| {
             views
                 .entry(key.clone())
@@ -343,6 +410,7 @@ impl Documents {
 
     /// The document `token` of `key`'s view, while it is given.
     pub fn document(&self, key: &AppKey, token: &str) -> Option<Document> {
+        self.loading.wait();
         self.views
             .read()
             .ok()?
@@ -353,6 +421,7 @@ impl Documents {
 
     /// What was chosen for `key`, most recent first: the chooser's Recent.
     pub fn chosen(&self, key: &AppKey) -> Vec<PathBuf> {
+        self.loading.wait();
         self.views
             .read()
             .ok()
@@ -366,6 +435,7 @@ impl Documents {
 
     /// The tokens of `key`'s view.
     pub fn tokens(&self, key: &AppKey) -> Vec<String> {
+        self.loading.wait();
         self.views
             .read()
             .ok()
@@ -379,6 +449,7 @@ impl Documents {
 
     /// Take back everything given to `key`.
     pub fn revoke(&self, key: &AppKey) {
+        self.loading.wait();
         let removed = self
             .views
             .write()
@@ -564,6 +635,46 @@ mod tests {
         );
         assert_eq!(next.tokens(&key()).len(), 1, "what is gone is forgotten");
         assert_eq!(next.grant(&key(), &kept, Kind::Read).unwrap(), path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_session_starts_before_its_kept_table_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("documents.json");
+        let kept = dir.path().join("kept.pdf");
+        std::fs::write(&kept, b"kept").unwrap();
+        let path = Documents::kept_in(record.clone())
+            .grant(&key(), &kept, Kind::Read)
+            .unwrap();
+        let bytes = std::fs::read(&record).unwrap();
+        // The record on a disk that has not answered yet: a pipe nothing
+        // has written to, which blocks whoever reads it.
+        let slow = dir.path().join("slow.json");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&slow)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (started, table) = std::sync::mpsc::channel();
+        std::thread::spawn({
+            let slow = slow.clone();
+            move || {
+                let _ = started.send(Documents::kept_in(slow));
+            }
+        });
+        let documents = table
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the table is there before its record is read");
+        std::fs::write(&slow, &bytes).unwrap();
+        let (token, _) = split_sandbox_path(&path).unwrap();
+        assert_eq!(
+            documents.document(&key(), &token).unwrap().host,
+            kept.canonicalize().unwrap(),
+            "what was kept is served once the record is read"
+        );
     }
 
     #[test]
