@@ -1663,6 +1663,20 @@ pub trait Widget {
         false
     }
 
+    /// Whether a one-finger drag that begins at `point` (logical coords)
+    /// moves something here rather than scrolling: a canvas whose items are
+    /// dragged, words selected by dragging.
+    ///
+    /// The host then turns that contact into a pointer drag: once the
+    /// finger travels past a tap's slop, a left press where it landed, a move
+    /// per update and a release where it lifts. A tap still clicks, a still
+    /// hold still opens the context menu, and a second finger still pinches
+    /// or pans (it ends the drag with a release first). Hit-tested like
+    /// [`claims_raw_touch`](Self::claims_raw_touch), which wins over it.
+    fn drags_by_touch(&self, _point: vello::kurbo::Point) -> bool {
+        false
+    }
+
     /// Revealed after a dwell over the widget's rect, via the toolkit's one
     /// tooltip mechanism ([`crate::widget::tooltip::TooltipHost`]),
     /// hit-tested like [`cursor_shape`](Self::cursor_shape) so containers
