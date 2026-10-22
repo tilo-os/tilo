@@ -480,9 +480,13 @@ mod tests {
         let demands = d.take_browser_font_demands();
         assert!(!demands.is_empty(), "code asks for the monospace face");
         for name in demands {
-            d.install_browser_font(&name, std::fs::read(root.join(&name)).expect("font bytes"))
+            let bytes = std::fs::read(root.join(&name)).expect("font bytes");
+            let digest = ui::font_catalog::test_sha256(&bytes);
+            d.install_browser_font(&name, bytes, &digest)
                 .expect("font installs");
         }
+        // An installed font asks for layout; the host runs it on its next frame.
+        d.relayout();
         let _ = d.render_rgba();
 
         let mut measure = TextRenderer::new();

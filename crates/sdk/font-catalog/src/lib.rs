@@ -384,13 +384,24 @@ impl Asset {
     ///
     /// When the bytes differ.
     pub fn verify_bytes(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        if bytes.len() as u64 != self.bytes {
-            return Err(Error::at(
-                path,
-                format!("expected {} bytes, found {}", self.bytes, bytes.len()),
-            ));
-        }
+        self.check_len(path, bytes.len())?;
         self.check_digest(path, &hex::encode(Sha256::digest(bytes)))
+    }
+
+    /// Compare a length in bytes with the pinned one.
+    ///
+    /// # Errors
+    ///
+    /// When they differ.
+    pub fn check_len(&self, path: &Path, len: usize) -> Result<(), Error> {
+        if len as u64 == self.bytes {
+            Ok(())
+        } else {
+            Err(Error::at(
+                path,
+                format!("expected {} bytes, found {len}", self.bytes),
+            ))
+        }
     }
 
     /// Compare a lowercase hex SHA-256 with the pinned one.

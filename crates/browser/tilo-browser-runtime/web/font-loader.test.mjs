@@ -72,6 +72,17 @@ test('font descriptors still refuse paths, encoded paths and cross-origin names'
   }
 });
 
+test('a verified font carries the page digest the runtime checks instead of hashing again',async()=>{
+  const manifest=await descriptor();
+  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async url=>{
+    if(String(url).endsWith('fonts.json'))return response(manifest);
+    return response(bytes[new URL(url).pathname.split('/').at(-1).replace('.ttf','')]);
+  }});
+  const arabic=await loader.request('arabic.ttf');
+  assert.equal(loader.digestOf(arabic),hashes.arabic);
+  assert.equal(loader.digestOf(new Uint8Array([4,5])),undefined,'only bytes this loader verified carry a digest');
+});
+
 test('optional demands are deduplicated and bounded to two concurrent fetches',async()=>{
   const manifest=await descriptor(),gates=new Map(),starts=[];let concurrent=0,peak=0;
   const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async url=>{
