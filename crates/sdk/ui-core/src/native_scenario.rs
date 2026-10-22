@@ -58,6 +58,9 @@ pub enum Input {
     Key {
         key: crate::synthetic_input::NativeKey,
     },
+    /// Find, as the platform types it: its command modifier (⌘ on macOS,
+    /// Ctrl elsewhere) held around one press of F.
+    Find {},
     /// A stylus tip touching down at `pressure` (`0.0..=1.0`): a pen sample
     /// with a pointer move, then a sample with the left press, as a tablet
     /// reports it.
@@ -109,6 +112,21 @@ impl Input {
                     .into_iter()
                     .map(|state| input::key_input(&key, state))
                     .collect()
+            }
+            Self::Find {} => {
+                let command = match crate::platform::PlatformConventions::default().platform() {
+                    crate::platform::Platform::MacOs => winit::keyboard::ModifiersState::SUPER,
+                    _ => winit::keyboard::ModifiersState::CONTROL,
+                };
+                let key = winit::keyboard::Key::Character("f".into());
+                vec![
+                    winit::event::WindowEvent::ModifiersChanged(command.into()),
+                    input::key_input(&key, ElementState::Pressed),
+                    input::key_input(&key, ElementState::Released),
+                    winit::event::WindowEvent::ModifiersChanged(
+                        winit::keyboard::ModifiersState::empty().into(),
+                    ),
+                ]
             }
             Self::PenDown { x, y, pressure } => vec![
                 input::pen_sample(pressure),
@@ -168,7 +186,7 @@ impl Scenario {
                     x.is_finite() && y.is_finite() && (0.0..=1.0).contains(pressure)
                 }
                 Input::Wheel { dx, dy } => dx.is_finite() && dy.is_finite(),
-                Input::Character { .. } | Input::Key { .. } => true,
+                Input::Character { .. } | Input::Key { .. } | Input::Find {} => true,
             };
             if !finite {
                 return Err(format!(
@@ -909,6 +927,32 @@ mod tests {
                 r#"{"kind":"character","value":"x","extra":true}"#,
             ] {
                 assert!(serde_json::from_str::<Input>(input).is_err(), "{input}");
+            }
+        }
+
+        // Case `find_holds_the_command_modifier_around_one_f`.
+        {
+            let scenario = parse(
+                r#"{"name":"find","interval_us":16667,"steps":[{"kind":"find"},{"kind":"character","value":"z"}]}"#,
+            )
+            .unwrap();
+            assert!(matches!(scenario.steps[0], Input::Find {}));
+            assert!(serde_json::from_str::<Input>(r#"{"kind":"find","key":"f"}"#).is_err());
+            #[cfg(feature = "native")]
+            {
+                let events = Input::Find {}.window_events();
+                assert_eq!(events.len(), 4);
+                let winit::event::WindowEvent::ModifiersChanged(held) = &events[0] else {
+                    panic!("the command modifier goes down first");
+                };
+                assert!(
+                    crate::platform::PlatformConventions::default()
+                        .command_modifier_down(held.state())
+                );
+                assert!(matches!(
+                    &events[3],
+                    winit::event::WindowEvent::ModifiersChanged(released) if released.state().is_empty()
+                ));
             }
         }
 
