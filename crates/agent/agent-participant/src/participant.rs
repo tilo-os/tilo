@@ -761,14 +761,8 @@ impl AgentParticipant {
                     .seed(&route)
                     .ok_or_else(|| format!("the room has no record {record} of {app_id} yet"))??;
                 let seed = Seed::Existing {
-                    // A room-record app (Notes, Chat) publishes its package-primary
-                    // record under the empty wire record id.
-                    record: if record.is_empty() {
-                        ui::record::RecordId::package_primary()
-                    } else {
-                        ui::record::RecordId::parse(record)
-                            .ok_or_else(|| format!("{record} is not a record id"))?
-                    },
+                    record: ui::record::RecordId::from_route(record)
+                        .ok_or_else(|| format!("{record} is not a record route"))?,
                     changes: vec![saved],
                 };
                 (seed, Some(route))
@@ -932,7 +926,11 @@ impl AgentParticipant {
     /// the people see where it acts ([`crate::desk`]).
     fn show_on_desk(&mut self, route: &DocumentRoute) {
         let desktop = desktop_route(&self.room);
-        let Some(record) = self.apps.get(route).map(|app| app.record().to_owned()) else {
+        let Some(record) = self
+            .apps
+            .get(route)
+            .map(|app| app.record_id().as_str().to_owned())
+        else {
             return;
         };
         let beside = self
@@ -944,7 +942,11 @@ impl AgentParticipant {
                 record: focus.record.clone(),
             })
             .filter(|last| last != route)
-            .and_then(|last| self.apps.get(&last).map(|app| app.record().to_owned()));
+            .and_then(|last| {
+                self.apps
+                    .get(&last)
+                    .map(|app| app.record_id().as_str().to_owned())
+            });
         let title = self
             .catalogue
             .get(&route.app_id)

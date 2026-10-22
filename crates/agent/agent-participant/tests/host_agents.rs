@@ -877,7 +877,7 @@ impl Page {
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: ROOM.into(),
-            record: page.record().to_owned(),
+            record: page.wire_record().to_owned(),
         };
         browser
             .peer

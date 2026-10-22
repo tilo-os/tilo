@@ -342,22 +342,11 @@ impl Replica {
         self.app_id
     }
 
-    /// The record's id, as its durable route names it.
-    #[must_use]
-    pub fn record(&self) -> &str {
-        self.view.checkout().id.as_str()
-    }
-
-    /// Collaboration route of this record. A package-primary storage key is
-    /// internal custody; its existing room-level route has an empty record id.
+    /// Collaboration route of this record ([`RecordId::route`]): the record
+    /// id a `DocumentRoute` names it by.
     #[must_use]
     pub fn wire_record(&self) -> &str {
-        let id = &self.view.checkout().id;
-        if id.is_package_primary() {
-            ""
-        } else {
-            id.as_str()
-        }
+        self.view.checkout().id.route()
     }
 
     /// The record's id.

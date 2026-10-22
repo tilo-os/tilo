@@ -993,7 +993,7 @@ fn take_all(
                 let route = DocumentRoute {
                     app_id: holder.app_id.clone(),
                     cluster_id: holder.cluster_id.clone(),
-                    record: record.as_str().to_owned(),
+                    record: record.route().to_owned(),
                 };
                 (Some(route), mutation)
             }),

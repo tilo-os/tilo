@@ -67,7 +67,7 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
         Seed::NewAt(default.clone()),
     )
     .unwrap();
-    assert_eq!(source.record(), default.as_str());
+    assert_eq!(source.record_id(), &default);
     let Some(DocumentMutation::Snapshot(genesis)) = source.take_mutation().unwrap() else {
         panic!("a new record is published whole");
     };

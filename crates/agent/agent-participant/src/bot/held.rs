@@ -80,12 +80,8 @@ impl HeldRecords {
                 .apply(&DocumentMutation::Snapshot(saved))
                 .map_err(|error| error.to_string());
         }
-        let record = if route.record.is_empty() {
-            ui::record::RecordId::package_primary()
-        } else {
-            ui::record::RecordId::parse(&route.record)
-                .ok_or_else(|| format!("{} is not a record id", route.record))?
-        };
+        let record = ui::record::RecordId::from_route(&route.record)
+            .ok_or_else(|| format!("{} is not a record route", route.record))?;
         if record.chain_part().is_some() {
             return self.hold_beside(route, &record, saved);
         }
@@ -253,7 +249,7 @@ impl DoorParticipant for HeldRecords {
             let part = DocumentRoute {
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                record: record.as_str().to_owned(),
+                record: record.route().to_owned(),
             };
             self.beside.insert(part.clone(), route.clone());
             self.changed.push((part, mutation));

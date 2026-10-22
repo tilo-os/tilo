@@ -151,20 +151,10 @@ impl ConfinedReplica {
         &self.app_id
     }
 
-    /// The record's id, as its durable route names it.
-    #[must_use]
-    pub fn record(&self) -> &str {
-        self.record.as_str()
-    }
-
     /// Collaboration route of this record: [`crate::Replica::wire_record`].
     #[must_use]
     pub fn wire_record(&self) -> &str {
-        if self.record.is_package_primary() {
-            ""
-        } else {
-            self.record.as_str()
-        }
+        self.record.route()
     }
 
     /// The record's id.
