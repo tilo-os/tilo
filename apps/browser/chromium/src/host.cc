@@ -482,13 +482,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
       return;
     }
-    if(type==PET_VIEW && awaiting_covering_paint_ && !tilo::PaintCoversView(buffer,width,height)) {
-      // The renderer has not drawn at the new size yet; its own paint follows.
-      // Publishing this one would show the embedder a blank page.
-      TraceGeometry("paint-uncovered",id_,width,height,geometry_.scale());
-      return;
-    }
-    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;awaiting_covering_paint_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted(); }
+    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted(); }
     else { popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height; }
     EmitFrame();
   }
@@ -772,7 +766,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
       if(effect==tilo::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
-      popup_.clear();pixels_.clear();awaiting_covering_paint_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+      popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
@@ -1178,7 +1172,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
-  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool awaiting_covering_paint_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
+  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
 void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {

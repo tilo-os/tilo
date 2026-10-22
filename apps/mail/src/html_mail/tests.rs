@@ -647,3 +647,21 @@ Not links: a@b, http://, www.x, sam@localhost.";
         || url.starts_with("http://")
         || url.starts_with("mailto:")));
 }
+
+/// The reader shows a body once the engine's frame carries the document's
+/// end mark, so every prepared document, light or dark, has it, after what
+/// the mail itself says.
+#[test]
+fn every_document_carries_its_end_mark() {
+    for dark in [false, true] {
+        let prepared = prepare(
+            "<html><head><style>:root{color-scheme:dark}</style></head><body><p>Hi</p></body></html>",
+            &policy(false, dark),
+        );
+        assert!(
+            prepared.document.contains(END_MARK),
+            "{}",
+            prepared.document
+        );
+    }
+}

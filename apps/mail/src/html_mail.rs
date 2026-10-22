@@ -345,6 +345,21 @@ fn dark_ready(html: &str) -> bool {
 /// The document's own style, before the mail's: a light sheet or the
 /// reader's dark ground, preformatted text that wraps, long words that
 /// break, and images without a set height that fit the width.
+/// The document's end mark: a square in the view's bottom-right corner,
+/// blended to differ from what is under it by one level, so it is invisible
+/// yet never the view's white background. Offscreen Chromium on Linux paints
+/// a resized view before the page has drawn at its new size, the page's old
+/// frame and the view's background in the rest; only the page's own frame
+/// at the size the view has carries the mark there, so the reader shows a
+/// body once a frame has it (`reader::html`). A pseudo-element of the root,
+/// above everything, so nothing the mail lays out moves or covers it.
+/// `apps/browser/chromium/tests/resize_frames.py` holds Chromium to it.
+pub const END_MARK: &str = "html::after{content:\"\"!important;display:block!important;\
+position:fixed!important;right:0!important;bottom:0!important;width:2px!important;\
+height:2px!important;margin:0!important;background:rgb(1,1,1)!important;\
+mix-blend-mode:difference!important;pointer-events:none!important;\
+z-index:2147483647!important}";
+
 fn base_css(dark: bool, policy: &Policy<'_>) -> String {
     let ground = css_color(policy.ground);
     let ink = css_color(policy.ink);
@@ -357,6 +372,7 @@ fn base_css(dark: bool, policy: &Policy<'_>) -> String {
         "body{overflow-wrap:break-word}pre{white-space:pre-wrap}\
 img:not([height]){max-width:100%}",
     );
+    css.push_str(END_MARK);
     css
 }
 

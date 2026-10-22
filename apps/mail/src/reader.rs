@@ -1852,7 +1852,7 @@ mod tests {
         let present = |reader: &mut MessageReader, when: &str| {
             draw(reader);
             assert!(
-                reader.html.rect().is_none() || reader.html.has_fitting_frame(),
+                reader.html.rect().is_none() || reader.html.shows_page(),
                 "{when}: the body is drawn without a frame of the page at its size"
             );
         };
@@ -1869,6 +1869,14 @@ mod tests {
         assert!(
             reader.html.rect().is_none() && reader.html.pending(),
             "hidden, and still on its way, until the engine paints it"
+        );
+        // The engine paints the grown view before the page has drawn there:
+        // its background, at the right size, without the page.
+        engine.paint_before_page();
+        present(&mut reader, "grown, painted before the page");
+        assert!(
+            reader.html.rect().is_none() && reader.html.pending(),
+            "a frame of the right size without the page is not the page"
         );
         engine.hold_frames(false);
         present(&mut reader, "painted");

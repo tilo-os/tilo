@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Every frame at a view's new size shows the page laid out at that size.
+"""An embedder can tell a frame of the page at the view's new size from one
+the compositor painted before the page drew there.
 
-An embedder that sizes a view to its document (a mail reader) measures the
-page in a sliver of a view, then grows the view to the document's height. A
-frame published at the grown size before the page repainted at it would show
-the page's background where its content belongs: a blank flash the embedder
-cannot tell from the page. The page here has a coloured block well below the
-sliver; every frame at the grown size must show it.
+A mail reader sizes its view to the document: it measures the page in a sliver
+of a view, then grows the view to the document's height the moment it has
+loaded. Offscreen Chromium on Linux does not wait for the renderer when a view
+is resized (DelegatedFrameHost uses no resize deadline there): it paints the
+new size at once with the page's old, smaller frame and the view's background
+in the rest, a blank sheet where the document belongs. The page cannot be made
+to arrive sooner, so the mail marks its end (apps/mail/src/html_mail.rs,
+END_MARK): a fixed square in the view's bottom-right corner, blended so it is
+invisible yet never the background's white. Only the page's own frame at the
+new size has it there. This test holds Chromium to that: every open yields a
+marked frame, and every marked frame shows the page.
 """
 import argparse
 import base64
@@ -29,13 +35,19 @@ args = parser.parse_args()
 
 PAGE = ('<!doctype html><html><head><style>html,body{margin:0;background:#fff}'
         '#block{position:absolute;top:150px;left:0;width:100%;height:100px;background:#d02020}'
+        # The end mark as apps/mail/src/html_mail.rs writes it (END_MARK).
+        'html::after{content:""!important;display:block!important;'
+        'position:fixed!important;right:0!important;bottom:0!important;width:2px!important;'
+        'height:2px!important;margin:0!important;background:rgb(1,1,1)!important;'
+        'mix-blend-mode:difference!important;pointer-events:none!important;'
+        'z-index:2147483647!important}'
         '</style></head><body><p>Hello</p><div id="block"></div></body></html>')
 SCALE = 2.0
 WIDTH = 600
 SLIVER = 4
 GROWN = 400
 LAST = 618
-OPENS = 8
+OPENS = 20
 
 
 def read_exact(stream, length):
@@ -55,9 +67,25 @@ def block_shown(pixels, width, y):
     return r > 160 and g < 90 and b < 90
 
 
+def marked(frame):
+    """Whether the page's end mark is in the frame's bottom-right corner (BGRA)."""
+    width, height, pixels = frame['width'], frame['height'], frame['pixels']
+    at = ((height - 2) * width + width - 2) * 4
+    return pixels[at + 3] != 0 and pixels[at:at + 3] != b'\xff\xff\xff'
+
+
+def describe(frame):
+    """A blank frame's middle column, top to bottom, as BGRA at a few rows."""
+    width, height, pixels = frame['width'], frame['height'], frame['pixels']
+    rows = sorted({0, 4, int(SLIVER * SCALE), int(200 * SCALE), height // 2, height - 1})
+    return ', '.join(f'y{y}={pixels[(y * width + width // 2) * 4:(y * width + width // 2) * 4 + 4].hex()}'
+                     for y in rows if y < height)
+
+
 with tempfile.TemporaryDirectory(prefix='tilo-cef-resize-') as profile:
     log = tempfile.TemporaryFile()
-    host = subprocess.Popen([str(args.host.resolve()), '--profile=' + profile, *args.host_args],
+    host = subprocess.Popen([str(args.host.resolve()), '--profile=' + profile,
+                             '--tilo-sealed-documents', *args.host_args],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
     incoming = queue.Queue()
 
@@ -107,6 +135,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-resize-') as profile:
         send({'op': 'document_size', 'tab': 1, 'enabled': True})
         grown = (int(WIDTH * SCALE), int(GROWN * SCALE))
         shown = 0
+        unmarked = 0
         # The way a mail reader opens a message: the view still has the last
         # message's size when the page is sent, shrinks to a sliver to measure
         # it, and grows to the document's height the moment it has loaded. The
@@ -124,24 +153,35 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-resize-') as profile:
             send({'op': 'resize', 'width': grown[0], 'height': grown[1], 'scale_factor': SCALE})
             frames = []
 
-            def at_grown_size(event, frames=frames):
+            def page_at_grown_size(event, frames=frames):
                 if event['event'] == 'frame' and (event['width'], event['height']) == grown:
                     frames.append(event)
+                    return marked(event)
                 return False
 
-            until(at_grown_size, timeout=1.5)
-            assert frames, f'open {opened}: no frame at the grown size'
+            def and_after(event, frames=frames):
+                page_at_grown_size(event, frames)
+                return False
+
+            # The page's own frame comes once the renderer has drawn at the
+            # new size, however busy the machine; then the frames after it.
+            until(page_at_grown_size, what=f'open {opened}: a frame of the page at the grown size')
+            until(and_after, timeout=0.3)
+            painted = [frame for frame in frames if marked(frame)]
+            assert painted, f'open {opened}: no frame of the page at the grown size'
             middle = int(200 * SCALE)
-            blank = [index for index, frame in enumerate(frames)
-                     if not block_shown(frame['pixels'], frame['width'], middle)
-                     or frame['pixels'][-1] == 0]
-            assert not blank, (f'open {opened}: frames {blank} of {len(frames)} at the grown size '
-                               'show no page there')
-            shown += len(frames)
+            blank = [index for index, frame in enumerate(painted)
+                     if not block_shown(frame['pixels'], frame['width'], middle)]
+            assert not blank, (f'open {opened}: marked frames {blank} of {len(painted)} at the '
+                               'grown size show no page there: ' + '; '.join(
+                                   describe(painted[index]) for index in blank))
+            unmarked += len(frames) - len(painted)
+            shown += len(painted)
         send({'op': 'shutdown'})
         until(lambda e: e['event'] == 'closed', what='closed')
         assert host.wait(timeout=HANG_BOUND) == 0
-        print(f'PASS: {OPENS} opens, {shown} frame(s) at the grown size, each showing the page')
+        print(f'PASS: {OPENS} opens, {shown} marked frame(s) at the grown size, each showing the '
+              f'page; {unmarked} unmarked')
     finally:
         if host.poll() is None:
             host.kill()
