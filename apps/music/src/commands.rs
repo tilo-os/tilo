@@ -303,7 +303,7 @@ fn bench_remote(queries: &[&str]) {
                     failed += 1;
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(1));
             }
             if !got_first {
                 superseded += 1;
@@ -312,7 +312,7 @@ fn bench_remote(queries: &[&str]) {
             if let Some(rest) =
                 KEYSTROKE.checked_sub(ui::time::now().saturating_duration_since(since))
             {
-                std::thread::sleep(rest);
+                let _ = ui::rt::sleep_thread(rest);
             }
         }
         println!(
