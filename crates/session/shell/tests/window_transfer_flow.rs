@@ -149,6 +149,10 @@ impl Fixture {
         other.strips.push(Strip::new(other_strip, "Main"));
         tree.desktop.workspaces.push(other);
         tree.desktop.active_strip.insert(elsewhere, other_strip);
+        // The Notes window's ids were written by hand, not minted: ids
+        // minted from here on (the destination's card) must not reuse them,
+        // as they never do after a stored tree is loaded.
+        tree.seed_next_id_from_self();
         tree.seed_doc_from_cache();
         let chrome = ChromeState::new(tree);
 
