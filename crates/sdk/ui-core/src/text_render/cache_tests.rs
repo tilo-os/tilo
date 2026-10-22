@@ -699,3 +699,53 @@ fn a_repeated_clamp_reuses_its_lines_without_measuring() {
         first
     );
 }
+
+#[test]
+fn wrapping_measures_each_line_once_not_every_prefix() {
+    let style = TextStyle::new(14.0);
+    let text = "Twenty words of a video description wrap over several lines, and each \
+                break is found without shaping every prefix before it";
+    let mut renderer = crate::font_catalog::fixture_renderer();
+    let lines = renderer.wrap_lines(text, &style, 140.0);
+    assert!(lines.len() >= 3, "{lines:?}");
+    // One measure per line, and one more per line its estimate overran.
+    assert!(
+        renderer.misses <= 2 * u64::try_from(lines.len()).unwrap(),
+        "{} measures for {} lines",
+        renderer.misses,
+        lines.len()
+    );
+    let mut probe = crate::font_catalog::fixture_renderer();
+    for line in &lines {
+        assert!(
+            probe.measure_style(line, None, &style).0 <= 140.0,
+            "{line:?}"
+        );
+    }
+    // Every line is as long as it can be: its next word would not fit.
+    for pair in lines.windows(2) {
+        let longer = format!("{} {}", pair[0], pair[1].split(' ').next().unwrap());
+        assert!(
+            probe.measure_style(&longer, None, &style).0 > 140.0,
+            "{longer:?}"
+        );
+    }
+    // An elided line fits with its ellipsis, and one more character would not.
+    let elided = renderer.elide_to_width_style(text, 140.0, &style);
+    assert!(elided.ends_with(crate::text_render::ELLIPSIS));
+    assert!(probe.measure_style(&elided, None, &style).0 <= 140.0);
+    let kept = elided.trim_end_matches(crate::text_render::ELLIPSIS).len();
+    let (offset, next) = text[kept..]
+        .char_indices()
+        .find(|(_, c)| !c.is_whitespace())
+        .unwrap();
+    let one_more = format!(
+        "{}{}",
+        &text[..kept + offset + next.len_utf8()],
+        crate::text_render::ELLIPSIS
+    );
+    assert!(
+        probe.measure_style(&one_more, None, &style).0 > 140.0,
+        "{one_more:?}"
+    );
+}
