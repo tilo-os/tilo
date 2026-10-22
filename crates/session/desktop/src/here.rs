@@ -323,8 +323,10 @@ impl HereState {
     /// The person the device `publisher` is a device of, as the host's lines
     /// say; `None` before its page posted to the host.
     fn user_of(&self, publisher: &str) -> Option<&str> {
-        if Some(publisher) == self.own_id() {
-            return self.own_user();
+        if Some(publisher) == self.own_id()
+            && let Some(own) = self.own_user()
+        {
+            return Some(own);
         }
         self.lines
             .iter()
@@ -390,7 +392,14 @@ impl HereState {
             label.to_owned()
         };
         let label = self.labels().label(&line.device, &label);
-        Some((label, color_in(&self.colors(), &line.device)))
+        // A device that left the live layer keeps its line a while: their
+        // person's own colour then, as when alone here.
+        let rgb = self
+            .colors()
+            .get(&line.device)
+            .copied()
+            .unwrap_or_else(|| ui::presence::user_color(user));
+        Some((label, rgb))
     }
 
     /// This page's own colour, as everyone here sees it.
@@ -404,38 +413,38 @@ impl HereState {
     /// ([`ui::presence::assign_peer_colors`]): two people here together
     /// never share a colour while the ring has room for both, and every
     /// page, seeing the same room, settles it alike. A person is settled by
-    /// who they are (their user root, once the host's lines pair their
-    /// device with it) so their other devices wear their colour; an agent
-    /// by its own publisher. The colour a page publishes for itself is not
-    /// consulted: a page picking alone cannot know who else is here, which
-    /// is how two visitors came to wear the same one.
+    /// who they are (their user root) so their other devices wear their
+    /// colour; an agent by its own publisher. The colour a page publishes
+    /// for itself is not consulted: a page picking alone cannot know who
+    /// else is here, which is how two visitors came to wear the same one.
+    ///
+    /// A person's device is in the live layer before the host's lines pair
+    /// it with its person. Until they do it has no entry here, and takes no
+    /// part in the settlement, so they are drawn neutral
+    /// ([`ui::presence::UNSETTLED_RGB`]) rather than in a colour keyed by
+    /// their device that changes once their person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
-        let user_of = |device: &str| {
-            self.lines
-                .iter()
-                .find(|line| line.device == device && !line.user.is_empty())
-                .map(|line| line.user.as_str())
-        };
         let present: Vec<(&str, &str)> = match &self.members {
             Some(members) => members
                 .iter()
                 .chain(self.own.as_ref())
-                .map(|member| {
+                .filter_map(|member| {
                     let id = member.publisher.as_str();
-                    let key = if member.kind == "agent" {
-                        id
+                    if member.kind == "agent" {
+                        Some((id, id))
                     } else {
-                        user_of(id).unwrap_or(id)
-                    };
-                    (id, key)
+                        self.user_of(id).map(|user| (id, user))
+                    }
                 })
                 .collect(),
+            // Without the live layer the host's lines are who is here, each
+            // already known to the host.
             None => self
                 .lines
                 .iter()
                 .map(|line| line.device.as_str())
-                .chain(self.own_id())
-                .map(|id| (id, user_of(id).unwrap_or(id)))
+                .map(|id| (id, self.user_of(id).unwrap_or(id)))
+                .chain(self.own_id().and_then(|id| Some((id, self.user_of(id)?))))
                 .collect(),
         };
         let keys: Vec<&str> = present.iter().map(|(_, key)| *key).collect();
@@ -663,13 +672,13 @@ impl HereState {
     }
 }
 
-/// `publisher`'s colour in `colors` ([`HereState::colors`]), or its
-/// identity's own while the room has not settled one for it.
+/// `publisher`'s colour in `colors` ([`HereState::colors`]), or the
+/// neutral face while the room has not settled one for it.
 fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8, u8) {
     colors
         .get(publisher)
         .copied()
-        .unwrap_or_else(|| ui::presence::user_color(publisher))
+        .unwrap_or(ui::presence::UNSETTLED_RGB)
 }
 
 /// What a person who gave no name is called.
@@ -839,10 +848,10 @@ mod tests {
             Some(("Ada".to_owned(), ui::presence::user_color("ada-root"))),
             "alone here, a person wears their own identity's colour"
         );
-        // Without presence, the host's label and the device's colour.
+        // Without presence, the host's label and their person's colour.
         assert_eq!(
             here.person("ben-root"),
-            Some(("Ben".to_owned(), ui::presence::user_color("ben-device")))
+            Some(("Ben".to_owned(), ui::presence::user_color("ben-root")))
         );
         assert_eq!(
             here.person("cy-root").map(|(name, _)| name),
@@ -1097,12 +1106,18 @@ mod tests {
             ui::presence::user_color("visitor-0"),
             ui::presence::user_color("visitor-13")
         );
+        let line = |device: &str| HostLine {
+            device: device.into(),
+            user: device.into(),
+            ..HostLine::default()
+        };
         let page = |own: &str, other: &str| {
             let mut here = HereState::default();
             here.set_members(
                 Some(member(own, "person", own)),
                 Some(vec![member(other, "person", other)]),
             );
+            here.set_lines(vec![line(own), line(other)], 1);
             here
         };
         let first = page("visitor-0", "visitor-13");
@@ -1117,6 +1132,59 @@ mod tests {
         let tree = DesktopTree::default();
         let shown = first.people(&tree, &[], &|_| None, 0);
         assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
+    }
+
+    /// Someone whose device is live here before the host's lines pair it
+    /// with their person is drawn neutral, never in a colour their device
+    /// would key that changes once their person is known: the face on the
+    /// bar, the People list's and the windows' all wear their room colour
+    /// from the first frame it is known, and none before.
+    #[test]
+    fn a_face_is_neutral_until_the_room_knows_whose_it_is() {
+        use ui::ColorCompat as _;
+        let me = LiveMember {
+            user: Some("me-root".into()),
+            ..member("me", "person", "Quinn")
+        };
+        let mut here = HereState::default();
+        here.set_members(
+            Some(me.clone()),
+            Some(vec![me, member("ben-tab", "person", "Ben")]),
+        );
+        let tree = DesktopTree::default();
+        let shown = |here: &mut HereState| {
+            let people = here.people(&tree, &[], &|_| None, 0);
+            let mut presence = PresenceCtx::empty();
+            here.register_windows(&people, &mut presence);
+            (people[0].rgb, presence.color_for(&UserId("ben-tab".into())))
+        };
+        assert_eq!(
+            shown(&mut here),
+            (ui::presence::UNSETTLED_RGB, ui::presence::UNSETTLED_RGB),
+            "not yet known whose device it is"
+        );
+        assert!(!here.colors().contains_key("ben-tab"));
+        assert_eq!(
+            here.own_rgb(),
+            Some(ui::presence::assign_peer_colors(&["me-root"], &[])["me-root"]),
+            "this page knows its own person"
+        );
+        here.set_lines(
+            vec![HostLine {
+                device: "ben-tab".into(),
+                user: "ben-root".into(),
+                label: "Ben".into(),
+                ..HostLine::default()
+            }],
+            1,
+        );
+        let settled = ui::presence::assign_peer_colors(&["me-root", "ben-root"], &[]);
+        assert_eq!(shown(&mut here), (settled["ben-root"], settled["ben-root"]));
+        // A neutral face paints grey, not a ring colour.
+        let palette = ui::tokens::colors::Colors::dark().presence;
+        let painted = palette.of_rgb(ui::presence::UNSETTLED_RGB);
+        assert!(painted.r().abs_diff(painted.g()) <= 1, "{painted:?}");
+        assert!(painted.g().abs_diff(painted.b()) <= 1, "{painted:?}");
     }
 
     /// A person's devices wear one colour (the person's, once the host pairs
@@ -1188,7 +1256,7 @@ mod tests {
     fn host(device: &str, status: &str, generated: bool) -> HostLine {
         HostLine {
             device: device.into(),
-            user: String::new(),
+            user: format!("{device}-root"),
             label: "From host".into(),
             status: status.into(),
             recent: "Edited the text of Welcome note.".into(),

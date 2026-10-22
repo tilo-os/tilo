@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createHere, liveMembers, POST_EVERY_MS, TICK_MS, WATCHING_EVERY_MS} from './here.mjs';
+import {createHere, liveMembers, PAIR_WAIT_MS, POST_EVERY_MS, TICK_MS, WATCHING_EVERY_MS} from './here.mjs';
 
 function fakeLayer(members = []) {
   const handlers = {presence: new Set(), member: new Set(), state: new Set()};
@@ -125,4 +125,40 @@ test('a hidden page neither posts nor reads; a member\'s name reaches the runtim
   assert.deepEqual(ann.focus, {app: 'so.tilo.chat', record: 'lounge'});
   here.stop();
   assert.equal(layer.handlers.presence.size, 0, 'stopping lets go of the layer');
+});
+
+test('someone arriving is paired with their person at once, so their face is never drawn in a guessed colour', async () => {
+  const h = harness();
+  let known = [{device: 'me', user: 'ab'.repeat(32)}];
+  h.peer.here = async (win, list) => { h.posts.push({window: win, actions: list}); return known; };
+  const layer = fakeLayer();
+  createHere({runtime: h.runtime, mountId: () => 1, active: () => true, layer: () => layer, peer: h.peer,
+    fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => true});
+  await settle();
+  assert.equal(h.posts.length, 1);
+  // Bob arrives: the page asks the host now, not at its next refresh.
+  layer.join('bob');
+  await settle();
+  assert.equal(h.posts.length, 2, 'asked at once');
+  // His page has not posted yet: ask again each tick until it has.
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.equal(h.posts.length, 3, 'still not known whose device it is');
+  known = [...known, {device: 'bob', user: 'cd'.repeat(32)}];
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.equal(h.posts.length, 4);
+  assert.deepEqual(h.calls.filter(([kind]) => kind === 'here').at(-1)[1], known);
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.equal(h.posts.length, 4, 'paired: back to the usual refresh');
+  // A page that never posts is not asked about for ever.
+  layer.join('quiet');
+  await settle();
+  const asked = h.posts.length;
+  h.advance(PAIR_WAIT_MS);
+  await h.runTimer();
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.ok(h.posts.length <= asked + 1, 'gave up waiting for its line');
 });

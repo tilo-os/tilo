@@ -566,12 +566,15 @@ impl PresencePalette {
     /// as this palette paints it: its hue at the palette's lightness and
     /// chroma. Identities travel between devices and themes as colours;
     /// painting them through here keeps every participant equal on every
-    /// ground. A grey identity has no hue and takes [`PresenceHue::Blue`].
+    /// ground. A grey identity has no hue and stays grey at the palette's
+    /// lightness: it is someone whose colour is not known yet
+    /// (`ui::presence::UNSETTLED_RGB`), and a hue picked for them would be
+    /// a colour they then change from.
     #[must_use]
     pub fn of(&self, identity: Color) -> Color {
         let source = Oklch::from_color(identity);
         if source.c < 0.02 {
-            return self.hue(PresenceHue::Blue);
+            return oklch(self.lightness, 0.0, 0.0);
         }
         oklch(self.lightness, self.chroma, source.h)
     }
