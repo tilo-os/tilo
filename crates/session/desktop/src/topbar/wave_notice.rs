@@ -4,9 +4,13 @@
 //! own.
 use super::{Affine, Scene, TextRenderer, Theme, TopBarChrome, t_args};
 use ui::time::{Duration, Instant};
+use ui::widget::{ChipFace, ChipLead};
 
 /// How long the bar says who waved.
 pub(super) const WAVE_NOTICE_FOR: Duration = Duration::from_secs(6);
+
+/// The notice leads with a waving hand.
+const WAVE_NOTICE_LEAD: ChipLead = ChipLead::Glyph(ui::icons::Icon::Hand);
 
 impl TopBarChrome {
     /// What the bar says about the last wave at this person at `now`;
@@ -15,6 +19,37 @@ impl TopBarChrome {
         let notice = self.chrome.as_ref()?.snapshot().waved?;
         (now.saturating_duration_since(notice.at) < WAVE_NOTICE_FOR && !self.is_compact())
             .then(|| t_args("topbar-waved-at-you", &[("name", notice.from.into())]))
+    }
+
+    /// The notice up at `now`, worded to fit `room` px of chip: the
+    /// waver's name gives way first, cut short with an ellipsis, so the
+    /// words saying what happened always stand whole. `None` when not
+    /// even the name's first letter fits beside them.
+    pub(super) fn wave_notice_fitted(
+        &self,
+        now: Instant,
+        room: f64,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<String> {
+        let whole = self.wave_notice_text(now)?;
+        let mut fits = |text: &str| {
+            ChipFace::intrinsic_width(text, WAVE_NOTICE_LEAD, false, text_renderer, theme) <= room
+        };
+        if fits(&whole) {
+            return Some(whole);
+        }
+        let name = self.chrome.as_ref()?.snapshot().waved?.from;
+        (1..name.chars().count())
+            .rev()
+            .map(|kept| {
+                let head: String = name.chars().take(kept).collect();
+                t_args(
+                    "topbar-waved-at-you",
+                    &[("name", format!("{}\u{2026}", head.trim_end()).into())],
+                )
+            })
+            .find(|text| fits(text))
     }
 
     /// When the notice up now goes.
@@ -36,29 +71,28 @@ impl TopBarChrome {
         text_renderer: &mut TextRenderer,
         (center_y, right_x): (f64, f64),
     ) -> f64 {
-        use ui::widget::{ChipFace, ChipLead};
-        let Some(text) = self.wave_notice_text(ui::time::now()) else {
-            return right_x;
-        };
         let height = 24.0;
         let right = right_x - f64::from(theme.tokens.spacing.s2);
         let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
-        let lead = ChipLead::Glyph(ui::icons::Icon::Hand);
-        let width = ChipFace::intrinsic_width(&text, lead, false, text_renderer, theme)
-            .min(right - left_limit);
         // No room for the words: the bouncing face says it alone.
-        if width < 96.0 {
+        let Some(text) =
+            self.wave_notice_fitted(ui::time::now(), right - left_limit, text_renderer, theme)
+        else {
             return right_x;
-        }
+        };
+        let width = ChipFace::intrinsic_width(&text, WAVE_NOTICE_LEAD, false, text_renderer, theme);
         let rect = vello::kurbo::Rect::new(
             right - width,
             center_y - height / 2.0,
             right,
             center_y + height / 2.0,
         );
-        ChipFace::new(rect, &text)
-            .lead(lead)
-            .paint(scene, transform, text_renderer, theme);
+        ChipFace::new(rect, &text).lead(WAVE_NOTICE_LEAD).paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+        );
         rect.x0
     }
 }
@@ -69,6 +103,22 @@ mod tests {
     use super::*;
     use crate::chrome::WaveNotice;
     use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+
+    fn bar_waved_at_by(from: &str, at: Instant) -> TopBarChrome {
+        ui::i18n::I18nManager::init("en-US");
+        let workspace = Workspace::new(WorkspaceId(1), "Hacked");
+        let tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let chrome = FixtureChrome::new(tree.clone());
+        chrome.borrow_mut().waved = Some(WaveNotice {
+            from: from.into(),
+            at,
+        });
+        TopBarChrome::from_tree(&tree).with_chrome(chrome)
+    }
 
     /// The bar says who waved for a moment, then lets it go and wakes to
     /// take it away.
@@ -97,5 +147,57 @@ mod tests {
         assert_eq!(bar.wave_notice_ends(now), Some(later));
         assert_eq!(bar.wave_notice_text(later), None);
         assert_eq!(bar.wave_notice_ends(later), None);
+    }
+
+    /// Where the bar is narrow, the waver's name gives way, never the
+    /// words saying they waved.
+    #[test]
+    fn a_narrow_bar_shortens_the_name_never_the_words() {
+        let now = ui::time::now();
+        let bar = bar_waved_at_by("Gentle Dolphin", now);
+        let theme = Theme::default();
+        let mut text = TextRenderer::new();
+        let mut width =
+            |s: &str| ChipFace::intrinsic_width(s, WAVE_NOTICE_LEAD, false, &mut text, &theme);
+        let whole = width("Gentle Dolphin waved at you");
+        let tight = width("Gentle D\u{2026} waved at you");
+        let least = width("G\u{2026} waved at you");
+        let mut text = TextRenderer::new();
+        assert_eq!(
+            bar.wave_notice_fitted(now, whole, &mut text, &theme)
+                .as_deref(),
+            Some("Gentle Dolphin waved at you"),
+            "room for it all"
+        );
+        for room in [
+            whole - 1.0,
+            f64::midpoint(whole, tight),
+            tight,
+            f64::midpoint(tight, least),
+            least,
+        ] {
+            let fitted = bar
+                .wave_notice_fitted(now, room, &mut text, &theme)
+                .expect("the words fit");
+            assert!(
+                fitted.starts_with('G') && fitted.ends_with("\u{2026} waved at you"),
+                "{room}px: {fitted:?}"
+            );
+            assert!(
+                ChipFace::intrinsic_width(&fitted, WAVE_NOTICE_LEAD, false, &mut text, &theme)
+                    <= room,
+                "{fitted:?} fits {room}px"
+            );
+        }
+        assert_eq!(
+            bar.wave_notice_fitted(now, tight, &mut text, &theme)
+                .as_deref(),
+            Some("Gentle D\u{2026} waved at you")
+        );
+        assert_eq!(
+            bar.wave_notice_fitted(now, least - 1.0, &mut text, &theme),
+            None,
+            "no room for the words: the bouncing face says it alone"
+        );
     }
 }
