@@ -443,7 +443,10 @@ pub fn host_entries(scan: &desktop_entry::Scan) -> Vec<HostEntry> {
             desktop_entry::EntrySource::Flatpak { app_id } => Some(app_id.clone()),
             desktop_entry::EntrySource::Host => None,
         },
-        downloaded: None,
+        downloaded: entry
+            .downloaded
+            .as_ref()
+            .map(|downloaded| downloaded.program.clone()),
     })
     .collect()
 }
@@ -562,15 +565,57 @@ pub fn uninstall(item: AppListItem, remove_data: bool) -> Result<(), String> {
             &[("name", item.name.as_str().into())],
         ));
     }
+    let taking_off = item.removal() == AppRemoval::RemoveFromApps;
+    on_worker(item, taking_off, move |item, places| {
+        run(item, remove_data, places)
+    })
+}
+
+/// Take `item` off the person's apps and leave everything else where it
+/// is, on a worker: a downloaded program's entry goes and its file stays.
+/// An app that can only be taken off the person's apps is, as
+/// [`uninstall`] does it.
+///
+/// # Errors
+///
+/// When the worker cannot start, or the app is one that is uninstalled
+/// instead.
+pub fn remove_from_apps(item: AppListItem) -> Result<(), String> {
+    if item.removal() == AppRemoval::RemoveFromApps {
+        return uninstall(item, false);
+    }
+    if !matches!(item.source, AppSource::Downloaded { .. }) {
+        return Err(t("app-list-invalid-entry"));
+    }
+    on_worker(item, true, |item, places| {
+        execute(&forget_entry(item, places)).map(|_| Outcome::RemovedFromApps)
+    })
+}
+
+/// The step that takes a downloaded program's entry off the person's apps.
+fn forget_entry(item: &AppListItem, places: &Places) -> Step {
+    Step::ForgetEntry {
+        data_home: places.data_home.clone(),
+        desktop_id: item.id.clone(),
+    }
+}
+
+/// Run `job` for `item` on a worker and turn its outcome into a notice;
+/// `taking_off` when it only takes the app off the person's apps.
+fn on_worker(
+    item: AppListItem,
+    taking_off: bool,
+    job: impl FnOnce(&AppListItem, &Places) -> Result<Outcome, String> + Send + 'static,
+) -> Result<(), String> {
     let places = Places::of_session().ok_or_else(|| t("app-list-no-home"))?;
     std::thread::Builder::new()
         .name("tilo-uninstall".into())
         .spawn(move || {
-            let notice = match run(&item, remove_data, &places) {
+            let notice = match job(&item, &places) {
                 Ok(outcome) => outcome.notice(&item.name),
                 Err(detail) => Notification::new(
                     t_args(
-                        if item.removal() == AppRemoval::RemoveFromApps {
+                        if taking_off {
                             "app-list-remove-failed"
                         } else {
                             "app-list-uninstall-failed"
@@ -633,9 +678,13 @@ pub enum Step {
     /// Write a `Hidden` entry here, which takes the app off the person's
     /// apps.
     Hide { at: PathBuf, name: String },
-    /// Remove the entry Tilo wrote for a downloaded program. Only ever a
-    /// file in the person's applications directory that Tilo wrote.
-    ForgetEntry(PathBuf),
+    /// Remove the entry Tilo wrote for a downloaded program, and the icon
+    /// it kept, from the person's `$XDG_DATA_HOME` (`data_home`). The
+    /// downloaded-apps store removes only entries it wrote.
+    ForgetEntry {
+        data_home: PathBuf,
+        desktop_id: String,
+    },
 }
 
 /// What uninstalling `item` does, step by step, and what to say when it is
@@ -680,10 +729,7 @@ pub fn plan(
                 return Err(t("app-list-invalid-entry"));
             }
             Ok((
-                vec![
-                    Step::Trash(program.clone()),
-                    Step::ForgetEntry(entry.clone()),
-                ],
+                vec![Step::Trash(program.clone()), forget_entry(item, places)],
                 Outcome::UninstalledFileInTrash,
             ))
         }
@@ -777,7 +823,10 @@ pub fn execute(step: &Step) -> Result<bool, String> {
                 .map(|()| false)
                 .map_err(|error| error.to_string())
         }
-        Step::ForgetEntry(entry) => match std::fs::remove_file(entry) {
+        Step::ForgetEntry {
+            data_home,
+            desktop_id,
+        } => match desktop_entry::downloaded::Store::in_data_home(data_home).remove(desktop_id) {
             Ok(()) => Ok(false),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error.to_string()),

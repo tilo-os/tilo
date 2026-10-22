@@ -944,7 +944,8 @@ const BOT_REMOVE_PARAMS: &[ActionParam] = &[
 
 /// Uninstalling an app from the person's apps ([`crate::shell::app_list`]).
 pub(crate) const APP_UNINSTALL_ID: &str = "app.uninstall";
-/// Taking a part of the system off the person's apps.
+/// Taking an app off the person's apps without uninstalling it: a part of
+/// the system, or a downloaded program, whose file stays.
 pub(crate) const APP_REMOVE_FROM_APPS_ID: &str = "app.remove-from-apps";
 
 const APP_UNINSTALL_PARAMS: &[ActionParam] = &[
@@ -969,7 +970,7 @@ const APP_REMOVE_FROM_APPS_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "app",
         ParamType::Text,
-        "The app, a part of the system, as Files' Applications place and search list it.",
+        "The app, a part of the system or a downloaded program (whose file stays), as Files' Applications place and search list it.",
     ),
     ActionParam::optional(
         "confirm",
@@ -986,6 +987,17 @@ fn uninstall_app(args: &ActionArgs, remove_from_apps: bool) -> Result<(), Action
     let id = args.text("app").unwrap_or_default().trim().to_owned();
     if id.is_empty() {
         return Err(ActionError::Refused("name the app".into()));
+    }
+    // Taking a downloaded program's entry off the person's apps leaves its
+    // file where it is and can be undone by adding it again: nothing to ask.
+    if remove_from_apps
+        && let Some(item) = crate::shell::app_list::find(&id)
+        && matches!(
+            item.source,
+            crate::shell::app_list::AppSource::Downloaded { .. }
+        )
+    {
+        return crate::shell::app_list::remove_from_apps(item).map_err(ActionError::Refused);
     }
     if args.boolean("confirm") != Some(true) {
         crate::shell::app_list::ask(&id);

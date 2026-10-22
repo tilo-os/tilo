@@ -535,6 +535,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-clock",
  "tilo-control",
+ "tilo-desktop-entry",
  "tilo-files",
  "tilo-net",
  "tilo-paths",
@@ -17433,8 +17434,11 @@ name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "flate2",
  "libc",
+ "lzma-rust2",
  "rustix 1.1.4",
+ "ruzstd",
  "serde",
  "serde_json",
  "serial_test",
@@ -23970,6 +23974,7 @@ dependencies = [
  "litemap",
  "log",
  "lru 0.16.3",
+ "lzma-rust2",
  "memchr",
  "miniz_oxide",
  "mio",

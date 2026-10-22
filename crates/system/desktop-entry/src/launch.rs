@@ -121,6 +121,11 @@ pub enum HostLaunchError {
     NeedsTerminal { id: String },
     #[error("no application on this system has the desktop-file id {0}")]
     NotFound(String),
+    #[error("{name} can't be found: {} is gone", program.display())]
+    ProgramMissing {
+        name: String,
+        program: std::path::PathBuf,
+    },
 }
 
 /// A resolved host-application launch: the exact argv and environment. Pure data — building
@@ -208,6 +213,12 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
     if entry.terminal {
         return Err(HostLaunchError::NeedsTerminal {
             id: entry.id.clone(),
+        });
+    }
+    if let Some(downloaded) = entry.downloaded.as_ref().filter(|d| !d.present) {
+        return Err(HostLaunchError::ProgramMissing {
+            name: entry.name.clone(),
+            program: downloaded.program.clone(),
         });
     }
     let mut argv = expanded_argv(entry, env)?.into_iter();

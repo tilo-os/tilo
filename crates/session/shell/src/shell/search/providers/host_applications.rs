@@ -193,6 +193,19 @@ impl HostApplicationsProvider {
     /// searchable but never shown. Only when another of `apps` has the same
     /// name does the row say which one it is (Flatpak or System).
     fn row(&self, app: &HostApp, score: i32, apps: &[HostApp]) -> SearchResult {
+        if app
+            .downloaded
+            .as_ref()
+            .is_some_and(|downloaded| !downloaded.present)
+        {
+            // Starting it would only fail: the row says the file is gone,
+            // and choosing it asks where the file is now.
+            let mut row = self.locate_row(app, score);
+            row.kind = ResourceKind::HostApplication;
+            app.desktop_id.clone_into(&mut row.id);
+            app.name.clone_into(&mut row.title);
+            return row.with_facts([t("downloaded-app-missing")]);
+        }
         let twin = apps
             .iter()
             .filter(|other| other.name.eq_ignore_ascii_case(&app.name))
@@ -260,6 +273,81 @@ impl HostApplicationsProvider {
                 }
             },
         )
+    }
+}
+
+/// Address prefix of "Remove from apps" on a downloaded app's entry.
+const REMOVE_PREFIX: &str = "remove-from-apps:";
+/// Address prefix of "Locate" on a downloaded app whose file is gone.
+const LOCATE_PREFIX: &str = "locate:";
+
+impl HostApplicationsProvider {
+    /// "Remove from apps": the entry goes, the file stays. The same action
+    /// as `app.remove-from-apps`.
+    fn remove_row(&self, app: &HostApp, score: i32) -> SearchResult {
+        let desktop_id = app.desktop_id.clone();
+        let mut row = SearchResult::nullary_fallible(
+            ResourceKind::Action,
+            self.id(),
+            format!("{REMOVE_PREFIX}{}", app.desktop_id),
+            t("search-apps-remove-from-apps"),
+            None,
+            score,
+            move |_doc, _root, _chrome: &Chrome| {
+                let item = crate::shell::app_list::find(&desktop_id).ok_or_else(|| {
+                    crate::shell::search::action_api::ActionError::Refused(t("app-list-gone-body"))
+                })?;
+                crate::shell::app_list::remove_from_apps(item)
+                    .map_err(crate::shell::search::action_api::ActionError::Refused)
+            },
+        );
+        row.operation_kind = tilo_actions::OperationKind::Effect;
+        row
+    }
+
+    /// "Locate": point the entry at the file where it is now.
+    fn locate_row(&self, app: &HostApp, score: i32) -> SearchResult {
+        let desktop_id = app.desktop_id.clone();
+        let mut row = SearchResult::nullary_fallible(
+            ResourceKind::Action,
+            self.id(),
+            format!("{LOCATE_PREFIX}{}", app.desktop_id),
+            t("downloaded-app-locate"),
+            None,
+            score,
+            |_doc, _root, _chrome: &Chrome| Ok(()),
+        );
+        row.operation_kind = tilo_actions::OperationKind::Effect;
+        row.params = vec![
+            crate::shell::search::action_api::ActionParam::required_owned(
+                "path",
+                crate::shell::search::action_api::ParamType::Text,
+                "Where the app's file is now: an absolute path.",
+            ),
+        ];
+        row.on_open = std::rc::Rc::new(move |_doc, _root, _chrome, args| {
+            let path = args
+                .text("path")
+                .map(str::trim)
+                .filter(|path| path.starts_with('/'))
+                .ok_or_else(|| {
+                    crate::shell::search::action_api::ActionError::Explained(t(
+                        "downloaded-app-locate-path",
+                    ))
+                })?;
+            crate::shell::downloaded_apps::locate(&desktop_id, std::path::Path::new(path));
+            Ok(())
+        });
+        row
+    }
+
+    /// The downloaded app `desktop_id` in the current snapshot.
+    fn downloaded_app(&self, desktop_id: &str) -> Option<HostApp> {
+        self.snapshot()?
+            .apps
+            .iter()
+            .find(|app| app.desktop_id == desktop_id && app.downloaded.is_some())
+            .cloned()
     }
 }
 
@@ -337,13 +425,21 @@ impl SearchProvider for HostApplicationsProvider {
     fn id(&self) -> &'static str {
         "host-applications"
     }
+    /// Uninstall, as everywhere; a downloaded app can also just leave the
+    /// person's apps while its file stays. A missing one is located by
+    /// choosing its row.
     fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
         if result.kind != ResourceKind::HostApplication {
             return Vec::new();
         }
-        super::applications::uninstall_row("host-applications", result)
-            .into_iter()
-            .collect()
+        let mut rows: Vec<SearchResult> =
+            super::applications::uninstall_row("host-applications", result)
+                .into_iter()
+                .collect();
+        if let Some(app) = self.downloaded_app(&result.id) {
+            rows.push(self.remove_row(&app, result.score));
+        }
+        rows
     }
     fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
         result.id.eq_ignore_ascii_case(app_id)
@@ -423,6 +519,14 @@ impl SearchProvider for HostApplicationsProvider {
                 || self.source_generation(),
                 || self.builder(),
             );
+        }
+        if let Some(desktop_id) = id.strip_prefix(REMOVE_PREFIX) {
+            let app = self.downloaded_app(desktop_id)?;
+            return Some(self.remove_row(&app, score_for(ctx.needle, None)));
+        }
+        if let Some(desktop_id) = id.strip_prefix(LOCATE_PREFIX) {
+            let app = self.downloaded_app(desktop_id)?;
+            return Some(self.locate_row(&app, score_for(ctx.needle, None)));
         }
         let snapshot = self.snapshot()?;
         snapshot
@@ -504,6 +608,7 @@ mod tests {
             mime_types: Vec::new(),
             terminal: false,
             icon: None,
+            downloaded: None,
             window_identities: vec![desktop_id.to_string()],
         }
     }

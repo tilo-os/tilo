@@ -71,6 +71,7 @@ pub mod display_identify;
 pub(crate) mod display_persistence;
 pub mod doc_open;
 pub mod document_import;
+pub mod downloaded_apps;
 #[cfg(target_os = "linux")]
 pub mod drives;
 pub mod durable_writer;

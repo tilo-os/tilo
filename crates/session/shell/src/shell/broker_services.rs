@@ -2578,6 +2578,7 @@ mod tests {
             mime_types: Vec::new(),
             terminal: false,
             icon: None,
+            downloaded: None,
         };
         let apps = launchable_applications(
             vec![package("so.tilo.word-processor")],

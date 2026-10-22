@@ -343,7 +343,10 @@ fn a_downloaded_program_goes_to_the_trash_and_its_entry_goes() {
         steps,
         [
             Step::Trash(home.join("Applications/krita-5.2.AppImage")),
-            Step::ForgetEntry(home.join(".local/share/applications/tilo-downloaded/krita.desktop")),
+            Step::ForgetEntry {
+                data_home: home.join(".local/share"),
+                desktop_id: "tilo-downloaded-krita".to_owned(),
+            },
         ]
     );
     let mut stray = krita.clone();

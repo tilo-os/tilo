@@ -326,7 +326,7 @@ host-fs = { path = "../../system/host-fs" }
 
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.
-desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry", features = ["appimage"] }
 # User root identity + device cert + revocation. See
 # `network::identity` for the peer-side wiring: on connect we
 # expect the remote to present its device pubkey + cert; we validate

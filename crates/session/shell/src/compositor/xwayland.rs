@@ -1900,6 +1900,7 @@ mod tests {
             mime_types: Vec::new(),
             terminal: false,
             icon: None,
+            downloaded: None,
             window_identities: vec!["steam".into()],
         };
         let command = |x11: Option<&X11Session>| {

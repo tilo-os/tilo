@@ -50,6 +50,9 @@ pub struct HostApp {
     /// `Icon=`: an icon-theme name or an absolute path, resolved by
     /// [`crate::app_icons`].
     pub icon: Option<String>,
+    /// For a program the person downloaded: the file it starts and whether
+    /// that file is still there ([`desktop_entry::downloaded`]).
+    pub downloaded: Option<desktop_entry::downloaded::DownloadedProgram>,
 }
 
 /// A palette launch held until the compositor can mint its external
@@ -250,6 +253,7 @@ impl HostApp {
             mime_types: entry.mime_types.clone(),
             terminal: entry.terminal,
             icon: entry.icon.clone(),
+            downloaded: entry.downloaded.clone(),
         }
     }
 
@@ -769,6 +773,7 @@ mod tests {
             mime_types: Vec::new(),
             terminal: false,
             icon: None,
+            downloaded: None,
             window_identities: identities
                 .iter()
                 .map(std::string::ToString::to_string)

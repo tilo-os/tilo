@@ -127,6 +127,7 @@ libm = { version = "0.2" }
 litemap = { version = "0.8", default-features = false, features = ["serde"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 lru = { version = "0.16" }
+lzma-rust2 = { version = "0.23", default-features = false, features = ["optimization", "std", "xz"] }
 memchr = { version = "2" }
 miniz_oxide = { version = "0.8", features = ["simd"] }
 mio = { version = "1", features = ["net", "os-ext"] }
@@ -366,6 +367,7 @@ libm = { version = "0.2" }
 litemap = { version = "0.8", default-features = false, features = ["serde"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 lru = { version = "0.16" }
+lzma-rust2 = { version = "0.23", default-features = false, features = ["optimization", "std", "xz"] }
 memchr = { version = "2" }
 miniz_oxide = { version = "0.8", features = ["simd"] }
 mio = { version = "1", features = ["net", "os-ext"] }
