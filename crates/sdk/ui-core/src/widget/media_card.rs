@@ -311,7 +311,7 @@ impl<'a> MediaCardFace<'a> {
             return 0.0;
         };
         let wrap = crate::num::f32_of_f64(width.max(1.0));
-        let lines = text.clamp_to_lines(title, &m.title, wrap, 2).len().max(1);
+        let lines = text.clamped_line_count(title, wrap, 2, &m.title).max(1);
         let mut h = crate::num::f64_of_usize(lines) * MediaMetrics::line(text, &m.title);
         let meta_lines = self.meta.iter().flatten().count();
         let metadata = crate::num::f64_of_usize(meta_lines) * MediaMetrics::line(text, &m.meta);
@@ -1104,8 +1104,7 @@ impl Widget for MediaCard {
             && let Some(title) = &self.title
         {
             let lines = text_renderer
-                .clamp_to_lines(title, &m.title, crate::num::f32_of_f64(width.max(1.0)), 2)
-                .len()
+                .clamped_line_count(title, crate::num::f32_of_f64(width.max(1.0)), 2, &m.title)
                 .max(1);
             self.creator_title_height =
                 crate::num::f64_of_usize(lines) * MediaMetrics::line(text_renderer, &m.title);
