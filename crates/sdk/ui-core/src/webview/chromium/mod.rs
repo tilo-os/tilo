@@ -29,6 +29,11 @@ use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 
 const MAX_OWNED_NAVIGATIONS: usize = 32;
+/// Longest address a page can have: Chromium's own limit
+/// (`url::kMaxURLChars`), in bytes.
+const MAX_PAGE_URL: usize = 2 * 1024 * 1024;
+/// Longest download address kept with its download, in bytes.
+const MAX_DOWNLOAD_URL: usize = 8192;
 
 #[derive(Default)]
 struct NavigationRequests {
@@ -1796,7 +1801,9 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             valid_id(value)
                 && text("path")
                 && text("name")
-                && value["url"].as_str().is_some_and(|url| url.len() <= 8192)
+                // Any length: a page's own export (a `data:` address) is
+                // its whole file. What is kept of it is bounded in decoding.
+                && text("url")
                 && value["retryable"].is_boolean()
                 && text("error")
                 && matches!(
@@ -1860,7 +1867,10 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             value["request_id"]
                 .as_u64()
                 .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                && value["url"].as_str().is_some_and(|uri| uri.len() <= 65536)
+                // The frame's address, as long as Chromium lets one be.
+                && value["url"]
+                    .as_str()
+                    .is_some_and(|uri| uri.len() <= MAX_PAGE_URL)
                 && value.get("error").is_none_or(|error| {
                     error
                         .as_str()
@@ -1889,7 +1899,9 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
                 && value["ok"].is_boolean()
         }
-        "error" => text("url") && text("message"),
+        // A load's failure names its address; the engine's own trouble (a
+        // filter that could not check a resource) does not.
+        "error" => value.get("url").is_none_or(Value::is_string) && text("message"),
         _ => true,
     };
     if valid {
@@ -2186,8 +2198,17 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             state: value["state"].as_str()?.into(),
             path: value["path"].as_str()?.into(),
             name: value["name"].as_str()?.into(),
-            url: value["url"].as_str()?.into(),
-            retryable: value["retryable"].as_bool()?,
+            // Too long to keep (a page's `data:` export): kept as no address,
+            // so it cannot be fetched again.
+            url: value["url"]
+                .as_str()
+                .filter(|url| url.len() <= MAX_DOWNLOAD_URL)
+                .unwrap_or_default()
+                .into(),
+            retryable: value["retryable"].as_bool()?
+                && value["url"]
+                    .as_str()
+                    .is_some_and(|url| url.len() <= MAX_DOWNLOAD_URL),
             received: wire_u64(&value["received"])?,
             total: wire_u64(&value["total"])?,
             error: value["error"].as_str()?.into(),
@@ -2261,10 +2282,17 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
                 })
                 .flatten(),
         },
-        "error" => WebViewEvent::LoadFailed {
-            uri: value["url"].as_str().unwrap_or_default().into(),
-            error: value["message"].as_str()?.into(),
-        },
+        "error" => {
+            let message = value["message"].as_str()?;
+            let Some(uri) = value["url"].as_str() else {
+                tracing::warn!(message, "Chromium engine error");
+                return None;
+            };
+            WebViewEvent::LoadFailed {
+                uri: uri.into(),
+                error: message.into(),
+            }
+        }
         _ => return None,
     })
 }
