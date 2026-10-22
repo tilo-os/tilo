@@ -404,6 +404,10 @@ pub struct ActivityTimeline {
     /// `metrics.min_pointer_target`, taken from the theme each `draw` so the
     /// theme-less hit-test accessors can grow a chip's target to it.
     min_pointer_target: f64,
+    /// The theme of the last `draw`, which an app's row faces measure
+    /// their height under ([`crate::widget::EntryBody::height`]): rows are
+    /// laid out by the theme-less accessors between frames.
+    face_theme: Theme,
     /// `RoomActivity` may supply its own Everyone/person selector; suppressing
     /// this duplicate leaves the op-class strip intact.
     show_author_pill: bool,
@@ -471,6 +475,7 @@ impl ActivityTimeline {
             filters_people: false,
             people_chip_rects: Vec::new(),
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            face_theme: Theme::default(),
             show_author_pill: true,
             show_day_headings: false,
             clear_chip_rect: Rect::ZERO,
@@ -1294,7 +1299,7 @@ impl ActivityTimeline {
                 .entries
                 .get(*entry)
                 .and_then(|entry| self.faces.get(&entry.id))
-                .map_or(ROW_HEIGHT, |face| face.height(ROW_HEIGHT)),
+                .map_or(ROW_HEIGHT, |face| face.height(ROW_HEIGHT, &self.face_theme)),
             None => ROW_HEIGHT,
         }
     }
@@ -3411,6 +3416,9 @@ impl Widget for ActivityTimeline {
         _presence: &PresenceCtx,
     ) {
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
+        if self.face_theme != *theme {
+            self.face_theme = theme.clone();
+        }
         if self.draws_own_surface {
             self.draw_surface_chrome(scene, transform, theme);
         }
@@ -4636,7 +4644,7 @@ mod tests {
     fn a_presented_change_reads_opens_and_copies_as_the_app_says() {
         struct Tall;
         impl crate::widget::EntryBody for Tall {
-            fn height(&self) -> f64 {
+            fn height(&self, _: &Theme) -> f64 {
                 ROW_HEIGHT * 2.0
             }
             fn paint(&self, _: &mut PaintCtx<'_>, _: Rect) {}

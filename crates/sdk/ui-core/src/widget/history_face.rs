@@ -19,6 +19,7 @@ use std::rc::Rc;
 use vello::kurbo::Rect;
 
 use crate::paint::PaintCtx;
+use crate::theme::Theme;
 use crate::widget::history::HistoryEntry;
 
 /// An app's presentation of the changes in its History. Asked once per
@@ -40,10 +41,11 @@ pub trait HistoryEntryPresenter {
 /// The content of one History row, painted by the app inside the row's
 /// content slot (beside the author, before the time).
 pub trait EntryBody {
-    /// The row height this content needs, in logical pixels. The timeline
-    /// lays rows out without a renderer, so this is a fixed measure; the
-    /// content fits itself into the rect [`Self::paint`] is given.
-    fn height(&self) -> f64;
+    /// The row height this content needs under `theme`, in logical pixels.
+    /// The timeline lays rows out without a renderer, so this is measured
+    /// from the theme's text roles and spacing; the content fits itself
+    /// into the rect [`Self::paint`] is given.
+    fn height(&self, theme: &Theme) -> f64;
     /// Paint into `rect`, the row's content slot.
     fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect);
 }
@@ -97,11 +99,11 @@ impl EntryFace {
         self
     }
 
-    /// The row height the face needs, at least `minimum`.
-    pub(crate) fn height(&self, minimum: f64) -> f64 {
+    /// The row height the face needs under `theme`, at least `minimum`.
+    pub(crate) fn height(&self, minimum: f64, theme: &Theme) -> f64 {
         self.body
             .as_ref()
-            .map_or(minimum, |body| body.height().max(minimum))
+            .map_or(minimum, |body| body.height(theme).max(minimum))
     }
 }
 
