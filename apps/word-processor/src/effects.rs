@@ -59,6 +59,21 @@ pub enum WordProcessorEffect {
         #[param("The character to read from; the start when none")]
         from: Option<usize>,
     },
+    /// Read a document kept as content.
+    ///
+    /// Answers with what a document kept as content says (an attachment, a
+    /// shared file), as Markdown, as `read-file` reads a file: its name tells
+    /// its format. A long one answers in parts: read on from the `next` an
+    /// answer gives.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ReadContent {
+        #[param("The document's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param("Its file name, e.g. report.docx")]
+        name: String,
+        #[param("The character to read from; the start when none")]
+        from: Option<usize>,
+    },
     /// Convert a file.
     ///
     /// Writes a document or text file again in another format beside it,
