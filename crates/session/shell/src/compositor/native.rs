@@ -3052,9 +3052,10 @@ fn spawn_agent_mcp(
     let principal = {
         let tree = tree_handle.read();
         tree.desktop.active_workspace().map(|workspace| {
+            let room = workspace.room();
             (
-                workspace.room.to_string(),
-                crate::shell::state::local_user_id_for_room(&workspace.room),
+                room.to_string(),
+                crate::shell::state::local_user_id_for_room(&room),
             )
         })
     };

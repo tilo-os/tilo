@@ -130,7 +130,7 @@ fn execute() -> Result<bool, String> {
             .desktop
             .active_workspace()
             .ok_or("fixture has no active workspace")?;
-        let actor = workspace.actor_for_person(&chrome.local_user_for_room(&workspace.room));
+        let actor = workspace.actor_for_person(&chrome.local_user_for_room(&workspace.room()));
         let gate = shell::shell::search::visibility::PolicyVisibility::new(workspace, actor);
         let entries = session.host.action_catalog("",&chrome,&ui_state.doc,&ui_state.root,&gate).enumerate()
             .into_iter().map(|a|serde_json::json!({"provider":a.resource.provider,"id":a.resource.id,"title":a.title,"kind":format!("{:?}",a.kind),"contract":a.contract})).collect::<Vec<_>>();
