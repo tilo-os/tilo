@@ -93,6 +93,12 @@ third-party = [
     # A vendored YouTube client only the Tube app uses; server images and
     # the builder canary must not compile it.
     { name = "rustypipe", path = "vendor/rustypipe" },
+    # The model gateway's pinned Rig turns on serde_json's `float_roundtrip`
+    # (and ordered-float). Counted, the hack handed them to every Linux build,
+    # so every app compiled serde_json's slow-path float parser into its own
+    # JSON decoding: 13 to 28 KB of each aarch64 tapp (Monitor 1,168,896 ->
+    # 1,141,248 B). The gateway still builds them as Rig asks.
+    { name = "rig-core", path = "vendor/rig-core" },
 ]
 
 [final-excludes]
