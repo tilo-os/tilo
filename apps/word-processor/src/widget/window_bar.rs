@@ -175,9 +175,12 @@ impl WordProcessorWidget {
         let Some(text) = written(Some("heading")).or_else(|| written(None)) else {
             return t("document-untitled");
         };
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let mut title = words[..words.len().min(WORDS)].join(" ");
-        if words.len() > WORDS {
+        let mut title = text
+            .split_whitespace()
+            .take(WORDS)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if text.split_whitespace().nth(WORDS).is_some() {
             title.push('…');
         }
         title

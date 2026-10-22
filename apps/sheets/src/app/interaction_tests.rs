@@ -67,7 +67,7 @@ fn the_window_bar_names_the_sheet_in_view() {
     let sheet = app
         .active_sheet_id()
         .and_then(|id| app.workbook.sheet(&id))
-        .map(|sheet| sheet.name.0.to_string())
+        .map(|sheet| sheet.name.0.clone())
         .expect("a sheet is in view");
     assert_eq!(
         app.window_bar().location.map(|location| location.label),

@@ -59,7 +59,7 @@ impl SheetsApp {
         let sheet = self
             .active_sheet_id()
             .and_then(|id| self.workbook.sheet(&id))
-            .map_or_else(|| "Sheets".to_owned(), |sheet| sheet.name.0.to_string());
+            .map_or_else(|| "Sheets".to_owned(), |sheet| sheet.name.0.clone());
         let toolbar = WindowToolbar {
             location: Some(ui::window_toolbar::ToolbarLocation {
                 label: sheet,
