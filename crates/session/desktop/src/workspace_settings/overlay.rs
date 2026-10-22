@@ -24,8 +24,8 @@ use tilo_desktop_model::{DesktopTree, UserId};
 use super::{
     AppDirectory, DefaultAppsCtx, GrantDraft, WsTab, agents_add_rect, agents_pane_rows,
     default_app_rows, draw_agents_pane, draw_default_apps_pane, draw_members_pane,
-    draw_permissions_pane, members_pane_rows, ownership_action_rect, ownership_transfer_resource,
-    permission_profiles_rect, permissions_pane_layout,
+    draw_permissions_pane, members_pane_rows, ownership_action_rect, permission_profiles_rect,
+    permissions_pane_layout,
 };
 use ui::TextRole;
 use ui::text_render::TextStyle;
@@ -1604,10 +1604,7 @@ impl WorkspaceSettingsOverlay {
                 .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
             let width = f32_of_f64(close.x0 - identity.x0 - 88.0);
             let caption = text_renderer.elide_to_width_style(
-                &t_args(
-                    "workspace-settings-identity-caption",
-                    &[("role", role.into())],
-                ),
+                &role,
                 width,
                 &tokens.typography.style(TextRole::Caption),
             );
@@ -1669,10 +1666,7 @@ impl WorkspaceSettingsOverlay {
             .and_then(|workspace| workspace.role_of(model.acting_user))
             .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
         let label = text_renderer.elide_to_width_style(
-            &t_args(
-                "workspace-settings-role-policy-line",
-                &[("role", active_role.into())],
-            ),
+            &active_role,
             f32_of_f64(identity.x1 - identity.x0 - 92.0),
             &tokens.typography.style(TextRole::Caption),
         );
@@ -2013,12 +2007,13 @@ impl WorkspaceSettingsOverlay {
         let is_owner = model.owner_controls;
         if let Some(ws) = model.desktop.active_workspace() {
             let actor = model.acting_user;
-            if !ownership_transfer_resource(ws, actor).actions.is_empty() {
+            if super::ownership_button(ws, actor).is_some() {
                 self.ownership_action_rect = ownership_action_rect(body_rect);
             }
             for row in members_pane_rows(ws, body_rect) {
+                let (role, remove) = super::member_row_controls(&row, actor);
                 self.member_control_rects
-                    .push((row.user.clone(), row.role_rect, row.remove_rect));
+                    .push((row.user.clone(), role, remove));
             }
             draw_members_pane(
                 scene,

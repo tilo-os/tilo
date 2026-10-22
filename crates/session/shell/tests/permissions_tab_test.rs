@@ -499,10 +499,25 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             roster.len(),
             "one row per member of the real roster"
         );
+        let owner = shell::shell::state::local_user_id_for_room(
+            &tree
+                .desktop
+                .active_workspace()
+                .expect("fixture workspace")
+                .room(),
+        );
+        // USER REQUIREMENT (2026-10-22): "drop the disabled Remove (it's not
+        // an action you can take)". The owner's own row offers neither a
+        // role change nor Remove; everyone else's row offers both.
         for (user, role_rect, remove_rect) in rows {
             assert!(roster.iter().any(|(u, _)| u == user), "{user} is a member");
-            assert!(role_rect.area() > 0.0);
-            assert!(remove_rect.area() > 0.0);
+            if *user == owner {
+                assert_eq!(role_rect.area(), 0.0, "the owner's role is not a choice");
+                assert_eq!(remove_rect.area(), 0.0, "no one removes themselves here");
+            } else {
+                assert!(role_rect.area() > 0.0, "{user}'s role is a choice");
+                assert!(remove_rect.area() > 0.0, "{user} can be removed");
+            }
         }
     }
 
@@ -630,8 +645,11 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         assert!(!rows.is_empty());
 
         for (_, role_rect, remove_rect) in &rows {
-            click(&mut host, *role_rect);
-            click(&mut host, *remove_rect);
+            for control in [role_rect, remove_rect] {
+                if control.area() > 0.0 {
+                    click(&mut host, *control);
+                }
+            }
         }
 
         assert_eq!(
@@ -734,6 +752,9 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             .expect("the owner is in the roster");
         let before = authority(&chrome);
 
+        // The row offers no control to press at all.
+        assert_eq!(row.1.area(), 0.0, "no role control on the owner's row");
+        assert_eq!(row.2.area(), 0.0, "no Remove on the owner's row");
         click(&mut host, row.1);
         click(&mut host, row.2);
 

@@ -754,20 +754,20 @@ workspace-settings-members-count = { $count ->
    *[other] { $count } people share this workspace
 }
 workspace-settings-members-help = Removing someone blocks future sync and edits; copies already downloaded stay with them.
-workspace-settings-ownership = Ownership
+workspace-settings-ownership-cancel-short = Cancel transfer
+workspace-settings-ownership-transfer = Transfer ownership
 workspace-settings-you-manage = You manage
 workspace-settings-view-only = View only
 workspace-settings-members-empty-title = No one else is in this workspace
 workspace-settings-members-empty-detail = Create a signed invite from the General tab to add someone.
 workspace-settings-people-header = People
 workspace-settings-ownership-offered = { $owner } offered you ownership. Review the workspace and explicitly accept before the offer expires.
-workspace-settings-ownership-waiting = Waiting for { $recipient } to explicitly accept ownership. You can cancel until acceptance.
+workspace-settings-ownership-waiting = Waiting for { $recipient } to accept ownership.
 workspace-settings-ownership-pending = Ownership transfer to { $recipient } is awaiting that person's acceptance.
 workspace-settings-you = You
-workspace-settings-member-detail = { $count ->
-    [0] { $role } · no extra permissions
-    [one] { $role } · 1 extra permission
-   *[other] { $role } · { $count } extra permissions
+workspace-settings-member-extra = { $count ->
+    [one] 1 extra permission
+   *[other] { $count } extra permissions
 }
 workspace-settings-remove = Remove
 workspace-settings-owner-only = Only the workspace owner can change permissions.
@@ -890,9 +890,7 @@ workspace-settings-keep-permission = Keep permission
 workspace-settings-revoke-permission = Revoke permission
 workspace-settings-revoke-permission-detail = This removes the selected capability immediately.
 workspace-settings-workspace-fallback = Workspace
-workspace-settings-identity-caption = Workspace · { $role }
 workspace-settings-current-workspace = Current workspace
-workspace-settings-role-policy-line = { $role } · Settings and policy stay with this workspace
 workspace-settings-identity-title = Workspace identity
 workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
 workspace-settings-rename-admin-only = Only a workspace administrator can rename this workspace.

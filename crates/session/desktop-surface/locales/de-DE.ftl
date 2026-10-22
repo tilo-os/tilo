@@ -775,20 +775,20 @@ workspace-settings-members-count = { $count ->
    *[other] { $count } Personen teilen diesen Arbeitsbereich
 }
 workspace-settings-members-help = Wer entfernt wird, erhält keine Synchronisierung und Änderungen mehr; bereits heruntergeladene Kopien bleiben bei der Person.
-workspace-settings-ownership = Eigentum
+workspace-settings-ownership-cancel-short = Übertragung abbrechen
+workspace-settings-ownership-transfer = Eigentum übertragen
 workspace-settings-you-manage = Von dir verwaltet
 workspace-settings-view-only = Nur ansehen
 workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
 workspace-settings-members-empty-detail = Erstelle im Tab „Allgemein“ eine signierte Einladung, um jemanden hinzuzufügen.
 workspace-settings-people-header = Personen
 workspace-settings-ownership-offered = { $owner } hat dir das Eigentum angeboten. Sieh dir den Arbeitsbereich an und nimm ausdrücklich an, bevor das Angebot abläuft.
-workspace-settings-ownership-waiting = Warte darauf, dass { $recipient } das Eigentum ausdrücklich annimmt. Bis dahin kannst du abbrechen.
+workspace-settings-ownership-waiting = Warten, bis { $recipient } das Eigentum annimmt.
 workspace-settings-ownership-pending = Die Eigentumsübertragung an { $recipient } wartet auf die Annahme durch diese Person.
 workspace-settings-you = Du
-workspace-settings-member-detail = { $count ->
-    [0] { $role } · keine zusätzlichen Berechtigungen
-    [one] { $role } · 1 zusätzliche Berechtigung
-   *[other] { $role } · { $count } zusätzliche Berechtigungen
+workspace-settings-member-extra = { $count ->
+    [one] 1 zusätzliche Berechtigung
+   *[other] { $count } zusätzliche Berechtigungen
 }
 workspace-settings-remove = Entfernen
 workspace-settings-owner-only = Nur der Eigentümer des Arbeitsbereichs kann Berechtigungen ändern.
@@ -911,9 +911,7 @@ workspace-settings-keep-permission = Berechtigung behalten
 workspace-settings-revoke-permission = Berechtigung entziehen
 workspace-settings-revoke-permission-detail = Dadurch wird die ausgewählte Berechtigung sofort entfernt.
 workspace-settings-workspace-fallback = Arbeitsbereich
-workspace-settings-identity-caption = Arbeitsbereich · { $role }
 workspace-settings-current-workspace = Aktueller Arbeitsbereich
-workspace-settings-role-policy-line = { $role } · Einstellungen und Richtlinien bleiben bei diesem Arbeitsbereich
 workspace-settings-identity-title = Identität des Arbeitsbereichs
 workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
 workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs können ihn umbenennen.
