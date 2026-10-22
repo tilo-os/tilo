@@ -1186,7 +1186,10 @@ impl ContactsApp {
         if !groups.is_empty() {
             sections.push(NavSection::new("groups", "Groups", groups));
         }
+        // Groups come under their heading as the person makes them: the
+        // sidebar is a list from the start, whether or not any has loaded.
         NavList::new(sections)
+            .with_headings()
             .with_id("contacts.groups")
             .with_accessible_name("Groups")
             .bind_selection(destination)

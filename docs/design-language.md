@@ -231,7 +231,13 @@ rail it hides, as the sidebar toggle hides it. The width is remembered per
 app on this device. Rail tiles never stand in a wide sidebar, and list rows
 never in a rail.
 
-Which form a sidebar starts in follows its destinations, not the app:
+Which form a sidebar starts in follows the destinations it can hold, not
+the app and not what has loaded so far: a sidebar whose places come under
+headings (a contact book's groups, a mail account's folders) declares so
+and starts as a list even before any heading arrives. The rule runs once,
+when a window first shows its sidebar; places that load afterwards never
+change its form or width in that window's life. Only the person's drag
+does.
 
 | Starts as | When |
 |---|---|
@@ -239,9 +245,8 @@ Which form a sidebar starts in follows its destinations, not the app:
 | List | Anything else: headings, many or growing sets of places, nesting, long labels, rows with more to say |
 
 Today that makes these sidebars rails: Tube (six places), Clocks (four
-screens), Containers (four places; their counts show once widened), and
-Contacts until it has groups; and these lists: Settings, Mail, Files,
-Contacts with groups, Feeds (its header adds a subscription), Passwords,
+screens), and Containers (four places; their counts show once widened); and these
+lists: Settings, Mail, Files, Contacts (its groups), Feeds (its header adds a subscription), Passwords,
 Snippets, Shortcuts, Backups, Themes, Database client, Disks (sizes and
 health), Firewall (no icons, the active zone's label). Remote's rail is
 always a rail (`NavMode::Docked`). A sidebar that is not a navigation list

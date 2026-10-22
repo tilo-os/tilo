@@ -930,6 +930,9 @@ pub struct NavList {
     unfiltered_open: Option<Vec<NodeId>>,
     /// The app state the list follows, read at every sync and update.
     source: Option<NavSource>,
+    /// The app declared its places come under headings, even while none
+    /// has loaded yet ([`Self::with_headings`]).
+    headings: bool,
 }
 
 /// What a followed list reads: the sections and the chosen destination, or
@@ -1048,6 +1051,7 @@ impl NavList {
             filter: String::new(),
             unfiltered_open: None,
             source: None,
+            headings: false,
         };
         list.install_presentation(false);
         list.refresh_keys();
@@ -1367,6 +1371,16 @@ impl NavList {
                 false
             },
         );
+        self
+    }
+
+    /// The places come in groups under headings (a contact book's groups,
+    /// a mail account's folders), even where none has loaded yet or the
+    /// person has made none. A sidebar that can hold headings starts as a
+    /// list, so it never turns from rail into list as its groups arrive.
+    #[must_use]
+    pub fn with_headings(mut self) -> Self {
+        self.headings = true;
         self
     }
 
@@ -1697,12 +1711,13 @@ impl AdaptiveNav for NavList {
     fn rail_by_default(&self, theme: &crate::Theme) -> bool {
         // Headings, folding, a "New …" action and a filter are what a list
         // of many or growing places needs; a rail shows none of them.
-        let flat_sections = self.sections.iter().all(|section| {
-            section.title.is_empty()
-                && !section.collapsible
-                && section.trailing_action.is_none()
-                && !section.filterable
-        });
+        let flat_sections = !self.headings
+            && self.sections.iter().all(|section| {
+                section.title.is_empty()
+                    && !section.collapsible
+                    && section.trailing_action.is_none()
+                    && !section.filterable
+            });
         let items = all_items(&self.sections);
         // A tile is an icon over a caption: a row that says more than its
         // label (a second line, a figure, a check, a status, a colour, the

@@ -18,6 +18,10 @@ use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
 #[derive(Debug, Default)]
 pub(super) struct Edge {
     pub(super) touch: Option<u64>,
+    /// Which form the sidebar started in, settled the first time the
+    /// window showed it: the rule never runs again in this window's life,
+    /// whatever arrives in the list later. Only the person's drag moves it.
+    started_as_rail: Option<bool>,
     memory: Option<crate::storage::Settings<super::memory::NavShellMemory>>,
 }
 
@@ -204,6 +208,9 @@ impl NavShell {
                     // The sidebar's own header actions ("Add subscription")
                     // need the list's width to stand in its header.
                     adaptive.rail_default &= !header_actions;
+                    if let Some(settled) = self.edge.started_as_rail {
+                        adaptive.rail_default = settled;
+                    }
                     adaptive
                 })
         };
@@ -225,7 +232,15 @@ impl NavShell {
     /// has (`width`); a hidden sidebar keeps the form it had.
     pub(super) fn follow_sidebar_width(&mut self, width: f64) {
         if width > 0.0 {
-            let rail = self.inputs.borrow().sidebar_reads_as_rail(width);
+            let (rail, adaptive) = {
+                let inputs = self.inputs.borrow();
+                (inputs.sidebar_reads_as_rail(width), inputs.adaptive)
+            };
+            if let Some(adaptive) = adaptive {
+                self.edge
+                    .started_as_rail
+                    .get_or_insert(adaptive.rail_default);
+            }
             self.set_sidebar_rail(rail);
         }
     }
