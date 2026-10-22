@@ -621,10 +621,10 @@ pub fn inject_gpu_fault(fault: InjectedGpuFault) {
 /// The fault a renderer on a device opened on the GPU (not in software) applies now: a reset
 /// or a hang once, a dead GPU to every such device.
 #[cfg(target_os = "linux")]
-fn injected_gpu_fault(opened_in_software: bool) -> Option<InjectedGpuFault> {
+fn injected_gpu_fault(in_software: bool) -> Option<InjectedGpuFault> {
     let mut slot = INJECTED_GPU_FAULT.lock_recover();
     match *slot {
-        Some(InjectedGpuFault::Dead) => (!opened_in_software).then_some(InjectedGpuFault::Dead),
+        Some(InjectedGpuFault::Dead) => (!in_software).then_some(InjectedGpuFault::Dead),
         _ => slot.take(),
     }
 }
@@ -632,8 +632,8 @@ fn injected_gpu_fault(opened_in_software: bool) -> Option<InjectedGpuFault> {
 /// Whether the GPU was declared dead ([`InjectedGpuFault::Dead`]), so a device opened on it
 /// now (not in software) is lost from its birth.
 #[cfg(target_os = "linux")]
-fn dead_gpu_injected(opened_in_software: bool) -> bool {
-    !opened_in_software && *INJECTED_GPU_FAULT.lock_recover() == Some(InjectedGpuFault::Dead)
+fn dead_gpu_injected(in_software: bool) -> bool {
+    !in_software && *INJECTED_GPU_FAULT.lock_recover() == Some(InjectedGpuFault::Dead)
 }
 
 /// A renderer's device on `adapter` was lost, after it finished at least one frame or before
@@ -790,8 +790,6 @@ pub struct VelloDrmBridge {
     /// The device's loss, wgpu's report or work that stopped finishing ([`Self::device_lost`]).
     loss_watch: ui::gpu::LossWatch,
     adapter: wgpu::AdapterInfo,
-    /// Opened after the GPU was given up ([`ui::gpu::software_fallback`]).
-    opened_in_software: bool,
     bgra_blitter: TextureBlitter,
     dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
