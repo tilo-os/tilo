@@ -828,23 +828,23 @@ pub enum CalendarEffect {
     /// Sync calendars
     ///
     /// Pulls the calendars of this device's accounts from their servers.
-    #[effect(job, device_only)]
+    #[effect(job)]
     Sync,
     /// Export ICS
     ///
     /// Saves every event and task to an iCalendar file you choose.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ExportIcs,
     /// Import ICS
     ///
     /// Imports the events and tasks of an iCalendar file you choose.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ImportIcs,
     /// Invite from Contacts
     ///
     /// Shows the people of your address book to add to an event; each one
     /// is added only once you confirm.
-    #[effect(view, device_only)]
+    #[effect(view)]
     ContactAttendees {
         #[param("Event id")]
         event_id: String,

@@ -1016,10 +1016,10 @@ pub enum BooksEffect {
     /// Open book
     ///
     /// Choose an EPUB through the system picker and open it.
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
     OpenBook,
     /// Open a book the content store holds, putting it on the shelf.
-    #[effect(job, device_only)]
+    #[effect(job)]
     OpenStored {
         #[param("Content hash of the book's bytes")]
         content: String,

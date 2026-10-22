@@ -29,7 +29,7 @@ pub enum VideoEffect {
     ///
     /// Opens a video file or stream on this device and answers once its
     /// first picture has decoded.
-    #[effect(job, kind = "read", device_only)]
+    #[effect(job, kind = "read")]
     OpenVideo {
         #[param(
             "A video's path or stream URL on this device; omit to choose with the file picker"
@@ -40,7 +40,7 @@ pub enum VideoEffect {
     ///
     /// Opens a video of this device's queue or recent videos and answers
     /// once its first picture has decoded.
-    #[effect(row, job, kind = "read", device_only)]
+    #[effect(row, job, kind = "read")]
     PlayQueued {
         #[param("The queue or recent video's item id")]
         item: String,

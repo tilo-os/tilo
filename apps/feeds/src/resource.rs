@@ -237,10 +237,10 @@ pub enum FeedsEffect {
     #[effect(job)]
     RefreshAll,
     /// Import OPML…
-    #[effect(device_only)]
+    #[effect(attended)]
     ImportOpml,
     /// Export OPML…
-    #[effect(kind = "read", device_only)]
+    #[effect(attended, kind = "read")]
     ExportOpml,
     /// Reveal tagged articles
     #[effect(view, row, idempotent)]

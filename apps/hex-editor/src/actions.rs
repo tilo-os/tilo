@@ -29,7 +29,7 @@ pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
 
 /// Work outside the buffer: reading a file into it and writing it out.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "hex_editor.effects", device_only)]
+#[effect(operation = "hex_editor.effects")]
 pub enum HexEffect {
     /// Open a file.
     #[effect(job, cancellable, label = "Open file")]
