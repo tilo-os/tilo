@@ -2047,10 +2047,14 @@ esac
             "the timed-out catalogue fetch",
             &fetched
         ));
-        // A loaded machine can reach the deadline before the fetch starts.
-        if let Ok(pid) = std::fs::read_to_string(dir.path().join("fetch.pid")) {
+        // A loaded machine can reach the deadline before the fetch starts, or
+        // between the shell creating the pid file and writing it: an empty
+        // file names no process, and `/proc/` itself never goes away.
+        if let Ok(pid) = std::fs::read_to_string(dir.path().join("fetch.pid"))
+            && let Ok(pid) = pid.trim().parse::<u32>()
+        {
             tilo_test_env::wait_until("the killed fetch to be gone", || {
-                !std::path::Path::new("/proc").join(pid.trim()).exists()
+                !std::path::Path::new("/proc").join(pid.to_string()).exists()
             });
         }
     }
