@@ -123,10 +123,7 @@ mod tests {
         let _note = state.subscribe_ops(&note.channel_key(), 2);
         let _other = state.subscribe_ops(&other.channel_key(), 3);
         let _second = state.subscribe_ops(&second.channel_key(), 4);
-        assert_eq!(
-            state.window_records(),
-            [(77, note.clone()), (78, second.clone())]
-        );
+        assert_eq!(state.window_records(), [(77, note.clone()), (78, second)]);
         state.remove_connection(4);
         assert_eq!(state.window_records(), [(77, note)], "a window closed");
         state.remove_connection(2);
