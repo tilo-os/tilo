@@ -723,6 +723,10 @@ fn native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets(
     const HEIGHT: u32 = 2_160;
     let mut one_bridge = required_bridge(WIDTH, HEIGHT);
     let mut two_bridge = required_bridge(WIDTH, HEIGHT);
+    // It checks the pixels of 4K frames, not how fast llvmpipe draws them: on a
+    // loaded runner a 4K fence can miss the one-second production allowance.
+    one_bridge.wait_for_gpu_completion_for_test();
+    two_bridge.wait_for_gpu_completion_for_test();
     let width = usize::try_from(WIDTH).expect("native width");
     let height = usize::try_from(HEIGHT).expect("native height");
     let pitch = width
