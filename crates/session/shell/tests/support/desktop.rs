@@ -399,6 +399,53 @@ impl Desktop {
             .unwrap_or_else(|e| format!("(no thread dump: {e})"))
     }
 
+    /// One request on the liveness socket, answered off the main loop.
+    fn liveness(&self, request: &str) -> Result<Answer, String> {
+        let path = shell::compositor::liveness::socket_path(&self.control);
+        let mut stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
+        stream
+            .set_read_timeout(Some(STALL_REPORT_DEADLINE))
+            .map_err(|e| e.to_string())?;
+        stream
+            .write_all(format!("{request}\n").as_bytes())
+            .map_err(|e| e.to_string())?;
+        let mut line = String::new();
+        BufReader::new(stream)
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?;
+        serde_json::from_str(&line).map_err(|e| format!("{e}: {line}"))
+    }
+
+    /// From now on, record every path the compositor's main thread walks
+    /// (`compositor::liveness::main_thread_files`). Startup is over: the
+    /// main loop opens, stats and lists nothing by path after it.
+    ///
+    /// # Panics
+    ///
+    /// When the audit cannot be armed: a desktop that cannot be watched
+    /// proves nothing.
+    #[track_caller]
+    pub fn forbid_main_thread_files(&self) {
+        match self.liveness(r#"{"op":"forbid_main_thread_files"}"#) {
+            Ok(Answer::Armed) => {}
+            other => panic!("arming the main-thread file audit: {other:?}"),
+        }
+    }
+
+    /// Every path the main thread walked since
+    /// [`Self::forbid_main_thread_files`], with where it was.
+    ///
+    /// # Panics
+    ///
+    /// When the audit does not answer.
+    #[track_caller]
+    pub fn main_thread_files(&self) -> Vec<shell::compositor::liveness::FileWalk> {
+        match self.liveness(r#"{"op":"main_thread_files"}"#) {
+            Ok(Answer::MainThreadFiles(walks)) => walks,
+            other => panic!("reading the main-thread file audit: {other:?}"),
+        }
+    }
+
     fn liveness_threads(&self) -> Result<String, String> {
         let path = shell::compositor::liveness::socket_path(&self.control);
         let mut stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
