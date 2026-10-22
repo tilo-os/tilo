@@ -68,10 +68,19 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
         let starter = surface(&mut app).expect("Graph 3D starts with a surface");
         app.harness().type_text("+1");
         app.settle();
-        assert_eq!(
-            surface(&mut app),
-            Some(format!("{starter}+1")),
-            "typing in the 3D graph mode enters the surface"
+        let typed = surface(&mut app).expect("the surface stays");
+        // The field writes its formula in its own spelling (`x^(2)` for
+        // `x^2`): the same function, one higher everywhere.
+        let (before, after) = (
+            engine::compile(&starter, false, true).expect("the starter plots"),
+            engine::compile(&typed, false, true).expect("what was typed plots"),
+        );
+        assert!(
+            typed.ends_with("+1")
+                && [(0.0, 0.0), (1.0, -2.0), (0.5, 3.0)]
+                    .into_iter()
+                    .all(|(x, y)| (after.eval2(x, y) - before.eval2(x, y) - 1.0).abs() < 1e-9),
+            "typing in the 3D graph mode enters the surface: {starter:?} became {typed:?}"
         );
     }
     // phase typing_as_soon_as_the_window_opens
