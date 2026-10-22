@@ -1783,8 +1783,9 @@ fn window_intent(needle: &str, row: &SearchResult, top: i32) -> f32 {
     system::application_intent_boost(row.score, top)
 }
 
-/// The most a row matched only by a typo, or by words spread over its
-/// fields, scores on its provider's scale, as a share of the top.
+/// What a row that matched every word of the query, spread over its fields
+/// (the least a real match ranks), scores on its provider's scale, as a
+/// share of the top. A row below it matched only by a typo.
 #[allow(
     clippy::cast_precision_loss,
     reason = "provider scores are small integers"
@@ -1793,14 +1794,16 @@ fn loose_share() -> f32 {
     provider_score(tilo_search::SPANNING_RANK) as f32 / system::MAX_PROVIDER_SCORE as f32
 }
 
-/// Whether `row` matched `needle` only loosely: by a typo or by words spread
-/// over its fields, with nothing of the query in its title.
+/// Whether `row` matched `needle` only loosely: by a typo, with nothing of
+/// the query in its title. A row that holds every word the person typed,
+/// spread over its fields ("gnome calculator": GNOME's Calculator, whose
+/// title is "Calculator"), is a real match, not a loose one.
 #[allow(
     clippy::cast_precision_loss,
     reason = "provider scores are small integers"
 )]
 fn only_loosely_matched(needle: &str, row: &SearchResult, top: i32) -> bool {
-    row.score as f32 / top.max(1) as f32 <= loose_share()
+    (row.score as f32 / top.max(1) as f32) < loose_share()
         && system::lexical_strength(needle, &row.kind, &row.title, None) < 1.0
 }
 
@@ -3594,6 +3597,48 @@ mod tests {
             1,
             "with nothing else, the misspelt name is still found"
         );
+    }
+
+    /// "gnome calculator" names Tilo's Calculator by an alias and GNOME's
+    /// Calculator (title "Calculator", "gnome" in its id) by every word, spread
+    /// over its fields. Both are real matches: the second is no typo and
+    /// does not give way to the first.
+    #[test]
+    fn a_match_on_every_word_spread_over_fields_never_gives_way() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "spread-apps".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "spread-apps",
+                "so.tilo.calculator",
+                "Calculator",
+                100,
+            )],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "spread-catalogue".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "spread-catalogue",
+                "flathub:org.gnome.Calculator",
+                "Calculator",
+                provider_score(tilo_search::SPANNING_RANK),
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let rows = ask(&reg, &chrome, "gnome calculator");
+        assert!(
+            rows.iter()
+                .any(|row| row.id == "flathub:org.gnome.Calculator"),
+            "the app holding every word typed is listed: {:?}",
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>()
+        );
+        assert!(rows.iter().any(|row| row.id == "so.tilo.calculator"));
     }
 
     #[test]
