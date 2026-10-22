@@ -432,6 +432,136 @@ fn a_screenshot_is_saved_into_screenshots_and_offered_on_the_clipboard() {
     );
 }
 
+/// Puts an earlier copy on the clipboard before a screenshot.
+type Arrange = fn(&crate::compositor::selection::SharedSelection);
+
+// USER REQUIREMENT (2026-10-22): every screenshot is copied to the
+// clipboard.
+//
+// Every target (a selection, several selections, a window, the strip, a
+// screen, Print and its instant variants) ends in this one step: the
+// pixels are written to the file and then copied. Whatever the clipboard
+// held before, afterwards it offers the screenshot and only the
+// screenshot, as a compositor-owned selection that outlives the capture
+// tool and reaches apps started later.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pass per earlier clipboard, each asserted the same way"
+)]
+fn every_screenshot_is_copied_to_the_clipboard_whatever_it_held_before() {
+    use crate::compositor::selection::{
+        SelectionStore, TEXT_MIME, Target, adopt_complete_client_selection, begin_client_selection,
+        clipboard_publication_pending, compositor_owns, host_services, mirror_bytes,
+        mirror_mime_types, mirror_text, record_client_bytes,
+    };
+    let pixels = |width: u32, height: u32, seed: u8| -> Vec<u8> {
+        (0..width * height)
+            .flat_map(|i| {
+                let i = u8::try_from(i % 241).unwrap().wrapping_add(seed);
+                [i, 255 - i, seed, 255]
+            })
+            .collect()
+    };
+    let earlier_clipboards: [(&str, Arrange); 4] = [
+        ("nothing", |_| {}),
+        ("a copy taken over from an app that has gone", |store| {
+            let mimes = vec![TEXT_MIME.to_string(), "text/plain".to_string()];
+            let generation = begin_client_selection(store, Target::Clipboard, Some(mimes));
+            for mime in [TEXT_MIME, "text/plain"] {
+                record_client_bytes(
+                    store,
+                    Target::Clipboard,
+                    generation,
+                    mime,
+                    b"text an app copied".to_vec(),
+                );
+            }
+            assert!(
+                adopt_complete_client_selection(store, 1),
+                "precondition: the compositor took the app's copy over"
+            );
+        }),
+        ("text copied in the shell", |_| {
+            ui::clipboard_copy("text copied in the shell");
+        }),
+        ("an earlier screenshot", |_| {
+            let earlier = [9_u8, 9, 9, 255].repeat(4 * 4);
+            assert_eq!(
+                ui::clipboard_copy_image(4, 4, &earlier).outcome(),
+                Some(true),
+                "precondition: the earlier screenshot was copied"
+            );
+        }),
+    ];
+    for (index, (earlier, arrange)) in earlier_clipboards.into_iter().enumerate() {
+        let store: crate::compositor::selection::SharedSelection =
+            std::sync::Arc::new(std::sync::Mutex::new(SelectionStore::default()));
+        let _host = ui::host::enter(&host_services(store.clone()));
+        arrange(&store);
+        let pictures = tempfile::tempdir().unwrap();
+        let mut executor = CaptureExecutor {
+            pictures: Some(pictures.path().to_path_buf()),
+            ..CaptureExecutor::default()
+        };
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        frame_builder.relayout();
+        let (width, height) = (29_u32, 17_u32);
+        let rgba = pixels(width, height, u8::try_from(index).unwrap());
+        let path = next_screenshot_path(executor.pictures.clone(), 0).unwrap();
+        executor.write_screenshot(
+            ScreenshotToWrite {
+                path: path.clone(),
+                width,
+                height,
+                rgba: rgba.clone(),
+                preview: capture_preview(&rgba, width, height),
+            },
+            true,
+            ScreenshotReceipt::Shell,
+        );
+        let outcomes = executor.finish_io_blocking(&mut frame_builder);
+        assert_eq!(
+            outcomes,
+            vec![CaptureOutcome::Saved(path)],
+            "after {earlier}"
+        );
+
+        assert_eq!(
+            mirror_mime_types(&store, Target::Clipboard),
+            vec!["image/png".to_string()],
+            "after {earlier}: the clipboard offers the screenshot and nothing \
+             else, so no app pastes what was there before"
+        );
+        assert_eq!(
+            mirror_text(&store, Target::Clipboard),
+            None,
+            "after {earlier}: the earlier text is gone"
+        );
+        let png = mirror_bytes(&store, Target::Clipboard, "image/png")
+            .unwrap_or_else(|| panic!("after {earlier}: the clipboard holds a PNG"));
+        let copied = ui::png::decode_rgba8(&png).unwrap();
+        assert_eq!(
+            (copied.width, copied.height, copied.rgba),
+            (width, height, rgba),
+            "after {earlier}: the clipboard holds this screenshot's pixels"
+        );
+        assert!(
+            compositor_owns(&store, Target::Clipboard),
+            "after {earlier}: the compositor owns the copy, so it outlives the tool"
+        );
+        assert!(
+            clipboard_publication_pending(&store),
+            "after {earlier}: the copy goes out to every app as the selection"
+        );
+        assert_eq!(
+            frame_builder.host().capture_screenshot_kept(),
+            Some(ui::widget::ScreenshotKept::SAVED_AND_COPIED),
+            "after {earlier}: the receipt says it was copied"
+        );
+    }
+}
+
 /// Pinning the last screenshot decodes it on the capture worker: while
 /// its bytes do not arrive, every frame returns without the pin, and the
 /// pin lands on the first frame after they do.
