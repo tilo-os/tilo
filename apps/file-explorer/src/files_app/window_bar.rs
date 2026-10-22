@@ -51,6 +51,8 @@ pub(super) struct BarKey {
     hidden: bool,
     query: Option<String>,
     sidebar: bool,
+    /// The cloud account and folder browsed, which the bar names instead.
+    cloud: Option<(String, Option<String>)>,
 }
 
 fn action(id: &str, icon: &str, name: String, enabled: bool, on: bool) -> ToolbarAction {
@@ -284,6 +286,7 @@ impl FileExplorerWidget {
             hidden: self.show_hidden,
             query: self.bar_query.clone(),
             sidebar: self.nav.is_sidebar_open(),
+            cloud: self.cloud_title(),
         }
     }
 

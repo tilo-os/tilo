@@ -2223,7 +2223,12 @@ fn a_hosted_shell_hands_its_header_to_the_window_bar() {
         .content(Probe::boxed("content").0)
         .sidebar_header("Mailboxes", vec![Box::new(add)])
         .overview_header("Inbox", Vec::new())
-        .content_header("Design review", Vec::new());
+        .content_header(
+            "Design review",
+            vec![Box::new(crate::widget::Row::new().push(Box::new(
+                Button::icon_only("mail.reply", Icon::Reply, "Reply"),
+            )))],
+        );
     let mut h = harness(shell, 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
     assert!(
@@ -2260,6 +2265,13 @@ fn a_hosted_shell_hands_its_header_to_the_window_bar() {
         .expect("the header's button is the bar's action");
     assert_eq!(action.icon, "plus");
     assert!(!action.menu, "a button with an icon stands in the row");
+    assert!(
+        toolbar
+            .actions
+            .iter()
+            .any(|action| action.id == "mail.reply"),
+        "a row of buttons gives its buttons"
+    );
     deliver(ToolbarEvent::Action {
         id: action.id.clone(),
     });
