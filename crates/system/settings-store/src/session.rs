@@ -1032,7 +1032,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn checked_open_rejects_malformed_copies_and_legacy_preserves_unreadable_bytes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let root = dir.path().canonicalize().unwrap();
         let paths = SessionPaths::beside(root.join("settings.json"));
         for invalid in [b"".as_slice(), b"{", b"[]", b"null", b"\xff"] {
@@ -1064,7 +1064,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn checked_read_errors_leave_records_history_revision_and_pending_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let root = dir.path().canonicalize().unwrap();
         let session =
             SessionSettings::open_checked(SessionPaths::beside(root.join("settings.json")))
@@ -1113,7 +1113,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn checked_session_retains_copy_directory_after_rename() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let root = dir.path().canonicalize().unwrap();
         let original = root.join("original");
         let paths = SessionPaths {
@@ -1150,7 +1150,7 @@ mod tests {
     #[test]
     fn opening_a_session_preserves_unreadable_records_and_copy() {
         for target in ["person", "device", "copy"] {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = crate::test_dir();
             let paths = SessionPaths::beside(dir.path().join("settings.json"));
             std::fs::create_dir_all(paths.person.parent().unwrap()).unwrap();
             let path = match target {
@@ -1176,7 +1176,7 @@ mod tests {
 
     #[test]
     fn unreadable_copy_blocks_writes_until_the_external_edit_is_readable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         session
             .update_section("appearance", object(json!({"dark_theme": "dark"})))
@@ -1210,7 +1210,7 @@ mod tests {
 
     #[test]
     fn a_directory_where_the_copy_goes_does_not_block_the_records() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         session
             .update_section("appearance", object(json!({"dark_theme": "dark"})))
@@ -1243,7 +1243,7 @@ mod tests {
     fn missing_and_malformed_copies_are_repaired_from_durable_records() {
         for missing in [true, false] {
             for reopen in [true, false] {
-                let dir = tempfile::tempdir().unwrap();
+                let dir = crate::test_dir();
                 let session = open(dir.path());
                 session
                     .update_section("appearance", object(json!({"dark_theme": "dark"})))
@@ -1275,7 +1275,7 @@ mod tests {
 
     #[test]
     fn display_update_commits_transaction_and_profiles_in_one_device_record() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let update = crate::DisplayUpdate::new(
             &session.load(),
@@ -1302,7 +1302,7 @@ mod tests {
 
     #[test]
     fn display_update_refuses_a_new_external_profile_without_overwriting_either_section() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let update = crate::DisplayUpdate::new(
             &session.load(),
@@ -1326,7 +1326,7 @@ mod tests {
 
     #[test]
     fn display_update_record_failure_rolls_back_both_sections() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let before = session.load();
         let update = crate::DisplayUpdate::new(
@@ -1343,7 +1343,7 @@ mod tests {
 
     #[test]
     fn display_update_copy_failure_reports_durable_both_sections_and_repairs_later() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let update = crate::DisplayUpdate::new(
             &session.load(),
@@ -1372,7 +1372,7 @@ mod tests {
 
     #[test]
     fn every_change_rings_its_readers_and_nothing_else_does() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let rung = std::sync::Arc::new(AtomicU64::new(0));
         let count = std::sync::Arc::clone(&rung);
@@ -1437,7 +1437,7 @@ mod tests {
 
     #[test]
     fn a_deferred_write_returns_while_the_disk_is_parked_and_is_read_back_at_once() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let before = view.revision();
         // The copy's lock stands for a disk that does not answer: every
@@ -1472,7 +1472,7 @@ mod tests {
     /// A flush joins a worker that took the edits before it finished writing.
     #[test]
     fn a_flush_waits_for_an_in_flight_deferred_write() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let parked = lock_copy(&session.paths.copy).unwrap();
         view.update_section("appearance", object(json!({"mode": "Dark"})))
@@ -1504,7 +1504,7 @@ mod tests {
 
     #[test]
     fn deferred_writes_keep_their_order_and_their_read_modify_write_steps() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let parked = lock_copy(&session.paths.copy).unwrap();
         let origin = ChangeOrigin::default();
@@ -1551,7 +1551,7 @@ mod tests {
 
     #[test]
     fn dropping_the_view_makes_accepted_writes_durable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let paths = SessionPaths::beside(dir.path().join("settings.json"));
         {
             let (session, view) = deferring_view(dir.path());
@@ -1567,7 +1567,7 @@ mod tests {
 
     #[test]
     fn a_deferred_write_that_cannot_be_stored_is_reverted_and_reported() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let before = view.load();
         std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
@@ -1597,7 +1597,7 @@ mod tests {
 
     #[test]
     fn one_failed_batch_names_every_section_it_reverted_once() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let parked = lock_copy(&session.paths.copy).unwrap();
         std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
@@ -1624,7 +1624,7 @@ mod tests {
     fn a_durable_write_wait_does_not_block_the_last_committed_read_snapshot() {
         use std::sync::{Arc, TryLockError, mpsc};
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let before = (session.load(), session.revision());
         // Another settings writer owns the real canonical copy lock. No
@@ -1664,7 +1664,7 @@ mod tests {
     fn host_view_refreshes_external_writes_and_notifies_after_the_committed_snapshot() {
         use std::sync::{Arc, mpsc};
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let view = session.host_view().unwrap();
         let initial_revision = view.revision();
@@ -1714,7 +1714,7 @@ mod tests {
     fn a_host_view_looks_at_the_copy_only_when_read() {
         use std::sync::Arc;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let (view, worker) =
             tilo_test_env::idle::spawned_thread("tilo-settings-r", || session.host_view().unwrap());
@@ -1758,7 +1758,7 @@ mod tests {
         // "Within the clock tick" is judged against the wall clock; it stands
         // still here, before the copy is written.
         tilo_clock::freeze_wall(tilo_clock::wall());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         assert!(
             session.copy_may_have_changed(),
@@ -1785,7 +1785,7 @@ mod tests {
     fn reads_of_an_unchanged_copy_leave_the_refresh_worker_asleep() {
         use std::sync::Arc;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         settle_copy(&session);
         let (view, worker) =
@@ -1816,7 +1816,7 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let view = session
             .host_view_polling_copy(Duration::from_millis(50))
@@ -1838,7 +1838,7 @@ mod tests {
     fn a_refused_record_write_never_replaces_the_host_committed_view() {
         use std::sync::Arc;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let view = session.host_view().unwrap();
         let before = (view.load(), view.revision());
@@ -1858,7 +1858,7 @@ mod tests {
     fn dropping_the_last_host_view_retires_its_pending_reader_and_record_owner() {
         use std::sync::Arc;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let owner = Arc::downgrade(&session);
         let view = session.host_view().unwrap();
@@ -1878,7 +1878,7 @@ mod tests {
 
     #[test]
     fn a_write_lands_in_its_scopes_record_reaches_the_copy_and_survives_a_restart() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let paths = session.paths().clone();
         let before = session.revision();
@@ -1915,7 +1915,7 @@ mod tests {
 
     #[test]
     fn origin_is_recorded() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let paths = session.paths().clone();
         let origin = ChangeOrigin::action("x").by("agent:alice");
@@ -1963,7 +1963,7 @@ mod tests {
 
     #[test]
     fn a_section_change_reads_and_writes_under_the_records_lock() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = std::sync::Arc::new(open(dir.path()));
         let threads: Vec<_> = (0..2)
             .map(|_| {
@@ -2000,7 +2000,7 @@ mod tests {
 
     #[test]
     fn the_change_log_keeps_its_newest_half_once_full() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let filler = "x".repeat(4096);
         let mut writes = 0_u64;
@@ -2031,7 +2031,7 @@ mod tests {
 
     #[test]
     fn another_processs_write_to_the_copy_reaches_the_session_and_its_records() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let paths = session.paths().clone();
         session
@@ -2086,7 +2086,7 @@ mod tests {
 
     #[test]
     fn what_the_copy_gained_while_no_session_ran_is_taken_in_and_the_records_keep_the_rest() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let copy = dir.path().join("settings.json");
         // First boot writes the copy before any session exists.
         crate::update_section_at(
@@ -2132,7 +2132,7 @@ mod tests {
     #[test]
     fn concurrent_writers_in_and_out_of_the_session_lose_nothing() {
         const WRITES: usize = 40;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = std::sync::Arc::new(open(dir.path()));
         let copy = session.paths().copy.clone();
         let outside = std::thread::spawn(move || {

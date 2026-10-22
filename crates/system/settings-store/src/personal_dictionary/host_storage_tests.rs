@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
 fn fixture() -> (tempfile::TempDir, Arc<SessionSettings>, Host) {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_dir();
     let session = Arc::new(
         SessionSettings::open(SessionPaths::beside(directory.path().join("settings.json")))
             .unwrap(),

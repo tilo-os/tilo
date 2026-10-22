@@ -1231,7 +1231,7 @@ mod publication_regressions {
 
     #[test]
     fn unchanged_live_person_observations_keep_the_published_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("person-displays.json");
         let (publisher_pid, publisher_start_ticks) =
             crate::hardware::publisher_identity_in(dir.path()).unwrap();
@@ -1276,7 +1276,7 @@ mod publication_regressions {
     #[cfg(unix)]
     #[test]
     fn matching_symlink_observations_are_replaced_under_the_owned_path() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("person-displays.json");
         let alias = dir.path().join("alias.json");
         let (publisher_pid, publisher_start_ticks) =

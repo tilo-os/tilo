@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn authenticated_projection_and_edits_are_local_revocable_and_never_persisted() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_dir();
         let service = Arc::new(Service::new(directory.path().to_owned()).unwrap());
         let account = Arc::new(Mutex::new(Some([1; 32])));
         let identity = Arc::clone(&account);

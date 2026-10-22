@@ -592,6 +592,26 @@ pub fn bool_at(doc: &Map<String, Value>, section: &str, key: &str) -> Option<boo
         .and_then(serde_json::Value::as_bool)
 }
 
+/// A test's scratch directory, removed with it. It is in memory where the
+/// system has one ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), as
+/// `tilo-app`'s test profiles are: these tests prove locking, merging and
+/// recovery, and every write still syncs as it does for a person, but a sync
+/// in memory costs nothing where on a shared disk it waits for every other
+/// writer's data. Two writers flipping one key 100 times each took over 80 s
+/// on a busy build node's disk. The parent-directory durability tests keep the
+/// real disk ([`tempfile::tempdir`]).
+#[cfg(test)]
+pub(crate) fn test_dir() -> tempfile::TempDir {
+    if let Some(memory) = tilo_paths::memory_temp_dir()
+        && let Ok(directory) = tempfile::Builder::new()
+            .prefix("settings-store-")
+            .tempdir_in(memory)
+    {
+        return directory;
+    }
+    tempfile::tempdir().expect("a temporary directory")
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -695,7 +715,7 @@ mod tests {
 
     #[test]
     fn first_document_write_holds_the_lock_before_running_the_edit() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("new-config/tilo/settings.json");
         assert!(!path.parent().unwrap().exists());
         update_document_at(&path, |doc| {
@@ -722,7 +742,7 @@ mod tests {
 
     #[test]
     fn conditional_write_to_a_missing_directory_is_superseded() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("new-config/tilo/settings.json");
         let result =
             compare_update_section_at(&path, "display_transaction", &Map::new(), Map::new())
@@ -919,7 +939,7 @@ mod tests {
     fn a_merge_refuses_unreadable_input_without_replacing_it() {
         use std::os::unix::fs::symlink;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("settings.json");
         // A symlink loop fails even for privileged test runners, unlike mode bits.
         symlink("settings.json", &path).unwrap();
@@ -934,7 +954,7 @@ mod tests {
 
     #[test]
     fn a_merge_does_not_replace_non_utf8_input() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("settings.json");
         let bytes = b"{\"region\":\"\xff\"}";
         std::fs::write(&path, bytes).unwrap();
