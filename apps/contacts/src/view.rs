@@ -105,6 +105,8 @@ pub(crate) struct Bridge {
     pub selected: Option<ContactId>,
     /// Shown in place of rows when the list is empty.
     pub empty_title: Option<String>,
+    /// The empty state's icon (a star for favorites when `None`).
+    pub empty_icon: Option<Icon>,
     /// A row to scroll into view on the next paint.
     pub reveal: Option<ContactId>,
     /// The rows the list painted last, in window coordinates.
@@ -314,7 +316,7 @@ impl ContactList {
             ctx.scene.pop_layer();
         } else if let Some(title) = bridge.empty_title.as_deref() {
             let content = EmptyStateContent {
-                icon: Some(Icon::Star),
+                icon: Some(bridge.empty_icon.unwrap_or(Icon::Star)),
                 ..EmptyStateContent::new(title)
             };
             EmptyState::paint(ctx, self.rect, &content, self.cursor);

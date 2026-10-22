@@ -72,3 +72,30 @@ fn the_link_puts_the_shells_toggle_in_the_apps_window_bar() {
     settle(&mut h, W, H);
     assert!(h.root::<NavShell>().is_sidebar_open());
 }
+
+/// A narrow window whose toolbar is the window bar's slots opens on its
+/// list, as one with a header row does: the list fills the window, and Back
+/// from an opened item comes back to it.
+#[test]
+fn a_narrow_window_with_its_toolbar_in_the_bar_opens_on_its_list() {
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .with_window_toolbar();
+    let mut h = harness(shell, 560, 800, Theme::dark());
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    let list = child_rect(&h, "overview").expect("the list is a column");
+    assert!(
+        list.width() >= 500.0 && list.height() > 0.0,
+        "the list fills the window: {list:?}"
+    );
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, 560, 800);
+    assert!(h.root_mut::<NavShell>().back());
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    let list = child_rect(&h, "overview").expect("the list is a column");
+    assert!(list.width() >= 500.0, "back on the list: {list:?}");
+}

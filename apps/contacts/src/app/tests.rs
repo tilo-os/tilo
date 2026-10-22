@@ -4688,3 +4688,25 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
         "the host asks to confirm the merge"
     );
 }
+
+/// A narrow window opens on the list, which stands alone: an empty book says
+/// so there instead of showing nothing (its New contact is in the bar). Beside
+/// the content, the content's first-run pane says it once.
+#[test]
+fn a_narrow_windows_empty_list_says_the_book_is_empty() {
+    let mut narrow = Live::empty(460, 880);
+    narrow.harness_mut().relayout();
+    assert_eq!(narrow.shell.front_pane(), NavPane::Overview);
+    assert_eq!(
+        narrow.shared.borrow().empty_title.as_deref(),
+        Some("No contacts yet"),
+        "the list a narrow window opens on is not blank"
+    );
+    let mut wide = Live::empty(1280, 800);
+    wide.harness_mut().relayout();
+    assert_eq!(
+        wide.shared.borrow().empty_title,
+        None,
+        "beside the first-run pane the list stays quiet"
+    );
+}

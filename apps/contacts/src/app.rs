@@ -208,6 +208,9 @@ pub struct ContactsApp {
     detail_scroll: (Option<ContactId>, std::rc::Rc<std::cell::Cell<(f32, f32)>>),
     last_mouse: Point,
     list_stale: bool,
+    /// Whether the list was published standing alone, a narrow window's
+    /// screen: only then does an empty book say so in the list.
+    list_alone: bool,
     structure_dirty: bool,
     layout_dirty: bool,
     dirty: bool,
@@ -567,6 +570,7 @@ impl ContactsApp {
             detail_scroll: (None, std::rc::Rc::default()),
             last_mouse: Point::ZERO,
             list_stale: true,
+            list_alone: false,
             structure_dirty: false,
             layout_dirty: true,
             dirty: true,
@@ -1294,18 +1298,29 @@ impl ContactsApp {
                 photo: pictures.hold_text(&contact.photo),
             })
             .collect();
-        let empty_title = match self.group_filter.as_deref() {
-            Some(FAVORITES_FILTER) => Some("No favorites yet".to_owned()),
-            Some(_) => Some("No one is in this group".to_owned()),
-            None => None,
+        // Beside the content, an empty book is said once, by the content's
+        // first-run pane with its New contact; a narrow window's list stands
+        // alone, so it says so itself rather than show nothing.
+        self.list_alone = !self.shell.geometry().stack.is_empty();
+        let (empty_title, empty_icon) = match self.group_filter.as_deref() {
+            Some(FAVORITES_FILTER) => (Some("No favorites yet".to_owned()), None),
+            Some(_) => (Some("No one is in this group".to_owned()), None),
+            None if self.list_alone && self.store.is_empty() => {
+                (Some("No contacts yet".to_owned()), Some(Icon::Users))
+            }
+            None => (None, None),
         };
         let sortable = !rows.is_empty();
         self.sort_shown = sortable;
         {
             let mut bridge = self.shared.borrow_mut();
-            if bridge.rows != rows || bridge.empty_title != empty_title {
+            if bridge.rows != rows
+                || bridge.empty_title != empty_title
+                || bridge.empty_icon != empty_icon
+            {
                 bridge.rows = rows;
                 bridge.empty_title = empty_title;
+                bridge.empty_icon = empty_icon;
                 bridge.revision = bridge.revision.wrapping_add(1);
             }
         }
@@ -1362,6 +1377,9 @@ impl ContactsApp {
     /// Hand the shell and the panes what the window shows now. Cheap when
     /// nothing changed: each part is rebuilt only when what it shows did.
     fn publish(&mut self) {
+        if self.list_alone == self.shell.geometry().stack.is_empty() {
+            self.list_stale = true;
+        }
         if self.list_stale {
             self.publish_list();
         }
