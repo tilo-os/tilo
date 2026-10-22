@@ -1044,6 +1044,13 @@ impl Widget for CalculatorApp {
         true
     }
 
+    /// The calculator is one keyboard target: what is typed goes to the
+    /// expression or the formula being edited, so it takes the keyboard
+    /// whenever its window does without a control of its own choosing.
+    fn is_default_keyboard_focus(&self) -> bool {
+        true
+    }
+
     fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
         self.dirty |= self.environment != environment;
         self.environment = environment;

@@ -801,6 +801,18 @@ pub fn revision() -> u64 {
     REVISION.with(Cell::get)
 }
 
+/// Whether `event` is a press on the app's own slots (a mode, an action,
+/// the sidebar toggle), after which the app takes the keyboard if nothing
+/// in its window holds it. Typing into the bar's location or search, and
+/// its History, keep the keyboard where it is.
+#[must_use]
+pub fn hands_keyboard_to_app(event: &ToolbarEvent) -> bool {
+    matches!(
+        event,
+        ToolbarEvent::Action { .. } | ToolbarEvent::ToggleSidebar
+    )
+}
+
 /// What the person did in the bar since the last call, oldest first.
 #[must_use]
 pub fn take_events() -> Vec<ToolbarEvent> {

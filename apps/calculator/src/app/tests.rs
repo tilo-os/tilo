@@ -106,7 +106,8 @@ fn press_bar(app: &mut TestApp<CalculatorShell>, id: &str) {
         )
         .any(|offered| offered == id);
     assert!(offered, "{id} is in the window's bar: {declared:?}");
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     app.settle();
 }
 

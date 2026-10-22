@@ -3197,28 +3197,7 @@ impl FrameHarness {
             .and_then(|saved| unsafe {
                 saved.restore(&self.node_map, &self.bindings, Some(&order))
             })
-            .or_else(|| {
-                order.iter().copied().find(|&node| {
-                    self.inspect_node(node, |widget| widget.is_default_keyboard_focus())
-                        .unwrap_or(false)
-                })
-            })
-            .or_else(|| {
-                order.iter().copied().find(|&node| {
-                    self.inspect_node(node, |widget| {
-                        widget.accessibility().is_some_and(|access| {
-                            matches!(
-                                access.role,
-                                crate::a11y::Role::TextInput
-                                    | crate::a11y::Role::MultilineTextInput
-                                    | crate::a11y::Role::Document
-                                    | crate::a11y::Role::Terminal
-                            )
-                        })
-                    })
-                    .unwrap_or(false)
-                })
-            });
+            .or_else(|| self.keyboard_entry(&order));
         self.set_focused(target);
         self.relayout();
     }
