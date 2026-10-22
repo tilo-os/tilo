@@ -255,9 +255,11 @@ pub fn open_beside(
     anchor: Option<TabAnchor>,
     background: bool,
 ) -> Result<(), AppTabError> {
-    let app = launcher::gui_apps()
+    // The compositor's loop opens tabs: the apps as last enumerated, never a
+    // registry read, which walks the disk.
+    let app = launcher::installed_apps_without_waiting()
         .into_iter()
-        .find(|app| app.package_id == package_id)
+        .find(|app| app.has_gui && app.package_id == package_id)
         .ok_or_else(|| AppTabError::UnknownApp(package_id.to_owned()))?;
     if let Some(target) = target {
         let resource = crate::shell::uri_open::resource_for_uri(target)
