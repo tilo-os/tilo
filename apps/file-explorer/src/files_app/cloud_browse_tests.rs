@@ -391,9 +391,8 @@ fn legacy_cloud_links_do_not_offer_document_import() {
     assert!(files.importable_cloud_entry(&root.path().join("Document.docx")));
 }
 
-/// USER REQUIREMENT: "the app's controls live in the window bar". A cloud
-/// folder is named by the window's bar as the account and the folder in it,
-/// and the window draws no header of its own while the bar hosts it.
+/// A cloud folder is named by the window's bar as the account and the folder in
+/// it, and the window draws no header of its own while the bar hosts it.
 #[test]
 fn the_window_bar_names_the_cloud_folder() {
     let root = tempfile::tempdir().unwrap();
@@ -416,4 +415,45 @@ fn the_window_bar_names_the_cloud_folder() {
         ["Drive", "Trip to Lisbon"]
     );
     assert!(!location.editable, "a cloud folder has no path to type");
+}
+
+/// The cloud folder as a window shows it, its place in the window's bar,
+/// in dark and light, for a person to look at: each picture is printed as
+/// hex between `capture <name>` and `end capture` lines. Run on request
+/// (`--ignored --nocapture`).
+#[test]
+#[ignore = "prints captures for review"]
+fn a_cloud_folder_capture_shows_its_place_in_the_bar() {
+    for (name, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
+        let root = tempfile::tempdir().unwrap();
+        let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+        let mut harness =
+            ui::headless::FrameHarness::for_root(ui::State::new(), files, (1200, 720), theme);
+        harness.present_in_window_bar();
+        harness
+            .root_mut::<FileExplorerWidget>()
+            .debug_show_cloud_folder();
+        for _ in 0..3 {
+            harness.recompose().unwrap();
+        }
+        assert_eq!(
+            ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.location)
+                .map(|location| location.label)
+                .as_deref(),
+            Some("Trip to Lisbon"),
+            "the bar is told the cloud folder"
+        );
+        let out = root.path().join("capture.png");
+        harness.render_window_png(&out);
+        let png = std::fs::read(&out).unwrap();
+        println!("capture cloud-folder-{name}");
+        let hex = png.iter().fold(String::new(), |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+        println!("{hex}");
+        println!("end capture");
+    }
 }

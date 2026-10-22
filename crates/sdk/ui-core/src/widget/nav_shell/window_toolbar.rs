@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::{Column, InspectorPlacement, NavPane, NavShell, Staged, at, is_app_search};
+use super::{Column, InspectorPlacement, NavPane, NavShell, Staged, Widget, at, is_app_search};
 use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 /// The shell's buttons, and an app inside it ([`WindowBarLink`]), report
@@ -342,10 +342,11 @@ impl NavShell {
     }
 
     /// The headers' buttons as the bar's actions, each with the column and
-    /// place it answers for, in column order. `None` while a header holds
-    /// something the bar cannot show: a leading fill, or a control that is
-    /// not a button.
-    fn header_slots(&self) -> Option<Vec<(ToolbarAction, Column, usize)>> {
+    /// the path to it there (the action's place in the header, then the
+    /// children down to the button), in column order. A row or group of
+    /// buttons gives its buttons. `None` while a header holds something the
+    /// bar cannot show: a leading fill, or a control that is not a button.
+    fn header_slots(&self) -> Option<Vec<(ToolbarAction, Column, Vec<usize>)>> {
         let mut slots = Vec::new();
         for column in Column::ALL {
             let leading = match at(&self.pending.leading, column) {
@@ -356,17 +357,8 @@ impl NavShell {
                 return None;
             }
             for (index, element) in self.header_actions(column).iter().enumerate() {
-                if is_app_search(element.as_ref()) {
-                    continue;
-                }
-                let button = element
-                    .as_any()
-                    .and_then(|any| any.downcast_ref::<crate::widget::Button>())?;
-                let id = element.test_id().filter(|id| !id.is_empty()).map_or_else(
-                    || format!("nav-shell.{}.{index}", column.key()),
-                    str::to_owned,
-                );
-                slots.push((button.window_slot(id)?, column, index));
+                let mut path = vec![index];
+                collect_slots(element.as_ref(), column, &mut path, &mut slots)?;
             }
         }
         Some(slots)
@@ -435,7 +427,7 @@ impl NavShell {
     pub(super) fn run_shell_bar_events(
         &mut self,
         edits: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
+        path_root: &automerge::ObjId,
     ) {
         if !self.inputs.borrow().shell_bar {
             return;
@@ -452,19 +444,66 @@ impl NavShell {
             let ToolbarEvent::Action { id } = event else {
                 continue;
             };
-            let Some(&(_, column, index)) = slots.iter().find(|(action, ..)| action.id == id)
-            else {
+            let Some((_, column, path)) = slots.iter().find(|(action, ..)| action.id == id) else {
+                continue;
+            };
+            let Some((&first, rest)) = path.split_first() else {
                 continue;
             };
             let header = &mut self.headers[column.index()];
             let element = match self.pending.actions[column.index()].as_mut() {
-                Some(pending) => pending.get_mut(index),
-                None => header.actions.get_mut(index),
+                Some(pending) => pending.get_mut(first),
+                None => header.actions.get_mut(first),
             };
-            if let Some(element) = element {
-                element.perform_action(&crate::a11y::Action::Activate, &[], edits, path);
+            let mut widget: Option<&mut dyn Widget> = element.map(|element| element.as_mut() as _);
+            for &child in rest {
+                widget = widget.and_then(|widget| widget.children_mut().into_iter().nth(child));
+            }
+            if let Some(widget) = widget {
+                widget.perform_action(&crate::a11y::Action::Activate, &[], edits, path_root);
             }
         }
         self.invalidate();
     }
+}
+
+/// The buttons under `widget` as the bar's actions, at `path` in `column`'s
+/// header. The app's search button is the bar's own search and gives none.
+/// `None` for a control that is not a button: the header keeps its row.
+fn collect_slots(
+    widget: &dyn Widget,
+    column: Column,
+    path: &mut Vec<usize>,
+    slots: &mut Vec<(ToolbarAction, Column, Vec<usize>)>,
+) -> Option<()> {
+    if is_app_search(widget) {
+        return Some(());
+    }
+    if let Some(button) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<crate::widget::Button>())
+    {
+        let id = widget.test_id().filter(|id| !id.is_empty()).map_or_else(
+            || {
+                let at: Vec<String> = path.iter().map(usize::to_string).collect();
+                format!("nav-shell.{}.{}", column.key(), at.join("."))
+            },
+            str::to_owned,
+        );
+        slots.push((button.window_slot(id)?, column, path.clone()));
+        return Some(());
+    }
+    let children = widget.children();
+    if children.is_empty() {
+        // An empty row holds nothing to show; anything else on its own (a
+        // label, a field, a picker) is not a button.
+        return widget.accessibility().is_none().then_some(());
+    }
+    for (index, child) in children.into_iter().enumerate() {
+        path.push(index);
+        let collected = collect_slots(child, column, path, slots);
+        path.pop();
+        collected?;
+    }
+    Some(())
 }

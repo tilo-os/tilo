@@ -116,7 +116,7 @@ impl FileExplorerWidget {
             files_mode: accounts::cloud_types::FilesMode::Import,
             mount: None,
         };
-        self.startup_accounts = Some(vec![account.clone()]);
+        self.startup_accounts = Some(vec![account]);
         self.places_shown = None;
         let entry = |id: &str, name: &str, kind: ImportKind| ImportEntry {
             id: id.into(),
@@ -127,7 +127,7 @@ impl FileExplorerWidget {
             content_writable: false,
         };
         self.leave_cloud_browse();
-        self.cloud.account = "shot-drive".to_owned();
+        "shot-drive".clone_into(&mut self.cloud.account);
         self.cloud.folder = Some("trip".into());
         self.cloud.folder_label = Some("Trip to Lisbon".into());
         self.cloud.entries = vec![
