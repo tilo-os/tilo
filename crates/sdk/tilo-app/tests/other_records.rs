@@ -4,7 +4,9 @@
 //! the person's own record, bound by path in a view of their own, published
 //! beside the app's resource with their field edits and verbs, changed only
 //! by their person whatever their role in the room, checked by the model's
-//! invariants and recorded in the record's history.
+//! invariants and recorded in the record's history. A host without a window
+//! (the session) holds an app's settings sections and changes them through
+//! the same field edits.
 
 use serde::{Deserialize, Serialize};
 use tilo_app::Role;
@@ -543,5 +545,107 @@ fn a_settings_section_opens_the_persons_record_only_when_first_written() {
     assert!(
         !app.settings::<Display>().get().high_contrast,
         "and it is the person's step"
+    );
+}
+
+/// How long before the screen locks: a settings section that is a model.
+#[derive(Model, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[model(check = Lock::valid)]
+pub struct Lock {
+    /// Minutes before the screen locks; 0 never.
+    #[model(weaker = "higher", weakest = 0)]
+    pub minutes: u32,
+}
+
+impl Default for Lock {
+    fn default() -> Self {
+        Self { minutes: 5 }
+    }
+}
+
+impl Lock {
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.minutes <= 60 {
+            Ok(())
+        } else {
+            Err(Refusal::new("at most an hour"))
+        }
+    }
+}
+
+#[resource(kind = "test.lock", label = "Lock")]
+impl Lock {}
+
+impl SettingsSchema for Lock {
+    const SCOPE: Scope = Scope::Shared("test-lock");
+}
+
+struct LockApp;
+
+impl ResourceApp for LockApp {
+    type Resource = Board;
+    const ID: &'static str = "so.tilo.test-lock";
+    const TITLE: &'static str = "Lock";
+
+    fn view(_cx: &mut ViewCx<Board>) -> Element {
+        Box::new(Column::new())
+    }
+
+    fn records(records: &mut Records<'_>) {
+        records.settings::<Lock>();
+    }
+}
+
+fn edit(minutes: u32) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::from_value(
+        serde_json::json!({ "edit": { "path": [{ "field": "minutes" }], "op": "set", "value": minutes } }),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_section_is_published_and_changed_without_a_window() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let stored = || {
+        tilo_app::storage::Settings::<Lock>::for_app(LockApp::ID)
+            .get()
+            .minutes
+    };
+    let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "field-edit");
+    let invoker = tilo_app::tilo_actions::ActionInvoker::actor("ada");
+
+    let records = tilo_app::framework::SettingsRecords::of::<LockApp>();
+    let resources = records.resources();
+    let spec = tilo_app::tilo_actions::door::resolve(&resources, &address)
+        .expect("the section's field edit is published");
+    assert_eq!(
+        spec.confirmation_for_json(&edit(1)),
+        tilo_app::tilo_actions::ConfirmationPolicy::None,
+        "locking sooner asks nothing"
+    );
+    assert_eq!(
+        spec.confirmation_for_json(&edit(0)),
+        tilo_app::tilo_actions::ConfirmationPolicy::Confirm,
+        "never locking asks first"
+    );
+
+    records.invoke(&address, &edit(1), &invoker).unwrap();
+    assert_eq!(stored(), 1);
+    assert!(
+        records.invoke(&address, &edit(90), &invoker).is_err(),
+        "the model's check refuses"
+    );
+    assert_eq!(stored(), 1, "a refused change stores nothing");
+
+    // What the window changed reaches a holder made before it.
+    tilo_app::storage::Settings::<Lock>::for_app(LockApp::ID)
+        .set(&Lock { minutes: 10 })
+        .unwrap();
+    let resources = records.resources();
+    let spec = tilo_app::tilo_actions::door::resolve(&resources, &address).unwrap();
+    assert_eq!(
+        spec.confirmation_for_json(&edit(5)),
+        tilo_app::tilo_actions::ConfirmationPolicy::None,
+        "judged against the value stored now"
     );
 }

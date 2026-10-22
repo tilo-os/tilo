@@ -381,6 +381,7 @@ pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
 pub use saves::Saves;
 pub use scenario::{Fixture, RunMode};
+pub use section::SettingsRecords;
 pub use settings::Setting;
 pub use share_link::host_link;
 pub use stage::{stage, time_frames};
