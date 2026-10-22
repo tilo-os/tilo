@@ -35,6 +35,107 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 /// The provider's own id, which also keys what was chosen from it.
 const PROVIDER_ID: &str = "applications";
 
+/// `open-with:<package id>` addresses an installed app that opens the files
+/// and links an invocation names (`{"open": ["/home/me/a.md"]}`), through the
+/// same "Open with" path Files uses. It is resolved by address only and never
+/// listed: the palette's row for the app stays the nullary one, so Enter,
+/// Shift+Enter and Ctrl+Enter keep opening the app itself.
+pub(crate) const OPEN_WITH_PREFIX: &str = "open-with:";
+
+/// Most files and links one invocation opens.
+const OPEN_WITH_MAX_ITEMS: usize = 64;
+
+/// The `open-with:` row for `app`: its one parameter is the list to open.
+fn open_with_row(app: Arc<InstalledApp>) -> SearchResult {
+    let package_id = app.package_id.clone();
+    let mut row = SearchResult::nullary_fallible(
+        ResourceKind::Application,
+        PROVIDER_ID,
+        format!("{OPEN_WITH_PREFIX}{package_id}"),
+        app.name_for(&crate::shell::i18n::current_locale()),
+        app_detail(&app.package_id, app.category.as_deref()),
+        provider_score(0),
+        |_doc, _root, _chrome: &Chrome| Ok(()),
+    );
+    row.params = vec![
+        crate::shell::search::action_api::ActionParam::required(
+            "open",
+            crate::shell::search::action_api::ParamType::Array,
+            "Absolute paths of files, or links, for the app to open",
+        )
+        .with_schema(serde_json::json!({
+            "minItems": 1,
+            "maxItems": OPEN_WITH_MAX_ITEMS,
+            "items": {"type": "string", "minLength": 1},
+        })),
+    ];
+    row.on_open = std::rc::Rc::new(move |_doc, _root, chrome: &Chrome, args| {
+        open_items_with(chrome, &app, args)
+    });
+    row
+}
+
+/// Open each of `args`' `open` items with exactly `app`: a file through the
+/// "Open with" path (the app must claim its type), a link when `app` is what
+/// opens links of its kind. Stops at the first that does not open.
+fn open_items_with(
+    chrome: &Chrome,
+    app: &InstalledApp,
+    args: &crate::shell::search::action_api::ActionArgs,
+) -> Result<(), ActionError> {
+    let name = app
+        .name_for(&crate::shell::i18n::current_locale())
+        .to_owned();
+    let items = args.array("open").unwrap_or_default();
+    for item in items {
+        let Some(item) = item.as_str() else {
+            continue;
+        };
+        let path = std::path::Path::new(item);
+        if path.is_absolute() {
+            crate::shell::doc_open::open_with_app(path, chrome, &app.package_id).map_err(
+                |error| {
+                    ActionError::Explained(t_args(
+                        "search-open-with-file-failed",
+                        &[
+                            ("app", name.clone().into()),
+                            ("file", item.to_owned().into()),
+                            ("reason", error.user_message().into()),
+                        ],
+                    ))
+                },
+            )?;
+            continue;
+        }
+        let handler = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            crate::shell::uri_open::resolve_for(
+                item,
+                &state.local_user_id,
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| &workspace.default_apps),
+            )
+        };
+        match handler {
+            Ok(handler) if handler.package_id == app.package_id => {
+                crate::shell::uri_open::open_in_workspace(item, chrome)
+                    .map(drop)
+                    .map_err(|error| ActionError::Explained(error.user_message()))?;
+            }
+            Ok(_) | Err(crate::shell::uri_open::UriOpenError::NoHandler { .. }) => {
+                return Err(ActionError::Explained(t_args(
+                    "search-open-with-link-other-app",
+                    &[("app", name.into()), ("link", item.to_owned().into())],
+                )));
+            }
+            Err(error) => return Err(ActionError::Explained(error.user_message())),
+        }
+    }
+    Ok(())
+}
+
 fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
     if needle.is_empty() {
         // The apps used most lead the empty list within the order the
@@ -800,6 +901,14 @@ impl SearchProvider for ApplicationsProvider {
             );
         }
         let snapshot = self.snapshot()?;
+        if let Some(package_id) = id.strip_prefix(OPEN_WITH_PREFIX) {
+            return snapshot.entries.iter().find_map(|entry| match entry {
+                ApplicationEntry::Installed(app) if app.package_id == package_id => {
+                    Some(open_with_row(Arc::clone(app)))
+                }
+                _ => None,
+            });
+        }
         snapshot
             .entries
             .iter()
@@ -1671,6 +1780,55 @@ mod tests {
         assert_eq!(files.name_for("de-DE"), "Dateien");
         assert_eq!(files.name_for("de"), "Dateien");
         assert_eq!(files.name_for("en-US"), "Files");
+    }
+
+    /// `tilo open notes ~/a.md` reaches the app through this address: one
+    /// typed `open` list, resolved by address and never listed, so the
+    /// palette's own row for the app stays nullary.
+    #[test]
+    fn open_with_is_addressed_not_listed_and_requires_the_list() {
+        let notes = app_in("so.tilo.notes", "Notes", Some("Productivity"));
+        let p = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
+            vec![notes],
+            Vec::new(),
+        ));
+        let c = chrome_rc();
+        let state = c.borrow();
+        let doc = AutoCommit::new();
+        let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "notes",
+            wanted: &[ResourceKind::Application],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        refresh_until_ready(&p, &ctx);
+        let listed = p.query(ctx);
+        assert!(listed.iter().any(|row| row.id == "so.tilo.notes"));
+        assert!(
+            listed
+                .iter()
+                .all(|row| !row.id.starts_with(OPEN_WITH_PREFIX) && row.params.is_empty()),
+            "the palette row stays nullary: {listed:?}"
+        );
+        let row = p
+            .resolve("open-with:so.tilo.notes", ctx)
+            .expect("an installed app resolves by its open-with address");
+        assert_eq!(row.title, "Notes");
+        assert_eq!(row.params.len(), 1);
+        assert_eq!(row.params[0].name, "open");
+        assert!(row.params[0].required);
+        assert!(
+            p.resolve("open-with:so.tilo.absent", ctx).is_none(),
+            "only an installed app opens files"
+        );
+        let missing = crate::shell::search::action_api::ActionArgs::bind_json(
+            &row.params,
+            &serde_json::Map::new(),
+        );
+        assert!(missing.is_err(), "the list is required");
     }
 
     #[test]

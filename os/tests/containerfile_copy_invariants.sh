@@ -284,7 +284,9 @@ containerfile="$repo/os/Containerfile"
 # addition beside the other rules, and tilo-identity, the identity command for
 # headless devices, is installed by its identity-cli component at
 # /usr/bin/tilo-identity: one payload row each.
-expected_contract=3693c773cd4727df669261c7d9b3d103bd54a22942814950d1512f5c4d99134e
+# `tilo device` and `tilo action` are the tilo binary under their own names
+# (/usr/bin/device, /usr/bin/action), with completions linked the same way.
+expected_contract=c1c384af02fedf986866b0e2a864c14d73b184b679830f60e44748dfd237496f
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

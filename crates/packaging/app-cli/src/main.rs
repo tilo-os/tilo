@@ -43,6 +43,17 @@ enum Cmd {
         #[arg(long)]
         installed: bool,
     },
+    /// Open an app, or files and links in it; an app this device doesn't
+    /// have yet is downloaded first.
+    #[command(
+        after_help = "Examples:\n  app open calculator\n  app open notes ~/Documents/plan.md\n  app open browser https://tilo.so"
+    )]
+    Open {
+        /// The app: its name, a word of its name, or its id.
+        app: String,
+        /// Files or links to open in it.
+        items: Vec<String>,
+    },
     /// Search the app store.
     #[command(visible_aliases = ["s", "find"])]
     Search { query: String },
@@ -145,6 +156,7 @@ fn main() -> ExitCode {
             let mut generated = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "app", &mut generated);
             clap_complete::generate(shell, &mut Cli::command(), "store", &mut generated);
+            generated.extend_from_slice(open_completions(shell).as_bytes());
             match std::io::stdout().write_all(&generated) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
@@ -162,6 +174,7 @@ fn main() -> ExitCode {
             json,
             installed: false,
         } => list(json),
+        Cmd::Open { app, items } => open(&app, &items),
         Cmd::Search { query } => search(&query),
         Cmd::Install {
             app,
@@ -190,6 +203,43 @@ fn main() -> ExitCode {
     }
 }
 
+/// App names after `app open`, asked of the desktop as they are typed
+/// (`tilo complete apps`, which prints nothing without a desktop).
+fn open_completions(shell: Shell) -> &'static str {
+    match shell {
+        Shell::Bash => {
+            r#"
+_app_open_dynamic() {
+    if (( COMP_CWORD == 2 )) && [[ "${COMP_WORDS[1]}" == open ]]; then
+        mapfile -t COMPREPLY < <(tilo complete apps "${COMP_WORDS[COMP_CWORD]}" 2>/dev/null)
+        return
+    fi
+    _app "$@"
+}
+complete -F _app_open_dynamic -o bashdefault -o default app store
+"#
+        }
+        Shell::Zsh => {
+            r#"
+_app_open_dynamic() {
+    if (( CURRENT == 3 )) && [[ "${words[2]}" == open ]]; then
+        local -a names
+        names=("${(@f)$(tilo complete apps "${words[CURRENT]}" 2>/dev/null)}")
+        compadd -U -a names
+        return
+    fi
+    _app "$@"
+}
+compdef _app_open_dynamic app store
+"#
+        }
+        Shell::Fish => {
+            "\ncomplete -c app -n '__fish_seen_subcommand_from open; and test (count (commandline -opc)) -eq 2' -f -a '(tilo complete apps (commandline -ct))'\n"
+        }
+        _ => "",
+    }
+}
+
 fn parse_cli() -> Cli {
     let forwarded_name = std::env::var("TILO_APP_DISPLAY_NAME").ok();
     let invoked_as_store = std::env::args_os()
@@ -203,8 +253,44 @@ fn parse_cli() -> Cli {
         _ if invoked_as_store => "store",
         _ => "app",
     };
-    let matches = Cli::command().bin_name(bin_name).get_matches();
+    let mut command = Cli::command().bin_name(bin_name);
+    if !tilo_control::client::desktop_present(&tilo_control::client::doors_from_env()) {
+        // Opening needs a desktop session; where there is none it is not
+        // offered, and typed anyway says so in one sentence.
+        command = command.mut_subcommands(|sub| {
+            if sub.get_name() == "open" {
+                sub.hide(true)
+            } else {
+                sub
+            }
+        });
+    }
+    let matches = command.get_matches();
     Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+/// `app open`: the same as `tilo open`.
+fn open(app: &str, items: &[String]) -> ExitCode {
+    let doors = tilo_control::client::doors_from_env();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut out = std::io::stdout().lock();
+    let mut err = std::io::stderr().lock();
+    let code = tilo_control::front::open(
+        &doors,
+        app,
+        items,
+        &cwd,
+        &tilo_control::front::Spelling::standalone(),
+        &mut tilo_control::front::Io {
+            out: &mut out,
+            err: &mut err,
+        },
+    );
+    if code == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(code)
+    }
 }
 
 fn print_apps(apps: &[CatalogueApp]) {

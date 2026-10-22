@@ -38,6 +38,9 @@ tilo-app-package = { path = "../tilo-app-package" }
 clap.workspace = true
 clap_complete.workspace = true
 tilo-paths.workspace = true
+# `app open`: the desktop's applications, through the control protocol's one
+# client (shared with `tilo open` and tilo-control).
+tilo-control = { path = "../../session/control-cli" }
 hex.workspace = true
 blake3.workspace = true
 serde.workspace = true
