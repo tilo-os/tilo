@@ -109,8 +109,12 @@ too). The environment can only add to that evidence, never subtract. The same
 test decides which host an app launched from such a terminal attaches to.
 
 ```sh
-claude mcp add tilo -- tilo-runtime-mcp --connect
+tilo agent connect claude
 ```
+
+That registers the door, `tilo-runtime-mcp --connect`, with Claude Code for
+every directory (`claude mcp add --scope user tilo -- /usr/libexec/tilo/tilo-runtime-mcp --connect`);
+`tilo agent connect codex` does the same for Codex.
 
 The door serves this login's own processes only: same account, same user and
 mount namespaces. A sandboxed app is refused and uses its own collaboration

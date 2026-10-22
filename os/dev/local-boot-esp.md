@@ -43,10 +43,10 @@ device identities for repeated copies of the same candidate.
 (libvirt on Linux, WHPX on Windows ARM64):
 
 ```sh
-tilo-vm vm create esp1 --image /path/to/tilo-base.raw --boot-esp /path/to/tilo-boot-override.raw
-tilo-vm vm start esp1
-tilo-vm vm serial esp1
-tilo-vm vm rm esp1 --force
+tilo device vm create esp1 --image /path/to/tilo-base.raw --boot-esp /path/to/tilo-boot-override.raw
+tilo device vm start esp1
+tilo device vm serial esp1
+tilo device vm rm esp1 --force
 ```
 
 The ESP is attached read-only and boots first; the base disk stays unchanged,
@@ -54,10 +54,10 @@ because the VM writes to a copy-on-write child of it, and the VM gets a fresh
 UEFI variable store. Replacing a candidate therefore copies only the UKI-sized
 payload and a small ESP, while the root disk and its PARTUUID remain the same.
 On Windows, keep the ESP on a local drive; a base disk on a WSL path is
-imported once into the cache (`tilo-vm guide platforms`).
+imported once into the cache (`tilo device guide platforms`).
 
 To exercise the live installer against a blank target, use
-`tilo-vm scenario install --medium <installer disk>` (`tilo-vm guide scenarios`).
+`tilo device scenario install --medium <installer disk>` (`tilo device guide scenarios`).
 
 ## Limits
 

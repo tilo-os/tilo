@@ -30,8 +30,8 @@ code, credential material or private message contents in screenshots or logs.
    the semantic entry points are:
 
    ```sh
-   tilo-vm control actions invoke applications so.tilo.messages
-   tilo-vm control actions list
+   tilo device control actions invoke applications so.tilo.messages
+   tilo device control actions list
    ```
 
    On a desktop use the installed `tilo-control` with the same arguments. Discover

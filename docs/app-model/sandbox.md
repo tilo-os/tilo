@@ -477,7 +477,7 @@ nothing is ever started unsandboxed.
   Useful when a `required` service is what's preventing launch.
 - `tilo-install run <pkg> --no-landlock` (hidden, debug-only) disables
   Layer 3. Layers 1 and 2 stay enforced.
-- `tilo-app-package inspect <pkg>` shows the manifest without launching. Grep for
+- `tilo package inspect <pkg>` shows the manifest without launching. Grep for
   `[sandbox.services]` and `[sandbox.portals]` first — they are the two
   blocks that decide whether the app can reach anything outside itself.
 

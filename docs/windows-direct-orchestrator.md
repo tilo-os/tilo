@@ -102,7 +102,7 @@ installer overlay is discarded before target boot to reclaim its temporary
 container store.
 
 For a standalone retained Windows scenario, use the original options and
-output directory with `tilo-vm scenario install --resume --keep`. Supply the
+output directory with `tilo device scenario install --resume --keep`. Supply the
 original secrets again if the first install used `--credentials-stdin`.
 
 The prompt helper sends only the JSON through the process pipe; it creates no

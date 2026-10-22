@@ -265,7 +265,7 @@ architecture failing or running late never holds back the other. See
 carry the release signature and provenance naming the source revision; a
 `tilo-ci` base must carry that revision as its OCI label and may publish only
 `-ci` tags, so it can never take a name a signed release would use. The disk
-manifest records `baseImage` and `baseTrust`. `tilo-vm vm create` takes the
+manifest records `baseImage` and `baseTrust`. `tilo device vm create` takes the
 newest `main-*` tag that has a disk for the host's architecture. Dispatch
 `dev-disk.yml` with `base_image=registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`
 to rebuild a disk by hand.

@@ -1560,7 +1560,7 @@ npm run dev:tilo -- --port 9998 --host-origin https://localhost:9443 --user-publ
 
 ## Updating the engine without replacing the desktop SDK
 
-A worktree `tilo-vm swap userspace` assembles the native toolkit and apps in one
+A worktree `tilo device swap userspace` assembles the native toolkit and apps in one
 Cargo graph. It does not build Chromium's optional runtime. Browser declares the
 exact engine reference in its signed `optional-runtimes`; a missing engine does
 not become available merely because the nine userspace components were updated.

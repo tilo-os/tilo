@@ -43,7 +43,7 @@ Actual rootless Podman answers on the builder host. The audit passed there using
 production driver: live list, owned volume creation, live projection, removal and confirmed
 absence. The pinned app build container lacks the Podman executable (`No such file or
 directory`), so its audit failed before creating a volume. This does not establish a
-transport or sandbox defect. The supported `tilo-vm doctor` found the configured VM’s daemon
+transport or sandbox defect. The supported `tilo device doctor` found the configured VM’s daemon
 SSH connection refused. No foreign VM was started and no sandbox was loosened. Backend-host
 proof is distinct from a successful packaged app action in a real OS slot.
 

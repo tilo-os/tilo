@@ -97,7 +97,7 @@ every generic image it publishes out by content before anything consumes it
   archive, and its independent rebuild's, before the install gate seals it.
   The repository variable `TILO_RECHUNK=0` turns it off without a commit.
 
-Local images (`os/dev/build-image.sh`, `tilo-vm vm upgrade --from local`) keep
+Local images (`os/dev/build-image.sh`, `tilo device vm upgrade --from local`) keep
 their Containerfile layers: podman's layer cache is what makes those rebuilds
 cheap, and tilo-vm sends the VM only the blobs it lacks either way.
 

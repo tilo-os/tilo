@@ -14,7 +14,7 @@ type = "cli"
 commands = ["notes", "notes-import"]
 ```
 
-At install time, `tilo-install install` walks `[cli].commands` and drops
+At install time, `tilo app install` walks `[cli].commands` and drops
 one copy of `tilo-cli-shim` per entry into
 `~/.local/share/tilo-apps/bin/`. A sidecar TOML (`<command>.tilo-shim`)
 holds the mapping back to the package id and command name.
@@ -26,7 +26,7 @@ $ tilo-install path
 /tmp/tilo-install-demo-data/tilo-apps/bin
 
 # Prepend the above to your shell's PATH so CLI commands
-# installed via `tilo-install install <pkg.tapp>` are picked up.
+# installed via `tilo app install <pkg.tapp>` are picked up.
 #
 # bash / zsh (~/.bashrc, ~/.zshrc):
 export PATH="/tmp/tilo-install-demo-data/tilo-apps/bin:$PATH"
@@ -36,8 +36,8 @@ fish_add_path -pg /tmp/tilo-install-demo-data/tilo-apps/bin
 ```
 
 The user prepends the printed dir to their PATH once. From then on, every
-`tilo-install install …` that ships a `[cli].commands` entry adds fresh
-PATH commands automatically. `tilo-install remove` un-writes the shims.
+`tilo app install …` that ships a `[cli].commands` entry adds fresh
+PATH commands automatically. `tilo app remove` un-writes the shims.
 
 ## What happens on `notes "hello world"`
 
@@ -169,13 +169,13 @@ variables at it before the binary runs.
 Install and run:
 
 ```
-$ tilo-app-package pack \
+$ tilo package pack \
     --manifest examples/packaging/notes-cli/manifest.toml \
     --payload  demo/payload \
     --output   demo/notes-cli.tapp
 packed tapp:36c777e279b33bd1c7ca6ee8a5a7033e0e500abfc5e2262c2b2b0476a9f33eca (4 blobs)
 
-$ tilo-install install demo/notes-cli.tapp
+$ tilo app install demo/notes-cli.tapp
 tilo-install: WARN — package self-signed by ed25519:… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
   shims    : wrote 1 shim(s) into /tmp/tilo-install-demo-data/tilo-apps/bin
   PATH     : prepend /tmp/tilo-install-demo-data/tilo-apps/bin to your shell's PATH to pick them up (see `tilo-install path`).

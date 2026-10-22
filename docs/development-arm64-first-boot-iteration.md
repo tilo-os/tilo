@@ -29,10 +29,10 @@ Boot each attempt as its own throwaway VM on a copy-on-write child of the disk,
 and follow its serial evidence (Linux libvirt or Windows ARM64 WHPX):
 
 ```sh
-tilo-vm vm create try1 --image /absolute/path/to/disk.raw
-tilo-vm vm start try1
-tilo-vm vm serial try1
-tilo-vm vm rm try1 --force
+tilo device vm create try1 --image /absolute/path/to/disk.raw
+tilo device vm start try1
+tilo device vm serial try1
+tilo device vm rm try1 --force
 ```
 
 A new VM starts from a fresh UEFI variable store; to rule out persistent UEFI

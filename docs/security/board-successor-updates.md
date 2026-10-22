@@ -1,6 +1,6 @@
 # Verified board successor updates
 
-The ordinary `tilo system update` / Settings update action invokes the existing
+The ordinary `tilo device update` / Settings update action invokes the existing
 `tilo-deployment-update.service`. The service retains one exclusive update lock
 through discovery, download, owner verification, rollback-floor publication and
 activation. No additional control socket or application permission is involved.
@@ -39,7 +39,7 @@ activation.
 
 Publishing a new tag does **not** update the already installed old helper, which
 still upgrades its fixed immutable origin. Delivery of this consumer requires a
-canonical `tilo-vm swap user-identity --slot vm --builder remote` prerequisite,
+canonical `tilo device swap user-identity --slot vm --builder remote` prerequisite,
 using the source-covered component installer and normal owner/CAS layer
 admission. This explicit component carries the three helper scripts, native
 image-trust verifier, hardware-profile reader and checksum-pinned native Cosign.

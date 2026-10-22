@@ -159,7 +159,7 @@ object the registry keeps a **twin**, the same bytes as one zstd frame at
 level 19 (`tilo_app_package::compressed`): `/blobs/<blake3>.zst` for every
 blob and chunk, `/artifacts/<blake3>.tapp.zst` for every imported package.
 The release pipeline uploads `<file>.tapp.zst` beside every tapp it
-publishes (`tilo-app-package compress`). Measured on real packages, twins are
+publishes (`tilo package compress`). Measured on real packages, twins are
 34–42 % of an app tapp and 32 % of the runtime's payload.
 
 A twin is transport only. Signatures, `tapp_blake3_hex`, `tapp_size_bytes`,
@@ -416,7 +416,7 @@ CI can generate the complete request from those final bytes with the same
 identity that signed the package:
 
 ```text
-tilo-app-package entry \
+tilo package entry \
   --identity /run/secrets/app-publisher.json \
   --action update \
   --previous-entry current-entry.json \
@@ -462,14 +462,14 @@ hash and a room stores the same bytes. The answer's `url` is
 approves a version that binds it. Pruning keeps a program blob while any
 retained entry binds it.
 
-`tilo-app-package bot-entry` builds a bot entry from a program file in any
+`tilo package bot-entry` builds a bot entry from a program file in any
 formatting. It re-encodes the Shortcut canonically, derives the apps,
 triggers and appearance the program needs, refuses `--connector
 <id>@<min version>` lists that differ from the connectors its triggers use,
 and with `--upload` sends the canonical bytes first:
 
 ```text
-tilo-app-package bot-entry \
+tilo package bot-entry \
   --identity /run/secrets/app-publisher.json \
   --package-id so.tilo.bots.echo --version 1.0.0 \
   --action add --upload echo.json > request.json
@@ -545,7 +545,7 @@ families are accepted (`registry_types::target`):
 | `android` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
-each tapp's target with `tilo-app-package entry --arch`. Linux, Windows,
+each tapp's target with `tilo package entry --arch`. Linux, Windows,
 macOS and Android versions sit beside Tilo OS versions in the same entry: version identity
 is `(version, platform, architecture)`, and a Tilo OS client installs only
 `tilo-os` versions.
@@ -558,7 +558,7 @@ names the executable as `module` (the GUI entrypoint must name the same path)
 and the linked release as `runtime`, equal to `[package].runtime`
 (`tilo_app_package::desktop::desktop_manifest`). Such a build may be up to
 `MAX_DESKTOP_APP_TAPP_BYTES` (64 MiB), a distribution policy rather than a
-design target; `tilo-app-package entry --platform linux|windows|macos|android`
+design target; `tilo package entry --platform linux|windows|macos|android`
 binds it.
 
 ### 6. Moderator workflow
@@ -752,10 +752,10 @@ runtime download; an older one downloads the runtime the newest version names.
 
 On the device, a downloaded runtime build lives in
 `$XDG_DATA_HOME/tilo-runtime/<version>/` only while something needs it
-(`runtime_bundle::gc`). After every `tilo-install install`, `update` and
-`uninstall`, and on `tilo-install gc`, a build is removed unless an installed
+(`runtime_bundle::gc`). After every `tilo app install`, `update` and
+`uninstall`, and on `tilo app gc`, a build is removed unless an installed
 package (the user's or the image's) names it as its `runtime` or among its
-`optional-runtimes`, it is pinned (`tilo-install runtime pin`, or installed
+`optional-runtimes`, it is pinned (`tilo app runtime pin`, or installed
 with `--pinned`), it was installed within the last hour (an app's first open
 installs its runtime and then the app, in two steps), or a running app has it
 mounted. A build leaves its version's directory in one rename before any file

@@ -48,7 +48,7 @@ Only after the respective cycle passes does it upload
 SHA-256 files. These offline jobs skip the separate raw imager bundle and its
 large qcow2-to-raw conversion. On Windows, verify the archive SHA-256,
 decompress once, verify
-the qcow2 SHA-256, then pass the qcow2 to `tilo-vm scenario install --medium`.
+the qcow2 SHA-256, then pass the qcow2 to `tilo device scenario install --medium`.
 Before using it as an install proof source, verify the accompanying
 `*.whpx-source.json` with `cosign verify-blob --offline --key keys/cosign.pub
 --bundle <json>.bundle --signature <json>.sig <json>`. This CI KMS signature

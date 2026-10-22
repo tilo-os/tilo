@@ -191,15 +191,19 @@ click handler is invisible to every one of them.
 
 **There is one story. Do not build a second one.**
 
-`tilo-control` is the CLI over the compositor's control sockets (never in `/tmp`: anyone could
-bind a shared name first). Every image ships it at `/usr/bin/tilo-control`; from a checkout run
-`cargo run -q --bin tilo-control --`. It has two halves; reach for the first.
+Every command is `tilo <noun> <verb>`: `tilo --help` lists the nouns (app, action, device, agent,
+package) that work where it runs. Old `tilo-<name>` commands still work as aliases.
+
+`tilo action` (`tilo actions`, `tilo do`) is what this desktop can do, and doing it. Underneath is
+`tilo-control`, the CLI over the compositor's control sockets (never in `/tmp`: anyone could bind a
+shared name first); from a checkout run `cargo run -q --bin tilo-control --`. It has two halves;
+reach for the first.
 
 The semantic half needs no development build and no environment variable: every compositor
 serves `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` in the **device admin's** session (the
 `wheel` account whose identity owns the device) once first login is complete, to that account's
 own unconfined processes — its login or ssh — and never to an app. On a real device, ssh in as
-the admin and run `tilo-control actions list`. A development session started with
+the admin and run `tilo actions`. A development session started with
 `$TILO_TEST_CONTROL` serves both halves there, and a set `$TILO_TEST_CONTROL` routes every
 subcommand to it.
 
@@ -224,9 +228,9 @@ cargo run -q --bin tilo-control -- snapshot PATH     # PNG of the live scene
 Prefer the semantic half: it is the surface real users and agents depend on, so exercising it
 is worth more than a synthetic click that proves only geometry.
 
-An agent in a terminal inside a Tilo login (Claude Code, Codex) reaches the same actions through
-`tilo-runtime-mcp --connect` (`claude mcp add tilo -- tilo-runtime-mcp --connect`): the session's
-agent door, with path-addressed tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`), e.g.
+An agent in a terminal inside a Tilo login (Claude Code, Codex) reaches the same actions once
+`tilo agent connect claude` (or `codex`) has registered the session's agent door with it, with
+path-addressed tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`), e.g.
 `notes/Todo/body#append-paragraph`. It never starts a standalone runtime inside the login, whatever
 environment a multiplexer or ssh left it (docs/runtime-mcp.md).
 
@@ -258,24 +262,28 @@ Debug overlays need `TILO_UI_DEBUG` **and** `debug_assertions`.
 ## Dev VMs
 
 To run your build in the real Tilo OS image (a headful session, real DRM and input, VM-wide
-services), use the one tool, `tilo-vm`. Start here:
+services), use `tilo device`'s development verbs. Start here:
 
 ```bash
-cargo build -p tilo-vm && target/debug/tilo-vm guide quickstart
+tilo device guide quickstart
 ```
 
+(From a checkout, `cargo build -p tilo-vm && target/debug/tilo-vm guide quickstart` runs this
+worktree's build of the same program; `tilo-vm <verb>` is `tilo device <verb>`.)
+
 You get a **slot** in a shared dev VM: your own user, session and layer stack, swapped with
-`tilo-vm swap <component>` and undone with `tilo-vm rollback`. Driving stays the one story above:
-`tilo-vm control …` runs the VM's `tilo-control` against your slot, and `tilo-vm shot` is its
-snapshot. `tilo-vm doctor` checks the host and prints each fix. Never deploy into a VM with raw
-`ssh`/`scp`. Image-level changes (Containerfiles, units, `/etc`, packages) go through
-`tilo-vm vm upgrade --from local`: it rebuilds only what changed, moves the running VM onto the new
-image with bootc and reboots it; `tilo-vm vm rollback-image` goes back (`tilo-vm guide images`).
-Kernel changes (`os/kernel/config-fragments/`, `os/kernel/patches/`) go through
-`tilo-vm swap kernel`: it builds incrementally from the release build's inputs, installs the
-kernel VM-wide and reboots (`tilo-vm guide kernel`). Installer changes go through
-`tilo-vm scenario install`: a throwaway VM installs from your medium through the installer's
-actions and cold-boots the result (`tilo-vm guide scenarios`).
+`tilo device swap <component>` and undone with `tilo-vm rollback` (a slot's generations, not the
+device's system). Driving stays the one story above: `tilo device control …` runs the VM's
+`tilo-control` against your slot, and `tilo device shot` is its snapshot. `tilo device doctor`
+checks the host and prints each fix. Never deploy into a VM with raw `ssh`/`scp`. Image-level
+changes (Containerfiles, units, `/etc`, packages) go through `tilo device vm upgrade --from local`:
+it rebuilds only what changed, moves the running VM onto the new image with bootc and reboots it;
+`tilo device vm rollback-image` goes back (`tilo device guide images`). Kernel changes
+(`os/kernel/config-fragments/`, `os/kernel/patches/`) go through `tilo device swap kernel`: it
+builds incrementally from the release build's inputs, installs the kernel VM-wide and reboots
+(`tilo device guide kernel`). Installer changes go through `tilo device scenario install`: a
+throwaway VM installs from your medium through the installer's actions and cold-boots the result
+(`tilo device guide scenarios`).
 
 ## Cargo.lock is committed — do not regenerate it
 
