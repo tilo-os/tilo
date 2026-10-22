@@ -71,6 +71,8 @@ pub(crate) struct ComposerRequest {
     /// The selection the request is about, when the composer was opened
     /// on one ([`AgentQuickComposer::open_about`]).
     pub about: Option<super::selection_agent::SelectionSeed>,
+    /// The model the person picked for the run; the agent's own without.
+    pub model: Option<runtime_collab::TaskRunModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,6 +182,10 @@ struct View {
     agent: LocalState<String>,
     /// Whether there is more than one agent to pick from.
     picks_agent: LocalState<bool>,
+    /// The model the person picked, among [`AgentQuickComposer::models`].
+    model: LocalState<String>,
+    /// Whether there are models to pick from.
+    picks_model: LocalState<bool>,
     context: LocalState<String>,
     asked: LocalState<String>,
     answer: LocalState<String>,
@@ -208,6 +214,8 @@ impl Default for View {
             title: LocalState::new(t("agent-quick-accessible-name")),
             agent: LocalState::new(String::new()),
             picks_agent: LocalState::new(false),
+            model: LocalState::new(String::new()),
+            picks_model: LocalState::new(false),
             context: LocalState::new(String::new()),
             asked: LocalState::new(String::new()),
             answer: LocalState::new(String::new()),
@@ -307,6 +315,11 @@ pub(crate) struct AgentQuickComposer {
     /// Whether the picker has yet to list [`Self::agents`]: it does once it
     /// is shown.
     agents_unlisted: bool,
+    /// The models a run may plan with, by how the picker names them; the
+    /// first is the agent's own.
+    models: Vec<(String, Option<runtime_collab::TaskRunModel>)>,
+    /// Whether the model picker has yet to list [`Self::models`].
+    models_unlisted: bool,
 }
 
 impl Default for AgentQuickComposer {
@@ -339,6 +352,8 @@ impl Default for AgentQuickComposer {
             agents: Vec::new(),
             agent_switch: None,
             agents_unlisted: false,
+            models: Vec::new(),
+            models_unlisted: false,
         };
         composer.popover = composer.controls();
         composer
@@ -371,6 +386,15 @@ impl AgentQuickComposer {
                     Dropdown::from_state(Vec::new(), &self.view.agent)
                         .with_id(AGENT_PICKER)
                         .with_resolved_accessible_name(t("agent-quick-agent")),
+                ),
+            )))
+            .push(Box::new(When::from_state(
+                &self.view.picks_model,
+                |picks| *picks,
+                Box::new(
+                    Dropdown::from_state(Vec::new(), &self.view.model)
+                        .with_id(MODEL_PICKER)
+                        .with_resolved_accessible_name(t("agent-quick-model")),
                 ),
             )))
             .push(Box::new(
@@ -577,6 +601,7 @@ impl AgentQuickComposer {
         self.agent_switch = None;
         self.view.picks_agent.set(false);
         self.view.agent.set(owner.agent.clone());
+        self.offer_models(models_of(&agent_provider_config::ProviderConfig::load()));
         label.clone_into(&mut self.label);
         self.view
             .title
@@ -639,9 +664,35 @@ impl AgentQuickComposer {
     }
 
     fn list_agents(&mut self) {
-        if self.agents_unlisted && set_agent_options(&mut self.popover, &self.agents) {
+        if self.agents_unlisted && set_picker_options(&mut self.popover, AGENT_PICKER, &self.agents)
+        {
             self.agents_unlisted = false;
         }
+        let models: Vec<String> = self.models.iter().map(|(label, _)| label.clone()).collect();
+        if self.models_unlisted && set_picker_options(&mut self.popover, MODEL_PICKER, &models) {
+            self.models_unlisted = false;
+        }
+    }
+
+    /// Let the person pick the model the run plans with, among `models`;
+    /// the agent's own until they do.
+    fn offer_models(&mut self, models: Vec<(String, Option<runtime_collab::TaskRunModel>)>) {
+        self.view.picks_model.set(models.len() > 1);
+        self.models_unlisted = models.len() > 1;
+        if let Some((own, _)) = models.first() {
+            self.view.model.set(own.clone());
+        }
+        self.models = models;
+        self.list_agents();
+    }
+
+    /// The model the person picked: `None` for the agent's own.
+    fn picked_model(&self) -> Option<runtime_collab::TaskRunModel> {
+        let picked = self.view.model.get();
+        self.models
+            .iter()
+            .find(|(label, _)| *label == picked)
+            .and_then(|(_, model)| model.clone())
     }
 
     /// The agent the person picked instead of the composer's own. The host
@@ -882,6 +933,7 @@ impl AgentQuickComposer {
             context: self.context.clone(),
             conversation: self.conversations.get(&owner).cloned().unwrap_or_default(),
             about: self.about.clone().filter(|_| !stop),
+            model: self.picked_model(),
         };
         self.refresh();
         Some(request)
@@ -1216,12 +1268,46 @@ fn editor_state(widget: &dyn Widget) -> Option<String> {
 /// The test id of the composer's agent picker.
 const AGENT_PICKER: &str = "agent-quick-agent";
 
-fn set_agent_options(widget: &mut dyn Widget, agents: &[String]) -> bool {
-    if widget.test_id() == Some(AGENT_PICKER)
+/// The test id of the composer's model picker.
+const MODEL_PICKER: &str = "agent-quick-model";
+
+/// The models a run may plan with, as Settings offers them: the agent's
+/// own first, then each enabled provider's models.
+fn models_of(
+    config: &agent_provider_config::ProviderConfig,
+) -> Vec<(String, Option<runtime_collab::TaskRunModel>)> {
+    let mut models = vec![(t("agent-quick-model-own"), None)];
+    for profile in config.profiles.iter().filter(|profile| profile.enabled) {
+        for model in &profile.models {
+            let label = if model.label.trim().is_empty() {
+                model.id.clone()
+            } else {
+                model.label.clone()
+            };
+            models.push((
+                t_args(
+                    "agent-quick-model-of",
+                    &[
+                        ("model", label.into()),
+                        ("provider", profile.label.clone().into()),
+                    ],
+                ),
+                Some(runtime_collab::TaskRunModel {
+                    profile: profile.id.clone(),
+                    model: model.id.clone(),
+                }),
+            ));
+        }
+    }
+    models
+}
+
+fn set_picker_options(widget: &mut dyn Widget, id: &str, options: &[String]) -> bool {
+    if widget.test_id() == Some(id)
         && let Some(any) = widget.as_any_mut()
     {
-        // The picker is shown only while there is a choice, so it is
-        // reached through the `When` that shows it.
+        // A picker is shown only while there is a choice, so it is reached
+        // through the `When` that shows it.
         let picker = match any.downcast_mut::<When>() {
             Some(when) => when
                 .child_mut()
@@ -1230,14 +1316,14 @@ fn set_agent_options(widget: &mut dyn Widget, agents: &[String]) -> bool {
             None => any.downcast_mut::<Dropdown>(),
         };
         if let Some(picker) = picker {
-            picker.set_options(agents.to_vec());
+            picker.set_options(options.to_vec());
             return true;
         }
     }
     widget
         .children_mut()
         .into_iter()
-        .any(|child| set_agent_options(child, agents))
+        .any(|child| set_picker_options(child, id, options))
 }
 
 fn set_placeholder(widget: &mut dyn Widget, placeholder: &str) -> bool {

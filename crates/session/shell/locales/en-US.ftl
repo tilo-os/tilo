@@ -2938,6 +2938,9 @@ portal-chooser-file-grant-unavailable = The selected file is no longer available
 ## The agent composer: one field to ask an agent or tell it what to do
 agent-quick-title = { $agent }
 agent-quick-agent = Agent
+agent-quick-model = Model
+agent-quick-model-own = The agent's own model
+agent-quick-model-of = { $model } ({ $provider })
 agent-quick-about-selection = About your selection in { $app }: “{ $selection }”
 agent-quick-about-window = About { $app }; nothing is selected
 agent-quick-accessible-name = Agent composer

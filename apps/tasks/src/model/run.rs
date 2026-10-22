@@ -104,6 +104,16 @@ impl Budget {
     }
 }
 
+/// A model of one provider, chosen for an issue's runs in place of the one
+/// chosen for its agent.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelChoice {
+    /// The provider profile, by id.
+    pub profile: String,
+    /// The model, by its id at that provider.
+    pub model: String,
+}
+
 /// What a run asks its person about, as the door that paused it says.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Question {
@@ -170,6 +180,9 @@ pub struct Run {
     /// The person who approved it: the agent acts for them.
     pub starter: String,
     pub phase: RunPhase,
+    /// The model the run plans with, as the issue chose it when the run
+    /// started; the agent's own without.
+    pub model: Option<ModelChoice>,
     pub started_ms: i64,
     /// When it last reported, or ended.
     pub updated_ms: i64,

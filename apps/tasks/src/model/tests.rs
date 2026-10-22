@@ -352,3 +352,46 @@ fn imported_tasks_are_one_issue_whoever_imports_them_and_never_come_back() {
     left.apply(import()).unwrap();
     assert!(left.state().unwrap().issues.is_empty());
 }
+
+#[test]
+fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
+    let mut person = ada();
+    let id = Id::from_raw("asked");
+    let ask = || {
+        Tracker::ASK_AGENT.with(tracker::AskAgent {
+            ask: crate::model::AgentRequest {
+                id: Id::from_raw("asked"),
+                title: "Summarize the thread".into(),
+                body: None,
+                agent: "claude".into(),
+                model: Some(crate::model::ModelChoice {
+                    profile: "work".into(),
+                    model: "fast".into(),
+                }),
+                subject: None,
+            },
+        })
+    };
+    person.apply(ask()).unwrap();
+    let state = person.state().unwrap();
+    let issue = state.issues.get(&id).unwrap();
+    let run = issue.active_run().unwrap();
+    assert_eq!((run.agent.0.as_str(), run.starter.as_str()), (AGENT, "ada"));
+    assert_eq!(run.model.as_ref().unwrap().model, "fast");
+    assert_eq!(issue.status, Status::InProgress);
+    assert!(person.apply(ask()).is_err(), "an id is asked once");
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    assert!(
+        agent.apply(ask()).is_err(),
+        "an agent asks nothing of itself"
+    );
+    // The model is not changed under the run.
+    assert!(
+        person
+            .apply(Tracker::CHOOSE_MODEL.with(tracker::ChooseModel {
+                issue: id,
+                model: None
+            }))
+            .is_err()
+    );
+}

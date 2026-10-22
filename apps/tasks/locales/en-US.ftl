@@ -80,3 +80,7 @@ tasks-issue-labels = Changed the labels of { $item }
 tasks-issue-links = Changed the links of { $item }
 tasks-settle-confirmation = Acted on the answer on { $item }
 tasks-add-label = Labelled { $item } { $label }
+tasks-choose-model = Chose the model for { $item }
+tasks-ask-agent = Asked an agent: { $title }
+tasks-field-model = Model
+tasks-issue-model-placeholder = The agent's own model, or provider/model

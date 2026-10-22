@@ -15,11 +15,13 @@ pub mod run;
 pub mod search;
 
 pub use issue::{
-    Imported, ImportedMessage, Issue, Link, Message, MessageKind, Status, agent_assignee,
-    person_assignee,
+    AgentRequest, Imported, ImportedMessage, Issue, Link, Message, MessageKind, Status,
+    agent_assignee, person_assignee,
 };
 pub use record::{Tracker, tracker};
-pub use run::{Budget, Confirmation, ConfirmationState, Question, Run, RunOutcome, RunPhase};
+pub use run::{
+    Budget, Confirmation, ConfirmationState, ModelChoice, Question, Run, RunOutcome, RunPhase,
+};
 
 /// The record kind issues live in.
 pub const KIND: &str = "tasks.tracker";

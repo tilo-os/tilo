@@ -179,12 +179,44 @@ fn facts(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             assignee: Some(assignee),
         }),
     );
+    let model_id = id.clone();
+    let read_id = id.clone();
+    let model = cx.control_with(
+        |state| {
+            TextInput::from_state(state)
+                .with_id("tasks-issue-model")
+                .with_accessible_name(tr("tasks-field-model"))
+                .with_placeholder("tasks-issue-model-placeholder")
+        },
+        move |tracker: &Tracker| {
+            tracker
+                .issues
+                .get(&read_id)
+                .and_then(|issue| issue.model.as_ref())
+                .map(|model| format!("{}/{}", model.profile, model.model))
+                .unwrap_or_default()
+        },
+        Tracker::CHOOSE_MODEL.map(move |text: String| tracker::ChooseModel {
+            issue: model_id.clone(),
+            model: model_choice(&text),
+        }),
+    );
     Box::new(
         Row::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(labeled_field("tasks-field-status", status)))
-            .push(Box::new(labeled_field("tasks-field-assignee", assignee))),
+            .push(Box::new(labeled_field("tasks-field-assignee", assignee)))
+            .push(Box::new(labeled_field("tasks-field-model", model))),
     )
+}
+
+/// The model typed as `provider/model`; nothing typed is the agent's own.
+fn model_choice(text: &str) -> Option<crate::model::ModelChoice> {
+    let (profile, model) = text.trim().split_once('/')?;
+    Some(crate::model::ModelChoice {
+        profile: profile.trim().to_owned(),
+        model: model.trim().to_owned(),
+    })
 }
 
 /// The issue's labels, and a field to add one.

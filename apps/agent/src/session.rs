@@ -434,11 +434,61 @@ impl Session {
         }
     }
 
+    /// Run `run`, planning with the model chosen for it when it names one.
+    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        let chosen = run.model.as_ref().and_then(|model| self.run_chooser(model));
+        let own = chosen.map(|chooser| std::mem::replace(&mut self.chooser, chooser));
+        let result = self.run_task_steps(run);
+        if let Some(own) = own {
+            self.chooser = own;
+        }
+        result
+    }
+
+    /// The chooser that plans with `model` for one run: the provider's
+    /// profile as Settings keeps it, or for a managed agent its gateway's
+    /// selection with that model. `None`, and the agent's own model, when
+    /// the model is not offered here.
+    fn run_chooser(&self, model: &runtime_collab::TaskRunModel) -> Option<Chooser> {
+        let config = agent_provider_config::ProviderConfig::load();
+        let found = config
+            .profiles
+            .iter()
+            .find(|profile| profile.id == model.profile && profile.enabled)
+            .and_then(|profile| {
+                profile
+                    .models
+                    .iter()
+                    .find(|offered| offered.id == model.model)
+                    .map(|offered| (profile, offered.clone()))
+            });
+        let Some((profile, descriptor)) = found else {
+            tracing::warn!(profile = %model.profile, model = %model.model, "the run's model is not offered here; planning with the agent's own");
+            return None;
+        };
+        let selection = if self.managed {
+            let mut selection = self.chooser.selection()?.clone();
+            if selection.profile_id != profile.id {
+                tracing::warn!(profile = %model.profile, "a managed agent plans only through its own provider");
+                return None;
+            }
+            selection.model = descriptor;
+            selection
+        } else {
+            crate::providers::ProviderSelection::from_profile(profile, descriptor)
+        };
+        Some(Chooser::with_provider(
+            self.managed || self.cfg.model,
+            self.cfg.model_timeout,
+            selection,
+        ))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one task run keeps planning, per-step reporting and the terminal update in a single auditable sequence"
     )]
-    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+    fn run_task_steps(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
         self.task_deadline = run.execution_budget.and_then(|budget| {
             ui::time::now().checked_add(Duration::from_millis(u64::from(budget.total_ms)))
         });
@@ -1273,6 +1323,7 @@ mod tests {
     fn task_run() -> runtime_collab::TaskRunEnvelope {
         runtime_collab::TaskRunEnvelope {
             paused: None,
+            model: None,
             version: 1,
             task_id: "task:review".into(),
             title: "Review draft".into(),

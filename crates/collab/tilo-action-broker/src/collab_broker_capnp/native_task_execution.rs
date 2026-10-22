@@ -646,6 +646,7 @@ impl CapnpBrokerState {
                 planning,
                 execution_budget,
                 action_context: context,
+                model: None,
             },
             (peer_id, tx),
         )

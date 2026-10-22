@@ -1789,6 +1789,7 @@ struct TaskRunEnvelope {
     planning: runtime_collab::TaskRunPlanning,
     execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     action_context: tilo_actions::ActionContext,
+    model: Option<runtime_collab::TaskRunModel>,
 }
 
 #[derive(Clone, Debug)]
@@ -7028,6 +7029,7 @@ impl CapnpBrokerState {
             },
             execution_budget,
             action_context: context.clone(),
+            model: None,
         })
         .map_err(|_| "the assigned agent task stream closed".to_string())?;
         self.pending_task_runs
@@ -13429,6 +13431,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 execution_budget: run.execution_budget,
                 action_context: serde_json::to_value(run.action_context)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                model: run.model,
             };
             results.get().set_task_json(
                 &serde_json::to_string(&payload)

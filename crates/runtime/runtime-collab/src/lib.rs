@@ -2891,6 +2891,20 @@ pub struct TaskRunEnvelope {
     /// first delivery, and from older senders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<TaskRunPausedStep>,
+    /// The model chosen for this run, in place of the one chosen for its
+    /// agent. Absent: the agent's own. Older senders omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<TaskRunModel>,
+}
+
+/// A model of one provider profile, chosen for a run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunModel {
+    /// The provider profile, by id.
+    pub profile: String,
+    /// The model, by its id at that provider.
+    pub model: String,
 }
 
 /// A run's step that asks its person first and is still unsettled: the draft
