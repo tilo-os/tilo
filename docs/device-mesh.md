@@ -16,6 +16,24 @@ without stealing the active workspace or focus. The always-on relay retains
 the latest aggregate checkpoint so sleeping devices can catch up later without
 exposing personal session state to collaborators.
 
+## How a person's devices find each other
+
+Pairing is the one explicit step: it brings the person's identity to a new
+device. From then on every device of theirs finds and trusts the others:
+
+- A device that proves, in its identity hello, a certificate the person's
+  root signed for a personal device (it owns workspaces, is not a host and is
+  not foreign) counts as theirs at once. The shell keeps the certificate in
+  the person's fleet, so the next session dials and trusts it too, whichever
+  device enrolled it and whenever. The enrolment list a device received when
+  it joined (`personal-device-peers.json`) is one source of that set, the
+  fleet the other.
+- Revocations travel in the same hellos. A revocation the root signed drops
+  the device at once and is kept in the fleet, so it wins over the
+  certificate, the enrolment list and a later hello of the revoked device.
+- Another person's device is never admitted this way; it joins through an
+  invitation to a workspace.
+
 ## One replication substrate
 
 `tilo-relay::mesh::ReplicationIntent` maps a device's residency choice onto the

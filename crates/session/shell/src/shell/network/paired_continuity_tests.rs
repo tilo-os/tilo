@@ -982,26 +982,6 @@ impl NativeEditorPair {
         })
     }
 
-    fn enroll(&self) {
-        std::fs::write(
-            self.peers.with_file_name("personal-device-peers.json"),
-            serde_json::to_vec(&[
-                hex::encode(self.left.cert.device_public_key),
-                hex::encode(self.right.cert.device_public_key),
-            ])
-            .unwrap(),
-        )
-        .unwrap();
-        self.recheck_enrollment();
-    }
-
-    /// Enrolment changed mid-session: each shell sees it at its next recheck
-    /// of the file; make that now.
-    fn recheck_enrollment(&self) {
-        self.left.network.recheck_personal_device_peers();
-        self.right.network.recheck_personal_device_peers();
-    }
-
     fn send_view(
         &mut self,
         line: usize,
@@ -1223,14 +1203,17 @@ impl NativeEditorPair {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation() {
+async fn paired_native_editor_views_follow_the_persons_root_and_stop_when_routes_or_policy_go() {
     use tilo_action_broker::services::ContinuationServices;
     let mut pair = NativeEditorPair::new().await;
+    // No enrolment lists either device: proving certificates of one root to
+    // each other makes them the person's devices.
     assert!(
-        pair.send_view(20).await.is_empty(),
-        "a shared certificate root is not enrollment"
+        !pair
+            .peers
+            .with_file_name("personal-device-peers.json")
+            .exists()
     );
-    pair.enroll();
     let first = pair.send_view(40).await;
     assert_eq!(first.len(), 1);
     pair.apply_target(&first[0], 40);
@@ -1238,28 +1221,6 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
     assert_eq!(second.len(), 1);
     assert!(second[0].generation > first[0].generation);
     pair.apply_target(&second[0], 70);
-    std::fs::remove_file(pair.peers.with_file_name("personal-device-peers.json")).unwrap();
-    pair.recheck_enrollment();
-    let stopped = in_owner_registry(&pair.right_registry, || {
-        pair.right.network.pump_owner_views()
-    });
-    assert_eq!(stopped.len(), 1);
-    assert!(stopped[0].0.projection.is_none());
-    assert!(stopped[0].0.generation > second[0].generation);
-    assert!(
-        in_owner_registry(&pair.right_registry, || pair
-            .right
-            .network
-            .pump_owner_views())
-        .is_empty()
-    );
-    pair.enroll();
-    let resumed = in_owner_registry(&pair.right_registry, || {
-        pair.right.network.pump_owner_views()
-    });
-    assert_eq!(resumed.len(), 1);
-    assert!(resumed[0].0.generation > stopped[0].0.generation);
-    pair.apply_target(&resumed[0].0, 70);
     in_owner_registry(&pair.right_registry, || {
         crate::shell::broker_services::NativeContinuations
             .handoff(
@@ -1274,7 +1235,7 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
         pair.right.network.pump_owner_views()
     });
     assert_eq!(subscribed.len(), 1);
-    assert!(subscribed[0].0.generation > resumed[0].0.generation);
+    assert!(subscribed[0].0.generation > second[0].generation);
     pair.apply_target(&subscribed[0].0, 70);
     // A departed authenticated session cannot keep a cached view alive.
     let routes = pair
@@ -1320,9 +1281,46 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+async fn paired_native_editor_views_stop_when_the_root_revokes_the_viewer() {
+    let mut pair = NativeEditorPair::new().await;
+    let first = pair.send_view(40).await;
+    assert_eq!(first.len(), 1);
+    pair.apply_target(&first[0], 40);
+    // Another device of the person brings the root's revocation of the
+    // viewing device.
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: pair.left.cert.device_public_key,
+        revoked_at_ns: 1,
+        reason: tilo_user_identity::RevocationReason::Stolen,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+    let mut revocations = tilo_user_identity::RevocationList::new();
+    revocations.insert(entry).unwrap();
+    pair.right.network.learn_own_revocations(&revocations);
+    let stopped = in_owner_registry(&pair.right_registry, || {
+        pair.right.network.pump_owner_views()
+    });
+    assert_eq!(stopped.len(), 1);
+    assert!(stopped[0].0.projection.is_none());
+    assert!(stopped[0].0.generation > first[0].generation);
+    assert!(
+        in_owner_registry(&pair.right_registry, || pair
+            .right
+            .network
+            .pump_owner_views())
+        .is_empty()
+    );
+    pair.close().await;
+    drop(pair);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
 async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restart() {
     let mut pair = NativeEditorPair::new().await;
-    pair.enroll();
     let remote = pair.send_view(40).await;
     assert_eq!(remote.len(), 1);
     pair.apply_target(&remote[0], 40);
@@ -1478,7 +1476,6 @@ async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restar
 #[serial_test::serial]
 async fn paired_native_editor_concurrent_takeovers_converge_on_one_durable_stamp() {
     let mut pair = NativeEditorPair::new().await;
-    pair.enroll();
     let remote = pair.send_view(40).await;
     assert_eq!(remote.len(), 1);
     pair.apply_target(&remote[0], 40);

@@ -65,6 +65,23 @@ impl DeviceFleet {
             .iter()
             .any(|entry| &entry.revoked_device_public_key == device_public_key)
     }
+
+    /// The person's own devices this fleet certifies at `now_ns`: personal
+    /// devices ([`DeviceCapabilities::is_personal_device`]) of `person`,
+    /// unexpired and not revoked.
+    #[must_use]
+    pub fn personal_devices(&self, person: &[u8; 32], now_ns: u64) -> Vec<[u8; 32]> {
+        self.certificates
+            .iter()
+            .filter(|cert| {
+                &cert.user_public_key == person
+                    && cert.capabilities.is_personal_device()
+                    && verify_device_cert_at(cert, now_ns).is_ok()
+                    && !self.is_revoked(&cert.device_public_key)
+            })
+            .map(|cert| cert.device_public_key)
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -593,6 +610,37 @@ impl DeviceFleetStore {
         cert: DeviceCert,
     ) -> io::Result<DeviceFleet> {
         self.insert_certificate(identity_id, cert)
+    }
+
+    /// Keep a revocation the person's root signed that reached this device
+    /// from another of theirs, so this device refuses the revoked one after a
+    /// restart too. Returns whether the fleet changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the revocation does not verify, belongs to another
+    /// identity, or the fleet cannot be saved.
+    pub fn remember_revocation(
+        &self,
+        identity_id: &str,
+        entry: RevocationEntry,
+    ) -> io::Result<bool> {
+        verify_revocation_entry(&entry)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        if entry.user_public_key != decode_hex_32(identity_id)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "revocation belongs to another identity",
+            ));
+        }
+        let _fleet_lock = self.lock_fleets()?;
+        let mut fleet = self.load(identity_id)?;
+        if fleet.is_revoked(&entry.revoked_device_public_key) {
+            return Ok(false);
+        }
+        fleet.revocations.push(entry);
+        self.save(&fleet)?;
+        Ok(true)
     }
 
     fn insert_certificate(&self, identity_id: &str, cert: DeviceCert) -> io::Result<DeviceFleet> {
