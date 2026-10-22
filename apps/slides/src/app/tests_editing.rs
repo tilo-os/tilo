@@ -2,9 +2,8 @@
 //! shared editor's caret, selection, input method, clipboard, undo,
 //! wrapping, formatting and collaboration, by mouse and by finger.
 //!
-// USER REQUIREMENT (2026-10-22): "Text in a slide's text box must behave
-// exactly like text in Writer/Notes, by reusing the shared text editing
-// widget and engine, never a hand-rolled one."
+// Text in a slide's text box behaves as in Writer and Notes: it is the
+// shared text editing widget and engine.
 #![allow(
     clippy::float_cmp,
     reason = "exact geometry and values the editor computes, not measurements"
@@ -118,8 +117,6 @@ fn touch(bench: &mut Bench, id: u64, phase: TouchPhase, at: Point) {
     bench.app.harness().touch(id, phase, at.x, at.y);
 }
 
-// USER REQUIREMENT (2026-10-22): "caret placement by click and touch;
-// selection by drag, double-click and triple-click"
 #[test]
 fn a_double_click_opens_a_box_at_the_word_and_a_third_selects_its_line() {
     let (mut bench, _) = box_of("Hello world", 900.0, 120.0);
@@ -156,7 +153,6 @@ fn a_double_click_opens_a_box_at_the_word_and_a_third_selects_its_line() {
     });
 }
 
-// USER REQUIREMENT (2026-10-22): "selection by drag"
 #[test]
 fn dragging_in_the_words_selects_them_and_leaves_the_box_in_place() {
     let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
@@ -184,9 +180,8 @@ fn dragging_in_the_words_selects_them_and_leaves_the_box_in_place() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "add, select, move and resize boxes at
-// native refresh, with touch parity": a finger held still on a box opens its
-// menu, as a right-click does, and moves nothing.
+// A finger held still on a box opens its menu, as a right-click does, and
+// moves nothing.
 #[test]
 fn holding_a_finger_on_a_box_opens_its_menu() {
     let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
@@ -208,8 +203,6 @@ fn holding_a_finger_on_a_box_opens_its_menu() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "caret placement by click and touch" and
-// "add, select, move and resize boxes at native refresh, with touch parity"
 #[test]
 fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it_at_the_word() {
     let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
@@ -293,7 +286,6 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it_at_the_word() {
     assert_eq!(element(&bench, &id).x, opened.x, "the box stays put");
 }
 
-// USER REQUIREMENT (2026-10-22): "shift+arrows; word and line navigation"
 #[test]
 fn shift_arrows_extend_and_word_and_line_keys_move_the_caret() {
     let (mut bench, _) = editing("Hello brave world");
@@ -331,8 +323,6 @@ fn shift_arrows_extend_and_word_and_line_keys_move_the_caret() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "IME and compose (German keyboard: dead
-// keys, umlauts)"
 #[test]
 fn dead_keys_umlauts_and_the_input_method_write_composed_letters() {
     let (mut bench, id) = editing("Gr");
@@ -410,7 +400,6 @@ fn dead_keys_umlauts_and_the_input_method_write_composed_letters() {
     bench.read(|app| assert!(app.editing_text));
 }
 
-// USER REQUIREMENT (2026-10-22): "clipboard copy, cut and paste"
 #[test]
 fn copy_cut_and_paste_move_words_through_the_clipboard() {
     let (mut bench, id) = editing("Hello world");
@@ -445,7 +434,6 @@ fn copy_cut_and_paste_move_words_through_the_clipboard() {
     assert_eq!(element(&bench, &id).text, "worldworldHello ");
 }
 
-// USER REQUIREMENT (2026-10-22): "undo and redo granularity"
 #[test]
 fn undo_takes_back_a_word_at_a_time_and_redo_brings_it_back() {
     let (mut bench, id) = editing("Title");
@@ -472,7 +460,6 @@ fn undo_takes_back_a_word_at_a_time_and_redo_brings_it_back() {
     bench.read(|app| assert!(app.editing_text, "undo leaves the box open"));
 }
 
-// USER REQUIREMENT (2026-10-22): "wrapping inside the box and auto-growing"
 #[test]
 fn words_wrap_inside_the_box_and_the_box_grows_to_hold_them() {
     let (mut bench, id) = box_of("Short", 300.0, 60.0);
@@ -514,8 +501,6 @@ fn words_wrap_inside_the_box_and_the_box_grows_to_hold_them() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "bold, italic and lists through the shared
-// formatting actions"
 #[test]
 fn the_toolbar_formats_the_selected_words_through_the_shared_editor() {
     use ui::widget::marks::Mark;
@@ -571,8 +556,6 @@ fn the_toolbar_formats_the_selected_words_through_the_shared_editor() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "bold, italic and lists through the shared
-// formatting actions"
 #[test]
 fn a_shortcut_formats_every_paragraph_the_selection_spans() {
     use ui::widget::marks::Mark;
@@ -604,8 +587,6 @@ fn a_shortcut_formats_every_paragraph_the_selection_spans() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "bold, italic and lists through the shared
-// formatting actions"
 #[test]
 fn a_selected_box_is_formatted_whole_from_the_toolbar() {
     let (mut bench, id) = editing("One");
@@ -630,8 +611,6 @@ fn a_selected_box_is_formatted_whole_from_the_toolbar() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "editing a box while a collaborator edits
-// another one, with CRDT splices, never whole-text rewrites per keystroke"
 #[test]
 fn a_collaborators_edits_merge_with_typing_letter_by_letter() {
     use tilo_document::RichTextAction;
@@ -705,8 +684,6 @@ fn the_words_being_edited_show_the_text_beam() {
     });
 }
 
-// USER REQUIREMENT (2026-10-22): "the box being edited must be in the
-// accessibility tree, through the shared embedded editor".
 /// The words being edited are in the accessibility tree where they are
 /// drawn, under their box, and an assistive technology writes them as
 /// typing does.
@@ -756,10 +733,8 @@ fn drawn_paths(bench: &mut Bench) -> usize {
     bench.app.harness().scene().encoding().path_tags.len()
 }
 
-// USER REQUIREMENT (2026-10-22): "editing a box while a collaborator edits
-// another one": a collaborator's caret shows in the box where they are,
-// whether or not this person edits it, and this person's caret is
-// published for theirs.
+// A collaborator's caret shows in the box where they are, whether or not
+// this person edits it, and this person's caret is published for theirs.
 #[test]
 fn collaborators_carets_show_in_the_boxes_they_are_in() {
     let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
@@ -878,10 +853,8 @@ fn assert_idle(bench: &mut Bench, what: &str) {
     panic!("{what}: the window keeps waking: {wakes:?}");
 }
 
-// USER REQUIREMENT (2026-10-22): "measure dragging and resizing a text box at
-// native refresh with near-zero idle CPU": moving a text box shapes none of
-// its words again, resizing it only re-wraps them, and once the hand stops
-// no frame runs.
+// Moving a text box shapes none of its words again, resizing it only
+// re-wraps them, and once the hand stops no frame runs.
 #[test]
 fn moving_and_resizing_a_text_box_reshapes_nothing_and_idles_after() {
     let words = "Quarterly goals: ship the new editor, grow the team, and keep \
@@ -975,9 +948,6 @@ fn row(rows: &[(String, Rect)], label: &str) -> Point {
         .center()
 }
 
-// USER REQUIREMENT (2026-10-22): "Text context menu (cut, copy, paste,
-// formatting) on right-click or long-press inside text, in the shared
-// editor."
 #[test]
 fn right_click_or_a_held_finger_opens_the_words_menu() {
     // Case `right_click_selects_the_word_and_formats_it`.

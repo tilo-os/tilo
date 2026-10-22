@@ -1569,9 +1569,6 @@ fn an_unanswered_copy_settles_as_failed_at_its_deadline() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "rich copy and paste: a rich mode in every
-// clipboard implementation including the compositor's, HTML both ways in the
-// shared editor"
 #[test]
 fn a_rich_copy_offers_its_html_and_its_words() {
     let harness = Harness::new();

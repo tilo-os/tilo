@@ -48,10 +48,6 @@ fn at(block: usize, byte: usize) -> DocumentPosition {
     DocumentPosition { block, byte }
 }
 
-// USER REQUIREMENT (2026-10-22): "rich copy and paste: a rich mode in every
-// clipboard implementation including the compositor's, HTML both ways in the
-// shared editor, and the editor owning Ctrl+C/X/V. It's a system feature, so
-// Writer, Notes and Mail benefit too."
 #[test]
 fn copy_and_paste_carry_formatting() {
     fn ctrl_c_offers_the_selection_as_html_and_as_words() {
@@ -233,8 +229,6 @@ fn copy_and_paste_carry_formatting() {
     the_copy_round_trips_into_another_editor();
 }
 
-// USER REQUIREMENT (2026-10-22): "Fix the text menu's edge clamping and
-// accessibility along the way."
 #[test]
 fn the_text_menu_is_accessible() {
     fn find<'a>(

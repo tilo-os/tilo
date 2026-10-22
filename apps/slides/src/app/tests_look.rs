@@ -47,9 +47,8 @@ fn slide_differs_across_ui_themes(bench: &mut Bench, area: impl Fn(&mut Bench) -
     OffscreenRenderer::pixels_differing_beyond_aa(&dark, &light)
 }
 
-// USER REQUIREMENT (2026-10-22): "A deck's look is document content. It must
-// look the same on every collaborator's screen, in Present and in the
-// exported file, whatever their UI theme."
+// A deck's look is document content: the same on every screen, in Present
+// and in the exported file, whatever the UI theme.
 #[test]
 fn a_deck_looks_the_same_in_the_dark_and_the_light_ui_theme() {
     let deck = crate::model::seed_deck();

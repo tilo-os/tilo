@@ -434,8 +434,6 @@ fn package_part(path: &std::path::Path, part: &str) -> String {
     text
 }
 
-// USER REQUIREMENT (2026-10-22): "Export: use the grown height": a saved
-// text box is as tall as the words it shows.
 /// A text box whose words outgrew it is written as tall as the canvas shows
 /// it, marked to fit its text; the box's own height stays its least.
 #[test]
@@ -505,9 +503,6 @@ fn a_saved_box_is_as_tall_as_its_words_show_it() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "bold/italic/lists through the shared
-// formatting actions": a list made in a box stays a list when the deck is
-// saved and opened again.
 /// Bulleted and numbered lists are written as lists, so they open as lists
 /// again here and elsewhere.
 #[test]
