@@ -3236,12 +3236,18 @@ fn provider_selection(
     agent_id: &str,
 ) -> Option<String> {
     let (profile, model) = config.selection_for(agent_id)?;
-    serde_json::to_string(&serde_json::json!({
+    let mut selection = serde_json::json!({
         "profile_id": profile.id,
         "model_id": model.id,
         "protocol": profile.protocol,
-    }))
-    .ok()
+    });
+    // Said only of a model that sees, so an agent shows it pictures.
+    if model.vision
+        && let Some(fields) = selection.as_object_mut()
+    {
+        fields.insert("vision".into(), true.into());
+    }
+    serde_json::to_string(&selection).ok()
 }
 
 /// [`launch`], additionally asking the app to open `document`. Grant the
@@ -9985,6 +9991,10 @@ mod tests {
             selection(&config, "reader"),
             expected("google/gemini-4-argon")
         );
+        config.profiles[0].models[1].vision = true;
+        let mut seeing = expected("small");
+        seeing["vision"] = true.into();
+        assert_eq!(selection(&config, "writer"), seeing);
     }
 }
 

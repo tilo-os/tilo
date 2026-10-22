@@ -129,6 +129,12 @@ retains bounded discovery, confirmation and broker authorization. Provider tool
 deltas remain inert until a successful complete turn validates arguments and
 unique call IDs; failed, truncated or refused turns do not authorize calls.
 
+A model whose descriptor declares `vision` is shown the pictures its invokes
+answered with: a Canvas look, a PDF page (`look-page`), a photo. After the
+turn's results the loop adds them as images (PNG, JPEG, GIF or WebP; at most
+four a turn and 4 MiB each), read from the device content the agent was handed.
+Any other model sees only their content addresses.
+
 The Agent producer streams ordered answer and provider-reasoning events through
 the replicated Chat document, retaining partial output and terminal outcomes.
 The reasoning UI identifies **Reasoning shared by the provider** honestly:
