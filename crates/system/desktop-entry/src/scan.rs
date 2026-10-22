@@ -136,6 +136,12 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
                 stats.unparseable = stats.unparseable.saturating_add(1);
                 continue;
             };
+            let mut entry = entry;
+            if let Some(downloaded) = entry.downloaded.as_mut() {
+                // The scan runs at startup and on its worker, never on the
+                // compositor's loop: this is where a missing file is noticed.
+                downloaded.present = std::fs::metadata(&downloaded.program).is_ok();
+            }
             if entry.hidden {
                 stats.tombstoned = stats.tombstoned.saturating_add(1);
                 tombstoned.push(id);

@@ -875,6 +875,7 @@ fn music_palette() -> Palette {
         terminal: false,
         icon: None,
         window_identities: vec!["org.feichtmeier.Musicpod".into()],
+        downloaded: None,
     };
     Palette::new()
         .with_files(&[

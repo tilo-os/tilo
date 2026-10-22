@@ -462,6 +462,7 @@ fn password_manager() -> crate::shell::host_apps::HostApp {
         mime_types: Vec::new(),
         terminal: false,
         icon: None,
+        downloaded: None,
     }
 }
 

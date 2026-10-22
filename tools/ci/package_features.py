@@ -54,6 +54,9 @@ NATIVE_TEST_FEATURES = {
     # Its librespot session and GStreamer sink, and every test of them, are
     # the `native` engine Music links; without it the package has no tests.
     "tilo-spotify": ("native",),
+    # Reading an AppImage's embedded entry is the compositor's alone; its
+    # tests build the images they read.
+    "tilo-desktop-entry": ("appimage",),
 }
 
 # Packages whose tested features above are not their default build. The

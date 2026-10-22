@@ -7185,6 +7185,7 @@ impl XdgShellHandler for State {
         self.release_sheets_of_destroyed(surface_id);
         self.system_modals.retain(|id| *id != surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
+        crate::shell::downloaded_apps::forget_window(surface_id);
         crate::compositor::window_handles::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
@@ -7344,6 +7345,11 @@ impl XdgShellHandler for State {
                 )
             };
             crate::shell::launcher::record_host_window_open(surface_id, &app_id);
+            crate::compositor::downloaded_programs::observe(
+                surface.wl_surface(),
+                surface_id,
+                &app_id,
+            );
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
