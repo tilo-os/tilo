@@ -558,18 +558,16 @@ fn segment_text(body: &dyn tilo_resource::SearchText, segment: usize) -> String 
     text
 }
 
-/// How many characters of a passage an excerpt shows before its match.
-const EXCERPT_BEFORE: usize = 48;
-
-/// How far back from its match an excerpt looks for a word's start.
+/// How far back from where it would start an excerpt looks for a word's
+/// start.
 const EXCERPT_REACH: usize = 96;
 
 /// How many characters an excerpt shows in all.
 const EXCERPT_LENGTH: usize = 180;
 
-/// The part of `passage` around the first word of `query` it holds, cut at
-/// word boundaries and marked where it was cut: what a hit inside prose
-/// shows of it.
+/// The part of `passage` around the first word of `query` it holds, the
+/// match in its middle, cut at word boundaries and marked where it was cut:
+/// what a hit inside prose shows of it.
 #[must_use]
 pub fn excerpt(passage: &str, query: &str) -> String {
     let chars: Vec<(usize, char)> = passage.char_indices().collect();
@@ -583,17 +581,24 @@ pub fn excerpt(passage: &str, query: &str) -> String {
             origin.extend(std::iter::repeat_n(at, folded_char.len_utf8()));
         });
     }
-    let found = query
+    let (found, word_len) = query
         .split_whitespace()
         .map(tilo_search::fold)
         .filter(|word| !word.is_empty() && !word.contains(':'))
-        .find_map(|word| folded.find(&word))
-        .and_then(|byte| origin.get(byte).copied())
-        .unwrap_or(0);
-    let mut start = found.saturating_sub(EXCERPT_BEFORE);
+        .find_map(|word| {
+            let byte = folded.find(&word)?;
+            Some((*origin.get(byte)?, word.chars().count()))
+        })
+        .unwrap_or((0, 0));
+    // The match in the middle, or as near it as the passage's ends allow.
+    let before = EXCERPT_LENGTH.saturating_sub(word_len) / 2;
+    let mut start = found
+        .saturating_sub(before)
+        .min(chars.len().saturating_sub(EXCERPT_LENGTH));
+    let planned = start;
     // Back to the word's start, unless the word runs on for long.
     while start > 0
-        && found.saturating_sub(start) < EXCERPT_REACH
+        && planned.saturating_sub(start) < EXCERPT_REACH
         && !chars
             .get(start.saturating_sub(1))
             .is_some_and(|(_, ch)| ch.is_whitespace())

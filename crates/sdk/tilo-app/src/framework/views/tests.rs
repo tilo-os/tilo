@@ -870,6 +870,15 @@ fn an_excerpt_shows_the_words_around_the_match_cut_at_words() {
     let words = shown.trim_matches('\u{2026}');
     assert!(passage.contains(words), "cut at word boundaries: {shown}");
     assert_eq!(excerpt("Short.", "short"), "Short.");
+    // USER REQUIREMENT (2026-10-22): an excerpt is centred on the first
+    // match.
+    let shown = excerpt(passage, "foolishness");
+    let at = shown.find("foolishness").expect("the match is shown");
+    let after = shown.len() - at - "foolishness".len();
+    assert!(
+        at.abs_diff(after) < 24,
+        "the match in the middle: {at} before, {after} after: {shown}"
+    );
 }
 
 #[test]

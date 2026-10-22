@@ -125,6 +125,8 @@ pub(super) struct BookQuery {
     /// A capture's or a test's executor: what the engine runs off the UI
     /// thread waits for a frame (or [`BooksApp::settle_query`]) to pump it.
     pumped: Option<Pumped>,
+    /// The store's covers, fetched off the UI thread as their rows show.
+    covers: ui::ImageStore,
 }
 
 /// One result as laid out: where it is, what opening it does, and what it
@@ -145,7 +147,10 @@ impl BookQuery {
         let engine = QueryEngine::new(kinds())
             .with_background(pumped.background())
             .with_remote(Arc::new(crate::store::SampleStore));
-        let mut query = Self::with_engine(engine);
+        // Nothing goes over the network: the store's rows keep their
+        // placeholder art.
+        let offline: ui::Fetcher = Arc::new(|_: &str| None);
+        let mut query = Self::with_engine(engine, &offline);
         query.pumped = Some(pumped);
         query
     }
@@ -156,10 +161,10 @@ impl BookQuery {
         let store: Arc<dyn RemoteSource> = Arc::new(crate::store::Gutenberg);
         let mut engine = QueryEngine::new(kinds()).with_remote(store);
         engine.set_waker(wake);
-        Self::with_engine(engine)
+        Self::with_engine(engine, &crate::store::cover_fetcher())
     }
 
-    fn with_engine(engine: QueryEngine) -> Self {
+    fn with_engine(engine: QueryEngine, covers: &ui::Fetcher) -> Self {
         Self {
             engine,
             input: String::new(),
@@ -178,6 +183,7 @@ impl BookQuery {
             rows: Vec::new(),
             staged: None,
             pumped: None,
+            covers: ui::ImageStore::new(covers),
         }
     }
 
@@ -442,10 +448,20 @@ impl BooksApp {
             1 => "1 result".to_owned(),
             n => format!("{n} results"),
         });
+        // The title names what is shown: the words searched for, or the
+        // chips alone when nothing is typed (their chips stand below).
+        let title = match results.query.text.trim() {
+            "" if results.query.chips.is_empty() => "Search".to_owned(),
+            "" => ui::framework::views::KeptViews::default_name(
+                &results.query,
+                self.query.engine.kinds(),
+            ),
+            text => text.to_owned(),
+        };
         let mut y = Self::draw_page_title(
             ctx,
             Point::new(span.0, body.y0 + gutter - self.query.scroll),
-            "Search",
+            &title,
             count.as_deref(),
         ) + gutter;
         y = self.query_chips(ctx, span, y, body, &results) + section;
@@ -684,13 +700,34 @@ impl BooksApp {
         let get_width = ButtonFace::new(Rect::ZERO, get_label)
             .control_size(ControlSize::Small)
             .intrinsic_width(ctx.text, theme);
+        // A store book's cover once it has arrived; its placeholder, the
+        // same size, until then.
+        let cover = store
+            .as_ref()
+            .and_then(|book| self.query.covers.get(&crate::store::cover_url(book.id)));
         let leading = if store.is_some() {
-            RowLeading::Media(MediaArt::Placeholder, MediaAspect::Portrait)
+            RowLeading::Media(
+                cover
+                    .as_ref()
+                    .map_or(MediaArt::Placeholder, MediaArt::Image),
+                MediaAspect::Portrait,
+            )
         } else {
             RowLeading::Icon(icon)
         };
         let bleed = ui::chrome::row_bleed(theme);
-        let mut face = ListRowFace::new(&title).leading(leading);
+        let words: Vec<String> = self
+            .query
+            .engine
+            .results()
+            .query
+            .text
+            .split_whitespace()
+            .filter(|word| !word.contains(':'))
+            .map(str::to_owned)
+            .collect();
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let mut face = ListRowFace::new(&title).leading(leading).found(&words);
         if item.kind == PASSAGE {
             face = face.two_line_title();
         }

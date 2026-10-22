@@ -50,6 +50,27 @@ pub(crate) fn book_url(id: u64) -> String {
     format!("https://www.gutenberg.org/ebooks/{id}.epub3.images")
 }
 
+/// Where the cover of catalogue book `id` is fetched from.
+pub(crate) fn cover_url(id: u64) -> String {
+    format!("https://www.gutenberg.org/cache/epub/{id}/pg{id}.cover.medium.jpg")
+}
+
+/// The largest cover fetched, in bytes.
+const MAX_COVER_BYTES: usize = 2 * 1024 * 1024;
+
+/// How the store's covers are fetched: from the store alone, off the UI
+/// thread, on the connection its searches keep open.
+pub(crate) fn cover_fetcher() -> ui::Fetcher {
+    Arc::new(|url: &str| {
+        if !url.starts_with("https://www.gutenberg.org/") {
+            return None;
+        }
+        fetch(url, &[], MAX_COVER_BYTES)
+            .map_err(|error| tracing::debug!(%error, "books: a store cover did not arrive"))
+            .ok()
+    })
+}
+
 /// Where a fetched book is kept until the import has placed it on the
 /// shelf.
 pub(crate) fn fetched_path(id: u64) -> PathBuf {

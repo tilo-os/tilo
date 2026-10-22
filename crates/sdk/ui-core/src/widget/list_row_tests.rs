@@ -684,3 +684,24 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
     driver.click_at(x + w / 2.0, y + h / 2.0);
     assert_eq!(calls.get(), 2, "a click runs the same action");
 }
+
+// USER REQUIREMENT (2026-10-22): the words a search matched are marked in
+// a result's text with the find bar's highlight.
+#[test]
+fn the_words_a_search_found_are_marked_at_word_starts_whatever_their_case() {
+    let line = "The glass rattled; Glassworks and fibreglass.";
+    let spans = found_spans(line, &["glass"]);
+    let marked: Vec<&str> = spans
+        .iter()
+        .filter_map(|span| line.get(span.clone()))
+        .collect();
+    // "fibreglass" has it inside a word, which is not a match.
+    assert_eq!(marked, ["glass", "Glass"]);
+    assert!(found_spans(line, &[]).is_empty());
+    assert!(found_spans(line, &[""]).is_empty());
+    // The longer of two words found at one place is marked whole.
+    let spans = found_spans("Tideglass letters", &["tide", "tideglass"]);
+    assert_eq!(spans, [0..9]);
+    // Letters whose lower case is longer still line up with the text.
+    assert_eq!(found_spans("İstanbul", &["i̇stan"]), [0..6]);
+}
