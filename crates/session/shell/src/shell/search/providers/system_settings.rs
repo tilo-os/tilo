@@ -1,5 +1,5 @@
 //! The machine's own settings as typed resources with actions: when the
-//! screen locks and blanks, when the machine suspends, the scale and refresh
+//! screen blanks, when the machine suspends, the scale and refresh
 //! rate of a display, the keyboard layout and the appearance mode.
 //!
 //! The session serves them, so a script, an agent or the palette reaches them
@@ -15,6 +15,9 @@
 //! Display changes are staged through the keep-or-restore handshake every
 //! display change goes through, and answer when staged; `display.change.keep`
 //! and `display.change.revert` settle them.
+//!
+//! When the screen locks is not served here: a longer delay weakens the
+//! lock, which only Settings' own field edit judges, so it is changed there.
 
 use std::rc::Rc;
 
@@ -37,7 +40,6 @@ pub const PROVIDER_ID: &str = "system-settings";
 /// What a setting is, which decides how it is read, validated and stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
-    LockAfter,
     BlankAfter,
     SuspendAfter,
     AutoSuspend,
@@ -60,12 +62,6 @@ struct Spec {
 }
 
 const SPECS: &[Spec] = &[
-    Spec {
-        id: "power.lock-after",
-        kind: Kind::LockAfter,
-        name: "setting-power-lock-after",
-        words: "lock screen after auto lock timeout idle never",
-    },
     Spec {
         id: "power.blank-after",
         kind: Kind::BlankAfter,
@@ -154,18 +150,6 @@ pub(crate) fn contract_for(id: &str) -> Option<ActionContract> {
         Verb::Get => ActionContract {
             tags,
             ..ActionContract::view()
-        },
-        // Changing when the screen locks can turn the lock off: as the
-        // Settings field it writes, it asks first and needs the person's own
-        // grant.
-        Verb::Set | Verb::Toggle if spec.kind == Kind::LockAfter => ActionContract {
-            kind: tilo_actions::contract::ActionKind::Undoable,
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            retry: RetryPolicy::Idempotent,
-            reversible: true,
-            tags,
-            ..ActionContract::default()
         },
         Verb::Set | Verb::Toggle => ActionContract {
             kind: tilo_actions::contract::ActionKind::Undoable,
@@ -296,7 +280,6 @@ fn input_config() -> RichInputConfig {
 /// read (no display has been published).
 fn read(kind: Kind) -> Option<Reading> {
     Some(match kind {
-        Kind::LockAfter => minutes_reading(&power::LOCK_MINUTES, power::LOCK_CHOICES),
         Kind::BlankAfter => minutes_reading(&power::BLANK_MINUTES, power::BLANK_CHOICES),
         Kind::SuspendAfter => {
             let mut reading = minutes_reading(&power::SUSPEND_MINUTES, power::SUSPEND_CHOICES);
@@ -402,10 +385,6 @@ fn set_params(kind: Kind) -> Vec<ActionParam> {
         )
     };
     match kind {
-        Kind::LockAfter => vec![minutes(
-            "Minutes of inactivity before the session locks; 0 means never.",
-            power::LOCK_CHOICES,
-        )],
         Kind::BlankAfter => vec![minutes(
             "Minutes of inactivity before the screen turns off; 0 means never.",
             power::BLANK_CHOICES,
@@ -545,13 +524,6 @@ fn apply(
     let id = format!("{}.{}", spec.id, verb.suffix());
     let previous = read(spec.kind).ok_or_else(|| refuse("this setting is not available here"))?;
     let value = match spec.kind {
-        Kind::LockAfter => {
-            let minutes =
-                power::check_minutes("lock timeout", power::LOCK_CHOICES, minutes_arg(args)?)
-                    .map_err(refuse)?;
-            store(&id, SectionWrite::new().set(&power::LOCK_MINUTES, &minutes))?;
-            json!(minutes)
-        }
         Kind::BlankAfter => {
             let minutes =
                 power::check_minutes("blank timeout", power::BLANK_CHOICES, minutes_arg(args)?)
@@ -796,7 +768,6 @@ impl SearchProvider for SystemSettingsProvider {
         use ui::icons::Icon;
         let (spec, _) = parse(&result.id)?;
         Some(match spec.kind {
-            Kind::LockAfter => Icon::Lock,
             Kind::BlankAfter | Kind::DisplayScale | Kind::DisplayRefreshRate => Icon::Monitor,
             Kind::SuspendAfter | Kind::AutoSuspend => Icon::Moon,
             Kind::KeyboardLayout => Icon::Keyboard,
@@ -829,13 +800,8 @@ impl SearchProvider for SystemSettingsProvider {
     /// flips a switch; a display change goes through its own confirmation
     /// and is chosen, not stepped.
     fn adjustable(&self, result: &SearchResult) -> bool {
-        // The screen lock is changed through its action, which asks first.
         parse(&result.id).is_some_and(|(spec, verb)| {
-            verb != Verb::Get
-                && !matches!(
-                    spec.kind,
-                    Kind::DisplayScale | Kind::DisplayRefreshRate | Kind::LockAfter
-                )
+            verb != Verb::Get && !matches!(spec.kind, Kind::DisplayScale | Kind::DisplayRefreshRate)
         })
     }
 
@@ -1047,8 +1013,6 @@ mod tests {
         {
             let ids: Vec<String> = rows(&chrome, "").into_iter().map(|row| row.id).collect();
             for expected in [
-                "power.lock-after.get",
-                "power.lock-after.set",
                 "power.blank-after.get",
                 "power.blank-after.set",
                 "power.suspend-after.get",
@@ -1067,46 +1031,47 @@ mod tests {
                 !ids.iter().any(|id| id.starts_with("display.")),
                 "no display has been published, so there is none to change"
             );
-            let lock = rows(&chrome, "")
+            assert!(
+                !ids.iter().any(|id| id.starts_with("power.lock-after")),
+                "when the screen locks is changed through Settings' field edit"
+            );
+            let blank = rows(&chrome, "")
                 .into_iter()
-                .find(|row| row.id == "power.lock-after.set")
+                .find(|row| row.id == "power.blank-after.set")
                 .unwrap();
-            assert_eq!(lock.params[0].ty, ParamType::Integer);
+            assert_eq!(blank.params[0].ty, ParamType::Integer);
             assert_eq!(
-                lock.params[0]
+                blank.params[0]
                     .choices
                     .iter()
                     .map(std::convert::AsRef::as_ref)
                     .collect::<Vec<_>>(),
                 ["0", "1", "5", "10", "15", "30"]
             );
-            assert_eq!(lock.title, "Lock screen after", "the setting's own name");
             assert_eq!(
-                lock.badge.as_deref(),
-                Some("5 minutes"),
+                blank.title, "Turn screen off after",
+                "the setting's own name"
+            );
+            assert_eq!(
+                blank.badge.as_deref(),
+                Some("10 minutes"),
                 "its value is the pill"
             );
-            assert_eq!(lock.subtitle, None);
+            assert_eq!(blank.subtitle, None);
             let provider = SystemSettingsProvider::new();
             let get = rows(&chrome, "")
                 .into_iter()
-                .find(|row| row.id == "power.lock-after.get")
+                .find(|row| row.id == "power.blank-after.get")
                 .unwrap();
             let state = chrome.borrow();
             assert!(
                 provider.hidden_from_people(&get, "", &state),
                 "reading is the row's pill"
             );
-            assert!(!provider.hidden_from_people(&lock, "", &state));
+            assert!(!provider.hidden_from_people(&blank, "", &state));
             drop(state);
 
-            // ←/→ step through the values Settings offers, held at the ends;
-            // the screen lock only through its action, which asks first.
-            assert!(!provider.adjustable(&lock));
-            let blank = rows(&chrome, "")
-                .into_iter()
-                .find(|row| row.id == "power.blank-after.set")
-                .unwrap();
+            // ←/→ step through the values Settings offers, held at the ends.
             assert!(provider.adjustable(&blank));
             let mut doc = AutoCommit::new();
             let mut step = |delta: i8| {
@@ -1140,17 +1105,17 @@ mod tests {
 
         // Phase `the_palette_finds_a_setting_by_its_name_in_either_language`.
         {
-            for needle in ["lock after", "lock screen after", "screen lock timeout"] {
+            for needle in ["blank after", "turn screen off after", "screen off timeout"] {
                 let top = rows(&chrome, needle).into_iter().next().map(|row| row.id);
                 assert!(
                     top.as_deref()
-                        .is_some_and(|id| id.starts_with("power.lock-after")),
+                        .is_some_and(|id| id.starts_with("power.blank-after")),
                     "{needle}: {top:?}"
                 );
             }
             crate::shell::i18n::ensure();
             ui::i18n::I18nManager::set_locale("de-DE");
-            let german = rows(&chrome, "Bildschirm sperren nach")
+            let german = rows(&chrome, "Bildschirm ausschalten nach")
                 .into_iter()
                 .next()
                 .map(|row| row.id);
@@ -1158,15 +1123,15 @@ mod tests {
             assert!(
                 german
                     .as_deref()
-                    .is_some_and(|id| id.starts_with("power.lock-after")),
+                    .is_some_and(|id| id.starts_with("power.blank-after")),
                 "{german:?}"
             );
         }
 
         // Phase `get_answers_the_value_and_what_is_allowed`.
         {
-            let answer = run(&chrome, "power.lock-after.get", Vec::new()).unwrap();
-            assert_eq!(answer["value"], 5);
+            let answer = run(&chrome, "power.blank-after.get", Vec::new()).unwrap();
+            assert_eq!(answer["value"], 10);
             assert_eq!(answer["allowed"], json!([0, 1, 5, 10, 15, 30]));
         }
 
@@ -1175,32 +1140,32 @@ mod tests {
             assert!(matches!(
                 run(
                     &chrome,
-                    "power.lock-after.set",
+                    "power.blank-after.set",
                     arg("minutes", ArgValue::Integer(7))
                 ),
                 Err(ActionError::Arguments(_))
             ));
             assert_eq!(
-                power::LOCK_MINUTES.get(),
-                5,
+                power::BLANK_MINUTES.get(),
+                10,
                 "a refused value stores nothing"
             );
             let answer = run(
                 &chrome,
-                "power.lock-after.set",
+                "power.blank-after.set",
                 arg("minutes", ArgValue::Integer(0)),
             )
             .unwrap();
             assert_eq!(answer["value"], 0);
-            assert_eq!(answer["previous"], 5);
-            assert_eq!(power::LOCK_MINUTES.get(), 0);
+            assert_eq!(answer["previous"], 10);
+            assert_eq!(power::BLANK_MINUTES.get(), 0);
             let stored = settings_store::load_section("power");
-            assert_eq!(stored["lock_minutes"], 0, "the leaf the compositor reads");
+            assert_eq!(stored["blank_minutes"], 0, "the leaf the compositor reads");
             let origin = session.change_log();
             assert!(
                 origin
                     .iter()
-                    .any(|entry| entry["action"] == "power.lock-after.set"),
+                    .any(|entry| entry["action"] == "power.blank-after.set"),
                 "the change is attributed to the action: {origin:?}"
             );
         }
@@ -1286,22 +1251,14 @@ mod tests {
         // Phase `reading_needs_no_write_permission`.
         {
             let read = crate::shell::search::providers::actions::shell_action_contract(
-                "power.lock-after.get",
+                "power.blank-after.get",
             );
             assert_eq!(read.kind, tilo_actions::contract::ActionKind::Read);
             let write = crate::shell::search::providers::actions::shell_action_contract(
-                "power.lock-after.set",
-            );
-            assert_eq!(write.kind, tilo_actions::contract::ActionKind::Undoable);
-            assert_eq!(
-                write.risk,
-                RiskLevel::Privileged,
-                "changing the screen lock asks first, as its Settings field does"
-            );
-            let blank = crate::shell::search::providers::actions::shell_action_contract(
                 "power.blank-after.set",
             );
-            assert_eq!(blank.risk, RiskLevel::Low);
+            assert_eq!(write.kind, tilo_actions::contract::ActionKind::Undoable);
+            assert_eq!(write.risk, RiskLevel::Low);
         }
         drop(settings);
     }

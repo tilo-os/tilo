@@ -3562,7 +3562,7 @@ fn build_scenarios() -> Vec<Scenario> {
         // and Escape clearing the query before it closes.
         Scenario {
             name: "palette_interaction",
-            description: "Search 's', page and tab through it, hold Shift on an app, pick a value for 'lock after', Escape out.",
+            description: "Search 's', page and tab through it, hold Shift on an app, pick a value for 'screen off after', Escape out.",
             actions: vec![
                 Action::OpenPalette,
                 Action::Wait(2),
@@ -3583,13 +3583,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(1),
                 Action::Snapshot("05-editor-shift-held"),
                 Action::Key(Key::Named(NamedKey::Escape)),
-                Action::Type("lock after"),
+                Action::Type("screen off after"),
                 Action::Wait(2),
-                Action::Snapshot("06-lock-after"),
+                Action::Snapshot("06-screen-off-after"),
                 Action::Key(Key::Named(NamedKey::ArrowDown)),
                 Action::Key(Key::Named(NamedKey::Enter)),
                 Action::Wait(2),
-                Action::Snapshot("07-lock-after-values"),
+                Action::Snapshot("07-screen-off-after-values"),
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::Wait(2),
                 Action::Snapshot("08-back-to-results"),
