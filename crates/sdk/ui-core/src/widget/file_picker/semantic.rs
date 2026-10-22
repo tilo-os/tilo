@@ -98,7 +98,8 @@ impl FilePicker {
             "replace_pending": self.replace_prompt.is_some(), "completed": self.pending_outcome.is_some(),
             "listing": match &self.listing { Listing::Folder => "folder", Listing::Recent => "recent", Listing::Search(_) => "search" },
             "query": self.query.value().chars().take(256).collect::<String>(),
-            "can_recent": !self.recent.is_empty()}),
+            "can_recent": !self.recent.is_empty(),
+            "looking_up": self.looking_up()}),
         )
     }
 

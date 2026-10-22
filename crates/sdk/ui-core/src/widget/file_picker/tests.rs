@@ -1425,6 +1425,26 @@ fn paint(picker: &mut FilePicker) {
     );
 }
 
+/// Wait for Recent or a search to come back from its worker thread, as
+/// the host does when the worker wakes it.
+fn settle(picker: &mut FilePicker) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while picker.looking_up() {
+        assert!(std::time::Instant::now() < deadline, "the lookup finishes");
+        picker.poll_lookups();
+        std::thread::yield_now();
+    }
+}
+
+/// Counts how often the picker wakes its host.
+struct CountingWake(std::sync::atomic::AtomicUsize);
+
+impl std::task::Wake for CountingWake {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 fn names(picker: &FilePicker) -> Vec<String> {
     picker.entries().iter().map(|e| e.name.clone()).collect()
 }
@@ -1510,6 +1530,7 @@ fn the_sheet_says_who_asks_and_finds_files_from_the_path_bar_and_search() {
         let rect = picker.place_rects[0];
         dispatch(&mut picker, &cursor_at(rect.center()));
         dispatch(&mut picker, &mouse_press());
+        settle(&mut picker);
         assert_eq!(
             names(&picker),
             ["gamma.txt"],
@@ -1524,13 +1545,18 @@ fn the_sheet_says_who_asks_and_finds_files_from_the_path_bar_and_search() {
         let (_g, root) = temp_tree();
         let gamma = root.join("nested").join("gamma.txt");
         let found = vec![gamma.clone(), PathBuf::from("/etc/passwd")];
-        let asked = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = asked.clone();
-        let search: PickerSearch = Rc::new(move |query: &str| {
-            seen.borrow_mut().push(query.to_owned());
+        let search: PickerSearch = Arc::new(move |query: &str| {
+            if let Ok(mut seen) = seen.lock() {
+                seen.push((query.to_owned(), std::thread::current().id()));
+            }
             found.clone()
         });
-        let mut picker = FilePicker::new("", &root, vec![root.clone()]).with_search(Some(search));
+        let woken = Arc::new(CountingWake(std::sync::atomic::AtomicUsize::new(0)));
+        let mut picker = FilePicker::new("", &root, vec![root.clone()])
+            .with_search(Some(search))
+            .with_waker(Some(std::task::Waker::from(woken.clone())));
         picker.set_rect(Rect::new(0.0, 0.0, 900.0, 620.0));
         Widget::set_focus(&mut picker, true);
         picker.focus_control(PickerFocus::List);
@@ -1550,7 +1576,21 @@ fn the_sheet_says_who_asks_and_finds_files_from_the_path_bar_and_search() {
         assert!(picker.outcome().is_none(), "and keeps the dialog");
 
         picker.search_for("gamma");
-        assert_eq!(asked.borrow().as_slice(), ["gamma"]);
+        assert!(picker.looking_up(), "the search runs elsewhere");
+        settle(&mut picker);
+        let asked = asked.lock().map(|asked| asked.clone()).unwrap_or_default();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0, "gamma");
+        assert_ne!(
+            asked[0].1,
+            std::thread::current().id(),
+            "the index is never read on the UI thread"
+        );
+        assert_eq!(
+            woken.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the host is woken when the results are in"
+        );
         assert_eq!(
             picker
                 .entries()
@@ -1598,6 +1638,8 @@ fn the_sheet_says_who_asks_and_finds_files_from_the_path_bar_and_search() {
             .perform_semantic(Some(&state), semantic::PickerOperation::Recent)
             .expect("recent");
         assert_eq!(seen["listing"], "recent");
+        assert_eq!(seen["looking_up"], true, "an agent inspects again");
+        settle(&mut recent);
         assert_eq!(names(&recent), ["gamma.txt"]);
     }
 
