@@ -4695,6 +4695,35 @@ mod tests {
         assert!(timeline.selection.is_none(), "opening is not selecting");
     }
 
+    /// A band says what the app says it amounts to, in place of how many
+    /// characters moved.
+    #[test]
+    fn a_presenter_says_what_a_band_amounts_to() {
+        struct Counting;
+        impl HistoryEntryPresenter for Counting {
+            fn face(&self, _: &HistoryEntry) -> Option<EntryFace> {
+                None
+            }
+            fn group_summary(&self, entries: &[HistoryEntry]) -> Option<String> {
+                Some(format!("{} calculations", entries.len()))
+            }
+        }
+        let entries: Vec<HistoryEntry> = (1..=3)
+            .map(|id| entry(EntryKind::Text, "Alice", u64::from(id), id))
+            .collect();
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
+        let band = |timeline: &ActivityTimeline| {
+            (0..timeline.row_count())
+                .find_map(|row| timeline.group_subtitle_at_row(row))
+                .expect("the changes form a band")
+        };
+        assert!(band(&timeline).contains("chars"), "{}", band(&timeline));
+        timeline.set_entry_presenter(Some(Rc::new(Counting)));
+        let said = band(&timeline);
+        assert!(said.contains("3 calculations"), "{said}");
+        assert!(!said.contains("chars"), "{said}");
+    }
+
     #[test]
     fn a_genesis_row_names_no_author_and_no_time() {
         use crate::a11y::Role;

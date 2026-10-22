@@ -533,6 +533,29 @@ mod tests {
         );
     }
 
+    /// A band reads as the functions and calculations in it, and any other
+    /// changes beside them; a band of neither keeps the default.
+    #[test]
+    fn a_band_counts_its_functions_and_calculations() {
+        let calculation = || {
+            entry(
+                verb("commit-history", &[("expr", "1+2"), ("result", "3")]),
+                None,
+            )
+        };
+        let curve = entry(verb("add-function", &[("formula", "x")]), None);
+        let other = entry(verb("clear-history", &[]), None);
+        let entries = [calculation(), calculation(), curve, other];
+        assert_eq!(
+            CalculatorEntries::default()
+                .group_summary(&entries)
+                .as_deref(),
+            Some("1 function, 2 calculations, 1 other change")
+        );
+        let none = [entry(verb("clear-history", &[]), None)];
+        assert_eq!(CalculatorEntries::default().group_summary(&none), None);
+    }
+
     /// Removing, clearing and hiding read as their sentences.
     #[test]
     fn other_changes_read_as_their_sentence() {
