@@ -34,6 +34,9 @@ mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
 mod native_replay_budget_tests;
+mod own_devices;
+#[cfg(test)]
+mod own_devices_tests;
 #[cfg(test)]
 mod paired_continuity_tests;
 mod peer_sync_worker;
@@ -803,8 +806,6 @@ fn home_peers_from_registrations(
 struct HomePeerInputs {
     /// Rooms an enrollment delivered (`personal-rooms.json`).
     enrolled_rooms: Vec<RoomId>,
-    /// Enrolled device keys, this device included.
-    direct_devices: Vec<[u8; 32]>,
     registrations: Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String>,
 }
 
@@ -815,7 +816,6 @@ impl HomePeerInputs {
         let peers = personal_device_peer_path();
         Self {
             enrolled_rooms: personal_room_ids(&peers.with_file_name("personal-rooms.json")),
-            direct_devices: read_personal_device_peers(&peers),
             registrations: read_home_peer_registry(),
         }
     }
@@ -1496,7 +1496,11 @@ pub struct ShellNetwork {
     /// it, re-validated at most once per recheck interval instead of read per
     /// outgoing message. `registered_home_device_ids` may be locked while
     /// holding this, never the reverse.
-    personal_device_peers: Mutex<personal_device_peers::PersonalDevicePeers>,
+    personal_device_peers: Arc<Mutex<personal_device_peers::PersonalDevicePeers>>,
+    /// Where this person's fleet is kept: the devices of theirs met here and
+    /// the revocations learned are written to it. `None` keeps them for this
+    /// session only.
+    own_device_fleet: Option<crate::device_fleet::DeviceFleetStore>,
     /// Last bounded scan of the enrollment registry. A paired home peer may
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
@@ -2138,6 +2142,10 @@ impl ShellNetwork {
         } else {
             None
         };
+        let personal_device_peers = Arc::new(Mutex::new(
+            personal_device_peers::PersonalDevicePeers::default(),
+        ));
+        let own_device_fleet = crate::device_fleet::DeviceFleetStore::from_env().ok();
         tracing::info!(
             local_peer_id = %local_peer_id,
             addr = ?endpoint.addr(),
@@ -2310,7 +2318,8 @@ impl ShellNetwork {
             dialed_direct_peers: Mutex::new(dialed_direct_peers),
             live_room_peers: Mutex::new(std::collections::HashSet::new()),
             registered_home_device_ids: Mutex::new(home_device_ids),
-            personal_device_peers: Mutex::default(),
+            personal_device_peers,
+            own_device_fleet,
             last_home_peer_refresh: Mutex::new(None),
             session_reach_checked: Mutex::new(None),
             home_peer_reader: home_peer_reader::HomePeerReader::spawn(
@@ -4643,10 +4652,10 @@ impl ShellNetwork {
         // such a room never arrives.
         self.adopt_enrolled_rooms(&inputs.enrolled_rooms);
         let mut changed = self.join_room_topics();
-        // Direct peers are how a setup machine reaches the device it
-        // enrolled, with or without a relay. A missing or malformed relay
-        // registry must not skip them.
-        changed |= self.dial_direct_peers(&inputs.direct_devices);
+        // Direct peers are how the person's devices reach each other, with
+        // or without a relay. A missing or malformed relay registry must not
+        // skip them.
+        changed |= self.dial_direct_peers();
         let mut relay_workspace_ids = self
             .replica
             .lock()
@@ -4750,9 +4759,9 @@ impl ShellNetwork {
         queued
     }
 
-    /// Dial enrolled devices this session has not reached yet.
-    fn dial_direct_peers(&self, enrolled: &[[u8; 32]]) -> bool {
-        let direct = enrolled_endpoints(enrolled, Some(*self.local_peer_id.as_bytes()));
+    /// Dial the person's own devices this session has not reached yet.
+    fn dial_direct_peers(&self) -> bool {
+        let direct = self.enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()));
         let Ok(connected) = self.dialed_direct_peers.lock() else {
             return false;
         };
@@ -6596,44 +6605,21 @@ impl ShellNetwork {
             return Arc::new(local.cloned().into_iter().collect());
         };
         peers.recipients_at(
-            personal_device_peer_path,
+            || self.own_device_sources(),
             std::time::Instant::now(),
             local,
             build,
         )
     }
 
-    /// Enrolled personal-device endpoints other than `local_device`, from the
-    /// bounded-staleness cache of the enrolment file.
+    /// The person's own device endpoints other than `local_device`, from the
+    /// bounded-staleness cache of the enrolment file and the fleet.
     fn enrolled_personal_devices(&self, local_device: Option<[u8; 32]>) -> Vec<iroh::EndpointAddr> {
         let devices = self.personal_device_peers.lock().map_or_else(
             |_| Arc::from([]),
-            |mut peers| peers.devices_at(personal_device_peer_path, std::time::Instant::now()),
+            |mut peers| peers.devices_at(|| self.own_device_sources(), std::time::Instant::now()),
         );
         enrolled_endpoints(&devices, local_device)
-    }
-
-    /// Re-validate the enrolment file on the next query, as a due recheck
-    /// would: for tests that rewrite it mid-session.
-    #[cfg(test)]
-    fn recheck_personal_device_peers(&self) {
-        if let Ok(mut peers) = self.personal_device_peers.lock() {
-            peers.expire();
-        }
-    }
-
-    /// Change the registered home-device ids, and drop the recipient set
-    /// derived from them.
-    fn update_registered_home_device_ids(
-        &self,
-        update: impl FnOnce(&mut std::collections::HashSet<[u8; 32]>),
-    ) {
-        if let Ok(mut devices) = self.registered_home_device_ids.lock() {
-            update(&mut devices);
-        }
-        if let Ok(mut peers) = self.personal_device_peers.lock() {
-            peers.invalidate_recipients();
-        }
     }
 
     fn local_device_fabric_checkpoint(&self) -> Option<Vec<u8>> {
@@ -8559,6 +8545,7 @@ impl ShellNetwork {
         self.peer_identities
             .set_revocations(cert.user_public_key, &list);
         self.peer_identities.add_successions(successions);
+        self.learn_own_revocations(&list);
         let was_known = self.peer_identities.get(origin).is_some();
         if self
             .peer_identities
@@ -8581,6 +8568,7 @@ impl ShellNetwork {
             user = %hex::encode(cert.user_public_key),
             "accepted collaboration device identity"
         );
+        self.keep_own_device(cert);
         if let Some(room) = self.replica.lock().ok().and_then(|replica| {
             replica
                 .tree
@@ -8996,7 +8984,8 @@ pub(crate) fn shell_network_for_test(
         dialed_direct_peers: Mutex::new(std::collections::HashSet::new()),
         live_room_peers: Mutex::new(std::collections::HashSet::new()),
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
-        personal_device_peers: Mutex::default(),
+        personal_device_peers: Arc::default(),
+        own_device_fleet: None,
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
         home_peer_reader: home_peer_reader::HomePeerReader::spawn(

@@ -467,15 +467,6 @@ fn fleet_revokes_device(
         .is_revoked(&device))
 }
 
-/// Whether a certificate names one of this person's own devices: one that
-/// holds their workspaces, as opposed to an always-on host (recorded as a home
-/// peer instead), an administering machine, or someone else's device.
-fn certifies_personal_device(cert: &DeviceCert) -> bool {
-    cert.capabilities.can_own_workspaces
-        && !cert.capabilities.can_act_as_host
-        && !cert.capabilities.foreign
-}
-
 /// The devices a joining device records as its personal peers: itself, and
 /// every personal device the approver's fleet certifies under this identity's
 /// root, valid now and not revoked. A device the fleet merely names, without
@@ -510,7 +501,7 @@ fn certified_personal_devices(
     let mut devices = vec![this_device];
     for cert in &fleet.certificates {
         if cert.user_public_key == user
-            && certifies_personal_device(cert)
+            && cert.capabilities.is_personal_device()
             && verify_device_cert_at(cert, now_ns).is_ok()
             && !revocations.is_revoked(&cert.device_public_key)
             && !devices.contains(&cert.device_public_key)
