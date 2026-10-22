@@ -91,6 +91,7 @@ store-runtime-install = Laufzeit installieren
 store-runtime-reference = Benötigte Laufzeit
 store-runtime-installed = { $name } { $version } wurde installiert. Öffne die App erneut, um sie zu verwenden.
 store-runtime-reviewed = { $name } wurde geprüft. Die Installation erfolgt in einem eigenen Schritt.
+store-identity-needed-to-sign = Wähle, wer du in diesem Arbeitsbereich bist, und sende es dann erneut.
 store-runtime-changed = Das geprüfte Laufzeitpaket hat sich geändert. Prüfe es erneut.
 store-runtime-service-unavailable = Der App-Dienst ist nicht verfügbar. Es wurde keine Laufzeitoperation versucht.
 store-runtime-offer-mismatch = Das signierte Laufzeitangebot entspricht nicht der angeforderten Identität.

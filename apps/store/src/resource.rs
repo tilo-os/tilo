@@ -503,6 +503,10 @@ impl ResourceApp for StoreShell {
     ];
     /// A `.flatpakref` to show, or a `tilo-store:app/<id>` link.
     const ARGUMENTS: usize = 1;
+    /// Browsing is anonymous: an app's page, the catalogue and installing
+    /// need nobody's identity. Only what is signed as the person working in
+    /// the workspace (a report, an appeal) asks who that is, when it is done.
+    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&STORE_CATALOG)
