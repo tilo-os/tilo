@@ -162,9 +162,6 @@ fn is_web(url: &str) -> bool {
     lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("//")
 }
 
-// USER REQUIREMENT (2026-10-22): "Safety (non-negotiable, the security
-// boundary): no scripts, no forms submitting, no plugins, no navigation
-// inside the pane."
 #[test]
 fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
     let html = html(HOSTILE);
@@ -245,8 +242,6 @@ fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
     }
 }
 
-// USER REQUIREMENT (2026-10-22): "Remote content: off by default, one clear
-// \"Load images\" control per message, plus \"always for this sender\"."
 #[test]
 fn nothing_remote_is_fetched_before_the_person_allows_it() {
     for raw in [NEWSLETTER, GITHUB, RECEIPT, DARK, INLINE, HOSTILE] {
@@ -395,7 +390,6 @@ fn markup_cannot_escape_the_text_or_attribute_it_is_written_in() {
     }
 }
 
-// USER REQUIREMENT (2026-10-22): "Inline images: cid: and data: always load."
 #[test]
 fn inline_parts_and_data_images_always_show() {
     let message = message(INLINE);
@@ -510,9 +504,6 @@ fn a_held_back_image_is_an_empty_box_at_its_declared_size() {
     assert!(!allowed.document.contains("background-color:"));
 }
 
-// USER REQUIREMENT (2026-10-22): "Dark mode: respect a mail's own
-// color-scheme and dark media queries; otherwise keep the mail's colours on a
-// light sheet, never inverted."
 #[test]
 fn a_mail_is_dark_only_when_it_says_it_can_be() {
     let dark = html(DARK);
@@ -551,9 +542,6 @@ fn a_mail_is_dark_only_when_it_says_it_can_be() {
     }
 }
 
-// USER REQUIREMENT (2026-10-22): "Fallbacks: multipart/alternative prefers
-// HTML and keeps text available; plain text renders as nicely set text with
-// links detected."
 #[test]
 fn multipart_alternative_prefers_html_and_keeps_its_text() {
     let newsletter = message(NEWSLETTER);
