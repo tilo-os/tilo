@@ -41,6 +41,7 @@ const EMU: f64 = 9_525.0;
 ///
 /// Returns an error if the ZIP writer fails.
 pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8>> {
+    let shown = crate::render::shown_text_heights(deck);
     let mut pictures = Vec::<Picture>::new();
     for slide in &deck.slides {
         for el in &slide.elements {
@@ -99,7 +100,7 @@ pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8
             .collect();
         put(
             &format!("ppt/slides/slide{}.xml", idx + 1),
-            &slide_xml(slide, &used),
+            &slide_xml(slide, &used, &shown),
         )?;
         put(
             &format!("ppt/slides/_rels/slide{}.xml.rels", idx + 1),
@@ -322,7 +323,10 @@ fn set_pending_color(c: &mut Pending, target: ColorTarget, e: &BytesStart<'_>) {
     }
 }
 
-fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
+/// One slide's part. `shown` holds each text box's height as Slides shows
+/// it ([`crate::render::shown_text_heights`]): its frame here, with the box
+/// marked to fit its text, so a box its words outgrew is not cut short.
+fn slide_xml(slide: &Slide, pictures: &[&Picture], shown: &HashMap<String, f64>) -> String {
     let mut s = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld>"#,
     );
@@ -339,6 +343,7 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                 }
             }
             ElementKind::Text => {
+                let h = emu(shown.get(&el.id).copied().unwrap_or(el.h));
                 let align = match el.align {
                     TextAlign::Center => "ctr",
                     TextAlign::Right => "r",
@@ -371,7 +376,7 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                         format!(r#"<a:p><a:pPr algn="{align}"/>{body}</a:p>"#)
                     })
                     .collect::<String>();
-                s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
+                s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr><a:spAutoFit/></a:bodyPr><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
             }
             kind => {
                 let prst = match kind {

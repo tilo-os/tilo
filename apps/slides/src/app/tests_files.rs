@@ -420,3 +420,85 @@ fn the_slide_shown_stays_shown_when_a_collaborator_inserts_before_it() {
         assert_eq!(app.cur_slide, 3);
     });
 }
+
+/// The text of `part` in the zip package at `path`.
+fn package_part(path: &std::path::Path, part: &str) -> String {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let mut text = String::new();
+    archive
+        .by_name(part)
+        .unwrap()
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
+
+/// A text box whose words outgrew it is written as tall as the canvas shows
+/// it, marked to fit its text; the box's own height stays its least.
+#[test]
+fn a_saved_box_is_as_tall_as_its_words_show_it() {
+    let mut slide = Slide::new(Layout::Blank);
+    let id = slide.add(Element::text(
+        "Words enough to wrap onto several lines in a narrow box",
+        100.0,
+        100.0,
+        300.0,
+        60.0,
+        40.0,
+    ));
+    let mut bench = Bench::one_slide(slide);
+    bench.frame();
+    let shown = render::text_height(&id).expect("the box was drawn");
+    assert!(shown > 120.0, "the words outgrow the box: {shown}");
+    let directory = tempfile::tempdir().unwrap();
+
+    let pptx = directory.path().join("grown.pptx");
+    bench
+        .app
+        .effect(&SlidesEffect::SaveAs {
+            path: Some(pptx.to_string_lossy().into_owned()),
+        })
+        .expect("save-as is answered");
+    let written =
+        crate::pptx::read_pptx(&std::fs::read(&pptx).unwrap(), &ContentStore::memory()).unwrap();
+    let h = written.slides[0].elements[0].h;
+    assert!(
+        (h - shown).abs() < 1.0,
+        "PowerPoint gets the shown height {shown}, not the stored 60: {h}"
+    );
+    assert!(package_part(&pptx, "ppt/slides/slide1.xml").contains("<a:spAutoFit/>"));
+
+    let odp = directory.path().join("grown.odp");
+    bench
+        .app
+        .effect(&SlidesEffect::SaveAs {
+            path: Some(odp.to_string_lossy().into_owned()),
+        })
+        .expect("save-as is answered");
+    let content = package_part(&odp, "content.xml");
+    let (_, frame) = content.split_once("<draw:frame").unwrap();
+    let height = frame
+        .split("svg:height=\"")
+        .nth(1)
+        .and_then(|rest| rest.split("cm\"").next())
+        .and_then(|cm| cm.parse::<f64>().ok())
+        .unwrap();
+    // The page is 25.4 cm wide.
+    let per_unit = 25.4 / SLIDE_W;
+    assert!(
+        (height / per_unit - shown).abs() < 1.0,
+        "other apps get the shown height {shown}: {}",
+        height / per_unit
+    );
+    assert!(
+        frame.contains("fo:min-height="),
+        "the box grows from its own height"
+    );
+    let read =
+        crate::odp::read_odp(&std::fs::read(&odp).unwrap(), &ContentStore::memory()).unwrap();
+    assert!(
+        (read.slides[0].elements[0].h - 60.0).abs() < 1e-9,
+        "Slides reads its own height back"
+    );
+}

@@ -419,6 +419,31 @@ pub fn text_height(id: &str) -> Option<f64> {
     TEXT_VIEWS.with(|views| views.borrow().get(id).map(|laid| laid.height))
 }
 
+/// How tall text box `e` shows, in slide units: its own height, or its
+/// words' where they outgrow it, set as the canvas sets them.
+pub fn shown_text_height(e: &Element, tr: &mut ui::text_render::TextRenderer) -> f64 {
+    let reader_scale = tr.text_scale();
+    tr.set_text_scale(1.0);
+    let mut view = RichTextView::with_editor(text_box_editor(e));
+    view.show(&e.rich_blocks());
+    let words = view.layout(text_box_rect(e), &ui::theme::Theme::dark(), tr);
+    tr.set_text_scale(reader_scale);
+    e.h.max(words)
+}
+
+/// Every text box's shown height ([`shown_text_height`]) across `deck`, by
+/// element id: the frame a file written from the deck gives each box, so
+/// another app shows the box as tall as Slides does.
+pub fn shown_text_heights(deck: &crate::model::Deck) -> HashMap<String, f64> {
+    let mut tr = ui::text_render::TextRenderer::new();
+    deck.slides
+        .iter()
+        .flat_map(|slide| &slide.elements)
+        .filter(|e| e.kind == ElementKind::Text)
+        .map(|e| (e.id.clone(), shown_text_height(e, &mut tr)))
+        .collect()
+}
+
 /// The most text boxes whose layout is kept between frames.
 const KEPT_TEXT_VIEWS: usize = 4_096;
 

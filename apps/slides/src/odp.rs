@@ -71,7 +71,8 @@ pub fn write_odp(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8>
         .iter()
         .map(|picture| (picture.source.as_str(), picture.href.as_str()))
         .collect();
-    let content = content_xml(deck, &picture_hrefs);
+    let shown = crate::render::shown_text_heights(deck);
+    let content = content_xml(deck, &picture_hrefs, &shown);
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     // The `mimetype` entry must be first and stored uncompressed per the ODF
     // packaging spec, so a reader can sniff the type from the archive header.
@@ -101,7 +102,14 @@ fn cm(units: f64, per_unit: f64) -> String {
     format!("{:.4}cm", units * per_unit)
 }
 
-fn content_xml(deck: &Deck, picture_hrefs: &HashMap<&str, &str>) -> String {
+/// The document's content. `shown` holds each text box's height as Slides
+/// shows it ([`crate::render::shown_text_heights`]): its frame here, its own
+/// height the text box's least, so a box its words outgrew is not cut short.
+fn content_xml(
+    deck: &Deck,
+    picture_hrefs: &HashMap<&str, &str>,
+    shown: &HashMap<String, f64>,
+) -> String {
     let sx = PAGE_W_CM / SLIDE_W;
     let sy = PAGE_H_CM / SLIDE_H;
     let mut s = String::new();
@@ -130,7 +138,7 @@ fn content_xml(deck: &Deck, picture_hrefs: &HashMap<&str, &str>) -> String {
         push_attr(&mut s, "qslides:notes", &slide.notes);
         s.push('>');
         for el in slide.z_sorted() {
-            push_element(&mut s, el, sx, sy, picture_hrefs);
+            push_element(&mut s, el, (sx, sy), picture_hrefs, shown);
         }
         s.push_str("</draw:page>");
     }
@@ -166,14 +174,14 @@ fn push_model_attrs(s: &mut String, el: &Element, exported_src: Option<&str>) {
 fn push_element(
     s: &mut String,
     el: &Element,
-    sx: f64,
-    sy: f64,
+    (sx, sy): (f64, f64),
     picture_hrefs: &HashMap<&str, &str>,
+    shown: &HashMap<String, f64>,
 ) {
     let gx = cm(el.x, sx);
     let gy = cm(el.y, sy);
     let gw = cm(el.w, sx);
-    let gh = cm(el.h, sy);
+    let gh = cm(shown.get(&el.id).copied().unwrap_or(el.h), sy);
     match el.kind {
         ElementKind::Text | ElementKind::Image => {
             s.push_str("<draw:frame");
@@ -190,7 +198,9 @@ fn push_element(
                 s.push_str(&quick_xml::escape::escape(exported_src.unwrap_or(&el.src)));
                 s.push_str("\" xlink:type=\"simple\"/>");
             } else {
-                s.push_str("<draw:text-box>");
+                s.push_str("<draw:text-box fo:min-height=\"");
+                s.push_str(&cm(el.h, sy));
+                s.push_str("\">");
                 // One `text:p` per explicit line so multi-line bodies survive
                 // (attribute-value normalisation would fold newlines to spaces,
                 // so text can't ride in a `qslides:` attribute).
