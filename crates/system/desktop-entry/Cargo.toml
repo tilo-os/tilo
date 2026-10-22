@@ -19,6 +19,8 @@ blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The scan is kept current by a worker watching the application directories.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
 thiserror = { workspace = true }
 url.workspace = true
 tilo-paths.workspace = true

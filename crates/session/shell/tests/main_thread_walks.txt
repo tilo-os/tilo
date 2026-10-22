@@ -19,7 +19,6 @@ app_state::acquire_gate
 app_state::fs_store::open_owner
 app_state::open_directory
 app_state::same_file
-desktop_entry::cache::fingerprint::{closure}
 file_explorer::templates::list_templates
 package_store::interfaces::read_interfaces
 runtime_identity::unix::list_identities_unlocked

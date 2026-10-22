@@ -17450,6 +17450,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-files",
  "tilo-lock",
  "tilo-paths",
  "tilo-test-env",
