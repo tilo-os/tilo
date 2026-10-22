@@ -1,11 +1,13 @@
 """The wrapper of t's check and clippy families (tools/ci/t_cargo_compile.py)."""
 from pathlib import Path
 import sys
+import tempfile
 import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import package_features  # noqa: E402
 import package_sets  # noqa: E402
 import t_cargo_compile  # noqa: E402
 
@@ -45,6 +47,53 @@ class WasmPassTests(unittest.TestCase):
         flags += [arg for feature in peer.get("features", []) for arg in ("--features", feature)]
         self.assertEqual(list(package_sets.WASM_ALSO["tilo-browser-peer"]), flags)
 
+    def test_clippy_lints_a_package_with_the_features_its_tests_are_verified_with(self):
+        argv = ["cargo", "clippy", *FORMAT, "-p", "shell", "-p", "tilo-media",
+                "--locked", "--all-targets", "--", "-D", "warnings"]
+        features = package_features.arguments(["tilo-media"])
+        self.assertTrue(features)
+        self.assertEqual(t_cargo_compile.with_test_features(argv),
+                         [*argv[:-3], *features, "--", "-D", "warnings"])
+        self.assertEqual(t_cargo_compile.with_test_features(["cargo", "clippy", "-p", "shell"]),
+                         ["cargo", "clippy", "-p", "shell"])
+
+    def test_the_workspace_form_lints_every_package_s_test_features_and_default_builds(self):
+        argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
+        features = package_features.arguments(list(package_features.NATIVE_TEST_FEATURES))
+        self.assertEqual(t_cargo_compile.with_test_features(argv),
+                         [*argv[:-3], *features, "--", "-D", "warnings"])
+        self.assertEqual(t_cargo_compile.default_build_passes(argv), [
+            ["cargo", "clippy", "--locked", "--all-targets", "-p", name, "--", "-D", "warnings"]
+            for name in sorted(package_features.DEFAULT_BUILDS_ALSO_CHECKED)])
+
+    def test_a_package_tested_with_features_it_does_not_ship_is_also_linted_as_it_ships(self):
+        argv = ["cargo", "clippy", *FORMAT, "-p", "imager", "-p", "shell",
+                "--locked", "--all-targets", "--", "-D", "warnings"]
+        self.assertIn("imager", package_features.DEFAULT_BUILDS_ALSO_CHECKED)
+        self.assertEqual(t_cargo_compile.default_build_passes(argv), [
+            ["cargo", "clippy", *FORMAT, "--locked", "--all-targets", "-p", "imager", "--", "-D", "warnings"],
+        ])
+
+    def test_check_gets_neither_test_features_nor_default_build_passes(self):
+        argv = ["cargo", "check", *FORMAT, "-p", "imager", "-p", "tilo-media", "--locked", "--all-targets"]
+        self.assertEqual(t_cargo_compile.with_test_features(argv), argv)
+        self.assertEqual(t_cargo_compile.default_build_passes(argv), [])
+
+    def test_the_default_build_pass_passes_on_all_but_its_artifacts(self):
+        artifact = '{"reason":"compiler-artifact","target":{"name":"imager"}}'
+        error = '{"reason":"compiler-message","message":{"level":"error"}}'
+        script = f"print({artifact!r}); print({error!r}); print('plain'); raise SystemExit(101)"
+        with tempfile.TemporaryFile("w+") as out:
+            saved = sys.stdout
+            sys.stdout = out
+            try:
+                code = t_cargo_compile.without_artifacts([sys.executable, "-c", script])
+            finally:
+                sys.stdout = saved
+            out.seek(0)
+            self.assertEqual(out.read().splitlines(), [error, "plain"])
+        self.assertEqual(code, 101)
+
     def test_the_check_and_clippy_families_run_under_it(self):
         config = tomllib.loads((ROOT / "t.toml").read_text())
         families = {family["name"]: family for family in config["cargo"]}
@@ -53,6 +102,7 @@ class WasmPassTests(unittest.TestCase):
                 self.assertEqual(families[name]["wrapper"], ["python3", "tools/ci/t_cargo_compile.py"])
                 self.assertIn("tools/ci/t_cargo_compile.py", families[name]["inputs"])
                 self.assertIn("tools/ci/package_sets.py", families[name]["inputs"])
+                self.assertIn("tools/ci/package_features.py", families[name]["inputs"])
 
 
 if __name__ == "__main__":

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """The wrapper of t's `check` and `clippy` families (t.toml): runs the cargo
 command t hands it, and first builds the browser crates among its packages for
-wasm32-unknown-unknown as the web build does.
+wasm32-unknown-unknown as the web build does. A clippy run also lints each
+package with the features its own tests are verified with, and the default
+build of those whose tested features are not what they ship.
 
   t_cargo_compile.py cargo check|clippy [OPTIONS] -p NAME ... [-- TRAILING]
+  t_cargo_compile.py cargo clippy [OPTIONS] --workspace [-- TRAILING]
 
 Code under `cfg(target_arch = "wasm32")` compiles only for that target, so a
 native check of a browser crate passed while the wasm build broke. For each
@@ -12,6 +15,14 @@ command for wasm32 on the package's library (its tests are native) with the
 features the page runtime gives it, then the native command unchanged. The
 wasm pass goes first: t answers a package's check as soon as its native units
 have compiled. Any other command passes through unchanged.
+
+Clippy gets tools/ci/package_features.py's selection: the native command adds
+each named package's NATIVE_TEST_FEATURES (all of them for `--workspace`), so
+code behind those features is linted at all, and each DEFAULT_BUILDS_ALSO_CHECKED
+package named is linted once more as it ships, before the native command. That
+pass's errors fail the package as any other's; its artifacts are not passed on,
+since t answers a package as passed once each of its units has an artifact, and
+the default build's would answer it before the tested build ran.
 """
 from __future__ import annotations
 
@@ -21,6 +32,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import package_features  # noqa: E402
 import package_sets  # noqa: E402
 
 TARGET = "wasm32-unknown-unknown"
@@ -77,6 +89,57 @@ def wasm_passes(argv: list[str], wasm: set[str]) -> list[list[str]]:
     ]
 
 
+def is_clippy(argv: list[str]) -> bool:
+    return len(argv) >= 2 and argv[0] == "cargo" and argv[1] == "clippy"
+
+
+def linted(argv: list[str]) -> tuple[list[str], bool]:
+    """The packages a clippy command names, and whether it names the whole workspace."""
+    packages, options, _ = split(argv[2:])
+    return packages, "--workspace" in options
+
+
+def with_test_features(argv: list[str]) -> list[str]:
+    """The clippy command `argv` with the features its packages' own tests are verified with."""
+    if not is_clippy(argv):
+        return argv
+    packages, workspace = linted(argv)
+    features = package_features.arguments(list(package_features.NATIVE_TEST_FEATURES) if workspace else packages)
+    if not features:
+        return argv
+    end = argv.index("--") if "--" in argv else len(argv)
+    return [*argv[:end], *features, *argv[end:]]
+
+
+def default_build_passes(argv: list[str]) -> list[list[str]]:
+    """The clippy commands over the default build of each package `argv` names whose tested
+    features are not the build it ships."""
+    if not is_clippy(argv):
+        return []
+    packages, workspace = linted(argv)
+    _, options, trailing = split(argv[2:])
+    options = [arg for arg in options if arg != "--workspace"]
+    chosen = sorted(package_features.DEFAULT_BUILDS_ALSO_CHECKED) if workspace else package_features.default_builds(packages)
+    return [[*argv[:2], *options, "-p", name, *(["--", *trailing] if trailing else [])] for name in chosen]
+
+
+def without_artifacts(command: list[str]) -> int:
+    """Run `command`, passing on its output but cargo's artifact messages."""
+    sys.stdout.flush()
+    with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as process:
+        assert process.stdout is not None
+        for line in process.stdout:
+            if line.startswith("{"):
+                try:
+                    if json.loads(line).get("reason") == "compiler-artifact":
+                        continue
+                except json.JSONDecodeError:
+                    pass
+            sys.stdout.write(line)
+    sys.stdout.flush()
+    return process.returncode
+
+
 def wasm_set() -> set[str]:
     metadata = json.loads(subprocess.run(
         ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
@@ -90,7 +153,10 @@ def main(argv: list[str]) -> int:
         return 2
     passes = wasm_passes(argv, wasm_set()) if len(argv) > 1 and argv[1] in COMPILE else []
     # Every pass runs, as `--keep-going` does: one failing still reports the others.
-    codes = [subprocess.run(command, check=False).returncode for command in [*passes, argv]]
+    codes = [subprocess.run(command, check=False).returncode for command in passes]
+    sys.stdout.flush()
+    codes += [without_artifacts(command) for command in default_build_passes(argv)]
+    codes.append(subprocess.run(with_test_features(argv), check=False).returncode)
     return next((code for code in codes if code), 0)
 
 
