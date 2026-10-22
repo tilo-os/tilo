@@ -79,7 +79,7 @@ impl BooksApp {
             }
             "search-in-book" => {
                 self.book_idx = self.book_index(TIDEGLASS);
-                self.query.staged = Some((View::Reader, "amber".into()));
+                self.query.staged = Some((View::Reader, "patience".into()));
             }
             _ => {
                 if !self.stage_settings(scenario) {

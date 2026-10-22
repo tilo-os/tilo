@@ -2249,7 +2249,7 @@ impl BooksApp {
             Action::OpenBook(i) => {
                 self.open_book_at(doc, i);
             }
-            Action::OpenHit(anchor) => self.open_hit(anchor),
+            Action::OpenHit(anchor) => self.open_hit(&anchor),
             Action::GetBook(id) => self.get_from_store(id),
             Action::SetQuery(query) => self.on_set_query(&query),
             Action::OpenFacet(key) => self.open_facet(&key),
@@ -5490,7 +5490,10 @@ impl BooksApp {
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        // Explicit, like `select_passage`: persisted, never re-adopted.
+        // Explicit, like `select_passage`: persisted, never re-adopted. A
+        // book opened here from the shelf must not then take up its stored
+        // position over the place asked for.
+        self.adopt_position = false;
         self.layout = None;
         self.dirty = true;
         Ok(())

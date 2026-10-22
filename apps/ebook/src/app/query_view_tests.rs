@@ -61,7 +61,7 @@ fn a_passage_found_opens_its_book_at_the_passage() {
         "the words around the match: {excerpt}"
     );
 
-    books(&mut app).open_hit(passage);
+    books(&mut app).open_hit(&passage);
     app.settle();
     app.settle();
     let books = books(&mut app);
@@ -71,11 +71,24 @@ fn a_passage_found_opens_its_book_at_the_passage() {
         Some(TIDEGLASS)
     );
     assert_eq!(books.chapter, chapter, "at the passage's chapter");
-    assert_eq!(
-        books.reading_block(),
-        block,
-        "with the passage's paragraph on the page"
-    );
+    // The paragraph is on the page shown, wherever on it; before the
+    // chapter is laid out, the page waits to be turned to it.
+    match books
+        .layout
+        .as_ref()
+        .filter(|layout| layout.key.chapter == chapter)
+    {
+        Some(layout) => assert_eq!(
+            books.page,
+            super::page_for_block(layout, block),
+            "with the passage's paragraph on the page"
+        ),
+        None => assert_eq!(
+            books.pending_jump_block,
+            Some(block),
+            "with the passage's paragraph on the page"
+        ),
+    }
 }
 
 // USER REQUIREMENT (2026-10-21): searching from inside a book searches that

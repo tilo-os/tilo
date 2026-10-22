@@ -185,7 +185,7 @@ impl BookQuery {
     pub(super) fn scroll_by(&mut self, dy: f64) -> bool {
         let before = self.scroll;
         self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll);
-        self.scroll != before
+        (self.scroll - before).abs() > 0.0
     }
 
     /// What the result addressed by `id` is called, for its accessible
@@ -322,8 +322,26 @@ impl BooksApp {
 
     /// Open what a result names: the book, chapter, annotation or passage
     /// it is anchored at, as the platform search opens its hits.
-    pub(super) fn open_hit(&mut self, anchor: String) {
-        self.opens.borrow_mut().push(anchor);
+    ///
+    /// Opening is the person's own gesture, done at once like a click on
+    /// the page; under an invocation, or for a collaborator's book that is
+    /// fetched first and answers once its bytes land, it goes through the
+    /// host like any caller's.
+    pub(super) fn open_hit(&mut self, anchor: &str) {
+        use crate::resource::BooksEffect;
+        let Some(effect) = self.book_search.opened(anchor) else {
+            tracing::debug!(%anchor, "books: a search hit to open is gone");
+            return;
+        };
+        if matches!(effect, BooksEffect::Download { .. }) || !self.dispatch.is_own_gesture(&effect)
+        {
+            self.dispatch.effect(&effect);
+            return;
+        }
+        let entries = self.book_search.registry().to_vec();
+        if let Err(error) = self.begin_effect(tilo_actions::InvocationId::new(), effect, &entries) {
+            tracing::debug!(%anchor, %error, "books: a search hit did not open");
+        }
         self.dirty = true;
     }
 

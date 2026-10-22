@@ -634,6 +634,12 @@ impl BookSearch {
         self.resource_for(entry, id)
     }
 
+    /// The library's entries this projection was built over: every book
+    /// the person or a collaborator has, on this device or not.
+    pub(crate) fn registry(&self) -> &[LibraryEntry] {
+        &self.registry
+    }
+
     /// What opening the hit anchored at `id` runs: the reader opens the
     /// book, chapter, annotation or match there; a collaborator's book not
     /// on this device is fetched first. `None` once the hit is gone.
