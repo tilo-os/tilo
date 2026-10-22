@@ -403,9 +403,7 @@ impl Refresh {
                 ));
                 self.expired.push(registry.name);
             }
-            Err(error) => self
-                .errors
-                .push((0, format!("Could not load {}: {error}", registry.name))),
+            Err(error) => self.errors.push((0, native_error(&registry.name, &error))),
         }
     }
 
@@ -581,6 +579,20 @@ impl Refresh {
         });
         state.details.clear();
         sync_authoritative_catalogue(state);
+    }
+}
+
+/// What the Store says when the repository `name` could not be read.
+///
+/// The app host refuses every repository while the system's interface
+/// declaration cannot be read ([`app_host::SYSTEM_UPDATE_NEEDED`]): then
+/// the system needs an update, and saying so is the way out, where the
+/// transport details would read as an unreachable repository.
+fn native_error(name: &str, error: &str) -> String {
+    if error.contains(app_host::SYSTEM_UPDATE_NEEDED) {
+        ui::i18n!("store-system-update-needed", "name" => name.to_owned())
+    } else {
+        format!("Could not load {name}: {error}")
     }
 }
 
@@ -829,6 +841,50 @@ mod tests {
                 .catalogue_error
                 .as_deref()
                 .is_some_and(|error| error.contains(MAIN))
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-22): "the Tilo app repository stays available
+    // after a component swap"
+    /// When the app host cannot read the system's interface declaration it
+    /// refuses the repository; the Store says the device needs a system
+    /// update, naming the repository, as visibly as an outage and without
+    /// the RPC's internals.
+    #[test]
+    fn a_repository_the_system_is_too_old_to_read_says_the_system_needs_an_update() {
+        crate::resource::STORE_CATALOG.ensure();
+        let (mut state, mut refresh) = refresh_with_bundled_mail();
+        refresh.apply(
+            &mut state,
+            Response::Native(
+                main_registry(),
+                Err(format!(
+                    "Failed: remote exception: {}: /usr/share/tilo/system-interfaces.toml is not a \
+                     system-interface declaration: invalid type: integer `2`, expected a sequence",
+                    app_host::SYSTEM_UPDATE_NEEDED
+                )),
+            ),
+        );
+        refresh.rebuild(&mut state);
+
+        let error = state
+            .catalogue_error
+            .as_deref()
+            .expect("reported, not silent");
+        // The fixture has no host connection, which reports its own line.
+        let says = ui::i18n::I18nManager::format(
+            "store-system-update-needed",
+            &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],
+        );
+        assert!(error.lines().any(|line| line == says), "{error}");
+        assert!(error.contains(MAIN), "{error}");
+        assert!(!error.contains("remote exception"), "{error}");
+        assert!(
+            state
+                .unanswered_repositories
+                .iter()
+                .any(|name| name == MAIN),
+            "the repository is not shown as answered and empty"
         );
     }
 

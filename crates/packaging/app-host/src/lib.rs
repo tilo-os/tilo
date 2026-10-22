@@ -63,6 +63,12 @@ pub use package_store::PackageStore;
 pub use package_store::{Catalog, InstalledPackage, Pinning};
 pub use tilo_app_package::PackageId;
 
+/// How the app host begins its refusal to read a repository when the
+/// system's own interface declaration cannot be read, so the Store can say
+/// that the system needs an update rather than show an unreachable or empty
+/// repository. One definition, used by both sides of the wire.
+pub const SYSTEM_UPDATE_NEEDED: &str = "this system needs an update to read app repositories";
+
 /// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`, or
 /// `None` without a runtime directory. Never the shared temp directory, where
 /// any local user could bind the name first.

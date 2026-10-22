@@ -204,6 +204,7 @@ impl Daemon {
         let preview = self
             .slots
             .userspace_preview(&admitted.record, &admitted.entries)?;
+        self.check_interfaces(&preview)?;
         let candidate_layers = self.system_layers(&admitted.record, self.layer_paths(&preview)?)?;
         // All builds and imports finished. Read actual running selections before
         // any sysext mutation, with the exact candidate catalog and old SDK view.

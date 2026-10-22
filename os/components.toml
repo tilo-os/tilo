@@ -118,7 +118,10 @@ files = [
   # The interface versions this image serves. The shell serves shell-ui and
   # judges apps against this file, so the file it reads must come from the
   # same source: a shell swapped onto an older image otherwise reads a
-  # declaration in another format and judges nothing.
+  # declaration in another format and judges nothing. The shell is its one
+  # owner: the launcher, tilo-install, the app host and the runtime services
+  # read it too, so tilo-vmd refuses a generation in which any of them was
+  # built for another declaration (crates/dev/tilo-vmd/src/interfaces.rs).
   { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" },
   # Source swaps materialize the pinned OS catalog; images already assemble
   # this direct tree with the runtime payload, sharing its font bytes.

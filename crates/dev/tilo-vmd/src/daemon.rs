@@ -1562,6 +1562,7 @@ impl Daemon {
                     .map(|cohort| cohort.ids().collect())
                     .unwrap_or_default();
                 self.check_cohort_users(&record, &from, &to, &reselected)?;
+                self.check_interfaces(&to)?;
                 self.transition(&mut record, &from, &to)?
             }
             None => unchanged(record),
@@ -1604,6 +1605,42 @@ impl Daemon {
         }
         self.check_cohort_users(&record, &from, &to, &BTreeSet::new())?;
         self.transition(&mut record, &from, &to)
+    }
+
+    /// Refuse generation `to` when a component of the matched session set,
+    /// its own layer's or the image's, was built for another system-interface
+    /// declaration than the one `to` leaves the slot reading
+    /// ([`crate::interfaces`]). Checked before anything is activated.
+    ///
+    /// # Errors
+    /// [`DaemonError::InvalidParams`] naming what to swap together; a
+    /// missing layer.
+    pub(crate) fn check_interfaces(&self, to: &Generation) -> Result<(), DaemonError> {
+        let mut members = Vec::new();
+        for (component, entry) in &to.components {
+            let path = self.layers.require(&entry.layer)?;
+            let declaration = path.join(
+                tilo_vm_protocol::SYSTEM_INTERFACES
+                    .strip_prefix('/')
+                    .unwrap_or(tilo_vm_protocol::SYSTEM_INTERFACES),
+            );
+            members.push(crate::interfaces::Member {
+                component: component.clone(),
+                layer: entry.layer.clone(),
+                provenance: self.layers.provenance(&entry.layer),
+                ships: declaration
+                    .exists()
+                    .then(|| tilo_vm_protocol::Declaration::read(&declaration)),
+            });
+        }
+        let image = image::recorded_declaration(&self.root);
+        match crate::interfaces::conflict(image.as_ref(), &members) {
+            None => Ok(()),
+            Some(conflict) => Err(DaemonError::InvalidParams(format!(
+                "generation {} is not activated: {conflict}",
+                to.number
+            ))),
+        }
     }
 
     /// Refuse a transition that takes away a native toolkit the slot user's
@@ -2478,6 +2515,80 @@ mod tests {
             .handle(Request::SlotList(tilo_vm_protocol::SlotList {}))
             .unwrap();
         assert_eq!(fs::read(daemon.lease_path()).unwrap(), held);
+    }
+
+    // USER REQUIREMENT (2026-10-22): "the Tilo app repository stays available
+    // after a component swap"
+    /// The laptop on 2026-10-22: a shell layer from main ships its
+    /// one-version-per-interface declaration over an image whose app host
+    /// reads lists of versions. The swap is refused before anything is
+    /// activated, naming the image's components to swap with it; the desktop
+    /// keeps running on the generation it had.
+    #[test]
+    fn a_swap_that_leaves_the_app_host_unable_to_read_the_declaration_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::with_login("quickuser")),
+            None,
+            BaseInfo::default(),
+        );
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
+        daemon.slots.save(&device).unwrap();
+        let before = device.current;
+        fs::write(
+            root.path().join("image.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "image": "composefs:1c9ab8",
+                "recorded_at": "2026-10-19T19:32:21Z",
+                "interfaces": tilo_vm_protocol::Declaration::parse(
+                    "[interfaces]\nsystem = [1]\napp-host = [1]\nshell-ui = [1]\n"
+                ),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let hash = "ca".repeat(32);
+        let layer = root.path().join("layers").join(&hash);
+        fs::create_dir_all(layer.join("usr/share/tilo")).unwrap();
+        let declaration = "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n";
+        fs::write(
+            layer.join("usr/share/tilo/system-interfaces.toml"),
+            declaration,
+        )
+        .unwrap();
+        let mut provenance = Provenance::local("shell");
+        provenance.interfaces = tilo_vm_protocol::system_interfaces(declaration);
+        fs::write(
+            layer.join("provenance.json"),
+            serde_json::to_vec(&provenance).unwrap(),
+        )
+        .unwrap();
+
+        let refused = daemon
+            .handle(Request::Swap(tilo_vm_protocol::Swap {
+                slot: DEVICE_SLOT.into(),
+                component: "shell".into(),
+                layer: hash,
+                info: Some(ComponentInfo::new(Scope::Session, Vec::new())),
+            }))
+            .unwrap_err()
+            .to_string();
+
+        assert!(refused.contains("app-host"), "{refused}");
+        assert!(refused.contains("ush"), "{refused}");
+        assert!(refused.contains("tilo-vm swap userspace"), "{refused}");
+        assert_eq!(
+            daemon.load_slot(DEVICE_SLOT).unwrap().current,
+            before,
+            "the device keeps the generation it ran"
+        );
     }
 
     #[test]

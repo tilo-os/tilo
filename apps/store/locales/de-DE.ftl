@@ -86,6 +86,7 @@ store-operation-failed = Der Vorgang konnte nicht abgeschlossen werden
 store-error-refresh = Apps aktualisieren
 store-repository-timeout = { $name } hat nicht geantwortet. Andere Apps bleiben verfügbar. Aktualisiere die Apps, um es erneut zu versuchen.
 store-repository-expired = Der App-Katalog von { $name } ist abgelaufen. Deine Apps funktionieren weiter.
+store-system-update-needed = Dieses Gerät braucht ein Systemupdate, bevor es { $name } lesen kann. Die Apps auf dem Gerät funktionieren weiter.
 store-build-version = Vollständige Build-Version
 
 store-runtime-install = Laufzeit installieren

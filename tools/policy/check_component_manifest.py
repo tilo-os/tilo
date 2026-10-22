@@ -214,6 +214,12 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
                              'to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" } to shell files; '
                              'a shell swapped onto an older image otherwise reads a declaration '
                              'in another format and judges no app.')
+        elif any(entry.to == "/usr/share/tilo/system-interfaces.toml" for entry in component.files):
+            report.error(where, f"component {component.name!r} ships the system-interface declaration, "
+                         "which the shell owns",
+                         "remove the entry: two layers shipping /usr/share/tilo/system-interfaces.toml "
+                         "leave which one a slot reads to their stacking order, and tilo-vmd refuses "
+                         "such a generation.")
         if component.scenario and not (report.repo / component.scenario).is_file():
             report.error(where, f"boot component {component.name!r} names scenario {component.scenario!r}, "
                          "which does not exist",
