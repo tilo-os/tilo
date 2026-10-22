@@ -129,7 +129,8 @@ impl ShellOverlayHost {
     /// screen, one of a file's other actions, a "Show all" row, or a search
     /// result through its provider callback. With `modifier` held a row that
     /// opens a window opens as a tab here (Shift), beside the focused window
-    /// (Ctrl), or lists its other actions (Alt).
+    /// (Ctrl), or lists its other actions (Alt); Shift on a window opens a
+    /// new window of its app, as a tab here.
     pub(super) fn activate_selected_result_with(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
@@ -173,6 +174,15 @@ impl ShellOverlayHost {
             let _ = self.choose_app_row(&result);
             return;
         }
+        if modifier == Some(ui::widget::command_palette::ActivationModifier::Shift)
+            && let Some(app) = self.new_window_of(&result)
+        {
+            let target = self
+                .focused_group()
+                .map(crate::shell::chrome_state::OpenTarget::Here);
+            self.run_result(app, doc, root, target);
+            return;
+        }
         let activation = modifier
             .filter(|_| result.params.is_empty() && palette_flow::opens_a_window(&result.kind))
             .map(palette_flow::Activation::of);
@@ -197,6 +207,25 @@ impl ShellOverlayHost {
             }
             _ => self.run_result(result, doc, root, None),
         }
+    }
+
+    /// For a window row, the row that starts its app: what a new window of
+    /// it runs. `None` for any other row, or a window of no app search has.
+    pub(super) fn new_window_of(
+        &self,
+        result: &crate::shell::search::SearchResult,
+    ) -> Option<crate::shell::search::SearchResult> {
+        if result.provider_id != tilo_desktop::search::WINDOWS_PROVIDER_ID
+            || result.kind != crate::shell::search::ResourceKind::Tab
+        {
+            return None;
+        }
+        let app = {
+            let state = self.chrome.as_ref()?.borrow();
+            let tree = state.tree();
+            tilo_desktop::search::window_row_app_id(&tree.desktop, &result.id)?
+        };
+        self.search_registry.app_row(&app)
     }
 
     /// The group of the focused window: where "here" and "beside" are.

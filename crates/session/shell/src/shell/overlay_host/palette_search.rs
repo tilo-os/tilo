@@ -768,6 +768,16 @@ impl ShellOverlayHost {
         if let Some(shortcut) = &r.shortcut {
             e = e.keybinding(shortcut.clone());
         }
+        // A window switches to it; Shift opens a new window of its app.
+        if r.provider_id == tilo_desktop::search::WINDOWS_PROVIDER_ID
+            && r.kind == ResourceKind::Tab
+            && !self.choosing_app()
+        {
+            e = e.alternate(
+                ui::widget::command_palette::ActivationModifier::Shift,
+                t("palette-open-new-window"),
+            );
+        }
         // Choosing an app for an app opens nothing, anywhere.
         if r.params.is_empty() && palette_flow::opens_a_window(&r.kind) && !self.choosing_app() {
             use ui::widget::command_palette::ActivationModifier;

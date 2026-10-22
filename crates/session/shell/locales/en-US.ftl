@@ -1299,6 +1299,7 @@ palette-value-not-on-off = Enter on or off
 palette-value-not-understood = Enter a value this setting takes
 palette-open-tab-here = As a tab here
 palette-open-beside = Beside
+palette-open-new-window = New window
 palette-more-actions = More
 palette-open-containing-folder = Open containing folder
 palette-copy-path = Copy path

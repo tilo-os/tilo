@@ -2793,6 +2793,7 @@ palette-value-not-on-off = Ein oder Aus eingeben
 palette-value-not-understood = Einen Wert eingeben, den diese Einstellung annimmt
 palette-open-tab-here = Als Tab hier
 palette-open-beside = Daneben
+palette-open-new-window = Neues Fenster
 palette-more-actions = Mehr
 palette-open-containing-folder = Enthaltenden Ordner öffnen
 palette-copy-path = Pfad kopieren
