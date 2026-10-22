@@ -5220,6 +5220,11 @@ pub struct ClientState {
     /// Kernel process lifetime observed when this connection was admitted.
     /// A reused PID can never authorize a mapped-file diagnostic.
     pub pid_start_time: Option<u64>,
+    /// The connected process and its parents, each with its kernel start
+    /// time, read once when the connection was admitted
+    /// ([`crate::shell::launch_readiness::ancestry`]): which launch a window
+    /// of this connection settles, without reading `/proc` when it maps.
+    pub(crate) ancestry: Arc<[(u32, u64)]>,
     /// Set when the connection is a legacy VM's Wayland forwarder: every app
     /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
     /// lowers what a window is trusted with, so it needs no proof.
@@ -5247,6 +5252,7 @@ impl Default for ClientState {
             executable: None,
             pid: None,
             pid_start_time: None,
+            ancestry: Arc::from([]),
             legacy_guest: None,
             touch_bound: std::sync::atomic::AtomicBool::new(false),
         }
@@ -5293,10 +5299,23 @@ impl ClientState {
             workspace_id: identity.workspace_id,
             launch_custody,
             enforce_package_id: identity.confined,
-            pid: Some(pid),
-            pid_start_time: crate::shell::launcher::proc_stat(pid).map(|(_, start)| start),
-            ..Self::default()
+            ..Self::admitted(pid)
         })
+    }
+
+    /// Per-client state for the process `pid`, its ancestry read now (from
+    /// the worker that admits connections).
+    pub(crate) fn admitted(pid: u32) -> Self {
+        let ancestry = crate::shell::launch_readiness::ancestry(pid);
+        Self {
+            pid: Some(pid),
+            pid_start_time: ancestry
+                .first()
+                .filter(|(first, _)| *first == pid)
+                .map(|(_, start)| *start),
+            ancestry: Arc::from(ancestry),
+            ..Self::default()
+        }
     }
 
     /// Per-client data for a connection accepted on the privileged socket.
@@ -5801,7 +5820,7 @@ fn ensure_surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
 fn observe_toplevel_startup(surface: &ToplevelSurface) {
     if let Some(client) = surface.wl_surface().client()
         && let Some(state) = client.get_data::<ClientState>()
-        && let Some(pid) = state.pid
+        && state.pid.is_some()
     {
         let adoption = state
             .package_id
@@ -5810,10 +5829,9 @@ fn observe_toplevel_startup(surface: &ToplevelSurface) {
             .filter(|_| {
                 state.enforce_package_id
                     && !state.privileged
-                    && state.pid_start_time.is_some_and(|expected| {
-                        crate::shell::launcher::proc_stat(pid)
-                            .is_some_and(|(_, start)| start == expected)
-                    })
+                    // The connection was bound to this launch when it was
+                    // admitted; its windows are that launch's.
+                    && state.pid_start_time.is_some()
             })
             .and_then(|(package, room)| {
                 Some(tilo_action_broker::services::LaunchAdoption {
@@ -5823,7 +5841,7 @@ fn observe_toplevel_startup(surface: &ToplevelSurface) {
                     room: room.clone(),
                 })
             });
-        crate::shell::launcher::record_startup_window(pid, adoption);
+        crate::shell::launcher::record_startup_window(&state.ancestry, adoption);
     }
 }
 
