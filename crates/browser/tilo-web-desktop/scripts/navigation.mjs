@@ -10,12 +10,13 @@
 //   SHOTS_DIR   where a screenshot of a failed step goes, when set
 // Exits non-zero on the first failed expectation.
 import assert from 'node:assert/strict';
-import {existsSync, readFileSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
 
 const bundle = process.argv[2];
 if (!bundle) throw Error('usage: node navigation.mjs BUNDLE_DIR');
+if (process.env.SHOTS_DIR) mkdirSync(process.env.SHOTS_DIR, {recursive: true});
 // A page that stops answering fails the run rather than holding the runner.
 const watchdog = setTimeout(() => {
   console.error(`navigation: no result within ten minutes; last step: ${progress}`);
