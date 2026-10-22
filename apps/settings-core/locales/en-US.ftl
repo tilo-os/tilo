@@ -11,7 +11,7 @@ display-picker = Selected display
 display-picker-choice = { $number }: { $name }
 display-resolution = Resolution
 display-refresh-rate = Refresh rate
-display-modes-unavailable = Not reported by the compositor
+display-modes-unavailable = Not reported by this display
 
 # Displays pane: layout tools trusted to change displays without asking
 display-tools-title = Display tools

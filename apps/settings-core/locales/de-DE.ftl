@@ -11,7 +11,7 @@ display-picker = Ausgewählter Bildschirm
 display-picker-choice = { $number }: { $name }
 display-resolution = Auflösung
 display-refresh-rate = Bildwiederholrate
-display-modes-unavailable = Vom Compositor nicht gemeldet
+display-modes-unavailable = Von diesem Bildschirm nicht gemeldet
 
 # Displays pane: layout tools trusted to change displays without asking
 display-tools-title = Bildschirmwerkzeuge
