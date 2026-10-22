@@ -1640,20 +1640,14 @@ impl ToolbarRow {
                 ));
             }
         }
-        // Every view, in the row or in the overflow menu, the chosen one
-        // checked.
+        // The views the row shows, the chosen one checked; without room
+        // they are the overflow menu's.
         if let Some(views) = toolbar.views.as_ref() {
-            for (i, view) in views.choices.iter().enumerate() {
-                let rect = self
-                    .slots
-                    .views
-                    .get(i)
-                    .copied()
-                    .unwrap_or(self.slots.overflow);
+            for (view, rect) in views.choices.iter().zip(&self.slots.views) {
                 let mut node = button(
                     view.label.clone(),
                     format!("{VIEW_TARGET_PREFIX}{}", view.id),
-                    rect,
+                    *rect,
                     true,
                 );
                 node.role = Role::RadioButton;
@@ -1664,19 +1658,12 @@ impl ToolbarRow {
                 nodes.push(node);
             }
         }
-        // Every action, in the row or in the overflow menu: assistive
-        // technology and automation reach all of them the same way.
-        for (i, action) in toolbar.actions.iter().enumerate() {
-            let rect = self
-                .slots
-                .actions
-                .get(i)
-                .copied()
-                .unwrap_or(self.slots.overflow);
+        // The actions the row shows; a menu button's items are its menu's.
+        for ((i, action), rect) in toolbar.actions.iter().enumerate().zip(&self.slots.actions) {
             let mut node = button(
                 action.name.clone(),
                 format!("{ACTION_TARGET_PREFIX}{}", action.id),
-                rect,
+                *rect,
                 action.enabled,
             );
             if action.on {
@@ -1684,35 +1671,173 @@ impl ToolbarRow {
                 node.state.checked = Some(true);
             }
             if !action.items.is_empty() {
-                node.state.expanded =
-                    Some(self.menu.is_open() && self.menu_slot == Some(Slot::Action(i)));
+                let slot = Slot::Action(i);
+                node.state.expanded = Some(self.menu_open_for(&slot));
+                let entries = (0..action.items.len()).map(|j| MenuEntry::Item(i, j));
+                node = node.with_children(vec![self.menu_node(
+                    action.name.clone(),
+                    &slot,
+                    *rect,
+                    entries,
+                )]);
             }
             nodes.push(node);
-            for item in &action.items {
-                let mut node = button(
-                    item.name.clone(),
-                    format!("{ACTION_TARGET_PREFIX}{}", item.id),
-                    rect,
-                    item.enabled,
-                );
-                if item.on {
-                    node.role = Role::ToggleButton;
-                    node.state.checked = Some(true);
-                }
-                nodes.push(node);
-            }
         }
+        // What the row has no room for is the overflow menu's. Its items
+        // are there for assistive technology and automation to run even
+        // while it is closed, hidden from a reader until it opens, each
+        // where its row is drawn while it is open.
         if self.slots.overflow.area() > 0.0 {
+            let name = crate::i18n::I18nManager::lookup_plain("window-toolbar-more");
             let mut more = button(
-                crate::i18n::I18nManager::lookup_plain("window-toolbar-more"),
+                name.clone(),
                 OVERFLOW_TARGET.into(),
                 self.slots.overflow,
                 true,
             );
-            more.state.expanded = Some(self.menu.is_open());
+            more.state.expanded = Some(self.menu_open_for(&Slot::Overflow));
+            let entries = self.overflow_entries();
+            if !entries.is_empty() {
+                more = more.with_children(vec![self.menu_node(
+                    name,
+                    &Slot::Overflow,
+                    self.slots.overflow,
+                    entries.into_iter(),
+                )]);
+            }
             nodes.push(more);
         }
         nodes
+    }
+
+    /// After an entry of the overflow menu or a menu button's ran (`ran`)
+    /// as assistive technology activated it: its open menu closes, as it
+    /// does when its row is picked. Returns `ran`.
+    fn ran_from_menu(&mut self, ran: bool) -> bool {
+        if ran && self.menu.is_open() && !self.menu_open_for(&Slot::Location) {
+            self.menu.close();
+        }
+        ran
+    }
+
+    /// Whether the open menu is `slot`'s.
+    fn menu_open_for(&self, slot: &Slot) -> bool {
+        self.menu.is_open() && self.menu_slot.as_ref() == Some(slot)
+    }
+
+    /// What the overflow menu lists, in its order: the views the row has
+    /// no room for, then the actions it does not show, a menu button's
+    /// items in its place.
+    fn overflow_entries(&self) -> Vec<MenuEntry> {
+        let Some(toolbar) = self.toolbar() else {
+            return Vec::new();
+        };
+        let mut entries = Vec::new();
+        if self.slots.views.is_empty()
+            && let Some(views) = toolbar.views.as_ref()
+        {
+            entries.extend((0..views.choices.len()).map(MenuEntry::View));
+        }
+        for (i, action) in toolbar
+            .actions
+            .iter()
+            .enumerate()
+            .skip(self.slots.actions.len())
+        {
+            if action.items.is_empty() {
+                entries.push(MenuEntry::Action(i));
+            } else {
+                entries.extend((0..action.items.len()).map(|j| MenuEntry::Item(i, j)));
+            }
+        }
+        entries
+    }
+
+    /// `slot`'s menu, named `name`, as assistive technology reaches it:
+    /// one item per entry, each running what its row runs. While the menu
+    /// is open each item is where its row is drawn; while it is closed the
+    /// items are hidden from a reader and stand at `anchor`, the control
+    /// that opens the menu.
+    fn menu_node(
+        &self,
+        name: String,
+        slot: &Slot,
+        anchor: Rect,
+        entries: impl Iterator<Item = MenuEntry>,
+    ) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let open = self.menu_open_for(slot);
+        let entries: Vec<MenuEntry> = entries.collect();
+        let count = entries.len();
+        let items = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(position, entry)| {
+                let (name, target, enabled, checked) = self.entry_semantics(*entry)?;
+                let rect = open
+                    .then(|| {
+                        self.menu_entries
+                            .iter()
+                            .position(|row| *row == Some(*entry))
+                            .and_then(|row| self.menu.item_rect(row))
+                    })
+                    .flatten()
+                    .unwrap_or(anchor);
+                Some(
+                    AccessNode::new(Role::MenuItem)
+                        .with_name(name)
+                        .with_action_target(target)
+                        .with_bounds(rect)
+                        .with_position(position.saturating_add(1), count)
+                        .with_state(AccessState {
+                            focusable: enabled && open,
+                            disabled: !enabled,
+                            checked,
+                            hidden: !open,
+                            ..Default::default()
+                        }),
+                )
+            })
+            .collect();
+        AccessNode::new(Role::Menu)
+            .with_name(name)
+            .with_children(items)
+            .with_state(AccessState {
+                hidden: !open,
+                ..Default::default()
+            })
+    }
+
+    /// A menu entry's name, action target, whether it runs, and its check.
+    fn entry_semantics(&self, entry: MenuEntry) -> Option<(String, String, bool, Option<bool>)> {
+        let toolbar = self.toolbar()?;
+        let action = |action: &crate::window_toolbar::ToolbarAction| {
+            (
+                action.name.clone(),
+                format!("{ACTION_TARGET_PREFIX}{}", action.id),
+                action.enabled,
+                action.on.then_some(true),
+            )
+        };
+        match entry {
+            MenuEntry::Action(i) => toolbar.actions.get(i).map(action),
+            MenuEntry::Item(i, j) => toolbar
+                .actions
+                .get(i)
+                .and_then(|menu| menu.items.get(j))
+                .map(action),
+            MenuEntry::View(i) => {
+                let views = toolbar.views.as_ref()?;
+                let view = views.choices.get(i)?;
+                Some((
+                    view.label.clone(),
+                    format!("{VIEW_TARGET_PREFIX}{}", view.id),
+                    true,
+                    Some(view.id == views.chosen),
+                ))
+            }
+            MenuEntry::Choice(_) => None,
+        }
     }
 
     /// The listed suggestions as assistive technology reaches them: each
@@ -1810,7 +1935,8 @@ impl ToolbarRow {
                         return false;
                     };
                     // A view in the overflow menu is chosen as one in the row is.
-                    return self.choose_view(i);
+                    let chosen = self.choose_view(i);
+                    return self.ran_from_menu(chosen);
                 }
                 let Some(id) = target.strip_prefix(ACTION_TARGET_PREFIX) else {
                     return false;
@@ -1821,7 +1947,9 @@ impl ToolbarRow {
                 if let Some(i) = toolbar.actions.iter().position(|a| a.id == id) {
                     // An action in the overflow menu runs as one in the row
                     // does; a menu button opens its menu.
-                    return self.activate(&Slot::Action(i));
+                    let opens = toolbar.actions.get(i).is_some_and(|a| !a.items.is_empty());
+                    let ran = self.activate(&Slot::Action(i));
+                    return if opens { ran } else { self.ran_from_menu(ran) };
                 }
                 let Some((i, j)) = toolbar.actions.iter().enumerate().find_map(|(i, action)| {
                     action
@@ -1833,7 +1961,8 @@ impl ToolbarRow {
                     return false;
                 };
                 // A menu button's item runs without its menu open.
-                return self.run_item(i, j);
+                let ran = self.run_item(i, j);
+                return self.ran_from_menu(ran);
             }
         };
         self.activate(&slot)
@@ -2169,6 +2298,7 @@ fn paint_location_picker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::a11y::{AccessNode, Role};
     use crate::window_toolbar::{ToolbarAction, ToolbarLocation, ToolbarNavigation};
 
     fn browser() -> WindowToolbar {
@@ -2339,6 +2469,153 @@ mod tests {
         );
     }
 
+    fn text(key: &str) -> String {
+        crate::i18n::I18nManager::lookup_plain(key)
+    }
+
+    /// The node with `role` and `name` among `nodes` and their children.
+    fn find_node<'a>(nodes: &'a [AccessNode], role: Role, name: &str) -> Option<&'a AccessNode> {
+        nodes.iter().find_map(|node| {
+            if node.role == role && node.name.as_deref() == Some(name) {
+                Some(node)
+            } else {
+                find_node(&node.children, role, name)
+            }
+        })
+    }
+
+    /// An address book's slots: the sidebar, Back, its place as the
+    /// location, and New contact, Import and Export, or Save and Cancel
+    /// while a person is edited.
+    fn address_book(editing: bool) -> WindowToolbar {
+        let actions = if editing {
+            vec![
+                ToolbarAction::new("save", "check", "Save"),
+                ToolbarAction::new("cancel", "x", "Cancel"),
+            ]
+        } else {
+            vec![
+                ToolbarAction::new("new-contact", "plus", "New contact"),
+                ToolbarAction::new("import", "download", "Import contacts").in_menu(),
+                ToolbarAction::new("export", "upload", "Export contacts").in_menu(),
+            ]
+        };
+        WindowToolbar {
+            sidebar: Some(false),
+            navigation: Some(ToolbarNavigation {
+                back: true,
+                forward: false,
+            }),
+            location: Some(ToolbarLocation {
+                label: "All contacts".into(),
+                editable: true,
+                name: "Search contacts".into(),
+                ..ToolbarLocation::default()
+            }),
+            actions,
+            ..WindowToolbar::default()
+        }
+        .bounded()
+    }
+
+    fn address_book_row(editing: bool, width: f64) -> ToolbarRow {
+        let mut row = ToolbarRow::new();
+        row.show(
+            4,
+            Some(&address_book(editing)),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        row.set_popup_area(Rect::new(0.0, 0.0, 1200.0, 800.0));
+        row.lay_out(Rect::new(0.0, 0.0, width, 40.0));
+        row
+    }
+
+    #[test]
+    fn every_slot_and_overflow_item_is_found_by_role_and_name_and_runs() {
+        let wide = address_book_row(false, 900.0).accessibility();
+        assert!(
+            find_node(
+                &wide,
+                Role::ToggleButton,
+                &text("window-toolbar-show-sidebar")
+            )
+            .is_some()
+        );
+        assert!(find_node(&wide, Role::Button, &text("window-toolbar-back")).is_some());
+        assert!(
+            find_node(&wide, Role::Button, "Search contacts").is_some(),
+            "the editable location is a control"
+        );
+        let new = find_node(&wide, Role::Button, "New contact").expect("in the row, a button");
+        let more = find_node(&wide, Role::Button, &text("window-toolbar-more"))
+            .expect("the overflow control");
+        assert_eq!(more.state.expanded, Some(false));
+        let import = find_node(&more.children, Role::MenuItem, "Import contacts")
+            .expect("what the row has no room for is the overflow menu's");
+        assert!(
+            import.state.hidden,
+            "a closed menu's item is hidden from a reader"
+        );
+        assert!(
+            find_node(&wide, Role::Button, "Import contacts").is_none(),
+            "an item in the menu is not also a button in the row"
+        );
+        assert_ne!(new.bounds, more.bounds);
+
+        // Narrow, New contact goes in the menu too; open, each item stands
+        // where its row is drawn.
+        let mut narrow = address_book_row(false, 240.0);
+        assert!(narrow.slots().actions.is_empty(), "no room for any action");
+        assert!(narrow.perform(OVERFLOW_TARGET), "More opens its menu");
+        assert!(narrow.popup_open());
+        let nodes = narrow.accessibility();
+        let more = find_node(&nodes, Role::Button, &text("window-toolbar-more")).unwrap();
+        assert_eq!(more.state.expanded, Some(true));
+        let new = find_node(&nodes, Role::MenuItem, "New contact").expect("in the open menu");
+        let import = find_node(&nodes, Role::MenuItem, "Import contacts").unwrap();
+        assert!(!new.state.hidden && new.state.focusable);
+        let (new_at, import_at) = (new.bounds.unwrap(), import.bounds.unwrap());
+        assert!(
+            new_at != more.bounds.unwrap() && new_at.y1 <= import_at.y0,
+            "each item is its own row of the menu: {new_at:?}, {import_at:?}"
+        );
+        let target = new.action_target.clone().unwrap();
+        assert!(narrow.perform(&target), "pressing the item runs it");
+        assert!(!narrow.popup_open(), "and closes its menu");
+        assert_eq!(
+            narrow.take_events(),
+            vec![(
+                4,
+                ToolbarEvent::Action {
+                    id: "new-contact".into()
+                }
+            )]
+        );
+
+        // Editing a person: Save and Cancel, closed menu or not.
+        let mut editing = address_book_row(true, 240.0);
+        let nodes = editing.accessibility();
+        let save = find_node(&nodes, Role::MenuItem, "Save").expect("Save is reachable");
+        assert!(find_node(&nodes, Role::MenuItem, "Cancel").is_some());
+        let target = save.action_target.clone().unwrap();
+        assert!(editing.perform(&target), "a closed menu's item still runs");
+        assert_eq!(
+            editing.take_events(),
+            vec![(4, ToolbarEvent::Action { id: "save".into() })]
+        );
+
+        // Edited, the location is a text field.
+        let mut row = address_book_row(false, 900.0);
+        assert!(row.begin_edit());
+        assert!(
+            row.accessibility()
+                .iter()
+                .any(|node| node.role == Role::TextInput),
+            "the edited location is a field"
+        );
+    }
+
     #[test]
     fn slots_shown_where_none_stood_are_at_rest_at_once() {
         let mut row = ToolbarRow::new();
@@ -2483,10 +2760,8 @@ mod tests {
             ]
         );
         let nodes = narrow.accessibility();
-        let week = nodes
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Week"))
-            .expect("every view reaches assistive technology");
+        let week = find_node(&nodes, Role::MenuItem, "Week")
+            .expect("a view in the overflow menu reaches assistive technology");
         assert_eq!(week.state.checked, Some(true));
     }
 
