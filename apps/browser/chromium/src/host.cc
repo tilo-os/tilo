@@ -1196,6 +1196,8 @@ void CreateTab(int id) {
   if(closing || id<=0 || clients.count(id) || VisibleOwners()>=32 || clients.size()>=64) {auto d=CefDictionaryValue::Create();d->SetInt("tab",id);Event("closed",d);return;}
   auto client=CefRefPtr<Client>(new Client(id));clients.emplace(id,client);
   CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=kOffscreenFrameRate;settings.background_color=CefColorSetARGB(255,255,255,255);
+  // A sealed document runs no script, whatever the document says.
+  if(sealed_documents) settings.javascript=STATE_DISABLED;
   TraceGeometry("create-begin",id);
   if(!CefBrowserHost::CreateBrowserSync(window,client,"about:blank",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
   TraceGeometry("create-return",id);
@@ -1295,7 +1297,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
 #endif
   }
   void OnContextInitialized() override {
-    request_filter=new tilo::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
+    request_filter=new tilo::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); },sealed_documents);
     if(private_mode) {
       CefRequestContextSettings settings;
       // Empty cache_path is CEF's incognito request context. The separate
