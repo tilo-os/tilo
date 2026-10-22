@@ -184,7 +184,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
 
     let referenced = html_body
         .as_deref()
-        .map(|html| html.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     let attachments: Vec<Attachment> = parsed
         .attachments()

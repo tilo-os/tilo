@@ -9,7 +9,7 @@
 //! only what a mail needs to look like itself.
 //!
 //! * **Only known elements and attributes survive.** Script, style sheets
-//!   from elsewhere, frames, objects, embeds, SVG and MathML, templates,
+//!   from elsewhere, frames, objects, embeds, SVG and `MathML`, templates,
 //!   forms and their controls, `<base>`, `<meta>` and `<link>` are gone, and
 //!   so is every event handler, `target`, `ping`, `srcdoc` and `formaction`.
 //!   Unknown elements lose their tags and keep their text. Text is written
@@ -148,18 +148,16 @@ pub fn links(html: &str) -> Vec<String> {
 /// Every address a link of `message` opens: the links of its HTML, or
 /// the addresses its text names.
 pub fn message_links(message: &crate::model::Message) -> Vec<String> {
-    match &message.html_body {
-        Some(html) => links(html),
-        None => {
-            let mut found: Vec<String> = Vec::new();
-            for (_, url) in text_links(&message.body) {
-                if found.len() < MAX_LINKS && !found.contains(&url) {
-                    found.push(url);
-                }
-            }
-            found
+    if let Some(html) = &message.html_body {
+        return links(html);
+    }
+    let mut found: Vec<String> = Vec::new();
+    for (_, url) in text_links(&message.body) {
+        if found.len() < MAX_LINKS && !found.contains(&url) {
+            found.push(url);
         }
     }
+    found
 }
 
 /// The web and mail addresses in plain `text` and where each is:
@@ -607,52 +605,47 @@ fn read_tag(src: &str, at: usize) -> Option<(Tag, usize)> {
                 break;
             }
         }
-        match bytes.get(i)? {
-            b'>' => return Some((tag, i + 1)),
-            _ => {
-                tag.self_closing = false;
-                let name_start = i;
-                // The first character of a name may be `=`.
-                i += 1;
-                while let Some(&byte) = bytes.get(i) {
-                    if byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>' | b'=') {
-                        break;
-                    }
-                    i += 1;
-                }
-                let name = src.get(name_start..i)?.to_ascii_lowercase();
-                while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
-                    i += 1;
-                }
-                let mut value = String::new();
-                if bytes.get(i) == Some(&b'=') {
-                    i += 1;
-                    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
-                        i += 1;
-                    }
-                    match bytes.get(i)? {
-                        quote @ (b'"' | b'\'') => {
-                            let open = i + 1;
-                            let close = open + src.get(open..)?.find(char::from(*quote))?;
-                            value = src.get(open..close)?.to_owned();
-                            i = close + 1;
-                        }
-                        _ => {
-                            let open = i;
-                            while let Some(&byte) = bytes.get(i) {
-                                if byte.is_ascii_whitespace() || byte == b'>' {
-                                    break;
-                                }
-                                i += 1;
-                            }
-                            value = src.get(open..i)?.to_owned();
-                        }
-                    }
-                }
-                if !tag.attributes.iter().any(|(key, _)| *key == name) {
-                    tag.attributes.push((name, value));
-                }
+        if *bytes.get(i)? == b'>' {
+            return Some((tag, i + 1));
+        }
+        tag.self_closing = false;
+        let name_start = i;
+        // The first character of a name may be `=`.
+        i += 1;
+        while let Some(&byte) = bytes.get(i) {
+            if byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>' | b'=') {
+                break;
             }
+            i += 1;
+        }
+        let name = src.get(name_start..i)?.to_ascii_lowercase();
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        let mut value = String::new();
+        if bytes.get(i) == Some(&b'=') {
+            i += 1;
+            while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+                i += 1;
+            }
+            if let quote @ (b'"' | b'\'') = *bytes.get(i)? {
+                let open = i + 1;
+                let close = open + src.get(open..)?.find(char::from(quote))?;
+                src.get(open..close)?.clone_into(&mut value);
+                i = close + 1;
+            } else {
+                let open = i;
+                while bytes
+                    .get(i)
+                    .is_some_and(|&byte| !byte.is_ascii_whitespace() && byte != b'>')
+                {
+                    i += 1;
+                }
+                src.get(open..i)?.clone_into(&mut value);
+            }
+        }
+        if !tag.attributes.iter().any(|(key, _)| *key == name) {
+            tag.attributes.push((name, value));
         }
     }
 }
@@ -728,7 +721,6 @@ impl<'p> Sanitizer<'p> {
             self.text(src.get(i..lt).unwrap_or_default());
             match bytes.get(lt + 1).copied() {
                 Some(b'!') => i = self.declaration(src, lt),
-                Some(b'?') => i = past(src, lt, ">"),
                 Some(b'/') if bytes.get(lt + 2).is_some_and(u8::is_ascii_alphabetic) => {
                     let Some((tag, next)) = read_tag(src, lt + 1) else {
                         break;
@@ -736,7 +728,7 @@ impl<'p> Sanitizer<'p> {
                     self.end(&tag);
                     i = next;
                 }
-                Some(b'/') => i = past(src, lt, ">"),
+                Some(b'?' | b'/') => i = past(src, lt, ">"),
                 Some(byte) if byte.is_ascii_alphabetic() => {
                     let Some((tag, next)) = read_tag(src, lt + 1) else {
                         break;
@@ -1065,11 +1057,12 @@ impl<'p> Sanitizer<'p> {
                 self.remote += 1;
                 if self.policy.remote {
                     out.push_str("@import");
+                    rest = rest.get(7..).unwrap_or_default();
                 } else {
-                    // An at-rule nobody knows: the parser skips it whole.
-                    out.push_str("@tilo-blocked");
+                    // The whole rule goes, its address with it.
+                    rest = rest.get(at_rule_end(rest)..).unwrap_or_default();
+                    out.push(' ');
                 }
-                rest = rest.get(7..).unwrap_or_default();
             } else if starts_ci(rest, "prefers-color-scheme") {
                 let (replacement, used) = self.color_scheme_query(rest);
                 out.push_str(&replacement);
@@ -1112,19 +1105,16 @@ impl<'p> Sanitizer<'p> {
         let inner = css.get(open..).unwrap_or_default();
         let trimmed_start = inner.len() - inner.trim_start().len();
         let body = inner.trim_start();
-        let (raw, used) = match body.chars().next() {
-            Some(quote @ ('"' | '\'')) => {
-                let end = string_end(body, quote);
-                let value = body.get(1..end.saturating_sub(1)).unwrap_or_default();
-                let after = body.get(end..).unwrap_or_default();
-                let close = after.find(')').map_or(after.len(), |at| at + 1);
-                (value.to_owned(), open + trimmed_start + end + close)
-            }
-            _ => {
-                let close = body.find(')').map_or(body.len(), |at| at + 1);
-                let value = body.get(..close.saturating_sub(1)).unwrap_or(body).trim();
-                (value.to_owned(), open + trimmed_start + close)
-            }
+        let (raw, used) = if let Some(quote @ ('"' | '\'')) = body.chars().next() {
+            let end = string_end(body, quote);
+            let value = body.get(1..end.saturating_sub(1)).unwrap_or_default();
+            let after = body.get(end..).unwrap_or_default();
+            let close = after.find(')').map_or(after.len(), |at| at + 1);
+            (value.to_owned(), open + trimmed_start + end + close)
+        } else {
+            let close = body.find(')').map_or(body.len(), |at| at + 1);
+            let value = body.get(..close.saturating_sub(1)).unwrap_or(body).trim();
+            (value.to_owned(), open + trimmed_start + close)
         };
         let url = clean_url(&css_unescape(&raw));
         let replacement = self
@@ -1168,6 +1158,29 @@ impl<'p> Sanitizer<'p> {
         };
         (feature.to_owned(), skipped + word_len)
     }
+}
+
+/// How far the statement at-rule at the start of `css` runs: through its
+/// `;` outside strings and brackets, or to the end.
+fn at_rule_end(css: &str) -> usize {
+    let mut at = 0;
+    let mut depth = 0_usize;
+    while let Some(c) = css.get(at..).and_then(|tail| tail.chars().next()) {
+        match c {
+            '"' | '\'' => at += string_end(css.get(at..).unwrap_or_default(), c),
+            '(' => {
+                depth += 1;
+                at += 1;
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                at += 1;
+            }
+            ';' if depth == 0 => return at + 1,
+            _ => at += c.len_utf8(),
+        }
+    }
+    css.len()
 }
 
 /// Whether `text` starts with the ASCII `prefix`, in any case.
@@ -1300,7 +1313,7 @@ fn css_unescape(value: &str) -> String {
         if hex.is_empty() {
             out.extend(chars.next());
         } else {
-            if chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+            if chars.peek().is_some_and(char::is_ascii_whitespace) {
                 chars.next();
             }
             out.extend(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32));
@@ -1409,15 +1422,12 @@ fn percent_decode(value: &str) -> String {
             .get(i + 1..i + 3)
             .and_then(|pair| std::str::from_utf8(pair).ok())
             .and_then(|pair| u8::from_str_radix(pair, 16).ok());
-        match (byte, hex) {
-            (b'%', Some(decoded)) => {
-                out.push(decoded);
-                i += 3;
-            }
-            _ => {
-                out.push(byte);
-                i += 1;
-            }
+        if let (b'%', Some(decoded)) = (byte, hex) {
+            out.push(decoded);
+            i += 3;
+        } else {
+            out.push(byte);
+            i += 1;
         }
     }
     String::from_utf8_lossy(&out).into_owned()

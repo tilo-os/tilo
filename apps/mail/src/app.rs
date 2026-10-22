@@ -4302,17 +4302,26 @@ impl MailApp {
                 self.attachment_to_save(&message, index)?;
                 Err("saving an attachment asks the host where to put it".into())
             }
+            effect @ (MailEffect::LoadRemoteContent { .. }
+            | MailEffect::AlwaysLoadRemoteContent { .. }
+            | MailEffect::OpenLink { .. }) => self.reader_effect(effect).map(|()| done),
+        }
+    }
+
+    /// What the reader does to a message: load its remote images, for it
+    /// or its sender, or open one of its links in the Browser.
+    fn reader_effect(&mut self, effect: crate::actions::MailEffect) -> Result<(), String> {
+        use crate::actions::MailEffect;
+        match effect {
             MailEffect::LoadRemoteContent { message } => {
                 let id = self.html_message(&message)?;
                 self.shared.borrow_mut().load_remote(id);
                 self.dirty = true;
-                Ok(done)
             }
             MailEffect::AlwaysLoadRemoteContent { message } => {
                 let id = self.html_message(&message)?;
                 self.shared.borrow_mut().always_load_remote(id);
                 self.dirty = true;
-                Ok(done)
             }
             MailEffect::OpenLink { message, url } => {
                 let id = message
@@ -4329,9 +4338,10 @@ impl MailApp {
                     return Err("the message has no such link".into());
                 }
                 open_link(&url);
-                Ok(done)
             }
+            _ => return Err("not an effect of the reader".into()),
         }
+        Ok(())
     }
 
     /// The loaded HTML message `message` names.

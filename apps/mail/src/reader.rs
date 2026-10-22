@@ -47,7 +47,9 @@ struct BodyStyle {
 impl BodyStyle {
     fn from_theme(theme: &Theme) -> Self {
         Self {
-            font_px: theme.text(TextRole::Body).size * theme.text_scale,
+            // The theme's body type already carries the text size and the
+            // UI scale: applying the text size again would grow it twice.
+            font_px: theme.text(TextRole::Body).size,
             quiet: ui::color::to_rgb8(theme.tokens.colors.text_dim),
         }
     }
@@ -1119,7 +1121,7 @@ impl MessageReader {
     /// the pointer (its real address, to open or copy), copying and
     /// selecting the text, and reading the message as plain text or as
     /// it was formatted.
-    fn open_menu(&mut self, point: Point) -> bool {
+    fn open_menu(&self, point: Point) -> bool {
         let Some(head) = self.shown else {
             return false;
         };
@@ -1472,10 +1474,10 @@ impl Widget for MessageReader {
         if self.html.hovered().map(str::to_owned) != hovered {
             self.dirty = true;
         }
-        if self.html.is_focused() {
-            if let Some(body) = self.active.and_then(|id| self.bodies.get_mut(&id)) {
-                body.input.set_focus(false);
-            }
+        if self.html.is_focused()
+            && let Some(body) = self.active.and_then(|id| self.bodies.get_mut(&id))
+        {
+            body.input.set_focus(false);
         }
         if *ctx.handled {
             return;

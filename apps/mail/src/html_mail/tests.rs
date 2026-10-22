@@ -29,6 +29,73 @@ fn policy(remote: bool, dark: bool) -> Policy<'static> {
     }
 }
 
+/// The markup of a prepared document: its tags with their attributes, and
+/// the sheets of its `style` elements, without the text it shows. Every `<`
+/// in a prepared document opens a tag (text writes `&lt;`, a sheet `\3c `),
+/// and every attribute value is quoted with `"`, which it never contains.
+fn markup(document: &str) -> String {
+    let mut out = String::new();
+    let mut rest = document;
+    while let Some(open) = rest.find('<') {
+        let tail = &rest[open..];
+        let mut quoted = false;
+        let close = tail
+            .char_indices()
+            .find(|&(_, c)| {
+                if c == '"' {
+                    quoted = !quoted;
+                }
+                c == '>' && !quoted
+            })
+            .map_or(tail.len(), |(at, _)| at + 1);
+        let tag = &tail[..close];
+        out.push_str(tag);
+        rest = &tail[close..];
+        if tag.to_ascii_lowercase().starts_with("<style") {
+            let end = rest
+                .to_ascii_lowercase()
+                .find("</style")
+                .unwrap_or(rest.len());
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+        }
+    }
+    out
+}
+
+/// The attribute names on the tags of a prepared document, lower-cased.
+fn attribute_names(document: &str) -> Vec<String> {
+    let markup = markup(document);
+    let mut names = Vec::new();
+    let mut rest = markup.as_str();
+    while let Some(open) = rest.find('<') {
+        rest = &rest[open + 1..];
+        let mut tag = rest.split_inclusive('>').next().unwrap_or_default();
+        tag = tag.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '/' || c == '!');
+        loop {
+            tag = tag.trim_start();
+            let end = tag
+                .find(|c: char| c == '=' || c == '>' || c == '/' || c.is_whitespace())
+                .unwrap_or(tag.len());
+            if end == 0 {
+                match tag.chars().next() {
+                    Some('/') => {
+                        tag = &tag[1..];
+                        continue;
+                    }
+                    _ => break,
+                }
+            }
+            names.push(tag[..end].to_ascii_lowercase());
+            tag = &tag[end..];
+            if let Some(value) = tag.strip_prefix("=\"") {
+                tag = value.find('"').map_or("", |close| &value[close + 1..]);
+            }
+        }
+    }
+    names
+}
+
 /// Every address the document makes the engine fetch: image sources and
 /// candidates, backgrounds, style sheets, and CSS `url()`s.
 fn fetched(document: &str) -> Vec<String> {
@@ -129,7 +196,6 @@ fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
             "xlink",
             "target=\"_self\" ping",
             "data:text/html",
-            "alert(",
             "default-src *",
             "prefetch",
             "preconnect",
@@ -140,6 +206,18 @@ fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
                 prepared.document
             );
         }
+        // What a script would say may stay as words the mail shows (the
+        // engine reads `<scr<script>ipt>alert(5)` as text too), never as
+        // markup.
+        let markup = markup(&document);
+        assert!(!markup.contains("alert("), "remote {remote}: {markup}");
+        assert!(
+            attribute_names(&document)
+                .iter()
+                .all(|name| !name.starts_with("on")),
+            "remote {remote}: {:?}",
+            attribute_names(&document)
+        );
         // The only policy is the reader's, and it comes first.
         assert_eq!(document.matches("<meta http-equiv").count(), 1);
         let csp = document
@@ -301,7 +379,14 @@ fn markup_cannot_escape_the_text_or_attribute_it_is_written_in() {
         let prepared = prepare(case, &policy(false, false));
         let lower = prepared.document.to_ascii_lowercase();
         assert!(!lower.contains("<script"), "{case}:\n{}", prepared.document);
-        assert!(!lower.contains(" on"), "{case}:\n{}", prepared.document);
+        // An attribute's value may read " onmouseover=", quoted; no
+        // attribute is a handler.
+        let names = attribute_names(&prepared.document);
+        assert!(
+            names.iter().all(|name| !name.starts_with("on")),
+            "{case}: {names:?}\n{}",
+            prepared.document
+        );
         assert!(
             !lower.contains("<img src=x"),
             "{case}:\n{}",
