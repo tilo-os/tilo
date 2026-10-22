@@ -475,6 +475,60 @@ fn agents_reach_every_item_verb_and_the_calendars() {
     );
 }
 
+#[test]
+fn a_new_project_takes_the_next_colour_no_project_has() {
+    let mut calendar = Replica::<Calendar>::new();
+    let colours = |calendar: &Replica<Calendar>| -> Vec<Palette> {
+        calendar
+            .state()
+            .unwrap()
+            .projects
+            .iter()
+            .map(|project| project.color)
+            .collect()
+    };
+    for name in ["Work", "Personal", "Health"] {
+        calendar
+            .apply(Calendar::NEW_PROJECT.with(calendar::NewProject { name: name.into() }))
+            .unwrap();
+    }
+    assert_eq!(
+        colours(&calendar),
+        [Palette::Indigo, Palette::Emerald, Palette::Amber],
+        "each new project has its own colour"
+    );
+
+    // A colour a project gave up is the next one handed out.
+    let personal = calendar.state().unwrap().projects[1].id;
+    calendar
+        .apply_confirmed(Calendar::DELETE_PROJECT.with(key(personal)))
+        .unwrap();
+    calendar
+        .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
+            name: "Garden".into(),
+        }))
+        .unwrap();
+    assert!(colours(&calendar).contains(&Palette::Emerald));
+
+    // With every colour taken, the next goes round again.
+    for index in 0..Palette::ALL.len() - 3 {
+        calendar
+            .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
+                name: format!("Project {index}"),
+            }))
+            .unwrap();
+    }
+    let mut taken = colours(&calendar);
+    taken.sort_by_key(|palette| palette.index());
+    assert_eq!(taken, Palette::ALL, "every colour once before any twice");
+    calendar
+        .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
+            name: "One more".into(),
+        }))
+        .unwrap();
+    assert_eq!(colours(&calendar).last(), Some(&Palette::Indigo));
+}
+
 /// What is more than setting a field: a task's steps go with it, a deleted
 /// project's tasks stay unfiled, and an event's notes go with the event.
 #[test]
@@ -701,16 +755,16 @@ fn calendar_display_choices_are_personal_settings() {
         .a11y_nodes()
         .into_iter()
         .find(|(_, node)| {
-            node.role() == ui::accesskit::Role::CheckBox
-                && node
-                    .label()
-                    .is_some_and(|label| label.contains(name.as_str()))
+            node.role() == ui::accesskit::Role::TreeItem
+                && node.toggled().is_some()
+                && node.label() == Some(name.as_str())
         })
         .map(|(id, _)| id)
-        .expect("the calendar's visibility checkbox");
+        .expect("the calendar's checked row in the sidebar");
     app.harness()
-        .perform_a11y_action(checkbox, &ui::a11y::Action::ToggleCheck)
-        .expect("toggle the checkbox");
+        .perform_a11y_action(checkbox, &ui::a11y::Action::Activate)
+        .expect("check the row");
+    app.settle();
     let display = app.settings::<crate::display::CalendarDisplay>().get();
     assert_eq!(display.visible.get(&calendar), Some(&false));
     assert!(
@@ -833,6 +887,20 @@ mod tasks_screen {
             .a11y_nodes()
             .into_iter()
             .find(|(_, node)| node.label() == Some(name))
+    }
+
+    /// Choose the sidebar's place `name`, as a screen reader does.
+    fn choose_place(app: &mut TestApp<CalendarShell>, name: &str) {
+        let (id, _) = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.role() == Role::TreeItem && node.label() == Some(name))
+            .unwrap_or_else(|| panic!("no place named {name} in the sidebar"));
+        app.harness()
+            .perform_a11y_action(id, &ui::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("choose {name}: {error:?}"));
+        app.settle();
     }
 
     fn activate(app: &mut TestApp<CalendarShell>, name: &str) {
@@ -963,7 +1031,7 @@ mod tasks_screen {
                         == crate::window_bar::view_slot(crate::model::View::Tasks))),
             "the bar's Tasks tab is not the task list"
         );
-        activate(&mut app, "Show tasks in Today");
+        choose_place(&mut app, "Today");
 
         app.call("show-tasks", serde_json::json!({}))
             .expect("show-tasks");
@@ -1012,7 +1080,7 @@ mod tasks_screen {
     #[test]
     fn the_tasks_tab_and_show_tasks_reach_the_same_list() {
         let mut by_tab = sample_calendar();
-        activate(&mut by_tab, "Show tasks in Inbox");
+        choose_place(&mut by_tab, "Inbox");
         choose_view_in_bar(&mut by_tab, crate::model::View::Tasks);
         let mut by_action = sample_calendar();
         by_action

@@ -185,10 +185,11 @@ impl Calendar {
             .map(|project| project.order.saturating_add(1))
             .max()
             .unwrap_or(0);
+        let color = Palette::next_after(self.projects.iter().map(|project| project.color));
         self.projects.push(Project {
             id: cx.uuid(),
             name: name.to_owned(),
-            color: Palette::Indigo,
+            color,
             order,
         });
         Ok(())
@@ -1159,7 +1160,21 @@ impl ResourceApp for CalendarShell {
             opens.borrow_mut().push(resource);
             Ok(())
         });
-        cx.surface(app)
+        // The shell keeps the sidebar (the lists, the calendars and the
+        // month), its width, its drawer in a narrow window and its keys;
+        // the calendar is the window's point, so the drawer floats over it.
+        let places = ui::widget::NavFeed::new();
+        let month = ui::widget::DateFeed::new();
+        let shell = ui::widget::NavShell::new()
+            .with_id("calendar-shell")
+            .content_kind(ui::widget::ContentKind::Document)
+            .with_window_toolbar();
+        let app = app.in_shell(&places, &month, shell.window_bar_link());
+        Box::new(
+            shell
+                .sidebar(crate::app::sidebar(&places, &month))
+                .content(cx.surface(app)),
+        )
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

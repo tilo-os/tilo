@@ -49,7 +49,6 @@ mod reminders;
 pub mod resource;
 pub mod setup;
 pub mod shown;
-mod sidebar;
 mod tasks;
 mod timeline_interaction;
 mod timeline_viewport;
