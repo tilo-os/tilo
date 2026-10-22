@@ -289,9 +289,6 @@ impl MailState {
         Rc::new(RefCell::new(state))
     }
 
-    /// The bundled sample mailbox and accounts, editing the document it is
-    /// handed.
-    #[cfg(test)]
     /// Whether remote images show in `message`: the person loaded them for
     /// it, or allowed them for its sender.
     pub fn remote_allowed(&self, message: &crate::model::Message) -> bool {
@@ -359,6 +356,9 @@ impl MailState {
             .collect()
     }
 
+    /// The bundled sample mailbox and accounts, editing the document it is
+    /// handed.
+    #[cfg(test)]
     pub fn new_sample(avatars: crate::avatars::Avatars) -> Self {
         let mut state = Self::from_fixture(&crate::sample::MailFixture::bundled(), avatars);
         state.dispatcher = Some(ui::framework::testing::dispatcher("so.tilo.mail"));
