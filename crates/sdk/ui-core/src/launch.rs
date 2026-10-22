@@ -1405,6 +1405,14 @@ fn with_capture_letters(mut theme: Theme, explicit: Option<bool>) -> Theme {
     theme
 }
 
+/// The theme a capture asked for by name: `--theme`, else
+/// `TILO_SHOTS_THEME`.
+fn shot_theme_name(args: &LaunchArgs) -> Option<String> {
+    args.theme
+        .clone()
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
+}
+
 /// Resolve the palette, text scale, and motion policy used by screenshot
 /// capture. An explicit `--text-scale` wins over the
 /// `TILO_SHOTS_TEXT_SCALE` environment variable.
