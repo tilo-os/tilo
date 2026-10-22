@@ -923,8 +923,10 @@ default = false
 # on every commit whatever its files.
 [[check]]
 name = "changes"
+# Every push's gate runs it: in the builder, which both architectures have, so a push never
+# waits for an x86_64 node.
+requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
 git = true
 run = """
 base=$(git rev-parse main)
