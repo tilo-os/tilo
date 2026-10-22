@@ -1436,11 +1436,12 @@ mod command_path_tests {
             "{:?}",
             panel.lines
         );
+        let new_folder = match ui::platform::PlatformConventions::default().platform() {
+            ui::platform::Platform::MacOs => "New folder: ⌘⇧N",
+            _ => "New folder: Ctrl+Shift+N",
+        };
         assert!(
-            panel
-                .lines
-                .iter()
-                .any(|line| line == "New folder: Ctrl+Shift+N"),
+            panel.lines.iter().any(|line| line == new_folder),
             "{:?}",
             panel.lines
         );
