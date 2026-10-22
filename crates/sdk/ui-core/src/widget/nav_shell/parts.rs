@@ -36,6 +36,7 @@ impl NavShell {
             Part::History(false) => Some(&self.history_open),
             Part::History(true) => Some(&self.history_close),
             Part::StatusAction => self.status_action.as_ref().map(|b| b as &dyn Widget),
+            Part::Band => self.band.as_deref(),
         }
     }
 
@@ -74,6 +75,7 @@ impl NavShell {
                 .status_action
                 .as_mut()
                 .map(|b| b as &mut (dyn Widget + 'static)),
+            Part::Band => self.band.as_deref_mut(),
         }
     }
 
@@ -113,6 +115,7 @@ impl NavShell {
             Part::History(false),
             Part::History(true),
             Part::StatusAction,
+            Part::Band,
         ]);
         parts
     }
