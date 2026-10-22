@@ -453,6 +453,15 @@ impl ShellNetwork {
             Ok(report) => report,
             Err(error) if error == tilo_peer_state::HELD_FOR_SURFACE => {
                 tracing::debug!(room = %input.room(), "native relay input held for its app surface");
+                // A surface this device has no copy of is a newer build of
+                // the app: its update brings it.
+                if let NeighbourMsg::AppDocument {
+                    app_id, envelope, ..
+                } = input.message()
+                    && let Some(surface) = envelope.surface
+                {
+                    crate::shell::app_versions::surface_named(app_id, surface);
+                }
                 self.native_admission.hold(input);
                 return;
             }

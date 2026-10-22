@@ -39,6 +39,13 @@ pub fn registered() -> u64 {
     NAMED.load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// A surface became readable other than by being named: an app's update
+/// installed it. A change decided against a surface that was not here may
+/// be decided again ([`registered`] moves).
+pub fn arrived() {
+    NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
 fn registry() -> &'static Mutex<BTreeMap<String, Named>> {
     static REGISTRY: OnceLock<Mutex<BTreeMap<String, Named>>> = OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)

@@ -39,6 +39,8 @@ mod paired_continuity_tests;
 mod peer_sync_worker;
 mod personal_device_peers;
 mod private_chat;
+#[cfg(test)]
+mod surface_update_tests;
 pub(crate) use private_chat::PrivateChatRoute;
 #[cfg(test)]
 mod reachability_tests;
