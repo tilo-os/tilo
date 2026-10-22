@@ -672,6 +672,11 @@ impl PresenceCtx {
         }
     }
 
+    /// The active viewport, when a scrolling ancestor set one.
+    pub fn viewport(&self) -> Option<vello::kurbo::Rect> {
+        self.viewport.get()
+    }
+
     /// Replace the active viewport, returning the previous value so the caller can restore it.
     pub fn push_viewport(&self, vp: vello::kurbo::Rect) -> Option<vello::kurbo::Rect> {
         self.viewport.replace(Some(vp))
