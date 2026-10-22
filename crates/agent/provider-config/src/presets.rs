@@ -219,7 +219,7 @@ mod tests {
             assert_eq!(Preset::from_slug(preset.slug()), Some(preset));
             let config = ProviderConfig {
                 profiles: vec![preset.profile()],
-                default_profile: None,
+                ..ProviderConfig::default()
             };
             assert_eq!(config.validation_errors(), [], "{preset:?}");
         }
