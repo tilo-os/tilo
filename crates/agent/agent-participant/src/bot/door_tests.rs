@@ -297,3 +297,50 @@ fn a_refused_op_settles_failed_and_an_unavailable_one_stays_pending() {
         ui::tilo_resource::Settled::failed("Missing Permissions")
     );
 }
+
+/// A send whose file had not reached the host yet queued its entry before
+/// the connector turned it away for now. The retried run finds the step in
+/// history and hands the entry over then, answering what Discord answered,
+/// so the step after it reads the message it sent.
+#[test]
+fn a_retried_step_hands_over_the_entry_it_queued_before() {
+    let fake = FakeParticipant::default();
+    let outbox = fake.outbox.clone();
+    let history = fake.history.clone();
+    let invoked = fake.invoked.clone();
+    let door = door(
+        fake,
+        vec![
+            Err(PerformError::Unavailable("the file is not here yet".into())),
+            Ok(json!({"result": "sent", "message_id": "d1"})),
+        ],
+    );
+    assert!(matches!(
+        block(door.invoke(&bot(), send())),
+        Err(ActionHostError::Unavailable { .. })
+    ));
+    let mut queued = step_context().with_invoker(ActionInvoker::actor("bot:b1"));
+    queued.item = Some(tilo_actions::ActionItem {
+        id: "q1".into(),
+        label: String::new(),
+    });
+    history
+        .lock()
+        .unwrap()
+        .push((route("so.tilo.discord", "rec-2"), queued));
+    let receipt = block(door.invoke(&bot(), send())).unwrap();
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("{receipt:?}")
+    };
+    assert_eq!(output.value.unwrap()["message_id"], "d1");
+    let outbox = outbox.lock().unwrap();
+    assert_eq!(outbox.len(), 1, "the send was not repeated");
+    assert_eq!(outbox[0].settled.as_ref().unwrap()["state"], "done");
+    let actions: Vec<String> = invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, _, address)| address.action.clone())
+        .collect();
+    assert_eq!(actions, ["send", "field-edit"]);
+}

@@ -231,6 +231,19 @@ impl<P: DoorParticipant> BotDoor<P> {
             .as_ref()
             .and_then(|step| participant.find_in_history(step, &self.actor()))
         {
+            // A step whose entry the connector could not take yet (a file
+            // whose bytes had not arrived) queued it all the same: the
+            // retried run hands it over now instead of answering nothing.
+            if let Some((spec, row)) = self.unsettled_from_history(&*participant, &route, &done) {
+                drop(participant);
+                return self.perform(
+                    &route,
+                    &request.target.address,
+                    spec,
+                    vec![row],
+                    ActionOutput::default(),
+                );
+            }
             return Ok(ReceiptStatus::Completed {
                 output: self.output_from_history(&*participant, &route, &done),
             });
@@ -356,6 +369,26 @@ impl<P: DoorParticipant> BotDoor<P> {
             .map_err(|error| ActionHostError::Unavailable {
                 reason: format!("the outbox entry was not settled: {error}"),
             })
+    }
+
+    /// The entry a step taken before queued that is not settled yet, with
+    /// the outbox it is in.
+    fn unsettled_from_history(
+        &self,
+        participant: &P,
+        route: &DocumentRoute,
+        done: &ActionContext,
+    ) -> Option<(&OutboxSpec, OutboxRow)> {
+        let spec = self
+            .outboxes
+            .iter()
+            .find(|spec| spec.app_id == route.app_id)?;
+        let item = done.item.as_ref()?;
+        let row = participant
+            .outbox(route, &spec.field)
+            .into_iter()
+            .find(|row| row.id == item.id && row.settled.is_none())?;
+        Some((spec, row))
     }
 
     /// What a step taken before answers: the settled results of the
