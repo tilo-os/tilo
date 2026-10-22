@@ -4987,8 +4987,8 @@ impl AppHandler {
             .set_interaction_environment(self.app.input.interaction.with_touch_modality());
         let scale = window.scale_factor();
         let app = &self.app;
-        let pointer_events = self.touch_pointer.events(touch, |position| {
-            app.claims_raw_touch_at(vello::kurbo::Point::new(
+        let pointer_events = self.touch_pointer.events_claimed(touch, |position| {
+            app.touch_claim_at(vello::kurbo::Point::new(
                 position.x / scale,
                 position.y / scale,
             ))
