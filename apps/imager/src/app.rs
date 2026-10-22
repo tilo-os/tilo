@@ -5085,7 +5085,17 @@ mod tests {
                     report.view_error.is_none()
                         && report.record_error.is_none()
                         && report.teardown_error.is_none()
-                })
+                }),
+            "a component closed with an error (view, record, teardown): {:?}",
+            host.harness()
+                .component_close_reports()
+                .iter()
+                .map(|report| (
+                    &report.view_error,
+                    &report.record_error,
+                    &report.teardown_error
+                ))
+                .collect::<Vec<_>>()
         );
 
         let unbound = JobControl::new();
