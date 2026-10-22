@@ -316,8 +316,6 @@ fn the_window_lists_groups_people_and_the_selected_person() {
     ] {
         assert!(named(&harness, name), "{name} is exposed");
     }
-    // USER REQUIREMENT (2026-10-22): "the bar always names what you're
-    // looking at." Contacts: the person shown.
     assert_eq!(
         ui::window_toolbar::declared()
             .and_then(|toolbar| toolbar.location)

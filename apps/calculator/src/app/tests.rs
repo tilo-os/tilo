@@ -132,8 +132,6 @@ fn captures_stage_mode_drawers_and_collaborators() {
         toolbar.views.as_ref().map(|views| views.chosen.as_str()),
         Some("calculator.mode:0")
     );
-    // USER REQUIREMENT (2026-10-22): "the bar always names what you're
-    // looking at." Calculator: its mode.
     assert_eq!(
         toolbar
             .location
@@ -611,9 +609,6 @@ impl CalculatorApp {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "every app's primary controls live in
-// the system window bar's app slots, through the one tilo-app API Files,
-// Notes and Browser already use, and no app draws a second toolbar row."
 /// The modes, the angle unit and the panel's show/hide button are the
 /// window bar's slots, and the screens start at the top of the window:
 /// no header row of the calculator's own.

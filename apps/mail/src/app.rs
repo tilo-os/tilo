@@ -5628,9 +5628,6 @@ mod tests {
         ui::synthetic_input::mouse_release()
     }
 
-    // USER REQUIREMENT (2026-10-21): "Compose opens inline, not as a modal hiding
-    // the message being answered; Send is disabled until there's an account and
-    // a recipient; remove the stray blur".
     #[test]
     fn compose_stands_in_the_window_and_sends_only_with_an_account_and_a_recipient() {
         // No account yet: the composer is the window's page, never a panel
@@ -7982,9 +7979,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         }
 
         // Phase `first_run_shows_onboarding_and_links_to_settings`.
-        // USER REQUIREMENT (2026-10-21): "Mail has no account editor of its own;
-        // accounts live only in Settings' External Accounts, and Mail links there
-        // (one place)".
         {
             let mut first = MailApp::new_first_run();
             let mut doc = crate::resource::TestMail::doc();

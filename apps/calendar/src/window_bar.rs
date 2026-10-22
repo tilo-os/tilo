@@ -134,9 +134,6 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 10, 21).unwrap_or_default()
     }
 
-    // USER REQUIREMENT (2026-10-21): "every app's primary controls live in
-    // the system window bar's app slots, through the one tilo-app API Files,
-    // Notes and Browser already use, and no app draws a second toolbar row."
     #[test]
     fn the_calendars_controls_are_the_window_bars_slots() {
         let toolbar = window_toolbar(View::Week, anchor(), true);

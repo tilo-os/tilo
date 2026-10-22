@@ -4636,10 +4636,6 @@ mod tests {
         assert!(!details(&model), "and closed again");
     }
 
-    // USER REQUIREMENT (2026-10-21): "the connected network appears once, in
-    // the Wi-Fi list, marked connected. Its settings open from its own row
-    // (and from any known network's row)." "Known networks out of range show
-    // as a \"Saved\" group."
     #[test]
     fn the_connected_network_is_one_row_of_the_wifi_list_and_opens_its_settings() {
         let fake = Arc::new(FakeNetwork::default());

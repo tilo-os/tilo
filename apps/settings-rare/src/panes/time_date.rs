@@ -1071,7 +1071,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "Clock format lives only in Region, with \"Follow language\" as an option. Remove the Time & date 24-hour switch." and "The current date shown uses the Region date format."
     #[test]
     fn the_clock_and_the_date_show_in_the_region_formats_with_no_switch_of_their_own() {
         ui::i18n::I18nManager::init("en-US");
@@ -1117,7 +1116,6 @@ mod tests {
         assert!(!says(&text, "Wednesday 15 March 2023"), "{text:#?}");
     }
 
-    // USER REQUIREMENT (2026-10-21): "Time zone: one control, a searchable time-zone picker with automatic detection as its first option."
     #[test]
     fn the_time_zone_is_one_searchable_picker_led_by_automatic_with_the_globe_as_its_visual() {
         ui::i18n::I18nManager::init("en-US");

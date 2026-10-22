@@ -1978,9 +1978,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "Settings is a special case: system
-    // settings that don't need a workspace identity should still work. [...]
-    // show the sign-in state only on the workspace panes."
     #[test]
     fn without_a_workspace_identity_only_the_identity_pages_ask_for_one() {
         use ui::prelude::TestApp;

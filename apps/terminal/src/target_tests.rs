@@ -1065,11 +1065,6 @@ fn settle_until(app: &mut App, what: &str, mut done: impl FnMut(&mut App) -> boo
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "When the shell exits (exit, Ctrl+D, or the
-// process ends), the Terminal keeps a dead window. Like every terminal
-// emulator, the window (or the tab, when there are several) closes when its
-// shell exits. Keep nothing behind: no \"process exited\" panel." Exiting the
-// shell closes its window.
 #[test]
 fn exiting_the_shell_closes_its_window_and_keeps_nothing_behind() {
     // A tab the shell shows in its own process, through the window it lent.
@@ -1147,13 +1142,6 @@ fn a_session_the_tab_replaced_or_dropped_closes_nothing() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "\"Your shell on this device\", the
-// shell/target disclosure drawn inside the terminal content, belongs in the
-// window bar, through the system window bar API, as the window's title. The
-// current target (this device, a VM, a remote host, a container) is shown
-// there; clicking it opens the standard picker to switch or open a new
-// target. The terminal content area holds only the terminal." The target
-// picker is in the window bar, and the content area has no chrome.
 #[test]
 fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
     let window = ui::hosted_window::HostedWindow::new();

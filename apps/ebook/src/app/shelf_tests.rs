@@ -49,9 +49,6 @@ fn shelf(app: &mut TestApp<EbookShell>) -> Vec<String> {
         .collect()
 }
 
-// USER REQUIREMENT (2026-10-22): the library is one thing: a fresh device
-// with a synced library of N books shows N tiles, whichever device has
-// their text.
 #[test]
 fn a_fresh_device_with_a_synced_library_of_n_books_shows_n_tiles() {
     const N: usize = 12;
@@ -68,8 +65,6 @@ fn a_fresh_device_with_a_synced_library_of_n_books_shows_n_tiles() {
     assert_eq!(shown.into_iter().collect::<BTreeSet<_>>(), titles);
 }
 
-// USER REQUIREMENT (2026-10-22): sorting and Hide finished treat a book
-// whose text is elsewhere exactly as one whose text is here.
 #[test]
 fn sorting_and_hiding_finished_books_treat_books_elsewhere_as_books_here() {
     let mut app = fresh();
@@ -117,9 +112,6 @@ fn sorting_and_hiding_finished_books_treat_books_elsewhere_as_books_here() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): opening a book whose text is elsewhere
-// fetches it: its tile shows it on its way, and the reader opens where its
-// reader left off once it is here.
 #[test]
 fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
     use ui::collaboration::record_content::{ContentLane, RecordContent};
@@ -177,9 +169,6 @@ fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
     assert!(books.arriving(&entry.id).is_none());
 }
 
-// USER REQUIREMENT (2026-10-22): when nothing this device can reach has a
-// book's text, opening it says so plainly, with what will make it
-// available, and its tile stays.
 #[test]
 fn a_book_nobody_reachable_has_says_so_on_open_and_keeps_its_tile() {
     let mut app = fresh();

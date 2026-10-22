@@ -949,8 +949,6 @@ fn a_guest_copies_a_snippet_without_being_asked() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): the sidebar collapse button collapses and
-// expands the sidebar.
 #[test]
 fn the_collapse_button_collapses_and_expands_the_sidebar() {
     // Every motion reads as arrived: a frame that comes after the slide's

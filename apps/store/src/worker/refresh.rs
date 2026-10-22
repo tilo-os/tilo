@@ -864,8 +864,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-22): "the Tilo app repository stays available
-    // after a component swap"
     /// When the app host cannot read the system's interface declaration it
     /// refuses the repository; the Store says the device needs a system
     /// update, naming the repository, as visibly as an outage and without

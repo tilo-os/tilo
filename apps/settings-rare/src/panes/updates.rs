@@ -3375,8 +3375,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "Updates: state the update status once.
-    // Rows with nothing to say (\"Unavailable\") don't render."
     #[test]
     fn the_update_is_stated_once_and_unknowns_have_no_rows() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();

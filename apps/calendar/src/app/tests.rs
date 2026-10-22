@@ -1690,9 +1690,6 @@ fn done_dismisses_the_mobile_editor_of_an_event_with_a_conflict() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
-// system window bar's app slots, through the one tilo-app API Files, Notes
-// and Browser already use, and no app draws a second toolbar row."
 #[test]
 fn the_view_switcher_and_period_controls_are_the_window_bars_alone() {
     for (width, height) in [(1280, 800), (460, 720)] {

@@ -200,7 +200,6 @@ pub fn row(
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-19): "app icons, tag line, directly opening tapps without explicit installation"
     #[test]
     fn a_tilo_app_shows_the_desktops_glyph_and_a_flathub_app_its_artwork() {
         let mut notes = crate::fixture::fixture_catalog().remove(0);

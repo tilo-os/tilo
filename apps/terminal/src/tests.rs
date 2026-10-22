@@ -3119,8 +3119,6 @@ fn cells(w: &TerminalWidget, row: usize, col: usize, len: usize) -> Vec<(char, A
         .collect()
 }
 
-// USER REQUIREMENT (2026-10-21): "for some reason nearly all text has a line
-// drawn under it" (Claude Code in the Terminal; Alacritty shows no underline).
 /// Claude Code's start-up bytes, as captured from `claude` 2.1.305 on a pty:
 /// it pushes Kitty keyboard flags (`CSI > 5 u`), pops them (`CSI < u`) and
 /// sets modifyOtherKeys (`CSI > 4 ; 2 m`), then styles its text with `1`/`22`

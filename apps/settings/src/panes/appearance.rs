@@ -851,7 +851,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "High contrast, Reduce motion and Text size each live in exactly one pane, Accessibility, which is where people look for them. Appearance links there with one row (\"Accessibility options\"), never a second copy of the controls."
     #[test]
     fn contrast_motion_and_text_size_live_only_in_accessibility_and_appearance_links_there() {
         use crate::categories::Category;

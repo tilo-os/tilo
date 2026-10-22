@@ -185,7 +185,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "Chat's composer appears the moment authorship arrives."
     #[test]
     fn the_composer_appears_the_moment_authorship_arrives() {
         use std::cell::RefCell;

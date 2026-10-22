@@ -196,10 +196,6 @@ fn room_channels(chat: &Chat) -> Vec<(String, String, ChannelKind)> {
         .collect()
 }
 
-// USER REQUIREMENT (2026-10-19): "Chat runs *in a workspace*, not the other way around."
-// First open in a workspace: exactly one text channel `#chat` and one voice
-// channel `#voice`, nothing else, created once per room so concurrent first
-// opens on several devices converge on exactly those two.
 #[test]
 fn first_opens_on_two_devices_converge_on_exactly_chat_and_voice() {
     let mut genesis = Replica::<Chat>::new().as_author(ADA);
@@ -1356,11 +1352,6 @@ fn channels_with_categories(chat: &Chat) -> Vec<(String, String, Option<String>)
         .collect()
 }
 
-// USER REQUIREMENT (2026-10-19): "Chat runs *in a workspace*, not the other way around."
-// The user's chat did not open: "this cannot be opened",
-// "categories.cat_home_text.v.workspace: required value is missing". And:
-// "why are you *deleting* existing stuff?" — the migration deletes nothing
-// the person has and adds nothing to a room that has channels.
 #[test]
 fn the_migration_opens_the_users_chat_with_everything_in_it() {
     use ui::tilo_resource::evolution;
@@ -1416,8 +1407,6 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
     }
 }
 
-// USER REQUIREMENT (2026-10-19): "not at all what IDs are for" — ids are
-// stable identity: removing the workspace layer rewrites none of them.
 #[test]
 fn every_id_in_the_users_chat_survives_the_migration_and_its_messages_still_show() {
     use ui::tilo_resource::evolution;

@@ -814,11 +814,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "every appearance setting applies
-    // instantly" starts at the control: a click on a text size segment and
-    // on the high contrast switch (both in Accessibility, their one pane)
-    // writes the person's appearance section, in a private window and in
-    // one that keeps the person's records.
     #[test]
     fn a_click_on_text_size_and_high_contrast_writes_the_appearance_section() {
         click_and_check(TestApp::<SettingsShell>::new().unwrap());

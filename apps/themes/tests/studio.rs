@@ -105,9 +105,6 @@ fn a_preset_is_one_card_holding_its_preview_name_and_actions() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): the preset grid has as many columns as
-// tiles of its minimum width fit in its width; the tiles stretch to fill
-// each row, resize as the window does, and the preview scales with its tile.
 #[test]
 fn the_preset_grid_columns_follow_the_width_and_its_tiles_resize() {
     let mut counts = Vec::new();

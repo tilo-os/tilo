@@ -1480,10 +1480,6 @@ mod tests {
         navigated(&engine)
     }
 
-    // USER REQUIREMENT (2026-10-19): "typing a URL or search term and pressing
-    // Enter does nothing, and there is no arrow/go button" -- Enter and the go
-    // button both commit the field: an address opens over https, anything
-    // else searches.
     #[test]
     fn enter_or_the_go_button_opens_an_address_or_searches() {
         let mut failures = Vec::new();
@@ -1529,9 +1525,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "There must be exactly one suggestion
-    // surface." and "Enter navigates to the typed URL, or searches if it isn't
-    // one; clicking or tapping a suggestion opens it."
     #[test]
     fn hosted_the_bar_lists_the_only_suggestions_and_each_opens_where_it_says() {
         use ui::window_toolbar::ToolbarEvent;

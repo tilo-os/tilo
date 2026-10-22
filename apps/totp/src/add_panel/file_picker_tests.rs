@@ -142,7 +142,6 @@ fn qr_png(uri: &str) -> Vec<u8> {
     png
 }
 
-// USER REQUIREMENT (2026-10-22): "the TOTP app opens the file picker"
 #[test]
 fn the_totp_app_opens_the_file_picker() {
     let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";

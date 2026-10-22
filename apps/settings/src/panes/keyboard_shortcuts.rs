@@ -636,9 +636,6 @@ mod tests {
         assert_eq!(pane.chords[&ShortcutAction::Search].get(), "Super+j");
     }
 
-    // USER REQUIREMENT (2026-10-21): "never ask the person to type an app
-    // id. They choose an app with the standard app picker, which lists
-    // installed apps with icons."
     #[test]
     fn an_app_is_chosen_for_its_paste_shortcut_never_typed() {
         fn find<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {

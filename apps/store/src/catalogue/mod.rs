@@ -485,7 +485,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the app store"
     /// Only the person's own block is theirs to lift; a policy's stays.
     #[test]
     fn the_person_unblocks_only_what_they_blocked() {
@@ -515,7 +514,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the app store"
     #[test]
     fn search_answers_locally_with_apps_and_bots_apart_and_tilo_first() {
         let mut bot = tilo("so.tilo.bot.notes-digest", "Notes digest");

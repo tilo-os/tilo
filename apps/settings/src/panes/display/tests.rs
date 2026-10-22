@@ -290,9 +290,6 @@ fn connected_display_controls_publish_their_parameter_actions() {
             && binding.control_id == format!("display.output.eDP-1.{field}")),
             "{field} shares the published display operation: {bindings:#?}");
     }
-    // USER REQUIREMENT (2026-10-22): where a display sits is set in one
-    // place, the arrangement canvas; no second control beside it says or
-    // sets it. Placing beside another stays an action for agents and search.
     assert!(
         rows.iter()
             .any(|row| row["resource"] == "settings.display-output:eDP-1"
@@ -746,9 +743,6 @@ fn relative_positions_use_the_neighbour_s_logical_extent() {
     assert!(place("Left of Nowhere", &mut portrait).is_err());
 }
 
-// USER REQUIREMENT (2026-10-22): a display is named by its model, never
-// by its port or card; two connected displays of one model are told
-// apart by the number Identify shows on each.
 #[test]
 fn identical_monitors_are_named_apart_by_number_in_settings() {
     let first = OutputDescriptor {
@@ -1469,10 +1463,6 @@ fn tile(host: &ui::headless::FrameHarness, name: &str) -> ui::vello::kurbo::Rect
     ui::vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1)
 }
 
-// USER REQUIREMENT (2026-10-22): there is one display selection, and it
-// is the arrangement canvas: no second picker beside it. Clicking, tapping
-// or starting to drag a display on the canvas selects it, as do the arrow
-// keys and a screen reader; the page then shows that display's settings.
 #[test]
 fn the_canvas_is_the_one_display_selection() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
@@ -1539,10 +1529,6 @@ fn the_canvas_is_the_one_display_selection() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): only the selected display's settings
-// show, below the canvas: no list of every display, and no
-// brightness slider anywhere but in the selected display's settings,
-// and only when that display's brightness can be controlled.
 #[test]
 fn only_the_selected_displays_settings_show() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
@@ -1586,8 +1572,6 @@ fn only_the_selected_displays_settings_show() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): virtual and disconnected connectors
-// never appear anywhere: no canvas tile, no settings, no brightness.
 #[test]
 fn a_virtual_or_disconnected_connector_appears_nowhere() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
@@ -1634,10 +1618,6 @@ fn a_virtual_or_disconnected_connector_appears_nowhere() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): hovering or selecting a display on the
-// canvas (by pointer, keys or screen reader) briefly flashes its number
-// on that physical display, so the person always knows which screen is
-// which.
 #[test]
 fn pointing_at_or_choosing_a_display_flashes_its_number_on_it() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
@@ -1655,8 +1635,6 @@ fn pointing_at_or_choosing_a_display_flashes_its_number_on_it() {
     assert_eq!(pane.last_flash.as_deref(), Some("eDP-1"));
 }
 
-// USER REQUIREMENT (2026-10-21): the arrangement, scale and rotation
-// apply immediately; a resolution or refresh change asks to be kept.
 #[test]
 fn arrangement_scale_and_rotation_apply_at_once_a_mode_asks_first() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();

@@ -607,8 +607,6 @@ mod tests {
         assert!(w.synthetic_accessibility_rect(&[2]).is_some());
     }
 
-    // USER REQUIREMENT (2026-10-21): "Keyboard (up/down/enter/escape),
-    // pointer and touch all work."
     #[test]
     fn keyboard_pointer_and_touch_choose_or_dismiss_suggestions() {
         let send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {

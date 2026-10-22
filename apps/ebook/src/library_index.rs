@@ -1008,8 +1008,6 @@ mod tests {
         assert!(segment.find("the", 10).is_empty(), "common words alone");
     }
 
-    // USER REQUIREMENT (2026-10-22): a passage is found by a phrase from it,
-    // including one of a long book's frequent names.
     #[test]
     fn a_name_in_a_tenth_of_a_long_books_paragraphs_still_finds_them() {
         let mut blocks = vec!["the tide came in"; 270];

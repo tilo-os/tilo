@@ -395,9 +395,6 @@ mod tests {
         Invoke::edit(edit).unwrap()
     }
 
-    // USER REQUIREMENT (2026-10-21): "every app's primary controls live in
-    // the system window bar's app slots, through the one tilo-app API Files,
-    // Notes and Browser already use, and no app draws a second toolbar row."
     /// History stands beside Music's slots in the window's bar: no band of
     /// the window's own above the page and no control of Music's own; the
     /// bar's History opens the framework's History.

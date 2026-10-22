@@ -1372,9 +1372,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "Show real disk capacity and usage.
-    // Workspaces are listed once, grouped as the data model actually groups
-    // them, not repeated under every device."
     #[test]
     fn each_workspace_is_listed_once_under_the_disks_real_capacity() {
         let profile = tempfile::tempdir().unwrap();

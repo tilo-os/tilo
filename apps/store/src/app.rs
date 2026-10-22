@@ -5821,7 +5821,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the app store"
     /// A blocked app is in no list and no search and cannot be installed; its
     /// page says who blocked it; only the person who blocked it lifts it,
     /// and the list is the one desktop search reads.

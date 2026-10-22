@@ -1571,7 +1571,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "Power: one suspend timer per power source (battery / plugged in), shown inside the selected power profile only if profiles truly differ. Every dependent control is disabled and explained when its parent toggle is off."
     #[test]
     fn one_suspend_timer_per_power_source_disabled_and_explained_while_idle_suspend_is_off() {
         ui::i18n::I18nManager::init("en-US");

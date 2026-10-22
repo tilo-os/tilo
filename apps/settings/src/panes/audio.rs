@@ -2690,8 +2690,6 @@ Video
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "Speaker sets appear as outputs in
-    // Sound, alongside other outputs, selectable like any output."
     #[test]
     fn a_speaker_set_is_an_output_chosen_like_any_other() {
         use media::audio::AudioDevice as GDevice;

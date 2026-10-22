@@ -1322,8 +1322,6 @@ fn request_identities_keep_stale_responses_from_winning() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "Home fetches nothing until the person connects
-// a source. The empty state invites connecting one."
 #[test]
 fn home_fetches_nothing_until_a_source_is_connected() {
     use ui::a11y::Action as A11yAction;

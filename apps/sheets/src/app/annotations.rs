@@ -1133,8 +1133,6 @@ mod chart_data_tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "a chart must not plot the label column as a
-    // series; label columns become the category axis, with labels shown".
     #[test]
     fn the_label_column_is_the_category_axis_and_never_a_series() {
         let values = sheet(&[

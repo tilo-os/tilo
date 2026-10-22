@@ -2410,9 +2410,6 @@ mod tests {
         tilo_system_stats::client::Client::from_stream(app).unwrap()
     }
 
-    /// USER REQUIREMENT: Monitor shows the machine's processes and stats,
-    /// which on Linux reach it only through the session's service.
-    // USER REQUIREMENT (2026-10-18): "the resource monitor isn't allowed to read the system process list/or any system stats"
     #[cfg(target_os = "linux")]
     #[test]
     fn the_monitor_shows_the_processes_and_stats_the_session_serves() {

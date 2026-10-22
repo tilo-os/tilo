@@ -1,7 +1,6 @@
 // Typing reaches the calculator through the framework's live input path:
 // included into `app::tests`.
 
-// USER REQUIREMENT (2026-10-22): "typing in the 2D graph mode enters the function"
 /// A person who switches to Graph 2D and types (no Tab first) writes the
 /// function they type, on the framework's live path: the mode press in the
 /// window's bar, the press on the formula and the keystrokes all go
