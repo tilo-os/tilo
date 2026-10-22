@@ -149,6 +149,7 @@ pub(crate) fn fill_with_ground(
             Some(brush_transform),
             shape,
         );
+        settle(scene, transform, shape, theme, ground);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -159,6 +160,71 @@ pub(crate) fn fill_with_ground(
         return;
     }
     scene.fill(Fill::NonZero, transform, ground, None, shape);
+}
+
+/// How far, as a contrast ratio, the floating material may stand off its
+/// ground anywhere, whatever is behind it. Every ink a panel draws is
+/// chosen to clear [`SMALL_TEXT_MIN_CONTRAST`] on the opaque ground (a
+/// disabled row's dim ink included), so on the material it still clears
+/// 7 / 1.5 ≈ 4.7:1, above body text's 4.5:1 with room for 8-bit rounding.
+///
+/// [`SMALL_TEXT_MIN_CONTRAST`]: crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST
+pub const MATERIAL_SPREAD: f64 = 1.5;
+
+/// The darkest and the lightest colour the floating material shows over
+/// `ground`: the ground stepped toward each end of the theme's neutral ramp
+/// until it stands [`MATERIAL_SPREAD`] off it (or reaches the end).
+#[must_use]
+pub fn material_band(theme: &Theme, ground: Color) -> (Color, Color) {
+    let toward = |end: Color| {
+        let at = |t: f32| {
+            let [r, g, b, _] = ground.components;
+            let [er, eg, eb, _] = end.components;
+            Color::new([r + (er - r) * t, g + (eg - g) * t, b + (eb - b) * t, 1.0])
+        };
+        if crate::color::contrast_ratio(at(1.0), ground) <= MATERIAL_SPREAD {
+            return at(1.0);
+        }
+        let (mut within, mut beyond) = (0.0_f32, 1.0_f32);
+        for _ in 0..24 {
+            let mid = (within + beyond) / 2.0;
+            if crate::color::contrast_ratio(at(mid), ground) <= MATERIAL_SPREAD {
+                within = mid;
+            } else {
+                beyond = mid;
+            }
+        }
+        at(within)
+    };
+    let stops = &theme.tokens.colors.neutral.stops;
+    let (first, last) = (toward(stops[0]), toward(stops[10]));
+    if crate::color::relative_luminance(first) <= crate::color::relative_luminance(last) {
+        (first, last)
+    } else {
+        (last, first)
+    }
+}
+
+/// Hold the blurred backdrop just drawn in `shape` inside the material's
+/// band ([`material_band`]), channel by channel: no channel lighter than
+/// the band's light end, none darker than its dark end. Each channel of
+/// the ground lies between the two, so the tint drawn over it stays
+/// inside too, and a panel's text keeps its contrast over a white page, a
+/// black one or a busy one. Inside the band the backdrop shows as it is.
+fn settle(scene: &mut Scene, transform: Affine, shape: &impl Shape, theme: &Theme, ground: Color) {
+    use vello::peniko::{BlendMode, Compose, Mix};
+    let (dark_end, light_end) = material_band(theme, ground);
+    for (mix, end) in [(Mix::Darken, light_end), (Mix::Lighten, dark_end)] {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::new(mix, Compose::SrcOver),
+            1.0,
+            transform,
+            shape,
+        );
+        scene.fill(Fill::NonZero, transform, end, None, shape);
+        scene.pop_layer();
+    }
 }
 
 /// The see-through material's fill over `ground`: half of it, unblurred,

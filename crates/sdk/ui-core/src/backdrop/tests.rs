@@ -317,8 +317,20 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
         "without the pass the placeholder is the opaque ground"
     );
     let tint = f64::from(theme.tokens.colors.surfaces.material_opacity);
+    // The stripes blur to mid grey, which the material then holds inside
+    // its band before tinting it.
+    let (dark_end, light_end) = material_band(&theme, crate::chrome::panel_ground(&theme));
+    let (dark_end, light_end) = (
+        dark_end.to_rgba8().to_u8_array(),
+        light_end.to_rgba8().to_u8_array(),
+    );
+    let mut channel_index = 0;
     let expected = ground.map(|channel| {
-        let mixed = f64::from(channel).mul_add(tint, 127.5 * (1.0 - tint));
+        let held = 127.5_f64
+            .min(f64::from(light_end[channel_index]))
+            .max(f64::from(dark_end[channel_index]));
+        channel_index += 1;
+        let mixed = f64::from(channel).mul_add(tint, held * (1.0 - tint));
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
