@@ -16,7 +16,7 @@ use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
 use tilo_desktop_search::{SearchData, Target};
 use ui::automerge::AutoCommit;
-use ui::kurbo::Point;
+use ui::kurbo::{Point, Rect};
 use ui::taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
@@ -45,6 +45,8 @@ const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
 const WORKSPACE_PREFIX: &str = "desktop.workspace:";
 /// Search command ids and banner action keys of the host's own actions.
 const HOST_PREFIX: &str = "host:";
+/// The least room the palette keeps from the surface's sides.
+const PALETTE_EDGE: f64 = 8.0;
 
 /// An action only the host that embeds the desktop can perform (in a
 /// browser: keeping the person's identity with a passkey). The desktop
@@ -726,7 +728,28 @@ impl DesktopSurface {
             .draw(scene, transform, text, theme, presence);
     }
 
-    /// Place the palette's layout node: centred near the top of the surface.
+    /// Where the open palette's card stands.
+    #[cfg(test)]
+    pub(super) fn search_palette_rect(&self) -> Rect {
+        self.search.palette().get_rect()
+    }
+
+    /// The window a search over one window (`search_window`) stands over.
+    fn searched_window_rect(&self) -> Option<Rect> {
+        let (strip, group) = self.search_window?;
+        self.rows
+            .get(&strip)?
+            .groups
+            .iter()
+            .find(|candidate| candidate.id == group)
+            .map(Widget::get_rect)
+            .filter(|rect| rect.area() > 0.0)
+    }
+
+    /// Place the palette's layout node: over the window a search of one
+    /// window was opened from, as an app's own palette stands over its
+    /// window, else centred near the top of the surface. It keeps its own
+    /// width and stays on the surface.
     pub(super) fn search_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -741,6 +764,27 @@ impl DesktopSurface {
         let (width, _) = palette.desired_size();
         let mut style = taffy.style(node).cloned().unwrap_or_default();
         style.position = ui::taffy::Position::Absolute;
+        if let Some(window) = self.searched_window_rect() {
+            let (origin, _) = ui::action_palette::placement(window);
+            let surface = self.rect;
+            let x0 = (window.center().x - width / 2.0)
+                .min(surface.x1 - width - PALETTE_EDGE)
+                .max(surface.x0 + PALETTE_EDGE);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a place on the surface is a few thousand logical pixels"
+            )]
+            let at = |v: f64| ui::taffy::LengthPercentageAuto::length(v as f32);
+            style.inset = ui::taffy::Rect {
+                left: at(x0 - surface.x0),
+                right: ui::taffy::LengthPercentageAuto::auto(),
+                top: at(origin.y - surface.y0),
+                bottom: ui::taffy::LengthPercentageAuto::auto(),
+            };
+            style.margin.left = ui::taffy::LengthPercentageAuto::length(0.0);
+            let _ = taffy.set_style(node, style);
+            return Some(node);
+        }
         style.inset = ui::taffy::Rect {
             left: ui::taffy::LengthPercentageAuto::percent(0.5),
             right: ui::taffy::LengthPercentageAuto::auto(),
