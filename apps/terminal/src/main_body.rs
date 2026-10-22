@@ -7677,20 +7677,12 @@ impl TerminalWidget {
     /// ended once it is not. The reader distinguishes a hosted session's
     /// start-up `EIO` from its exit by the lifetime socket the supervisor
     /// closes when the guest ends. A local PTY has none.
-    #[cfg(unix)]
     fn reader_lease(&self) -> ReaderLease {
         ReaderLease::new(
             self.service_lifetime
                 .as_ref()
                 .and_then(|socket| socket.clone_for_reader().ok()),
         )
-    }
-
-    /// What the reader asks whether the session is still open: a PTY
-    /// without a supervisor's lease is open until it reads end of file.
-    #[cfg(not(unix))]
-    fn reader_lease(&self) -> ReaderLease {
-        ReaderLease::new()
     }
 
     fn attach_backend(&mut self, backend: TerminalBackend) {

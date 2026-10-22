@@ -129,19 +129,29 @@ impl SessionLifetime {
     /// The duplicate does not acquire responsibility for ending the session.
     ///
     /// # Errors
-    /// Returns the descriptor duplication error.
+    /// Returns the descriptor duplication error, and
+    /// [`std::io::ErrorKind::Unsupported`] where leases are not sockets.
     #[cfg(unix)]
     pub fn clone_for_reader(&self) -> std::io::Result<ReaderLifetime> {
         self.socket
             .try_clone()
             .map(|socket| ReaderLifetime { socket })
     }
+
+    /// Where leases are not sockets there is nothing to duplicate.
+    ///
+    /// # Errors
+    /// Always [`std::io::ErrorKind::Unsupported`].
+    #[cfg(not(unix))]
+    pub fn clone_for_reader(&self) -> std::io::Result<ReaderLifetime> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
 }
 
 /// A reader's duplicate of a [`SessionLifetime`] connection; it only observes
 /// whether the peer still holds the session open.
-#[cfg(unix)]
 pub struct ReaderLifetime {
+    #[cfg(unix)]
     socket: std::os::unix::net::UnixStream,
 }
 
@@ -176,7 +186,6 @@ impl ReaderLifetime {
 
 /// Where a lease stands for a reader, when its peer may say how the session
 /// ended before closing it (a relay session's `end_report`).
-#[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeaseState {
     /// The peer holds the session open.
@@ -239,6 +248,17 @@ impl ReaderLifetime {
             .unwrap_or(line.len());
         line.truncate(end.min(MAX_END_REPORT));
         LeaseState::Reported(line)
+    }
+}
+
+/// Where leases are not sockets no reader holds one; this is only for the
+/// type to exist on every target.
+#[cfg(not(unix))]
+impl ReaderLifetime {
+    /// A lease that is not there reads as closed.
+    #[must_use]
+    pub fn state(&self) -> LeaseState {
+        LeaseState::Closed
     }
 }
 
