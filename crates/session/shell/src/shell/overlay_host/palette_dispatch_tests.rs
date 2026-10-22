@@ -1550,7 +1550,7 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
         h.pump_peer_sync();
 
         let none = Modifiers::default();
-        h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none);
+        peer_sync_key(&mut h, &key_event(Key::Named(NamedKey::Enter)), none);
 
         assert!(
             h.peer_sync_snapshot().invite_token.is_none(),
@@ -1675,7 +1675,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
 
         assert!(
-            h.handle_peer_sync_event(&key_event(Key::Character("c".into())), ctrl),
+            peer_sync_key(&mut h, &key_event(Key::Character("c".into())), ctrl),
             "the card owns Ctrl+C while it is showing a token"
         );
 
@@ -1764,7 +1764,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
 
         let none = Modifiers::default();
         for c in ["X", "a", "v", "e", "r"] {
-            h.handle_peer_sync_event(&key_event(Key::Character(c.into())), none);
+            peer_sync_key(&mut h, &key_event(Key::Character(c.into())), none);
         }
         assert_eq!(
             h.peer_sync_snapshot().invite_name.as_deref(),
@@ -1776,16 +1776,8 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         h.set_peer_sync_snapshot_for_tests(snapshot);
 
         assert!(
-            h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none),
-            "Enter belongs to the composer while it is up"
-        );
-        assert!(
-            h.peer_sync_snapshot().invite_review_open,
-            "the first Enter is an explicit review, not a mint"
-        );
-        assert!(
-            h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Enter)), none),
-            "Enter confirms after the review is visible"
+            peer_sync_key(&mut h, &key_event(Key::Named(NamedKey::Enter)), none),
+            "Enter is the sheet's one primary action, Invite"
         );
         assert_eq!(
             h.peer_sync_snapshot().invite_token.as_deref(),
@@ -1818,7 +1810,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
 
         assert!(
-            h.handle_peer_sync_event(&key_event(Key::Character("v".into())), ctrl),
+            peer_sync_key(&mut h, &key_event(Key::Character("v".into())), ctrl),
             "the prompt owns Ctrl+V"
         );
 
@@ -1840,7 +1832,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         });
         ui::text_selection::clipboard_copy(&format!("  {SAMPLE_TOKEN}\n"));
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        h.handle_peer_sync_event(&key_event(Key::Character("v".into())), ctrl);
+        peer_sync_key(&mut h, &key_event(Key::Character("v".into())), ctrl);
         assert_eq!(
             h.peer_sync_snapshot().connect_input.as_deref(),
             Some(SAMPLE_TOKEN)
@@ -1858,7 +1850,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         });
         ui::text_selection::clipboard_copy(SAMPLE_TOKEN);
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        h.handle_peer_sync_event(&key_event(Key::Character("v".into())), ctrl);
+        peer_sync_key(&mut h, &key_event(Key::Character("v".into())), ctrl);
         let got = h.peer_sync_snapshot().connect_input.unwrap();
         assert!(
             !got.ends_with('v') || SAMPLE_TOKEN.ends_with('v'),
@@ -1877,7 +1869,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
         });
         let none = Modifiers::default();
         for c in ["a", "b", "c"] {
-            h.handle_peer_sync_event(&key_event(Key::Character(c.into())), none);
+            peer_sync_key(&mut h, &key_event(Key::Character(c.into())), none);
         }
         assert_eq!(h.peer_sync_snapshot().connect_input.as_deref(), Some("abc"));
     }
@@ -1911,27 +1903,19 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             ..PeerSyncSnapshot::default()
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
+        let has = |name: &str| names.iter().any(|n| n == name);
         assert!(
-            names.contains(&"review") && names.contains(&"new-recipient"),
-            "the recipient face must offer review and a way to change who, got {names:?}"
-        );
-        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
-            invite_name: Some("bob".to_string()),
-            invite_review_open: true,
-            ..PeerSyncSnapshot::default()
-        });
-        let names = draw_and_collect_peer_sync_buttons(&mut h);
-        assert!(
-            names.contains(&"create"),
-            "the reviewed invite face must offer its Create gesture, got {names:?}"
+            has("peer-sync.primary=Create invite") && has("peer-sync-who"),
+            "the invite face must offer Create invite and a way to say who, got {names:?}"
         );
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
             invite_token: Some(SAMPLE_TOKEN.to_string()),
             ..PeerSyncSnapshot::default()
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
+        let has = |name: &str| names.iter().any(|n| n == name);
         assert!(
-            names.contains(&"copy"),
+            has("peer-sync.primary=Copy invite"),
             "the issuing side must offer Copy, got {names:?}"
         );
 
@@ -1940,15 +1924,19 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             ..PeerSyncSnapshot::default()
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
+        let has = |name: &str| names.iter().any(|n| n == name);
         assert!(
-            names.contains(&"paste"),
+            has("peer-sync-paste-link"),
             "the receiving side must offer Paste, got {names:?}"
         );
         assert!(
-            names.contains(&"copy-identity"),
+            has("peer-sync-copy-identity"),
             "the recipient must be able to send a bindable identity card, got {names:?}"
         );
-        assert!(names.contains(&"join"), "and still Join, got {names:?}");
+        assert!(
+            has("peer-sync.primary=Join"),
+            "and still Join, got {names:?}"
+        );
 
         // Half a token: what the field holds while typed by hand (a paste
         // arrives whole), exercising `elide_token` — a card that panicked
@@ -1958,8 +1946,9 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             ..PeerSyncSnapshot::default()
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
+        let has = |name: &str| names.iter().any(|n| n == name);
         assert!(
-            names.contains(&"join") && names.contains(&"paste"),
+            has("peer-sync.primary=Join") && has("peer-sync-paste-link"),
             "a field holding something unfinished still offers both, got {names:?}"
         );
     }
@@ -2069,7 +2058,11 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             ..PeerSyncSnapshot::default()
         });
         let none = Modifiers::default();
-        assert!(h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Escape)), none));
+        assert!(peer_sync_key(
+            &mut h,
+            &key_event(Key::Named(NamedKey::Escape)),
+            none
+        ));
         assert!(h.peer_sync_snapshot().invite_token.is_none());
     }
 
@@ -2252,13 +2245,152 @@ fn invitation_actions_return_their_network_output_to_the_caller() {
     }
 }
 
+/// Deliver `event` to the open invite, join or pairing sheet as the frame
+/// does, its field focused as when it opens. Returns whether the sheet
+/// kept the event.
+fn peer_sync_key(
+    h: &mut ShellOverlayHost,
+    event: &WindowEvent,
+    modifiers: winit::event::Modifiers,
+) -> bool {
+    let (taffy, root) = lay_out_host(h, 1280.0, 800.0, &Theme::dark());
+    h.peer_sync_overlay.focus_field_for_tests();
+    // A keyboard's character key types its character unless a chord holds
+    // it, as the window delivers it.
+    let typed;
+    let event = match event {
+        WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: Key::Character(c),
+                    text: None,
+                    ..
+                },
+            ..
+        } if !modifiers.state().control_key() => {
+            typed = ui::synthetic_input::key_press(Key::Character(c.clone()), Some(c.as_str()));
+            &typed
+        }
+        other => other,
+    };
+    let mut document = automerge::AutoCommit::new();
+    let mut handled = false;
+    let mut focus = None;
+    h.handle_peer_sync_event(
+        event,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: ui::widget::Edits::lend(&mut document),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: root,
+            taffy: &taffy,
+        },
+    );
+    handled
+}
+
+/// Lay the host out at `vw`x`vh` through the frame's own solver, which
+/// lets a widget settle the styles its allocation decides (a modal sheet
+/// narrows its body to the sheet).
+fn lay_out_host(
+    h: &mut ShellOverlayHost,
+    vw: f64,
+    vh: f64,
+    theme: &Theme,
+) -> (taffy::TaffyTree<()>, taffy::NodeId) {
+    use std::collections::HashMap as StdHashMap;
+    let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+    let mut node_map: StdHashMap<taffy::NodeId, *mut dyn Widget> = StdHashMap::new();
+    let child = h.build_layout(&mut taffy, theme, &mut node_map);
+    let outer = taffy
+        .new_with_children(
+            taffy::Style {
+                size: taffy::Size::from_lengths(ui::num::f32_of_f64(vw), ui::num::f32_of_f64(vh)),
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the tree and the pointers in `node_map` were just built from
+    // `h`, which nothing else touches during the solve.
+    unsafe {
+        admitted.rebuild(&*h, &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
+            outer,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(ui::num::f32_of_f64(vw)),
+                height: taffy::AvailableSpace::Definite(ui::num::f32_of_f64(vh)),
+            },
+            &node_map,
+            &admitted,
+            &mut tr,
+        )
+        .expect("the host lays out");
+    }
+    h.apply_layout(&taffy, child, Point::ORIGIN);
+    (taffy, child)
+}
+
+/// Lay the host out at `vw`x`vh` and draw the invite, join and pairing
+/// sheet as the frame does, twice, so the sheet is placed where it is drawn.
+fn lay_out_and_draw_peer_sync(h: &mut ShellOverlayHost, vw: f64, vh: f64, theme: &Theme) {
+    let mut tr = TextRenderer::new();
+    for _ in 0..2 {
+        let _tree = lay_out_host(h, vw, vh, theme);
+        let mut scene = Scene::new();
+        h.draw_peer_sync(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &ui::presence::PresenceCtx::default(),
+        );
+    }
+}
+
+/// The sheet's footer buttons and the buttons in its body whose label is
+/// their name, with the size they are drawn at.
+fn labelled_buttons(
+    controls: &[crate::shell::peer_sync_overlay::SheetControl],
+) -> Vec<(&crate::shell::peer_sync_overlay::SheetControl, bool)> {
+    controls
+        .iter()
+        .filter(|control| {
+            control.button
+                && matches!(
+                    control.id.as_str(),
+                    "peer-sync.primary"
+                        | "peer-sync.secondary"
+                        | "peer-sync-paste-link"
+                        | "peer-sync-copy-identity"
+                )
+        })
+        .map(|control| (control, control.id == "peer-sync.primary"))
+        .collect()
+}
+
+/// The width `label` needs on a Regular button.
+fn button_need(label: &str, primary: bool, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
+        .control_size(ui::widget::ControlSize::Regular);
+    if primary {
+        face = face.role(ui::widget::ButtonRole::Primary);
+    }
+    face.intrinsic_width(tr, theme)
+}
+
 /// Every footer button of the invitation sheet is as wide as its face needs,
 /// so a label such as "Cancel" is never elided to "Ca...", and the row stays
 /// inside the sheet, in English and in German copy.
 #[test]
 fn peer_sync_sheet_buttons_fit_their_labels() {
     let (mut h, _) = host_with_chrome();
-    h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
     let snapshots = [
@@ -2267,8 +2399,8 @@ fn peer_sync_sheet_buttons_fit_their_labels() {
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
-            invite_name: Some("bob".to_string()),
-            invite_review_open: true,
+            invite_name: Some(String::new()),
+            invite_recipient_path: crate::shell::peer_sync_overlay::InviteRecipientPath::Link,
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
@@ -2286,37 +2418,15 @@ fn peer_sync_sheet_buttons_fit_their_labels() {
         ui::i18n::I18nManager::set_locale(locale);
         for snapshot in snapshots.clone() {
             h.set_peer_sync_snapshot_for_tests(snapshot);
-            let mut scene = Scene::new();
-            h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let (sheet, labels) = h.peer_sync_overlay.drawn_labels_for_tests();
-            let rects = h.peer_sync_prompt_rects_for_tests();
-            assert_eq!(labels.len(), rects.len());
-            let footer: Vec<_> = labels
-                .iter()
-                .zip(&rects)
-                .filter(|(_, (id, _))| {
-                    matches!(
-                        *id,
-                        "create"
-                            | "review"
-                            | "back"
-                            | "join"
-                            | "cancel"
-                            | "copy"
-                            | "paste"
-                            | "paste-identity"
-                            | "copy-identity"
-                    )
-                })
-                .collect();
+            lay_out_and_draw_peer_sync(&mut h, 1280.0, 800.0, &theme);
+            let sheet = h.peer_sync_overlay.card_rect();
+            let controls = h.peer_sync_controls_for_tests();
+            let footer = labelled_buttons(&controls);
             assert!(!footer.is_empty(), "{locale}: the sheet drew no footer");
-            for (label, (id, rect)) in footer {
-                let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
-                    .control_size(ui::widget::ControlSize::Large);
-                if matches!(*id, "create" | "join" | "copy") {
-                    face = face.role(ui::widget::ButtonRole::Primary);
-                }
-                let need = face.intrinsic_width(&mut tr, &theme);
+            for (control, primary) in footer {
+                let label = &control.label;
+                let rect = control.rect;
+                let need = button_need(label, primary, &mut tr, &theme);
                 assert!(
                     rect.width() + 0.5 >= need,
                     "{locale}: {label:?} is {}px wide but its face needs {need}px",
@@ -2337,10 +2447,6 @@ fn peer_sync_sheet_buttons_fit_their_labels() {
 /// and none of them is narrower than its label needs. A short window clips
 /// the form above the footer instead of pushing the sheet off screen.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one size-by-sheet matrix that reads top to bottom"
-)]
 fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
     use crate::shell::peer_sync_overlay::PendingInvitationSummary;
     let (mut h, _) = host_with_chrome();
@@ -2365,8 +2471,8 @@ fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
-            invite_name: Some("bob".to_string()),
-            invite_review_open: true,
+            invite_name: Some(String::new()),
+            invite_recipient_path: crate::shell::peer_sync_overlay::InviteRecipientPath::Link,
             ..PeerSyncSnapshot::default()
         },
         PeerSyncSnapshot {
@@ -2387,56 +2493,42 @@ fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
         (1472.0, 920.0),
     ] {
         let window = Rect::new(0.0, 0.0, vw, vh);
-        h.rect = window;
         for snapshot in snapshots.clone() {
             h.set_peer_sync_snapshot_for_tests(snapshot);
-            let mut scene = Scene::new();
-            h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let (sheet, labels) = h.peer_sync_overlay.drawn_labels_for_tests();
+            lay_out_and_draw_peer_sync(&mut h, vw, vh, &theme);
+            let sheet = h.peer_sync_overlay.card_rect();
             assert!(
-                window.contains_rect(sheet),
+                sheet.area() > 0.0 && window.contains_rect(sheet),
                 "at {vw}x{vh} the sheet {sheet:?} leaves the window"
             );
-            let rects = h.peer_sync_prompt_rects_for_tests();
-            assert_eq!(labels.len(), rects.len());
+            let controls = h.peer_sync_controls_for_tests();
             assert!(
-                rects.iter().any(|(id, _)| *id == "cancel" || *id == "copy"),
-                "at {vw}x{vh} the footer is drawn: {rects:?}"
+                controls
+                    .iter()
+                    .any(|control| control.id == "peer-sync.secondary"
+                        || control.id == "peer-sync.primary"),
+                "at {vw}x{vh} the footer is drawn: {controls:?}"
             );
-            for (label, (id, rect)) in labels.iter().zip(&rects) {
+            for (control, primary) in labelled_buttons(&controls) {
+                let (id, label, rect) = (&control.id, &control.label, control.rect);
                 assert!(
-                    sheet.contains_rect(*rect),
+                    sheet.contains_rect(rect),
                     "at {vw}x{vh} {id} {label:?} at {rect:?} leaves the sheet {sheet:?}"
                 );
-                let footer = matches!(
-                    *id,
-                    "create"
-                        | "review"
-                        | "back"
-                        | "join"
-                        | "cancel"
-                        | "copy"
-                        | "paste"
-                        | "paste-identity"
-                        | "copy-identity"
+                let need = button_need(label, primary, &mut tr, &theme);
+                assert!(
+                    rect.width() + 0.5 >= need,
+                    "at {vw}x{vh} {label:?} is {}px wide but its face needs {need}px",
+                    rect.width()
                 );
-                if footer {
-                    let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
-                        .control_size(ui::widget::ControlSize::Large);
-                    if matches!(*id, "create" | "join" | "copy") {
-                        face = face.role(ui::widget::ButtonRole::Primary);
-                    }
-                    let need = face.intrinsic_width(&mut tr, &theme);
-                    assert!(
-                        rect.width() + 0.5 >= need,
-                        "at {vw}x{vh} {label:?} is {}px wide but its face needs {need}px",
-                        rect.width()
-                    );
-                }
             }
-            for (i, (_, a)) in rects.iter().enumerate() {
-                for (_, b) in rects.iter().skip(i.saturating_add(1)) {
-                    let o = a.intersect(*b);
+            let buttons: Vec<_> = controls
+                .iter()
+                .filter(|control| control.button && control.rect.area() > 0.0)
+                .collect();
+            for (i, a) in buttons.iter().enumerate() {
+                for b in buttons.iter().skip(i.saturating_add(1)) {
+                    let o = a.rect.intersect(b.rect);
                     assert!(
                         o.width() <= 0.0 || o.height() <= 0.0,
                         "at {vw}x{vh} targets overlap: {a:?} and {b:?}"
@@ -2447,14 +2539,15 @@ fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
     }
 }
 
-fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {
-    let mut scene = Scene::new();
-    let mut tr = TextRenderer::new();
-    let theme = Theme::dark();
-    h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-    h.peer_sync_prompt_rects_for_tests()
+/// The sheet's named controls, laid out and drawn: `id` or `id=label`.
+fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<String> {
+    lay_out_and_draw_peer_sync(h, 1280.0, 800.0, &Theme::dark());
+    h.peer_sync_controls_for_tests()
         .into_iter()
-        .map(|(name, _)| name)
+        .flat_map(|control| {
+            let labelled = format!("{}={}", control.id, control.label);
+            [control.id, labelled]
+        })
         .collect()
 }
 
@@ -2551,4 +2644,61 @@ fn an_apps_app_chooser_lists_the_apps_and_answers_none_when_closed() {
     host.open_app_chooser("set how it pastes", second);
     assert_eq!(first_answer.try_recv().unwrap(), Ok(None));
     assert!(host.choosing_app());
+}
+
+// USER REQUIREMENT (2026-10-21): "errors in plain words: never "peer-sync is
+// not running in this session". If the service isn't running, start it or
+// say what the person can do."
+#[test]
+fn the_invite_sheet_says_in_plain_words_why_it_cannot_invite_yet() {
+    let (mut h, chrome) = host_with_chrome();
+    {
+        let state = chrome.borrow();
+        state
+            .tree_mut()
+            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+    }
+    h.set_peer_sync_enabled(true);
+    chrome
+        .borrow_mut()
+        .push_peer_sync_request(PeerSyncAction::PromptInvite);
+    h.pump_peer_sync();
+    let connecting = h.peer_sync_snapshot().status;
+    assert_eq!(
+        connecting.as_deref(),
+        Some(crate::shell::i18n::t("peer-sync-connecting").as_str()),
+        "the network is still starting: the sheet says it will be ready"
+    );
+    // Inviting meanwhile asks nothing of a network that is not there.
+    let mut snapshot = h.peer_sync_snapshot();
+    snapshot.invite_name = Some("Ada".into());
+    snapshot.invite_recipient_key = Some([0x42; 32]);
+    h.set_peer_sync_snapshot_for_tests(snapshot);
+    peer_sync_key(
+        &mut h,
+        &key_event(Key::Named(NamedKey::Enter)),
+        Modifiers::default(),
+    );
+    let status = h.peer_sync_snapshot().status.unwrap_or_default();
+    assert!(
+        !status.contains("peer-sync") && !status.contains("not running"),
+        "no plumbing words: {status:?}"
+    );
+
+    // It could not start: the sheet says what the person can do.
+    h.set_peer_sync_failed();
+    assert_eq!(
+        h.peer_sync_snapshot().status.as_deref(),
+        Some(crate::shell::i18n::t("peer-sync-offline").as_str())
+    );
+
+    // It came up after all: the explanation goes and the sheet reads its
+    // pending invites.
+    h.set_peer_sync_bridge(std::rc::Rc::new(|request| match request {
+        PeerSyncRequest::ListPendingInvitations => {
+            Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
+        }
+        _ => Err("not here".to_string()),
+    }));
+    assert_eq!(h.peer_sync_snapshot().status, None);
 }

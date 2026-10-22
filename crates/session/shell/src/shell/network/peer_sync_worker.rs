@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 const SHARED_ROOMS_EVERY: Duration = Duration::from_millis(200);
 
 /// How long an invite minted from the invitation card stays valid.
-const INVITE_EXPIRY_SECONDS: u64 = 3600;
+const INVITE_EXPIRY_SECONDS: u64 = crate::shell::peer_sync_overlay::INVITE_EXPIRES_IN_SECONDS;
 
 /// One unit of work for the worker.
 pub(crate) type Job = Box<dyn FnOnce() + Send>;

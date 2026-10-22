@@ -260,10 +260,17 @@ impl ShellOverlayHost {
         (0..count).map(|i| self.overview_row_rect(i)).collect()
     }
 
-    /// The peer-sync card's buttons, named `join` / `cancel` / `copy` /
-    /// `paste`.
-    pub fn peer_sync_prompt_rects_for_tests(&self) -> Vec<(&'static str, Rect)> {
-        self.peer_sync_overlay.button_rects_for_tests()
+    /// The invite, join and pairing sheet's named controls, as last laid
+    /// out (`peer-sync.primary`, `peer-sync-who`, …).
+    pub fn peer_sync_prompt_rects_for_tests(&self) -> Vec<(String, Rect)> {
+        self.peer_sync_overlay.targets()
+    }
+
+    /// The sheet's named controls with their labels, in reading order.
+    pub fn peer_sync_controls_for_tests(
+        &self,
+    ) -> Vec<crate::shell::peer_sync_overlay::SheetControl> {
+        self.peer_sync_overlay.controls()
     }
 
     pub fn peer_sync_snapshot(&self) -> PeerSyncSnapshot {
@@ -809,11 +816,13 @@ impl ShellOverlayHost {
 
     /// Open the join field with `typed` in it, as a person typing a site.
     pub fn prompt_join_for_shots(&mut self, typed: &str) {
-        self.peer_sync_overlay.prompt_connect();
-        let mut snapshot = self.peer_sync_overlay.snapshot();
-        snapshot.connect_input = Some(typed.to_owned());
-        snapshot.status = Some(crate::shell::i18n::t("peer-sync-paste-token"));
-        self.peer_sync_overlay.set_snapshot_for_shots(snapshot);
+        self.peer_sync_overlay.prompt_connect_with(typed);
+    }
+
+    /// Stand `people` in as the people this computer has verified, as the
+    /// invite sheet's Who field offers them, for a screenshot scene.
+    pub fn remember_invitees_for_shots(&mut self, people: Vec<RememberedInvitee>) {
+        self.peer_sync_overlay.set_remembered_invitees(people);
     }
 
     /// Open "Pair a new device" showing `link`.

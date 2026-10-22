@@ -136,13 +136,11 @@ use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::notification::ChromeNotifications;
-use crate::shell::peer_sync_overlay::{
-    EventOutcome as PeerSyncEventOutcome, InviteContext, PeerSyncOverlay,
-};
 pub use crate::shell::peer_sync_overlay::{
     InvitationTerms, InviteRecipientPath, PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot,
     PendingInvitationSummary, RememberedInvitee,
 };
+use crate::shell::peer_sync_overlay::{InviteContext, PeerSyncOverlay};
 use crate::shell::portal_dialog::PortalDialogController;
 use crate::shell::power_menu::PowerMenu;
 #[cfg(test)]
@@ -992,6 +990,8 @@ pub struct ShellOverlayHost {
     #[cfg(feature = "hosted-test-control")]
     public_for_shots: bool,
     person_quick_composer_node: Option<NodeId>,
+    /// The invite, join and pairing sheet's node while it is up.
+    peer_sync_node: Option<NodeId>,
     agent_actions:
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,

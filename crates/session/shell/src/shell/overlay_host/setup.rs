@@ -564,6 +564,7 @@ impl ShellOverlayHost {
             #[cfg(feature = "hosted-test-control")]
             public_for_shots: false,
             person_quick_composer_node: None,
+            peer_sync_node: None,
             agent_actions: HashMap::new(),
             agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
             agent_quick_composer_node: None,

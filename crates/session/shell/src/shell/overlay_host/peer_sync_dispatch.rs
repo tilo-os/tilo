@@ -114,6 +114,8 @@ type Reply = (u64, Result<PeerSyncResponse, String>);
 pub(super) struct PeerSyncDispatch {
     inline: Option<PeerSyncBridge>,
     worker: Option<PeerSyncWorker>,
+    /// The session's network could not start: it is not coming.
+    failed: bool,
     next: u64,
     in_flight: BTreeMap<u64, FollowUp>,
     replies: mpsc::Sender<Reply>,
@@ -126,6 +128,7 @@ impl Default for PeerSyncDispatch {
         Self {
             inline: None,
             worker: None,
+            failed: false,
             next: 0,
             in_flight: BTreeMap::new(),
             replies,
@@ -156,7 +159,7 @@ fn execute(
 }
 
 /// What a request answers in a session with no peer-sync to run it.
-pub(super) const NOT_RUNNING: &str = "peer-sync is not running in this session";
+pub(super) use crate::shell::peer_sync_overlay::NOT_RUNNING;
 
 impl PeerSyncDispatch {
     /// Whether a request can run here at all, on the worker or inline.
@@ -167,11 +170,29 @@ impl PeerSyncDispatch {
     pub(super) fn set_bridge(&mut self, bridge: PeerSyncBridge) {
         self.inline = Some(bridge);
         self.worker = None;
+        self.failed = false;
     }
 
     pub(super) fn set_worker(&mut self, worker: PeerSyncWorker) {
         self.worker = Some(worker);
         self.inline = None;
+        self.failed = false;
+    }
+
+    /// The session's network could not start.
+    pub(super) fn set_failed(&mut self) {
+        self.failed = true;
+    }
+
+    /// Why nothing can be asked of the network now, in the person's terms,
+    /// with what they can do: it is still starting, or it could not start.
+    /// `enabled`: whether this session runs a network at all.
+    pub(super) fn unavailable_message(&self, enabled: bool) -> String {
+        crate::shell::i18n::t(if self.failed || !enabled {
+            "peer-sync-offline"
+        } else {
+            "peer-sync-connecting"
+        })
     }
 
     /// The rooms held as a site's workspace; none without a network.
