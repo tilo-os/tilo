@@ -444,9 +444,6 @@ fn drive_facts(drive: &Drive) -> Vec<Property> {
     if let Some(serial) = &drive.serial {
         facts.push(Property::new("Serial number", serial.clone()).with_kind(TextKind::Identifier));
     }
-    if drive.is_system_drive() {
-        facts.push(Property::new("Used for", "Running system"));
-    }
     facts
 }
 
@@ -609,8 +606,9 @@ fn purpose(drive: &Drive, part: &Partition) -> Option<&'static str> {
     }
 }
 
-/// What a partition's row says under its name: what it is for and its
-/// state, in words ("Home folders, encrypted", "Not in use"). The facts
+/// What a partition's row says under its name: what it is for, its state
+/// and its room, in words ("Home folders, encrypted, 134.2 GB free", "Not
+/// in use"). The facts
 /// behind it are on the partition's own page.
 fn partition_summary(drive: &Drive, part: &Partition) -> String {
     let locked = part
@@ -630,6 +628,9 @@ fn partition_summary(drive: &Drive, part: &Partition) -> String {
         Some(true) => summary.push_str(", encrypted and locked"),
         Some(false) => summary.push_str(", encrypted"),
         None => {}
+    }
+    if let Some(used) = part.used {
+        summary = format!("{summary}, {} free", size(part.size.saturating_sub(used)));
     }
     summary
 }
@@ -687,15 +688,10 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
         .enumerate()
         .map(|(index, part)| -> Element {
             let pick = intents.clone();
-            // Room left where it is known, else the partition's size.
-            let meta = match part.used {
-                Some(used) => format!("{} free", size(part.size.saturating_sub(used))),
-                None => size(part.size),
-            };
             let row = ListRow::new(format!("disks-partition-{index}"), part.display_label())
                 .icon(Icon::Layers)
                 .secondary(partition_summary(drive, part))
-                .meta(meta)
+                .meta(size(part.size))
                 .selected(model.partition == Some(index))
                 .on_view(move || pick.push(Intent::SelectPartition(Some(index))));
             Box::new(ContextMenuArea::new(
@@ -786,8 +782,22 @@ mod tests {
                 .map(|(_, summary)| summary.as_str())
                 .unwrap()
         };
-        assert_eq!(of("nvme0n1p4"), "Home folders, encrypted");
-        assert_eq!(of("nvme0n1p7"), "Running system, encrypted");
+        let free = |name: &str| {
+            let part = drive
+                .partitions
+                .iter()
+                .find(|part| part.name == name)
+                .unwrap();
+            size(part.size - part.used.unwrap())
+        };
+        assert_eq!(
+            of("nvme0n1p4"),
+            format!("Home folders, encrypted, {} free", free("nvme0n1p4"))
+        );
+        assert_eq!(
+            of("nvme0n1p7"),
+            format!("Running system, encrypted, {} free", free("nvme0n1p7"))
+        );
         assert_eq!(of("nvme0n1p5"), "Starts this device");
         assert_eq!(
             of("nvme0n1p3"),
