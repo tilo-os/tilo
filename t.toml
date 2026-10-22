@@ -4410,15 +4410,10 @@ default = false
 # the same workspace. Against the test site on eu1, never the production Lounge: it posts for real.
 [[check]]
 name = "site-door-acceptance"
-run = """
-mkdir -p target
-ln -sfn /target/nested-session target/nested-session
-bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --out /target/site-door-acceptance
-"""
-# nested-session.sh reads its build from target/nested-session in the sources, so the link
-# to the nested-session check's output goes there, in a private view of the tree.
-writable_sources = true
-env = { TILO_ACCEPTANCE_SITE = "https://acceptance.tilo.coffee/" }
+run = "bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --out /target/site-door-acceptance"
+# nested-session.sh takes the nested-session check's output where t puts it, so the
+# sources stay read-only.
+env = { TILO_ACCEPTANCE_SITE = "https://acceptance.tilo.coffee/", TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
 needs = ["nested-session"]
 inputs = ["dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "crates/hosting/tilo-room-service/dev/site-web-view.mjs", "crates/hosting/tilo-room-service/dev/auth-e2e.mjs", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs", "tools/test-env.sh", "tools/with-test-environment.sh"]
 outputs = ["/target/site-door-acceptance/**"]

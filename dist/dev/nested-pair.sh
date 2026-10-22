@@ -86,7 +86,7 @@ control_of() {
 }
 control_a=$(control_of "$a")
 control_b=$(control_of "$b")
-bin=$repo_root/target/nested-session/bin
+bin=${TILO_NESTED_SESSION_BUILD:-$repo_root/target/nested-session}/bin
 
 common=()
 ((headless)) && common+=(--headless)
