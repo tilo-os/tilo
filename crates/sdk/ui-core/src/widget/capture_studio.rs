@@ -520,14 +520,6 @@ fn output_name(mode: CaptureMode) -> String {
     }
 }
 
-fn output_shortcut(mode: CaptureMode) -> &'static str {
-    match mode {
-        CaptureMode::Screenshot => "S",
-        CaptureMode::Recording => "R",
-        CaptureMode::Pip => "P",
-    }
-}
-
 fn target_key(source: SourceMode) -> &'static str {
     match source {
         SourceMode::Region => "widget-capture-source-region",
@@ -583,10 +575,6 @@ fn layout_key(layout: PipLayout) -> &'static str {
 }
 
 /// `label  shortcut`, the way the shell's tooltips name a shortcut.
-fn with_shortcut(label: &str, shortcut: &str) -> String {
-    format!("{label}  {shortcut}")
-}
-
 fn ui_count(n: usize) -> f64 {
     crate::num::f64_of_usize(n)
 }
@@ -1663,19 +1651,15 @@ impl CaptureStudio {
     }
 
     /// How far each half of the setup bar reaches from the shutter: the
-    /// targets and the options on the right, the outputs on the left, with
-    /// the gap before the shutter. Both halves are this wide, so the shutter
-    /// is the bar's centre whatever is chosen.
+    /// wider of the outputs, or the targets and the options, with the gap
+    /// before the shutter. Both halves are this wide, so the shutter is the
+    /// bar's centre whatever is chosen; each group packs toward the shutter
+    /// at its own width, and the bar's outer padding takes the difference.
     fn setup_side(&self) -> f64 {
         let m = &self.metrics;
+        let outputs = OUTPUTS.len() as f64 * m.output_w;
         let targets = TARGETS.len() as f64 * m.target_w + m.gap + m.icon_button;
-        targets.max(OUTPUTS.len() as f64 * m.output_w) + m.gap
-    }
-
-    /// One output segment's width: its label's, or wider so the outputs fill
-    /// their half of the bar as the targets and the options fill theirs.
-    fn output_segment_w(&self) -> f64 {
-        (self.setup_side() - self.metrics.gap) / OUTPUTS.len() as f64
+        outputs.max(targets) + m.gap
     }
 
     /// The bar while recording, counting down or keeping the last 30
@@ -1747,11 +1731,10 @@ impl CaptureStudio {
         // it is of and the options on its right.
         let cx = bar.center().x;
         let mut items = Vec::with_capacity(9);
-        let output_w = self.output_segment_w();
-        let mut x = cx - m.shutter / 2.0 - m.gap - OUTPUTS.len() as f64 * output_w;
+        let mut x = cx - m.shutter / 2.0 - m.gap - OUTPUTS.len() as f64 * m.output_w;
         for i in 0..OUTPUTS.len() {
-            items.push((BarItem::Output(i), strip(x, output_w)));
-            x += output_w;
+            items.push((BarItem::Output(i), strip(x, m.output_w)));
+            x += m.output_w;
         }
         items.push((
             BarItem::Shutter,
@@ -1832,17 +1815,20 @@ impl CaptureStudio {
             .bar_items()
             .into_iter()
             .find(|(_, rect)| rect.contains(self.cursor))?;
+        // No shortcut helpers in this tool. The outputs and targets carry
+        // their labels, so only the unlabelled shutter and options are named,
+        // and an output whose label is a short form (PiP) spells it out.
         let tip = match item {
-            BarItem::Output(i) => {
-                with_shortcut(&output_name(OUTPUTS[i]), output_shortcut(OUTPUTS[i]))
-            }
-            BarItem::Target(i) => {
-                with_shortcut(&studio_text(target_key(TARGETS[i])), &(i + 1).to_string())
-            }
-            BarItem::Shutter if self.shows_status() => self.shutter_name(),
-            BarItem::Shutter => with_shortcut(&self.shutter_name(), "Enter"),
+            BarItem::Shutter => self.shutter_name(),
             BarItem::Options => studio_text("widget-capture-options"),
-            BarItem::Time | BarItem::Save => return None,
+            BarItem::Output(i) => {
+                let name = output_name(OUTPUTS[i]);
+                if name == studio_text(output_key(OUTPUTS[i])) {
+                    return None;
+                }
+                name
+            }
+            BarItem::Target(_) | BarItem::Time | BarItem::Save => return None,
         };
         Some((rect, tip))
     }
