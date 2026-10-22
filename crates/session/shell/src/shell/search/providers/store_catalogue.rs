@@ -817,9 +817,18 @@ fn store_detail_uri(app_id: &str) -> Result<String, ActionError> {
     Ok(format!("tilo-store:app/{app_id}"))
 }
 
+/// The App Store pages a test asked to open, in order.
+#[cfg(test)]
+static STORE_PAGES_OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Open the App Store at `app_id`'s page.
 fn show_in_store(chrome: &Chrome, app_id: &str, display_name: &str) -> Result<(), ActionError> {
     let uri = store_detail_uri(app_id)?;
+    #[cfg(test)]
+    STORE_PAGES_OPENED
+        .lock()
+        .expect("store pages opened lock")
+        .push(uri.clone());
     let Some((room, capabilities)) = launch_context(chrome) else {
         return Err(report_no_workspace(chrome, display_name));
     };
@@ -1355,13 +1364,21 @@ mod tests {
 
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
         let mut doc = AutoCommit::new();
-        // No Store is installed in a test, so opening its page may fail; what
-        // matters is what did not happen.
+        // No Store is installed in a test, so the launch itself may fail;
+        // what matters is the page it asked for, and what did not happen.
         let _ = (spotify.on_open)(
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &chrome,
             &tilo_actions::ActionArgs::none(),
+        );
+        assert!(
+            STORE_PAGES_OPENED
+                .lock()
+                .expect("store pages opened lock")
+                .iter()
+                .any(|uri| uri == "tilo-store:app/com.spotify.Client"),
+            "picking it opens the App Store at its page"
         );
         assert!(
             !catalogue::installing_from_flathub("com.spotify.Client"),
