@@ -7,7 +7,9 @@
 # packages it changes. No tests, VM checks, images, suites or dependents. A check that is red on
 # main where the push branched off is skipped, and said so. Failures that main has too pass; a
 # failure the change causes refuses the push, and one t can fix is fixed for you to commit
-# (never amended). Pushes to other branches run nothing. Bypass with `git push --no-verify`.
+# (never amended). A change that passed and was rebased onto a newer main as the same patch
+# passes again without a run. Pushes to other branches run nothing. Bypass with
+# `git push --no-verify`.
 set -euo pipefail
 note() { printf 'pre-push: %s\n' "$*" >&2; }
 
@@ -23,8 +25,29 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     exit 1
   fi
   pushed=$local_sha
+  onto=$remote_sha
 done
 [ -n "$pushed" ] || exit 0
+
+# A gate takes minutes, and main moves meanwhile: the push is refused, and the change, rebased,
+# is a new commit. What the gate judges is the change, not main's newer commits (main's CI
+# checks those, and the change on top of them, after the push), so a change that passed it
+# passes again as long as it is the same patch: `git patch-id` of what it changes on the main
+# it goes onto, line numbers aside. A rebase that changed the patch, or its context, runs the
+# gate again. Kept per clone, for every worktree of it.
+passed="$(git rev-parse --git-common-dir)/t-gate-passed"
+change=""
+if [[ ! $onto =~ ^0+$ ]]; then
+  change=$(git diff --binary "$onto" "$pushed" -- | git patch-id --stable | cut -d' ' -f1)
+fi
+if [ -n "$change" ] && [ -f "$passed" ] && earlier=$(grep -m1 "^$change " "$passed"); then
+  note "this change passed the gate as ${earlier#* } on an older main; the same patch passes again (main checks it after the push)"
+  exit 0
+fi
+gate_passed() {
+  [ -n "$change" ] || return 0
+  { tail -n 199 "$passed" 2>/dev/null; echo "$change ${pushed:0:10}"; } >"$passed.new" && mv "$passed.new" "$passed"
+}
 
 if ! git config --get merge.generated.driver >/dev/null; then
   note "the merge drivers for generated files are not set up: run python3 tools/dev/install-git-hooks.py"
@@ -122,8 +145,8 @@ show_run() {
 }
 
 case $status in
-  0) note "t passed $short in ${took}s ($what)"; exit 0 ;;
-  3) note "t passed $short in ${took}s ($what): what fails also fails on main (t main)"; exit 0 ;;
+  0) gate_passed; note "t passed $short in ${took}s ($what)"; exit 0 ;;
+  3) gate_passed; note "t passed $short in ${took}s ($what): what fails also fails on main (t main)"; exit 0 ;;
   1) ;;
   *)
     note "t could not run the push gate on $short (exit $status):"
