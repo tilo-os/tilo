@@ -83,7 +83,7 @@
 "crates/doc/tilo-doc/src/model.rs" = 5000
 "crates/doc/tilo-document/src/action.rs" = 3500
 "crates/hosting/tilo-relay/src/daemon.rs" = 4500
-"crates/hosting/tilo-relay/src/enroll.rs" = 4500
+"crates/hosting/tilo-relay/src/enroll.rs" = 3500
 "crates/hosting/tilo-relay/src/peer/private_transport_tests.rs" = 4500
 "crates/hosting/tilo-relay/src/peer/state_tests.rs" = 4000
 "crates/hosting/tilo-relay/src/store/retained.rs" = 3500
@@ -150,7 +150,6 @@
 "crates/session/shell/src/compositor/backend/drm/mod.rs" = 5000
 "crates/session/shell/src/compositor/backend/drm/runtime.rs" = 9500
 "crates/session/shell/src/compositor/backend/drm/scanout.rs" = 5500
-"crates/session/shell/src/compositor/capture.rs" = 4000
 "crates/session/shell/src/compositor/client_input.rs" = 4000
 "crates/session/shell/src/compositor/native.rs" = 22000
 "crates/session/shell/src/compositor/selection.rs" = 3500
