@@ -660,6 +660,15 @@ commit falls between attach and commit, with optional `wp_presentation`
 feedback, and flushes from the calling thread. `client_buffer_formats`
 reports the announced pairs. X11 windows report none and make no buffers.
 
+## `vendor/winit`: drag offers stream files when asked
+
+`WindowExtWayland::start_drag` takes each offer as a `DragData`: bytes, or a
+file. A file is opened and copied into the pipe when a receiver asks for its
+mime type, on the thread that already writes the pipe, so starting a drag
+(inside a pointer motion on the app's thread) reads nothing: Files froze for
+seconds holding a multi-gigabyte video in memory before the gesture began.
+Offers are held behind an `Arc`, so a request no longer copies a payload.
+
 ## Build-script-generated protobuf descriptors
 
 `buffa-build` 0.9.2 is carried as verified registry source with a small

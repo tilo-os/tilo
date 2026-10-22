@@ -6,7 +6,7 @@ keeps writing `winit::…`. Upstream: https://github.com/rust-windowing/winit
 (Apache-2.0, unchanged).
 
 The additions the SDK uses are `KeyEvent::synthetic`, Wayland drag sources
-(`start_drag`), swipe gestures, announcing a frame drawn off the event-loop
+(`start_drag`, whose offers are bytes or a file streamed when asked, `DragData`), swipe gestures, announcing a frame drawn off the event-loop
 thread (`Window::announce_frame`), Wayland pen tablets
 (`WindowEvent::PenSample` before each pointer event a stylus makes), and a
 macOS quit request (`set_quit_request_window`), and a surface-bound private
