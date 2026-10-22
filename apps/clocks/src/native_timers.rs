@@ -90,7 +90,7 @@ pub(crate) fn activation_record(uri: &str) -> Option<ui::record::RecordId> {
     let record = path
         .split_once("/alarm/")
         .map_or(path, |(record, _)| record);
-    ui::record::RecordId::parse(record)
+    activation_record_id(record)
 }
 
 pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
@@ -98,9 +98,19 @@ pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
         let (record, alarm) = uri
             .strip_prefix("tilo-clocks:record/")?
             .split_once("/alarm/")?;
-        ui::record::RecordId::parse(record)?;
+        activation_record_id(record)?;
         Some(alarm)
     })
+}
+
+/// The record an activation names: one of the room's, or the workspace's
+/// own, where Clocks keeps its alarms unless a window opened another.
+fn activation_record_id(record: &str) -> Option<ui::record::RecordId> {
+    let primary = ui::record::RecordId::package_primary();
+    if record == primary.as_str() {
+        return Some(primary);
+    }
+    ui::record::RecordId::parse(record)
 }
 
 pub(crate) fn alarm_id(id: &str) -> String {

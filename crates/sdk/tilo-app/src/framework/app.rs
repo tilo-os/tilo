@@ -1084,10 +1084,12 @@ pub(crate) fn prepare_on(
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let kind = definition.record_kind.clone();
     match named {
-        Some(id) => {
+        // A launch naming the workspace's own record (a notification about
+        // something in it) opens it as a launch naming nothing does.
+        Some(id) if !(id.is_package_primary() && definition.keeps_room_record()) => {
             host.prepare_record(definition, instance, RecordCheckout::new(id, kind), inputs)
         }
-        None => host.prepare_default(
+        _ => host.prepare_default(
             definition,
             instance,
             RecordCheckout::new(RecordId::room_default(), kind),
