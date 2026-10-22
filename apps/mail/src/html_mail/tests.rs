@@ -440,9 +440,67 @@ fn inline_parts_and_data_images_always_show() {
     let unreferenced = String::from_utf8_lossy(INLINE).replace("cid:logo-v3", "cid:other");
     let unreferenced = self::message(unreferenced.as_bytes());
     assert_eq!(unreferenced.shown_attachments().count(), 1);
-    // A missing part is no image at all, never a fetch.
+    // A missing part is never a fetch: it is held back like a remote one.
     let missing = prepare("<img src=\"cid:gone@x\">", &policy(false, false));
-    assert!(!missing.document.contains("src="));
+    assert_eq!(fetched(&missing.document), [HELD_BACK_IMAGE]);
+}
+
+/// A held-back image is an empty neutral box at the size the mail declares,
+/// takes no room when it declares none, and keeps its alternative text as
+/// its accessible name, never the engine's broken image over the layout.
+#[test]
+fn a_held_back_image_is_an_empty_box_at_its_declared_size() {
+    let sized = prepare(
+        "<img src=\"https://t.example/a.png\" width=\"600\" height=\"300\" alt=\"Tomato plants\">",
+        &policy(false, false),
+    );
+    assert_eq!(sized.remote, 1);
+    assert_eq!(fetched(&sized.document), [HELD_BACK_IMAGE]);
+    assert!(
+        sized.document.contains("width=\"600\" height=\"300\""),
+        "{}",
+        sized.document
+    );
+    assert!(
+        sized.document.contains("alt=\"Tomato plants\""),
+        "{}",
+        sized.document
+    );
+    assert!(
+        sized.document.contains("background-color:"),
+        "{}",
+        sized.document
+    );
+
+    let styled = prepare(
+        "<img src=\"https://t.example/a.png\" style=\"width:120px; height:40px\">",
+        &policy(false, false),
+    );
+    assert!(
+        styled.document.contains("background-color:"),
+        "{}",
+        styled.document
+    );
+
+    // Without a size of its own it is the held-back pixel: no box.
+    let bare = prepare(
+        "<img src=\"https://t.example/a.png\" alt=\"Logo\">",
+        &policy(false, false),
+    );
+    assert_eq!(fetched(&bare.document), [HELD_BACK_IMAGE]);
+    assert!(
+        !bare.document.contains("background-color:"),
+        "{}",
+        bare.document
+    );
+
+    // Allowed, it is the image itself.
+    let allowed = prepare(
+        "<img src=\"https://t.example/a.png\" width=\"600\" height=\"300\">",
+        &policy(true, false),
+    );
+    assert_eq!(fetched(&allowed.document), ["https://t.example/a.png"]);
+    assert!(!allowed.document.contains("background-color:"));
 }
 
 // USER REQUIREMENT (2026-10-22): "Dark mode: respect a mail's own

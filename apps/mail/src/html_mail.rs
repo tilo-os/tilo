@@ -892,6 +892,8 @@ impl<'p> Sanitizer<'p> {
     fn attributes(&mut self, tag: &Tag) -> String {
         let mut out = String::new();
         let mut fragment = false;
+        let mut shows = false;
+        let mut style = String::new();
         for (name, raw) in &tag.attributes {
             match name.as_str() {
                 "href" if tag.name == "a" => match link_target(&url_value(raw)) {
@@ -909,12 +911,14 @@ impl<'p> Sanitizer<'p> {
                 },
                 "src" if tag.name == "img" => {
                     if let Some(url) = self.image(&url_value(raw)) {
+                        shows = true;
                         let _ = write!(out, " src=\"{}\"", escape_decoded(&url));
                     }
                 }
                 "srcset" if tag.name == "img" => {
                     let kept = self.srcset(raw);
                     if !kept.is_empty() {
+                        shows = true;
                         let _ = write!(out, " srcset=\"{}\"", escape_decoded(&kept));
                     }
                 }
@@ -924,16 +928,30 @@ impl<'p> Sanitizer<'p> {
                     }
                 }
                 "style" => {
-                    let css = self.css(&decode_entities(raw), false);
-                    if !css.trim().is_empty() {
-                        let _ = write!(out, " style=\"{}\"", escape_decoded(&css));
-                    }
+                    style = self.css(&decode_entities(raw), false);
                 }
                 name if PLAIN_ATTRIBUTES.contains(&name) || is_aria(name) => {
                     let _ = write!(out, " {name}=\"{}\"", escape_attribute(raw));
                 }
                 _ => {}
             }
+        }
+        if tag.name == "img" && !shows {
+            // An image held back is an empty box at the size the mail gives
+            // it, and takes no room when it gives none: never the engine's
+            // broken image and its alternative text over the layout. The
+            // text stays its accessible name.
+            let _ = write!(out, " src=\"{HELD_BACK_IMAGE}\"");
+            let sized = tag.attribute("width").is_some() && tag.attribute("height").is_some()
+                || ["width", "height"]
+                    .iter()
+                    .all(|side| css_declares(&style, side));
+            if sized {
+                style.push_str(";background-color:rgba(128,128,128,0.14)");
+            }
+        }
+        if !style.trim().trim_matches(';').trim().is_empty() {
+            let _ = write!(out, " style=\"{}\"", escape_decoded(&style));
         }
         if tag.name == "a" {
             // A link opens outside the message; one to a place in it stays.
@@ -1181,6 +1199,19 @@ fn at_rule_end(css: &str) -> usize {
         }
     }
     css.len()
+}
+
+/// A transparent image one pixel square: what an image held back shows.
+const HELD_BACK_IMAGE: &str =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
+/// Whether the declarations in `css` set the property `name`.
+fn css_declares(css: &str, name: &str) -> bool {
+    css.split(';').any(|declaration| {
+        declaration
+            .split_once(':')
+            .is_some_and(|(property, _)| property.trim().eq_ignore_ascii_case(name))
+    })
 }
 
 /// Whether `text` starts with the ASCII `prefix`, in any case.

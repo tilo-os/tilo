@@ -83,5 +83,6 @@ mail-link-open = Open link
 mail-link-copy = Copy link address
 mail-copy = Copy
 mail-select-all = Select all
+mail-show-quoted = Show quoted text
 mail-show-plain = Show plain text
 mail-show-formatted = Show formatted

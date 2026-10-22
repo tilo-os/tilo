@@ -539,6 +539,16 @@ pub enum WebViewEvent {
     /// The address of the link under the pointer, or empty when it left
     /// the link. Sent by an engine showing sealed documents.
     LinkHovered(String),
+    /// Where the active match of find `id` is in the view, in logical
+    /// pixels from its top left, so a host that scrolls the page itself (a
+    /// mail sized to its whole document) can bring it into sight.
+    FindSelection {
+        id: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
     /// The raw layout snapshot (JSON), or `None` when the engine could not
     /// take one.
     PaintSnapshot {

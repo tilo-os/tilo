@@ -14,7 +14,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -751,13 +751,17 @@ impl MessageReader {
             // The quote it ends with waits behind a quiet button.
             flow.y += f64::from(theme.tokens.spacing.s2);
             let side = ButtonFace::height(ControlSize::Small, theme);
-            let button = Rect::new(flow.x, flow.y, flow.x + side * 1.5, flow.y + side);
+            let label = crate::i18n::t("mail-show-quoted");
+            let width = ButtonFace::new(Rect::ZERO, &label)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(flow.ctx.text, theme);
+            let button = Rect::new(flow.x, flow.y, flow.x + width, flow.y + side);
             Button::paint(
                 flow.ctx.scene,
                 flow.ctx.transform,
                 flow.ctx.text,
                 theme,
-                &ButtonFace::icon_only(button, Icon::MoreHorizontal, "Show quoted text")
+                &ButtonFace::new(button, &label)
                     .control_size(ControlSize::Small)
                     .hovered(button.contains(flow.pointer)),
             );
@@ -944,12 +948,10 @@ impl MessageReader {
                     flow.y += f64::from(spacing.s3);
                 }
                 if measured {
-                    // As tall as its document, up to the reader's height:
-                    // a taller one scrolls inside once the reader has
-                    // scrolled it into full view.
-                    let most = (r.height() - 2.0 * gutter).max(f64::from(spacing.s12));
+                    // As tall as its document: the reader scrolls the
+                    // conversation and the mail as one page.
                     let width = flow.width;
-                    let (laid, kept) = self.html.layout(width, most, f64::from(spacing.s1));
+                    let (laid, kept) = self.html.layout(width, f64::from(spacing.s1));
                     webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + width, flow.y + laid));
                     flow.y += kept;
                 } else {
@@ -1039,6 +1041,9 @@ impl MessageReader {
         let said = self.html.drain();
         if said.dirty {
             self.dirty = true;
+        }
+        if let (Some((top, bottom)), Some(rect)) = (said.found_at, self.html.rect()) {
+            self.bring_into_view(rect.y0 + top, rect.y0 + bottom);
         }
         if !said.open.is_empty() {
             let mut state = self.shared.borrow_mut();
@@ -1177,33 +1182,11 @@ impl MessageReader {
     }
 
     /// Whether the wheel `event` scrolls the HTML body rather than the
-    /// reader: a body sized to its document scrolls once the reader can go
-    /// no further that way and the body can.
+    /// reader: only an engine that cannot say how tall its document is,
+    /// whose body fills the reader. A body sized to its document never
+    /// scrolls inside; the reader scrolls it with the conversation.
     fn wheel_scrolls_body(&self, event: &WindowEvent) -> bool {
-        let WindowEvent::MouseWheel { delta, .. } = event else {
-            return false;
-        };
-        if !self.html.measures() {
-            return true;
-        }
-        let (Some(rect), Some(doc)) = (self.html.rect(), self.html.measured()) else {
-            return false;
-        };
-        if !rect.contains(self.pointer) {
-            return false;
-        }
-        let toward_top = match delta {
-            MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-            MouseScrollDelta::PixelDelta(position) => position.y,
-        };
-        if toward_top > 0.0 {
-            doc.scroll_y > 0.5
-        } else if toward_top < 0.0 {
-            self.region.offset().y >= self.scroll_max - 0.5
-                && doc.scroll_y + rect.height() < doc.height - 0.5
-        } else {
-            false
-        }
+        matches!(event, WindowEvent::MouseWheel { .. }) && !self.html.measures()
     }
 
     /// Give the message text the pointer and the keys: selecting, copying and
@@ -1344,18 +1327,7 @@ impl Findable for MessageReader {
                 .into_iter()
                 .next()
         }) {
-            let offset = self.region.offset().y;
-            let top = self.rect.y0 + f64::from(theme.tokens.spacing.s6);
-            let bottom = self.rect.y1 - f64::from(theme.tokens.spacing.s6);
-            let target = if span.y0 < top {
-                offset - (top - span.y0)
-            } else if span.y1 > bottom {
-                offset + (span.y1 - bottom)
-            } else {
-                offset
-            };
-            self.region
-                .set_offset(Vec2::new(0.0, target.clamp(0.0, self.scroll_max)));
+            self.bring_into_view(span.y0, span.y1);
         }
         self.dirty = true;
     }
@@ -1387,16 +1359,46 @@ impl Findable for MessageReader {
     }
 }
 
+impl MessageReader {
+    /// Scroll the reader so the span from `y0` to `y1` (as drawn) is in
+    /// sight, inside its margins: a find match in the text or the mail.
+    fn bring_into_view(&mut self, y0: f64, y1: f64) {
+        let margin = f64::from(self.theme.tokens.spacing.s6);
+        let offset = self.region.offset().y;
+        let top = self.rect.y0 + margin;
+        let bottom = self.rect.y1 - margin;
+        let target = if y0 < top {
+            offset - (top - y0)
+        } else if y1 > bottom {
+            offset + (y1 - bottom)
+        } else {
+            offset
+        };
+        self.region
+            .set_offset(Vec2::new(0.0, target.clamp(0.0, self.scroll_max)));
+        self.dirty = true;
+    }
+
+    /// Whether the window's find acts on the open message: one is shown and
+    /// the reader holds the keyboard (or a find in it is running).
+    fn offers_find(&self) -> bool {
+        self.shown.is_some()
+            && (self.focused || self.html_query.is_some() || !self.text_matches.is_empty())
+    }
+}
+
 impl Widget for MessageReader {
-    /// Find in the open message, while one is open.
+    /// Find in the open message while the reader has the keyboard: Ctrl+F
+    /// and the window bar's search find where the person is, the message
+    /// they read; from the list they search the folder.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if self.shown.is_some() && request.wants::<dyn Findable>() {
+        if self.offers_find() && request.wants::<dyn Findable>() {
             request.provide::<dyn Findable>(self);
         }
     }
 
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if self.shown.is_some() && request.wants::<dyn Findable>() {
+        if self.offers_find() && request.wants::<dyn Findable>() {
             request.provide::<dyn Findable>(self);
         }
     }
@@ -1765,8 +1767,7 @@ mod tests {
     }
 
     /// An HTML body is as tall as its document, so the reader scrolls the
-    /// conversation and the body as one page; a body taller than the reader
-    /// takes the wheel once the reader has scrolled it into full view.
+    /// conversation and the body as one page, however tall the body is.
     #[test]
     fn an_html_body_is_as_tall_as_its_document_and_scrolls_with_the_reader() {
         use ui::webview::WebViewEvent;
@@ -1813,34 +1814,78 @@ mod tests {
         draw(&mut reader);
         draw(&mut reader);
         let tall = reader.html.rect().expect("still shown");
-        let gutter = f64::from(Theme::dark().tokens.spacing.s6);
         assert!(
-            (tall.height() - (reader.rect.height() - 2.0 * gutter)).abs() < 0.01,
-            "a tall body is at most as tall as the reader: {tall:?}"
+            (tall.height() - 5000.0).abs() < 0.01,
+            "a tall body is as tall as its document: {tall:?}"
         );
-        assert!(reader.scroll_max > 0.0, "the reader scrolls it into view");
+        assert!(
+            reader.scroll_max > 0.0,
+            "the reader scrolls it with the header"
+        );
         reader.pointer = tall.center();
         assert!(
             !reader.wheel_scrolls_body(&wheel_down),
-            "the reader scrolls first"
+            "the reader scrolls a tall body too"
         );
         reader.region.set_offset(Vec2::new(0.0, reader.scroll_max));
-        assert!(
-            reader.wheel_scrolls_body(&wheel_down),
-            "then the body scrolls inside"
-        );
         let wheel_up = ui::synthetic_input::mouse_wheel(0.0, 3.0);
         assert!(
-            !reader.wheel_scrolls_body(&wheel_up),
-            "at its top, the reader scrolls back up"
+            !reader.wheel_scrolls_body(&wheel_down) && !reader.wheel_scrolls_body(&wheel_up),
+            "and never inside it: one scroll surface"
         );
-        engine.push_event(document(5000.0, 400.0));
-        draw(&mut reader);
-        reader.pointer = reader.html.rect().expect("shown").center();
+    }
+
+    /// The body appears with the engine's first frame of the page at the
+    /// size it is shown at. Grown to its document's height, the view has no
+    /// such frame until the engine paints again, and a body drawn then is a
+    /// blank sheet that flashes before the mail.
+    #[test]
+    fn an_opened_html_mail_is_never_presented_blank() {
+        use ui::webview::WebViewEvent;
+        let shared = shared();
+        let id = message_from(&shared, "hello@fieldnotes.example");
+        let mut reader = reader_for(&shared, id, 960.0, 820.0);
+        let engine = TestEngine::new();
+        engine.set_measures_document(true);
+        reader.set_html_engine(engine.clone());
+        // Every frame of the open, as it is presented.
+        let present = |reader: &mut MessageReader, when: &str| {
+            draw(reader);
+            assert!(
+                reader.html.rect().is_none() || reader.html.has_fitting_frame(),
+                "{when}: the body is drawn without a frame of the page at its size"
+            );
+        };
+        present(&mut reader, "opened");
+        engine.hold_frames(true);
+        engine.push_event(WebViewEvent::DocumentSize {
+            width: 912.0,
+            height: 1400.0,
+            scroll_y: 0.0,
+        });
+        for _ in 0..4 {
+            present(&mut reader, "measured, the engine still painting");
+        }
         assert!(
-            reader.wheel_scrolls_body(&wheel_up),
-            "scrolled down, the body scrolls back first"
+            reader.html.rect().is_none() && reader.html.pending(),
+            "hidden, and still on its way, until the engine paints it"
         );
+        engine.hold_frames(false);
+        present(&mut reader, "painted");
+        let shown = reader.html.rect().expect("shown with its first frame");
+        assert!((shown.height() - 1400.0).abs() < 0.01, "{shown:?}");
+        assert!(!reader.html.pending(), "on screen");
+
+        // A later resize keeps the last frame up until the next one comes.
+        engine.hold_frames(true);
+        engine.push_event(WebViewEvent::DocumentSize {
+            width: 912.0,
+            height: 1600.0,
+            scroll_y: 0.0,
+        });
+        draw(&mut reader);
+        draw(&mut reader);
+        assert!(reader.html.rect().is_some(), "the message stays on screen");
     }
 
     /// The `(message, remote)` the HTML view has loaded.
@@ -2090,6 +2135,27 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, WebViewCommand::CopySelection { .. })),
             "a copy reads the page's selection for the system clipboard"
+        );
+    }
+
+    /// Ctrl+F does what the window bar's search does: with the message in
+    /// hand it finds in the message; with the list focused the reader offers
+    /// no find, and the key reaches Mail, which searches the folder.
+    #[test]
+    fn find_is_the_messages_once_the_reader_has_the_keyboard() {
+        let shared = shared();
+        let id = message_from(&shared, "hello@fieldnotes.example");
+        let mut reader = reader_for(&shared, id, 960.0, 820.0);
+        reader.set_html_engine(TestEngine::new());
+        draw(&mut reader);
+        assert!(
+            ui::widget::with_findable(&mut reader, &mut |_| ()).is_none(),
+            "the list has the keyboard: the folder is searched"
+        );
+        reader.set_focus(true);
+        assert!(
+            ui::widget::with_findable(&mut reader, &mut |_| ()).is_some(),
+            "the message has the keyboard: it is found in"
         );
     }
 

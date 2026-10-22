@@ -3236,7 +3236,8 @@ impl BrowserWidget {
                 | WebViewEvent::PaintResource { .. }
                 | WebViewEvent::DocumentSize { .. }
                 | WebViewEvent::SelectionText { .. }
-                | WebViewEvent::LinkHovered(_) => {}
+                | WebViewEvent::LinkHovered(_)
+                | WebViewEvent::FindSelection { .. } => {}
                 WebViewEvent::LoadFinished => {
                     if self.load_error.is_some() {
                         continue;

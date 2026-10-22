@@ -253,10 +253,10 @@ impl WebView {
     #[must_use]
     pub fn has_fitting_frame(&self) -> bool {
         let expected = (
-            round_to_u32_px(self.rect.width() * f64::from(self.scale_factor)),
-            round_to_u32_px(self.rect.height() * f64::from(self.scale_factor)),
+            round_to_u32_px(self.rect.width() * f64::from(self.engine_scale())),
+            round_to_u32_px(self.rect.height() * f64::from(self.engine_scale())),
         );
-        let slack = frame_quantization_slack(self.scale_factor);
+        let slack = frame_quantization_slack(self.engine_scale());
         let slot = self.engine.frames();
         let guard = slot.lock();
         guard.ok().as_deref().is_some_and(|frame| {
@@ -282,7 +282,7 @@ impl WebView {
     /// The device scale the page is rendered at.
     #[must_use]
     pub fn device_scale(&self) -> f32 {
-        self.scale_factor
+        self.engine_scale()
     }
 
     /// The density the engine renders the page at: the device's, lowered
@@ -2273,6 +2273,38 @@ mod tests {
             assert!(cmds.contains(&WebViewCommand::GoBack));
             assert!(cmds.contains(&WebViewCommand::GoForward));
         }
+    }
+
+    /// A view taller than the engine paints in one frame (an HTML mail
+    /// sized to its whole document) asks for the largest frame the engine
+    /// takes, never one it refuses, and keeps its device scale otherwise.
+    #[test]
+    fn a_view_never_asks_for_a_frame_past_the_engines_limits() {
+        let sizes = |engine: &TestEngine| -> Vec<(u32, u32)> {
+            engine
+                .commands()
+                .iter()
+                .filter_map(|command| match command {
+                    WebViewCommand::Resize { width, height, .. } => Some((*width, *height)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone());
+        view.set_viewport(Rect::new(0.0, 0.0, 612.0, 900.0), 2.0);
+        assert_eq!(sizes(&engine).last(), Some(&(1224, 1800)));
+        for (width, height) in [(612.0, 12_000.0), (3000.0, 7000.0)] {
+            view.place(Rect::new(0.0, 0.0, width, height));
+            let &(w, h) = sizes(&engine).last().expect("a resize");
+            assert!(
+                f64::from(w) <= MAX_FRAME_SIDE && f64::from(h) <= MAX_FRAME_SIDE,
+                "{w}x{h}"
+            );
+            assert!(f64::from(w) * f64::from(h) <= MAX_FRAME_PIXELS, "{w}x{h}");
+        }
+        view.place(Rect::new(0.0, 0.0, 612.0, 900.0));
+        assert_eq!(sizes(&engine).last(), Some(&(1224, 1800)));
     }
 }
 
