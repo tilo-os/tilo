@@ -167,6 +167,32 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
     )
     .await;
     let profile = first.config.profiles[0].clone();
+    // Settings' model list asks the provider with the stored key; the key
+    // never reaches the caller.
+    let listing = async {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        while !bytes.ends_with(b"\r\n\r\n") {
+            bytes.push(socket.read_u8().await.unwrap());
+        }
+        let headers = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+        assert!(headers.starts_with("get /v1/models "), "{headers}");
+        assert!(headers.contains("authorization: bearer write-only-test-key"));
+        let reply =
+            r#"{"object":"list","data":[{"id":"second"},{"id":"first","context_length":8192}]}"#;
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes()).await.unwrap();
+    };
+    let (listed, ()) = tokio::join!(admin.list_models(profile.id.clone()), listing);
+    let listed = listed.unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert_eq!(listed[0].context_window, Some(8192));
     let (began, mut started) = tokio::sync::mpsc::channel(1);
     let (release, released) = tokio::sync::oneshot::channel();
     let provider = tokio::spawn(async move {
@@ -224,6 +250,14 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
     );
     assert_eq!(
         model.complete_once(&request).await.unwrap_err().kind,
+        ErrorKind::Authentication
+    );
+    assert_eq!(
+        admin
+            .list_models(profile.id.clone())
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::Authentication
     );
     cleanup(admin, &profile, updated).await;
@@ -468,6 +502,14 @@ async fn child(http: bool) {
             assert_eq!(
                 denied
                     .set_api_key("test-provider".into(), "write-only-test-key".into())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                denied
+                    .list_models("test-provider".into())
                     .await
                     .unwrap_err()
                     .kind,

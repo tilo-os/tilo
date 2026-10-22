@@ -67,6 +67,27 @@ impl ProviderAdmin for FakeAdminBackend {
         })
     }
 
+    fn list_models(
+        &self,
+        id: String,
+    ) -> AdminFuture<'_, Vec<agent_provider_config::ModelDescriptor>> {
+        Box::pin(async move {
+            self.ready().await?;
+            // A provider answers only with the key it was given.
+            if self.state.lock_recover().keys.get(&id) != Some(&CredentialStatus::Configured) {
+                return Err(ModelError::new(ErrorKind::Authentication));
+            }
+            Ok(vec![
+                agent_provider_config::ModelDescriptor {
+                    label: "Listed Model A".into(),
+                    context_window: Some(200_000),
+                    ..agent_provider_config::ModelDescriptor::new("listed-a")
+                },
+                agent_provider_config::ModelDescriptor::new("listed-b"),
+            ])
+        })
+    }
+
     fn set_api_key(&self, id: String, key: String) -> AdminFuture<'_, ()> {
         Box::pin(async move {
             self.ready().await?;

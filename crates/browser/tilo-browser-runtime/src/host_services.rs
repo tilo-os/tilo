@@ -262,6 +262,13 @@ impl ProviderAdmin for LazyAdministration {
         Box::pin(async move { self.client().await?.credential_status(profile_id).await })
     }
 
+    fn list_models(
+        &self,
+        profile_id: String,
+    ) -> AdminFuture<'_, Vec<agent_provider_config::ModelDescriptor>> {
+        Box::pin(async move { self.client().await?.list_models(profile_id).await })
+    }
+
     fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()> {
         Box::pin(async move { self.client().await?.set_api_key(profile_id, api_key).await })
     }

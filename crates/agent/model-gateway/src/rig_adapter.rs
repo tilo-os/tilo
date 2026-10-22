@@ -8,7 +8,7 @@ use futures_util::StreamExt as _;
 use rig_core::completion::{CompletionRequest, CompletionResponse};
 use rig_core::error::ProviderError;
 use rig_core::http_client::{self as http, HttpClientExt, LazyBody, MultipartForm};
-use rig_core::providers::{anthropic, openai};
+use rig_core::providers::{anthropic, chatgpt, openai};
 use rig_core::streaming::{Item, PartKind, StreamEvent};
 
 #[cfg(test)]
@@ -20,6 +20,9 @@ mod provider_conformance_tests;
 #[cfg(test)]
 #[path = "rig_stream_tests.rs"]
 pub(super) mod stream_tests;
+#[cfg(test)]
+#[path = "subscription_rig_tests.rs"]
+mod subscription_tests;
 #[cfg(test)]
 #[path = "rig_tests.rs"]
 mod tests;
@@ -463,6 +466,7 @@ pub(super) async fn legacy(
         .await
         .map(|mut response| {
             if profile.protocol == ProviderProtocol::OpenAiCompatible
+                && !provider_transform::speaks_responses(profile)
                 && let Some(object) = response.raw.as_object_mut()
             {
                 object.insert("object".into(), "chat.completion".into());
@@ -524,6 +528,22 @@ async fn execute(
     let result = async {
         let model = transport.model.clone();
         match transport.profile.protocol {
+            // A ChatGPT sign-in reaches the subscription backend, which
+            // speaks Responses only, always streamed and never stored.
+            ProviderProtocol::OpenAiCompatible
+                if provider_transform::speaks_responses(&transport.profile) =>
+            {
+                let provider =
+                    openai::OpenAIConfig::with_key(&chatgpt::DIALECT, secret.unwrap_or_default());
+                run(
+                    provider.connect(transport.clone()).responses(model),
+                    request,
+                    streaming,
+                    transport.body.is_none(),
+                    &transport.stream_end,
+                )
+                .await
+            }
             ProviderProtocol::OpenAiCompatible => {
                 let provider = openai::OpenAIConfig::new(secret.unwrap_or_default());
                 run(
