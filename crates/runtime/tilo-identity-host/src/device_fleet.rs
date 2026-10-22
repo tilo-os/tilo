@@ -789,6 +789,15 @@ impl DeviceFleetStore {
             .map_or_else(PathBuf::new, Path::to_path_buf)
     }
 
+    /// The files [`Self::load`] reads for `identity_id`: its fleet and the
+    /// shared home-peer registry, for a caller that watches them.
+    #[must_use]
+    pub fn backing_files(&self, identity_id: &str) -> Vec<PathBuf> {
+        std::iter::once(self.path(identity_id))
+            .chain(self.home_peer_registry())
+            .collect()
+    }
+
     fn path(&self, identity_id: &str) -> PathBuf {
         self.identity_dir
             .join("fleets")

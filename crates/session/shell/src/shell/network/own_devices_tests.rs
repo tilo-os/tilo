@@ -91,14 +91,10 @@ fn after_restart(
     crate::shell::durable_writer::global().flush();
     let mut fresh = personal_device_peers::PersonalDevicePeers::default();
     fresh
-        .devices_at(
-            || personal_device_peers::Sources {
-                peers: dir.join("personal-device-peers.json"),
-                person: Some(person),
-                fleet: personal_device_peers::load_fleet(&person, store),
-            },
-            std::time::Instant::now(),
-        )
+        .devices_at(|| personal_device_peers::Sources {
+            peers: dir.join("personal-device-peers.json"),
+            fleet: Some((person, store.clone())),
+        })
         .to_vec()
 }
 
