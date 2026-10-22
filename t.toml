@@ -3957,9 +3957,10 @@ default = false
 # ---------------------------------------------------------------------------
 # The local model catalog (crates/agent/local-model-service/RELEASE.md), published by hand from
 # stable: `t dispatch publish-model-catalog --ref stable` builds the compiler, signs the reviewed
-# catalog (which must reproduce the checked-in one) and uploads it; `t dispatch
-# review-speech-catalog --ref stable` signs the speech candidate for review (`t outputs
-# review-speech-catalog`). The compiler is built without credentials; only the signing checks
+# catalog (which must reproduce the checked-in one) and uploads it with the runtime archives it
+# names; `t dispatch review-model-catalog --ref stable` signs dist/local-models/catalog-source.json
+# for review (`t outputs review-model-catalog`), to be checked in as the image's catalog. The
+# runtimes come from their builds below. The compiler is built without credentials; only the signing checks
 # hold TILO_MODEL_CATALOG_SIGNING_KEY and only the publishing one the package token. Forgejo's
 # generic package registry does not take t's identity tokens, so that one is a stored secret.
 # Checks holding a secret run as micro-VM steps, which t boots on x86_64 only for now.
@@ -3975,7 +3976,7 @@ default = false
 name = "sign-model-catalog"
 run = "bash tools/release/local-model-catalog.sh sign /target/model-catalog/bin/tilo-model-catalog /target/model-catalog/signed"
 inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_catalog.py", "tools/ci/publish/lib.sh", "dist/local-models/**", "os/usr/share/tilo/system-extensions/local-model-*.json"]
-needs = ["model-catalog-compiler"]
+needs = ["model-catalog-compiler", "local-model-runtime-llama-cpp-cpu-x86_64", "local-model-runtime-llama-cpp-cpu-aarch64", "local-model-runtime-llama-cpp-vulkan-x86_64", "local-model-runtime-llama-cpp-vulkan-aarch64", "local-model-runtime-llama-cpp-cuda-x86_64", "local-model-runtime-vllm-cuda-x86_64"]
 outputs = ["/target/model-catalog/signed/catalog.json", "/target/model-catalog/signed/keys.json"]
 secrets = ["TILO_MODEL_CATALOG_SIGNING_KEY"]
 requires = ["arch=x86_64"]
@@ -3985,20 +3986,85 @@ on = ["dispatch"]
 name = "publish-model-catalog"
 run = "bash tools/release/local-model-catalog.sh publish /target/model-catalog/signed"
 inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_catalog.py", "tools/release/publish_speech_artifacts.py", "tools/ci/publish/lib.sh", "dist/local-models/**", "os/usr/share/tilo/system-extensions/local-model-*.json"]
-needs = ["sign-model-catalog"]
+needs = ["sign-model-catalog", "local-model-runtime-llama-cpp-cpu-x86_64", "local-model-runtime-llama-cpp-cpu-aarch64", "local-model-runtime-llama-cpp-vulkan-x86_64", "local-model-runtime-llama-cpp-vulkan-aarch64", "local-model-runtime-llama-cpp-cuda-x86_64", "local-model-runtime-vllm-cuda-x86_64"]
 secrets = ["REGISTRY_TOKEN"]
 requires = ["arch=x86_64"]
 on = ["dispatch"]
 
 [[check]]
-name = "review-speech-catalog"
+name = "review-model-catalog"
 run = "bash tools/release/local-model-catalog.sh review /target/model-catalog/bin/tilo-model-catalog /target/model-catalog/review"
 inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_catalog.py", "tools/ci/publish/lib.sh", "dist/local-models/**", "os/usr/share/tilo/system-extensions/local-model-keys.json"]
-needs = ["model-catalog-compiler"]
+needs = ["model-catalog-compiler", "local-model-runtime-llama-cpp-cpu-x86_64", "local-model-runtime-llama-cpp-cpu-aarch64", "local-model-runtime-llama-cpp-vulkan-x86_64", "local-model-runtime-llama-cpp-vulkan-aarch64", "local-model-runtime-llama-cpp-cuda-x86_64", "local-model-runtime-vllm-cuda-x86_64"]
 outputs = ["/target/model-catalog/review/*"]
 secrets = ["TILO_MODEL_CATALOG_SIGNING_KEY"]
 requires = ["arch=x86_64"]
 on = ["dispatch"]
+
+# ---------------------------------------------------------------------------
+# Local model runtimes (tools/release/local-model-runtime.sh, dist/local-models/runtimes): the
+# servers the signed model catalog ships, built from pinned sources and bases without secrets,
+# each into an OCI archive named for podman and the catalog entry it signs. llama.cpp serves GGUF
+# models on the processor (cpu) and on Mesa's GPUs (vulkan) for both architectures and on NVIDIA
+# GPUs (cuda); vLLM serves safetensors on NVIDIA GPUs. Stable rebuilds them when their inputs
+# change, and the catalog's signing and publishing checks take their archives; `t test
+# local-model-runtime-llama-cpp-cpu-x86_64` builds one for a working tree, and
+# local-model-runtime-e2e answers a chat completion through the CPU build.
+[[check]]
+name = "local-model-runtime-llama-cpp-{backend}-{arch}"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/release/local-model-runtime.sh build llama-cpp-{backend}-{arch} /target/local-model-runtimes/llama-cpp-{backend}-{arch}"
+inputs = ["tools/release/local-model-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "dist/local-models/runtimes/llama-cpp.Containerfile"]
+outputs = ["/target/local-model-runtimes/llama-cpp-{backend}-{arch}/*"]
+requires = ["arch={arch}"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 16, memory = "16GiB" }
+timeout_secs = 7200
+on = ["stable", "dispatch"]
+default = false
+
+[check.matrix]
+backend = ["cpu", "vulkan"]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "local-model-runtime-llama-cpp-cuda-x86_64"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/release/local-model-runtime.sh build llama-cpp-cuda-x86_64 /target/local-model-runtimes/llama-cpp-cuda-x86_64"
+inputs = ["tools/release/local-model-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "dist/local-models/runtimes/llama-cpp-cuda.Containerfile"]
+outputs = ["/target/local-model-runtimes/llama-cpp-cuda-x86_64/*"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 10800
+on = ["stable", "dispatch"]
+default = false
+
+# vLLM's upstream image at a pinned digest, its manifest converted to OCI and its layers unchanged.
+[[check]]
+name = "local-model-runtime-vllm-cuda-x86_64"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/release/local-model-runtime.sh build vllm-cuda-x86_64 /target/local-model-runtimes/vllm-cuda-x86_64"
+inputs = ["tools/release/local-model-runtime.sh", "tools/ci/publish/lib.sh"]
+outputs = ["/target/local-model-runtimes/vllm-cuda-x86_64/*"]
+requires = ["arch=any", "disk-100g"]
+cost = "minutes"
+requirement = { cores = 2, memory = "4GiB" }
+on = ["stable", "dispatch"]
+default = false
+
+[[check]]
+name = "local-model-runtime-e2e"
+run = "bash tools/release/local-model-runtime-e2e.sh /target/local-model-runtimes/llama-cpp-cpu-x86_64"
+inputs = ["tools/release/local-model-runtime-e2e.sh", "tools/ci/publish/lib.sh"]
+needs = ["local-model-runtime-llama-cpp-cpu-x86_64"]
+cargo_packages = ["local-model-service", "tilo-model-gateway"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+on = ["stable", "dispatch"]
+default = false
 
 # ---------------------------------------------------------------------------
 # Deploys what stable released (tools/release/cloud_deploy.py). Which images run where is not
