@@ -69,14 +69,22 @@ impl PlatformConventions {
         }
     }
 
-    /// Whether the platform's primary command modifier is currently held.
-    pub fn command_modifier_down(self, modifiers: winit::keyboard::ModifiersState) -> bool {
+    /// The platform's primary command modifier: Command (Super) on macOS,
+    /// Control elsewhere. The one place that says what a
+    /// [`Shortcut::command`] chord is pressed with; matching it, pressing it
+    /// in a test and sending it to a page all ask here.
+    pub const fn command_modifier(self) -> winit::keyboard::ModifiersState {
         match self.platform {
-            Platform::MacOs => modifiers.super_key(),
+            Platform::MacOs => winit::keyboard::ModifiersState::SUPER,
             Platform::Windows | Platform::Linux | Platform::Android | Platform::Other => {
-                modifiers.control_key()
+                winit::keyboard::ModifiersState::CONTROL
             }
         }
+    }
+
+    /// Whether the platform's primary command modifier is currently held.
+    pub fn command_modifier_down(self, modifiers: winit::keyboard::ModifiersState) -> bool {
+        modifiers.contains(self.command_modifier())
     }
 }
 

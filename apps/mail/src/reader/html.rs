@@ -656,11 +656,9 @@ impl HtmlBody {
                 engine.send(WebViewCommand::Key {
                     key: ui::webview::KeyInput::Character("a".into()),
                     down,
-                    modifiers: ui::webview::KeyModifiers {
-                        ctrl: !cfg!(target_os = "macos"),
-                        meta: cfg!(target_os = "macos"),
-                        ..ui::webview::KeyModifiers::default()
-                    },
+                    modifiers: ui::webview::KeyModifiers::command(
+                        ui::platform::PlatformConventions::default(),
+                    ),
                 });
             }
         }

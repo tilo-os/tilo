@@ -9199,13 +9199,7 @@ impl FrameHarness {
         let mut st = winit::keyboard::ModifiersState::empty();
         for n in names {
             match n.to_ascii_lowercase().as_str() {
-                "command" => {
-                    st |= if self.platform.platform() == crate::platform::Platform::MacOs {
-                        winit::keyboard::ModifiersState::SUPER
-                    } else {
-                        winit::keyboard::ModifiersState::CONTROL
-                    };
-                }
+                "command" => st |= self.platform.command_modifier(),
                 "ctrl" | "control" => st |= winit::keyboard::ModifiersState::CONTROL,
                 "shift" => st |= winit::keyboard::ModifiersState::SHIFT,
                 "alt" => st |= winit::keyboard::ModifiersState::ALT,
