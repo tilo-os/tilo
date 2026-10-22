@@ -30,8 +30,8 @@ use crate::mathfield::{self, MathField};
 /// A calculation row: the expression over its result, as the display sets
 /// them.
 const CALCULATION_HEIGHT: f64 = 60.0;
-/// A graph row: one formula line.
-const GRAPH_HEIGHT: f64 = 48.0;
+/// A graph row: one formula, tall enough for a fraction or a root.
+const GRAPH_HEIGHT: f64 = 64.0;
 /// The x range a curve's thumbnail plots.
 const THUMBNAIL_SPAN: f64 = 5.0;
 /// Samples across a thumbnail.
@@ -297,7 +297,7 @@ impl EntryBody for GraphBody {
         let thumb_w = if self.samples.is_empty() {
             0.0
         } else {
-            (rect.height() * 1.5).min(rect.width() / 3.0)
+            (rect.height() * 1.25).min(rect.width() / 4.0)
         };
         let label_style = theme.text(TextRole::Body);
         let (label_w, _) =

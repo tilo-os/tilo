@@ -89,16 +89,22 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
     );
 
     app.harness()
-        .click_named(ui::widget::HISTORY_CONTROL_ID)
-        .unwrap();
+        .open_history()
+        .expect("the window's History opens");
+    app.settle();
     app.harness().relayout();
     let rows = history_rows(&mut app);
+    let mut addressable: Vec<String> = app.harness().targets().into_keys().collect();
+    addressable.sort();
     let named = |text: &str| {
         rows.iter()
             .find(|(_, name)| name.ends_with(text))
             .map(|(target, _)| target.clone())
     };
-    assert!(named("3*4 = 12").is_some(), "{rows:?}");
+    assert!(
+        named("3*4 = 12").is_some(),
+        "{rows:?} among {addressable:?}"
+    );
     assert!(named("y = x+1").is_some(), "{rows:?}");
     let first = named("1+2 = 3").unwrap_or_else(|| panic!("{rows:?}"));
 
@@ -121,66 +127,4 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
         Some("1+2"),
         "the chosen calculation is back in the calculator"
     );
-}
-
-/// Review stills of History and of typing in Graph 2D, in dark and light:
-/// `CALCULATOR_SHOTS=<dir> <test binary> --ignored review_stills`.
-#[test]
-#[ignore = "writes review screenshots; run by hand with CALCULATOR_SHOTS"]
-fn review_stills() {
-    let Some(dir) = std::env::var_os("CALCULATOR_SHOTS").map(std::path::PathBuf::from) else {
-        return;
-    };
-    for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
-        let mut app = hosted();
-        app.harness().set_theme(theme.clone());
-        click(&mut app, "calculator.mode:0");
-        for expression in [
-            "1250+420+90+160",
-            "1920*12",
-            "23040/52",
-            "sqrt(2)",
-            "86.4*0.15",
-        ] {
-            calculate(&mut app, expression);
-        }
-        app.flush().unwrap();
-        app.harness()
-            .click_named(ui::widget::HISTORY_CONTROL_ID)
-            .unwrap();
-        app.harness().relayout();
-        let _ = history_rows(&mut app);
-        app.harness()
-            .render_png(&dir.join(format!("history-calculations-{name}.png")));
-
-        let mut app = hosted();
-        app.harness().set_theme(theme.clone());
-        click(&mut app, "calculator.mode:0");
-        calculate(&mut app, "2^10");
-        click(&mut app, "calculator.mode:1");
-        click(&mut app, "calculator.graph.field:2d:0");
-        app.harness().type_text("sin(x)");
-        app.settle();
-        // Enter adds a curve and puts the caret in it.
-        app.harness().key("Enter");
-        app.harness().type_text("x^2/4-1");
-        app.settle();
-        app.flush().unwrap();
-        app.harness()
-            .click_named(ui::widget::HISTORY_CONTROL_ID)
-            .unwrap();
-        app.harness().relayout();
-        let _ = history_rows(&mut app);
-        app.harness()
-            .render_png(&dir.join(format!("history-graphs-{name}.png")));
-
-        let mut app = hosted();
-        app.harness().set_theme(theme);
-        click(&mut app, "calculator.mode:1");
-        click(&mut app, "calculator.graph.field:2d:0");
-        app.harness().type_text("x^3-2*x");
-        app.settle();
-        app.harness()
-            .render_png(&dir.join(format!("graph2d-typing-{name}.png")));
-    }
 }
