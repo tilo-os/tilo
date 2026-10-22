@@ -316,6 +316,10 @@ pub fn route_to_children(
 
 /// Draw `child` unless what it paints misses the viewport. Off-viewport
 /// widgets stay dirty, so they re-emit when scrolled back in.
+///
+/// A widget ends every layer it begins: the render service refuses a scene
+/// that leaves a clip open, and with it the whole frame. Debug builds check
+/// that here, naming the widget, so a test that draws it fails.
 pub fn draw_child(
     child: &mut (impl Widget + ?Sized),
     scene: &mut Scene,
@@ -325,7 +329,16 @@ pub fn draw_child(
     presence: &PresenceCtx,
 ) {
     if !presence.should_cull(child.paint_bounds()) {
+        #[cfg(debug_assertions)]
+        let open = scene.encoding().n_open_clips;
         child.draw(scene, transform, text_renderer, theme, presence);
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            scene.encoding().n_open_clips,
+            open,
+            "{} left a layer open (or ended one it did not begin) in its draw",
+            child.concrete_type_name()
+        );
     }
 }
 

@@ -186,7 +186,8 @@ pub struct RecordedBackdrop {
     /// The layer of the scene the surface was drawn into (see
     /// [`layer_scene`]).
     pub layer: u32,
-    /// What that scene held before the surface.
+    /// What that scene held before the surface, with the layers still open
+    /// there ended: a balanced scene of its own.
     pub below: Scene,
     /// The opaque panel ground the material tints with.
     pub ground: Color,
@@ -358,6 +359,7 @@ pub fn append_nested(scene: &mut Scene, child: &Scene, transform: Affine) -> usi
         for (_, mut surface) in carried {
             let mut below = scene.clone();
             below.append(&surface.below, Some(transform));
+            end_open_layers(&mut below);
             surface.below = below;
             surface.bounds = transform.transform_rect_bbox(surface.bounds);
             surface.blur_px *= transform.determinant().abs().sqrt();
@@ -425,7 +427,11 @@ fn record(
             blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px)
                 * transform.determinant().abs().sqrt(),
             layer: layer.unwrap_or_default(),
-            below: scene.clone(),
+            below: {
+                let mut below = scene.clone();
+                end_open_layers(&mut below);
+                below
+            },
             ground,
         };
         if layer.is_some() {
@@ -435,6 +441,21 @@ fn record(
         }
         Some((image, brush_transform))
     })
+}
+
+/// End the layers `below` leaves open, so a copy of a scene taken part way
+/// through drawing it is a scene of its own.
+///
+/// A surface is often drawn inside layers its scene still has open: the clip
+/// of the list or window it floats over, the alpha layer of its own fade-in.
+/// Those layers end after the surface, so what lies below it is everything
+/// drawn so far with them ended where the copy stops, exactly as a renderer
+/// ends a scene's open layers. The render service draws a backdrop's scene by
+/// itself and refuses one that leaves a clip open, and with it the whole frame.
+fn end_open_layers(below: &mut Scene) {
+    for _ in 0..below.encoding().n_open_clips {
+        below.pop_layer();
+    }
 }
 
 #[allow(

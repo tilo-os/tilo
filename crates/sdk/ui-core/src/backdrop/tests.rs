@@ -203,6 +203,58 @@ fn a_surface_in_a_nested_cache_lands_where_the_cache_is_appended() {
     assert_eq!(append_nested(&mut plain, &inner, Affine::IDENTITY), 0);
 }
 
+/// The render service draws a backdrop's scene by itself and refuses a frame
+/// whose backdrop leaves a clip open ("invalid scene: a clip is left open"),
+/// which froze every window showing a menu, toast or notice drawn inside a
+/// clip or a fade. What lies below a surface must pass the service's own
+/// validator, wherever the surface was drawn.
+#[test]
+fn what_lies_below_a_surface_drawn_inside_open_layers_is_a_balanced_scene() {
+    use tilo_render_protocol::Limits;
+    use tilo_render_protocol::validate::validate;
+    use vello::peniko::BlendMode;
+
+    let theme = Theme::dark();
+    let mut frame = stripes(256, 192);
+    let recording = BackdropRecording::begin();
+    layer_scene(&frame, 0);
+    // A surface inside the window's clip and its own fade-in layer.
+    frame.push_clip_layer(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        &Rect::new(0.0, 0.0, 256.0, 192.0),
+    );
+    frame.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        0.5,
+        Affine::IDENTITY,
+        &Rect::new(0.0, 0.0, 256.0, 192.0),
+    );
+    floating(&mut frame, Affine::IDENTITY, &theme);
+    frame.pop_layer();
+    // A surface in a cache that is itself drawn and appended inside a clip.
+    let mut cache = Scene::new();
+    nest_scene(&cache);
+    cache.push_clip_layer(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        &Rect::new(0.0, 0.0, 128.0, 96.0),
+    );
+    floating(&mut cache, Affine::IDENTITY, &theme);
+    cache.pop_layer();
+    append_nested(&mut frame, &cache, Affine::translate((8.0, 8.0)));
+    frame.pop_layer();
+    let surfaces = recording.finish();
+    assert_eq!(surfaces.len(), 2);
+    validate(frame.encoding(), &Limits::default()).expect("the frame itself is balanced");
+    for surface in &surfaces {
+        assert_eq!(surface.below.encoding().n_open_clips, 0);
+        validate(surface.below.encoding(), &Limits::default())
+            .expect("the render service accepts what lies below a surface");
+    }
+}
+
 #[test]
 fn a_nested_recording_never_shares_a_placeholder_with_its_host() {
     let theme = Theme::dark();
