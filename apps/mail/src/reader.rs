@@ -1991,9 +1991,6 @@ mod tests {
         .expect("utf-8")
     }
 
-    // USER REQUIREMENT (2026-10-22): "Remote content: off by default, one
-    // clear \"Load images\" control per message, plus \"always for this
-    // sender\"."
     #[test]
     fn html_mail_renders_sealed_with_remote_content_blocked_until_allowed() {
         let shared = shared();
@@ -2080,8 +2077,6 @@ mod tests {
         assert_eq!(loaded(&reader), Some((id, false)));
     }
 
-    // USER REQUIREMENT (2026-10-22): "Links: open in the Browser through the
-    // normal open path; hover or long-press shows the real target URL."
     #[test]
     fn a_followed_link_opens_in_the_browser_and_its_address_shows_first() {
         use ui::webview::WebViewEvent;
@@ -2145,8 +2140,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-22): "Text: selection, copy, find in message
-    // (framework find bar), zoom work in HTML mails."
     #[test]
     fn find_and_copy_reach_the_html_body() {
         use ui::webview::WebViewEvent;
