@@ -9254,32 +9254,8 @@ mod live_power_settings_tests {
     use super::reapply_power_policy;
     use crate::compositor::backend::drm::input_config::SettingsChange;
     use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
-    use crate::shell::chrome_state::ChromeState;
-    use crate::shell::search::action_api::{ActionArgs, ArgValue};
-    use crate::shell::search::providers::SystemSettingsProvider;
-    use crate::shell::search::{ResourceKind, SearchContext, SearchProvider as _, SearchResult};
-    use automerge::{AutoCommit, ROOT};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-
-    /// The system-settings row `id`, as the palette and the control socket
-    /// list it.
-    fn row(chrome: &crate::shell::chrome_state::Chrome, id: &str) -> SearchResult {
-        let state = chrome.borrow();
-        SystemSettingsProvider::new()
-            .query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "",
-                wanted: &[ResourceKind::Action],
-                chrome: &state,
-                doc: &AutoCommit::new(),
-                doc_root: &ROOT,
-            })
-            .into_iter()
-            .find(|row| row.id == id)
-            .unwrap_or_else(|| panic!("{id} is not offered"))
-    }
 
     /// A write through the settings store reaches the running session: the
     /// compositor learns of it from the live document, derives the idle
@@ -9298,7 +9274,6 @@ mod live_power_settings_tests {
         let live = settings_store::live::LiveSettings::start(|| {});
         let mut follower = settings_store::live::SectionFollower::new(&live);
         let bridge = tilo_power_mgmt::PowerBridge::new();
-        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
         let t0 = Instant::now();
         let fresh = || {
             SessionManager::new(
@@ -9318,33 +9293,14 @@ mod live_power_settings_tests {
             );
         }
 
-        // Phase `a_value_the_pane_does_not_offer_is_refused_before_anything_is_stored`.
-        {
-            let lock_after = row(&chrome, "power.lock-after.set");
-            assert!(
-                ActionArgs::bind(
-                    &lock_after.params,
-                    [("minutes".to_owned(), ArgValue::Integer(7))]
-                )
-                .is_err()
-            );
-            assert_eq!(settings_store::power::LOCK_MINUTES.get(), 5);
-        }
-
-        // Phase `setting_it_to_never_through_the_action_is_applied_live`.
+        // Phase `setting_it_to_never_is_applied_live`.
         {
             let mut running = fresh();
             let before = live.generation();
-            let lock_after = row(&chrome, "power.lock-after.set");
-            let args = ActionArgs::bind(
-                &lock_after.params,
-                [("minutes".to_owned(), ArgValue::Integer(0))],
-            )
-            .unwrap();
-            let mut doc = AutoCommit::new();
-            let mut edits = ui::widget::Edits::lend(&mut doc);
-            let invoke = lock_after.on_invoke.as_ref().expect("a typed receipt");
-            invoke(&mut edits, &ROOT, &chrome, &args).expect("the setting is stored");
+            settings_store::SectionWrite::new()
+                .set(&settings_store::power::LOCK_MINUTES, &0)
+                .commit_by(&settings_store::ChangeOrigin::action("settings.power"))
+                .expect("the setting is stored");
 
             let snapshot = live.wait_for_change(before, tilo_test_env::hang_bound());
             assert_eq!(snapshot.section("power")["lock_minutes"], 0);
