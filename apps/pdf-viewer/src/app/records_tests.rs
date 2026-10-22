@@ -642,7 +642,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             })
             .expect("the render is queued");
         tests::drain_until(&mut app, |app| app.raster_images.contains_key(&key));
-        let bitmap = app.raster_images[&key].clone();
+        let bitmap = app.raster_images.get(&key).expect("the render arrived");
         assert!(
             bitmap.height > bitmap.width,
             "the landscape page renders portrait once rotated ({}x{})",

@@ -46,6 +46,7 @@ pub mod adopt;
 pub mod app;
 pub mod markup;
 pub mod model;
+pub mod page_images;
 pub mod render;
 pub mod resource;
 pub mod search;

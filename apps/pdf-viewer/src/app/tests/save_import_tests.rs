@@ -358,7 +358,7 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
         );
 
         // The pure crop path yields a correctly-sized sub-image of the page.
-        let img = app.raster_images[&key].clone();
+        let img = app.raster_images.get(&key).expect("the render arrived");
         let rect = PtRect::from_corners(40.0, 40.0, pw * 0.6, ph * 0.5);
         let (w, h, rgba) = render::crop_page_region(&img, pw, ph, rect).expect("crop succeeds");
         assert!(w > 0 && h > 0);

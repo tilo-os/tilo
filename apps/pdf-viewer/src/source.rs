@@ -1353,6 +1353,16 @@ pub struct TileBatch {
     pub tiles: Vec<TileRequest>,
 }
 
+/// The whole-page bitmaps a viewer wants now (pages on screen, the pages
+/// the scroll is heading into, rail thumbnails), most important first. Like
+/// a [`TileBatch`] it *replaces* the viewer's queued page renders, so a page
+/// that scrolled past is never rendered ahead of the one now on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenderBatch {
+    pub document_id: u64,
+    pub renders: Vec<RenderRequest>,
+}
+
 /// A request for one page's selectable text layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextRequest {
@@ -1490,6 +1500,10 @@ pub enum RasterCommand {
         visible: bool,
     },
     Render(RenderRequest),
+    /// Replace the session's queued view renders with this batch.
+    Renders(RenderBatch),
+    /// One page render taken off a batch by the worker.
+    ViewRender(RenderRequest),
     /// Replace the session's queued tiles with this batch.
     Tiles(TileBatch),
     /// One tile taken off a batch by the worker.
@@ -1701,10 +1715,10 @@ struct QueueState {
     open_order: VecDeque<u64>,
     controls: VecDeque<QueuedCommand>,
     renders: VecDeque<QueuedCommand>,
-    /// Each session's current tile batch, most important first, and the
-    /// round-robin order sessions are served in.
-    tiles: HashMap<u64, VecDeque<TileRequest>>,
-    tile_order: VecDeque<u64>,
+    /// Each session's current page-render batch.
+    view_renders: SessionBatches<RenderRequest>,
+    /// Each session's current tile batch.
+    tiles: SessionBatches<TileRequest>,
     texts: VecDeque<QueuedCommand>,
     reconciles: HashMap<u64, ReconcileRequest>,
     reconcile_order: VecDeque<u64>,
@@ -1727,6 +1741,10 @@ struct QueueState {
     content: HashMap<u64, ContentStore>,
     start_error: Option<String>,
     prefer_text: bool,
+    /// Each session's window, woken when a result for it is queued, so a
+    /// page that finishes rendering while nothing else happens is drawn
+    /// without waiting for input.
+    wakes: HashMap<u64, ui::wake::WakeHandle>,
 }
 
 fn session_settlement_count(state: &QueueState, session_id: u64) -> usize {
@@ -1788,6 +1806,16 @@ impl RasterHandle {
                 closed: std::sync::atomic::AtomicBool::new(false),
             }),
         })
+    }
+
+    /// Wake `wake`'s window whenever a result for this viewer is queued.
+    pub fn set_wake(&self, wake: ui::wake::WakeHandle) {
+        self.session
+            .queue
+            .state
+            .lock_recover()
+            .wakes
+            .insert(self.session.id, wake);
     }
 
     /// Queue the newest path to open. Queued opens are deliberately coalesced:
@@ -1903,6 +1931,16 @@ impl RasterHandle {
     /// Returns an error when the worker has stopped or is unavailable.
     pub fn request_tiles(&self, batch: TileBatch) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Tiles(batch))
+    }
+
+    /// Replace this viewer's queued page renders with `batch`, most
+    /// important first; an empty batch cancels them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker has stopped or is unavailable.
+    pub fn request_renders(&self, batch: RenderBatch) -> Result<(), RasterSubmitError> {
+        self.enqueue(RasterCommand::Renders(batch))
     }
 
     /// Queue extraction of one page text layer, coalescing duplicate pages.
@@ -2074,7 +2112,8 @@ impl RasterHandle {
             && state.save_order.is_empty()
             && state.import_order.is_empty()
             && state.renders.is_empty()
-            && state.tile_order.is_empty()
+            && state.view_renders.is_empty()
+            && state.tiles.is_empty()
             && state.texts.is_empty()
             && state.open_events.is_empty()
             && state.events.is_empty())
@@ -2134,6 +2173,7 @@ impl RasterHandle {
                     .renders
                     .retain(|queued| queued.session_id != self.session.id);
                 drop_session_tiles(&mut state, self.session.id);
+                drop_session_view_renders(&mut state, self.session.id);
                 state
                     .texts
                     .retain(|queued| queued.session_id != self.session.id);
@@ -2172,6 +2212,27 @@ impl RasterHandle {
                     });
                 }
             }
+            RasterCommand::Renders(batch) => {
+                let mut seen = HashSet::new();
+                let renders: VecDeque<RenderRequest> = batch
+                    .renders
+                    .into_iter()
+                    .filter(|request| request.document_id == batch.document_id)
+                    .map(|mut request| {
+                        request.target_width = RasterBackend::bucket_for(request.target_width);
+                        request
+                    })
+                    .filter(|request| seen.insert((request.page, request.target_width)))
+                    .take(MAX_PENDING_PAGE_REQUESTS)
+                    .collect();
+                state.view_renders.replace(self.session.id, renders);
+            }
+            // A single view render is only ever taken off a batch by the worker.
+            RasterCommand::ViewRender(request) => {
+                state
+                    .view_renders
+                    .push(self.session.id, request, MAX_PENDING_PAGE_REQUESTS);
+            }
             RasterCommand::Tiles(batch) => {
                 let mut seen = HashSet::new();
                 let tiles: VecDeque<TileRequest> = batch
@@ -2180,25 +2241,13 @@ impl RasterHandle {
                     .filter(|tile| tile.document_id == batch.document_id && seen.insert(*tile))
                     .take(crate::tiles::MAX_TILE_BATCH)
                     .collect();
-                if tiles.is_empty() {
-                    state.tiles.remove(&self.session.id);
-                    state.tile_order.retain(|queued| *queued != self.session.id);
-                } else {
-                    if !state.tiles.contains_key(&self.session.id) {
-                        state.tile_order.push_back(self.session.id);
-                    }
-                    state.tiles.insert(self.session.id, tiles);
-                }
+                state.tiles.replace(self.session.id, tiles);
             }
             // A single tile is only ever taken off a batch by the worker.
             RasterCommand::Tile(request) => {
-                if !state.tiles.contains_key(&self.session.id) {
-                    state.tile_order.push_back(self.session.id);
-                }
-                let queue = state.tiles.entry(self.session.id).or_default();
-                if !queue.contains(&request) && queue.len() < crate::tiles::MAX_TILE_BATCH {
-                    queue.push_back(request);
-                }
+                state
+                    .tiles
+                    .push(self.session.id, request, crate::tiles::MAX_TILE_BATCH);
             }
             RasterCommand::Text(request) => {
                 if !state.texts.iter().any(|queued| {
@@ -2239,6 +2288,7 @@ impl RasterHandle {
                     .renders
                     .retain(|queued| queued.session_id != self.session.id);
                 drop_session_tiles(&mut state, self.session.id);
+                drop_session_view_renders(&mut state, self.session.id);
                 state
                     .texts
                     .retain(|queued| queued.session_id != self.session.id);
@@ -2339,7 +2389,9 @@ fn shared_worker_queue() -> Arc<WorkerQueue> {
             return queue;
         }
         let worker_queue = Arc::clone(&queue);
-        if let Err(error) = ui::rt::spawn_thread("pdf-source", move || source_worker(&worker_queue))
+        // Rendering never competes with the window's own thread for a CPU.
+        if let Err(error) =
+            ui::rt::spawn_background_thread("pdf-source", move || source_worker(&worker_queue))
         {
             let mut state = queue.state.lock_recover();
             state.start_error = Some(error.to_string());
@@ -2395,11 +2447,13 @@ fn next_page_work(state: &mut QueueState) -> Option<QueuedCommand> {
             .texts
             .pop_front()
             .or_else(|| state.renders.pop_front())
+            .or_else(|| pop_view_render(state))
             .or_else(|| pop_tile(state))
     } else {
         state
             .renders
             .pop_front()
+            .or_else(|| pop_view_render(state))
             .or_else(|| pop_tile(state))
             .or_else(|| state.texts.pop_front())
     };
@@ -2409,33 +2463,103 @@ fn next_page_work(state: &mut QueueState) -> Option<QueuedCommand> {
     command
 }
 
-fn drop_session_tiles(state: &mut QueueState, session_id: u64) {
-    state.tiles.remove(&session_id);
-    state.tile_order.retain(|queued| *queued != session_id);
+/// Each session's current batch of one kind of page work, most important
+/// first, and the round-robin order sessions are served in, so one window's
+/// batch cannot starve another's.
+struct SessionBatches<T> {
+    queues: HashMap<u64, VecDeque<T>>,
+    order: VecDeque<u64>,
 }
 
-/// The next queued tile, serving sessions round-robin so one viewer's large
-/// batch cannot starve another window.
-fn pop_tile(state: &mut QueueState) -> Option<QueuedCommand> {
-    while let Some(session_id) = state.tile_order.pop_front() {
-        let Some(queue) = state.tiles.get_mut(&session_id) else {
-            continue;
-        };
-        let Some(tile) = queue.pop_front() else {
-            state.tiles.remove(&session_id);
-            continue;
-        };
-        if queue.is_empty() {
-            state.tiles.remove(&session_id);
-        } else {
-            state.tile_order.push_back(session_id);
+impl<T> Default for SessionBatches<T> {
+    fn default() -> Self {
+        Self {
+            queues: HashMap::new(),
+            order: VecDeque::new(),
         }
-        return Some(QueuedCommand {
-            session_id,
-            command: RasterCommand::Tile(tile),
-        });
     }
-    None
+}
+
+impl<T: PartialEq> SessionBatches<T> {
+    /// Replace `session`'s batch; an empty one cancels it.
+    fn replace(&mut self, session: u64, items: VecDeque<T>) {
+        if items.is_empty() {
+            self.drop_session(session);
+            return;
+        }
+        if !self.queues.contains_key(&session) {
+            self.order.push_back(session);
+        }
+        self.queues.insert(session, items);
+    }
+
+    /// Queue one item behind `session`'s batch, unless it is already there
+    /// or the batch holds `cap`.
+    fn push(&mut self, session: u64, item: T, cap: usize) {
+        if !self.queues.contains_key(&session) {
+            self.order.push_back(session);
+        }
+        let queue = self.queues.entry(session).or_default();
+        if !queue.contains(&item) && queue.len() < cap {
+            queue.push_back(item);
+        }
+    }
+
+    fn drop_session(&mut self, session: u64) {
+        self.queues.remove(&session);
+        self.order.retain(|queued| *queued != session);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    /// The next item, from the next session in turn.
+    fn pop(&mut self) -> Option<(u64, T)> {
+        while let Some(session) = self.order.pop_front() {
+            let Some(queue) = self.queues.get_mut(&session) else {
+                continue;
+            };
+            let Some(item) = queue.pop_front() else {
+                self.queues.remove(&session);
+                continue;
+            };
+            if queue.is_empty() {
+                self.queues.remove(&session);
+            } else {
+                self.order.push_back(session);
+            }
+            return Some((session, item));
+        }
+        None
+    }
+}
+
+fn drop_session_view_renders(state: &mut QueueState, session_id: u64) {
+    state.view_renders.drop_session(session_id);
+}
+
+/// The next queued page render of a viewer's batch.
+fn pop_view_render(state: &mut QueueState) -> Option<QueuedCommand> {
+    state
+        .view_renders
+        .pop()
+        .map(|(session_id, request)| QueuedCommand {
+            session_id,
+            command: RasterCommand::ViewRender(request),
+        })
+}
+
+fn drop_session_tiles(state: &mut QueueState, session_id: u64) {
+    state.tiles.drop_session(session_id);
+}
+
+/// The next queued tile of a viewer's batch.
+fn pop_tile(state: &mut QueueState) -> Option<QueuedCommand> {
+    state.tiles.pop().map(|(session_id, tile)| QueuedCommand {
+        session_id,
+        command: RasterCommand::Tile(tile),
+    })
 }
 
 fn close_session_locked(state: &mut QueueState, session_id: u64) {
@@ -2444,6 +2568,7 @@ fn close_session_locked(state: &mut QueueState, session_id: u64) {
     }
     state.closing_sessions.insert(session_id);
     state.evicted_sessions.remove(&session_id);
+    state.wakes.remove(&session_id);
     state.open.remove(&session_id);
     state
         .open_contents
@@ -2459,6 +2584,7 @@ fn close_session_locked(state: &mut QueueState, session_id: u64) {
         .renders
         .retain(|queued| queued.session_id != session_id);
     drop_session_tiles(state, session_id);
+    drop_session_view_renders(state, session_id);
     state.texts.retain(|queued| queued.session_id != session_id);
     state.reconciles.remove(&session_id);
     state.reconcile_order.retain(|queued| *queued != session_id);
@@ -2662,7 +2788,7 @@ impl SourceWorker {
                 }
                 return;
             }
-            RasterCommand::Render(request) => match active
+            RasterCommand::Render(request) | RasterCommand::ViewRender(request) => match active
                 .get_mut(&session_id)
                 .and_then(|documents| documents.get_mut(&request.document_id))
             {
@@ -2691,7 +2817,7 @@ impl SourceWorker {
                 _ => RasterEvent::TileFailed { request },
             },
             // Batches are unpacked at admission and never reach the worker.
-            RasterCommand::Tiles(_) => return,
+            RasterCommand::Tiles(_) | RasterCommand::Renders(_) => return,
             RasterCommand::Text(request) => match active
                 .get_mut(&session_id)
                 .and_then(|documents| documents.get_mut(&request.document_id))
@@ -2851,7 +2977,17 @@ fn session_content(queue: &WorkerQueue, session_id: u64) -> ContentStore {
 }
 
 fn push_event(queue: &WorkerQueue, session_id: u64, event: RasterEvent) {
-    let mut state = queue.state.lock_recover();
+    let wake = {
+        let mut state = queue.state.lock_recover();
+        queue_event(&mut state, session_id, event);
+        state.wakes.get(&session_id).cloned()
+    };
+    if let Some(wake) = wake {
+        wake.wake();
+    }
+}
+
+fn queue_event(state: &mut QueueState, session_id: u64, event: RasterEvent) {
     if matches!(
         &event,
         RasterEvent::Opened { .. }
@@ -2889,7 +3025,7 @@ fn push_event(queue: &WorkerQueue, session_id: u64, event: RasterEvent) {
             queued.session_id == session_id && same_page_result(&queued.event, &event)
         });
         if is_same {
-            remove_page_event(&mut state, index);
+            remove_page_event(state, index);
         } else {
             index += 1;
         }
@@ -2907,7 +3043,7 @@ fn push_event(queue: &WorkerQueue, session_id: u64, event: RasterEvent) {
             let owner = discarded.session_id;
             state.evicted_sessions.insert(owner);
         }
-        remove_page_event(&mut state, 0);
+        remove_page_event(state, 0);
     }
     state.event_bytes = state.event_bytes.saturating_add(bytes);
     state.events.push_back(QueuedEvent { session_id, event });

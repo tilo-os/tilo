@@ -1242,7 +1242,9 @@ impl PdfApp {
             self.viewport.pan_by(-raw_x, -raw_y);
         }
         self.current_page = self.nearest_page();
-        self.dirty = true;
+        // Only the view moved: the frame can scroll what is on screen
+        // (`collect_damage`) instead of repainting the window.
+        self.scrolled = true;
         *handled = true;
     }
 
