@@ -1414,13 +1414,15 @@ async fn route(
                     "not admitted to this workspace",
                 ));
             }
-            let (reply, job) = web.here.post(
+            let workspace_id = request.workspace_id;
+            let (mut reply, job) = web.here.post(
                 request,
                 session.peer.device_public_key,
                 session.peer.user_public_key,
                 std::time::Instant::now(),
                 tilo_clock::unix_now_ms(),
             );
+            here::pair_members(&mut reply, &web.grants.persons_in(workspace_id));
             if let Some(job) = job {
                 tokio::spawn(web.here.clone().summarize(job));
             }

@@ -415,6 +415,15 @@ async fn live_grants_follow_announced_changes() {
             .unwrap();
         held.push(authority.try_admit(&grant.token).unwrap());
     }
+    // The room knows whose device each member is from the grant, before
+    // their page says anything; an agent's publisher is not a device.
+    grants
+        .issue(&sessions, session.token, &peer, 82, Some("scribe"))
+        .await
+        .unwrap();
+    let person = (cert.device_public_key, cert.user_public_key);
+    assert_eq!(grants.persons_in(81), [person]);
+    assert_eq!(grants.persons_in(82), [person]);
     // Removal announces itself; the observer runs well before its old 50 ms
     // tick plus the carrier's 100 ms recheck.
     relay
@@ -435,6 +444,8 @@ async fn live_grants_follow_announced_changes() {
         matches!(held[1].status(), AuthorizationStatus::Current),
         "the other room's grant is untouched"
     );
+    assert!(grants.persons_in(81).is_empty(), "no longer a member there");
+    assert_eq!(grants.persons_in(82), [person]);
 
     observer.abort();
     drop(sessions);
