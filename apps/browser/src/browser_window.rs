@@ -1640,7 +1640,17 @@ mod tests {
                     .iter()
                     .map(|action| action.id.as_str())
                     .collect::<Vec<_>>(),
-                ["reload", "bookmark", "library"]
+                [
+                    "reload",
+                    "bookmark",
+                    "library",
+                    "page",
+                    "zoom",
+                    "extensions",
+                    "privacy",
+                    "settings"
+                ],
+                "the row's buttons, then the More menu's commands"
             );
             ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Commit {
                 text: typed.into(),

@@ -18,7 +18,9 @@ use ui::widget::{
     Actions, Banner, Button, Column, Container, Element, ListRow, MenuButton, MenuItem, Text,
     TextInput,
 };
+use ui::window_toolbar::ToolbarAction;
 
+use crate::CATALOG;
 use crate::extension_host::{ExtensionHost, Wanted};
 use crate::extension_toolbar::{self as toolbar, Installed};
 use crate::extensions::{self, ExtensionInfo, StagedPackage};
@@ -29,6 +31,11 @@ const POPUP_SIZE: (f32, f32) = (360.0, 560.0);
 
 const ADD_BUTTON: &str = "browser.extension.add";
 const MENU_BUTTON: &str = "browser.extensions.menu";
+
+/// The window bar's action ids: the Web Store offer, and the prefix of an
+/// item opening one extension's popup.
+const BAR_ADD: &str = "extension-add";
+const BAR_OPEN: &str = "extension-open:";
 
 /// Something the interface asked for.
 #[derive(Debug, Clone)]
@@ -399,6 +406,65 @@ impl ExtensionController {
         buttons
     }
 
+    /// The Web Store offer as a slot of the window's bar, which stands for
+    /// the toolbar row in a Tilo session: on a store item not yet added.
+    pub fn bar_offer(&self) -> Option<ToolbarAction> {
+        if !self.active {
+            return None;
+        }
+        let item = self.store_item.as_ref()?;
+        if self
+            .installed
+            .iter()
+            .any(|extension| extension.id == item.id)
+        {
+            return None;
+        }
+        let name = CATALOG.t(if self.busy {
+            "browser-extension-adding"
+        } else {
+            "browser-extension-add"
+        });
+        Some(ToolbarAction::new(BAR_ADD, "download", name).enabled(!self.busy))
+    }
+
+    /// The bar's Extensions items: one per enabled extension with an action,
+    /// which opens its popup, as the Extensions menu's rows do.
+    pub fn bar_items(&self) -> Vec<ToolbarAction> {
+        if !self.active {
+            return Vec::new();
+        }
+        self.model()
+            .menu
+            .into_iter()
+            .map(|entry| {
+                let name = if entry.button.badge.is_empty() {
+                    entry.button.label
+                } else {
+                    format!("{} ({})", entry.button.label, entry.button.badge)
+                };
+                ToolbarAction::new(format!("{BAR_OPEN}{}", entry.button.id), "box", name)
+            })
+            .collect()
+    }
+
+    /// Run a bar action from [`Self::bar_offer`] or [`Self::bar_items`] on
+    /// the next `sync`. Returns whether `id` was one of them.
+    pub fn bar_action(&mut self, id: &str) -> bool {
+        let command = if id == BAR_ADD {
+            match &self.store_item {
+                Some(item) => Command::Fetch(item.id.clone()),
+                None => return true,
+            }
+        } else if let Some(extension) = id.strip_prefix(BAR_OPEN) {
+            Command::OpenAction(extension.to_owned())
+        } else {
+            return false;
+        };
+        (self.queue(command))();
+        true
+    }
+
     fn extensions_menu(&self, model: &toolbar::Model) -> MenuButton {
         let mut items = Vec::new();
         for entry in &model.menu {
@@ -637,4 +703,49 @@ fn read_package_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
         return Err("the file is larger than 64 MiB".into());
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STORE_ITEM: &str = "https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh";
+
+    fn queued(controller: &ExtensionController) -> Vec<String> {
+        controller
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|command| format!("{command:?}"))
+            .collect()
+    }
+
+    #[test]
+    fn the_window_bar_offers_a_store_item_and_opens_extension_popups() {
+        let mut controller = ExtensionController::new(true);
+        assert_eq!(controller.bar_offer(), None, "no offer away from the store");
+        controller.store_item = web_store::item_from_url(STORE_ITEM);
+        let offer = controller.bar_offer().expect("a store item is offered");
+        assert_eq!(offer.id, BAR_ADD);
+        assert!(offer.enabled);
+        assert!(controller.bar_action(BAR_ADD));
+        assert_eq!(
+            queued(&controller),
+            [r#"Fetch("ddkjiahejlhfcafbddmgiahcphecmpfh")"#]
+        );
+        controller.busy = true;
+        assert!(
+            !controller.bar_offer().unwrap().enabled,
+            "one download at a time"
+        );
+
+        assert!(controller.bar_action(&format!("{BAR_OPEN}abc")));
+        assert_eq!(queued(&controller)[1], r#"OpenAction("abc")"#);
+        assert!(!controller.bar_action("reload"), "not this controller's");
+
+        let private = ExtensionController::new(false);
+        assert_eq!(private.bar_offer(), None);
+        assert!(private.bar_items().is_empty());
+    }
 }

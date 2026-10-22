@@ -67,7 +67,7 @@ impl BrowserWidget {
     }
 
     /// The resource and action a press of the settings row performs.
-    fn settings_command(&self) -> (&'static str, &'static str) {
+    pub(super) fn settings_command(&self) -> (&'static str, &'static str) {
         if self.show_settings {
             (crate::resource::Browser::KIND, "show-page")
         } else {
