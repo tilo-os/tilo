@@ -420,6 +420,7 @@ impl DisksApp {
             self.shell.set_sidebar(Some(Box::new(view::drive_list(
                 &drives,
                 self.selected,
+                self.loading,
                 &self.intents,
             ))));
         }

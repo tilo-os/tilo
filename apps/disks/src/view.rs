@@ -190,6 +190,7 @@ pub(crate) fn drive_icon(drive: &Drive) -> Icon {
 pub(crate) fn drive_list(
     drives: &[(&Drive, String)],
     selected: usize,
+    loading: bool,
     intents: &Intents,
 ) -> NavList {
     let items = drives
@@ -208,7 +209,9 @@ pub(crate) fn drive_list(
         })
         .collect();
     let intents = intents.clone();
-    NavList::new(vec![NavSection::untitled("drives", items)])
+    // While the machine is being read, a row holds the first drive's place.
+    let section = NavSection::untitled("drives", items).pending(u8::from(loading));
+    NavList::new(vec![section])
         .selected(&drive_id(selected))
         .with_accessible_name("Drives")
         .on_select(move |id| {
@@ -251,7 +254,7 @@ pub(crate) fn loading(tab: Tab, intents: &Intents, offset: &Rc<Cell<(f32, f32)>>
         .with_rhythm(Rhythm::Group)
         .push(Box::new(Section::titled(
             "Partition map",
-            vec![Box::new(Skeleton::text(3))],
+            vec![Box::new(PartitionMap::pending())],
         )))
         .push(Box::new(Section::titled(
             "Filesystems",
