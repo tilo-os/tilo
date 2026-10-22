@@ -110,6 +110,21 @@ impl Target {
         )?)
     }
 
+    /// Where this really is on the host, found as an open finds it:
+    /// resolved beneath the chosen item, so a link swapped in since it was
+    /// chosen cannot point it anywhere else. What a host-side opener (the
+    /// app that opens the file's type) is handed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`], and when the system cannot say where the opened
+    /// item is.
+    pub fn real_path(&self) -> io::Result<PathBuf> {
+        use std::os::fd::AsRawFd as _;
+        let opened = self.open(OFlags::PATH, Mode::empty())?;
+        std::fs::read_link(format!("/proc/self/fd/{}", opened.as_raw_fd()))
+    }
+
     /// The folder this target's entry lives in, opened beneath the chosen
     /// item, and the entry's name in it: what creating, renaming and
     /// removing work on. `None` for the chosen item itself in a folder

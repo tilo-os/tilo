@@ -73,6 +73,10 @@ pub struct OpenRequest {
     pub caller: PortalCaller,
     pub path: PathBuf,
     pub reply: mpsc::Sender<Result<(), String>>,
+    /// The path the app named, when it is one it was given through its
+    /// documents (`/run/tilo/documents/…`): checked again against that
+    /// choice, not the workspace's grants, when it is dispatched.
+    given: Option<(tilo_documents::AppKey, PathBuf)>,
 }
 
 /// An app asked for `uri` to be opened in the app that claims its scheme.
@@ -121,6 +125,7 @@ struct OpenQueues {
 
 pub struct ChooserService {
     grants: GrantStoreHandle,
+    documents: Option<tilo_documents::Documents>,
     opens: mpsc::Receiver<OpenRequest>,
     links: mpsc::Receiver<LinkOpenRequest>,
     identities: mpsc::Receiver<IdentityChooserRequest>,
@@ -163,6 +168,7 @@ impl ChooserService {
             apps: apps_tx,
         };
         let grants = context.grants.clone();
+        let documents = context.documents.clone();
         let context = Arc::new(context);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -196,6 +202,7 @@ impl ChooserService {
             })?;
         Ok(Self {
             grants,
+            documents,
             opens: opens_rx,
             links: links_rx,
             identities: identities_rx,
@@ -213,13 +220,19 @@ impl ChooserService {
             .filter_map(|mut open| {
                 // Admission can precede compositor dispatch by several frames.
                 // Resolve the path again against the original app's current
-                // workspace policy rather than handing over stale approval.
-                match permitted(
-                    &self.grants,
-                    &open.caller,
-                    std::slice::from_ref(&open.path),
-                    PickMode::Open,
-                ) {
+                // workspace policy, or the choice it was given by, rather
+                // than handing over stale approval.
+                let checked = match &open.given {
+                    Some((key, sandbox)) => given_host_path(self.documents.as_ref(), key, sandbox)
+                        .map(|path| vec![path]),
+                    None => permitted(
+                        &self.grants,
+                        &open.caller,
+                        std::slice::from_ref(&open.path),
+                        PickMode::Open,
+                    ),
+                };
+                match checked {
                     Ok(mut paths) => {
                         open.path = paths.remove(0);
                         Some(open)
@@ -575,7 +588,9 @@ fn answer(
                 filters,
             },
         ),
-        Request::Open { id, path } => answer_open(context, &opens.documents, caller, id, path),
+        Request::Open { id, path } => {
+            answer_open(context, &opens.documents, caller, room, (id, path))
+        }
         Request::OpenUri { id, uri } => answer_open_uri(context, &opens.links, caller, id, uri),
         Request::ChooseIdentity { id } => {
             answer_choose_identity(context, &opens.identities, caller, id)
@@ -828,10 +843,24 @@ fn answer_open(
     context: &ChooserContext,
     opens: &mpsc::Sender<OpenRequest>,
     caller: &PortalCaller,
-    id: u64,
-    path: PathBuf,
+    room: &str,
+    (id, path): (u64, PathBuf),
 ) -> Reply {
-    let paths = match permitted(&context.grants, caller, &[path], PickMode::Open) {
+    // A path the app was given through its documents is the one it hears
+    // and opens itself; the file it names on the host is found through that
+    // choice, which the workspace's grants know nothing of.
+    let given = path
+        .starts_with(tilo_documents::SANDBOX_DIR)
+        .then(|| tilo_documents::AppKey::new(room, caller.app_id.as_str()))
+        .flatten()
+        .map(|key| (key, path.clone()));
+    let checked = match &given {
+        Some((key, sandbox)) => {
+            given_host_path(context.documents.as_ref(), key, sandbox).map(|path| vec![path])
+        }
+        None => permitted(&context.grants, caller, &[path], PickMode::Open),
+    };
+    let paths = match checked {
         Ok(paths) => paths,
         Err(reason) => return Reply::Failed { id, reason },
     };
@@ -847,6 +876,7 @@ fn answer_open(
             caller: caller.clone(),
             path,
             reply,
+            given,
         })
         .is_err()
     {
@@ -864,6 +894,20 @@ fn answer_open(
             reason: t("portal-chooser-session-closing"),
         },
     }
+}
+
+/// The host file `sandbox` (a path `key`'s app was given through its
+/// documents) really is, found beneath the choice as an open finds it, while
+/// that choice still covers it.
+fn given_host_path(
+    documents: Option<&tilo_documents::Documents>,
+    key: &tilo_documents::AppKey,
+    sandbox: &Path,
+) -> Result<PathBuf, String> {
+    documents
+        .and_then(|documents| tilo_documents::host::resolve(documents, key, sandbox))
+        .and_then(|target| target.real_path().ok())
+        .ok_or_else(|| t("portal-chooser-no-file"))
 }
 
 /// Derive picker reach from the requested operation's current authority.
@@ -2281,6 +2325,52 @@ type = "gui"
             &giving.session.elsewhere.join("report.pdf"),
         );
         assert_eq!(giving.read(VIEWER, &given).as_deref(), Some(&b"%PDF"[..]));
+    }
+
+    /// An app asking for a file it was given to be opened in the app for
+    /// its type names it by the path it heard; the compositor gets the file
+    /// that path names on the host, and only for the app it was given to.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn opening_a_given_file_hands_the_compositor_the_file_it_names() {
+        let giving = giving();
+        let session = &giving.session;
+        let report = session.elsewhere.join("report.pdf");
+        let given = giving.choose(
+            VIEWER,
+            tilo_dialogs::portal::PickRequest::open("Open a PDF", "Open"),
+            &report,
+        );
+
+        let mut viewer = App::launch(session, VIEWER, &session.room);
+        viewer.send(&Request::Open {
+            id: 1,
+            path: given.clone(),
+        });
+        let open = open_request(session);
+        assert_eq!(open.caller.app_id.as_str(), VIEWER);
+        assert_eq!(open.path, report.canonicalize().unwrap());
+        open.reply.send(Ok(())).unwrap();
+        assert_eq!(viewer.reply(), Some(Reply::Opened { id: 1 }));
+
+        let mut settings = App::launch(session, SETTINGS, &session.room);
+        settings.send(&Request::Open {
+            id: 2,
+            path: given.clone(),
+        });
+        assert!(
+            matches!(settings.reply(), Some(Reply::Failed { id: 2, .. })),
+            "another app cannot open what was given to the viewer"
+        );
+        viewer.send(&Request::Open {
+            id: 3,
+            path: given.with_file_name("beside.txt"),
+        });
+        assert!(
+            matches!(viewer.reply(), Some(Reply::Failed { id: 3, .. })),
+            "nothing beside the given file opens"
+        );
+        assert!(session.service.drain_opens().is_empty());
     }
 
     /// Settings' wallpaper chooser opens the chosen image itself
