@@ -622,7 +622,8 @@ impl DisplayConfirmPrompt {
             Focus::AlwaysKeep => None,
         };
         for card in self.cards(outputs) {
-            ui::chrome::shell::paint_panel(scene, transform, card.card, theme, 1.0);
+            let painted = ui::chrome::shell::paint_panel(scene, transform, card.card, theme, 1.0);
+            let theme = &painted.theme;
             paint_keep_revert_band(
                 scene,
                 transform,

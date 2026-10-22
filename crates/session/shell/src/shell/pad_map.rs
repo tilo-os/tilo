@@ -233,7 +233,8 @@ impl PadMap {
             center.x + width / 2.0,
             center.y + height / 2.0,
         );
-        ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
+        let theme = &painted.theme;
         let colors = &theme.tokens.colors;
         let text_w = Some(f32_of_f64(card.width() - metrics.inset * 2.0));
         text_renderer.draw_text_weighted(

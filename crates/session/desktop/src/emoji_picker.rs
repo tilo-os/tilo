@@ -1467,11 +1467,12 @@ impl EmojiPicker {
             self.footer_height = footer_height;
             self.layout();
         }
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography;
         let g = self.geometry.clone();
 
-        ui::chrome::shell::paint_panel(scene, transform, g.card, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, g.card, theme, 1.0);
+        let theme = &painted.theme;
+        let colors = &theme.tokens.colors;
+        let type_scale = &theme.tokens.typography;
 
         self.search
             .draw(scene, transform, text_renderer, theme, presence);

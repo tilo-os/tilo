@@ -531,7 +531,6 @@ impl PowerMenu {
     ) {
         let panel = self.panel_rect(viewport);
         let m = self.metrics();
-        let colors = &theme.tokens.colors;
         // This is a compact flyout rooted in the status area, not a modal
         // task. Its bounds are the click-dismiss surface; the rest of the
         // desktop stays visually present so the power button and result read
@@ -539,7 +538,9 @@ impl PowerMenu {
         // Panel role (HIG §9.1/§9.2): the flyout is the same material as
         // every other Panel — `panel_ground` at the Panel radius, with the
         // derived Panel border — rather than a ramp slot and a literal 24.
-        ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+        let theme = &painted.theme;
+        let colors = &theme.tokens.colors;
         // Theme-resolved sizes, painted once: `draw` has reset the renderer
         // for this pass.
         let title_style = theme.text(TextRole::Heading);

@@ -459,14 +459,16 @@ impl OverviewPanel {
         reason = "one immediate-mode pass over the panel's bounded rows; text widths are f32"
     )]
     fn paint(&self, scene: &mut Scene, transform: Affine, text: &mut TextRenderer, theme: &Theme) {
-        let colors = &theme.tokens.colors;
         let m = self.metrics;
         ui::chrome::shell::fill_scrim(scene, transform, self.rect, 0.45, theme);
         let panel = self.panel;
         if panel.width() <= 0.0 || panel.height() <= 0.0 {
             return;
         }
-        let shape = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+        let shape = painted.body;
+        let theme = &painted.theme;
+        let colors = &theme.tokens.colors;
         // Everything inside stays inside the panel's outline.
         scene.push_layer(
             Fill::NonZero,

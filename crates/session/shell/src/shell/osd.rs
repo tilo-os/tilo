@@ -522,7 +522,8 @@ impl Osd {
             .with_weight(TextWeight::Medium)
             .with_kind(TextKind::Numeric);
         let pill = OsdPill::layout(area, theme, text_renderer, &self, &text_style);
-        ui::chrome::shell::paint_panel(scene, transform, pill.rect, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, pill.rect, theme, 1.0);
+        let theme = &painted.theme;
         draw_glyph(scene, transform, pill.glyph, theme, self.kind);
         if let Some(bar) = pill.bar {
             draw_level_bar(scene, transform, bar, theme, self);

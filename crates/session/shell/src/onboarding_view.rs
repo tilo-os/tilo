@@ -4311,6 +4311,7 @@ impl OnboardingView {
             return;
         };
         let panel = composed.get_rect();
+        let on_panel = ui::chrome::shell::on_panel(theme);
         if panel.area() > 0.0 {
             // Panel role (HIG §9.1–§9.3): the onboarding card floats over the
             // backdrop, so it casts the same Panel shadow every other Panel
@@ -4319,11 +4320,17 @@ impl OnboardingView {
             // nothing — the edge does the separating (§9.3) — so the former
             // by-name high-contrast guard is not needed. Ground is
             // `panel_ground`, edge the derived Panel border.
-            ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+            let _ = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
 
         let mut local = Scene::new();
-        composed.draw(&mut local, Affine::IDENTITY, text_renderer, theme, presence);
+        composed.draw(
+            &mut local,
+            Affine::IDENTITY,
+            text_renderer,
+            &on_panel,
+            presence,
+        );
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
