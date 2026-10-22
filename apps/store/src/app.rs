@@ -3806,7 +3806,10 @@ mod tests {
             store.set_worker_busy(false);
             store.set_operation_error(Some(crate::flathub_client::remote_error(
                 &remote,
-                "Failed: remote exception: remote exception: command timed out after 8000 ms",
+                &app_host::client::CatalogueError::Refused {
+                    refusal: app_host::client::Refusal::TimedOut,
+                    detail: "command timed out after 8000 ms".into(),
+                },
             )));
         })
         .unwrap();

@@ -195,7 +195,7 @@ pub mod wire {
     /// runtime interface's (`runtime_portal::RUNTIME_INTERFACE_VERSION`),
     /// every session service speaking the runtime's one version
     /// (docs/architecture/compatibility.md).
-    pub const PRESENTATION_SERVICE_VERSION: u32 = 2;
+    pub const PRESENTATION_SERVICE_VERSION: u32 = runtime_portal::RUNTIME_INTERFACE_VERSION;
 
     #[derive(Debug, Serialize, Deserialize)]
     pub enum Request {
