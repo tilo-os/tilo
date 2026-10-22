@@ -2,10 +2,12 @@ use super::*;
 use crate::headless::FrameHarness;
 use crate::state::State;
 use crate::widget::Text;
+use std::cell::Cell;
 use std::rc::Rc as SharedRc;
 
 mod adaptive;
 mod capabilities;
+mod hosted;
 
 /// A pane that fills what it is given and counts the input it receives.
 struct Probe {

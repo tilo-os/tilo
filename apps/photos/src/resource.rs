@@ -20,7 +20,7 @@ use ui::framework::{
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::effect::Answers;
 use ui::tilo_resource::{self, Derived, Effect as _, Id, Invoke, Refusal, resource};
-use ui::widget::Element;
+use ui::widget::{ContentKind, Element, NavList, NavShell};
 
 use crate::actions::PhotosEffect;
 use crate::app::PhotosApp;
@@ -482,7 +482,21 @@ impl ResourceApp for PhotosShell {
                 Ok(())
             },
         );
-        cx.surface(app)
+        // The shell keeps the sidebar: the library's places as a list
+        // (their counts and the albums under a heading make it one), its
+        // width, its drawer in a narrow window and its keys.
+        let places = ui::widget::NavFeed::new();
+        let shell = NavShell::new()
+            .with_id("photos-shell")
+            .content_kind(ContentKind::Grid)
+            .with_window_toolbar();
+        let app = app.in_shell(&places, shell.window_bar_link());
+        let sidebar = NavList::new(Vec::new())
+            .with_id("photos.places")
+            .with_accessible_name(crate::strings::tr("photos-library"))
+            .with_headings()
+            .fed_by(&places);
+        Box::new(shell.sidebar(Box::new(sidebar)).content(cx.surface(app)))
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

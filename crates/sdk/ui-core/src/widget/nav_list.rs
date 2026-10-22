@@ -1915,6 +1915,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     }
 }
 
+mod feed;
+pub use feed::NavFeed;
+
 #[cfg(test)]
 mod tests;
 
