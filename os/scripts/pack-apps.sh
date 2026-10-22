@@ -290,6 +290,12 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     mkdir -p "$payload/$(dirname "$entry_bin")"
     cp "$built" "$payload/$entry_bin"
     chmod 755 "$payload/$entry_bin"
+    # The app's public surface ships at the payload root, as the release
+    # packages stage it (dist/apps/package-apps.sh): the shell decides a
+    # room's writes of the app against it and names it in the app's own.
+    if [ -f "$(dirname "$manifest")/surface.toml" ]; then
+        install -pm 0644 "$(dirname "$manifest")/surface.toml" "$payload/surface.toml"
+    fi
 
     # `tilo-app-package pack` refuses a manifest whose publisher.identity disagrees
     # with the signing key, so stamp this build's pubkey into a copy. The
