@@ -535,7 +535,6 @@ impl AppearancePane {
                 )
                 .aspect(ui::widget::MediaAspect::Ratio(WALLPAPER_ASPECT))
                 .title(t("settings-appearance-your-picture"))
-                .meta(t("settings-appearance-choose-picture"))
                 .selected(chosen == Some(tilo_wallpapers::Choice::Custom)),
                 AppearanceEffect::ChooseWallpaper,
             ),
