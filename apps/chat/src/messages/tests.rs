@@ -409,7 +409,6 @@ fn read_messages_pages_through_a_channel_across_its_parts() {
     let unique: std::collections::BTreeSet<_> = seen.iter().collect();
     assert_eq!(unique.len(), seen.len(), "each once");
     assert!(
-        crate::effects::read_messages(&held, ("c_general", &str::to_owned), Some(0), None)
-            .is_err()
+        crate::effects::read_messages(&held, ("c_general", &str::to_owned), Some(0), None).is_err()
     );
 }

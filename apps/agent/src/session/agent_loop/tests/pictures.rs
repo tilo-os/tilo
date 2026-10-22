@@ -1,7 +1,7 @@
 //! Pictures an invoke answered with, shown to a model that sees.
 
-use super::*;
 use super::super::pictures::{MOST_PICTURE_BYTES, picture_type};
+use super::*;
 
 /// A picture an invoke answered with is shown to the model after the
 /// turn's results, as an image of its type; what is not a picture, is
