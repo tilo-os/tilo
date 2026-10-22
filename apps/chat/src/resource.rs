@@ -557,7 +557,7 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
         {
             return crate::effects::read_messages(
                 &self.held_messages(),
-                channel,
+                (channel, &|id| self.display_name(id)),
                 *page_size,
                 cursor.as_deref(),
             )
