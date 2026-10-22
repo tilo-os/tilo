@@ -128,7 +128,8 @@ fn request_id(request: &Request) -> u64 {
         | Request::Open { id, .. }
         | Request::OpenUri { id, .. }
         | Request::AwaitIdentity { id }
-        | Request::ChooseIdentity { id } => *id,
+        | Request::ChooseIdentity { id }
+        | Request::ChooseApp { id, .. } => *id,
     }
 }
 
