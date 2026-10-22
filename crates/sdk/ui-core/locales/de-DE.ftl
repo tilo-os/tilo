@@ -813,7 +813,6 @@ window-search-this-app = In dieser App suchen
 window-search-everywhere = Überall suchen
 window-search-close = Suche schließen
 history-panel-title = Verlauf
-history-panel-close = Verlauf schließen
 history-panel-selected-changes = { $count } Änderungen
 history-mode-restore-change = Nur diese Änderung wiederherstellen
 history-panel-name = Diese Änderungen benennen
