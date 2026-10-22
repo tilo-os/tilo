@@ -1274,8 +1274,9 @@ fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
     let hide = control_center(&mut host, "Hide sidebar");
     host.harness().click_at(hide.x, hide.y);
     pump_frames(&mut host);
+    // The sidebar's shortcut is Command+Shift+L: Cmd on macOS, Ctrl elsewhere.
     host.harness()
-        .set_modifiers(&["ctrl".to_owned(), "shift".to_owned()]);
+        .set_modifiers(&["command".to_owned(), "shift".to_owned()]);
     // Collapsed by the click; the shortcut brings it back and takes it away.
     host.harness().key("L");
     pump_frames(&mut host);
