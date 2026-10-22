@@ -267,6 +267,9 @@ impl ShellOverlayHost {
                     self.wave_at(&target);
                 }
                 crate::shell::chrome_state::PresenceRequest::Show(id) => self.show_person(id),
+                crate::shell::chrome_state::PresenceRequest::JoinCall(call) => {
+                    self.join_voice(&call);
+                }
             }
         }
         true

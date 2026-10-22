@@ -7,11 +7,13 @@ pub mod app_content;
 pub mod applications;
 pub(crate) mod authentication_prompts;
 mod background_index;
+pub mod continue_places;
 pub mod continuity;
 pub mod desktop_windows;
 pub mod downloaded_programs;
 pub mod file_picker;
 pub mod files;
+pub mod happening_now;
 pub mod host_applications;
 pub mod live_app_actions;
 pub mod now_playing;
@@ -25,11 +27,13 @@ pub mod shortcuts;
 pub mod store_catalogue;
 pub mod terminal_device_shell;
 pub mod tray_items;
+pub mod waiting_on_you;
 pub mod web;
 
 pub use actions::ActionsProvider;
 pub use app_content::AppContentProvider;
 pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
+pub use continue_places::ContinueProvider;
 pub use continuity::{
     CallContinuityActionsProvider, ContinueFromDeviceProvider, DeviceContinuityActionsProvider,
 };
@@ -44,4 +48,5 @@ pub use session_actions::{SessionActionPolicy, SessionActionsProvider};
 pub use settings_pages::SettingsPagesProvider;
 pub use shortcuts::ShortcutsProvider;
 pub use store_catalogue::StoreCatalogueProvider;
+pub use waiting_on_you::WaitingOnYouProvider;
 pub use web::WebProvider;

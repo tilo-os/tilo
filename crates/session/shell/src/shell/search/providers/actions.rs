@@ -6547,7 +6547,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_palette_builds_the_catalogue_once() {
+    fn typing_builds_the_catalogue_once() {
         // The catalogue is rebuilt when the settings document changes, and
         // which document that is follows the environment: hold it still, as
         // every test that changes either does, or a neighbour's settings
@@ -6576,24 +6576,10 @@ mod tests {
             )
         };
 
-        let empty = grouped("");
-        let suggestions = empty
-            .iter()
-            .filter(|group| group.kind == ResourceKind::Action)
-            .flat_map(|group| group.results.iter().map(|result| result.id.as_str()))
-            .collect::<Vec<_>>();
-        assert!(
-            suggestions.contains(&"room.activity.open")
-                && suggestions.contains(&"shortcut-help.toggle"),
-            "the empty palette looks its suggestions up: {suggestions:?}"
-        );
-        assert_eq!(
-            builds.get(),
-            1,
-            "one fan-out query and its suggestion lookups share one build"
-        );
-        grouped("");
-        assert_eq!(builds.get(), 1, "nothing changed, so nothing is rebuilt");
+        // Nothing typed is the launcher, which actions are not part of: it
+        // asks the catalogue nothing.
+        assert!(grouped("").is_empty(), "no action is suggested unasked");
+        assert_eq!(builds.get(), 0, "the launcher builds no catalogue");
         for needle in ["d", "da", "dar"] {
             assert!(!grouped(needle).is_empty(), "{needle:?} finds actions");
         }
@@ -6602,7 +6588,11 @@ mod tests {
             .flat_map(|group| group.results)
             .any(|result| result.id == "appearance.theme.dark");
         assert!(found, "\"dark\" finds the dark theme");
-        assert_eq!(builds.get(), 1, "typing narrows the retained rows");
+        assert_eq!(
+            builds.get(),
+            1,
+            "built once, typing narrows the retained rows"
+        );
     }
 
     #[test]

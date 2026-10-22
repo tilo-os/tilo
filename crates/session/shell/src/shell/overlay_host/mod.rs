@@ -1776,6 +1776,9 @@ mod wifi_password_tests;
 #[path = "open_window_rows_tests.rs"]
 mod open_window_rows_tests;
 #[cfg(test)]
+#[path = "search_launcher_tests.rs"]
+mod search_launcher_tests;
+#[cfg(test)]
 #[path = "store_index_arrival_tests.rs"]
 mod store_index_arrival_tests;
 

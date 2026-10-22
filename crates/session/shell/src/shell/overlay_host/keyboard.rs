@@ -197,7 +197,7 @@ impl ShellOverlayHost {
                 crate::compositor::key_latency::KeyHandler::Shortcut(ShortcutAction::Search),
             );
             if !repeat {
-                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.toggle_global_search();
                 self.refresh_search_results(state, path);
             }
             *handled = true;

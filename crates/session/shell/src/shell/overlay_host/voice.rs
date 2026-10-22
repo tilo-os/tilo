@@ -139,6 +139,53 @@ impl super::ShellOverlayHost {
         );
     }
 
+    /// The calls in progress in the workspace in front that this device is
+    /// not in, each with who is in it: the Join the people panel offers on
+    /// their rows, gathered by call, for search's Happening now.
+    pub(super) fn calls_here(
+        &self,
+        presence: &ui::presence::PresenceCtx,
+    ) -> Vec<crate::shell::search::providers::happening_now::LiveCall> {
+        use crate::shell::search::providers::happening_now::LiveCall;
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Vec::new();
+        };
+        let mut rows: Vec<RosterRow> = {
+            let state = chrome.borrow();
+            let local_user = state.active_local_user();
+            let own = state.local_user_id.clone();
+            crate::shell::desk_widgets::team::members(
+                &state.tree().desktop,
+                &local_user,
+                &own,
+                presence,
+                std::time::SystemTime::now(),
+            )
+            .into_iter()
+            .map(|member| member.row)
+            .collect()
+        };
+        self.decorate_calls(&mut rows, presence);
+        let mut calls: Vec<LiveCall> = Vec::new();
+        for row in rows {
+            let (Some(join), Some(name)) = (row.join.clone(), row.call.clone()) else {
+                continue;
+            };
+            match calls
+                .iter_mut()
+                .find(|call| call.channel.channel == join.channel)
+            {
+                Some(call) => call.people.push(row),
+                None => calls.push(LiveCall {
+                    channel: join,
+                    name,
+                    people: vec![row],
+                }),
+            }
+        }
+        calls
+    }
+
     /// Ask Chat, through `broker`, to join the call `target` names; the
     /// reason it refused, if it did.
     fn ask_to_join(

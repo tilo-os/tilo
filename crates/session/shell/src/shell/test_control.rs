@@ -224,7 +224,7 @@ pub enum Command {
         #[serde(default)]
         primary: bool,
     },
-    /// Enumerate the actions/resources the shell exports now, through the same provider registry that feeds the Ctrl+K palette. Read-only — no invoke handles in the reply. An empty `query` lists every provider's defaults.
+    /// Enumerate the actions/resources the shell exports now, through the same provider registry that feeds the Ctrl+K palette. Read-only — no invoke handles in the reply. An empty `query` lists every provider's defaults, and adds `launcher`: the sections global search shows before anything is typed, in order (Happening now, Waiting on you, Continue, Apps), each with its groups of rows and every row's reason, for the workspace in front or, with `every_workspace`, all of them.
     ///
     /// The answer is one page of the listing ([`ListingRequest`]); a request without paging fields gets the first.
     ActionsEnumerate {
@@ -388,6 +388,11 @@ pub struct ListingRequest {
     /// answered by hundreds of same-named files otherwise, ahead of it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub files: bool,
+    /// With an empty `query`: the answer's `launcher` (what global search
+    /// shows before anything is typed) covers every workspace instead of
+    /// the one in front.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub every_workspace: bool,
 }
 
 /// How much of each row a listing carries; see [`ListingRequest::detail`].

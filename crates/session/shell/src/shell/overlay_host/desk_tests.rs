@@ -57,15 +57,20 @@ fn forms(host: &ShellOverlayHost) -> (Form, Form) {
 
 #[test]
 fn super_tap_opens_the_surface_and_it_stays_until_closed() {
-    let (mut host, _chrome, _) = desk();
+    let (mut host, chrome, _) = desk();
     let doc = AutoCommit::new();
     let now = Instant::now();
     host.super_gesture(SuperGesture::Tap, &doc, &automerge::ROOT);
     assert_eq!(host.super_surface(), Some(SuperSurface::Pinned));
     assert!(host.palette_visible, "search is the surface's field");
     assert!(
-        host.palette.shows_field_only(),
-        "empty, nothing listed under it"
+        !host.palette.shows_field_only(),
+        "global search with the launcher under the field"
+    );
+    assert_eq!(
+        chrome.borrow().search_scope,
+        crate::shell::chrome_state::SearchScope::Workspace,
+        "scoped to the workspace in front"
     );
     host.update_desk(now);
     assert_eq!(
@@ -80,7 +85,7 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
         "no timer closes it"
     );
 
-    // Typing searches as it always has: the field grows into results.
+    // Typing searches as it always has.
     host.palette.set_query("spo");
     assert!(!host.palette.shows_field_only());
 

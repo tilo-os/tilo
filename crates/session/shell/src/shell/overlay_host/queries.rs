@@ -603,6 +603,104 @@ impl ShellOverlayHost {
         )
     }
 
+    /// What an enumerate of `args` says the launcher shows: before anything
+    /// is typed global search is the launcher, so the first page of an
+    /// empty listing carries it ([`Self::launcher_listing`]), scoped as
+    /// `page` asks. `None` for a typed query or a later page.
+    pub fn launcher_answer(
+        &self,
+        args: &crate::shell::search::QueryArgs<'_>,
+        page: Option<&crate::shell::test_control::ListingRequest>,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+    ) -> Option<serde_json::Value> {
+        let first = args.needle.trim().is_empty() && page.is_none_or(|page| page.cursor.is_none());
+        let every_workspace = page.is_some_and(|page| page.every_workspace);
+        first.then(|| self.launcher_listing(args, every_workspace, visibility))
+    }
+
+    /// The launcher as the search action API lists it for an empty query:
+    /// its sections in order, each with its id, its name and its groups of
+    /// rows, every row an address `actions_invoke` takes with the reason it
+    /// is there and the people it shows. Rows `visibility` hides are left
+    /// out, and so is a section left with none. Scoped to the workspace in
+    /// front, or to every workspace when `every_workspace`.
+    pub fn launcher_listing(
+        &self,
+        args: &crate::shell::search::QueryArgs<'_>,
+        every_workspace: bool,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+    ) -> serde_json::Value {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::ResourceRef;
+        use crate::shell::search::launcher;
+        let scope = if every_workspace {
+            SearchScope::All
+        } else {
+            SearchScope::Workspace
+        };
+        let args = &crate::shell::search::QueryArgs { scope, ..*args };
+        let mut sections: Vec<serde_json::Value> = Vec::new();
+        let mut last_section = None;
+        for group in launcher::groups(&self.search_registry, args) {
+            let rows: Vec<serde_json::Value> = group
+                .rows
+                .iter()
+                .filter(|row| {
+                    visibility.can_see(&ResourceRef::new(&row.provider_id, &row.id), &row.kind)
+                })
+                .map(|row| {
+                    let reason: Vec<String> = if row.facts.is_empty() {
+                        row.subtitle.clone().into_iter().collect()
+                    } else {
+                        row.facts.clone()
+                    };
+                    let people: Vec<String> = self
+                        .search_registry
+                        .row_faces(row)
+                        .into_iter()
+                        .map(|face| face.name)
+                        .collect();
+                    serde_json::json!({
+                        "provider": row.provider_id,
+                        "id": row.id,
+                        "kind": row.kind.id(),
+                        "operation_kind": row.operation_kind,
+                        "title": row.title,
+                        "reason": reason,
+                        "people": people,
+                        "outcome": self.search_registry.row_outcome(row),
+                    })
+                })
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let section = group.section;
+            let group = serde_json::json!({ "name": group.label, "rows": rows });
+            // Apps comes as several groups: its most used apps, then one
+            // per purpose. Every other section is one group.
+            if last_section == Some(section)
+                && let Some(groups) = sections
+                    .last_mut()
+                    .and_then(|last| last.get_mut("groups"))
+                    .and_then(serde_json::Value::as_array_mut)
+            {
+                groups.push(group);
+                continue;
+            }
+            last_section = Some(section);
+            sections.push(serde_json::json!({
+                "id": section.id(),
+                "name": section.label(),
+                "groups": [group],
+            }));
+        }
+        serde_json::json!({
+            "scope": if args.scope == SearchScope::All { "all" } else { "workspace" },
+            "sections": sections,
+        })
+    }
+
     pub fn action_catalog_query(
         &self,
         args: &crate::shell::search::QueryArgs<'_>,

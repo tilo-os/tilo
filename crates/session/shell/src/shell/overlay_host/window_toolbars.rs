@@ -48,9 +48,53 @@ impl ShellOverlayHost {
             .window_toolbars
             .declare(anchor.tab, connection, toolbar);
         if changed {
+            self.note_window_place(anchor.tab);
             self.sync_window_toolbars();
         }
         changed
+    }
+
+    /// Remember where window `tab` is now, as its app declared it to the
+    /// bar: what the launcher's Continue lists. A window that declares no
+    /// location is nowhere to continue.
+    fn note_window_place(&self, tab: TabId) {
+        let Some(location) = self
+            .window_toolbars
+            .toolbar(tab)
+            .and_then(|toolbar| toolbar.location.as_ref())
+        else {
+            return;
+        };
+        let Some(chrome) = &self.chrome else {
+            return;
+        };
+        let found = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop.workspaces.iter().find_map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|candidate| candidate.id == tab)
+                    .and_then(|candidate| {
+                        tilo_desktop_model::apps::canonical_app_id(&candidate.tile)
+                    })
+                    .map(|app| (app.as_str().to_owned(), workspace.room().to_string()))
+            })
+        };
+        let Some((app_id, room)) = found else {
+            return;
+        };
+        crate::shell::search::recent_places::visit(
+            &app_id,
+            &room,
+            tab,
+            &location.label,
+            &location.value,
+            location.anchor.as_deref(),
+        );
     }
 
     /// `app_id` on shell-ui `connection`, launched as record `instance`, said
@@ -192,7 +236,9 @@ impl ShellOverlayHost {
     /// Show `toolbar` in tab `tab`'s bar as though its app declared it, for
     /// screenshots and tests that run no app.
     pub fn declare_tab_toolbar_for_tests(&mut self, tab: TabId, toolbar: Option<WindowToolbar>) {
-        self.window_toolbars.declare(tab, 0, toolbar);
+        if self.window_toolbars.declare(tab, 0, toolbar) {
+            self.note_window_place(tab);
+        }
         self.sync_window_toolbars();
     }
 
@@ -241,6 +287,9 @@ impl ShellOverlayHost {
         };
         let groups = self.window_groups_mut();
         let sync = self.window_toolbars.sync_hosted(&windows, groups);
+        for tab in &sync.declared {
+            self.note_window_place(*tab);
+        }
         if sync.searched {
             // An app with nothing to search in place hands on to the palette.
             self.harvest_pending_search_open();

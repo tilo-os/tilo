@@ -2198,8 +2198,8 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(
             h.chrome.borrow().search_scope,
-            SearchScope::All,
-            "Super+Space searches the machine"
+            SearchScope::Workspace,
+            "Super+Space opens global search on the workspace in front, the launcher's scope"
         );
         h.host.palette.set_query("zzyzx");
         // Retained application indexes are built from the compositor update
@@ -2291,7 +2291,9 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         let mut doc = AutoCommit::new();
         let sup = Modifiers::from(ModifiersState::SUPER);
         assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
-        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
+        assert_eq!(h.chrome.borrow().search_scope, SearchScope::Workspace);
+        // Scoped to the workspace, typing still reaches other rooms' records:
+        // the scope ranks what is here first, it hides nothing.
         h.host.palette.set_query("field-guide");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
