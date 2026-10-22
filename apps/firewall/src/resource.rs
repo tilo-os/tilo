@@ -692,11 +692,18 @@ mod tests {
                 .is_err(),
             "a malformed service name is refused"
         );
-        app.call(
-            "field-edit",
-            serde_json::json!({ "edit": Firewall::paths().default_zone.set(ZoneKind::Home) }),
-        )
-        .unwrap();
+        let zone = |zone| serde_json::json!({ "edit": Firewall::paths().default_zone.set(zone) });
+        assert!(
+            matches!(
+                app.call("field-edit", zone(ZoneKind::Home)),
+                Err(tilo_actions::DoorError::ConfirmationRequired)
+            ),
+            "a more trusted active zone weakens the firewall, so it asks"
+        );
+        app.call("field-edit", zone(ZoneKind::Block))
+            .expect("a stricter zone asks nothing");
+        app.call_confirmed("field-edit", zone(ZoneKind::Home))
+            .unwrap();
         let catalogue =
             tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
         let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);

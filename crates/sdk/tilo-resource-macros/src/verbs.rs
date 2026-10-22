@@ -2054,6 +2054,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 ::core::option::Option::Some(<Self as #krate::Model>::SHAPE)
             }
 
+            fn state_json(
+                state: &Self,
+            ) -> ::core::option::Option<#krate::__private::serde_json::Value> {
+                ::core::option::Option::Some(<Self as #krate::Model>::to_json(state))
+            }
+
             fn action_schema() -> ::core::option::Option<#krate::__private::serde_json::Value> {
                 ::core::option::Option::Some(#krate::schema::record_action_schema::<Self>())
             }

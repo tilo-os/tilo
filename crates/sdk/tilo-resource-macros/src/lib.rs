@@ -45,10 +45,14 @@ fn krate() -> Tokens {
 /// holds none: a required field with a sensible derivation, so an item
 /// missing it still reads; the next whole write stores it),
 /// `#[model(trust = "sensitive")]` (every edit of it asks for confirmation:
-/// a change can expose the person) and `#[model(trust = "weakening")]`
-/// (it also crosses a security boundary: a change can weaken the person's
-/// security, such as turning off the screen lock, so an agent or script
-/// acting for them needs their own grant).
+/// a change can expose the person), `#[model(trust = "weakening")]`
+/// (it also crosses a security boundary: any change can weaken the person's
+/// security, so an agent or script acting for them needs their own grant)
+/// and `#[model(weaker = ..)]` (only a change making it weaker than it is
+/// now does: `weaker = "higher"` or `"lower"` for a number, with
+/// `weakest = N` for the value weaker than any, such as a lock delay's `0`
+/// for never; `weaker = true` or `false` for a switch; a list of values
+/// from the strongest to the weakest for a choice).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -152,7 +156,114 @@ struct FieldOptions {
     /// `default = expr`: what an absent field reads as.
     default: Option<Expr>,
     /// `trust = "sensitive" | "weakening"`: the `Trust` variant it names.
-    trust: Option<syn::Ident>,
+    trust: Option<syn::LitStr>,
+    /// `weaker = "higher" | "lower" | bool | ["strongest", .., "weakest"]`:
+    /// which way a change weakens security.
+    weaker: Option<Expr>,
+    /// `weakest = N`: the number weaker than any (a delay's `0`, never).
+    weakest: Option<syn::LitInt>,
+}
+
+impl FieldOptions {
+    /// The field's `Trust`, as an expression.
+    fn trust(&self, krate: &Tokens) -> syn::Result<Tokens> {
+        let named = self.trust.as_ref().map(syn::LitStr::value);
+        let numeric = matches!(
+            &self.weaker,
+            Some(Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(_),
+                ..
+            }))
+        );
+        if let Some(weakest) = self.weakest.as_ref().filter(|_| !numeric) {
+            return Err(syn::Error::new(
+                weakest.span(),
+                "`weakest` goes with `weaker = \"higher\"` or `weaker = \"lower\"`",
+            ));
+        }
+        let Some(weaker) = &self.weaker else {
+            return Ok(match named.as_deref() {
+                None => quote!(#krate::Trust::Ordinary),
+                Some("sensitive") => quote!(#krate::Trust::Sensitive),
+                Some("weakening") => quote!(#krate::Trust::Weakening),
+                Some(_) => {
+                    return Err(syn::Error::new(
+                        self.trust.span(),
+                        "expected `trust = \"sensitive\"` or `trust = \"weakening\"`",
+                    ));
+                }
+            });
+        };
+        if named.as_deref().is_some_and(|named| named != "weakening") {
+            return Err(syn::Error::new(
+                self.trust.span(),
+                "`weaker` makes the field weaken one way: drop `trust` or make it \"weakening\"",
+            ));
+        }
+        let unexpected = || {
+            syn::Error::new(
+                weaker.span(),
+                "expected `weaker = \"higher\"`, `\"lower\"`, `true`, `false` or a list of \
+                 values from the strongest to the weakest",
+            )
+        };
+        let weakest = if let Some(weakest) = &self.weakest {
+            let weakest: i64 = weakest.base10_parse()?;
+            quote!(::core::option::Option::Some(#weakest))
+        } else {
+            quote!(::core::option::Option::None)
+        };
+        let string = |expr: &Expr| match expr {
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(text),
+                ..
+            }) => Some(text.value()),
+            _ => None,
+        };
+        let weaker = match weaker {
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(rule),
+                ..
+            }) if rule.value() == "higher" => {
+                quote!(#krate::Weaker::Higher { weakest: #weakest })
+            }
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(rule),
+                ..
+            }) if rule.value() == "lower" => quote!(#krate::Weaker::Lower { weakest: #weakest }),
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Bool(weak),
+                ..
+            }) => {
+                let order = if weak.value {
+                    ["false", "true"]
+                } else {
+                    ["true", "false"]
+                };
+                quote!(#krate::Weaker::Order(&[#(#order),*]))
+            }
+            Expr::Array(values) => {
+                // Each value as the JSON text of the string it serializes to.
+                let order = values
+                    .elems
+                    .iter()
+                    .map(|value| {
+                        string(value)
+                            .filter(|text| {
+                                !text
+                                    .chars()
+                                    .any(|c| c == '"' || c == '\\' || c.is_control())
+                            })
+                            .map(|text| format!("\"{text}\""))
+                            .ok_or_else(unexpected)
+                    })
+                    .collect::<syn::Result<Vec<_>>>()?;
+                quote!(#krate::Weaker::Order(&[#(#order),*]))
+            }
+            _ => return Err(unexpected()),
+        };
+        Ok(quote!(#krate::Trust::Weakens(#weaker)))
+    }
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -179,18 +290,11 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else if meta.path.is_ident("default") {
                 options.default = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("trust") {
-                let trust: syn::LitStr = meta.value()?.parse()?;
-                let variant = match trust.value().as_str() {
-                    "sensitive" => "Sensitive",
-                    "weakening" => "Weakening",
-                    _ => {
-                        return Err(syn::Error::new(
-                            trust.span(),
-                            "expected `trust = \"sensitive\"` or `trust = \"weakening\"`",
-                        ));
-                    }
-                };
-                options.trust = Some(syn::Ident::new(variant, trust.span()));
+                options.trust = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("weaker") {
+                options.weaker = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("weakest") {
+                options.weakest = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("remove") {
                 let how: syn::LitStr = meta.value()?.parse()?;
                 if how.value() != "quiet" {
@@ -200,7 +304,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole`, `resource`, `default = ..`, `trust = \"..\"` or `remove = \"quiet\"`",
+                     `whole`, `resource`, `default = ..`, `trust = \"..\"`, `weaker = ..`, \
+                     `weakest = N` or `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -618,10 +723,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label_fields.push((label_part, descs.len()));
         }
         let quiet_remove = options.quiet_remove;
-        let trust = options
-            .trust
-            .clone()
-            .unwrap_or_else(|| syn::Ident::new("Ordinary", Span::call_site()));
+        let trust = options.trust(&krate)?;
         if is_label {
             if label.is_some() {
                 return Err(syn::Error::new(
@@ -690,7 +792,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label: #is_label,
             label_part: #label_part,
             quiet_remove: #quiet_remove,
-            trust: #krate::Trust::#trust,
+            trust: #trust,
             schema: <#ty as #krate::Model>::value_schema,
             text: #krate::stored_text::<#ty>,
             absent: #krate::absent_scalar::<#ty>,

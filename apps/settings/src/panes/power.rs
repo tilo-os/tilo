@@ -1515,12 +1515,15 @@ mod tests {
             crate::host::testing::edit_field(app, crate::host::testing::POWER, field, value)
         };
         edit(&mut app, "blank_minutes", 30.into()).unwrap();
-        assert!(
-            edit(&mut app, "lock_minutes", 0.into())
-                .is_err_and(|error| error.contains("Confirmation")),
-            "turning the screen lock off asks first"
-        );
-        assert_eq!(app.settings::<PowerPrefs>().get().lock_minutes, 5);
+        edit(&mut app, "lock_minutes", 1.into()).expect("locking sooner asks nothing");
+        for weaker in [10, 0] {
+            assert!(
+                edit(&mut app, "lock_minutes", weaker.into())
+                    .is_err_and(|error| error.contains("Confirmation")),
+                "locking later or never asks first"
+            );
+        }
+        assert_eq!(app.settings::<PowerPrefs>().get().lock_minutes, 1);
         app.call_confirmed_on(
             &format!("settings:{}", crate::host::testing::POWER),
             "field-edit",

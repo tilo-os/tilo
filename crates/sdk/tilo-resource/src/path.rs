@@ -211,19 +211,41 @@ impl<R, T> Path<R, T> {
 }
 
 /// [`Edit::risk`] of the edit `op` at `path` in a record stored as `shape`:
-/// the field's [`Trust`](crate::Trust), or a removal's.
-fn edit_risk(shape: crate::Shape, path: &[Segment], op: &EditOp) -> tilo_actions::RiskLevel {
+/// the field's [`Trust`](crate::Trust), or a removal's. `now` holds the
+/// values, as JSON text by dotted path, of the fields that weaken one way:
+/// a change of one the other way, or to a value as strong, is ordinary;
+/// without its value now, any change of it counts as weakening.
+pub(crate) fn edit_risk(
+    shape: crate::Shape,
+    path: &[Segment],
+    op: &EditOp,
+    now: Option<&[(String, String)]>,
+) -> tilo_actions::RiskLevel {
     use tilo_action_policy::edits::{EditStep, field_edit_asks};
-    let trust = shape.trust_at(path);
-    if trust != crate::Trust::Ordinary {
-        return trust.risk();
-    }
     let mut steps: Vec<EditStep<'_>> = Vec::with_capacity(path.len());
     for segment in path {
         steps.push(match segment {
             Segment::Field(key) => EditStep::Field(key),
             Segment::Item(_) | Segment::Key(_) | Segment::Cell { .. } => EditStep::Item,
         });
+    }
+    match shape.trust_at(path) {
+        crate::Trust::Ordinary => {}
+        crate::Trust::Weakens(weaker) => {
+            let at = tilo_action_policy::edits::dotted(&steps);
+            let weakens = match op {
+                EditOp::Set { value } => weaker.weakens(
+                    now.and_then(|now| now.iter().find(|(path, _)| *path == at))
+                        .map(|(_, now)| now.as_str()),
+                    &value.to_string(),
+                ),
+                _ => true,
+            };
+            if weakens {
+                return tilo_actions::RiskLevel::Privileged;
+            }
+        }
+        trust => return trust.risk(),
     }
     let quiet = shape.quiet_removals();
     let quiet: Vec<&str> = quiet.iter().map(String::as_str).collect();
@@ -1055,7 +1077,7 @@ impl<R> Edit<R> {
     where
         R: Model,
     {
-        edit_risk(R::SHAPE, &self.path, &self.op)
+        edit_risk(R::SHAPE, &self.path, &self.op, None)
     }
 
     /// The node of the published tree this edit acts on, for deciding

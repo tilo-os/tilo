@@ -368,6 +368,118 @@ fn a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged() {
     assert!(!need(&paths.label.set(String::new())).privileged);
 }
 
+/// A screen whose lock delay weakens when longer (`0` is never) and whose
+/// notifications on the lock screen weaken it when shown.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Screen {
+    #[model(weaker = "higher", weakest = 0)]
+    pub lock_minutes: u32,
+    #[model(weaker = true)]
+    pub notifications_when_locked: bool,
+    #[model(weaker = ["strict", "normal", "off"])]
+    pub guard: String,
+}
+
+#[resource(kind = "test.screen", label = "Screen")]
+impl Screen {}
+
+/// A field that weakens one way asks, and needs the person's own grant,
+/// only for a change that way from what it holds now: in the app and at any
+/// door that reads only the published contract.
+#[test]
+fn only_a_change_making_a_field_weaker_asks_and_is_privileged() {
+    use tilo_actions::{ConfirmationPolicy, RiskLevel};
+    let paths = Screen::paths();
+    assert_eq!(
+        paths.lock_minutes.set(1).risk(),
+        RiskLevel::Privileged,
+        "without the value now, any change counts as weakening"
+    );
+
+    let mut screen = Replica::<Screen>::new();
+    screen
+        .apply(paths.lock_minutes.set(10))
+        .expect("from never, a delay is stricter");
+    screen
+        .apply(paths.lock_minutes.set(5))
+        .expect("sooner is stricter");
+    screen
+        .apply(paths.lock_minutes.set(5))
+        .expect("the same is no weaker");
+    for weaker in [15, 0] {
+        assert!(matches!(
+            screen.apply(paths.lock_minutes.set(weaker)),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+    }
+    assert!(matches!(
+        screen.apply(paths.notifications_when_locked.set(true)),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    screen.apply(paths.guard.set("strict".to_owned())).unwrap();
+    assert!(matches!(
+        screen.apply(paths.guard.set("off".to_owned())),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    screen
+        .apply_confirmed(paths.notifications_when_locked.set(true))
+        .unwrap();
+    screen
+        .apply(paths.notifications_when_locked.set(false))
+        .expect("hiding them is stricter");
+    assert_eq!(screen.state().unwrap().lock_minutes, 5);
+
+    let published = screen.published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let door = |edit: &dyn erased_edit::Encode| {
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({ "edit": edit.encode() })
+        );
+        spec.contract.confirmation_for_argument(Some(&argument))
+    };
+    assert_eq!(door(&paths.lock_minutes.set(1)), ConfirmationPolicy::None);
+    assert_eq!(
+        door(&paths.lock_minutes.set(30)),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        door(&paths.lock_minutes.set(0)),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        door(&paths.notifications_when_locked.set(true)),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        door(&paths.guard.set("strict".to_owned())),
+        ConfirmationPolicy::None
+    );
+    assert_eq!(
+        door(&paths.guard.set("normal".to_owned())),
+        ConfirmationPolicy::Confirm
+    );
+
+    // An agent acting for the person needs their own grant only to weaken.
+    let need = |edit: &dyn erased_edit::Encode| {
+        let serde_json::Value::Object(json) = serde_json::json!({ "edit": edit.encode() }) else {
+            panic!("an object");
+        };
+        spec.need_for(Some(&json), None)
+    };
+    assert!(need(&paths.lock_minutes.set(30)).privileged);
+    assert!(need(&paths.lock_minutes.set(0)).privileged);
+    assert!(need(&paths.notifications_when_locked.set(true)).privileged);
+    assert!(!need(&paths.lock_minutes.set(1)).privileged);
+    assert!(!need(&paths.lock_minutes.set(5)).privileged);
+    assert!(!need(&paths.notifications_when_locked.set(false)).privileged);
+}
+
 /// The JSON form of an edit, whatever record it is of.
 mod erased_edit {
     pub trait Encode {
