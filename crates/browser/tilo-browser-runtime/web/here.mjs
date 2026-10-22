@@ -1,8 +1,7 @@
 // Who is here in the desktop's room and what they are doing.
 //
 // The room's live layer says who is present now: each member's publisher,
-// name, and for an agent the record it works in and what it is
-// doing. Every few seconds the page asks the runtime what its own person is
+// name, the record they focus, and for an agent what it is doing. Every few seconds the page asks the runtime what its own person is
 // doing (`desktop_here_tick`: the window they focus and the titles of their
 // own recent steps, never content) and posts it to the host's `/here`
 // (`peer.here`), which answers with everyone's one-line status and recent
@@ -30,7 +29,10 @@ export function liveMembers(layer, seen) {
       publisher,
       kind: participant?.kind === 'agent' ? 'agent' : 'person',
       label: participant?.label ?? '',
-      focus: participant?.kind === 'agent' ? focus ?? null : null,
+      // The record they focus: the window it shows here, or where no
+      // window here shows it (a room whose layout is personal) its app,
+      // is where the people panel says they are.
+      focus: focus ?? null,
       activity: participant?.activity ?? null,
       // The strip a person shows, for the bar's counts.
       place: participant?.kind === 'agent' ? null : place ?? null,
