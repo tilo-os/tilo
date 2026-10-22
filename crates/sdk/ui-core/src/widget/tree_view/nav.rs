@@ -129,6 +129,8 @@ pub(crate) enum NavRowSpec {
     Item(Box<NavItemSpec>),
     /// The one quiet line an empty section shows ("No drafts").
     Caption,
+    /// A row standing in for an item still being read.
+    Pending,
 }
 
 type SpecFn<M> = Box<dyn Fn(&M, NodeId) -> Option<NavRowSpec>>;
@@ -290,6 +292,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
                             ),
                             NavRowSpec::Caption if rail => f64::from(theme.tokens.spacing.s3),
                             NavRowSpec::Caption => nav_row_height(theme),
+                            NavRowSpec::Pending if rail => nav_rail_row_height(theme),
+                            NavRowSpec::Pending => nav_item_height(theme, false, false),
                         };
                         Some((index, key, height))
                     })
@@ -396,6 +400,11 @@ impl<T, M: TreeModel> TreeView<T, M> {
                     paint_nav_row(scene, transform, text_renderer, theme, &face);
                 }
             }
+            NavRowSpec::Pending => {
+                if !rail {
+                    paint_nav_pending(scene, transform, text_renderer, theme, row);
+                }
+            }
             NavRowSpec::Caption => {
                 if !rail {
                     paint_nav_caption(
@@ -461,7 +470,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 let face = NavSectionFace::new(row, "");
                 nav_section_layout(&nav.theme, &face).band
             }),
-            NavRowSpec::Caption => None,
+            NavRowSpec::Caption | NavRowSpec::Pending => None,
             NavRowSpec::Item(_) if nav.rail || !self.model.is_branch(id) => None,
             NavRowSpec::Item(_) => {
                 let face = NavRowFace::new(row, "").disclosure(self.expanded.contains(&id));
@@ -604,7 +613,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let is_caption = |at: usize| {
             matches!(
                 self.index.row_at(&self.model, at),
-                Some((TreeRowKey::Node(id), _)) if matches!(self.nav_spec(id), Some(NavRowSpec::Caption | NavRowSpec::Section { collapsible: false, .. }))
+                Some((TreeRowKey::Node(id), _)) if matches!(self.nav_spec(id), Some(NavRowSpec::Caption | NavRowSpec::Pending | NavRowSpec::Section { collapsible: false, .. }))
             )
         };
         let mut at = index;
@@ -749,6 +758,49 @@ impl<T, M: TreeModel> TreeView<T, M> {
         true
     }
 }
+
+/// A row standing in for an item still being read: its icon and its label
+/// where a row puts them, in the skeleton tone.
+fn paint_nav_pending(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    row: Rect,
+) {
+    let face = NavRowFace::new(row, "").icon(Icon::HardDrive);
+    let layout = nav_row_layout(theme, text_renderer, &face);
+    // The tone every skeleton in the window takes, so the stand-ins read as
+    // one loading page.
+    let tone = crate::widget::skeleton_tone(theme.tokens.colors.surfaces.content);
+    let radius = f64::from(theme.tokens.radii.detail);
+    let fill = |scene: &mut Scene, rect: Rect| {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tone,
+            None,
+            &rect.to_rounded_rect(radius),
+        );
+    };
+    if let Some(icon) = layout.icon {
+        fill(scene, icon);
+    }
+    // The label's bar is the line box's x-height band, as a skeleton's is.
+    let line = f64::from(theme.text(TextRole::Body).line_height_px());
+    let bar = (line * PENDING_BAR_SHARE).round();
+    let top = layout.label_top + (line - bar) / 2.0;
+    let width = (layout.label_x1 - layout.label_x0) * PENDING_LABEL_SHARE;
+    fill(
+        scene,
+        Rect::new(layout.label_x0, top, layout.label_x0 + width, top + bar),
+    );
+}
+
+/// How much of the label's line box a pending row's bar fills.
+const PENDING_BAR_SHARE: f64 = 0.6;
+/// How far along the label's run a pending row's bar goes.
+const PENDING_LABEL_SHARE: f64 = 0.7;
 
 /// The one quiet line of an empty section, where its first row would be.
 fn paint_nav_caption(

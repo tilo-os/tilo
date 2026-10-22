@@ -1390,3 +1390,30 @@ fn a_row_asked_open_opens_when_its_first_children_arrive() {
         "what the person folded stays folded"
     );
 }
+
+#[test]
+fn a_pending_section_holds_its_rows_place_until_the_items_arrive() {
+    let list = NavList::new(vec![
+        NavSection::untitled("drives", Vec::new())
+            .pending(1)
+            .empty_caption("No drives"),
+    ]);
+    let h = harness(list, Theme::dark());
+    let list = h.root::<NavList>();
+    let rows = list.tree().visible_rows();
+    assert_eq!(rows.len(), 1, "one row stands in, and no caption");
+    let (pending, label, _) = rows[0];
+    assert_eq!(label, "Loading", "assistive technology hears it is loading");
+    assert!(
+        !list.tree().model().is_selectable(pending),
+        "a pending row is not a destination"
+    );
+    let stand_in = list.tree().row_rect(pending).expect("the pending row");
+
+    let arrived = NavList::new(vec![
+        NavSection::untitled("drives", vec![NavItem::new("disk", "Disk").meta("1 TB")]).pending(1),
+    ]);
+    let h = harness(arrived, Theme::dark());
+    let row = h.root::<NavList>().row_rect("disk").expect("the item");
+    assert_eq!(row, stand_in, "the item takes the pending row's place");
+}
