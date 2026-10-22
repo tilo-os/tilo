@@ -164,6 +164,7 @@ pub mod render;
 pub mod room_activity;
 pub mod room_records;
 pub(crate) mod room_sync;
+pub(crate) mod room_task_import;
 pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;

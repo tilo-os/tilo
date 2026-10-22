@@ -714,6 +714,42 @@ settings_store::read_through_json_value!(AgentModel);
 #[cfg(feature = "model")]
 tilo_resource::json_model!(AgentModel);
 
+/// A model a person may pick for an agent's run: one model of an enabled
+/// provider, named the way pickers show it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferedModel {
+    /// The provider profile's id.
+    pub profile: String,
+    /// The provider's label.
+    pub provider: String,
+    /// The model's id at that provider.
+    pub model: String,
+    /// The model's label, its id without one.
+    pub label: String,
+}
+
+impl ProviderConfig {
+    /// Every model of the enabled providers, in Settings' order: what a
+    /// model picker offers besides the agent's own.
+    pub fn offered_models(&self) -> impl Iterator<Item = OfferedModel> + '_ {
+        self.profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .flat_map(|profile| {
+                profile.models.iter().map(|model| OfferedModel {
+                    profile: profile.id.clone(),
+                    provider: profile.label.clone(),
+                    model: model.id.clone(),
+                    label: if model.label.trim().is_empty() {
+                        model.id.clone()
+                    } else {
+                        model.label.clone()
+                    },
+                })
+            })
+    }
+}
+
 impl ProviderConfig {
     pub fn load() -> Self {
         let section = settings_store::load_section(SETTINGS_SECTION);

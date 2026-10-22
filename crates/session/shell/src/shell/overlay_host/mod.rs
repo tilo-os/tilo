@@ -74,6 +74,7 @@ mod shortcuts;
 mod strip_switcher;
 mod switcher_layer;
 mod tab_menu;
+mod task_import;
 mod top_bar_reveal;
 mod widget;
 mod window_toolbars;
@@ -996,6 +997,10 @@ pub struct ShellOverlayHost {
     peer_sync_node: Option<NodeId>,
     agent_actions:
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
+    /// The rooms' trackers, where the composer follows the runs it asked for.
+    tracker: Option<std::sync::Arc<crate::shell::broker_services::NativeTrackerRuns>>,
+    /// The rooms' old tasks, moved into their trackers.
+    task_imports: task_import::TaskImports,
     agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
     agent_quick_composer_node: Option<NodeId>,
     /// The workspace menu and the profile card the top bar opens.

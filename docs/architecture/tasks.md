@@ -98,9 +98,21 @@ read first. An action that asks first waits for the person's answer on the
 issue, and a confirmation admits only the arguments asked about, when the
 draft the person saw is the one those arguments render.
 
+## The composer
+
+"Tell an agent" asks through the tracker: work becomes an issue whose run
+the asking starts (`ask-agent`), a message to it is `send-message` and Stop is
+`stop-run`. The composer follows the run on the room's tracker, read by the
+shell from the committed record whenever the room's owner publishes, so it
+says the run ended, and how, with the agent's last words, when the tracker
+does.
+
 ## Migration
 
-Tasks once lived as records in the workspace's room document. The Tasks app
-reads them once through the workspace's task actions and imports each as an
-issue under an id derived from the task's, so two devices importing at once
-make one issue, and an imported task is never imported again.
+Tasks once lived as records in the workspace's room document. Once a
+session, when the person opens a workspace, the shell reads the tasks the
+room still keeps (`room_task_import`) and hands those the tracker has not
+imported to its `import`, as the person. Each becomes an issue under an id
+derived from the task's, so two devices importing at once make one issue,
+and an imported task is never imported again. A task's run does not move
+with it: an agent's task waits in Todo for a person to approve it again.

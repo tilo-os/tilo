@@ -1298,28 +1298,21 @@ fn models_of(
     config: &agent_provider_config::ProviderConfig,
 ) -> Vec<(String, Option<runtime_collab::TaskRunModel>)> {
     let mut models = vec![(t("agent-quick-model-own"), None)];
-    for profile in config.profiles.iter().filter(|profile| profile.enabled) {
-        for model in &profile.models {
-            let label = if model.label.trim().is_empty() {
-                model.id.clone()
-            } else {
-                model.label.clone()
-            };
-            models.push((
-                t_args(
-                    "agent-quick-model-of",
-                    &[
-                        ("model", label.into()),
-                        ("provider", profile.label.clone().into()),
-                    ],
-                ),
-                Some(runtime_collab::TaskRunModel {
-                    profile: profile.id.clone(),
-                    model: model.id.clone(),
-                }),
-            ));
-        }
-    }
+    models.extend(config.offered_models().map(|offered| {
+        (
+            t_args(
+                "agent-quick-model-of",
+                &[
+                    ("model", offered.label.into()),
+                    ("provider", offered.provider.into()),
+                ],
+            ),
+            Some(runtime_collab::TaskRunModel {
+                profile: offered.profile,
+                model: offered.model,
+            }),
+        )
+    }));
     models
 }
 

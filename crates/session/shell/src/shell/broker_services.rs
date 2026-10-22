@@ -36,6 +36,7 @@ use tilo_action_broker::services::{
     ShortcutLibraryServices, WorkspaceAuthority, WorkspaceControlServices,
     WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
 };
+pub(crate) use tracker_runs::{FollowedRun, NativeTrackerRuns};
 
 /// The same state.json owner used by canonical enrollment and ingress. Network
 /// availability never supplies or removes this durable admission boundary.
@@ -1860,11 +1861,13 @@ fn native_task_execution(
     Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
 }
 
-fn native_tracker_runs(
+/// The room's tracker, read for the broker's runs and for whoever follows
+/// one in the shell.
+pub(crate) fn native_tracker(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
-) -> Arc<dyn tilo_action_broker::services::TrackerRuns> {
+) -> Arc<NativeTrackerRuns> {
     Arc::new(tracker_runs::NativeTrackerRuns::new(
         NativeOwnerCommitService {
             history_keys,
@@ -1904,9 +1907,10 @@ pub fn native_services(
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> HostServices {
-    let tracker_runs = membership
-        .as_ref()
-        .map(|tree| native_tracker_runs(tree, network.clone(), history_keys.clone()));
+    let tracker_runs = membership.as_ref().map(|tree| {
+        native_tracker(tree, network.clone(), history_keys.clone())
+            as Arc<dyn tilo_action_broker::services::TrackerRuns>
+    });
     let committed_documents = membership
         .as_ref()
         .map(|tree| native_document_reads(tree, network.clone(), history_keys));

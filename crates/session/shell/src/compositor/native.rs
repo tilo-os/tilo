@@ -8595,6 +8595,7 @@ fn attach_collab_broker_bridges(
             .host_mut()
             .attach_app_action_broker(action_broker);
     }
+    frame_builder.host_mut().attach_tracker(broker.tracker());
     if let Some(review) = broker.task_review() {
         frame_builder.host_mut().attach_task_review(review);
     }

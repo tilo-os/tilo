@@ -139,6 +139,7 @@ pub struct BrokerHandle {
     _personal_source: Option<Arc<NativePersonalSource>>,
     native_media: Option<super::native_media::NativeMediaService>,
     task_review: Option<super::task_review::NativeTaskReview>,
+    tracker: Option<Arc<super::broker_services::NativeTrackerRuns>>,
     realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
@@ -159,6 +160,11 @@ impl std::ops::Deref for BrokerHandle {
 impl BrokerHandle {
     pub(crate) fn task_review(&self) -> Option<super::task_review::NativeTaskReview> {
         self.task_review.clone()
+    }
+
+    /// The rooms' trackers, for following an issue's run in the shell.
+    pub(crate) fn tracker(&self) -> Option<Arc<super::broker_services::NativeTrackerRuns>> {
+        self.tracker.clone()
     }
 
     pub(crate) fn native_media_service(&self) -> Option<super::native_media::NativeMediaService> {
@@ -936,6 +942,17 @@ fn spawn_inner(
     } else {
         tilo_action_broker::services::HostServices::default()
     };
+    // The broker's runs and the shell's composer read one tracker.
+    let tracker = membership
+        .as_ref()
+        .filter(|_| config.is_none())
+        .map(|tree| {
+            super::broker_services::native_tracker(tree, peer_sync.cloned(), channel_keys.clone())
+        });
+    if let Some(tracker) = &tracker {
+        services.tracker_runs =
+            Some(tracker.clone() as Arc<dyn tilo_action_broker::services::TrackerRuns>);
+    }
     #[cfg(any(test, feature = "test-support"))]
     if let CertificateProvisioning::HarnessDevices(_, Some(wrap)) = &certificate_provisioning {
         services.committed_documents = services.committed_documents.map(|reads| wrap(reads));
@@ -1033,6 +1050,7 @@ fn spawn_inner(
         });
     Ok(BrokerHandle {
         task_review: None,
+        tracker,
         inner,
         local_session,
         _personal_source: personal_source,
