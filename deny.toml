@@ -69,6 +69,13 @@ confidence-threshold = 0.9
 crate = "tilo-ntfs-helper@=0.1.0"
 allow = ["GPL-2.0-or-later"]
 
+# libbz2-rs-sys, the pure-Rust port of libbzip2 behind Files' bzip2 and 7z
+# reading, keeps libbzip2's own license: BSD-style (redistribution with the
+# notice, no endorsement), compatible with distributing under the AGPL.
+[[licenses.exceptions]]
+crate = "libbz2-rs-sys"
+allow = ["bzip2-1.0.6"]
+
 [bans]
 # Duplicate major versions of one crate are the dependency tree's own bloat
 # report: each is a separate compilation. `warn` until the tree is cleaned up,
