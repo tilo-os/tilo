@@ -56,7 +56,9 @@ impl Widget for Field {
         self.focused = focused;
     }
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::TextInput);
+        // Named by its id, as a field's node is.
+        let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::TextInput)
+            .with_action_target(self.id.clone());
         node.name = Some(self.id.clone());
         node.state.focused = self.focused;
         Some(node)
@@ -77,6 +79,22 @@ impl Widget for Field {
         taffy.widget_leaf(style, nodes, self)
     }
     ui::rect_geometry!();
+    /// A value set through assistive technology replaces what was typed.
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        _: &[u64],
+        _: &mut ui::widget::Edits<'_>,
+        _: &ui::widget::ModelPath,
+    ) -> bool {
+        let ui::a11y::Action::SetValue(value) = action else {
+            return false;
+        };
+        self.typed
+            .borrow_mut()
+            .insert(self.id.clone(), value.clone());
+        true
+    }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => self.pointer = ctx.logical(position),
@@ -836,4 +854,42 @@ fn one_click_in_an_inactive_window_gives_the_control_under_it_the_keyboard() {
             desk.focus_path()
         );
     }
+}
+
+/// The retained path of the widget whose semantics are named `name`.
+fn semantic_path(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
+    if node
+        .semantics
+        .as_ref()
+        .is_some_and(|semantics| semantics.name.as_deref() == Some(name))
+    {
+        return Some(node.path.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| semantic_path(child, name))
+}
+
+/// The page's accessibility tree names a field by its node's own target,
+/// and a screen reader, voice input, autofill or an automation's `fill`
+/// sets its value there.
+#[test]
+fn a_value_set_on_a_fields_semantics_reaches_the_app() {
+    let mut desk = Desk::new(2, 450);
+    let second = desk.tabs[1];
+    let field = format!("field-{second}-1");
+    let path = semantic_path(&desk.driver.inspection().root, &field).unwrap();
+    desk.driver
+        .perform_semantic_named(&path, Some(&field), &ui::a11y::Action::Focus)
+        .unwrap();
+    desk.settle();
+    desk.driver
+        .perform_semantic_named(
+            &path,
+            Some(&field),
+            &ui::a11y::Action::SetValue("Ada".into()),
+        )
+        .unwrap();
+    desk.settle();
+    assert_eq!(desk.typed(&field), "Ada");
 }
