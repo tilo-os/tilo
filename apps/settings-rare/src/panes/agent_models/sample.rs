@@ -64,6 +64,9 @@ impl LocalModelControl for SampleManager {
         crate::device_read::off_ui_thread();
         Ok(())
     }
+}
+
+impl super::hub::HubControl for SampleManager {
     /// Two sample models on Hugging Face, one per file family, found by
     /// any part of their name.
     fn hub_search(&self, query: &str, format: &str) -> Result<Vec<HubSearchResult>, String> {

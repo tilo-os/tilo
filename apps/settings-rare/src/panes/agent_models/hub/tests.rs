@@ -11,7 +11,7 @@ use ui::widget::{InPlace, SearchDriver};
 
 use crate::panes::model::PaneModel as _;
 
-use super::super::tests::{collect_accessibility, mock, model_over, rendered_names, snapshot};
+use super::super::tests::{mock, model_over, rendered_names, snapshot};
 use super::super::{AgentModelsEffect, LocalModelPhase, ModelAction, model_actions};
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -352,15 +352,13 @@ fn a_result_states_downloads_and_likes_as_separate_facts() {
         license: None,
         formats: vec![HubFormat::Gguf],
     }]));
-    let composition = pane.build_composition();
-    let mut nodes = Vec::new();
-    collect_accessibility(composition.as_ref(), &mut nodes);
-    let row = nodes
+    let said = crate::widgets::announced_text(pane.compose().as_ref());
+    let row = said
         .iter()
-        .find(|node| node.name.as_deref() == Some("acme/Chat-GGUF"))
-        .expect("the result is a row");
-    let value = row.value.clone().unwrap_or_default();
-    let facts: Vec<&str> = value.lines().map(str::trim).collect();
-    assert!(facts.contains(&"1 download"), "{value:?}");
-    assert!(facts.contains(&"312 likes"), "{value:?}");
+        .find(|text| text.lines().any(|fact| fact.trim() == "1 download"))
+        .unwrap_or_else(|| panic!("the result says its downloads as a fact: {said:?}"));
+    assert!(
+        row.lines().any(|fact| fact.trim() == "312 likes"),
+        "its likes are a fact of their own beside it: {row:?}"
+    );
 }
