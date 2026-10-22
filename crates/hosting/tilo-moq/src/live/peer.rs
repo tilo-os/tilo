@@ -200,6 +200,65 @@ impl Peer {
     }
 }
 
+/// One room member's presence datagrams, followed the way a page follows
+/// them (`watchMembers` in the browser runtime's live transport): the relay
+/// withdraws a member's namespace (a revoked client, a host-fed namespace
+/// idle past [`super::HOST_SLOT_IDLE`]) and announces it afresh when the
+/// member speaks again, and the follower reads on from the new broadcast.
+/// Following runs on its own task, so a caller that stops waiting loses
+/// nothing: a subscription under way completes, and frames queue (the
+/// newest give way once [`MEMBER_PRESENCE_QUEUE`] are waiting).
+pub struct MemberPresence {
+    frames: tokio::sync::mpsc::Receiver<bytes::Bytes>,
+    _follow: crate::Task,
+}
+
+/// Presence frames a [`MemberPresence`] keeps for its reader.
+pub const MEMBER_PRESENCE_QUEUE: usize = 64;
+
+impl MemberPresence {
+    /// Follow the member publishing under `namespace` on `peer`'s session.
+    #[must_use]
+    pub fn follow(peer: &Peer, namespace: &str) -> Self {
+        let (tx, frames) = tokio::sync::mpsc::channel(MEMBER_PRESENCE_QUEUE);
+        let origin = peer.incoming.consume();
+        let namespace = namespace.to_owned();
+        let follow = crate::Task::spawn(async move {
+            // Ends when the session's origin closes; the reader then hears
+            // nothing more.
+            while let Ok(broadcast) = origin.routed_broadcast(namespace.as_str()).await {
+                if let Ok(track) = broadcast.track(PRESENCE_TRACK)
+                    && let Ok(mut track) = track.subscribe(None).await
+                {
+                    while let Ok(Some(datagram)) = track.recv_datagram().await {
+                        if tx.is_closed() {
+                            return;
+                        }
+                        let _ = tx.try_send(datagram.payload);
+                    }
+                }
+                // The broadcast ended (the member was withdrawn) or refused
+                // the subscription: its next announcement is a new one.
+                broadcast.closed().await;
+            }
+            std::future::pending::<()>().await;
+        });
+        Self {
+            frames,
+            _follow: follow,
+        }
+    }
+
+    /// The member's next presence datagram, or `None` when none arrives
+    /// within `wait`.
+    pub async fn next(&mut self, wait: Duration) -> Option<bytes::Bytes> {
+        tokio::time::timeout(wait, self.frames.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+}
+
 /// A peer being assembled before its session exists.
 struct Pending {
     incoming: moq_net::origin::Producer,
