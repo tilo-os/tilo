@@ -256,6 +256,9 @@ impl LocalModelControl for MockControl {
         self.calls.lock().unwrap().push("stage-accelerator".into());
         Ok(())
     }
+}
+
+impl super::hub::HubControl for MockControl {
     fn hub_install(&self, repo: &str, revision: &str, variant: &str) -> Result<(), String> {
         self.calls
             .lock()
@@ -837,6 +840,8 @@ fn one_model(name: &str, phase: LocalModelPhase) -> LocalModelSnapshot {
         ..snapshot(None)
     }
 }
+
+impl super::hub::HubControl for StalledManager {}
 
 impl LocalModelControl for StalledManager {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {

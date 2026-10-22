@@ -911,6 +911,81 @@ fn fit_reason(variant: &HubVariantOffer) -> String {
     }
 }
 
+/// The model manager's Hugging Face half: searching and reading the Hub,
+/// downloading from it, adding a file from this device and the stored token.
+/// Where the manager cannot do it, every request is refused as unavailable.
+#[allow(
+    clippy::missing_errors_doc,
+    reason = "every operation shares the adapter's one error contract, documented on LocalModelControl"
+)]
+pub trait HubControl {
+    /// Search Hugging Face for models with `format`'s files.
+    fn hub_search(&self, _query: &str, _format: &str) -> Result<Vec<HubSearchResult>, String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    /// A Hugging Face model, by id or link, as this device can pick it.
+    fn hub_model(&self, _reference: &str) -> Result<HubModelOffer, String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    /// Download `variant` of `repo` at `revision`, accepting its licence.
+    fn hub_install(&self, _repo: &str, _revision: &str, _variant: &str) -> Result<(), String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    /// Ask the person to choose a GGUF model file: its name and the file,
+    /// opened by the file chooser, or `None` when they cancelled.
+    fn choose_model_file(&self) -> Result<Option<(String, std::fs::File)>, String> {
+        choose_model_file()
+    }
+    /// Hand `file`, called `name`, to the model store, which copies it in.
+    fn import_file(&self, _name: &str, _file: std::fs::File) -> Result<(), String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    /// What Hugging Face token or sign-in is stored on this device.
+    fn hub_token(&self) -> Result<HubTokenState, String> {
+        Ok(HubTokenState::None)
+    }
+    fn save_hub_token(&self, _token: &str) -> Result<(), String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    fn forget_hub_token(&self) -> Result<(), String> {
+        Err(t("agent-hub-unavailable"))
+    }
+}
+
+impl HubControl for super::ModelManagerCli {
+    fn hub_search(&self, query: &str, format: &str) -> Result<Vec<HubSearchResult>, String> {
+        manager_answer(&[
+            "hub-search",
+            &format!("--query={query}"),
+            &format!("--format={format}"),
+        ])
+    }
+
+    fn hub_model(&self, reference: &str) -> Result<HubModelOffer, String> {
+        manager_answer(&["hub-model", &format!("--reference={reference}")])
+    }
+
+    fn hub_install(&self, repo: &str, revision: &str, variant: &str) -> Result<(), String> {
+        manager_install(repo, revision, variant)
+    }
+
+    fn import_file(&self, name: &str, file: std::fs::File) -> Result<(), String> {
+        manager_import(name, file)
+    }
+
+    fn hub_token(&self) -> Result<HubTokenState, String> {
+        token_state()
+    }
+
+    fn save_hub_token(&self, token: &str) -> Result<(), String> {
+        store_token(token)
+    }
+
+    fn forget_hub_token(&self) -> Result<(), String> {
+        forget_token()
+    }
+}
+
 /// Ask the model manager something it answers in JSON; the Hub may take a
 /// while.
 pub(crate) fn manager_answer<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<T, String> {

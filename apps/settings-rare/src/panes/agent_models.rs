@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use agent_provider_config::local::hub::{HubModelOffer, HubSearchResult, HubTokenState};
+use agent_provider_config::local::hub::HubTokenState;
 pub use agent_provider_config::local::snapshot::{
     AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
     InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
@@ -2091,44 +2091,13 @@ fn phase_status(phase: &LocalModelPhase) -> String {
     clippy::missing_errors_doc,
     reason = "the six adapter operations share one error contract documented on the trait"
 )]
-pub trait LocalModelControl: Send + Sync {
+pub trait LocalModelControl: hub::HubControl + Send + Sync {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String>;
     fn install(&self, model: &LocalModelPackage) -> Result<(), String>;
     fn start(&self, id: &str) -> Result<(), String>;
     fn stop(&self, id: &str) -> Result<(), String>;
     fn remove(&self, id: &str) -> Result<(), String>;
     fn stage_accelerator(&self) -> Result<(), String>;
-    /// Search Hugging Face for models with `format`'s files.
-    fn hub_search(&self, _query: &str, _format: &str) -> Result<Vec<HubSearchResult>, String> {
-        Err(t("agent-hub-unavailable"))
-    }
-    /// A Hugging Face model, by id or link, as this device can pick it.
-    fn hub_model(&self, _reference: &str) -> Result<HubModelOffer, String> {
-        Err(t("agent-hub-unavailable"))
-    }
-    /// Download `variant` of `repo` at `revision`, accepting its licence.
-    fn hub_install(&self, _repo: &str, _revision: &str, _variant: &str) -> Result<(), String> {
-        Err(t("agent-hub-unavailable"))
-    }
-    /// Ask the person to choose a GGUF model file: its name and the file,
-    /// opened by the file chooser, or `None` when they cancelled.
-    fn choose_model_file(&self) -> Result<Option<(String, std::fs::File)>, String> {
-        hub::choose_model_file()
-    }
-    /// Hand `file`, called `name`, to the model store, which copies it in.
-    fn import_file(&self, _name: &str, _file: std::fs::File) -> Result<(), String> {
-        Err(t("agent-hub-unavailable"))
-    }
-    /// What Hugging Face token or sign-in is stored on this device.
-    fn hub_token(&self) -> Result<HubTokenState, String> {
-        Ok(HubTokenState::None)
-    }
-    fn save_hub_token(&self, _token: &str) -> Result<(), String> {
-        Err(t("agent-hub-unavailable"))
-    }
-    fn forget_hub_token(&self) -> Result<(), String> {
-        Err(t("agent-hub-unavailable"))
-    }
 }
 
 pub struct ModelManagerCli;
@@ -2195,38 +2164,6 @@ impl LocalModelControl for ModelManagerCli {
             .success()
             .then_some(())
             .ok_or_else(|| "accelerator setup service refused the request".to_string())
-    }
-
-    fn hub_search(&self, query: &str, format: &str) -> Result<Vec<HubSearchResult>, String> {
-        hub::manager_answer(&[
-            "hub-search",
-            &format!("--query={query}"),
-            &format!("--format={format}"),
-        ])
-    }
-
-    fn hub_model(&self, reference: &str) -> Result<HubModelOffer, String> {
-        hub::manager_answer(&["hub-model", &format!("--reference={reference}")])
-    }
-
-    fn hub_install(&self, repo: &str, revision: &str, variant: &str) -> Result<(), String> {
-        hub::manager_install(repo, revision, variant)
-    }
-
-    fn import_file(&self, name: &str, file: std::fs::File) -> Result<(), String> {
-        hub::manager_import(name, file)
-    }
-
-    fn hub_token(&self) -> Result<HubTokenState, String> {
-        hub::token_state()
-    }
-
-    fn save_hub_token(&self, token: &str) -> Result<(), String> {
-        hub::store_token(token)
-    }
-
-    fn forget_hub_token(&self) -> Result<(), String> {
-        hub::forget_token()
     }
 }
 
