@@ -107,3 +107,7 @@ upstream = "msm fix, in mainline for v7.4 (commit 128a0edde50780ed9eb93ab5d2e18c
 [[patch]]
 file = "0019-drm-msm-a6xx-record-a-GPU-frequency-only-once-the-GMU-has-acknowledged-it.patch"
 upstream = "Tilo's own, not posted; mainline still records a GX_BW_PERF_VOTE the GMU never acknowledged"
+
+[[patch]]
+file = "0020-drm-msm-a6xx-log-what-is-left-in-an-HFI-queue-the-GMU-stopped-servicing.patch"
+upstream = "Tilo's own, not posted; mainline still discards unserviced HFI queues silently"
