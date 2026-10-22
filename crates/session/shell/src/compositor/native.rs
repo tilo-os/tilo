@@ -3203,6 +3203,19 @@ struct TestControlConn {
     /// the session's own person and never on behalf of a seated agent.
     admin: bool,
     admin_identity_dir: Option<PathBuf>,
+    /// Handed over by the agent door for a program running in an app: only
+    /// [`super::workspace_door::permitted`] requests are served, with that
+    /// app's workspace scope.
+    scope: Option<super::workspace_door::AppScope>,
+    /// A request already read off the stream before this connection was
+    /// made (the agent door reads the first line to tell how it speaks),
+    /// served before anything else.
+    replay: Option<zeroize::Zeroizing<String>>,
+    /// A scoped request waiting on the person's answer; nothing after it
+    /// on this connection is read until then.
+    held_for_consent: Option<HeldForConsent>,
+    /// The sensitive request the person just allowed, run once.
+    confirmed: Option<zeroize::Zeroizing<String>>,
     /// Wakes the compositor loop when request bytes arrive on this stream;
     /// removed from the loop together with the connection.
     wake: Option<calloop::RegistrationToken>,
@@ -3304,6 +3317,14 @@ fn listing_stamp(frame_builder: &FrameBuilder) -> ListingStamp {
     }
 }
 
+/// Connections from programs running in apps served at once; more are
+/// dropped as they arrive.
+const MAX_SCOPED_CONTROL_CONNS: usize = 16;
+
+#[path = "native_scoped_control.rs"]
+mod scoped_control;
+use scoped_control::HeldForConsent;
+
 #[cfg(test)]
 thread_local! {
     /// How many times a test-control connection's wake fired on this thread.
@@ -3338,6 +3359,10 @@ impl TestControlConn {
             agent,
             admin: false,
             admin_identity_dir: None,
+            scope: None,
+            replay: None,
+            held_for_consent: None,
+            confirmed: None,
             wake: None,
             output_wake: None,
             closed: false,
@@ -6613,6 +6638,19 @@ fn pump_test_control_conn(
     // next frame must reflect; starts the input-latency measurement instrumentation uses.
     let mut injected_input = false;
     loop {
+        // A request held for the person runs, or is refused, once they
+        // answered; until then nothing after it is read.
+        match scoped_control::settle_held(conn, frame_builder) {
+            scoped_control::Held::Nothing => {}
+            scoped_control::Held::Waiting => return injected_input,
+            scoped_control::Held::Refused(refusal) => {
+                match queue_test_control_response(conn, &refusal) {
+                    PendingConnectionProgress::Closed
+                    | PendingConnectionProgress::OutputPending => return injected_input,
+                    _ => continue,
+                }
+            }
+        }
         // A held listing runs again, before anything after it on this
         // connection is read, once the action surface moved or its wait ran
         // out.
@@ -6638,9 +6676,15 @@ fn pump_test_control_conn(
                 line.push_str(&held.line);
                 Ok(Some(()))
             }
-            None => conn
-                .input
-                .read(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES),
+            None => match conn.replay.take() {
+                Some(first) => {
+                    line.push_str(&first);
+                    Ok(Some(()))
+                }
+                None => conn
+                    .input
+                    .read(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES),
+            },
         };
         match read {
             Ok(None) => {
@@ -6660,7 +6704,18 @@ fn pump_test_control_conn(
                 let mut diagnostic_query = None;
                 // How long an `actions_invoke` asked to wait for its invocation to settle.
                 let mut settle_for: Option<Duration> = None;
-                let (mut resp, actions) = match parse_request(&line) {
+                let locked = session.is_locked();
+                let scoped_refusal =
+                    match scoped_control::gate(conn, &line, frame_builder, ctx, locked) {
+                        scoped_control::Gate::Held => continue,
+                        scoped_control::Gate::Refuse(refusal) => Some(refusal),
+                        scoped_control::Gate::Serve => None,
+                    };
+                let parsed = match (parse_request(&line), scoped_refusal) {
+                    (Ok(_), Some(refusal)) => Err(*refusal),
+                    (parsed, _) => parsed,
+                };
+                let (mut resp, actions) = match parsed {
                     Ok(request)
                         if conn.admin
                             && (request.agent.is_some()
@@ -6833,6 +6888,7 @@ fn pump_test_control_conn(
                 if let Some(query) = diagnostic_query.as_deref() {
                     super::diagnostic_actions::append_catalogue(&mut resp, query);
                 }
+                scoped_control::filter_answer(conn, &mut resp, frame_builder);
                 if let Some(scope) = &scope {
                     state.client_input.set_participant(Some(scope.peer));
                     ctx.snapshot_crop = Some(scope.viewport);
@@ -10198,6 +10254,11 @@ pub fn run() {
         Option<calloop::RegistrationToken>,
     )> = None;
     let mut agent_door_consent: Option<crate::shell::agent_admission::AgentDoorConsent> = None;
+    // Connections the agent door handed over for programs running in apps.
+    let mut tab_grant_watch = scoped_control::TabGrantWatch::default();
+    let mut agent_door_controls: Option<
+        std::sync::mpsc::Receiver<crate::compositor::agent_door::ControlHandoff>,
+    > = None;
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
     // A control client is itself an event source. Each accepted stream gets
     // its own wake (see `TestControlConn::watch`), because a connection is
@@ -12136,6 +12197,9 @@ pub fn run() {
                     .global_shortcuts
                     .set_shortcut_config(frame_builder.host().shortcut_config().clone());
             }
+            if settings_change.desktop_control_stop() {
+                tab_grant_watch.stop_requested(&frame_builder);
+            }
             if settings_change.desktop_controls() {
                 frame_builder.host_mut().set_desktop_controls_config(
                     settings_store::hardware::DesktopControlsConfig::load(),
@@ -13757,10 +13821,13 @@ pub fn run() {
                         crate::shell::agent_admission::default_always_path(),
                         Some(Arc::clone(&session_wake)),
                     );
+                    let (controls, handed_over) = std::sync::mpsc::channel();
+                    agent_door_controls = Some(handed_over);
                     agent_door = Some((
                         crate::compositor::agent_door::Door::new(
                             listener,
                             requests,
+                            controls,
                             Arc::clone(&session_wake),
                         ),
                         UnlinkOnDrop(path),
@@ -14818,6 +14885,17 @@ pub fn run() {
                 .as_ref()
                 .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker);
             door.accept(broker.as_ref());
+        }
+        // A tab the person let control the desktop closed: its grant ends.
+        tab_grant_watch.sync(&frame_builder, &event_loop.handle());
+        if let Some(handed_over) = agent_door_controls.as_ref() {
+            scoped_control::accept(
+                handed_over,
+                &mut test_control_conns,
+                &event_loop.handle(),
+                &frame_builder,
+                &state,
+            );
         }
         for conn in &mut test_control_conns {
             let injected = pump_test_control_conn(
@@ -17471,7 +17549,7 @@ mod tests {
         );
     }
 
-    fn socket_response(reader: &mut BufReader<UnixStream>) -> test_control::Response {
+    pub(super) fn socket_response(reader: &mut BufReader<UnixStream>) -> test_control::Response {
         use std::io::BufRead as _;
         let mut line = String::new();
         reader.read_line(&mut line).expect("read response frame");
@@ -21870,3 +21948,7 @@ use tilo_lock::MutexRecover as _;
 )]
 #[path = "native_agent_seats_tests.rs"]
 mod agent_seats_tests;
+
+#[cfg(test)]
+#[path = "native_scoped_control_tests.rs"]
+mod scoped_control_tests;

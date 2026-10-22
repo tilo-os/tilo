@@ -367,6 +367,11 @@ impl SettingsChange {
         self.touches(&["display_identify"])
     }
 
+    /// Settings asked to stop a terminal tab controlling the desktop.
+    pub fn desktop_control_stop(&self) -> bool {
+        self.touches(&[settings_store::desktop_control::StopRequest::SECTION])
+    }
+
     /// The shortcut table the compositor matches before a client sees a key.
     pub fn shortcuts(&self) -> bool {
         self.touches(&["shortcuts"])

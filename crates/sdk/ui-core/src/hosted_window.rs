@@ -39,6 +39,10 @@ struct State {
     revision: u64,
     events: VecDeque<ToolbarEvent>,
     close: bool,
+    /// The session-supervisor session the tab runs, as the supervisor named
+    /// it to the app: how the host knows which tab a program typed in a
+    /// terminal belongs to.
+    session: Option<String>,
     /// What the host runs when the app declared or asked to close, so it
     /// looks again even while nothing else is happening.
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -116,7 +120,19 @@ impl HostedWindow {
         Self::wake(wake);
     }
 
+    /// Name the session-supervisor session this tab runs (`None`: none
+    /// now), as the supervisor answered when it opened. From any thread.
+    pub fn set_session(&self, session: Option<String>) {
+        self.state().session = session;
+    }
+
     // --- the host's side
+
+    /// The session-supervisor session the tab runs, as the app named it.
+    #[must_use]
+    pub fn session(&self) -> Option<String> {
+        self.state().session.clone()
+    }
 
     /// What the host runs when the app declares new slots or asks to close.
     pub fn set_wake(&self, wake: impl Fn() + Send + Sync + 'static) {

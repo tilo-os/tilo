@@ -53,6 +53,7 @@ use ui::TextRole;
 
 mod controller;
 mod desk;
+mod desktop_control_chips;
 mod device_local_chips;
 pub use desk::SuperSurface;
 mod device_fabric;
@@ -1012,6 +1013,9 @@ pub struct ShellOverlayHost {
     /// The tabs whose bar says "Only on this device", and the tree
     /// generation they were read at ([`device_local_chips`]).
     device_local: device_local_chips::DeviceLocal,
+    /// The tabs whose bar says "Controls your desktop", and the
+    /// generations they were read at ([`desktop_control_chips`]).
+    desktop_control: desktop_control_chips::DesktopControlMarks,
     /// The tooltip naming the window bar's button under the pointer.
     bar_tooltip: ui::widget::tooltip::TooltipHost,
     /// The tiles shown and the pointer, kept current for a presence pump

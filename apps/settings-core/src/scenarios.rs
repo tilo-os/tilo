@@ -46,6 +46,9 @@ const DISPLAYS_DRAGGING: &str = "displays-dragging";
 const DISPLAYS_IDENTIFY: &str = "displays-identify";
 /// Storage with remembered NTFS drives, drawn tall enough to reach them.
 const STORAGE_DRIVES: &str = "storage-drives";
+/// Device privacy & security drawn tall enough to reach the terminal tabs
+/// controlling the desktop and the workspace grants below them.
+const PERMISSIONS_ALL: &str = "permissions-all";
 
 /// Network with Wi-Fi off, looking for networks, and with a known
 /// network's details open.
@@ -90,6 +93,7 @@ pub fn names() -> &'static [&'static str] {
                 DISPLAYS_DRAGGING,
                 DISPLAYS_IDENTIFY,
                 STORAGE_DRIVES,
+                PERMISSIONS_ALL,
                 "keyboard-single",
                 "keyboard-many",
                 "keyboard-touch",
@@ -118,6 +122,7 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
             | DISPLAYS_IDENTIFY,
         ) => (1200, 1300),
         Some(STORAGE_DRIVES) => (1200, 1450),
+        Some(PERMISSIONS_ALL) => (1200, 2000),
         Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => (1200, 980),
         _ => WIDE_VIEWPORT,
     }
@@ -569,6 +574,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         ) => Staged::Pane(Category::Displays),
         Some(DISPLAYS_KEYBOARD) => Staged::Focused(Category::Displays, "display.arrangement"),
         Some(STORAGE_DRIVES) => Staged::Pane(Category::Storage),
+        Some(PERMISSIONS_ALL) => Staged::Pane(Category::Permissions),
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
             Staged::Pane(Category::Keyboard)
         }
@@ -726,7 +732,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 25 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 26 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
@@ -753,6 +759,10 @@ mod tests {
         assert_eq!(
             staged(Some(STORAGE_DRIVES)),
             Staged::Pane(Category::Storage)
+        );
+        assert_eq!(
+            staged(Some(PERMISSIONS_ALL)),
+            Staged::Pane(Category::Permissions)
         );
         assert_eq!(
             staged(Some(DEVICES_REMOVE)),

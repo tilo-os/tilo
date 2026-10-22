@@ -332,6 +332,7 @@ impl TerminalWidget {
         match result {
             Ok(backend) => {
                 self.record_relay_session(backend.relay_session.clone());
+                self.tell_window_session(backend.supervisor_session.clone());
                 self.attach_backend(backend);
                 // A process stands behind the grid from now on.
                 self.headless = false;

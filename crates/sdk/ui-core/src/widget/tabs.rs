@@ -22,6 +22,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
+
+#[path = "tabs_status_chips.rs"]
+mod status_chips;
 use crate::tokens::{EffectiveMotion, MotionSource};
 
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
@@ -408,6 +411,9 @@ pub struct TabBar {
     /// the workspace (a host or unconfined program's, in a public
     /// workspace): the bar says so with a quiet chip while one is in front.
     device_local_ids: HashSet<u64>,
+    /// Tabs whose app may control the desktop beyond its workspace, and
+    /// where their chip was last painted ([`status_chips`]).
+    desktop_control: status_chips::DesktopControlChip,
     /// A drag on a held tab, pulling it or springing it back.
     resist: Option<Resist>,
     /// Whether the hover-reveal maximize chip is offered at all. A host whose
@@ -586,6 +592,7 @@ impl TabBar {
             modified_ids: HashSet::new(),
             held_ids: HashMap::new(),
             device_local_ids: HashSet::new(),
+            desktop_control: status_chips::DesktopControlChip::default(),
             resist: None,
             show_maximize: true,
             closable: true,
@@ -684,6 +691,18 @@ impl TabBar {
     /// Where the tabs end: past the last pill, or past the "+" after them;
     /// the window's search control stands here.
     #[must_use]
+    /// Where the bar's status chips ("Only on this device", "Controls your
+    /// desktop") may start: after the pills, the "+" and the window's search
+    /// control, which stands right after them.
+    pub(super) fn status_chips_start(&self) -> f64 {
+        let search = if self.search_control.is_some() {
+            super::window_controls::CONTROL_GAP + super::window_controls::CONTROL_PX
+        } else {
+            0.0
+        };
+        self.tabs_end() + search
+    }
+
     pub fn tabs_end(&self) -> f64 {
         let pills = self
             .tab_rects
@@ -2575,15 +2594,8 @@ impl TabBar {
         }
         let label = crate::i18n!("tab-only-on-this-device");
         let tab_row = self.tab_row();
-        let after = self
-            .tab_rects
-            .iter()
-            .chain(std::iter::once(&self.new_tab_rect))
-            .filter(|rect| rect.area() > 0.0)
-            .map(|rect| rect.x1)
-            .fold(tab_row.x0, f64::max);
-        let x0 = after + TOOLBAR_LEAD_GAP;
-        let limit = self.controls.content_limit(tab_row) - self.search_control.unwrap_or(0.0);
+        let x0 = self.status_chips_start() + TOOLBAR_LEAD_GAP;
+        let limit = self.controls.content_limit(tab_row);
         let width =
             super::ChipFace::intrinsic_width(&label, super::ChipLead::None, false, tr, theme);
         let height = super::ChipFace::height(theme);
@@ -4050,6 +4062,7 @@ impl Widget for TabBar {
         });
         self.draw_new_tab_chip(scene, transform, tr, theme);
         self.draw_device_local_chip(scene, transform, tr, theme);
+        self.draw_desktop_control_chip(scene, transform, tr, theme);
         if self.window_controls {
             self.controls.paint(
                 scene,
@@ -4378,6 +4391,7 @@ impl Widget for TabBar {
                 }
             })
             .collect();
+        tab_children.extend(self.desktop_control_access());
         if self.new_tab {
             tab_children.push(
                 AccessNode::new(Role::Button)
@@ -4462,6 +4476,9 @@ impl Widget for TabBar {
         }
         if self.window_controls && self.toolbar_row.perform(target) {
             return true;
+        }
+        if target == status_chips::DESKTOP_CONTROL_TARGET {
+            return self.activate_desktop_control();
         }
         if self.window_controls {
             let active = self.active_id;
@@ -5189,6 +5206,10 @@ impl TabBar {
             *handled = true;
             return;
         }
+        if self.press_desktop_control(cursor_pos) {
+            *handled = true;
+            return;
+        }
         if self.active_toolbar().is_some() && self.toolbar_row.press(cursor_pos) {
             *handled = true;
             return;
@@ -5523,6 +5544,62 @@ mod tests {
         lay_out_at_width(&mut bar, 800.0);
         assert!(bar.set_device_local(1, false));
         assert!(bar.device_local_chip(&mut tr, &theme).is_none());
+    }
+
+    /// A window whose app may control the desktop says so beside its pill,
+    /// after "Only on this device" where both apply, and a press on the
+    /// chip — by pointer or by an assistive technology — reaches the host.
+    #[test]
+    fn a_window_that_controls_the_desktop_says_so_and_opens_on_press() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut bar = TabBar::new("terminal", vec![TabDescriptor::new(1, "Terminal")], 1);
+        lay_out_at_width(&mut bar, 900.0);
+        assert!(bar.desktop_control_chip(&mut tr, &theme).is_none());
+        assert!(bar.set_desktop_control(1, true));
+        bar.set_device_local(1, true);
+        let (local, _) = bar.device_local_chip(&mut tr, &theme).expect("local chip");
+        let (rect, label) = bar
+            .desktop_control_chip(&mut tr, &theme)
+            .expect("the chip stands after the other");
+        assert_eq!(label, "Controls your desktop");
+        assert!(rect.x0 > local.x1, "{rect:?} after {local:?}");
+        let mut scene = Scene::new();
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(bar.press_desktop_control(rect.center()));
+        assert_eq!(bar.take_desktop_control_press(), Some((1, rect)));
+        assert_eq!(bar.take_desktop_control_press(), None, "once");
+        assert!(Widget::perform_semantic_action(
+            &mut bar,
+            status_chips::DESKTOP_CONTROL_TARGET,
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT,
+        ));
+        assert_eq!(bar.take_desktop_control_press(), Some((1, rect)));
+        // The window's search control stands right after the tabs; the
+        // chips stand after it, never under it.
+        bar.set_device_local(1, false);
+        bar.set_search_control(Some(240.0));
+        lay_out_at_width(&mut bar, 900.0);
+        let search_x1 = bar.tabs_end()
+            + super::super::window_controls::CONTROL_GAP
+            + super::super::window_controls::CONTROL_PX;
+        let (rect, _) = bar
+            .desktop_control_chip(&mut tr, &theme)
+            .expect("room for the chip");
+        assert!(
+            rect.x0 >= search_x1,
+            "{rect:?} after the search at {search_x1}"
+        );
+        assert!(bar.set_desktop_control(1, false));
+        assert!(bar.desktop_control_chip(&mut tr, &theme).is_none());
     }
 
     #[test]

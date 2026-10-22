@@ -528,11 +528,13 @@ impl ShellOverlayHost {
                 self.permission_prompt_app = Some(pending.app_id.clone());
                 let label = prompt_label(&pending.request);
                 let is_owner = is_active_workspace_owner(&st);
-                self.permission_prompt = Some(PermissionPrompt::new(
-                    pending.app_id.clone(),
-                    label,
-                    is_owner,
-                ));
+                let prompt = PermissionPrompt::new(pending.app_id.clone(), label, is_owner);
+                self.permission_prompt = Some(match &pending.request {
+                    crate::shell::chrome_state::PromptRequest::DesktopControl(ask) => {
+                        prompt.with_choices(ask.choices())
+                    }
+                    _ => prompt,
+                });
             }
         }
     }

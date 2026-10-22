@@ -54,6 +54,9 @@ impl ShellOverlayHost {
                 .then_with(|| a.0.group.cmp(&b.0.group))
         });
         let Some((target, tab_count, maximized, point, title)) = nearest else {
+            // A press on a bar's "Controls your desktop" chip opens its menu
+            // the same way.
+            self.harvest_desktop_control_presses();
             return;
         };
         let rows = self.window_menu_rows(target, tab_count, maximized);
@@ -371,6 +374,7 @@ impl ShellOverlayHost {
                 self.move_to_workspace_from_menu(target, workspace)
             }
             WindowMenuAction::NewTab => self.new_tab_from_menu(target),
+            WindowMenuAction::StopDesktopControl => self.stop_desktop_control(target.tab),
             WindowMenuAction::SplitRight | WindowMenuAction::MoveToNewGroup => {
                 let Some(chrome) = self.chrome.clone() else {
                     return false;

@@ -435,24 +435,38 @@ impl ActionCatalog {
         self.select(resource).is_some()
     }
 
+    /// The semantic identity its provider gives the visible action at
+    /// `resource`: which app, room and record it belongs to.
+    pub fn hierarchy_of(&self, resource: &ResourceRef) -> Option<&ActionHierarchy> {
+        self.hierarchies
+            .get(self.visible_index(resource)?)?
+            .as_ref()
+    }
+
     /// Resolve a [`ResourceRef`] to the live action. `None` when the id
     /// isn't in this snapshot or the visibility gate hid it.
     pub fn select(&self, resource: &ResourceRef) -> Option<SelectedAction<'_>> {
-        // Two independent identity checks (provider, then id) — matching
-        // field names would be a coincidence, not a bug:
-        // `SearchResult::provider_id` and `ResourceRef::provider` name
-        // the same concept differently by design.
-        #[allow(
-            clippy::suspicious_operation_groupings,
-            reason = "provider_id/provider and id/id are two independent equality checks, not a \
-                      swapped field pair"
-        )]
-        let found = self
-            .visible
-            .iter()
-            .filter_map(|&i| self.results.get(i))
-            .find(|r| r.provider_id == resource.provider && r.id == resource.id);
-        found.map(|result| SelectedAction { result })
+        let result = self.results.get(self.visible_index(resource)?)?;
+        Some(SelectedAction { result })
+    }
+
+    /// Where the visible action at `resource` sits in `results`.
+    ///
+    /// Two independent identity checks (provider, then id) — matching field
+    /// names would be a coincidence, not a bug: `SearchResult::provider_id`
+    /// and `ResourceRef::provider` name the same concept differently by
+    /// design.
+    #[allow(
+        clippy::suspicious_operation_groupings,
+        reason = "provider_id/provider and id/id are two independent equality checks, not a \
+                  swapped field pair"
+    )]
+    fn visible_index(&self, resource: &ResourceRef) -> Option<usize> {
+        self.visible.iter().copied().find(|&i| {
+            self.results
+                .get(i)
+                .is_some_and(|r| r.provider_id == resource.provider && r.id == resource.id)
+        })
     }
 }
 

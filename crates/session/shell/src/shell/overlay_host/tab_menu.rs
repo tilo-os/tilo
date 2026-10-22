@@ -50,6 +50,9 @@ pub(crate) struct TabMenuLayer {
     target: Option<MenuSubject>,
     /// Title of the tab the menu is for, for the accessible name.
     title: String,
+    /// The accessible name when the menu is not the tab's own: the bar's
+    /// "Controls your desktop" chip names what it allows.
+    name: Option<String>,
     /// The pointer position the menu opened at, so a refused row can
     /// re-open the menu exactly where it was.
     anchor: Point,
@@ -79,6 +82,7 @@ impl TabMenuLayer {
             items,
             target: Some(target),
             title,
+            name: None,
             anchor: at,
         };
         // Anchored to the pointer as a zero-size rect: `open_anchored`
@@ -88,6 +92,29 @@ impl TabMenuLayer {
         // metrics.
         self.menu
             .open_anchored(Rect::new(at.x, at.y, at.x, at.y), viewport);
+    }
+
+    /// Open the menu of the bar's "Controls your desktop" chip for `target`,
+    /// hanging from the chip at `chip`: `captions` say what the grant allows
+    /// and for how long, and its one row stops it.
+    pub(crate) fn open_desktop_control(
+        &mut self,
+        target: TabMenuTarget,
+        chip: Rect,
+        captions: Vec<String>,
+        viewport: Rect,
+    ) {
+        let name = captions.join(". ");
+        let items = crate::shell::window_menu::desktop_control_menu_rows(captions);
+        *self = Self {
+            menu: build_window_menu(&items),
+            items,
+            target: Some(MenuSubject::Window(target)),
+            title: String::new(),
+            name: Some(name),
+            anchor: Point::new(chip.x0, chip.y1),
+        };
+        self.menu.open_anchored(chip, viewport);
     }
 
     /// Where the menu was opened, which decides the display it sits on.
@@ -170,13 +197,15 @@ impl TabMenuLayer {
         }
     }
 
-    /// The `i`-th named row's item index (separators publish no semantic
-    /// node).
+    /// The `i`-th named row's item index (separators and captions publish
+    /// no semantic node; the menu's own name carries the captions).
     fn item_index_of_action(&self, ordinal: usize) -> Option<usize> {
         self.items
             .iter()
             .enumerate()
-            .filter(|(_, item)| !matches!(item, WindowMenuRow::Separator))
+            .filter(|(_, item)| {
+                !matches!(item, WindowMenuRow::Separator | WindowMenuRow::Caption(_))
+            })
             .nth(ordinal)
             .map(|(index, _)| index)
     }
@@ -328,7 +357,9 @@ impl ShellLayer for TabMenuLayer {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| !matches!(item, WindowMenuRow::Separator))
+            .filter(|(_, item)| {
+                !matches!(item, WindowMenuRow::Separator | WindowMenuRow::Caption(_))
+            })
             .collect();
         let count = rows.len();
         let children = rows
@@ -374,7 +405,7 @@ impl ShellLayer for TabMenuLayer {
                                 .collect(),
                         );
                     }
-                    WindowMenuRow::Separator => {}
+                    WindowMenuRow::Separator | WindowMenuRow::Caption(_) => {}
                 }
                 let node = node.with_state(state);
                 match self.menu.item_rect(index) {
@@ -385,10 +416,12 @@ impl ShellLayer for TabMenuLayer {
             .collect();
         Some(
             AccessNode::new(Role::Menu)
-                .with_name(t_args(
-                    "host-a11y-tab-menu",
-                    &[("title", self.title.clone().into())],
-                ))
+                .with_name(self.name.clone().unwrap_or_else(|| {
+                    t_args(
+                        "host-a11y-tab-menu",
+                        &[("title", self.title.clone().into())],
+                    )
+                }))
                 .with_semantic_key("tabmenu")
                 .with_bounds(self.menu.get_rect())
                 .with_state(AccessState {

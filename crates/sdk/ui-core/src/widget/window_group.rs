@@ -2161,6 +2161,25 @@ impl WindowGroup {
         self.bar.set_device_local(id, local)
     }
 
+    /// Mark tab `id` as a window whose app may control the desktop, or
+    /// clear the mark: while it is in front the bar says "Controls your
+    /// desktop". `true` when that changed what the window shows.
+    pub fn set_tab_desktop_control(&mut self, id: u64, on: bool) -> bool {
+        self.bar.set_desktop_control(id, on)
+    }
+
+    /// Press the bar's "Controls your desktop" chip without a pointer, as an
+    /// assistive technology does. Whether the bar shows it.
+    pub fn activate_desktop_control(&mut self) -> bool {
+        self.bar.activate_desktop_control()
+    }
+
+    /// A press on the bar's "Controls your desktop" chip, once: the tab and
+    /// where the chip stands, for the host's menu.
+    pub fn take_desktop_control_press(&mut self) -> Option<(u64, vello::kurbo::Rect)> {
+        self.bar.take_desktop_control_press()
+    }
+
     /// Whether someone else holds any of the window's tabs, so it does not
     /// move as a whole.
     pub fn is_held(&self) -> bool {

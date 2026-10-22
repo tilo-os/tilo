@@ -230,6 +230,7 @@ pub(crate) fn prompt_label(request: &crate::shell::chrome_state::PromptRequest) 
             capability_label(capability)
         }
         crate::shell::chrome_state::PromptRequest::AgentAdmission(admission) => admission.label(),
+        crate::shell::chrome_state::PromptRequest::DesktopControl(ask) => ask.label(),
     }
 }
 
@@ -252,6 +253,7 @@ pub(crate) fn capability_label(cap: &Capability) -> String {
         Capability::RemoteDesktop { .. } => t("capability-remote-desktop"),
         Capability::Print { .. } => t("capability-print"),
         Capability::HostShell { .. } => t("capability-host-shell"),
+        Capability::DesktopControl { .. } => t("capability-desktop-control"),
         Capability::SystemInfo { .. } => t("capability-system-info"),
         Capability::Processes { .. } => t("capability-processes"),
         Capability::ProcessCommands { .. } => t("capability-process-commands"),
