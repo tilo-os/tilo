@@ -2445,6 +2445,28 @@ fn the_window_bar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphas
     assert_eq!(kind(wp).0, "paragraph", "pressed again, the list ends");
 }
 
+// USER REQUIREMENT (2026-10-22): "Every app that has a document or item open
+// declares it as the bar's location, so the bar always names what you're
+// looking at." Writer: the document's title.
+#[test]
+fn the_window_bar_names_the_document() {
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
+    wp.sync(&state.doc, &state.root);
+    wp.model_mut().insert_str(
+        &mut edits(&mut state.doc),
+        "Quarterly report for the garden cooperative and its many volunteers",
+    );
+    let mut framed = mount(state, wp, 1280, 800);
+    let (wp, _) = Framed::split(&mut framed);
+    let label = wp.window_bar().location.map(|location| location.label);
+    assert_eq!(
+        label.as_deref(),
+        Some("Quarterly report for the garden cooperative and its…"),
+        "the bar names the document by its first words"
+    );
+}
+
 /// Build a doc directly in `state` from a closure over a `DocMut`.
 fn with_doc(state: &mut ui::State, f: impl FnOnce(&mut tilo_doc::DocMut)) {
     let c = crate::model::init(&mut state.doc).unwrap();

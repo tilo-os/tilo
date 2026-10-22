@@ -54,7 +54,17 @@ impl SheetsApp {
         commands.push(("autosum".into(), MenuItem::AutoSum));
         commands.push(("formulas".into(), MenuItem::ToggleFormulaView));
         commands.push(("settings".into(), MenuItem::OpenDocSettings));
+        // A workbook carries no name of its own: the bar names the sheet in
+        // view, as its tab does.
+        let sheet = self
+            .active_sheet_id()
+            .and_then(|id| self.workbook.sheet(&id))
+            .map_or_else(|| "Sheets".to_owned(), |sheet| sheet.name.0.to_string());
         let toolbar = WindowToolbar {
+            location: Some(ui::window_toolbar::ToolbarLocation {
+                label: sheet,
+                ..ui::window_toolbar::ToolbarLocation::default()
+            }),
             actions: std::mem::take(&mut actions),
             ..WindowToolbar::default()
         };

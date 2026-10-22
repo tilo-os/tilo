@@ -570,6 +570,11 @@ pub struct ComposeWindow {
 }
 
 impl ComposeWindow {
+    /// What the window is writing ("New message", "Reply", …).
+    pub fn heading(&self) -> &'static str {
+        self.heading
+    }
+
     pub fn new(format: ComposeFormat) -> Self {
         // Recipients are addresses and names: no spell check, identifier
         // text.

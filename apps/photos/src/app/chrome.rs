@@ -556,8 +556,13 @@ impl PhotosApp {
     pub(crate) fn window_bar(&self) -> WindowToolbar {
         let mut toolbar = WindowToolbar {
             sidebar: Some(self.chrome.drawer.is_open()),
-            location: (!self.chrome.title.is_empty()).then(|| ToolbarLocation {
-                label: self.chrome.title.clone(),
+            // What is open, else (no photograph) the app's name.
+            location: Some(ToolbarLocation {
+                label: if self.chrome.title.is_empty() {
+                    ui::widget::AppWidget::app_title(self).to_owned()
+                } else {
+                    self.chrome.title.clone()
+                },
                 ..ToolbarLocation::default()
             }),
             ..WindowToolbar::default()

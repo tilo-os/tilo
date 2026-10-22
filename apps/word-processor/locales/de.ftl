@@ -6,6 +6,7 @@
 ## Toolbar button faces
 toolbar-format = Format
 toolbar-insert = Einfügen
+document-untitled = Dokument
 toolbar-file = Datei
 toolbar-table = Tabelle
 toolbar-link = Link

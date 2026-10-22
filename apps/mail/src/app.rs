@@ -983,8 +983,14 @@ impl MailApp {
         let (items, toolbar) = {
             let state = self.shared.borrow();
             let items = crate::window_bar::bar_items(&state, first_run);
-            let toolbar =
-                crate::window_bar::toolbar(self.nav.window_toolbar(), &state, &items, first_run);
+            let composing = self.compose.open.then(|| self.compose.heading());
+            let toolbar = crate::window_bar::toolbar(
+                self.nav.window_toolbar(),
+                &state,
+                &items,
+                first_run,
+                composing,
+            );
             (items, toolbar)
         };
         self.bar = items;
@@ -6418,10 +6424,15 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             app.apply_commands(&mut ui::widget::Edits::lend(&mut doc));
             assert_eq!(app.shared.borrow().folder, Folder::Sent);
             app.sync(&doc, &automerge::ROOT);
+            let state = app.shared.borrow();
+            let expected = state
+                .selected
+                .and_then(|id| state.mailbox.get(id))
+                .map_or_else(|| "Sent".to_owned(), |message| message.subject.clone());
             assert_eq!(
-                crate::window_bar::location(&app.shared.borrow()),
-                "Sent",
-                "the window's location follows"
+                crate::window_bar::location(&state, None),
+                expected,
+                "the window's location names the open message, else the folder"
             );
         }
 
