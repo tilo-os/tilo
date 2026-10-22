@@ -198,15 +198,19 @@ fn opening_a_retained_profile_migrates_and_restores_live_player_actions() {
     use ui::framework::testing::TestApp;
     use ui::record::{RecordId, RecordKind};
 
+    // A retained profile kept the library in the record of the window that
+    // opened it; the app now keeps it in the workspace's one record, which
+    // adopts what that window record held.
     let mut doc = populated_legacy_library();
-    let record = RecordId::room_default();
+    let window = RecordId::room_default();
     assert!(ui::record::init_scoped(
         &mut doc,
-        &record,
+        &window,
         &RecordKind::new(Library::KIND),
         "test-workspace",
         Some("test-workspace"),
     ));
+    let record = RecordId::package_primary();
     let mut app = TestApp::<crate::MusicShell>::launched_replica(&[], &mut doc).unwrap();
     assert_eq!(app.record(), &record);
     assert_eq!(
