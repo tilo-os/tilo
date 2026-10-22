@@ -142,6 +142,7 @@ members = [
     "apps/terminal",
     "apps/themes",
     "apps/thumbnails",
+    "apps/tasks",
     "apps/totp",
     "apps/tube",
     "apps/typst-editor",

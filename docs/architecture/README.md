@@ -109,6 +109,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
 | `network.md` | `tilo-net`: HTTP, WebSocket, WebTransport, sockets, status, and the fetch-proxy contract |
 | `search.md` | providers and per-resource-type rendering |
+| `tasks.md` | the workspace's issues: nested issues, the board, threads, agent runs as issue actions |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
 | `agent-host.md` | agent MCP beside a local enrolled relay on a foreign Linux host (no desktop/OS) |
 | `bots.md` | bots and connectors: headless Shortcuts with identity, derived grants, the trigger dispatcher, the runner, appearance, the bot directory |
