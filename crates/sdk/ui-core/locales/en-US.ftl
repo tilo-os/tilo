@@ -819,7 +819,6 @@ window-search-this-app = Search this app
 window-search-everywhere = Search everywhere
 window-search-close = Close search
 history-panel-title = History
-history-panel-close = Close History
 history-panel-selected-changes = { $count } changes
 history-mode-restore-change = Restore just this change
 history-panel-name = Name these changes

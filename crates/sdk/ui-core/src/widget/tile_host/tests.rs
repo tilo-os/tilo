@@ -2429,8 +2429,9 @@ fn a_desktop_window_presents_history_on_its_tab_not_in_a_band() {
     assert!(driver.targets().contains_key("activity_timeline"));
     assert_eq!(window_history_control(&driver), Some(true));
     assert!(
-        !driver.targets().contains_key("history-open"),
-        "open, History draws no toggle of its own: the tab's closes it"
+        !driver.targets().contains_key("history-open")
+            && !driver.targets().contains_key("history-back-live"),
+        "open, History draws no toggle or close of its own: the tab's closes it"
     );
     let press_tab = |driver: &mut crate::headless::FrameHarness| {
         driver

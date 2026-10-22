@@ -2068,31 +2068,42 @@ impl HistoryHost {
     /// live (closing the panel returns to the live document, as that
     /// control does), so either keeps its address.
     fn panel_header(&self) -> Row {
-        let close: Button = if self.selected.is_empty() && !self.window_presents {
+        let control: Option<Button> = if !self.selected.is_empty() {
+            let label = I18nManager::lookup_plain("history-mode-back-to-live");
+            let close = self.commands.clone();
+            Some(
+                Button::icon_only("history-back-live", crate::icons::Icon::X, &label)
+                    .on_click(move || close.borrow_mut().push_back(Command::Live)),
+            )
+        } else if self.window_presents {
+            // The window's bar holds History's control, which closes it as
+            // it opened it (and Escape does): a second one here would be
+            // two controls for one thing.
+            None
+        } else {
             // No window presents History's control: the panel holds it, on.
             let clicked = self.open_requested.clone();
-            crate::standalone_history_host::history_control_face(
-                "history-open",
-                crate::widget::window_header::HistoryControl::Open,
+            Some(
+                crate::standalone_history_host::history_control_face(
+                    "history-open",
+                    crate::widget::window_header::HistoryControl::Open,
+                )
+                .on_click(move || clicked.set(true)),
             )
-            .on_click(move || clicked.set(true))
-        } else {
-            let label = I18nManager::lookup_plain(if self.selected.is_empty() {
-                "history-panel-close"
-            } else {
-                "history-mode-back-to-live"
-            });
-            let close = self.commands.clone();
-            Button::icon_only("history-back-live", crate::icons::Icon::X, &label)
-                .on_click(move || close.borrow_mut().push_back(Command::Live))
         };
         // The panel's name is painted beside the control
         // ([`Self::draw`]): the control already carries History's name for
-        // assistive technology, and one name per thing reads once.
-        Row::new()
+        // assistive technology, and one name per thing reads once. The row
+        // keeps a control's height when it has none, so the name sits the
+        // same either way.
+        let row = Row::new()
             .with_justify(taffy::JustifyContent::FlexEnd)
             .with_align_items(taffy::AlignItems::Center)
-            .push(Box::new(close))
+            .with_min_height(crate::widget::ControlSize::Regular);
+        match control {
+            Some(control) => row.push(Box::new(control)),
+            None => row,
+        }
     }
 
     /// The panel's foot and the preview's banner for the selected change:
