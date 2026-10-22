@@ -215,6 +215,10 @@ fn bench_search(value: &str) -> Result<(), String> {
             .filter(|q| !q.is_empty())
             .collect()
     };
+    if queries.is_empty() {
+        // Only commas: nothing to type.
+        return Err(format!("--bench-search: no queries in {value:?}"));
+    }
     for (name, extra) in [("sample library", 0), ("10k-song library", 10_000)] {
         let lib = bench_library(extra);
         let mut engine = QueryEngine::new(crate::views::kinds());
