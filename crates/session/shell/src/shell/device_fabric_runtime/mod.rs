@@ -1767,21 +1767,26 @@ impl worker::FabricPump for NetworkFabricPump {
     }
 }
 
-/// Run `runtime` off the compositor thread (see [`worker`]). After each run
-/// that left spatial input or nearby-drop news for the compositor, its loop
-/// is woken to pick them up.
+/// Make the fabric's runtime and run it off the compositor thread (see
+/// [`worker`]): making it reads the settings and display files, starts their
+/// watches and binds the device-unlock socket, none of which the compositor
+/// may wait for. After each run that left spatial input or nearby-drop news
+/// for the compositor, its loop is woken to pick them up.
 ///
 /// # Errors
 ///
 /// The OS error when the thread cannot be started.
 pub(crate) fn spawn_worker(
-    runtime: DeviceFabricRuntime,
     network: Arc<ShellNetwork>,
+    notification_bridge: NotificationBridge,
 ) -> std::io::Result<worker::FabricWorker<FabricTurn>> {
     let wake = network.loop_waker();
     worker::FabricWorker::spawn(
         "device-fabric",
-        NetworkFabricPump { runtime, network },
+        move || NetworkFabricPump {
+            runtime: DeviceFabricRuntime::new(&network, notification_bridge),
+            network,
+        },
         move || {
             if fabric_output_pending() {
                 wake();
