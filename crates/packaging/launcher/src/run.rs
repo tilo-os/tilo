@@ -2378,6 +2378,47 @@ fn splice_retained_files(
     Ok(())
 }
 
+/// Bind the app's own view of the files the person chose for it in the
+/// session shell's chooser (`tilo_documents`) at
+/// [`tilo_documents::SANDBOX_DIR`]. The view is empty at launch and fills as
+/// the person chooses; nothing else of the documents filesystem, and no
+/// other app's view, is reachable. Answers whether it was bound: a launch
+/// outside a room, or a session whose shell serves no documents, binds
+/// nothing.
+fn splice_documents(
+    argv: &mut Vec<String>,
+    manifest: &ManifestView,
+    opts: &RunOptions,
+) -> Result<bool, RunError> {
+    let Some(view) = documents_view(
+        tilo_documents::mountpoint().as_deref(),
+        &manifest.package_id,
+        opts.workspace_id.as_deref(),
+    ) else {
+        return Ok(false);
+    };
+    let entry = pop_entry(argv)?;
+    argv.extend([
+        "--bind-try".to_owned(),
+        view.display().to_string(),
+        tilo_documents::SANDBOX_DIR.to_owned(),
+    ]);
+    argv.push(entry);
+    Ok(true)
+}
+
+/// The host folder that is `package_id`'s view in `room` under the
+/// documents filesystem mounted at `mountpoint`, when it is being served.
+fn documents_view(
+    mountpoint: Option<&Path>,
+    package_id: &str,
+    room: Option<&str>,
+) -> Option<PathBuf> {
+    let key = tilo_documents::AppKey::new(room?, package_id)?;
+    let view = tilo_documents::app_view(mountpoint?, &key);
+    view.is_dir().then_some(view)
+}
+
 fn validate_retained_files_projection(path: &Path) -> Result<(), RunError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let invalid =
@@ -2573,6 +2614,9 @@ struct ShimSpliceCtx<'a> {
     gpu_devices: bool,
     pipeline_seed: &'a Option<PathBuf>,
     keep_fds: &'a [RawFd],
+    /// The app's view of the documents chosen for it is bound
+    /// ([`splice_documents`]).
+    documents: bool,
 }
 
 /// In-sandbox shim: bind this launcher binary in and rewrite the trailing
@@ -2681,6 +2725,13 @@ fn splice_sandbox_shim(
     // And the person's records of it, bound the same way.
     argv.push("--rw".to_string());
     argv.push(crate::appdir::SANDBOX_PERSON_DIR.to_string());
+    // The documents chosen for it, by their in-sandbox path like the app
+    // directory: read and written as each choice allows (the documents
+    // filesystem refuses the rest), never executed.
+    if ctx.documents {
+        argv.push("--rw-noexec".to_string());
+        argv.push(tilo_documents::SANDBOX_DIR.to_string());
+    }
     // The GPU device nodes a `gpu` app was bound — same O_RDWR reasoning
     // as above.
     if ctx.gpu_devices {
@@ -3886,6 +3937,7 @@ pub(crate) fn run_with_context(
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     splice_retained_files(&mut argv, manifest, opts)?;
+    let documents = splice_documents(&mut argv, manifest, opts)?;
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
@@ -3913,6 +3965,7 @@ pub(crate) fn run_with_context(
             gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
+            documents,
         },
     )?;
 
@@ -4604,6 +4657,7 @@ fn run_with_capture_spawn<T>(
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     splice_retained_files(&mut argv, manifest, opts)?;
+    let documents = splice_documents(&mut argv, manifest, opts)?;
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
@@ -4625,6 +4679,7 @@ fn run_with_capture_spawn<T>(
             gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
+            documents,
         },
     )?;
 
@@ -6289,6 +6344,7 @@ mod retained_files_tests {
                 gpu_devices: false,
                 pipeline_seed: &None,
                 keep_fds: &[],
+                documents: false,
             },
         )
         .unwrap();
@@ -6306,6 +6362,91 @@ mod retained_files_tests {
         let mut argv = vec!["settings".into()];
         splice_retained_files(&mut argv, &other, &opts).unwrap();
         assert_eq!(argv, ["settings"]);
+    }
+
+    /// An app launched into a room is bound its own view of the documents
+    /// chosen for it, at the one sandbox path, and nothing else of the
+    /// documents filesystem; Landlock lets it read and write there as each
+    /// choice allows, never execute.
+    #[test]
+    fn an_app_is_bound_only_its_own_view_of_the_documents_chosen_for_it() {
+        let mount = tempfile::tempdir().unwrap();
+        let own = mount.path().join("room-7").join("so.tilo.pdf-viewer");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(mount.path().join("room-7").join("so.tilo.files")).unwrap();
+        assert_eq!(
+            documents_view(Some(mount.path()), "so.tilo.pdf-viewer", Some("room-7")),
+            Some(own)
+        );
+        for (mountpoint, app, room) in [
+            (None, "so.tilo.pdf-viewer", Some("room-7")),
+            (Some(mount.path()), "so.tilo.pdf-viewer", None),
+            (Some(mount.path()), "so.tilo.pdf-viewer", Some("room-8")),
+            (Some(mount.path()), "..", Some("room-7")),
+            (
+                Some(mount.path()),
+                "so.tilo.files/../so.tilo.pdf-viewer",
+                Some("room-7"),
+            ),
+        ] {
+            assert_eq!(
+                documents_view(mountpoint, app, room),
+                None,
+                "{app} in {room:?}"
+            );
+        }
+
+        let manifest: ManifestView = toml::from_str(
+            "[package]\nkind = \"app\"\nid = \"so.tilo.pdf-viewer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"viewer\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
+        )
+        .unwrap();
+        let opts = RunOptions {
+            landlock_enforce: true,
+            ..RunOptions::default()
+        };
+        let capabilities = resolve_capabilities(&manifest, &opts);
+        for documents in [true, false] {
+            let mut shim = vec!["viewer".into()];
+            splice_sandbox_shim(
+                &mut shim,
+                &opts,
+                &ShimSpliceCtx {
+                    manifest: &manifest,
+                    net_gate: &None,
+                    runtime_arg: None,
+                    extra_ro_paths: &[],
+                    egress: &crate::netgate::EgressDecision::Blocked,
+                    capabilities: &capabilities,
+                    dbus_plan: &None,
+                    system_authority: &None,
+                    wayland_bind: &None,
+                    gpu: &None,
+                    gpu_devices: false,
+                    pipeline_seed: &None,
+                    keep_fds: &[],
+                    documents,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                shim.windows(2)
+                    .any(|args| args == ["--rw-noexec", tilo_documents::SANDBOX_DIR]),
+                documents
+            );
+            assert!(
+                !shim
+                    .iter()
+                    .any(|arg| arg.starts_with(tilo_documents::SANDBOX_DIR)
+                        && arg != tilo_documents::SANDBOX_DIR),
+                "no rule reaches past the app's own view"
+            );
+            assert!(
+                !shim
+                    .windows(2)
+                    .any(|args| args == ["--rw", tilo_documents::SANDBOX_DIR]),
+                "documents are never executable"
+            );
+        }
     }
 
     #[test]
