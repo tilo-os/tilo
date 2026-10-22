@@ -89,6 +89,21 @@ pub struct KeyModifiers {
     pub meta: bool,
 }
 
+impl KeyModifiers {
+    /// The platform's command modifier alone (Command on macOS, Control
+    /// elsewhere), for a host that sends a page its own shortcut: select
+    /// all, copy.
+    #[must_use]
+    pub fn command(conventions: crate::platform::PlatformConventions) -> Self {
+        let command = conventions.command_modifier();
+        Self {
+            ctrl: command.control_key(),
+            meta: command.super_key(),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedKey {
     Enter,
@@ -730,3 +745,21 @@ pub trait WebViewEngine: Send + Sync {
 
 /// Shared engine handle, as stored by the widget and the host app.
 pub type SharedEngine = Arc<dyn WebViewEngine>;
+
+#[cfg(test)]
+mod key_modifier_tests {
+    use super::KeyModifiers;
+    use crate::platform::{Platform, PlatformConventions};
+
+    /// A page's own shortcut goes with the platform's command modifier:
+    /// Command on macOS, Control everywhere else, never both.
+    #[test]
+    fn the_command_modifier_is_the_platforms() {
+        let mac = KeyModifiers::command(PlatformConventions::new(Platform::MacOs));
+        assert!(mac.meta && !mac.ctrl && !mac.shift && !mac.alt);
+        for platform in [Platform::Linux, Platform::Windows, Platform::Android] {
+            let other = KeyModifiers::command(PlatformConventions::new(platform));
+            assert!(other.ctrl && !other.meta && !other.shift && !other.alt);
+        }
+    }
+}
