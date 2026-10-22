@@ -8059,11 +8059,10 @@ fn start_device_fabric(
         crate::shell::device_fabric_runtime::FabricTurn,
     >,
 > {
-    let runtime = crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
-        network,
+    match crate::shell::device_fabric_runtime::spawn_worker(
+        Arc::clone(network),
         notifications.clone(),
-    );
-    match crate::shell::device_fabric_runtime::spawn_worker(runtime, Arc::clone(network)) {
+    ) {
         Ok(worker) => Some(worker),
         Err(error) => {
             tracing::error!(%error, "device fabric: could not start its thread");

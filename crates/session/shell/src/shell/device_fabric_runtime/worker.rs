@@ -88,12 +88,14 @@ pub(crate) struct FabricWorker<F> {
 }
 
 impl<F: Send + 'static> FabricWorker<F> {
-    /// Start `pump` on a thread named `name`. `after_run` follows each run,
-    /// on that thread: it is how the compositor learns there is output to
-    /// pick up.
+    /// Start a pump on a thread named `name`, made there by `make`: making
+    /// one may read settings and bind sockets, which the compositor thread
+    /// must not wait for. Facts asked for before it is made wait for it.
+    /// `after_run` follows each run, on that thread: it is how the
+    /// compositor learns there is output to pick up.
     pub(crate) fn spawn<P>(
         name: &str,
-        mut pump: P,
+        make: impl FnOnce() -> P + Send + 'static,
         after_run: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self>
     where
@@ -113,6 +115,7 @@ impl<F: Send + 'static> FabricWorker<F> {
                 // A settings write made here must not wait for the disk
                 // either, exactly as on the compositor thread it came from.
                 settings_store::defer_writes_on_this_thread();
+                let mut pump = make();
                 while let Some(facts) = worker.next() {
                     pump.pump(facts);
                     after_run();
@@ -202,7 +205,7 @@ mod tests {
         let (after_tx, after) = mpsc::channel();
         let worker = FabricWorker::spawn(
             "fabric-test",
-            Slow {
+            move || Slow {
                 started: started_tx,
                 release,
                 runs: runs_tx,

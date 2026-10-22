@@ -5,8 +5,6 @@
 <app_state::fs_store::FsStore as durable_store::DurableStore>::lease
 <app_state::fs_store::FsStore as durable_store::DurableStore>::read
 <file_explorer::files_app::FileExplorerWidget>::current_place
-<inotify::watches::Watches>::add
-<settings_store::hardware::DisplayHardwareSnapshot>::load
 <shell::shell::network::personal_device_peers::FileStamp>::of
 <tilo_identity_host::device_fleet::DeviceFleetStore>::load
 advisory_lock::open_lock_file
@@ -16,7 +14,5 @@ app_state::open_directory
 app_state::same_file
 file_explorer::templates::list_templates
 rustix::backend::arch::asm::syscall4_readonly
-settings_store::watch::watch_settings_at
-shell::shell::test_control_socket::bind_private
 tilo_files::native::bounded::read
 tilo_files::native::entry_names
