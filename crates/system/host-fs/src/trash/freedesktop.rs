@@ -313,7 +313,7 @@ fn local_now() -> String {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: both pointers refer to live values of the right types;
     // `localtime_r` is the reentrant form and keeps no reference.
-    if unsafe { libc::localtime_r(&now, &mut tm) }.is_null() {
+    if unsafe { libc::localtime_r(&raw const now, &raw mut tm) }.is_null() {
         return String::new();
     }
     format!(
@@ -363,7 +363,7 @@ mod tests {
     }
 
     fn unprepared(_: &Path) -> io::Result<()> {
-        panic!("only the first Trash was needed")
+        Err(io::Error::other("only the first Trash was needed"))
     }
 
     /// A sandboxed app cannot read the mount table, and the `trash` crate
