@@ -198,6 +198,17 @@ impl Palette {
             .find(|palette| palette.name().eq_ignore_ascii_case(name))
     }
 
+    /// The colour for something new beside things already in `taken`: the
+    /// first colour none of them has, or, with every colour taken, the one
+    /// fewest have.
+    pub fn next_after(taken: impl IntoIterator<Item = Palette>) -> Self {
+        let taken: Vec<Palette> = taken.into_iter().collect();
+        Self::ALL
+            .into_iter()
+            .min_by_key(|palette| taken.iter().filter(|used| *used == palette).count())
+            .unwrap_or_default()
+    }
+
     pub fn from_index(i: usize) -> Self {
         // `i % Self::ALL.len()` is always in bounds since `ALL` is a fixed,
         // non-empty array; `Self::ALL[0]` is a compile-time-safe fallback.
