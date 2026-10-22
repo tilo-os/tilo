@@ -1808,7 +1808,15 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 picker.click_cancel();
             }
             driver.host_mut().pump_file_picker();
-            seed_file_picker_fixture(driver);
+            let home = seed_file_picker_fixture(driver);
+            // What the writer was given before: the chooser's Recent.
+            let recent: Vec<std::path::PathBuf> = home
+                .iter()
+                .flat_map(|home| {
+                    ["Quarterly report.odt", "Meeting notes.md", "Projects"]
+                        .map(|name| home.join(name))
+                })
+                .collect();
             // The writer's Document tab is the window that asks: in front,
             // focused, and the window the chooser is a sheet on.
             let mut document = None;
@@ -1847,10 +1855,11 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             let caller = PortalCaller::new(WorkspaceId(1), "so.tilo.word-processor");
             let opts = FilePickerOptions::new(
                 caller,
+                // The writer gives a purpose for a folder; otherwise the
+                // sheet says what it wants in its name.
                 match mode {
-                    "save" => "Save Document",
-                    "folder" => "Choose Folder",
-                    _ => "Open Document",
+                    "folder" => "Choose where to keep exports",
+                    _ => "",
                 },
                 save,
             )
@@ -1884,6 +1893,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 current_name: opts.current_name,
                 filters: opts.filters,
                 scope: None,
+                recent,
                 reply: tx,
             });
             driver.host_mut().pump_file_picker();
@@ -1937,7 +1947,7 @@ fn seed_drive_consent(driver: &mut ShellDriver, preset: &str) {
 /// folders and a few documents with sizes and dates — so the capture shows
 /// the sidebar and every column. The fixture is a throwaway directory the
 /// capture owns; nothing here exists outside `--shots`.
-fn seed_file_picker_fixture(driver: &mut ShellDriver) {
+fn seed_file_picker_fixture(driver: &mut ShellDriver) -> Option<std::path::PathBuf> {
     let mut home = None;
     driver.with_chrome(|st: &mut ChromeState| {
         home = st
@@ -1946,9 +1956,7 @@ fn seed_file_picker_fixture(driver: &mut ShellDriver) {
             .as_ref()
             .map(|scope| scope.initial_dir.clone());
     });
-    let Some(home) = home else {
-        return;
-    };
+    let home = home?;
     for folder in ["Documents", "Downloads", "Pictures", "Music", "Projects"] {
         let _ = std::fs::create_dir_all(home.join(folder));
     }
@@ -1968,6 +1976,7 @@ fn seed_file_picker_fixture(driver: &mut ShellDriver) {
             );
         }
     }
+    Some(home)
 }
 
 /// `Action::SeedWifiPrompt` and `Action::SelectGroup` — split out of

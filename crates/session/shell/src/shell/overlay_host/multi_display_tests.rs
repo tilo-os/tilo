@@ -324,6 +324,7 @@ fn ask(
             roots: vec![folder.to_path_buf()],
             home: None,
         }),
+        recent: Vec::new(),
         reply,
     });
     answer
@@ -454,6 +455,7 @@ fn the_file_chooser_sheet_goes_on_the_window_its_handle_names() {
                 roots: vec![folder.path().to_path_buf()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         assert!(desk.fb.host_mut().pump_file_picker());

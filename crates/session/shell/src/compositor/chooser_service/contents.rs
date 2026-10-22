@@ -256,6 +256,7 @@ fn choose(
             })
             .collect(),
         scope: Some(scope),
+        recent: Vec::new(),
         reply,
     });
     (context.wake)();

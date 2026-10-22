@@ -106,6 +106,7 @@ impl ShellOverlayHost {
         crate::shell::search::SearchRegistry,
         std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
         crate::shell::search::providers::actions::SharedQsActions,
+        std::rc::Rc<crate::shell::search::providers::FilesProvider>,
     ) {
         // Start the remote-app refresh with the shell, not with the user's
         // first Win+K query. A persisted metadata snapshot makes search
@@ -187,9 +188,9 @@ impl ShellOverlayHost {
         let records = crate::shell::search::providers::RecordsProvider::new();
         let room_records = records.index();
         search_registry.register(std::rc::Rc::new(records));
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::FilesProvider::new(),
-        ));
+        // One file index: the palette's Files and the file chooser's search.
+        let files = std::rc::Rc::new(crate::shell::search::providers::FilesProvider::new());
+        search_registry.register(files.clone());
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::PeopleProvider::new(),
         ));
@@ -201,7 +202,7 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::WebProvider::new(),
         ));
-        (search_registry, room_records, qs_action_slot)
+        (search_registry, room_records, qs_action_slot, files)
     }
 
     pub fn new(content: Box<dyn Widget>) -> Self {
@@ -210,7 +211,7 @@ impl ShellOverlayHost {
         let qs_actions: std::rc::Rc<dyn crate::shell::quick_settings::actions::QsActions> =
             std::rc::Rc::new(crate::shell::quick_settings::actions::RealQsActions);
         let session_action_policy = crate::shell::search::providers::SessionActionPolicy::default();
-        let (search_registry, room_records, qs_action_slot) =
+        let (search_registry, room_records, qs_action_slot, files) =
             Self::build_search_registry(qs_actions.clone(), session_action_policy.clone());
         let mut host = Self::from_inputs(
             content,
@@ -257,6 +258,7 @@ impl ShellOverlayHost {
         );
         // The live session keeps the desk choices made on the desk itself.
         host.desk = desk::DeskState::persisting();
+        host.file_picker_overlay.set_search(files);
         host
     }
 

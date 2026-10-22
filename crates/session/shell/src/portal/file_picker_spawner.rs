@@ -121,6 +121,9 @@ pub struct FilePickerRequest {
     /// decided it ahead of time (the shell's own chooser service keeps it to
     /// the caller's grants). `None` is the user's own directories.
     pub scope: Option<super::PickerScope>,
+    /// What this app was given before, most recent first: the dialog's
+    /// Recent. Empty when the app has none, or the session keeps no record.
+    pub recent: Vec<PathBuf>,
     /// One-shot reply channel; the spawner fulfils this with the user's selection.
     pub reply: oneshot::Sender<Option<Vec<PathBuf>>>,
 }
@@ -206,6 +209,7 @@ impl FilePickerSpawnerHandle {
             current_name: opts.current_name,
             filters: opts.filters,
             scope: None,
+            recent: Vec::new(),
             reply: tx,
         };
         self.inner.spawn(req);
@@ -453,6 +457,7 @@ mod tests {
                 current_name: None,
                 filters: Vec::new(),
                 scope: None,
+                recent: Vec::new(),
                 reply: tx,
             };
             assert_eq!(req.confirm_label(), "Choose folder");
@@ -472,6 +477,7 @@ mod tests {
                 current_name: None,
                 filters: Vec::new(),
                 scope: None,
+                recent: Vec::new(),
                 reply: tx,
             };
             assert_eq!(req.confirm_label(), "Import");
@@ -491,6 +497,7 @@ mod tests {
                 current_name: None,
                 filters: Vec::new(),
                 scope: None,
+                recent: Vec::new(),
                 reply: tx,
             };
             assert_eq!(req.confirm_label(), "Save");
