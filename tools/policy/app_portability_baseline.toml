@@ -42,8 +42,8 @@ D1 = 2
 D2 = 3
 
 [apps.disks]
-D1 = 2
-D2 = 3
+D1 = 1
+D2 = 2
 
 [apps.ebook]
 D1 = 1
