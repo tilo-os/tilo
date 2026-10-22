@@ -78,7 +78,7 @@ tracing.workspace = true
 # The committed public client registrations (`oauth-clients.toml`).
 toml.workspace = true
 tilo-net = { path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
-reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
+reqwest = { workspace = true, optional = true, features = ["blocking", "form", "json"] }
 serde_json = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }

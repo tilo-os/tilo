@@ -171,7 +171,7 @@ read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { path = "../../vendor/regex-syntax" }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rqrr = { version = "0.10" }
@@ -410,7 +410,7 @@ read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { path = "../../vendor/regex-syntax" }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rqrr = { version = "0.10" }
