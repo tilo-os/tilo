@@ -294,11 +294,20 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
     let mut second_tree = WorkspaceTree::default();
     assert!(second_tree.join_enrolled_room(room));
     let second_tree = second_tree.shared();
+    // A collaborator, not another of the person's own devices: one of
+    // those proving its certificate is kept and dialed, and holds the relays
+    // up for as long as it is theirs (docs/device-mesh.md). This one's
+    // certificate covers the workspaces assigned to it.
+    let collaborator = DeviceCapabilities {
+        can_own_workspaces: false,
+        ..DeviceCapabilities::member()
+    };
+    assert!(!collaborator.is_personal_device());
     let second = device_reaching(
         second_tree.clone(),
         &dir.path().join("second"),
         &root,
-        DeviceCapabilities::member(),
+        collaborator,
         Reach::LoopbackHoldingRelays,
     );
     assert!(second.join_default_workspace());

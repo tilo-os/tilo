@@ -11008,6 +11008,29 @@ mod tests {
         );
     }
 
+    /// `device` of `root`'s person proves, on the person's continuity topic,
+    /// a certificate for the workspaces assigned to it: a route of the person
+    /// that is not one of their own devices, which never enrols it.
+    pub(super) fn authenticated_workspace_peer(
+        net: &ShellNetwork,
+        root: &ed25519_dalek::SigningKey,
+        device: &iroh::SecretKey,
+    ) {
+        let capabilities = tilo_user_identity::DeviceCapabilities {
+            can_own_workspaces: false,
+            ..tilo_user_identity::DeviceCapabilities::member()
+        };
+        assert!(!capabilities.is_personal_device());
+        authenticated_peer_with(
+            net,
+            root,
+            device,
+            crate::network::actor::MembershipEpoch::for_test(1),
+            personal_continuity_topic_id(&root.verifying_key().to_bytes()),
+            capabilities,
+        );
+    }
+
     fn authenticated_personal_peer_on_topic(
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
@@ -11015,13 +11038,31 @@ mod tests {
         membership_epoch: crate::network::actor::MembershipEpoch,
         topic: u64,
     ) {
-        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        authenticated_peer_with(
+            net,
+            root,
+            device,
+            membership_epoch,
+            topic,
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
+    }
+
+    fn authenticated_peer_with(
+        net: &ShellNetwork,
+        root: &ed25519_dalek::SigningKey,
+        device: &iroh::SecretKey,
+        membership_epoch: crate::network::actor::MembershipEpoch,
+        topic: u64,
+        capabilities: tilo_user_identity::DeviceCapabilities,
+    ) {
+        use tilo_user_identity::{DeviceCert, sign_device_cert};
 
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Personal device".into(),
-            capabilities: DeviceCapabilities::member(),
+            capabilities,
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
@@ -11604,7 +11645,10 @@ mod tests {
         let user = root.verifying_key().to_bytes();
         let peer = iroh::SecretKey::from_bytes(&[0xE4; 32]);
         let (net, _commands) = personal_continuity_network_for_test(user);
-        authenticated_personal_peer(&net, &root, &peer);
+        // A personal-device certificate from the person's root enrols its
+        // device by itself (docs/device-mesh.md); this peer proves one for
+        // assigned workspaces only, so nothing but the display cache could.
+        authenticated_workspace_peer(&net, &root, &peer);
         let owner =
             crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
