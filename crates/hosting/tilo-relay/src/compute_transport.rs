@@ -61,6 +61,16 @@ pub const WORKER_NOT_ADMITTED: &str = "worker_not_admitted";
 /// A worker loses its jobs with its session to the relay, so nothing can
 /// still be running one once the relay is back.
 pub const RELAY_RESTARTED: &str = "relay_restarted";
+/// Why the relay refused a job before it began: its worker has no
+/// advertisement here (it never advertised, or its session ended).
+pub const WORKER_UNADVERTISED: &str = "worker_unadvertised";
+/// ... its worker's last advertisement expired before the job arrived.
+pub const WORKER_ADVERTISEMENT_EXPIRED: &str = "worker_advertisement_expired";
+/// ... its worker cannot run it (the app, an accelerator, its capacity) or
+/// the job itself is not admissible.
+pub const WORKER_INELIGIBLE: &str = "worker_ineligible";
+/// ... its id names another job already.
+pub const JOB_ID_CONFLICT: &str = "job_id_conflict";
 /// The placement reason when moving a job's inputs to every eligible
 /// worker would take longer than running the job where it was asked.
 pub const INPUTS_HEAVIER_THAN_GAIN: &str = "inputs_heavier_than_gain";
@@ -264,6 +274,10 @@ pub enum ComputeTransportError {
     InvalidAdvertisement,
     #[error("compute worker is unavailable or ineligible")]
     WorkerUnavailable,
+    #[error("compute worker has no advertisement on this relay")]
+    WorkerUnadvertised,
+    #[error("compute worker's advertisement expired")]
+    AdvertisementExpired,
     #[error("compute update metadata exceeds its bound")]
     MetadataTooLarge,
     #[error("compute update is not valid for the current lifecycle")]
@@ -274,6 +288,26 @@ pub enum ComputeTransportError {
     UnknownJob,
     #[error("compute store: {0}")]
     Store(#[from] StoreError),
+}
+
+impl ComputeTransportError {
+    /// The code a requester's job is refused with, for an error that refuses
+    /// one job rather than ending the requester's session: a forged route
+    /// or a store failure is not a refusal.
+    #[must_use]
+    pub const fn refusal_code(&self) -> Option<&'static str> {
+        match self {
+            Self::WorkerUnadvertised => Some(WORKER_UNADVERTISED),
+            Self::AdvertisementExpired => Some(WORKER_ADVERTISEMENT_EXPIRED),
+            Self::WorkerUnavailable | Self::InvalidAdvertisement => Some(WORKER_INELIGIBLE),
+            Self::ReplayConflict => Some(JOB_ID_CONFLICT),
+            Self::RouteMismatch
+            | Self::MetadataTooLarge
+            | Self::InvalidLifecycle
+            | Self::UnknownJob
+            | Self::Store(_) => None,
+        }
+    }
 }
 
 /// A worker's relay-to-worker round trip, smoothed across observations.
@@ -1290,7 +1324,10 @@ impl ComputeTransportState {
         let worker = self
             .workers
             .get(&spec.worker)
-            .ok_or(ComputeTransportError::WorkerUnavailable)?;
+            .ok_or(ComputeTransportError::WorkerUnadvertised)?;
+        if now_ms >= worker.expires_at_ms {
+            return Err(ComputeTransportError::AdvertisementExpired);
+        }
         worker.validate(spec.worker, now_ms)?;
         admit_compute_job(
             spec,
@@ -2812,7 +2849,7 @@ mod tests {
             ));
             assert!(matches!(
                 state.accept_request([1; 32], 7, 10_000, &store, &spec()),
-                Err(ComputeTransportError::InvalidAdvertisement)
+                Err(ComputeTransportError::AdvertisementExpired)
             ));
 
             let mut gpu_job = spec();
@@ -2825,7 +2862,7 @@ mod tests {
             state.remove_worker(&[2; 32]);
             assert!(matches!(
                 state.accept_request([1; 32], 7, 200, &store, &spec()),
-                Err(ComputeTransportError::WorkerUnavailable)
+                Err(ComputeTransportError::WorkerUnadvertised)
             ));
         }
         // Phase `cancellation_is_durable_idempotent_and_route_bound`.
