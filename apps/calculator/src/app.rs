@@ -1531,6 +1531,11 @@ impl Widget for CalculatorApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // A press on the calculator makes it the keyboard's target,
+                // as a press on any editor does: what is typed next goes to
+                // the formula or expression it pressed, whichever widget
+                // the host focused at launch.
+                *ctx.focus_target = Some(ctx.node_id);
                 self.on_press(self.mouse, &mut ctx.state);
                 *ctx.handled = true;
             }
@@ -2107,6 +2112,7 @@ mod tests {
     use ui::tilo_resource::Invoke;
 
     include!("local_capture_tests.rs");
+    include!("typing_tests.rs");
 
     fn keyboard(key: WKey) -> WindowEvent {
         let text = if let WKey::Character(text) = &key {
