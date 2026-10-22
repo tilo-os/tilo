@@ -165,12 +165,10 @@ pub enum AgentModelsEffect {
         #[param("The variant, for example Q4_K_M")]
         variant: String,
     },
-    /// Copy a GGUF model file on this device into the model store.
+    /// Ask the person to choose a GGUF model file on this device in the
+    /// file chooser, and copy it into the model store.
     #[effect(job, device_only, label = "Add model file")]
-    AddModelFile {
-        #[param("The absolute path of a .gguf file")]
-        path: String,
-    },
+    AddModelFile,
     /// Open a gated model's page on Hugging Face, where its terms are accepted.
     #[effect(view, label = "Open model page")]
     OpenHubModelPage {
@@ -477,7 +475,7 @@ pub(crate) fn answer(
         | AgentModelsEffect::RetryModel { .. }
         | AgentModelsEffect::RemoveModel { .. }
         | AgentModelsEffect::InstallHubModel { .. }
-        | AgentModelsEffect::AddModelFile { .. } => {
+        | AgentModelsEffect::AddModelFile => {
             let work = model.manager_work(&effect)?;
             let control = Arc::clone(&model.control);
             if matches!(effect, AgentModelsEffect::InstallModel { .. }) {
@@ -674,7 +672,8 @@ enum ManagerWork {
         revision: String,
         variant: String,
     },
-    ImportFile(String),
+    /// The file the person chooses, handed over open.
+    ImportFile,
     Start(String),
     Stop(String),
     Remove(String),
@@ -701,10 +700,19 @@ impl ManagerWork {
                 .hub_install(repo, revision, variant)
                 .map(|()| t("agent-notice-install-ok"))
                 .map_err(|error| t_args("agent-notice-install-err", &[("error", error.into())])),
-            Self::ImportFile(path) => control
-                .import_file(path)
-                .map(|()| t("agent-notice-install-ok"))
-                .map_err(|error| t_args("agent-notice-install-err", &[("error", error.into())])),
+            Self::ImportFile => match control.choose_model_file() {
+                Ok(Some((name, file))) => control
+                    .import_file(&name, file)
+                    .map(|()| t("agent-notice-install-ok"))
+                    .map_err(|error| {
+                        t_args("agent-notice-install-err", &[("error", error.into())])
+                    }),
+                Ok(None) => Ok(String::new()),
+                Err(error) => Err(t_args(
+                    "agent-notice-install-err",
+                    &[("error", error.into())],
+                )),
+            },
             Self::Start(id) => Self::named(ModelAction::Start, control.start(id)),
             Self::Stop(id) => Self::named(ModelAction::Stop, control.stop(id)),
             Self::Remove(id) => Self::named(ModelAction::Remove, control.remove(id)),
@@ -1262,13 +1270,7 @@ impl AgentModelsModel {
                     variant: variant.clone(),
                 })
             }
-            AgentModelsEffect::AddModelFile { path } => {
-                let path = path.trim();
-                if !path.starts_with('/') || !path.to_ascii_lowercase().ends_with(".gguf") {
-                    return Err(t("agent-hub-file-invalid"));
-                }
-                Ok(ManagerWork::ImportFile(path.to_owned()))
-            }
+            AgentModelsEffect::AddModelFile => Ok(ManagerWork::ImportFile),
             AgentModelsEffect::StartModel { model } => {
                 let model = installed(model)?;
                 allowed(model, ModelAction::Start)?;
@@ -2095,8 +2097,13 @@ pub trait LocalModelControl: Send + Sync {
     fn hub_install(&self, _repo: &str, _revision: &str, _variant: &str) -> Result<(), String> {
         Err(t("agent-hub-unavailable"))
     }
-    /// Copy the GGUF file at `path` into the model store.
-    fn import_file(&self, _path: &str) -> Result<(), String> {
+    /// Ask the person to choose a GGUF model file: its name and the file,
+    /// opened by the file chooser, or `None` when they cancelled.
+    fn choose_model_file(&self) -> Result<Option<(String, std::fs::File)>, String> {
+        hub::choose_model_file()
+    }
+    /// Hand `file`, called `name`, to the model store, which copies it in.
+    fn import_file(&self, _name: &str, _file: std::fs::File) -> Result<(), String> {
         Err(t("agent-hub-unavailable"))
     }
     /// What Hugging Face token or sign-in is stored on this device.
@@ -2193,8 +2200,8 @@ impl LocalModelControl for ModelManagerCli {
         hub::manager_install(repo, revision, variant)
     }
 
-    fn import_file(&self, path: &str) -> Result<(), String> {
-        hub::manager_request(&["import-file", &format!("--path={path}")])
+    fn import_file(&self, name: &str, file: std::fs::File) -> Result<(), String> {
+        hub::manager_import(name, file)
     }
 
     fn hub_token(&self) -> Result<HubTokenState, String> {
@@ -2751,8 +2758,12 @@ mod tests {
                 .push(format!("hub-install:{repo}@{revision}:{variant}"));
             Ok(())
         }
-        fn import_file(&self, path: &str) -> Result<(), String> {
-            self.calls.lock().unwrap().push(format!("import:{path}"));
+        fn choose_model_file(&self) -> Result<Option<(String, std::fs::File)>, String> {
+            let file = std::fs::File::open("/dev/null").map_err(|error| error.to_string())?;
+            Ok(Some(("Tune.Q4_K_M.gguf".into(), file)))
+        }
+        fn import_file(&self, name: &str, _file: std::fs::File) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("import:{name}"));
             Ok(())
         }
         fn save_hub_token(&self, token: &str) -> Result<(), String> {

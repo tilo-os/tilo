@@ -460,16 +460,27 @@ fn records_are_checked_when_read_back() {
 
 #[test]
 fn a_local_gguf_file_is_a_model_with_an_unknown_licence() {
-    let model =
-        UserModel::from_file("/home/me/Models/My Tune.Q4_K_M.gguf", 10, &"d".repeat(64)).unwrap();
+    let model = UserModel::from_file("My Tune.Q4_K_M.gguf", 10, &"d".repeat(64)).unwrap();
     assert_eq!(model.id, "file/my-tune.q4_k_m");
+    assert_eq!(model.source_label(), "My Tune.Q4_K_M.gguf");
     assert_eq!(model.revision(), "local");
     assert!(model.file_url(&model.files[0]).is_none());
     let release = model.release(&"d".repeat(64));
     release.validate_shape().unwrap();
     assert!(!release.requires_acceptance);
-    assert!(UserModel::from_file("relative.gguf", 10, "").is_err());
-    assert!(UserModel::from_file("/home/me/model.safetensors", 10, "").is_err());
+    // A name, never a path the service would open.
+    assert!(UserModel::from_file("/home/me/model.gguf", 10, "").is_err());
+    assert!(UserModel::from_file("model.safetensors", 10, "").is_err());
+    assert!(UserModel::from_file("model.gguf", 0, "").is_err());
+    // A record from before files were handed over keeps its file name.
+    let legacy: UserModelSource =
+        serde_json::from_str(r#"{"kind":"file","path":"old.gguf"}"#).unwrap();
+    assert_eq!(
+        legacy,
+        UserModelSource::File {
+            name: "old.gguf".into()
+        }
+    );
 }
 
 #[test]

@@ -124,3 +124,5 @@ workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
+# Hands the model file a person chose to the service as a descriptor.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }

@@ -183,7 +183,7 @@ fn a_picked_gguf_resumes_verifies_and_runs_on_the_signed_runtime() {
 
     // A dropped connection leaves what arrived, published for the reader.
     assert!(matches!(
-        service.install_user_model(&model.id),
+        service.install_user_model(&model.id, None),
         Err(ServiceError::IncompleteDownload { .. })
     ));
     let published = crate::load_state(&dir.path().join(crate::STATE_FILE)).unwrap();
@@ -196,7 +196,7 @@ fn a_picked_gguf_resumes_verifies_and_runs_on_the_signed_runtime() {
     );
     service.transport.cut = None;
     assert_eq!(
-        service.install_user_model(&model.id).unwrap(),
+        service.install_user_model(&model.id, None).unwrap(),
         LocalModelStatus::Installed
     );
     let url = picks::file_url("acme/Chat-GGUF", COMMIT, "chat.Q4_K_M.gguf");
@@ -270,7 +270,7 @@ fn snapshot_files_are_checked_against_the_published_hashes() {
     let mut service = service(dir.path(), hub);
     service.queue_user_model(model.clone()).unwrap();
     assert!(matches!(
-        service.install_user_model(&model.id),
+        service.install_user_model(&model.id, None),
         Err(ServiceError::DigestMismatch)
     ));
     assert!(
@@ -282,7 +282,7 @@ fn snapshot_files_are_checked_against_the_published_hashes() {
     assert!(service.user_release(&model.id).is_some());
 
     service.transport.files.insert(config_url, config.to_vec());
-    service.install_user_model(&model.id).unwrap();
+    service.install_user_model(&model.id, None).unwrap();
     let release = service.user_release(&model.id).unwrap();
     let directory = dir.path().join("snapshots").join(&release.artifact.sha256);
     validate_snapshot_layout(&directory).unwrap();
@@ -301,7 +301,7 @@ fn removing_one_pick_keeps_the_files_another_still_uses() {
     let (one, two) = (pick(&first, "Q4_0"), pick(&second, "Q4_0"));
     for model in [&one, &two] {
         service.queue_user_model(model.clone()).unwrap();
-        service.install_user_model(&model.id).unwrap();
+        service.install_user_model(&model.id, None).unwrap();
     }
     let object = dir.path().join("sha256").join(sha256(shared));
     service.remove(&one.id).unwrap();
@@ -349,10 +349,14 @@ fn a_local_gguf_file_is_copied_hashed_and_independent_of_the_original() {
     let bytes = b"GGUF a fine-tune of my own";
     fs::write(&path, bytes).unwrap();
     let mut service = service(dir.path(), FakeHub::default());
-    let model = UserModel::from_file(path.to_str().unwrap(), bytes.len() as u64, "").unwrap();
+    let model = UserModel::from_file("My Tune.Q4_K_M.gguf", bytes.len() as u64, "").unwrap();
     let release = service.queue_user_model(model.clone()).unwrap();
     assert!(!release.requires_acceptance);
-    service.install_user_model(&model.id).unwrap();
+    // Without the handle the file chooser gave, nothing is copied.
+    assert!(service.install_user_model(&model.id, None).is_err());
+    service
+        .install_user_model(&model.id, Some(fs::File::open(&path).unwrap()))
+        .unwrap();
     let installed = &service.state().user_models[&model.id];
     assert_eq!(installed.files[0].sha256(), Some(sha256(bytes).as_str()));
     fs::write(&path, b"GGUF changed afterwards").unwrap();
@@ -367,7 +371,11 @@ fn a_local_gguf_file_is_copied_hashed_and_independent_of_the_original() {
 
     let other = files.path().join("notes.gguf");
     fs::write(&other, b"not a model").unwrap();
-    let wrong = UserModel::from_file(other.to_str().unwrap(), 11, "").unwrap();
+    let wrong = UserModel::from_file("notes.gguf", 11, "").unwrap();
     service.queue_user_model(wrong.clone()).unwrap();
-    assert!(service.install_user_model(&wrong.id).is_err());
+    assert!(
+        service
+            .install_user_model(&wrong.id, Some(fs::File::open(&other).unwrap()))
+            .is_err()
+    );
 }

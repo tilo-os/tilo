@@ -162,15 +162,21 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         Some(model.release(&managed.model_sha256))
     }
 
-    /// Background-worker install of the person's model `id`: every file is
-    /// fetched (or copied from this device) and verified, progress is
-    /// published as for a catalog release, then the directory the runtime
-    /// mounts is assembled. It ends `Installed`.
+    /// Background install of the person's model `id`: every file is fetched
+    /// (or, for a file the person chose, copied from `chosen`, the handle
+    /// the file chooser gave) and verified, progress is published as for a
+    /// catalog release, then the directory the runtime mounts is assembled.
+    /// It ends `Installed`.
     ///
     /// # Errors
-    /// An unknown model, a missing licence acceptance, or any transfer,
-    /// verification, filesystem or persistence error.
-    pub fn install_user_model(&mut self, id: &str) -> Result<LocalModelStatus, ServiceError> {
+    /// An unknown model, a missing licence acceptance, a chosen file without
+    /// its handle, or any transfer, verification, filesystem or persistence
+    /// error.
+    pub fn install_user_model(
+        &mut self,
+        id: &str,
+        chosen: Option<fs::File>,
+    ) -> Result<LocalModelStatus, ServiceError> {
         self.require_process_absent(id)?;
         let release = self
             .user_release(id)
@@ -184,7 +190,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .ok_or_else(|| ServiceError::ModelNotInstalled(id.into()))?;
         let identity = release.artifact.sha256;
         let mut progress = Progress::new(self, id, model.download_bytes(), |_| {});
-        let fetched = self.fetch_user_files(&mut model, &identity, &mut |event| {
+        let fetched = self.fetch_user_files(&mut model, (&identity, chosen), &mut |event| {
             progress.event(event);
         });
         let (objects, outcome) = match fetched {
@@ -214,7 +220,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     fn fetch_user_files(
         &mut self,
         model: &mut UserModel,
-        identity: &str,
+        (identity, mut chosen): (&str, Option<fs::File>),
         progress: &mut dyn FnMut(TransferEvent),
     ) -> Result<Vec<String>, ServiceError> {
         let mut done = 0_u64;
@@ -240,8 +246,11 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
                     let url = url.ok_or(ServiceError::InvalidArtifact)?;
                     self.fetch_hub_file(&url, file, &mut relay)?
                 }
-                UserModelSource::File { path } => {
-                    let sha256 = self.import_file(Path::new(path), file, identity, &mut relay)?;
+                UserModelSource::File { .. } => {
+                    let input = chosen.take().ok_or_else(|| {
+                        ServiceError::Backend("choose the model file again to add it".into())
+                    })?;
+                    let sha256 = self.import_file(input, file, identity, &mut relay)?;
                     file.digest = HubDigest::Sha256 {
                         sha256: sha256.clone(),
                     };
@@ -299,17 +308,17 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         }
     }
 
-    /// Copy a GGUF file on this device into the object store, hashing it on
-    /// the way, and return its SHA-256. The copy is the model from then on:
-    /// changing or deleting the original does not change what runs.
+    /// Copy the GGUF file the person chose, read from its open handle
+    /// `input`, into the object store, hashing it on the way, and return its
+    /// SHA-256. The copy is the model from then on: changing or deleting the
+    /// original does not change what runs.
     fn import_file(
         &self,
-        source: &Path,
+        mut input: fs::File,
         file: &HubFile,
         identity: &str,
         progress: &mut dyn FnMut(TransferEvent),
     ) -> Result<String, ServiceError> {
-        let mut input = fs::File::open(source)?;
         let metadata = input.metadata()?;
         if !metadata.is_file() || metadata.len() != file.size_bytes {
             return Err(ServiceError::Backend(
