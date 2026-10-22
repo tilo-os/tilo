@@ -217,7 +217,8 @@ fn drawing_color(role: &str, palette: &Palette) -> String {
     }
     let literal = |color: Color| format!(r#"<a:srgbClr val="{}"/>"#, rgb(color));
     let scheme = match role {
-        "white" => return literal(Color::WHITE),
+        // The deck names pure white itself: document content, not a theme colour.
+        "white" => return r#"<a:srgbClr val="FFFFFF"/>"#.to_owned(),
         "on-accent" => return literal(palette.on_accent),
         "surface" => "lt1",
         "surface-dim" => "lt2",
