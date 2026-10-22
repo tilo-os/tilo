@@ -1817,8 +1817,20 @@ impl TubeApp {
                         changed = true;
                     }
                 }
-                Update::Dislikes { video, count } => {
+                Update::Dislikes {
+                    video,
+                    count,
+                    likes,
+                } => {
                     changed |= watching(&self.model.route, &video);
+                    // A search hit carries no like count: the votes answer
+                    // gives the one shown beside its dislikes.
+                    if let Some(likes) = likes
+                        && let Some(v) = self.model.videos.iter_mut().find(|v| v.id == video)
+                        && v.likes == 0
+                    {
+                        v.likes = likes;
+                    }
                     self.model.dislikes.insert(video, count);
                 }
                 Update::Comments { video, comments } => {

@@ -270,6 +270,7 @@ fn hosted_frames_while_results_land() {
             .send(tube::api::Update::Dislikes {
                 video: id.clone(),
                 count: round as u64,
+                likes: None,
             })
             .unwrap();
         let t = Instant::now();

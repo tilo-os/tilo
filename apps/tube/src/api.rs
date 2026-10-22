@@ -117,10 +117,13 @@ pub enum Update {
         /// when one exists.
         thumbnail_url: Option<String>,
     },
-    /// Crowdsourced dislike count for a video (Return `YouTube` Dislike).
+    /// Crowdsourced dislike count for a video (Return `YouTube` Dislike),
+    /// with the like count it reports beside it: the watch page shows both
+    /// counts or neither, and a search hit carries no like count of its own.
     Dislikes {
         video: String,
         count: u64,
+        likes: Option<u64>,
     },
     /// Live search results: the query, the ordered videos, and the playlists +
     /// creator rows that share the query (so the type filter has all three).
@@ -407,32 +410,44 @@ pub fn parse_dearrow(resp: &serde_json::Value, video_id: &str) -> (Option<String
     (title, thumbnail_url)
 }
 
-/// Fetch the crowdsourced dislike count for a video via Return `YouTube` Dislike
+/// A video's votes as Return `YouTube` Dislike reports them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Votes {
+    /// The crowdsourced dislike estimate.
+    pub dislikes: u64,
+    /// The like count, when the response carries one.
+    pub likes: Option<u64>,
+}
+
+/// Fetch a video's votes via Return `YouTube` Dislike
 /// (`GET /votes?videoId=<id>`).
 ///
 /// # Errors
 ///
 /// Returns `Err` if the request fails, the response isn't valid JSON, or it
 /// carries no dislike count.
-pub async fn fetch_dislikes(client: &tilo_net::Client, video_id: &str) -> anyhow::Result<u64> {
-    fetch_dislikes_at(client, DISLIKE_ENDPOINT, video_id).await
+pub async fn fetch_votes(client: &tilo_net::Client, video_id: &str) -> anyhow::Result<Votes> {
+    fetch_votes_at(client, DISLIKE_ENDPOINT, video_id).await
 }
 
-async fn fetch_dislikes_at(
+async fn fetch_votes_at(
     client: &tilo_net::Client,
     endpoint: &str,
     video_id: &str,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<Votes> {
     let resp = get_json(client, endpoint, &[("videoId", video_id)])
         .await?
         .ok_or_else(|| anyhow::anyhow!("HTTP 404"))?;
-    parse_dislikes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
+    parse_votes(&resp).ok_or_else(|| anyhow::anyhow!("no dislikes field in RYD response"))
 }
 
-/// Parse a Return `YouTube` Dislike `/votes` response's dislike count. Pure (no
-/// I/O) so it is unit-tested directly.
-pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
-    resp.get("dislikes").and_then(serde_json::Value::as_u64)
+/// Parse a Return `YouTube` Dislike `/votes` response. Pure (no I/O) so it
+/// is unit-tested directly.
+pub fn parse_votes(resp: &serde_json::Value) -> Option<Votes> {
+    Some(Votes {
+        dislikes: resp.get("dislikes")?.as_u64()?,
+        likes: resp.get("likes").and_then(serde_json::Value::as_u64),
+    })
 }
 
 /// One Invidious list item (a search hit, a trending or recommended video,
@@ -584,9 +599,13 @@ async fn branding(client: tilo_net::Client, id: String, up_tx: Updates) {
             let _ = up_tx.send(Update::Note(format!("DeArrow: {e}")));
         }
     }
-    match fetch_dislikes(&client, &id).await {
-        Ok(count) => {
-            let _ = up_tx.send(Update::Dislikes { video: id, count });
+    match fetch_votes(&client, &id).await {
+        Ok(votes) => {
+            let _ = up_tx.send(Update::Dislikes {
+                video: id,
+                count: votes.dislikes,
+                likes: votes.likes,
+            });
         }
         Err(e) => {
             let _ = up_tx.send(Update::Note(format!("Dislikes: {e}")));
@@ -1723,7 +1742,11 @@ mod tests {
                     200,
                     r#"{"titles":[{"title":"Accurate title","votes":5,"original":false}],"thumbnails":[{"timestamp":12.5,"votes":4,"original":false}]}"#,
                 ),
-                ("/votes?videoId=fixture", 200, r#"{"dislikes":42}"#),
+                (
+                    "/votes?videoId=fixture",
+                    200,
+                    r#"{"likes":900,"dislikes":42}"#,
+                ),
                 ("/api/skipSegments?videoID=none&categories=", 404, ""),
             ]);
             let c = client().expect("an HTTP client");
@@ -1746,9 +1769,12 @@ mod tests {
             assert_eq!(title.as_deref(), Some("Accurate title"));
             assert!(thumbnail.is_some_and(|url| url.contains("time=12.5")));
             assert_eq!(
-                block(fetch_dislikes_at(&c, &format!("{base}/votes"), "fixture"))
-                    .expect("dislike response"),
-                42
+                block(fetch_votes_at(&c, &format!("{base}/votes"), "fixture"))
+                    .expect("votes response"),
+                Votes {
+                    dislikes: 42,
+                    likes: Some(900),
+                }
             );
             assert!(
                 block(fetch_sponsor_at(

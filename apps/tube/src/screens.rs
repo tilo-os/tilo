@@ -813,7 +813,10 @@ fn watch_details(ui: Ui<'_>, v: &Video) -> Column {
     if !v.published.trim().is_empty() {
         fact(v.published.clone());
     }
+    // Dislikes stand beside the like count on the Like button: with no like
+    // count to read them against, neither shows.
     if model.settings.return_dislike_enabled
+        && v.likes > 0
         && let Some(dislikes) = model.dislikes_of(&v.id)
     {
         facts = facts.push(Box::new(
