@@ -9184,13 +9184,23 @@ impl FrameHarness {
             .unwrap_or_default()
     }
 
-    /// Set the held modifier set. Names: `ctrl`, `shift`, `alt`, `logo`.
+    /// Set the held modifier set. Names: `ctrl`, `shift`, `alt`, `logo`, and
+    /// `command`: the platform's command modifier, which a
+    /// [`crate::platform::Shortcut::command`] chord is pressed with (Cmd on
+    /// macOS, Ctrl elsewhere).
     pub fn set_modifiers(&mut self, names: &[String]) {
         self.invalidate_local();
         self.pump_component_wakes();
         let mut st = winit::keyboard::ModifiersState::empty();
         for n in names {
             match n.to_ascii_lowercase().as_str() {
+                "command" => {
+                    st |= if self.platform.platform() == crate::platform::Platform::MacOs {
+                        winit::keyboard::ModifiersState::SUPER
+                    } else {
+                        winit::keyboard::ModifiersState::CONTROL
+                    };
+                }
                 "ctrl" | "control" => st |= winit::keyboard::ModifiersState::CONTROL,
                 "shift" => st |= winit::keyboard::ModifiersState::SHIFT,
                 "alt" => st |= winit::keyboard::ModifiersState::ALT,
