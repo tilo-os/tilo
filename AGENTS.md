@@ -114,7 +114,8 @@ Then:
    skips what is red on main already, and names the opt-in checks the change touches
    (`t test <check>` runs one); main runs the tests and the rest.
 3. If it refuses, fix and commit (it says when `t fix` already fixed files for you to commit),
-   or `git fetch origin && git rebase origin/main` when main moved, then push again.
+   or `git fetch origin && git rebase origin/main` when main moved, then push again: a change
+   that passed and rebased as the same patch passes again at once.
 4. Watch `t inbox`; fix forward what your commit broke on main.
 
 Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `quickuser` /

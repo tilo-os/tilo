@@ -178,6 +178,35 @@ class HookTests(unittest.TestCase):
         # It names what t suggests and runs none of it.
         self.assertFalse(any("test-x86_64/shell" in run for run in runs))
 
+    def gate_runs(self) -> int:
+        calls = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        return len([call for call in calls if call[0] == "test" and "--help" not in call])
+
+    def test_a_change_that_passed_passes_again_once_rebased_onto_a_newer_main(self):
+        # The gate passes, and main moves meanwhile: the push is refused, the change rebased.
+        pushed = self.git("push", "origin", "main", env=self.env, check=False)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertEqual(self.gate_runs(), 1)
+        self.git("push", "-q", "--no-verify", "-f", "origin", f"{self.red}:main")
+        self.git("branch", "change", "HEAD")
+        self.git("reset", "-q", "--hard", self.red)
+        (self.work / "other.rs").write_text("fn other() {}\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "feat: someone else's change")
+        self.git("push", "-q", "--no-verify", "origin", "main")
+        self.git("cherry-pick", "change")
+        # The same patch on the newer main: it passes without running the gate again.
+        pushed = self.git("push", "origin", "main", env=self.env, check=False)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertIn("this change passed the gate as", pushed.stderr)
+        self.assertEqual(self.gate_runs(), 1)
+        # Another patch runs it.
+        (self.work / "change.rs").write_text("fn main() { let _x = 1; }\n", encoding="utf-8")
+        self.git("commit", "-qam", "feat: a change of the change")
+        pushed = self.git("push", "origin", "main", env=self.env, check=False)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertEqual(self.gate_runs(), 2)
+
     def test_a_push_to_another_branch_runs_nothing(self):
         self.git("push", "-q", "origin", "HEAD:topic", env=self.env)
         self.assertFalse(self.log.exists())
