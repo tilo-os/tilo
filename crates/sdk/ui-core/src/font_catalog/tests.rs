@@ -618,3 +618,65 @@ fn a_recorded_catalog_on_writable_storage_is_parsed() {
     assert_eq!(Trust::of_root(&root), Trust::Verify);
     assert!(tilo_font_catalog::faces::FaceIndex::read_trusted(&root, Trust::Verify).is_none());
 }
+
+/// Shaping on the compositor's main loop must never open a font by path: a
+/// path lookup there waits on the disk with the desktop frozen. A mapped
+/// database holds every face's bytes, so it still shapes and reads its faces
+/// with the files gone, in the order and generic families it had.
+#[test]
+fn a_mapped_database_reads_and_shapes_without_its_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = fixture().root().canonicalize().unwrap();
+    let mut db = fontdb::Database::new();
+    for name in ["NotoSans[wght].ttf", "NotoSansMono[wght].ttf"] {
+        let copy = tmp.path().join(name);
+        std::fs::copy(source.join(name), &copy).unwrap();
+        db.load_font_file(&copy).unwrap();
+    }
+    db.set_monospace_family("Noto Sans Mono");
+    let held = mapped(&db);
+    for entry in std::fs::read_dir(tmp.path()).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+
+    let describe = |db: &fontdb::Database| {
+        db.faces()
+            .map(|face| (face.post_script_name.clone(), face.index, face.weight))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(describe(&held), describe(&db));
+    assert_eq!(
+        held.family_name(&fontdb::Family::Monospace),
+        "Noto Sans Mono"
+    );
+    for face in held.faces() {
+        assert!(
+            matches!(face.source, fontdb::Source::SharedFile(..)),
+            "{} is held mapped",
+            face.post_script_name
+        );
+        let bytes = held.with_face_data(face.id, |data, _| data.len());
+        assert!(bytes.unwrap_or(0) > 0, "{} reads", face.post_script_name);
+    }
+
+    let mut system = system_over("en-US".into(), held);
+    let mut buffer = Buffer::new(&mut system, Metrics::new(14.0, 18.0));
+    buffer.set_text(
+        "Shaped without a file",
+        &Attrs::new()
+            .family(Family::Name("Noto Sans"))
+            .weight(Weight(600)),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut system, false);
+    let glyphs: usize = buffer.layout_runs().map(|run| run.glyphs.len()).sum();
+    assert!(glyphs > 0, "the text shaped");
+    assert!(
+        buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs.iter())
+            .all(|glyph| glyph.glyph_id != 0),
+        "every glyph found in a mapped face"
+    );
+}

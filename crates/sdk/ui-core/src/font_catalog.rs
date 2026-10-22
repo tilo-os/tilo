@@ -36,6 +36,8 @@ pub(crate) use android::android_font_system;
 /// The database is read from the font index the last launch recorded
 /// ([`index`]) when everything it was built from is unchanged, so a launch
 /// parses no font and hashes nothing; otherwise it is built and recorded.
+/// Either way every font file is mapped before the database is handed out
+/// ([`mapped`]), so shaping never opens a file.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
@@ -45,7 +47,7 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
         if let Some(db) = recorded.as_deref().and_then(|path| {
             tilo_startup_metrics::span("font-index-read", || index::load(path, &roots))
         }) {
-            return Some(db);
+            return Some(tilo_startup_metrics::span("font-files-map", || mapped(&db)));
         }
         match load_first_catalog_at(&roots, &locale, fontdb::Database::load_system_fonts) {
             Ok((root, font_system)) => {
@@ -53,7 +55,7 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
                 if let Some(path) = recorded.as_deref() {
                     index::store(path, &roots, &root, &db);
                 }
-                Some(db)
+                Some(tilo_startup_metrics::span("font-files-map", || mapped(&db)))
             }
             Err(errors) => {
                 tracing::error!(?errors, "Tilo font catalog unavailable");
@@ -161,6 +163,51 @@ pub(crate) fn load_first_catalog_at(
         ));
     }
     Err(errors)
+}
+
+/// `db` with every face's file mapped now, one mapping per file, in the
+/// same face order and generic families.
+///
+/// fontdb opens a face's file by path whenever the face is read: each time
+/// for a `File` source, and the first time for a lazily mapped one. Text is
+/// shaped on the thread that lays it out, which in the compositor is the main
+/// loop, and a path lookup there waits on the disk with the desktop frozen.
+/// Mapping is an open, a stat and an `mmap` per file and reads no font
+/// bytes; a page of a face is read when shaping first touches it. A file
+/// that cannot be mapped loses its faces, as it would have failed to load
+/// when shaped.
+pub(crate) fn mapped(db: &fontdb::Database) -> fontdb::Database {
+    type Bytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
+    let mut files: HashMap<PathBuf, Option<Bytes>> = HashMap::new();
+    let mut out = fontdb::Database::new();
+    for face in db.faces() {
+        let source = match &face.source {
+            fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
+                let bytes = files.entry(path.clone()).or_insert_with(|| {
+                    tilo_files::native::mapped::MappedFile::open(path)
+                        .map(|map| Arc::new(map) as Bytes)
+                        .inspect_err(|error| {
+                            tracing::debug!(%error, path = %path.display(), "font file not mapped");
+                        })
+                        .ok()
+                });
+                let Some(bytes) = bytes else {
+                    continue;
+                };
+                fontdb::Source::SharedFile(path.clone(), Arc::clone(bytes))
+            }
+            fontdb::Source::Binary(bytes) => fontdb::Source::Binary(Arc::clone(bytes)),
+        };
+        let mut info = face.clone();
+        info.source = source;
+        out.push_face_info(info);
+    }
+    out.set_sans_serif_family(db.family_name(&fontdb::Family::SansSerif));
+    out.set_serif_family(db.family_name(&fontdb::Family::Serif));
+    out.set_monospace_family(db.family_name(&fontdb::Family::Monospace));
+    out.set_cursive_family(db.family_name(&fontdb::Family::Cursive));
+    out.set_fantasy_family(db.family_name(&fontdb::Family::Fantasy));
+    out
 }
 
 /// Keep one face per family, style, weight and stretch. A system can install
