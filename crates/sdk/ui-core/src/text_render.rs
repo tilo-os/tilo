@@ -1643,8 +1643,6 @@ fn force_flow_fragment(
 // Fixed metadata is bounded independently from variable retained payloads.
 const MEASURE_CACHE_LIMIT: usize = 4096;
 const MEASURE_CACHE_BYTES: usize = 2 * 1024 * 1024;
-const ADVANCE_CACHE_LIMIT: usize = 2048;
-const ADVANCE_CACHE_BYTES: usize = 2 * 1024 * 1024;
 const SHAPE_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 /// One contiguous span of glyphs sharing a single font face, already
@@ -1702,14 +1700,49 @@ struct GlyphBatch<'a> {
 struct ShapedText {
     runs: Arc<Vec<GlyphRun>>,
     size: (f32, f32),
+    /// For text shaped on one line ([`TextRenderer::ltr_advances`]).
+    advances: Option<Arc<LineAdvances>>,
 }
 
 /// Each glyph of a left-to-right line with the bytes it covers and its
 /// advance ([`TextRenderer::ltr_advances`]).
 struct LineAdvances {
-    glyphs: Vec<(usize, usize, f32)>,
+    glyphs: Vec<(u32, u32, f32)>,
     /// The whole line's width, as measuring it gives.
     line: f32,
+}
+
+/// The advances of `buffer` when it holds one line read left to right.
+fn line_advances(buffer: &Buffer) -> Option<Arc<LineAdvances>> {
+    let mut runs = buffer.layout_runs();
+    let run = runs.next()?;
+    if run.rtl || runs.next().is_some() {
+        return None;
+    }
+    run.glyphs
+        .iter()
+        .map(|glyph| {
+            let start = u32::try_from(glyph.start).ok()?;
+            let end = u32::try_from(glyph.end).ok()?;
+            (!glyph.level.is_rtl()).then_some((start, end, glyph.w))
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|glyphs| {
+            Arc::new(LineAdvances {
+                glyphs,
+                line: run.line_w,
+            })
+        })
+}
+
+/// What a shaped text's advances add to its cache entry.
+fn advance_bytes(advances: Option<&Arc<LineAdvances>>) -> usize {
+    advances.map_or(0, |advances| {
+        advances
+            .glyphs
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(u32, u32, f32)>())
+    })
 }
 
 /// Whitespace a wrapped line drops at its ends.
@@ -1738,7 +1771,10 @@ impl LineAdvances {
     fn width(&self, start: usize, end: usize) -> f32 {
         self.glyphs
             .iter()
-            .filter(|&&(from, to, _)| from >= start && to <= end)
+            .filter(|&&(from, to, _)| {
+                usize::try_from(from).is_ok_and(|from| from >= start)
+                    && usize::try_from(to).is_ok_and(|to| to <= end)
+            })
             .map(|&(_, _, advance)| advance)
             .sum()
     }
@@ -1929,11 +1965,6 @@ pub struct TextRenderer {
     /// across a 50-widget tree; most widgets re-measure the same static
     /// strings every frame, so caching drops that to a hash lookup.
     measure_cache: TextCache<(f32, f32)>,
-    /// `text, style` → its glyph advances on one line, for wrapping and
-    /// eliding it at any width ([`Self::ltr_advances`]): with them a clamp
-    /// costs a measure of each line it keeps, which the measure cache
-    /// answers when the same title is drawn again.
-    advance_cache: TextCache<Option<Arc<LineAdvances>>>,
     /// Bumped by [`Self::bump_generation`] when locale or fonts change.
     /// Generation participates in identity; bumping it also clears retained entries.
     generation: u64,
@@ -2061,7 +2092,6 @@ impl TextRenderer {
             font_system,
             swash_cache: SwashCache::new(),
             measure_cache: TextCache::new(MEASURE_CACHE_LIMIT, MEASURE_CACHE_BYTES),
-            advance_cache: TextCache::new(ADVANCE_CACHE_LIMIT, ADVANCE_CACHE_BYTES),
             generation: 0,
             layout_epoch: Arc::new(()),
             distinct_letters: false,
@@ -2266,7 +2296,6 @@ impl TextRenderer {
         self.layout_epoch = Arc::new(());
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
-        self.advance_cache.clear();
         // Entries key on `generation` so stale ones would never match
         // anyway; the explicit clear reclaims their memory immediately.
         self.shape_cache.clear();
@@ -2736,34 +2765,14 @@ impl TextRenderer {
         self.sync_distinct_letters();
         let input = CacheQuery::new(text, style);
         let key = input.key(None, self.generation, self.text_scale);
-        if let Some(advances) = self.advance_cache.get(&key) {
-            return advances.clone();
+        if let Some(shaped) = self.shape_cache.get(&key).or_else(|| key.uncached_shape()) {
+            return shaped.advances.clone();
         }
         let scaled = self.scaled_style(style);
         let prepared = self.shape_buffer(text, None, &scaled);
-        let mut runs = prepared.buffer.layout_runs();
-        let advances = runs.next().and_then(|run| {
-            if run.rtl || runs.next().is_some() {
-                return None;
-            }
-            run.glyphs
-                .iter()
-                .map(|glyph| (!glyph.level.is_rtl()).then_some((glyph.start, glyph.end, glyph.w)))
-                .collect::<Option<Vec<_>>>()
-                .map(|glyphs| {
-                    Arc::new(LineAdvances {
-                        glyphs,
-                        line: run.line_w,
-                    })
-                })
-        });
-        let bytes = advances.as_ref().map_or(0, |advances| {
-            advances
-                .glyphs
-                .len()
-                .saturating_mul(std::mem::size_of::<(usize, usize, f32)>())
-        });
-        self.advance_cache.insert(key, advances.clone(), bytes);
+        let size = Self::buffer_metrics(&prepared, scaled.line_height_px());
+        let advances = line_advances(&prepared.buffer);
+        self.store_shaped(key, &prepared, &scaled, size);
         advances
     }
 
@@ -3303,16 +3312,25 @@ impl TextRenderer {
         // Count measure-time warms as shape misses so paint-side stats still
         // see the cosmic-text work that filled the entry.
         self.shape_misses = self.shape_misses.saturating_add(1);
-        let bytes = glyph_run_bytes(&runs);
+        let advances = key
+            .is_unwrapped()
+            .then(|| line_advances(&prepared.buffer))
+            .flatten();
+        let bytes = glyph_run_bytes(&runs).saturating_add(advance_bytes(advances.as_ref()));
         if !self.shape_cache.insert(
             key,
             ShapedText {
                 runs: runs.clone(),
                 size,
+                advances: advances.clone(),
             },
             bytes,
         ) {
-            key.remember_uncached_shape(ShapedText { runs, size });
+            key.remember_uncached_shape(ShapedText {
+                runs,
+                size,
+                advances,
+            });
         }
     }
 
@@ -3345,13 +3363,19 @@ impl TextRenderer {
         let runs = Arc::new(self.flatten_glyph_runs(&prepared.buffer, style));
         self.shape_ns = self.shape_ns.saturating_add(t0.elapsed().as_nanos());
 
+        let advances = key
+            .is_unwrapped()
+            .then(|| line_advances(&prepared.buffer))
+            .flatten();
+        let bytes = glyph_run_bytes(&runs).saturating_add(advance_bytes(advances.as_ref()));
         self.shape_cache.insert(
             key,
             ShapedText {
                 runs: runs.clone(),
                 size,
+                advances,
             },
-            glyph_run_bytes(&runs),
+            bytes,
         );
         let measure_key = key;
         if !self.measure_cache.contains_key(&measure_key) {

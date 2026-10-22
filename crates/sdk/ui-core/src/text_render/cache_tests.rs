@@ -251,6 +251,7 @@ fn glyph_capacity_budget_and_eviction_preserve_live_run_owners() {
         ShapedText {
             runs: roomy.clone(),
             size: (1.0, 1.0),
+            advances: None,
         },
         cost,
     );
