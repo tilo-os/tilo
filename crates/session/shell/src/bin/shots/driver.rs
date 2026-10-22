@@ -3011,16 +3011,15 @@ impl ShellDriver {
         // in a session when the change is answered elsewhere. Stage one in
         // this run's private settings (`main` isolates them), as a tool's
         // display change does.
-        let staged = settings_store::hardware::DisplayTransaction {
-            id: 1,
-            state: settings_store::hardware::DisplayTransactionState::AwaitingConfirmation,
-            deadline_unix_ms: Some(
-                tilo_clock::unix_now_ms().saturating_add(
+        let staged =
+            settings_store::hardware::DisplayTransaction {
+                id: 1,
+                state: settings_store::hardware::DisplayTransactionState::AwaitingConfirmation,
+                deadline_unix_ms: Some(tilo_clock::unix_now_ms().saturating_add(
                     settings_store::hardware::DisplayTransaction::CONFIRM_TIMEOUT_MS,
-                ),
-            ),
-            ..settings_store::hardware::DisplayTransaction::default()
-        };
+                )),
+                ..settings_store::hardware::DisplayTransaction::default()
+            };
         if let Err(error) = staged.save() {
             eprintln!("shots: display-confirm could not stage its change: {error}");
         }
