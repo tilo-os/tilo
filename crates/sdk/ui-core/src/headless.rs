@@ -2969,34 +2969,48 @@ impl FrameHarness {
         Vec::new()
     }
 
+    fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
+        self.drain_component_wakes();
+        self.write_scene_png(&self.scene, 0, background, out);
+    }
+
     #[cfg(target_arch = "wasm32")]
-    fn render_png_on(&self, out: &std::path::Path, _background: vello::peniko::Color) {
+    fn write_scene_png(
+        &self,
+        _scene: &Scene,
+        _extra_rows: u32,
+        _background: vello::peniko::Color,
+        out: &std::path::Path,
+    ) {
         tracing::warn!(path = %out.display(), "a browser page has no offscreen renderer; no PNG written");
     }
 
+    /// Rasterise `scene` over the window ground to a PNG as wide as the
+    /// frame and `extra_rows` device pixels taller than it.
     #[cfg(not(target_arch = "wasm32"))]
-    fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
-        self.drain_component_wakes();
+    fn write_scene_png(
+        &self,
+        scene: &Scene,
+        extra_rows: u32,
+        background: vello::peniko::Color,
+        out: &std::path::Path,
+    ) {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let (w, h) = self.device_size();
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        let mut renderer =
+            crate::offscreen::OffscreenRenderer::new(w, h.saturating_add(extra_rows));
         renderer.set_backdrop(Some(self.backdrop.clone()));
-        renderer.render_png(&self.scene, background, out);
+        renderer.render_png(scene, background, out);
     }
 
     /// Rasterise the most recently laid-out frame under the desktop's window
     /// bar ([`Self::present_in_window_bar`]) to a PNG as tall as the window:
     /// the bar, then the app's frame under it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_window_png(&mut self, out: &std::path::Path) {
         self.drain_component_wakes();
-        if let Some(parent) = out.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let scale = crate::offscreen::capture_device_scale();
-        let (w, h) = self.device_size();
         let bar = window_bar::bar_height_px();
         let device_bar = bar.saturating_mul(scale);
         let transform = self.capture_draw_transform();
@@ -3006,16 +3020,12 @@ impl FrameHarness {
             &self.scene,
             Some(Affine::translate((0.0, f64::from(device_bar)))),
         );
-        let mut renderer =
-            crate::offscreen::OffscreenRenderer::new(w, h.saturating_add(device_bar));
-        renderer.set_backdrop(Some(self.backdrop.clone()));
-        renderer.render_png(&scene, self.theme.tokens.colors.surfaces.content, out);
-    }
-
-    /// A browser page cannot read a frame back: nothing is written.
-    #[cfg(target_arch = "wasm32")]
-    pub fn render_window_png(&mut self, out: &std::path::Path) {
-        tracing::warn!(path = %out.display(), "a browser page has no offscreen renderer; no PNG written");
+        self.write_scene_png(
+            &scene,
+            device_bar,
+            self.theme.tokens.colors.surfaces.content,
+            out,
+        );
     }
 
     /// The transform frames are drawn with: the identity, or the capture's
