@@ -22,6 +22,7 @@ fn paint(&mut self, row: Rect, theme: &Theme) {
     let face = ui::chrome::HeaderRowFace::new(row, theme).with_history_if(true);
     let bar = Toolbar::new(ui::widget::toolbar::Orientation::Horizontal);
     let rail = Toolbar::new(Orientation::Vertical);
+    ui::widget::toolbar::paint_band(scene, transform, theme, row);
     self.shell.set_content_header("Inbox", vec![Box::new(compose)]);
     self.shell.set_overview_header("", Vec::new());
     self.shell.set_sidebar_header("", vec![]);
@@ -52,6 +53,7 @@ class AppToolbarsTests(unittest.TestCase):
         self.assertEqual(counts["history-in-row"], 2, "the opener and the row's History")
         self.assertEqual(counts["header-row"], 1, "a row's height alone draws no row")
         self.assertEqual(counts["toolbar-row"], 1, "a vertical rail and the test are not rows")
+        self.assertEqual(counts["toolbar-band"], 1, "the band behind a row the app lays out")
         self.assertEqual(counts["nav-header-actions"], 1, "an empty list puts nothing in a row")
 
     def test_a_new_row_fails_and_a_removed_one_lowers_the_baseline(self):

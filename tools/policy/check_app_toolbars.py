@@ -15,6 +15,9 @@ under the bar is what this refuses, in production Rust under `apps/`:
   (`HistoryOpener`, `header_with_history`, `with_history_if`);
 - header-row: a header row painted by hand (`HeaderRowFace::new`);
 - toolbar-row: a horizontal toolbar (`Toolbar::new(Orientation::Horizontal)`);
+- toolbar-band: the band behind a toolbar row painted by the app
+  (`toolbar::paint_band`), the row of an app that lays out its own controls
+  in it (Books' shelf header: sort, Hide finished, Settings, Open book);
 - nav-header-actions: a `NavShell` header row given actions
   (`set_content_header`, `set_overview_header`, `set_sidebar_header` with
   anything but an empty list).
@@ -40,7 +43,14 @@ BASELINE = Path(__file__).resolve().parent / "app_toolbars_baseline.txt"
 
 SCOPES = ("apps",)
 
-RULES = ("window-header", "history-in-row", "header-row", "toolbar-row", "nav-header-actions")
+RULES = (
+    "window-header",
+    "history-in-row",
+    "header-row",
+    "toolbar-row",
+    "toolbar-band",
+    "nav-header-actions",
+)
 
 PATTERNS = {
     "window-header": re.compile(r"\bimpl\b[^{;]*\bWindowHeader\s+for\b"),
@@ -49,6 +59,7 @@ PATTERNS = {
     "toolbar-row": re.compile(
         r"\bToolbar::new\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*Orientation::Horizontal\s*\)"
     ),
+    "toolbar-band": re.compile(r"\btoolbar::paint_band\s*\("),
 }
 NAV_HEADER = re.compile(r"\.set_(?:content|overview|sidebar)_header\s*\(")
 EMPTY_LIST = re.compile(r",\s*(?:Vec::new\(\)|vec!\[\s*\])\s*,?\s*$")
