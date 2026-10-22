@@ -118,7 +118,6 @@ impl ShellOverlayHost {
         let mut sheets = Vec::new();
         let mut waiting = None;
         sheets.extend(self.directory_sheet.accessibility());
-        sheets.extend(self.peer_sync_overlay.accessibility());
         if self.file_picker_place().dialog_rect().is_some()
             && let Some(mut picker) = self
                 .file_picker_overlay
@@ -299,18 +298,6 @@ impl ShellOverlayHost {
             };
             if let Some(request) = outcome.request {
                 self.run_directory_request(request);
-            }
-            return Some(outcome.consumed);
-        }
-        if crate::shell::peer_sync_overlay::is_accessibility_target(target) {
-            let Some(outcome) = self
-                .peer_sync_overlay
-                .perform_accessibility_action(target, action)
-            else {
-                return Some(false);
-            };
-            if let Some(request) = outcome.request {
-                self.run_peer_sync_request(&request, outcome.copy_result);
             }
             return Some(outcome.consumed);
         }

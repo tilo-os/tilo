@@ -150,7 +150,6 @@ hand-rolled 1 crates/session/desktop/src/topbar.rs
 hand-rolled 4 crates/session/desktop/src/workspace_settings.rs
 hand-rolled 3 crates/session/desktop/src/workspace_settings/overlay.rs
 hand-rolled 1 crates/session/shell/src/shell/display_confirm.rs
-hand-rolled 3 crates/session/shell/src/shell/peer_sync_overlay.rs
 raw-colour 1 apps/calculator/src/app.rs
 raw-colour 1 apps/calculator/src/graph3d.rs
 raw-colour 1 apps/canvas/src/panels/inspector.rs

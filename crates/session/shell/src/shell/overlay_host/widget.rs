@@ -65,6 +65,9 @@ impl Widget for ShellOverlayHost {
         self.palette.sync(s, p);
         self.agent_quick_composer.sync(s, p);
         self.person_quick_composer.sync(s, p);
+        if self.peer_sync_overlay.visible() {
+            self.peer_sync_overlay.sync(s, p);
+        }
         if self.bar_popovers.profile.is_open() {
             self.bar_popovers.profile.sync(s, p);
         }
@@ -115,6 +118,8 @@ impl Widget for ShellOverlayHost {
         }
         let agent_quick_dirty = action_dirty | self.agent_quick_composer.update(doc, path);
         let person_quick_dirty = self.person_quick_composer.update(doc, path)
+            | (self.peer_sync_overlay.visible() && self.peer_sync_overlay.update(doc, path))
+            | self.run_peer_sync_sheet_request()
             | person_activation
             | person_context_dirty
             | person_action_dirty;
@@ -484,6 +489,7 @@ impl Widget for ShellOverlayHost {
             self.person_quick_composer
                 .build_layout(taffy, theme, node_map)
         });
+        self.peer_sync_node = self.build_peer_sync_layout(taffy, theme, node_map);
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.place_on_focused_display(taffy, capture_node);
         self.capture_node = Some(capture_node);
@@ -580,6 +586,7 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing_node) = self.pairing.build_layout(taffy, theme, node_map) {
             children.push(pairing_node);
         }
+        children.extend(self.peer_sync_node);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -710,6 +717,16 @@ impl Widget for ShellOverlayHost {
         }
         self.pairing
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
+        if let Some(node) = self.peer_sync_node {
+            // The sheet centres on, and measures itself against, the
+            // display it opens on.
+            let area = self.overlay_area();
+            let origin = self.rect.origin();
+            let sheet = &mut self.peer_sync_overlay;
+            ui::widget::modal_dialog::within_window(node, area, || {
+                sheet.apply_layout(taffy, node, origin);
+            });
+        }
         self.finish_axis_gather();
         self.publish_strip_viewport();
         if let Some(desk) = &self.shared_desk {
@@ -935,6 +952,9 @@ impl Widget for ShellOverlayHost {
             out.push(&self.person_quick_composer);
         }
         out.extend(self.person_markers.children());
+        if self.peer_sync_node.is_some() {
+            out.push(&self.peer_sync_overlay);
+        }
         out
     }
 
@@ -974,12 +994,16 @@ impl Widget for ShellOverlayHost {
             out.push(&mut self.person_quick_composer);
         }
         out.extend(self.person_markers.children_mut());
+        if self.peer_sync_node.is_some() {
+            out.push(&mut self.peer_sync_overlay);
+        }
         out
     }
 
     fn take_focus_reset(&mut self) -> bool {
         self.agent_quick_composer.take_focus_reset()
             | self.person_quick_composer.take_focus_reset()
+            | self.peer_sync_overlay.take_focus_reset()
             | self.bar_popovers.profile.take_focus_reset()
             | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
@@ -1049,6 +1073,8 @@ impl Widget for ShellOverlayHost {
             | self.person_markers.take_structure_dirty()
             | (self.person_quick_composer.is_open() != self.person_quick_composer_node.is_some())
             | self.person_quick_composer.take_structure_dirty()
+            | (self.peer_sync_overlay.visible() != self.peer_sync_node.is_some())
+            | self.peer_sync_overlay.take_structure_dirty()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()

@@ -13655,6 +13655,9 @@ pub fn run() {
                 }
                 Some(Err(error)) => {
                     tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
+                    // Invites and joins need it: their sheets say so and
+                    // what the person can do, instead of waiting for it.
+                    frame_builder.host_mut().set_peer_sync_failed();
                     // Launches held for the network first login asked for
                     // are reported; a boot carries on local-only.
                     network_held_launches.then_some(error)

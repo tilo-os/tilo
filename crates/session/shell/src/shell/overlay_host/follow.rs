@@ -490,15 +490,29 @@ impl ShellOverlayHost {
             .collect()
     }
 
+    /// The invite, join and pairing sheet, over the display it opened on.
     pub(super) fn draw_peer_sync(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
-        self.peer_sync_overlay
-            .draw(self.rect, scene, transform, text_renderer, theme);
+        if self.peer_sync_node.is_none() {
+            return;
+        }
+        // The sheet's scrim covers the display it measures against.
+        let outer = presence.viewport.replace(Some(self.overlay_area()));
+        ui::widget::Widget::draw_overlay(
+            &mut self.peer_sync_overlay,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        presence.viewport.set(outer);
     }
 }
 

@@ -1283,6 +1283,16 @@ impl Widget for Autocomplete {
         self.rect
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// A host that composes the field into a larger form reaches it to
+    /// offer suggestions and read what was accepted.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)

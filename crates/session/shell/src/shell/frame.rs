@@ -5978,8 +5978,9 @@ impl FrameBuilder {
             put(format!("member_remove[{index}]"), *remove_rect);
             put(format!("member_remove[{user}]"), *remove_rect);
         }
-        for (which, rect) in host.peer_sync_prompt_rects_for_tests() {
-            put(format!("peer_sync_{which}"), rect);
+        // The invite, join and pairing sheet's controls, by their own names.
+        for (name, rect) in host.peer_sync_prompt_rects_for_tests() {
+            put(name, rect);
         }
         // The collaborator dropdown's own controls, named so a scenario
         // clicks the button a person clicks rather than invoking the action

@@ -99,7 +99,7 @@ impl ShellOverlayHost {
         });
 
         overlay_part(scene, "shell.peer-sync", desktop, |scene| {
-            self.draw_peer_sync(scene, transform, text_renderer, theme);
+            self.draw_peer_sync(scene, transform, text_renderer, theme, presence);
             None
         });
 

@@ -105,8 +105,8 @@ impl ShellOverlayHost {
         }
         // Before every other overlay: a token prompt owns the keyboard
         // outright, since a token shares characters with chords.
-        if self.peer_sync_overlay.visible() && self.handle_peer_sync_event(event, *ctx.modifiers) {
-            *ctx.handled = true;
+        if self.peer_sync_overlay.visible() {
+            self.handle_peer_sync_event(event, ctx);
             return true;
         }
         // So does the directory sheet, whose search takes pasted links.

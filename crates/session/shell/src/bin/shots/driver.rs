@@ -29,6 +29,7 @@ use ui::Widget;
 
 use taffy::prelude::NodeId;
 
+mod invite_scenes;
 mod search_seed;
 mod window_menu_scene;
 
@@ -2045,6 +2046,11 @@ impl ShellDriver {
             ),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
+            "invite-empty" => self.scene_invite_empty(),
+            "invite-typing" => self.scene_invite_typing(),
+            "invite-error" => self.scene_invite_error(),
+            "invite-pending" => self.scene_invite_pending(),
+            "join-empty" => self.scene_join_empty(),
             "overview-lounge" => self.scene_overview_lounge(),
             "join-field" => self.scene_join_field(),
             "pairing-sheet" => self.scene_pairing_sheet(),
@@ -2153,7 +2159,7 @@ impl ShellDriver {
     /// "Join a workspace…" with a site typed in it.
     fn scene_join_field(&mut self) {
         self.fb.host_mut().prompt_join_for_shots("tilo.coffee");
-        self.step_frames(2);
+        self.step_frames(20);
     }
 
     /// "Pair a new device": the link as a QR code, the link and what to do.
@@ -2969,24 +2975,6 @@ impl ShellDriver {
         self.fb.pump_apps(&mut self.state, &root);
         self.step_frames(12);
         self.fb.host_mut().force_palette_settled();
-    }
-
-    /// The invite card (`peer_sync_overlay.rs`), reached the way a person
-    /// reaches it — the roster's Invite button through the production event
-    /// path — so the host wires the invite context exactly as it would live.
-    fn scene_peer_sync(&mut self) {
-        self.scene_collaborators();
-        let _ = self.paint_settled();
-        let invite = self.host().collaborators_invite_rect_for_tests();
-        // A missing Invite button (peer sync off, or the local user may not
-        // invite) fails the scene instead of quietly capturing the roster
-        // under the name `peer-sync`.
-        assert!(
-            invite.area() > 0.0,
-            "peer-sync scene: the roster offers no Invite button to open the invite card from"
-        );
-        self.click_at(invite.center());
-        self.step_frames(2);
     }
 
     /// The Alt+Tab switcher (`window_switcher.rs`): Alt held past the
@@ -3861,6 +3849,11 @@ impl ShellDriver {
         "saved-window-reopen",
         "launchpad-notes-card",
         "peer-sync",
+        "invite-empty",
+        "invite-typing",
+        "invite-error",
+        "invite-pending",
+        "join-empty",
         "overview-lounge",
         "join-field",
         "pairing-sheet",
