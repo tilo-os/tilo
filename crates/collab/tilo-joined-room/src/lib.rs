@@ -660,6 +660,9 @@ impl NativeWorkspaceOwner {
             .peer
             .receive_from_report(origin, message, now)
             .map_err(|e| e.to_string())?;
+        for dropped in &report.summary().dropped {
+            tracing::warn!(%room, %dropped, "a held app message was let go unapplied");
+        }
         let previous_publication = candidate.record.publication.clone();
         publication::retire(&mut candidate)?;
         publication::refresh_governance_checkpoint(&mut candidate)?;

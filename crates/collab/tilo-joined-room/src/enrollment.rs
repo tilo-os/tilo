@@ -393,18 +393,12 @@ impl NativeWorkspaceOwner {
             now,
         )?;
         peer.select_admission_v5().map_err(|e| e.to_string())?;
-        // Only B's closed, pinned Complete evidence selects historical bootstrap
-        // admission. Ongoing relay input uses strict receive_from_report instead.
-        // This legacy enum labels canonical admission context, not fabricated
-        // gossip provenance or a claim that Complete arrived as a relay frame.
-        for bytes in &bootstrap.governance_messages {
-            let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
-            peer.receive_from(
-                TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
-                message,
-                now,
-            )?;
-        }
+        let app_messages = install_governance(&mut peer, bootstrap, now)?;
+        tracing::debug!(
+            %room,
+            app_messages,
+            "a room was installed on its governance; its app data follows through the room's sync"
+        );
         if !peer.has_governance() {
             return Err("native enrollment is missing real admitted governance".into());
         }
@@ -612,6 +606,42 @@ impl NativeWorkspaceOwner {
             aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
         })
     }
+}
+/// Admit the room's governance from `bootstrap` into `peer`, in the order
+/// the host published it, and answer how many app messages it left out.
+///
+/// Becoming a member takes the room's governance alone: its membership,
+/// roles and policy, and the certificates they import, which are everything
+/// an app message is authorized against. An app message is not part of it.
+/// A host's bootstrap carries its own record publications as well (every
+/// checkpoint it published since its last full one), and a device that does
+/// not hold the room yet cannot decide many of them: the app surface a change
+/// names is read from the room's own content, and a sealed write needs its
+/// record's checkpoint. Admitted here, each one waited in the peer's bounded
+/// prerequisite queue, so a busy room's bootstrap overflowed it and the join
+/// failed however often it was tried. The host retains every one of those
+/// publications on its record's channel, and the room's sync delivers them
+/// once the room is installed, where each is authorized exactly as any later
+/// write is.
+fn install_governance(
+    peer: &mut StatePeer,
+    bootstrap: &tilo_peer_state::join::JoinBootstrap,
+    now: SystemTime,
+) -> Result<usize, String> {
+    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key);
+    let mut app_messages = 0usize;
+    for bytes in &bootstrap.governance_messages {
+        let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+        if matches!(message, NeighbourMsg::AppDocument { .. }) {
+            app_messages = app_messages.saturating_add(1);
+            continue;
+        }
+        // Only the closed, pinned Complete evidence selects historical
+        // admission here; ongoing relay input uses strict receive_from_report.
+        // The origin labels that admission context, not a relay frame.
+        peer.receive_from(origin, message, now)?;
+    }
+    Ok(app_messages)
 }
 pub(crate) fn ns(now: SystemTime) -> Result<u64, String> {
     u64::try_from(

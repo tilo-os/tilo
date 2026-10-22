@@ -242,6 +242,29 @@ nothing, the room's authority included. The checks, in order:
    receiver then binds a policy to its own authority record before
    installing the candidate.
 
+### Joining: governance first, app data after
+
+A device becomes a member on the room's governance alone
+(`tilo-joined-room`, `install`): the join's bootstrap is admitted in the
+host's order, but only its governance — membership, roles, policy and the
+certificates they import, everything an app message is authorized against.
+The bootstrap's app messages (the host's own record checkpoints since its
+last full one) are left out: a device that does not hold the room yet often
+cannot decide them (the app surface a change names is read from the room's
+own content; a sealed write needs its record's checkpoint), and the host
+retains every one on its record's channel. They arrive through the room's
+sync once it is installed and are authorized like any later write, so how
+many messages a room has never decides whether someone can join it.
+
+An app message whose prerequisite is still in flight (its author's
+certificate, its record's checkpoint, the changes it builds on, its app
+surface) is held, and every later room change and admitted document retries
+what is held. The queue is bounded (`MAX_HELD_INPUTS`, `MAX_HELD_BYTES`) and
+never refuses the input being admitted: when it is full, the message held
+longest is decided again, applied if it now can be, and otherwise let go
+unapplied with what it waited for (`ReceiveOutcome::dropped`, logged by the
+room owner). Nothing is applied without being authorized.
+
 ### Write authority on a room's governance
 
 The governance writer is pinned from local, authenticated knowledge, never
