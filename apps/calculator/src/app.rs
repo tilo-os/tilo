@@ -86,6 +86,9 @@ pub struct CalculatorApp {
     /// edit or verb here. `None` until the framework attaches the surface,
     /// and for a bare widget in a layout test.
     dispatch: Option<Dispatcher<Calculator>>,
+    /// How this calculator's changes read in the window's History: one
+    /// presenter for the instance's life, so the timeline keeps its faces.
+    entries: Rc<dyn ui::widget::HistoryEntryPresenter>,
     /// The durable rows last presented, with their stable ids.
     rows: Rc<Calculator>,
     /// A graph row this window just added, to select once it is presented.
@@ -128,6 +131,7 @@ impl CalculatorApp {
             pending_effect: None,
             node: None,
             dispatch: None,
+            entries: Rc::new(crate::history_face::CalculatorEntries),
             rows: Rc::default(),
             select: None,
         }
@@ -177,9 +181,7 @@ impl CalculatorApp {
         self.model.ans = lived_in.ans;
         self.model.memory = lived_in.memory;
         match scenario {
-            Some(
-                "calculator" | "history-open" | "history-closed" | "narrow" | "narrow-history",
-            ) => {
+            Some("calculator" | "narrow") => {
                 self.set_mode(Mode::Calc);
             }
             Some("error") => self.model.apply_error_demo(),
@@ -189,11 +191,8 @@ impl CalculatorApp {
         // The drawer decides docked or floating from the window it has been
         // laid out in, so lay the mode out before staging its panel.
         self.relayout();
-        match scenario {
-            Some("history-open" | "narrow-history") => self.calc.snap_sidebar(true),
-            Some("history-closed") => self.calc.snap_sidebar(false),
-            Some("narrow-functions") => self.g2.panel.side_mut().snap(true),
-            _ => {}
+        if scenario == Some("narrow-functions") {
+            self.g2.panel.side_mut().snap(true);
         }
         if self.model.mode == Mode::Graph2d
             && let Some(field) = self.graph_field(GraphKind::Curve2d, self.model.active_fn)
@@ -214,7 +213,7 @@ impl CalculatorApp {
 
     fn layout_active(&mut self) {
         match self.model.mode {
-            Mode::Calc => self.calc.layout(self.area, &self.model),
+            Mode::Calc => self.calc.layout(self.area),
             Mode::Graph2d => self.g2.layout(self.area, &self.model),
             Mode::Graph3d => self.g3.layout(self.area, &self.model),
         }
@@ -311,17 +310,6 @@ impl CalculatorApp {
         self.model_dirty = true;
     }
 
-    /// Empty the history.
-    fn clear_history(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        // Only a non-empty history is a real mutation.
-        if self.model.history.is_empty() {
-            return;
-        }
-        self.model.history.clear();
-        self.submit(doc, Calculator::CLEAR_HISTORY.with(()));
-        self.model_dirty = true;
-    }
-
     /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
     /// updates the presentation (Ans, result line) via the model, then dispatches
     /// the [`CommitHistory`](CalculatorAction::CommitHistory) action so the new
@@ -382,7 +370,7 @@ impl CalculatorApp {
     /// beneath it takes no presses.
     fn drawer_blocks(&self) -> bool {
         match self.model.mode.graph() {
-            None => self.calc.is_overlay() && self.calc.sidebar_open(),
+            None => false,
             Some(kind) => self.panel(kind).floats_open(),
         }
     }
@@ -481,12 +469,6 @@ impl CalculatorApp {
     }
 
     fn on_press_calc(&mut self, p: Point, doc: &mut ui::widget::Edits<'_>) {
-        // History sidebar chrome takes priority over the keypad underneath.
-        if self.calc.scrim_at(p) {
-            // Tapping outside an open overlay drawer dismisses it.
-            self.calc.close_sidebar();
-            return;
-        }
         if let Some(i) = self.calc.key_at(p) {
             self.calc.pressed_key = Some(i);
             if let Some(key) = self.calc.keys().get(i).cloned() {
@@ -499,18 +481,10 @@ impl CalculatorApp {
                     self.model_dirty = true;
                 }
             }
-        } else if let Some(i) = self.calc.mem_at(p) {
-            if let Some(key) = MEM_KEYS.get(i).cloned() {
-                self.apply_calc_key(&key);
-                self.model_dirty = true;
-            }
-        } else if self.calc.clear_history_at(p) {
-            self.clear_history(doc);
-        } else if let Some(hi) = self.calc.history_at(p)
-            && let Some(e) = self.model.history.get(hi).cloned()
+        } else if let Some(i) = self.calc.mem_at(p)
+            && let Some(key) = MEM_KEYS.get(i).cloned()
         {
-            self.model.expr = e.expr;
-            self.model.after_equals = false;
+            self.apply_calc_key(&key);
             self.model_dirty = true;
         }
     }
@@ -581,12 +555,6 @@ impl CalculatorApp {
         }
         let factor = (1.0 + step * 0.12).clamp(0.4, 2.5);
         match self.model.mode {
-            // Scroll the history list when the pointer is over it. This is
-            // ephemeral view state (like hover), so it lives on the screen
-            // cache rather than the CRDT.
-            Mode::Calc if self.calc.history_viewport().contains(self.mouse) => {
-                self.calc.history_scroll = (self.calc.history_scroll - step * 48.0).max(0.0);
-            }
             Mode::Graph2d if self.g2.canvas_contains(self.mouse) => {
                 self.navigated = true;
                 let v0 = self.model.view2d;
@@ -629,7 +597,6 @@ impl CalculatorApp {
     fn escape_is_idle(&self, key: &WKey) -> bool {
         matches!(key, WKey::Named(NamedKey::Escape))
             && self.model.mode == Mode::Calc
-            && !self.calc.sidebar_open()
             && self.model.expr.is_empty()
     }
 
@@ -675,10 +642,6 @@ impl CalculatorApp {
         // overlay must never trap a keyboard user behind its scrim.
         if matches!(key, WKey::Named(NamedKey::Escape)) {
             let dismissed = match self.model.mode.graph() {
-                None if self.calc.sidebar_open() => {
-                    self.calc.close_sidebar();
-                    true
-                }
                 Some(kind) if self.panel(kind).side().is_open() => {
                     self.panel_mut(kind).side_mut().close();
                     true
@@ -1027,6 +990,13 @@ impl CalculatorApp {
                 }
                 return;
             }
+            actions::CalculatorEffect::Recall { expression } => {
+                self.model.expr = expression;
+                self.model.after_equals = false;
+                self.model_dirty = true;
+                self.set_mode(Mode::Calc);
+                return;
+            }
             actions::CalculatorEffect::ShowCalculator => Mode::Calc,
             actions::CalculatorEffect::ShowGraph2d => Mode::Graph2d,
             actions::CalculatorEffect::ShowGraph3d => Mode::Graph3d,
@@ -1037,8 +1007,36 @@ impl CalculatorApp {
     }
 }
 
+/// History is the calculator's list of past calculations: each reads as
+/// itself, and choosing one puts it back into the calculator through the
+/// Use calculation effect, the same door the palette and agents use.
+impl ui::history_mode::capability::PresentsHistoryEntries for CalculatorApp {
+    fn history_entry_presenter(&self) -> Option<Rc<dyn ui::widget::HistoryEntryPresenter>> {
+        Some(Rc::clone(&self.entries))
+    }
+
+    fn open_history_entry(&mut self, entry: &ui::widget::history::HistoryEntry) -> bool {
+        let Some((expression, _)) = crate::history_face::calculation(entry) else {
+            return false;
+        };
+        let recall = actions::CalculatorEffect::Recall { expression };
+        match &self.dispatch {
+            Some(dispatch) => dispatch.effect(&recall),
+            None => {
+                if self.queue_effect(recall).is_err() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
 impl Widget for CalculatorApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::history_mode::capability::PresentsHistoryEntries
+    );
 
     fn is_focusable(&self) -> bool {
         true
@@ -1139,7 +1137,7 @@ impl Widget for CalculatorApp {
                 .draw_content(scene, t, tr, theme, &self.model, pointer),
         }
         match self.model.mode {
-            Mode::Calc => self.calc.draw_panel(scene, t, tr, theme, &self.model),
+            Mode::Calc => {}
             Mode::Graph2d => {
                 self.g2
                     .draw_panel(scene, t, tr, theme, &self.model, self.host_focused);
@@ -1362,36 +1360,6 @@ impl Widget for CalculatorApp {
                         .with_hashed_key("calculator.keypad")
                         .with_children(keys),
                 );
-
-                if self.calc.sidebar_open() {
-                    let mut history = Vec::new();
-                    if !self.model.history.is_empty() {
-                        history.push(
-                            AccessNode::new(Role::Button)
-                                .with_name("Clear calculation history")
-                                .with_action_target("calculator.history.clear")
-                                .with_state(AccessState::new().focusable(true))
-                                .with_bounds(self.calc.clear_history_rect()),
-                        );
-                    }
-                    for (index, entry) in self.model.history.iter().enumerate() {
-                        let mut item = AccessNode::new(Role::ListItem)
-                            .with_name(format!("{} equals {}", entry.expr, entry.result))
-                            .with_action_target(format!("calculator.history.recall:{index}"))
-                            .with_position(index + 1, self.model.history.len())
-                            .with_state(AccessState::new().focusable(true));
-                        if let Some(bounds) = self.calc.history_row_rect(index) {
-                            item = item.with_bounds(bounds);
-                        }
-                        history.push(item);
-                    }
-                    children.push(
-                        AccessNode::new(Role::List)
-                            .with_name("Calculation history")
-                            .with_hashed_key("calculator.history")
-                            .with_children(history),
-                    );
-                }
             }
             Mode::Graph2d => children.push(self.graph_accessibility(GraphKind::Curve2d)),
             Mode::Graph3d => children.push(self.graph_accessibility(GraphKind::Surface3d)),
@@ -1448,16 +1416,6 @@ impl Widget for CalculatorApp {
             {
                 self.set_degrees(true);
             }
-            "calculator.history.toggle"
-                if matches!(action, Action::Activate | Action::ToggleCheck) =>
-            {
-                self.calc.toggle_sidebar();
-            }
-            "calculator.history.clear"
-                if matches!(action, Action::Activate) && !self.model.history.is_empty() =>
-            {
-                self.clear_history(state);
-            }
             "calculator.expression" if matches!(action, Action::SetValue(_)) => {
                 let Action::SetValue(expr) = action else {
                     return false;
@@ -1503,23 +1461,6 @@ impl Widget for CalculatorApp {
                 self.apply_calc_key(&key);
                 self.model_dirty = true;
             }
-            _ if target.starts_with("calculator.history.recall:")
-                && matches!(action, Action::Activate) =>
-            {
-                let Some(index) = target
-                    .rsplit(':')
-                    .next()
-                    .and_then(|i| i.parse::<usize>().ok())
-                else {
-                    return false;
-                };
-                let Some(entry) = self.model.history.get(index) else {
-                    return false;
-                };
-                self.model.expr = entry.expr.clone();
-                self.model.after_equals = false;
-                self.model_dirty = true;
-            }
             _ if target.starts_with("calculator.graph.") => {
                 return self.perform_graph_semantic_action(target, action, state);
             }
@@ -1535,7 +1476,7 @@ impl Widget for CalculatorApp {
     /// (only the visible screen's `draw` advances its own animation).
     fn needs_animation_frame(&self) -> bool {
         match self.model.mode {
-            Mode::Calc => self.calc.drawer_animating(),
+            Mode::Calc => false,
             Mode::Graph2d => self.g2.zoom_active() || self.g2.panel.side().is_animating(),
             Mode::Graph3d => self.g3.zoom_active() || self.g3.panel.side().is_animating(),
         }

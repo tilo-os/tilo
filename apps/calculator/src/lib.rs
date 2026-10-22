@@ -40,6 +40,7 @@ pub mod draw;
 pub mod engine;
 pub mod graph2d;
 pub mod graph3d;
+pub mod history_face;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;
