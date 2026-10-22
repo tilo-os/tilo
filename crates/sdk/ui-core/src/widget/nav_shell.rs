@@ -92,6 +92,7 @@ use crate::widget::{
     AppModel, Button, Element, ModelPath, SearchField, TaffyTreeExt, Widget, WidgetLayoutError,
 };
 
+mod band;
 mod header_parts;
 pub(crate) mod memory;
 mod notices;
@@ -102,6 +103,7 @@ mod window_toolbar;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
 use crate::widget::toast::ToastStack;
+use band::plan;
 use header_parts::{HeaderTitle, MoreActions};
 use notices::TOAST_ACTION;
 use sidebar_resize::AdaptiveSidebar;
@@ -300,6 +302,8 @@ enum Part {
     History(bool),
     /// The button beside the window's sync status (Retry), while it has one.
     StatusAction,
+    /// The band across the window's foot ([`NavShell::bottom_band`]).
+    Band,
 }
 
 /// A column's header: a title the shell paints and actions the app owns.
@@ -454,6 +458,7 @@ struct ColumnFit {
 )]
 #[derive(Clone, Debug)]
 struct Inputs {
+    band: band::Band,
     mode: NavMode,
     kind: ContentKind,
     /// The content is one centred page column this many lines of body text
@@ -549,6 +554,7 @@ fn reaches(room: f64, threshold: f64, held: Option<bool>, band: f64) -> bool {
 impl Default for Inputs {
     fn default() -> Self {
         Self {
+            band: band::Band::default(),
             status_action: false,
             mode: NavMode::Push,
             kind: ContentKind::default(),
@@ -671,6 +677,8 @@ pub struct NavGeometry {
     /// The window-wide row the window's bar covers (also while a header in
     /// the bar hides), or zero.
     pub window_row: Rect,
+    /// The band across the window's foot, or zero.
+    pub band: Rect,
     /// The column whose header holds the sidebar toggle and the Back button.
     toggle_column: Option<Column>,
     back_column: Option<Column>,
@@ -724,6 +732,7 @@ impl NavGeometry {
             history: t(self.history),
             window_controls: t(self.window_controls),
             window_row: t(self.window_row),
+            band: t(self.band),
             resize_handle: t(self.resize_handle),
             page_edges: self.page_edges.map(|(x0, x1)| (x0 + by.x, x1 + by.x)),
             ..self.clone()
@@ -796,6 +805,9 @@ impl NavGeometry {
         }
         if shows(self.toggle) {
             parts.push(Part::Toggle);
+        }
+        if inputs.band.has {
+            parts.push(Part::Band);
         }
         parts
     }
@@ -916,7 +928,7 @@ fn page_edges(column: Rect, lines: f64, m: &Metrics) -> Option<(f64, f64)> {
     clippy::too_many_lines,
     reason = "the responsive plan is one ordered decision: sidebar, inspector, split, stack, then rects"
 )]
-fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
+fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let m = inputs.metrics;
     let mut g = NavGeometry::default();
     if w <= 0.0 || h <= 0.0 {
@@ -1604,6 +1616,7 @@ pub struct NavShell {
     status_span: Rect,
     /// The button beside the sync status (Retry), and what it was made from.
     status_action: Option<Button>,
+    band: Option<Element>,
     status_action_spec: Option<crate::widget::StatusAction>,
     /// Buttons replaced since the host last built its tree, which may still
     /// point at them.
@@ -1705,6 +1718,7 @@ impl NavShell {
             status_drawn: Rect::ZERO,
             status_span: Rect::ZERO,
             status_action: None,
+            band: None,
             status_action_spec: None,
             retired_status_actions: Vec::new(),
         }
@@ -2813,6 +2827,7 @@ impl NavShell {
             Part::InspectorToggle => self.geometry.inspector_toggle_column,
             Part::History(_) => self.geometry.history_column,
             Part::StatusAction => Some(self.geometry.status_column()),
+            Part::Band => None,
         }
     }
 
@@ -3373,6 +3388,7 @@ impl NavShell {
         }
         self.paint_status_action(f);
         self.paint_sync_status(f);
+        self.paint_band(f);
     }
 
     /// The button beside the sync status, where layout found it room.
@@ -3638,12 +3654,14 @@ fn place_parts(
     ctx: &mut ManualContext<'_>,
 ) -> Result<Size<f32>, WidgetLayoutError> {
     let size = ctx.available();
+    band::measure_band(inputs, ctx, f64::from(size.width))?;
     let g = plan(inputs, f64::from(size.width), f64::from(size.height));
     let mut placed: Vec<Option<Rect>> = vec![None; inputs.parts.len()];
     for (index, part) in inputs.parts.iter().enumerate() {
         let rect = match part {
             Part::Body(column) => Some(g.body(*column)),
             Part::Rail => Some(g.rail),
+            Part::Band => Some(g.band),
             Part::Filter => Some(g.filter),
             Part::Toggle => Some(g.toggle),
             Part::Back => Some(g.back),
@@ -4173,6 +4191,7 @@ impl Widget for NavShell {
             toasts,
             sync_status,
             status_action,
+            band,
             ..
         } = self;
         let mut stubs = inert_parts.iter_mut();
@@ -4208,6 +4227,7 @@ impl Widget for NavShell {
         let mut history_open = Some(history_open as &mut dyn Widget);
         let mut history_close = Some(history_close as &mut dyn Widget);
         let mut status_action = status_action.as_mut().map(|b| b as &mut dyn Widget);
+        let mut band = band.as_deref_mut().map(|w| w as &mut dyn Widget);
         let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(parts.len());
         for (part, inert) in parts.into_iter().zip(inert) {
             let stub = stubs.next();
@@ -4242,6 +4262,7 @@ impl Widget for NavShell {
                 Part::History(false) => history_open.take(),
                 Part::History(true) => history_close.take(),
                 Part::StatusAction => status_action.take(),
+                Part::Band => band.take(),
             };
             if let Some(widget) = next {
                 out.push(widget);
@@ -4753,10 +4774,11 @@ impl NavShell {
             return true;
         }
         // A press on the content beside an open drawer puts the drawer away
-        // (and does nothing else); the header row stays live.
+        // (and does nothing else); the header row and the band stay live.
         if let Some(column) = g.open_drawer()
             && !g.column(column).contains(p)
             && !g.window_row_contains(p)
+            && !g.band.contains(p)
         {
             match column {
                 Column::Sidebar => self.toggle_sidebar(),
@@ -4788,6 +4810,7 @@ impl NavShell {
             Part::Filter => g.filter,
             Part::Controls => g.controls,
             Part::Rail => g.rail,
+            Part::Band => g.band,
             Part::Title(column)
             | Part::Leading(column)
             | Part::Action(column, _)

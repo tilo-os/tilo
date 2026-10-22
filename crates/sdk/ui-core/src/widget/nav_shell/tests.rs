@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::rc::Rc as SharedRc;
 
 mod adaptive;
+mod band;
 mod capabilities;
 mod hosted;
 
