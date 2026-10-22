@@ -40,6 +40,16 @@ hands it to the app (`TILO_SVC_SYSTEM-STATS_FD`) before the sandbox starts.
   and state. A process's command line is sent only with its own grant. Its
   environment, open files and memory never are: the service does not read
   them.
+- **Storage, on request.** The machine's block devices are an answer, not a
+  reading at an interval: an app asks (`Request::Storage`) when it opens and
+  when the person rescans, and the session lists the devices with `lsblk`
+  (sysfs and the udev database) and asks `UDisks2` for each drive's health
+  (the `NVMe` controller's and ATA drive's properties, and the `NVMe` health
+  log), all of which polkit lets a local user read without a prompt. It is
+  part of `system-info`, so Disks, which the image ships, reads it without
+  asking; its sandbox never gets `/dev`, udev, the host's programs or the
+  system bus. Mounting, formatting and powering off stay `UDisks2` calls
+  behind polkit.
 - **Pushed, not polled.** An app subscribes at an interval and is sent a
   snapshot each interval. One thread reads for every subscriber, and only
   while there is one; nobody subscribed costs no thread and no read.

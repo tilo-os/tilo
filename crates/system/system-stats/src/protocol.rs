@@ -13,6 +13,11 @@
 //! connection closes. Nothing is read per field and nothing is read for a
 //! connection that holds no subscription.
 //!
+//! The machine's storage (its block devices, their partitions, filesystems
+//! and encryption, and each drive's health) is not a reading at an interval
+//! but an answer: the app asks with [`Request::Storage`] when it opens and
+//! when the person rescans, and is sent one [`Storage`].
+//!
 //! What a snapshot carries is bounded by the connection's [`Grants`]:
 //! machine-wide readings need [`Grant::SystemInfo`]; running apps and the
 //! process list need [`Grant::Processes`], and a process's command line needs
@@ -52,7 +57,8 @@ pub const MAX_INTERVAL_MS: u32 = 60_000;
 #[serde(rename_all = "kebab-case")]
 pub enum Grant {
     /// Machine-wide readings: processor, memory, pressure, disks, network,
-    /// graphics, battery and temperature. The `system-info` capability.
+    /// graphics, battery and temperature, and the machine's storage devices
+    /// with their health ([`Request::Storage`]). The `system-info` capability.
     SystemInfo,
     /// The running apps and the person's process list (pid, name, app,
     /// user, processor, memory, state), and ending the person's own apps
@@ -247,6 +253,9 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// Describe the machine's storage once. The answer is [`Reply::Storage`]
+    /// under `request`, or [`Reply::Refused`].
+    Storage { request: u64 },
 }
 
 /// What the service answers.
@@ -272,6 +281,8 @@ pub enum Reply {
     Ended { request: u64, ended: u32 },
     /// A request was refused.
     Refused { request: u64, refusal: Refusal },
+    /// The machine's storage, after a [`Request::Storage`].
+    Storage { request: u64, storage: Box<Storage> },
 }
 
 /// The `op` of a [`Reply`].
@@ -283,6 +294,7 @@ enum ReplyOp {
     Grants,
     Ended,
     Refused,
+    Storage,
 }
 
 /// A [`Reply`] as it arrives: its tag and the fields of every variant, read
@@ -296,6 +308,7 @@ struct ReplyWire {
     refusal: Option<Refusal>,
     grants: Option<Grants>,
     ended: Option<u32>,
+    storage: Option<Box<Storage>>,
 }
 
 impl<'de> Deserialize<'de> for Reply {
@@ -324,6 +337,10 @@ impl<'de> Deserialize<'de> for Reply {
             ReplyOp::Refused => Self::Refused {
                 request: field(wire.request, "request")?,
                 refusal: field(wire.refusal, "refusal")?,
+            },
+            ReplyOp::Storage => Self::Storage {
+                request: field(wire.request, "request")?,
+                storage: field(wire.storage, "storage")?,
             },
         })
     }
@@ -625,6 +642,122 @@ impl ProcessState {
     }
 }
 
+/// The machine's storage: every block device `lsblk` lists, as a tree.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Storage {
+    pub devices: Vec<StorageDevice>,
+}
+
+/// One block device and the devices stacked on it: a disk's partitions, an
+/// encrypted partition's unlocked mapping, a volume group's volumes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StorageDevice {
+    /// The name `lsblk` lists it by (`nvme0n1p4`; a mapping's own name, such
+    /// as `home`, for a device-mapper device).
+    pub name: String,
+    /// The kernel's name (`dm-1` for the mapping `home`), which is what
+    /// `/dev` and `UDisks2` know it by.
+    #[serde(default)]
+    pub kernel_name: Option<String>,
+    /// `disk`, `part`, `crypt`, `lvm`, `loop`, `rom`, ...
+    pub kind: String,
+    /// In bytes.
+    pub size: u64,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub serial: Option<String>,
+    /// How it is attached: `nvme`, `sata`, `usb`, ...
+    #[serde(default)]
+    pub transport: Option<String>,
+    #[serde(default)]
+    pub rotational: bool,
+    #[serde(default)]
+    pub removable: bool,
+    #[serde(default)]
+    pub read_only: bool,
+    /// What it holds: a filesystem (`ext4`), swap, or a container such as
+    /// `crypto_LUKS`.
+    #[serde(default)]
+    pub fstype: Option<String>,
+    /// The version of what it holds: `2` for LUKS2.
+    #[serde(default)]
+    pub fs_version: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub uuid: Option<String>,
+    /// Bytes in use on its mounted filesystem.
+    #[serde(default)]
+    pub fs_used: Option<u64>,
+    /// Where its filesystem is mounted, when it is.
+    #[serde(default)]
+    pub mountpoint: Option<String>,
+    #[serde(default)]
+    pub children: Vec<StorageDevice>,
+    /// What the drive reports of its own health; only on a whole drive, and
+    /// only where it reports anything.
+    #[serde(default)]
+    pub health: Option<DriveHealth>,
+}
+
+/// A drive's own account of its health (SMART, or the `NVMe` health log),
+/// as `UDisks2` reads it. Every reading is optional: a drive reports what it
+/// reports.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriveHealth {
+    /// Whether the drive reports health at all (always for `NVMe`; ATA drives
+    /// say whether they support SMART).
+    pub supported: bool,
+    /// When the drive's health was last read, in seconds since the Unix epoch;
+    /// `None` when it has not been read yet.
+    #[serde(default)]
+    pub updated: Option<u64>,
+    /// The drive's own verdict: it predicts its failure (ATA), or it raises a
+    /// critical warning (`NVMe`).
+    #[serde(default)]
+    pub failing: bool,
+    /// The `NVMe` critical warnings raised, as `UDisks2` names them: `spare`,
+    /// `temperature`, `degraded`, `readonly`, `volatile_mem`, `pmr_readonly`.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub temperature_c: Option<i32>,
+    #[serde(default)]
+    pub power_on_hours: Option<u64>,
+    #[serde(default)]
+    pub power_cycles: Option<u64>,
+    /// `NVMe` wear: the share of the drive's rated life used, in percent (it
+    /// may pass 100).
+    #[serde(default)]
+    pub percent_used: Option<u8>,
+    /// `NVMe` spare capacity left, in percent, and the level below which the
+    /// drive warns.
+    #[serde(default)]
+    pub available_spare: Option<u8>,
+    #[serde(default)]
+    pub spare_threshold: Option<u8>,
+    #[serde(default)]
+    pub bytes_written: Option<u64>,
+    #[serde(default)]
+    pub bytes_read: Option<u64>,
+    /// `NVMe` unrecovered data integrity errors.
+    #[serde(default)]
+    pub media_errors: Option<u64>,
+    #[serde(default)]
+    pub unsafe_shutdowns: Option<u64>,
+    /// ATA reallocated and pending sectors together.
+    #[serde(default)]
+    pub bad_sectors: Option<u64>,
+    /// ATA attributes past their threshold now.
+    #[serde(default)]
+    pub failing_attributes: Option<u32>,
+    /// The last self-test's outcome as `UDisks2` names it (`success`,
+    /// `aborted`, `inprogress`, ...).
+    #[serde(default)]
+    pub self_test: Option<String>,
+}
+
 /// Encode one request or reply as a frame on `stream`.
 ///
 /// # Errors
@@ -712,6 +845,29 @@ mod tests {
                 refusal: Refusal::Invalid {
                     detail: "no such process".into(),
                 },
+            },
+            Reply::Storage {
+                request: 6,
+                storage: Box::new(Storage {
+                    devices: vec![StorageDevice {
+                        name: "nvme0n1".into(),
+                        kind: "disk".into(),
+                        size: 1_024_209_543_168,
+                        children: vec![StorageDevice {
+                            name: "nvme0n1p4".into(),
+                            kind: "part".into(),
+                            fstype: Some("crypto_LUKS".into()),
+                            fs_version: Some("2".into()),
+                            ..StorageDevice::default()
+                        }],
+                        health: Some(DriveHealth {
+                            supported: true,
+                            power_on_hours: Some(2294),
+                            ..DriveHealth::default()
+                        }),
+                        ..StorageDevice::default()
+                    }],
+                }),
             },
         ];
         for reply in replies {

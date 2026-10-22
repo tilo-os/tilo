@@ -118,7 +118,9 @@ pub enum AttrSeverity {
 /// One row in the SMART attribute table.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SmartAttr {
-    pub id: u16,
+    /// The ATA attribute number; `None` for a reading with no number, such as
+    /// one from the `NVMe` health log.
+    pub id: Option<u16>,
     pub name: String,
     pub value: String,
     pub severity: AttrSeverity,
@@ -192,6 +194,20 @@ pub struct Partition {
     /// Bytes used on the filesystem, if mounted + measurable.
     pub used: Option<u64>,
     pub uuid: Option<String>,
+    /// How the partition is encrypted, when it is. Once unlocked, the fields
+    /// above describe the filesystem inside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<Encryption>,
+}
+
+/// An encrypted partition's container.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Encryption {
+    /// `LUKS2`, `LUKS1`, `BitLocker`.
+    pub scheme: String,
+    /// The unlocked mapping's kernel name (`dm-1`), which is where its
+    /// filesystem is mounted from; `None` while it is locked.
+    pub unlocked_as: Option<String>,
 }
 
 impl Partition {
@@ -334,6 +350,7 @@ impl Topology {
                     mountpoint: Some("/boot/efi".into()),
                     used: Some(96_468_992),
                     uuid: Some("9C33-6Bled".into()),
+                    encryption: None,
                 },
                 Partition {
                     name: "nvme0n1p2".into(),
@@ -343,6 +360,7 @@ impl Topology {
                     mountpoint: Some("/".into()),
                     used: Some(142_300_000_000),
                     uuid: Some("a1b2c3d4-...-root".into()),
+                    encryption: None,
                 },
                 Partition {
                     name: "nvme0n1p3".into(),
@@ -352,6 +370,7 @@ impl Topology {
                     mountpoint: Some("/home".into()),
                     used: Some(410_900_000_000),
                     uuid: Some("e5f6a7b8-...-home".into()),
+                    encryption: None,
                 },
                 Partition {
                     name: "nvme0n1p4".into(),
@@ -361,6 +380,7 @@ impl Topology {
                     mountpoint: Some("[SWAP]".into()),
                     used: Some(1_073_741_824),
                     uuid: Some("c0ffee00-...-swap".into()),
+                    encryption: None,
                 },
             ],
             smart: Some(SmartInfo {
@@ -372,12 +392,10 @@ impl Topology {
                 pct_used: Some(3),
                 written_gb: Some(48_210),
                 attrs: vec![
-                    attr(5, "Available spare", "100 %", AttrSeverity::Ok),
-                    attr(9, "Percentage used", "3 %", AttrSeverity::Ok),
-                    attr(12, "Power cycles", "412", AttrSeverity::Ok),
-                    attr(14, "Unsafe shutdowns", "14", AttrSeverity::Ok),
-                    attr(1, "Media and data errors", "0", AttrSeverity::Ok),
-                    attr(2, "Critical warning", "0x00", AttrSeverity::Ok),
+                    health_row("Available spare", "100 %", AttrSeverity::Ok),
+                    health_row("Percentage used", "3 %", AttrSeverity::Ok),
+                    health_row("Media and data errors", "0", AttrSeverity::Ok),
+                    health_row("Unsafe shutdowns", "14", AttrSeverity::Ok),
                 ],
                 detail: None,
             }),
@@ -403,6 +421,7 @@ impl Topology {
                 mountpoint: Some("/mnt/backup".into()),
                 used: Some(213_400_000_000),
                 uuid: Some("7E5A9C2B5A9C1F00".into()),
+                encryption: None,
             }],
             smart: Some(SmartInfo {
                 status: SmartStatusOpt(SmartStatus::Passed),
@@ -443,6 +462,7 @@ impl Topology {
                 mountpoint: Some("/mnt/media".into()),
                 used: Some(1_461_000_000_000),
                 uuid: Some("d34db33f-...-media".into()),
+                encryption: None,
             }],
             smart: Some(SmartInfo {
                 status: SmartStatusOpt(SmartStatus::Warning),
@@ -485,6 +505,7 @@ impl Topology {
                 mountpoint: Some("/run/media/tilo/Ultra".into()),
                 used: Some(8_240_000_000),
                 uuid: Some("64ED-1A2B".into()),
+                encryption: None,
             }],
             smart: Some(SmartInfo {
                 status: SmartStatusOpt(SmartStatus::Unknown),
@@ -505,7 +526,17 @@ impl Topology {
 
 fn attr(id: u16, name: &str, value: &str, severity: AttrSeverity) -> SmartAttr {
     SmartAttr {
-        id,
+        id: Some(id),
+        name: name.into(),
+        value: value.into(),
+        severity,
+    }
+}
+
+/// A health reading with no attribute number (the `NVMe` health log).
+fn health_row(name: &str, value: &str, severity: AttrSeverity) -> SmartAttr {
+    SmartAttr {
+        id: None,
         name: name.into(),
         value: value.into(),
         severity,
@@ -577,6 +608,7 @@ mod tests {
                 mountpoint: None,
                 used: Some(150),
                 uuid: None,
+                encryption: None,
             };
             assert_eq!(p.used_frac(), Some(1.0));
         }
@@ -604,6 +636,7 @@ mod tests {
                 mountpoint: Some(mp.into()),
                 used: None,
                 uuid: None,
+                encryption: None,
             };
             // bootc systems: home at /var/home, root sometimes surfaced as /sysroot.
             assert_eq!(part("/var/home", "btrfs").role(), PartRole::Home);

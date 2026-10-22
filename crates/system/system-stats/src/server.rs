@@ -274,6 +274,18 @@ impl Connection<'_> {
                     Err(refusal) => Reply::Refused { request, refusal },
                 });
             }
+            Request::Storage { request } => {
+                let result = self
+                    .require(Grant::SystemInfo)
+                    .and_then(|()| self.hub.storage());
+                self.reply(match result {
+                    Ok(storage) => Reply::Storage {
+                        request,
+                        storage: Box::new(storage),
+                    },
+                    Err(refusal) => Reply::Refused { request, refusal },
+                });
+            }
         }
     }
 
