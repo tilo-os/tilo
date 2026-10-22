@@ -1708,6 +1708,27 @@ struct ShapedText {
 /// advance ([`TextRenderer::ltr_advances`]).
 struct LineAdvances(Vec<(usize, usize, f32)>);
 
+/// Whitespace a wrapped line drops at its ends.
+fn collapsible_edge(character: char) -> bool {
+    matches!(character, ' ' | '\t' | '\n' | '\r')
+}
+
+/// Byte offsets where an elision may cut `text`: the start of every grapheme
+/// cluster after the first, so a combining sequence or a flag is never split.
+fn elision_cuts(text: &str) -> Vec<usize> {
+    crate::text_break::grapheme_indices(text)
+        .map(|(start, _)| start)
+        .filter(|&start| start > 0)
+        .collect()
+}
+
+/// `text` cut at `end`, without the whitespace before the ellipsis.
+fn elided(text: &str, end: usize) -> String {
+    let mut kept = text.get(..end).unwrap_or_default().trim_end().to_string();
+    kept.push(ELLIPSIS);
+    kept
+}
+
 impl LineAdvances {
     /// The advances of the glyphs wholly inside bytes `start..end`.
     fn width(&self, start: usize, end: usize) -> f32 {
@@ -1910,6 +1931,9 @@ pub struct TextRenderer {
     /// grid of titles laid out again (intrinsic sizing asks each card
     /// several times a frame) otherwise repeats dozens of measures per title.
     clamp_cache: TextCache<(usize, Vec<String>)>,
+    /// `text, style` → its glyph advances on one line, for wrapping and
+    /// eliding it at any width ([`Self::ltr_advances`]).
+    advance_cache: TextCache<Option<Arc<LineAdvances>>>,
     /// Bumped by [`Self::bump_generation`] when locale or fonts change.
     /// Generation participates in identity; bumping it also clears retained entries.
     generation: u64,
@@ -2038,6 +2062,7 @@ impl TextRenderer {
             swash_cache: SwashCache::new(),
             measure_cache: TextCache::new(MEASURE_CACHE_LIMIT, MEASURE_CACHE_BYTES),
             clamp_cache: TextCache::new(CLAMP_CACHE_LIMIT, CLAMP_CACHE_BYTES),
+            advance_cache: TextCache::new(CLAMP_CACHE_LIMIT, 2 * CLAMP_CACHE_BYTES),
             generation: 0,
             layout_epoch: Arc::new(()),
             distinct_letters: false,
@@ -2243,6 +2268,7 @@ impl TextRenderer {
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
         self.clamp_cache.clear();
+        self.advance_cache.clear();
         // Entries key on `generation` so stale ones would never match
         // anyway; the explicit clear reclaims their memory immediately.
         self.shape_cache.clear();
@@ -2510,63 +2536,77 @@ impl TextRenderer {
         if self.measure_style_cold(text, None, style).0 <= max_width {
             return text.to_string();
         }
-        // Byte offsets where a cut may fall: the start of every grapheme
-        // cluster after the first. Cutting at index `i` keeps `text[..cuts[i]]`.
-        let cuts: Vec<usize> = crate::text_break::grapheme_indices(text)
-            .map(|(start, _)| start)
-            .filter(|&start| start > 0)
-            .collect();
-        let candidate = |end: usize| {
-            let mut kept = text.get(..end).unwrap_or_default().trim_end().to_string();
-            kept.push(ELLIPSIS);
-            kept
+        match self.ltr_advances(text, style) {
+            Some(advances) => self.elide_on_advances(text, 0, max_width, style, &advances),
+            None => self.elide_measuring(text, max_width, style, None),
+        }
+    }
+
+    /// Elide `text[from..]`, which does not fit `max_width`, searching its
+    /// cuts on `advances` (of all of `text`) and confirming the cut found
+    /// with a measure of its own: shaping every probed prefix was most of
+    /// laying out a page of titles. A cut the estimate let overrun hands the
+    /// cuts before it to [`Self::elide_measuring`].
+    fn elide_on_advances(
+        &mut self,
+        text: &str,
+        from: usize,
+        max_width: f32,
+        style: &TextStyle,
+        advances: &LineAdvances,
+    ) -> String {
+        let slice = text.get(from..).unwrap_or_default();
+        let cuts = elision_cuts(slice);
+        let ellipsis = self
+            .measure_style_cold(ELLIPSIS.encode_utf8(&mut [0; 4]), None, style)
+            .0;
+        let estimate = |end: usize| {
+            let kept = slice.get(..end).unwrap_or_default().trim_end().len();
+            advances.width(from, from.saturating_add(kept)) + ellipsis
         };
-        // Invariant: every cut below `lo` fits, every cut at or past `hi`
-        // does not.
-        let (mut lo, mut hi) = (0usize, cuts.len());
-        if let Some(advances) = self.ltr_advances(text, style) {
-            // Search on the advances of one shape of the whole text, then
-            // confirm the cut found with a measure of its own: shaping every
-            // probed prefix was most of laying out a page of titles.
-            let ellipsis = self
-                .measure_style_cold(ELLIPSIS.encode_utf8(&mut [0; 4]), None, style)
-                .0;
-            let estimate = |end: usize| {
-                let kept = text.get(..end).unwrap_or_default().trim_end().len();
-                advances.width(0, kept) + ellipsis
-            };
-            let (mut low, mut high) = (0usize, cuts.len());
-            while low < high {
-                let mid = low.midpoint(high);
-                if estimate(cuts.get(mid).copied().unwrap_or_default()) <= max_width {
-                    low = mid.saturating_add(1);
-                } else {
-                    high = mid;
-                }
-            }
-            match low.checked_sub(1).and_then(|i| cuts.get(i)) {
-                None => return ELLIPSIS.to_string(),
-                Some(&end) => {
-                    let kept = candidate(end);
-                    if self.measure_style_cold(&kept, None, style).0 <= max_width {
-                        return kept;
-                    }
-                    // The estimate was short: search the cuts before it.
-                    hi = low.saturating_sub(1);
-                }
+        let (mut low, mut high) = (0usize, cuts.len());
+        while low < high {
+            let mid = low.midpoint(high);
+            if estimate(cuts.get(mid).copied().unwrap_or_default()) <= max_width {
+                low = mid.saturating_add(1);
+            } else {
+                high = mid;
             }
         }
+        let Some(&end) = low.checked_sub(1).and_then(|i| cuts.get(i)) else {
+            return ELLIPSIS.to_string();
+        };
+        let kept = elided(slice, end);
+        if self.measure_style_cold(&kept, None, style).0 <= max_width {
+            return kept;
+        }
+        self.elide_measuring(slice, max_width, style, Some(low.saturating_sub(1)))
+    }
+
+    /// Elide `text` by measuring each probed cut, below cut index `below`
+    /// when given (every cut from it on is known not to fit).
+    fn elide_measuring(
+        &mut self,
+        text: &str,
+        max_width: f32,
+        style: &TextStyle,
+        below: Option<usize>,
+    ) -> String {
+        let cuts = elision_cuts(text);
+        // Invariant: every cut below `lo` fits, every cut at or past `hi`
+        // does not.
+        let (mut lo, mut hi) = (0usize, below.unwrap_or(cuts.len()).min(cuts.len()));
         while lo < hi {
             let mid = lo.midpoint(hi);
             let end = cuts.get(mid).copied().unwrap_or_default();
-            if self.measure_style_cold(&candidate(end), None, style).0 <= max_width {
+            if self.measure_style_cold(&elided(text, end), None, style).0 <= max_width {
                 lo = mid.saturating_add(1);
             } else {
                 hi = mid;
             }
         }
         match lo.checked_sub(1).and_then(|i| cuts.get(i)) {
-            Some(&end) => candidate(end),
+            Some(&end) => elided(text, end),
             None => ELLIPSIS.to_string(),
         }
     }
@@ -2626,24 +2666,37 @@ impl TextRenderer {
         if max_lines == 1 {
             return vec![self.elide_to_width_style(text, max_width, style)];
         }
-        let wrapped = self.wrap_lines(text, style, max_width);
-        if wrapped.len() <= max_lines {
+        let advances = self.ltr_advances(text, style);
+        // Only as many lines as are kept are wrapped: the rest is elided
+        // from where the last kept line starts.
+        let (wrapped, more) =
+            self.wrap_from(text, style, max_width, max_lines, advances.as_deref());
+        if !more {
             return wrapped
                 .into_iter()
-                .map(|line| self.elide_to_width_style(&line, max_width, style))
+                .map(|(_, line)| self.elide_to_width_style(&line, max_width, style))
                 .collect();
         }
-        // Keep the first `max_lines - 1` whole lines, then merge the rest
-        // onto the final line and elide it as the truncation marker.
-        let (head, tail) = wrapped
-            .split_at_checked(max_lines.saturating_sub(1))
-            .unwrap_or((&wrapped, &[]));
-        let mut kept: Vec<String> = head
+        let last = wrapped
+            .get(max_lines.saturating_sub(1))
+            .map_or(0, |(start, _)| *start);
+        let mut kept: Vec<String> = wrapped
             .iter()
-            .map(|line| self.elide_to_width_style(line, max_width, style))
+            .take(max_lines.saturating_sub(1))
+            .map(|(_, line)| self.elide_to_width_style(line, max_width, style))
             .collect();
-        let remainder: String = tail.join(" ");
-        kept.push(self.elide_to_width_style(&remainder, max_width, style));
+        let rest = text
+            .get(last..)
+            .unwrap_or_default()
+            .trim_end_matches(collapsible_edge);
+        kept.push(match &advances {
+            Some(advances) => {
+                let line_end = last.saturating_add(rest.len());
+                let whole = text.get(..line_end).unwrap_or_default();
+                self.elide_on_advances(whole, last, max_width, style, advances)
+            }
+            None => self.elide_to_width_style(rest, max_width, style),
+        });
         kept
     }
 
@@ -2652,40 +2705,71 @@ impl TextRenderer {
     /// slice of it is then the sum of the advances inside that slice, short
     /// only of kerning across its ends. `None` for text with right-to-left
     /// glyphs or more than one line, whose slices are measured one by one.
-    fn ltr_advances(&mut self, text: &str, style: &TextStyle) -> Option<LineAdvances> {
+    /// Kept per text and style, so clamping it at another width does not
+    /// shape it again.
+    fn ltr_advances(&mut self, text: &str, style: &TextStyle) -> Option<Arc<LineAdvances>> {
+        self.sync_distinct_letters();
+        let input = CacheQuery::new(text, style);
+        let key = input.key(None, self.generation, self.text_scale);
+        if let Some(advances) = self.advance_cache.get(&key) {
+            return advances.clone();
+        }
         let scaled = self.scaled_style(style);
         let prepared = self.shape_buffer(text, None, &scaled);
         let mut runs = prepared.buffer.layout_runs();
-        let run = runs.next()?;
-        if run.rtl || runs.next().is_some() {
-            return None;
-        }
-        run.glyphs
-            .iter()
-            .map(|glyph| (!glyph.level.is_rtl()).then_some((glyph.start, glyph.end, glyph.w)))
-            .collect::<Option<Vec<_>>>()
-            .map(LineAdvances)
+        let advances = runs.next().and_then(|run| {
+            if run.rtl || runs.next().is_some() {
+                return None;
+            }
+            run.glyphs
+                .iter()
+                .map(|glyph| (!glyph.level.is_rtl()).then_some((glyph.start, glyph.end, glyph.w)))
+                .collect::<Option<Vec<_>>>()
+                .map(|glyphs| Arc::new(LineAdvances(glyphs)))
+        });
+        let bytes = advances.as_ref().map_or(0, |advances| {
+            advances
+                .0
+                .len()
+                .saturating_mul(std::mem::size_of::<(usize, usize, f32)>())
+        });
+        self.advance_cache.insert(key, advances.clone(), bytes);
+        advances
     }
 
     /// Greedy UAX #14 wrap of `text` at `max_width`. This handles scripts that
     /// do not use ASCII spaces, keeps non-breaking spaces intact, and honors
     /// explicit mandatory breaks. An unbreakable segment wider than the budget
     /// stays on its own line; [`Self::clamp_to_lines`] elides it if necessary.
+    #[cfg(test)]
     pub(crate) fn wrap_lines(
         &mut self,
         text: &str,
         style: &TextStyle,
         max_width: f32,
     ) -> Vec<String> {
-        fn collapsible_edge(character: char) -> bool {
-            matches!(character, ' ' | '\t' | '\n' | '\r')
-        }
-
-        let opportunities: Vec<_> = line_break_opportunities(text).collect();
-        // Each break is found on the advances of one shape of the whole text
-        // and confirmed by measuring its line, instead of shaping every
-        // prefix up to it.
         let advances = self.ltr_advances(text, style);
+        self.wrap_from(text, style, max_width, usize::MAX, advances.as_deref())
+            .0
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect()
+    }
+
+    /// At most `limit` lines of the greedy UAX #14 wrap of `text` at
+    /// `max_width`, each with the byte it starts at, and whether text follows
+    /// the last of them. With `advances` each break is found on them and
+    /// confirmed by measuring its line, instead of shaping every prefix up to
+    /// it.
+    fn wrap_from(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: f32,
+        limit: usize,
+        advances: Option<&LineAdvances>,
+    ) -> (Vec<(usize, String)>, bool) {
+        let opportunities: Vec<_> = line_break_opportunities(text).collect();
         let mut lines = Vec::new();
         let mut start = 0usize;
         while start < text.len() {
@@ -2698,6 +2782,9 @@ impl TextRenderer {
             if start == text.len() {
                 break;
             }
+            if lines.len() >= limit {
+                return (lines, true);
+            }
 
             let mut first = None;
             let mut fitting = Vec::new();
@@ -2707,7 +2794,7 @@ impl TextRenderer {
                     .get(start..end)
                     .unwrap_or_default()
                     .trim_end_matches(collapsible_edge);
-                let fits = match &advances {
+                let fits = match advances {
                     Some(advances) => {
                         advances.width(start, start.saturating_add(candidate.len())) <= max_width
                     }
@@ -2740,11 +2827,11 @@ impl TextRenderer {
                 .unwrap_or_default()
                 .trim_end_matches(collapsible_edge);
             if !line.is_empty() {
-                lines.push(line.to_string());
+                lines.push((start, line.to_string()));
             }
             start = end;
         }
-        lines
+        (lines, false)
     }
 
     pub fn draw_text(
