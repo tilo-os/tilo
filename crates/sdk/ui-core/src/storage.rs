@@ -325,12 +325,17 @@ struct Change {
 /// key wins and what other processes stored meanwhile is kept. A writer on
 /// any other thread stores the queue first, so changes land in the order
 /// they were made in that document.
+///
+/// Each document has a job of its own, scheduled on the background of the
+/// thread that queued its first change, and that job stores that document's
+/// changes alone: a document's changes never wait for, nor are stored by,
+/// the job of another (another window's, or another test's profile).
 struct Queue {
     pending: Vec<Change>,
     /// Batches removed after a store, so readers can detect a stale file.
     retired: u64,
-    /// A background job is to store the queue.
-    scheduled: bool,
+    /// The documents a background job is to store.
+    scheduled: Vec<SettingsDocument>,
     /// A thread is writing the oldest changes.
     writing: bool,
     /// The window to wake when a change could not be stored, so it shows
@@ -341,7 +346,7 @@ struct Queue {
 static QUEUE: std::sync::Mutex<Queue> = std::sync::Mutex::new(Queue {
     pending: Vec::new(),
     retired: 0,
-    scheduled: false,
+    scheduled: Vec::new(),
     writing: false,
     wake: None,
 });
@@ -358,30 +363,38 @@ fn wait(queue: std::sync::MutexGuard<'static, Queue>) -> std::sync::MutexGuard<'
 }
 
 fn defer(change: Change) {
+    let document = change.document.clone();
     let mut queue = lock_queue();
     queue.pending.push(change);
     queue.wake = Some(crate::WakeHandle::new());
-    if std::mem::replace(&mut queue.scheduled, true) {
+    if queue.scheduled.contains(&document) {
         return;
     }
+    queue.scheduled.push(document.clone());
     drop(queue);
     // A host with no background work stores it here rather than lose it.
+    let job = document.clone();
     if crate::background::Background::current()
-        .spawn("settings writes", store_queue)
+        .spawn("settings writes", move || store_queue(&job))
         .is_err()
     {
-        store_queue();
+        store_queue(&document);
     }
 }
 
-/// The background job: store the queue until it is empty.
-fn store_queue() {
+/// The background job of `document`: store its queued changes until there
+/// are none.
+fn store_queue(document: &SettingsDocument) {
     loop {
-        store_pending(None);
+        store_pending(Some(document));
         let mut queue = lock_queue();
         // A change queued after the last batch found this job scheduled.
-        if queue.pending.is_empty() {
-            queue.scheduled = false;
+        if !queue
+            .pending
+            .iter()
+            .any(|change| change.document == *document)
+        {
+            queue.scheduled.retain(|scheduled| scheduled != document);
             STORED.notify_all();
             return;
         }
@@ -460,7 +473,7 @@ pub fn flush_settings_writes() {
         return;
     }
     let mut queue = lock_queue();
-    while queue.scheduled {
+    while !queue.scheduled.is_empty() {
         queue = wait(queue);
     }
 }
@@ -935,9 +948,9 @@ mod tests {
                 assert_eq!(document.section("playback")["autoplay"], false);
                 std::thread::scope(|scope| {
                     scope.spawn(|| {
-                        // Drain even if another parallel test owns the
-                        // scheduled job for the process-wide queue.
-                        flush_settings_writes();
+                        // Off the UI thread, this document's changes
+                        // first; then its own job, which finds none.
+                        store_pending(Some(&document));
                         work.run_pending();
                     });
                 });
