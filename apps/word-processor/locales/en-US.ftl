@@ -7,6 +7,7 @@
 ## Toolbar button faces (the terse, visible labels)
 toolbar-format = Format
 toolbar-insert = Insert
+document-untitled = Document
 toolbar-file = File
 toolbar-table = Table
 toolbar-link = Link

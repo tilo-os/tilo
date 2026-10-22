@@ -1165,17 +1165,40 @@ impl ContactsApp {
         }
     }
 
+    /// What the bar names: the person being written, the person shown
+    /// (beside the list, or pushed over it in a narrow window), else the
+    /// list.
+    fn location_label(&self) -> String {
+        if let Some(form) = self.form.as_ref().filter(|_| self.mode == Mode::Edit) {
+            let draft = &form.draft;
+            let unnamed = [&draft.first, &draft.last, &draft.org]
+                .iter()
+                .all(|part| part.trim().is_empty());
+            return if form.is_new && unnamed {
+                "New contact".to_owned()
+            } else {
+                draft.display_name()
+            };
+        }
+        let list_in_front =
+            !self.shell.geometry().stack.is_empty() && self.shell.front_pane() != NavPane::Content;
+        if !list_in_front && let Some(contact) = self.selected.and_then(|id| self.store.contact(id))
+        {
+            return contact.display_name();
+        }
+        self.destination_label()
+            .unwrap_or_else(|| "All contacts".to_owned())
+    }
+
     /// The window bar's slots ([`ui::window_toolbar`]): the shell's own,
-    /// the list as the window's location, New contact and what can be done
+    /// what is open as the window's location, New contact and what can be done
     /// to the person shown (or Save and Cancel while editing them), and
     /// import, export and a duplicate's review in the bar's menu.
     fn window_toolbar(&self) -> ui::window_toolbar::WindowToolbar {
         use ui::window_toolbar::{ToolbarAction, ToolbarLocation};
         let mut toolbar = self.shell.window_toolbar();
         toolbar.location = Some(ToolbarLocation {
-            label: self
-                .destination_label()
-                .unwrap_or_else(|| "All contacts".to_owned()),
+            label: self.location_label(),
             ..ToolbarLocation::default()
         });
         let mut actions = Vec::new();

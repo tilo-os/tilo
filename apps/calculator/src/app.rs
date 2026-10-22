@@ -1843,6 +1843,15 @@ mod tests {
             toolbar.views.as_ref().map(|views| views.chosen.as_str()),
             Some("calculator.mode:0")
         );
+        // USER REQUIREMENT (2026-10-22): "the bar always names what you're
+        // looking at." Calculator: its mode.
+        assert_eq!(
+            toolbar
+                .location
+                .as_ref()
+                .map(|location| location.label.as_str()),
+            Some("Calculator")
+        );
         assert!(
             toolbar
                 .actions
