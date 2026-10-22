@@ -65,6 +65,15 @@ prove it survives a reset. It is a per-device flag that only that method sets,
 so it is inert in every other build; the change is `DeviceShared::simulated_loss`
 and an early return in `Device::wait` (`src/vulkan/device.rs`).
 
+`vulkan::Device::simulate_hang` makes that device's GPU stop finishing work without
+reporting anything, as a GPU whose firmware stopped answering does while its kernel
+driver cannot reset it: `get_fence_value` stays at the last value it read before the
+call, and a wait for a later value sleeps out its timeout and reports it unreached
+(one without a timeout never returns). Toolkit and compositor tests use it to prove a
+GPU that stopped making progress is detected as lost. Like the loss switch it is a
+per-device flag only that method sets; the change is `DeviceShared::{fence_value_seen,
+hung_at}` and early returns in `Device::{get_fence_value, wait}`.
+
 ## Vulkan presentation damage
 
 `vulkan::Surface::set_next_present_damage` supplies bounded framebuffer
