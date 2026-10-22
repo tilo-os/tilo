@@ -61,6 +61,7 @@ pub mod search_type;
 pub mod seed;
 pub mod storage;
 pub mod stream;
+pub mod views;
 pub use app::{MusicApp, View};
 pub use search_type::{MusicSearchProvider, SearchHit, SearchableType};
 
