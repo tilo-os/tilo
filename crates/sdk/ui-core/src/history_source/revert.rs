@@ -564,20 +564,61 @@ pub fn revert_changes(
 }
 
 /// The changes `entries` name, each with the actor whose work it is, newest
-/// first: what [`revert_changes`] takes. An entry not in `doc` is skipped.
+/// first: what [`revert_changes`] takes. An entry is a History row, so it
+/// names every change of a person's typing it stands for
+/// ([`super::typing`]). An entry not in `doc` is skipped.
 pub fn changes_of_entries(
     doc: &mut AutoCommit,
     entries: &[HistoryEntryId],
 ) -> Vec<(ChangeHash, String)> {
-    let mut found: Vec<(ChangeHash, String)> = doc
+    let changes: Vec<(ChangeHash, String, i64)> = doc
         .get_changes(&[])
         .into_iter()
-        .filter(|change| entries.contains(&entry_id_from_hash(&change.hash().to_string())))
-        .map(|change| (change.hash(), change.actor_id().to_hex_string()))
+        .map(|change| {
+            (
+                change.hash(),
+                change.actor_id().to_hex_string(),
+                change.timestamp().saturating_mul(1000),
+            )
+        })
+        .collect();
+    // Each change's run, in the log's order: a typing run's changes share
+    // one, every other change is a run of its own.
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    let mut typing = super::typing::TypingRuns::<usize>::default();
+    for (index, (hash, actor, time_ms)) in changes.iter().enumerate() {
+        let typed = tilo_actions::entry_of(doc.committed_document(), *hash)
+            .as_ref()
+            .and_then(super::typing::TypedField::of);
+        if let Some(&mut run) = typing.continues(actor, typed.as_ref(), *time_ms)
+            && let Some(members) = runs.get_mut(run)
+        {
+            members.push(index);
+            continue;
+        }
+        if let Some(field) = typed {
+            typing.start(actor, field, *time_ms, runs.len());
+        }
+        runs.push(vec![index]);
+    }
+    let mut selected: Vec<usize> = runs
+        .into_iter()
+        .filter(|members| {
+            members.iter().any(|&index| {
+                changes.get(index).is_some_and(|(hash, _, _)| {
+                    entries.contains(&entry_id_from_hash(&hash.to_string()))
+                })
+            })
+        })
+        .flatten()
         .collect();
     // `get_changes` lists them in causal order; undo the newest first.
-    found.reverse();
-    found
+    selected.sort_unstable_by(|a, b| b.cmp(a));
+    selected
+        .into_iter()
+        .filter_map(|index| changes.get(index))
+        .map(|(hash, actor, _)| (*hash, actor.clone()))
+        .collect()
 }
 
 /// The contiguous run of changes authored by `actor_hex`, ending at the

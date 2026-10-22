@@ -48,6 +48,7 @@ pub mod schema_ops;
 pub mod seen;
 pub mod sentence;
 pub mod steps;
+pub mod typing;
 pub(crate) use authors::room_agents_revision;
 pub use authors::{
     AuthorDirectory, HistoryAgent, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,

@@ -1294,3 +1294,58 @@ fn passed_over_changes_make_no_row_and_take_no_place_in_the_window() {
     let (fresh, _) = read_since(&viewer, &mut doc, &mut scratch);
     assert_eq!(fresh, rows);
 }
+
+#[test]
+fn typing_in_one_field_is_one_change_until_the_person_stops() {
+    use tilo_actions::{ActionContext, ActionId, Did, EditOp, FieldEdit, PathStep, Scalar};
+    let typed = |row: &str, text: &str| ActionContext {
+        what: Some(Did::Edit(FieldEdit {
+            ty: "plot-fn".into(),
+            field: "expr".into(),
+            path: vec![
+                PathStep::Field("funcs".into()),
+                PathStep::Item(row.into()),
+                PathStep::Field("expr".into()),
+            ],
+            op: EditOp::Replace,
+            old: None,
+            new: Some(Scalar::text(text)),
+            args: std::collections::BTreeMap::new(),
+        })),
+        gesture: Some(ActionId::new()),
+        ..ActionContext::default()
+    };
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from(b"typist".as_slice()));
+    let type_at = |doc: &mut AutoCommit, row: &str, text: &str, secs: i64| {
+        doc.put(ROOT, row, text).unwrap();
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(secs)
+                .with_message(typed(row, text).change_message().unwrap()),
+        );
+    };
+    for (secs, text) in [(100, "sin"), (101, "sin("), (102, "sin(x"), (103, "sin(x)")] {
+        type_at(&mut doc, "a", text, secs);
+    }
+    type_at(&mut doc, "b", "x", 104);
+    type_at(&mut doc, "b", "x/2", 105);
+    type_at(&mut doc, "a", "sin(x)+1", 105 + 60);
+
+    let rows = HistorySource::new().entries(&mut doc);
+    let formulas: Vec<String> = rows
+        .iter()
+        .filter_map(|row| match row.context.as_ref()?.what.as_ref()? {
+            Did::Edit(edit) => edit.new.as_ref()?.as_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(formulas, ["sin(x)", "x/2", "sin(x)+1"], "{rows:?}");
+
+    let first = rows
+        .iter()
+        .find(|row| row.timestamp == timestamp_from_ms(103_000))
+        .expect("the first row is as of its last keystroke");
+    let changes = revert::changes_of_entries(&mut doc, &[first.id]);
+    assert_eq!(changes.len(), 4, "restoring the row takes back all of it");
+}
