@@ -204,20 +204,27 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     {
         let tree = tree_with_seeded_roster();
 
-        let (general_fills, _) = render_with_ws_settings_tab(&tree, WsTab::General);
-        let (roles_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Members);
-
-        // Members pane paints row-card + avatar + role-chip + Remove button per
-        // member (>= 4 fills each); a 3-person roster clears the 20 threshold.
-        let diff = roles_fills.abs_diff(general_fills);
-        assert!(
-            diff >= 20,
-            "Switching to the Members tab must change the rendered output by
-             at least 20 solid-colour fills (a row card + avatar + role chip +
-             Remove button per member of the real roster). \
-             Observed |members_fills - general_fills| = {diff} (general={general_fills}, \
-             members={roles_fills}). If this drops to 0 the modal body is not \
-             per-tab branching at all."
+        // One row per member of the real roster, on the Members tab only.
+        // Counted as the rows the pane lays out, not as painted fills: the
+        // rows are the design system's list rows, and the owner's own row
+        // offers no role choice or Remove, so a fill count says nothing
+        // stable about how many people are shown.
+        let roster = tree
+            .desktop
+            .active_workspace()
+            .expect("fixture workspace")
+            .roster()
+            .len();
+        assert!(roster >= 3, "the fixture seeds a roster");
+        assert_eq!(
+            member_rows_on_tab(&tree, WsTab::Members),
+            roster,
+            "the Members tab shows one row per member of the real roster"
+        );
+        assert_eq!(
+            member_rows_on_tab(&tree, WsTab::General),
+            0,
+            "the General tab shows no member rows: the modal body branches per tab"
         );
     }
 
@@ -523,6 +530,30 @@ fn tree_with_seeded_roster() -> WorkspaceTree {
         }
     }
     tree
+}
+
+/// How many member rows Workspace Settings lays out with `tab` open.
+fn member_rows_on_tab(tree: &WorkspaceTree, tab: WsTab) -> usize {
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = tab;
+    }
+    lay_out(&mut host, W, H);
+    host.force_ws_settings_settled();
+    lay_out(&mut host, W, H);
+    let mut tr = TextRenderer::new();
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    host.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &Theme::dark(),
+        &presence,
+    );
+    host.member_control_rects().len()
 }
 
 /// Render with the modal open at the given tab. `ws_settings_tab` is the
