@@ -59,8 +59,8 @@ impl ShellOverlayHost {
     /// since the group's active tile rect *is* the surface's rect.
     ///
     /// SAFETY mirrors [`Self::groups_per_strip`].
-    /// Where the open file chooser sits this frame: a sheet on the window
-    /// that asked while that window is in front of its group and laid out,
+    /// Where the open file chooser sits this frame: a system sheet centred
+    /// on the display of the window that asked while that window is in front of its group and laid out,
     /// waiting out of sight otherwise; over the display in use when no
     /// window of the app asked.
     pub(crate) fn file_picker_place(&self) -> crate::shell::file_picker_overlay::PickerPlace {

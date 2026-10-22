@@ -97,8 +97,8 @@ pub struct FilePickerRequest {
     pub caller: PortalCaller,
     /// The window the app says it asks from: the portal's `parent_window`
     /// handle (`wayland:<exported handle>` or `x11:<window id>`), `None`
-    /// when the app named none. The dialog is a sheet on the asking window;
-    /// the shell picks that window among the caller's own
+    /// when the app named none. The dialog is a system sheet for the asking
+    /// window, which it dims and closes to input; the shell picks that window among the caller's own
     /// ([`crate::shell::file_picker_overlay`]), so a handle can only narrow
     /// the choice, never point the sheet at another app's window.
     pub parent_window: Option<String>,
