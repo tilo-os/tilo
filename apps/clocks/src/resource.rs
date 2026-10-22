@@ -132,12 +132,7 @@ impl ResourceApp for ClocksShell {
     }
 
     fn launch_record(input: &LaunchInput<'_>) -> Option<ui::record::RecordId> {
-        let uri = input.arguments().first()?;
-        let path = uri.strip_prefix("tilo-clocks:record/")?;
-        let record = path
-            .split_once("/alarm/")
-            .map_or(path, |(record, _)| record);
-        ui::record::RecordId::parse(record)
+        crate::native_timers::activation_record(input.arguments().first()?)
     }
 
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Clocks>> {
