@@ -23,7 +23,7 @@ fn tr(key: &str) -> String {
 #[effect(operation = "chip_design.effect")]
 pub enum ChipEffect {
     /// Import analytical report from the host's consented file chooser.
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
     ImportFile,
     /// Open the structural operator graph.
     #[effect(view, kind = "read")]

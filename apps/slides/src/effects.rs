@@ -67,13 +67,13 @@ pub enum SlidesEffect {
     ///
     /// Choose a picture with the system picker and place it on the current
     /// slide.
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
     InsertPicture,
     /// Open presentation
     ///
     /// Replace the deck with an ODP or PPTX file: the one at `path`, or one
     /// chosen with the system picker.
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, destructive)]
     OpenPresentation {
         #[param("Absolute path of the presentation; omit to use the system picker")]
         path: Option<String>,
@@ -82,7 +82,7 @@ pub enum SlidesEffect {
     ///
     /// Write the deck as ODP (or PPTX, by the file's extension) to `path`, or
     /// where the person chooses with the system picker.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable)]
     SaveAs {
         #[param("Absolute path to write; omit to use the system picker")]
         path: Option<String>,

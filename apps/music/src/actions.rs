@@ -225,57 +225,55 @@ pub enum MusicEffect {
     /// Choose music source
     ///
     /// Opens the source picker without starting sign-in or changing a grant.
-    #[effect(device_only)]
     Sources,
     /// Enable full Spotify library and device controls
     ///
     /// Explicitly requests editing, playlist, followed-artist and remote-device permissions.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ConnectSpotifyLibrary,
     /// Connect Spotify
     ///
     /// Requests profile and saved-library read access, without editing or remote control.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ConnectSpotify,
     /// Authorize Spotify playback
     ///
     /// Separately grants native streaming for the same Premium account.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ConnectSpotifyPlayback,
     /// Inspect Spotify account eligibility
     /// Reads existing grants only; returns product classifications and account matching.
-    #[effect(job, device_only, returns, idempotent, kind = "read")]
+    #[effect(job, returns, idempotent, kind = "read")]
     SpotifyAccountStatus,
     /// Refresh Spotify devices
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyDevices,
     /// Show Spotify's remote queue
     ///
     /// Reads a provider snapshot; never replaces this device's queue.
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyQueue,
     /// Load more Spotify library collections
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyLibraryMore,
     /// Name a new private Spotify playlist
-    #[effect(device_only)]
     NewSpotifyPlaylist,
     /// Create private Spotify playlist
     ///
     /// Creates an empty private playlist. Refresh before retrying an uncertain result.
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyCreatePlaylist {
         #[param("Playlist name")]
         name: String,
     },
     /// Transfer Spotify playback
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyTransfer {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Play on a Spotify device
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyRemotePlay {
         #[param("Spotify Connect device ID")]
         device: String,
@@ -283,25 +281,25 @@ pub enum MusicEffect {
         track: String,
     },
     /// Pause a Spotify device
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyRemotePause {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Save to Spotify library
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifySave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Remove from Spotify library
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyUnsave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Rename Spotify playlist
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyRenamePlaylist {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -309,7 +307,7 @@ pub enum MusicEffect {
         name: String,
     },
     /// Add to Spotify playlist
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyPlaylistAdd {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -319,7 +317,7 @@ pub enum MusicEffect {
     /// Remove from Spotify playlist
     ///
     /// Removes every occurrence of the track from this Spotify playlist.
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyPlaylistRemove {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -329,27 +327,27 @@ pub enum MusicEffect {
     /// Disconnect Spotify
     ///
     /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
-    #[effect(job, device_only)]
+    #[effect(job)]
     DisconnectSpotify,
     /// Browse Spotify
-    #[effect(job, device_only)]
+    #[effect(job)]
     BrowseSpotify,
     /// Browse `YouTube` Music
-    #[effect(job, device_only)]
+    #[effect(job)]
     BrowseYouTube,
 
     /// Search the remote catalogue
     /// Results join the canonical search index after the worker answers.
-    #[effect(job, device_only, kind = "read")]
+    #[effect(job, kind = "read")]
     Search { query: String },
     /// Inspect playback
     /// Device-local transport observations, with no account or credential data.
-    #[effect(row, device_only, returns, idempotent, kind = "read")]
+    #[effect(row, returns, idempotent, kind = "read")]
     PlaybackStatus,
     /// Open audio file
     ///
     /// Plays a local audio file the person chooses on this device.
-    #[effect(job, device_only, returns)]
+    #[effect(attended, job, returns)]
     OpenFile,
     /// Open
     #[effect(view, row)]

@@ -17,7 +17,7 @@ pub enum SheetsEffect {
     /// Import CSV
     ///
     /// Adds a CSV file as a new sheet.
-    #[effect(job, cancellable, device_only, opens_path = "csv")]
+    #[effect(job, cancellable, opens_path = "csv")]
     ImportCsv {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
@@ -25,7 +25,7 @@ pub enum SheetsEffect {
     /// Import Excel workbook
     ///
     /// Adds every sheet of an `.xlsx` workbook.
-    #[effect(job, cancellable, device_only, opens_path = "xlsx")]
+    #[effect(job, cancellable, opens_path = "xlsx")]
     ImportXlsx {
         #[param("Path of the file; omit to choose one")]
         path: Option<String>,
@@ -34,7 +34,6 @@ pub enum SheetsEffect {
     #[effect(
         job,
         cancellable,
-        device_only,
         opens_path = "ods",
         label = "Import OpenDocument spreadsheet"
     )]
@@ -45,7 +44,7 @@ pub enum SheetsEffect {
     /// Export CSV
     ///
     /// Saves what the active sheet shows as a CSV file.
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, destructive)]
     ExportCsv {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
@@ -53,7 +52,7 @@ pub enum SheetsEffect {
     /// Export Excel workbook
     ///
     /// Saves every sheet as an `.xlsx` workbook.
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, destructive)]
     ExportXlsx {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
@@ -63,7 +62,6 @@ pub enum SheetsEffect {
         job,
         cancellable,
         destructive,
-        device_only,
         label = "Export OpenDocument spreadsheet"
     )]
     ExportOds {

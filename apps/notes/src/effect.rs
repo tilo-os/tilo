@@ -47,7 +47,7 @@ pub enum NotesEffect {
     /// Import Markdown
     ///
     /// Choose a Markdown file and add it to the notebook as a note.
-    #[effect(job, cancellable, device_only)]
+    #[effect(attended, job, cancellable)]
     ImportMarkdownFile,
     /// Import Markdown content
     ///
@@ -62,7 +62,7 @@ pub enum NotesEffect {
     /// Export Markdown
     ///
     /// Save a note as a Markdown file, its images inside it.
-    #[effect(job, cancellable, device_only, row, item = pages)]
+    #[effect(attended, job, cancellable, row, item = pages)]
     ExportMarkdown {
         #[param("The note")]
         page: Uuid,
@@ -70,7 +70,7 @@ pub enum NotesEffect {
     /// Insert image
     ///
     /// Choose an image and add it to a note.
-    #[effect(job, cancellable, device_only, row, item = pages)]
+    #[effect(attended, job, cancellable, row, item = pages)]
     InsertImage {
         #[param("The note")]
         page: Uuid,
@@ -78,7 +78,7 @@ pub enum NotesEffect {
     /// Copy note link
     ///
     /// Copy a link to a note that pastes into another note.
-    #[effect(device_only, row, item = pages)]
+    #[effect(row, item = pages)]
     CopyLink {
         #[param("The note")]
         page: Uuid,
@@ -86,7 +86,7 @@ pub enum NotesEffect {
     /// Open link
     ///
     /// Open a web or mail link in the person's browser.
-    #[effect(job, device_only)]
+    #[effect(job)]
     OpenLink {
         #[param("The address, http(s) or mailto")]
         url: String,

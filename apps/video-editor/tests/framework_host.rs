@@ -272,14 +272,6 @@ fn agent_answer(app: &mut HeadlessApp<VideoEditor>, action: &str) -> ui::permiss
             descriptor.address.action == action && descriptor.resource_kind == Project::KIND
         })
         .unwrap();
-    assert!(
-        !descriptor
-            .contract
-            .tags
-            .iter()
-            .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY),
-        "`{action}` has no rule of its own about who may run it"
-    );
     let need = descriptor.contract.need();
     let node = tilo_actions::action_node(
         &ui::permissions::TreePath::root(),
@@ -293,7 +285,7 @@ fn agent_answer(app: &mut HeadlessApp<VideoEditor>, action: &str) -> ui::permiss
 }
 
 #[test]
-fn an_agent_is_asked_first_before_export_writes_a_file() {
+fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     use ui::permissions::{Answer, LOCAL_ROOM, LOCAL_USER, PermissionContext, Role, policy};
     const AGENT: &str = "renderer";
 
@@ -308,8 +300,11 @@ fn an_agent_is_asked_first_before_export_writes_a_file() {
         PermissionContext::member(LOCAL_USER, Role::Owner)
             .acting_as(policy::Subject::agent(AGENT), grants),
     );
-    // Writing a file is an outside effect: it asks first, like any other.
-    assert_eq!(agent_answer(&mut app, "export"), Answer::Ask);
+    // Reading or writing a file is an outside effect: it asks first, like
+    // any other.
+    for action in ["export", "import", "open-project", "save", "save-as"] {
+        assert_eq!(agent_answer(&mut app, action), Answer::Ask, "{action}");
+    }
     // Rendering into content reads.
     assert_eq!(agent_answer(&mut app, "render"), Answer::Allow);
     // The window's door never runs an ask for someone acting for the

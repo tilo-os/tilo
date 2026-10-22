@@ -52,25 +52,25 @@ pub enum VideoEditorEffect {
         media: String,
     },
     /// Import media.
-    #[effect(job, device_only)]
+    #[effect(job)]
     Import {
         #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
     /// Open project.
-    #[effect(job, device_only)]
+    #[effect(job)]
     OpenProject {
         #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
     /// Save project.
-    #[effect(job, device_only)]
+    #[effect(job)]
     Save {
         #[param("Direct filesystem path; omit to save to the current project file")]
         path: Option<String>,
     },
     /// Save project as.
-    #[effect(job, device_only)]
+    #[effect(job)]
     SaveAs {
         #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,

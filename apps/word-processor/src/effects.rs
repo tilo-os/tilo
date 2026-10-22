@@ -25,7 +25,7 @@ pub enum WordProcessorEffect {
     /// Open document.
     ///
     /// Replaces the document with a file's content; Undo takes it back.
-    #[effect(job, destructive, device_only)]
+    #[effect(job, destructive)]
     OpenDocument {
         #[param("Direct filesystem path; omit to choose one")]
         path: Option<String>,
@@ -33,7 +33,7 @@ pub enum WordProcessorEffect {
     /// Save document.
     ///
     /// Writes the document to its file, or to the one given.
-    #[effect(job, destructive, device_only)]
+    #[effect(job, destructive)]
     Save {
         #[param("Direct filesystem path; omit to save to the document's file")]
         path: Option<String>,
@@ -41,7 +41,7 @@ pub enum WordProcessorEffect {
     /// Save document as.
     ///
     /// Writes the document to a file, in the format its name says.
-    #[effect(job, destructive, device_only)]
+    #[effect(job, destructive)]
     SaveAs {
         #[param("Direct filesystem path; omit to choose one")]
         path: Option<String>,
@@ -52,7 +52,7 @@ pub enum WordProcessorEffect {
     /// `OpenDocument`, RTF, HTML, EPUB or Markdown (a text file as itself),
     /// without opening it; the document here stays as it is. A long file
     /// answers in parts: read on from the `next` an answer gives.
-    #[effect(kind = "read", returns, idempotent, device_only, audience = "agents")]
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ReadFile {
         #[param("Absolute path of the file")]
         file: String,
@@ -80,7 +80,7 @@ pub enum WordProcessorEffect {
     /// under a free name: PDF, Word, `OpenDocument`, Markdown, HTML, RTF or
     /// plain text. The original and the document here stay as they are.
     /// Answers with the new file's path.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     ConvertFile {
         #[param("Absolute path of the file")]
         file: String,

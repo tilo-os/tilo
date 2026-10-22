@@ -34,7 +34,7 @@ pub const MAX_PUBLISHED_CAMERA_DEVICES: usize = 16;
 /// pipeline, the code scanner and the document scanner rides the row of the
 /// same name; choosing a camera rides that camera's row.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
-#[effect(operation = "camera.effect", device_only)]
+#[effect(operation = "camera.effect")]
 pub enum CameraEffect {
     /// Open Camera
     #[effect(view)]
@@ -141,7 +141,7 @@ pub enum CameraEffect {
     ///
     /// Asks for an image with the file chooser and decodes the QR code or
     /// barcode in it, without importing the image.
-    #[effect(row, job)]
+    #[effect(attended, row, job)]
     ImportImage,
     /// Capture document page
     #[effect(row, job, cancellable)]
@@ -158,7 +158,7 @@ pub enum CameraEffect {
     /// Export searchable PDF
     ///
     /// Asks where to save the scanned pages as one searchable PDF.
-    #[effect(row, job)]
+    #[effect(attended, row, job)]
     ExportPdf,
     /// Crop selected page
     #[effect(view, row)]
