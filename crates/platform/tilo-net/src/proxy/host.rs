@@ -912,6 +912,7 @@ impl FetchProxy {
             }
             url = next;
         };
+        log_answer(caller, &method, &url, answer.status(), hop);
         let relayed = Relayed {
             answer: None,
             deadline,
@@ -1422,6 +1423,28 @@ fn log_refusal(caller: Caller, method: &Method, destination: Option<&str>, refus
     }
 }
 
+/// Whether the target's answer with `status` is logged where the host's
+/// operators read: a refusal or a failure upstream is, so a page whose
+/// fetches fail can be diagnosed; a plain answer only at `debug`.
+fn answer_is_notable(status: StatusCode) -> bool {
+    status.is_client_error() || status.is_server_error()
+}
+
+/// One line per relayed request: who asked, the destination's host (never
+/// its path, query, cookies or body), the target's status and how many
+/// redirects led there.
+fn log_answer(caller: Caller, method: &Method, url: &Url, status: StatusCode, redirects: usize) {
+    let device = caller.short();
+    let destination = host_of(url);
+    let notable = answer_is_notable(status);
+    let status = status.as_u16();
+    if notable {
+        tracing::info!(target: "fetch_proxy", device, %method, destination, status, redirects, "upstream refused");
+    } else {
+        tracing::debug!(target: "fetch_proxy", device, %method, destination, status, redirects, "answered");
+    }
+}
+
 /// The target's `answer` from `url` as the page's response, its body
 /// streamed through `relayed` (bounded, on the clock and on the budgets);
 /// refused when it declares a body over the limit.
@@ -1583,6 +1606,21 @@ impl http_body::Body for ProxyBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_upstream_answer_is_logged_by_host_alone_and_failures_stand_out() {
+        let url = Url::parse("https://inv.example.org:8443/api/v1/videos/abc?token=secret#x")
+            .expect("a url");
+        assert_eq!(
+            host_of(&url),
+            "inv.example.org:8443",
+            "no path, query or fragment"
+        );
+        assert!(answer_is_notable(StatusCode::FORBIDDEN));
+        assert!(answer_is_notable(StatusCode::BAD_GATEWAY));
+        assert!(!answer_is_notable(StatusCode::OK));
+        assert!(!answer_is_notable(StatusCode::PARTIAL_CONTENT));
+    }
 
     #[test]
     fn private_and_reserved_addresses_are_not_public() {
