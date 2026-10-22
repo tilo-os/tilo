@@ -19,6 +19,13 @@
 //! the count it answers with, and the app's runtime runs the same
 //! [`SearchDriver`] on its widgets. An app with neither opens the platform
 //! search narrowed to itself, as the control always did.
+//!
+//! An app whose views are queries over its resources offers more than a
+//! list: what is typed turns the window's view into a query view of the
+//! app's resources ([`Queryable`], [`InPlace::Query`]). The field then
+//! searches the whole app in place ("Search Music"), so it offers no
+//! widening to the app; Enter or Down hands the keyboard to the results, and
+//! Escape returns the window to the view it showed before.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -54,14 +61,56 @@ pub enum InPlace {
     Document,
     /// A list ([`Filterable`]): it narrows to what matches.
     List,
+    /// The app's views ([`Queryable`]): the window shows a query view of the
+    /// app's resources.
+    Query,
+}
+
+/// An app whose views are queries over its resources: the window's search
+/// turns the view shown into a query view, and closing it returns to the
+/// view before.
+pub trait Queryable {
+    /// The search opened on the window: the person focused the field and
+    /// may type next (an app warms its remote sources here).
+    fn query_opened(&mut self) {}
+
+    /// What is typed is now `text` (empty when nothing is yet).
+    fn set_query_text(&mut self, text: &str);
+
+    /// Enter or Down in the field: the keyboard goes to the results.
+    fn enter_results(&mut self) {}
+
+    /// The search closed: show the view from before it opened, as it was.
+    fn query_closed(&mut self);
+
+    /// What the field's counter shows, if anything.
+    fn query_count(&self) -> Option<FilterCount> {
+        None
+    }
+}
+
+/// Run `visit` on the first [`Queryable`] in `widget`'s subtree; whether
+/// there was one.
+pub fn with_queryable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Queryable)) -> bool {
+    if let Some(target) = crate::widget::capability::capability_mut::<dyn Queryable>(&mut *widget) {
+        visit(target);
+        return true;
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| with_queryable(child, visit))
 }
 
 impl InPlace {
-    /// What `root`'s widgets offer: a document wins over a list, since a
-    /// window showing both (a sidebar of notes and the open note) is read in
-    /// its document.
+    /// What `root`'s widgets offer: views that are queries win, since such an
+    /// app searches all of itself in place; then a document over a list,
+    /// since a window showing both (a sidebar of notes and the open note) is
+    /// read in its document.
     pub fn of(root: &mut dyn Widget) -> Self {
-        if with_findable(root, &mut |_| ()).is_some() {
+        if with_queryable(root, &mut |_| ()) {
+            Self::Query
+        } else if with_findable(root, &mut |_| ()).is_some() {
             Self::Document
         } else if with_filterable(root, &mut |_| ()) {
             Self::List
@@ -194,6 +243,36 @@ impl SearchDriver {
                     self.count = count.filter(|_| !query.is_empty());
                     self.applied = Some(query.to_owned());
                     touched = true;
+                }
+            }
+            InPlace::Query => {
+                let opening = self.applied.is_none();
+                let changed = self.applied.as_deref() != Some(query);
+                let mut count = None;
+                with_queryable(root, &mut |target| {
+                    if finishing {
+                        target.query_closed();
+                        return;
+                    }
+                    if opening {
+                        target.query_opened();
+                    }
+                    if changed {
+                        target.set_query_text(query);
+                    }
+                    if step == Some(true) {
+                        target.enter_results();
+                    }
+                    count = target.query_count();
+                });
+                if finishing {
+                    self.applied = None;
+                    self.count = None;
+                    touched = true;
+                } else {
+                    touched |= changed || step.is_some();
+                    self.applied = Some(query.to_owned());
+                    self.count = count.filter(|_| !query.is_empty());
                 }
             }
         }
@@ -451,6 +530,13 @@ impl WindowSearch {
     /// with its query selected (so typing replaces it, as Find does).
     pub fn open(&mut self, in_place: InPlace, source: MotionSource) {
         self.in_place = in_place;
+        // A query view searches the whole app: the field says so.
+        let hint = if in_place == InPlace::Query {
+            self.app_label()
+        } else {
+            tr("window-search-placeholder")
+        };
+        self.field.set_placeholder(&hint);
         self.finishing = false;
         self.remote = false;
         self.sent = None;
@@ -556,10 +642,16 @@ impl WindowSearch {
         self.field.select_all();
     }
 
-    /// Step to the next (or previous) match in a document.
+    /// Step to the next (or previous) match in a document; in a query view,
+    /// hand the keyboard to the results.
     pub fn step(&mut self, forward: bool) {
-        if self.in_place == InPlace::Document {
-            self.step = Some(forward);
+        match self.in_place {
+            InPlace::Document => self.step = Some(forward),
+            InPlace::Query if forward => {
+                self.step = Some(true);
+                self.release_keyboard();
+            }
+            _ => {}
         }
     }
 
@@ -718,6 +810,20 @@ impl WindowSearch {
             {
                 self.step(!modifiers.shift_key());
             }
+            // A query view searches the whole app already: Enter and Down go
+            // into its results, and Find again keeps the field.
+            Key::Named(NamedKey::Enter | NamedKey::ArrowDown)
+                if self.in_place == InPlace::Query =>
+            {
+                if !self.field.value().is_empty() {
+                    self.step(true);
+                }
+            }
+            Key::Character(text)
+                if command && text.eq_ignore_ascii_case("f") && self.in_place == InPlace::Query =>
+            {
+                self.field.select_all();
+            }
             // Nothing here matches, or this window has no document to step
             // through: Enter widens to the whole app, as the next step does.
             Key::Named(NamedKey::Enter) if !self.field.value().is_empty() => {
@@ -797,7 +903,8 @@ impl WindowSearch {
         // What follows the field, dropped from the widest reach inwards when
         // the bar is narrow: everywhere, then the app, then the steps.
         let mut want_everywhere = true;
-        let mut want_app = true;
+        // A query view searches the whole app in place already.
+        let mut want_app = self.in_place != InPlace::Query;
         let mut want_steps = stepper;
         let after = |everywhere: bool, app: bool, steps: bool| {
             let mut w = CONTROL_PX + sibling;
@@ -1328,6 +1435,85 @@ mod tests {
         search.close(MotionSource::Pointer);
         search.drive(&mut names);
         assert_eq!(names.shown, 4, "the whole list is back");
+    }
+
+    /// An app whose views are queries: it records what the search told it.
+    #[derive(Default)]
+    struct Views {
+        opened: usize,
+        texts: Vec<String>,
+        entered: usize,
+        closed: usize,
+    }
+
+    impl Queryable for Views {
+        fn query_opened(&mut self) {
+            self.opened += 1;
+        }
+        fn set_query_text(&mut self, text: &str) {
+            self.texts.push(text.to_owned());
+        }
+        fn enter_results(&mut self) {
+            self.entered += 1;
+        }
+        fn query_closed(&mut self) {
+            self.closed += 1;
+        }
+    }
+
+    impl Widget for Views {
+        crate::provides!(dyn Queryable);
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            leaf(taffy, node_map, self)
+        }
+        fn name(&self) -> &'static str {
+            "Views"
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-21): typing into the window bar's search field
+    // turns the window's view into a query view of the app's resources, and
+    // Escape returns to the view before; focusing the field is told to the
+    // app before the first character so it can warm its remote sources.
+    #[test]
+    fn a_query_view_app_hears_the_open_each_keystroke_enter_and_the_close() {
+        let mut views = Views::default();
+        assert_eq!(InPlace::of(&mut views), InPlace::Query);
+        let mut search = WindowSearch::new();
+        search.set_app_name("Music");
+        search.open(InPlace::Query, MotionSource::Keyboard);
+        assert!(search.drive(&mut views));
+        assert_eq!(
+            views.opened, 1,
+            "the field is focused before anything is typed"
+        );
+        assert_eq!(views.texts, [""]);
+        typed(&mut search, "aur");
+        search.drive(&mut views);
+        typed(&mut search, "aurora");
+        search.drive(&mut views);
+        assert_eq!(
+            views.texts,
+            ["", "aur", "aurora"],
+            "each keystroke goes out"
+        );
+        assert!(!search.drive(&mut views), "the same text goes out once");
+        search.step(true);
+        assert!(
+            !search.has_keyboard(),
+            "Enter hands the keyboard to the results"
+        );
+        search.drive(&mut views);
+        assert_eq!(views.entered, 1);
+        search.close(MotionSource::Keyboard);
+        search.drive(&mut views);
+        assert_eq!(views.closed, 1, "Escape returns to the view before");
+        assert_eq!(views.opened, 1);
     }
 
     /// The resting magnifier sits beside the app's own controls, so it says

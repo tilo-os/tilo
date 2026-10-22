@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 11
+version = 12
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -338,6 +338,7 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "SearchOffer::document" = "unit"
 "SearchOffer::list" = "unit"
 "SearchOffer::nothing" = "unit"
+"SearchOffer::query" = "unit"
 "SelectionAnchor" = "struct"
 "SelectionAnchor.excerpt" = "Option<String> optional"
 "SelectionAnchor.interaction" = "Option<InteractionAnchor> optional"

@@ -53,7 +53,7 @@ const TINT_EDGE: f32 = 0.38;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ChipStyle {
     /// The quiet pill: the raised tier with its derived edge and primary
-    /// ink. A selected chip is a lift of its ground.
+    /// ink. A selected chip is the accent washed in, with an accent edge.
     #[default]
     Neutral,
     /// A tone washed into the body and drawn as the edge, with neutral ink
@@ -83,11 +83,19 @@ impl ChipStyle {
         let colors = &theme.tokens.colors;
         match self {
             Self::Neutral => {
-                let state = crate::chrome::SelectionState::new(selected, hovered, false);
-                let tier = crate::chrome::selection_tier_on(theme, state, ground);
                 let raised = colors.surfaces.raised;
                 let (fill, edge) = if selected {
-                    (tier.fill, None)
+                    // Chosen: the accent washed into the body and drawn as
+                    // the edge, clearly apart from the idle chips beside it
+                    // in every theme.
+                    let accent = colors.intent.accent_ink;
+                    let fill = mix8(ground, accent, TINT_FILL);
+                    let fill = if hovered {
+                        colors.lift_on(fill, 0.5)
+                    } else {
+                        fill
+                    };
+                    (fill, Some(mix8(ground, accent, TINT_EDGE)))
                 } else if hovered {
                     (
                         colors.lift_on(raised, 0.5),
@@ -588,6 +596,10 @@ pub struct Chip {
     style: ChipStyle,
     toggled: bool,
     removed: bool,
+    /// Told the new selection each time a person flips a selectable chip.
+    on_toggle: Option<Box<dyn FnMut(bool)>>,
+    /// Told each time a person presses the "×".
+    on_remove: Option<Box<dyn FnMut()>>,
     rect: Rect,
     x_rect: Rect,
     last_cursor: Point,
@@ -631,6 +643,8 @@ impl Chip {
             style: ChipStyle::Neutral,
             toggled: false,
             removed: false,
+            on_toggle: None,
+            on_remove: None,
             rect: Rect::ZERO,
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -734,6 +748,15 @@ impl Chip {
         self
     }
 
+    /// Show the chip as standing for what is applied now (a menu chip whose
+    /// filter has a choice), without making a press flip it: its press stays
+    /// its activation, which opens the menu.
+    #[must_use]
+    pub fn current(mut self, on: bool) -> Self {
+        self.selected = on;
+        self
+    }
+
     /// Show a trailing "×" that removes the chip when clicked.
     #[must_use]
     pub fn removable(mut self) -> Self {
@@ -765,6 +788,43 @@ impl Chip {
         self.selected = on;
     }
 
+    /// Run `f` with the new selection whenever a person flips the chip
+    /// (implies [`selectable`](Self::selectable)): a host that keeps its
+    /// filters elsewhere hears of each change without draining.
+    #[must_use]
+    pub fn on_toggle(mut self, f: impl FnMut(bool) + 'static) -> Self {
+        self.selectable = true;
+        self.on_toggle = Some(Box::new(f));
+        self
+    }
+
+    /// Run `f` whenever a person presses the "×" (implies
+    /// [`removable`](Self::removable)).
+    #[must_use]
+    pub fn on_remove(mut self, f: impl FnMut() + 'static) -> Self {
+        self.removable = true;
+        self.on_remove = Some(Box::new(f));
+        self
+    }
+
+    /// The selection was flipped by a person.
+    fn flipped(&mut self) {
+        self.selected = !self.selected;
+        self.toggled = true;
+        let selected = self.selected;
+        if let Some(on_toggle) = self.on_toggle.as_mut() {
+            on_toggle(selected);
+        }
+    }
+
+    /// The "×" was pressed.
+    fn remove_pressed(&mut self) {
+        self.removed = true;
+        if let Some(on_remove) = self.on_remove.as_mut() {
+            on_remove();
+        }
+    }
+
     /// Drain the "selection toggled" signal (fires once per click on the body
     /// of a selectable chip). Read `is_selected()` for the new value.
     pub fn take_toggled(&mut self) -> bool {
@@ -789,8 +849,7 @@ impl Chip {
     /// Press the body: toggle a filter, or run the bound activation.
     fn press(&mut self) -> bool {
         if self.selectable {
-            self.selected = !self.selected;
-            self.toggled = true;
+            self.flipped();
             return true;
         }
         self.activation.activate()
@@ -992,12 +1051,11 @@ impl Widget for Chip {
                 let over_body = self.hit_rect().contains(self.last_cursor);
                 match state {
                     ElementState::Pressed if over_x => {
-                        self.removed = true;
+                        self.remove_pressed();
                         *ctx.handled = true;
                     }
                     ElementState::Pressed if self.selectable && over_body => {
-                        self.selected = !self.selected;
-                        self.toggled = true;
+                        self.flipped();
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                     }
@@ -1310,9 +1368,14 @@ mod tests {
             assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
             let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
             assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
+            // A chosen chip is the design system's selected treatment, the
+            // accent as wash and edge, unmistakable beside idle ones.
             let chosen = ChipStyle::Neutral.colors(&theme, ground, true, false);
-            assert_ne!(chosen.fill, neutral.fill, "a selected chip is lifted");
-            assert_eq!(chosen.edge, None);
+            assert_ne!(chosen.fill, neutral.fill, "a selected chip is tinted");
+            assert!(chosen.edge.is_some() && chosen.edge != neutral.edge);
+            assert!(
+                crate::a11y::contrast_ratio(chosen.ink, chosen.fill) >= SMALL_TEXT_MIN_CONTRAST
+            );
         }
     }
 
