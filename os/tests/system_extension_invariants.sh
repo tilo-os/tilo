@@ -221,7 +221,7 @@ need "$containerfile" 'systemctl enable tilo-system-extension-dispatcher.socket'
 containerfile_installs_output "$containerfile" tilo-system-extension-manager \
   /usr/libexec/tilo-system-extension-manager \
   || bad 'image does not package privileged BootPack manager'
-need "$containerfile" '-p system-extension' 'image builder does not compile privileged BootPack manager'
+need "$repo/os/image/compile.sh" '-p system-extension' 'image builder does not compile privileged BootPack manager'
 need "$containerfile" 'systemctl enable tilo-system-extension-boot-pack-status.timer' 'BootPack reboot status is not projected after boot'
 need "$boot_status_timer" 'Unit=tilo-system-extension-boot-pack-status.service' 'BootPack status timer starts the wrong unit'
 need "$boot_status_timer" 'OnBootSec=5s' 'BootPack status projection is not deferred beyond the login-critical path'
