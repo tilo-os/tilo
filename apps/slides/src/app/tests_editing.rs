@@ -184,6 +184,30 @@ fn dragging_in_the_words_selects_them_and_leaves_the_box_in_place() {
     );
 }
 
+// USER REQUIREMENT (2026-10-22): "add, select, move and resize boxes at
+// native refresh, with touch parity": a finger held still on a box opens its
+// menu, as a right-click does, and moves nothing.
+#[test]
+fn holding_a_finger_on_a_box_opens_its_menu() {
+    let (mut bench, id) = box_of("Hello world", 900.0, 120.0);
+    bench.with(|app| app.sel = None);
+    let frame = frame_of(&mut bench, &id);
+    let before = element(&bench, &id);
+    let centre = frame.center();
+    bench.app.harness().touch_hold_at(centre.x, centre.y);
+    bench.read(|app| {
+        assert!(app.ctx_menu.is_open(), "a hold opens the box's menu");
+        assert_eq!(app.sel.as_deref(), Some(id.as_str()), "the box is selected");
+        assert!(!app.editing_text, "a hold does not open the words");
+    });
+    let after = element(&bench, &id);
+    assert_eq!(
+        (after.x, after.y),
+        (before.x, before.y),
+        "a hold moves nothing"
+    );
+}
+
 // USER REQUIREMENT (2026-10-22): "caret placement by click and touch" and
 // "add, select, move and resize boxes at native refresh, with touch parity"
 #[test]
