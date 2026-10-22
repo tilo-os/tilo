@@ -632,38 +632,44 @@ impl NativeWorkspaceOwner {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
-        if !matches!(
-            message,
-            NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
-        ) {
-            return Err("native owner admits only workspace state messages".into());
-        }
+        self.receive_batch(room, vec![(origin, message)], now)?
+            .pop()
+            .ok_or_else(|| "native owner admitted no input".to_owned())?
+    }
+    /// Admit `inputs`, in order, into `room` and commit the room once for
+    /// all of them: a host's replay of a busy room is thousands of inputs,
+    /// and committing the room for each one rewrote the whole state file
+    /// thousands of times. Each input is decided on its own, exactly as
+    /// [`Self::receive`] decides it, and its refusal changes nothing; the
+    /// answer is one result per input. Nothing of the batch is observable,
+    /// and no report is returned, before the one commit is durable: when
+    /// it fails, every input fails with it.
+    ///
+    /// # Errors
+    /// The room is fenced, or the batch's commit cannot be published.
+    pub fn receive_batch(
+        &self,
+        room: RoomId,
+        inputs: Vec<(TransportOrigin, NeighbourMsg)>,
+        now: SystemTime,
+    ) -> Result<Vec<Result<AdmissionReport, String>>, String> {
         let _turn = self.0.mutation.lock();
-        if matches!(&message, NeighbourMsg::AppDocument { .. })
-            && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
-            && let Some(report) = self.with_current(room, |view| {
-                let exact = view
-                    .peer
-                    .lookup_exact_document_report(origin, &message, now)
-                    .map_err(|error| error.to_string())?;
-                if exact.is_some() && publication::exact_replay_unchanged(view)? {
-                    Ok(exact)
-                } else {
-                    Ok(None)
-                }
-            })?
-        {
-            return Ok(report);
-        }
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        let report = candidate
-            .peer
-            .receive_from_report(origin, message, now)
-            .map_err(|e| e.to_string())?;
-        for dropped in &report.summary().dropped {
-            tracing::warn!(%room, %dropped, "a held app message was let go unapplied");
-        }
         let previous_publication = candidate.record.publication.clone();
+        let mut reports = Vec::with_capacity(inputs.len());
+        for (origin, message) in inputs {
+            reports.push(Self::admit_input(
+                &mut candidate,
+                room,
+                origin,
+                message,
+                now,
+            ));
+        }
+        if reports.iter().all(Result::is_err) {
+            // Every input was refused: nothing changed to commit.
+            return Ok(reports);
+        }
         publication::retire(&mut candidate)?;
         publication::refresh_governance_checkpoint(&mut candidate)?;
         let durable = candidate.peer.durable()?;
@@ -674,7 +680,7 @@ impl NativeWorkspaceOwner {
         // still require publication before they can be observed.
         if durable == candidate.record.peer && candidate.record.publication == previous_publication
         {
-            return Ok(report);
+            return Ok(reports);
         }
         candidate.record.peer = durable;
         candidate.record.generation = candidate
@@ -683,6 +689,42 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
         self.publish_room(room, candidate, None)?;
+        Ok(reports)
+    }
+    /// Decide one relay input into `candidate`: refused, it changes nothing.
+    fn admit_input(
+        candidate: &mut NativeCommittedView,
+        room: RoomId,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, String> {
+        if !matches!(
+            message,
+            NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
+        ) {
+            return Err("native owner admits only workspace state messages".into());
+        }
+        if matches!(&message, NeighbourMsg::AppDocument { .. })
+            && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
+        {
+            let exact = candidate
+                .peer
+                .lookup_exact_document_report(origin, &message, now)
+                .map_err(|error| error.to_string())?;
+            if let Some(exact) = exact
+                && publication::exact_replay_unchanged(candidate)?
+            {
+                return Ok(exact);
+            }
+        }
+        let report = candidate
+            .peer
+            .receive_from_report(origin, message, now)
+            .map_err(|e| e.to_string())?;
+        for dropped in &report.summary().dropped {
+            tracing::warn!(%room, %dropped, "a held app message was let go unapplied");
+        }
         Ok(report)
     }
     /// Caller holds the serialized turn, but readers keep the preceding committed view during I/O.

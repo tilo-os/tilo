@@ -367,15 +367,43 @@ impl Input {
     ///
     /// # Errors
     /// The session closed or its pin changed, or admission refuses it.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag stays locked through admission so a close cannot interleave"
-    )]
     pub fn admit(
         &self,
         identity: &HostIdentity,
     ) -> Result<tilo_peer_state::AdmissionReport, String> {
-        let live = self
+        Self::admit_all(std::slice::from_ref(self), identity)?
+            .pop()
+            .ok_or_else(|| "native owner admitted no input".to_owned())?
+    }
+    /// Whether `other` came over the same relay session as this one: what
+    /// [`Self::admit_all`] admits together.
+    #[must_use]
+    pub fn same_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.scope, &other.scope)
+    }
+    /// Admit `inputs`, all of one relay session, in the order they came, in
+    /// one commit of the owner, while the session is still live and pinned
+    /// to the owner's current material: each is authorized as one alone is,
+    /// and a burst of them persists once. One report per input.
+    ///
+    /// # Errors
+    /// The inputs span sessions, the session closed or its pin changed, or
+    /// the commit failed: no input is admitted.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the live flag stays locked through admission so a close cannot interleave"
+    )]
+    pub fn admit_all(
+        inputs: &[Self],
+        identity: &HostIdentity,
+    ) -> Result<Vec<Result<tilo_peer_state::AdmissionReport, String>>, String> {
+        let Some(first) = inputs.first() else {
+            return Ok(Vec::new());
+        };
+        if !inputs.iter().all(|input| first.same_session(input)) {
+            return Err("native relay inputs of different sessions".into());
+        }
+        let live = first
             .scope
             .live
             .lock()
@@ -383,21 +411,26 @@ impl Input {
         if !*live {
             return Err("native relay session closed".into());
         }
-        let (hint, device, _, continuity) = self.scope.connect.material(identity)?;
-        if !self.scope.pinned_to(&hint, &device, continuity) {
+        let (hint, device, _, continuity) = first.scope.connect.material(identity)?;
+        if !first.scope.pinned_to(&hint, &device, continuity) {
             return Err("native relay pin changed".into());
         }
-        let origin = if self.retained {
-            TransportOrigin::RetainedRelayDelta(self.author)
-        } else {
-            TransportOrigin::RelayDelta(self.author)
-        };
-        self.scope.connect.owner.receive(
-            self.room(),
-            origin,
-            self.msg.clone(),
-            std::time::SystemTime::now(),
-        )
+        let batch = inputs
+            .iter()
+            .map(|input| {
+                let origin = if input.retained {
+                    TransportOrigin::RetainedRelayDelta(input.author)
+                } else {
+                    TransportOrigin::RelayDelta(input.author)
+                };
+                (origin, input.msg.clone())
+            })
+            .collect();
+        first
+            .scope
+            .connect
+            .owner
+            .receive_batch(first.room(), batch, std::time::SystemTime::now())
     }
     /// The author's current standing in the room: the room's policy, and
     /// the bound on a device not theirs.

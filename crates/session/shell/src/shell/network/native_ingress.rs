@@ -372,30 +372,47 @@ impl ShellNetwork {
             tree.requires_native_owner(room) && !tree.commits_native_documents(room)
         })
     }
+    /// Whether `input` is admitted together with the inputs of its session
+    /// queued right before and after it: an app write the owner commits.
+    pub(super) fn admits_in_batch(&self, input: &native_ingress::Input) -> bool {
+        matches!(input.message(), NeighbourMsg::AppDocument { .. })
+            && !self.sealed_record_write(input.message())
+    }
     /// Handle `input` here, admitting it in place: a commit through the
     /// room's owner, which publishes the state file.
     pub(super) fn dispatch_native_input(&self, input: native_ingress::Input) {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return;
-        };
         if self.dispatch_channel_traffic(&input) {
             return;
         }
-        self.complete_native_input(super::native_admission::admit(input, identity));
+        self.dispatch_native_inputs(vec![input]);
+    }
+
+    /// Admit `inputs`, all of one session and none channel traffic, here,
+    /// in one commit through the room's owner.
+    pub(super) fn dispatch_native_inputs(&self, inputs: Vec<native_ingress::Input>) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        self.complete_native_inputs(super::native_admission::admit(inputs, identity));
     }
 
     /// Handle `input` on the frame loop: what needs no admission here, its
     /// admission on the admission worker, which no later event overtakes.
     pub(super) fn dispatch_native_input_off_loop(&self, input: native_ingress::Input) {
-        let Some(identity) = self.host_identity.clone() else {
-            return;
-        };
         if self.dispatch_channel_traffic(&input) {
             return;
         }
-        if let Some(input) = self.admit_off_loop(input, identity) {
-            // No worker to take it: admitting late would reorder it.
-            self.dispatch_native_input(input);
+        self.dispatch_native_inputs_off_loop(vec![input]);
+    }
+
+    /// [`Self::dispatch_native_inputs`] on the admission worker.
+    pub(super) fn dispatch_native_inputs_off_loop(&self, inputs: Vec<native_ingress::Input>) {
+        let Some(identity) = self.host_identity.clone() else {
+            return;
+        };
+        if let Some(inputs) = self.admit_off_loop(inputs, identity) {
+            // No worker to take them: admitting late would reorder them.
+            self.dispatch_native_inputs(inputs);
         }
     }
 
@@ -407,13 +424,31 @@ impl ShellNetwork {
         });
     }
 
-    /// What follows an admission, on the thread handling inbound events.
-    pub(super) fn complete_native_input(&self, admitted: super::native_admission::Admitted) {
-        let super::native_admission::Admitted {
-            input,
-            changed,
-            report,
-        } = admitted;
+    /// What follows an admission, on the thread handling inbound events:
+    /// each input's remainder in the order they came, and the owner's
+    /// publication once for the commit.
+    pub(super) fn complete_native_inputs(&self, admitted: super::native_admission::Admitted) {
+        let super::native_admission::Admitted { inputs, changed } = admitted;
+        let room = inputs.first().map(|(input, _)| input.room());
+        for (input, report) in inputs {
+            self.complete_native_input(input, changed, report);
+        }
+        // A genuine committed change can enable successors or retire custody.
+        // An unchanged replay must not enqueue another expensive recovery pass.
+        if changed && let Some(room) = room {
+            let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
+                ws: room_topic_id(room),
+            });
+        }
+    }
+
+    /// What follows one input's admission.
+    fn complete_native_input(
+        &self,
+        input: native_ingress::Input,
+        changed: bool,
+        report: Result<tilo_peer_state::AdmissionReport, String>,
+    ) {
         let report = match report {
             Ok(report) => report,
             Err(error) if error == tilo_peer_state::HELD_FOR_SURFACE => {
@@ -437,13 +472,6 @@ impl ShellNetwork {
             changed,
             "native relay input admitted"
         );
-        // A genuine committed change can enable successors or retire custody.
-        // An unchanged replay must not enqueue another expensive recovery pass.
-        if changed {
-            let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
-                ws: room_topic_id(input.room()),
-            });
-        }
         // The durable owner already projected governed shell state. Only an exact
         // admitted app operation may now reach the existing broker fanout.
         if !matches!(
