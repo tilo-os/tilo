@@ -153,8 +153,9 @@ pub enum ChatEffect {
     /// Read conversation messages
     ///
     /// A page of the channel's messages, oldest first, from every part of
-    /// the chat's messages this window holds; `cursor` is the preceding
-    /// page's `nextCursor`.
+    /// the chat's messages this window holds, each with its author's id
+    /// (`author`) and name (`authorName`); `cursor` is the preceding page's
+    /// `nextCursor`.
     #[effect(kind = "read", returns, audience = "agents")]
     ReadMessages {
         #[param("Id of the channel")]
@@ -787,13 +788,14 @@ const PAGE_MOST: usize = 32;
 /// The answer of [`ChatEffect::ReadMessages`]: `channel`'s messages in
 /// `held` (every part of the chat's messages the window holds), oldest
 /// first, a page of at most `page_size` after `cursor`, with the cursor of
-/// the next page when there is more.
+/// the next page when there is more. Each names its author by id and by
+/// the name `name` gives them, as the window shows it.
 ///
 /// # Errors
 /// When `page_size` is out of bounds or `cursor` names no place.
 pub(crate) fn read_messages(
     held: &crate::messages::Messages,
-    channel: &str,
+    (channel, name): (&str, &dyn Fn(&str) -> String),
     page_size: Option<u8>,
     cursor: Option<&str>,
 ) -> Result<serde_json::Value, String> {
@@ -847,6 +849,7 @@ pub(crate) fn read_messages(
         "messages": messages.iter().map(|(id, found)| serde_json::json!({
             "id": id.as_str(),
             "author": found.author.0.as_str(),
+            "authorName": name(found.author.0.as_str()),
             "ts": found.ts.to_string(),
             "parent": found.parent.as_ref().map_or("", tilo_resource::Id::as_str),
             "edited": found.edited,
