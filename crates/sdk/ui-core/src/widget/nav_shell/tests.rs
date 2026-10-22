@@ -2205,3 +2205,99 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
         "the bar's Back pops the pane in front"
     );
 }
+
+/// An app that declares no slots of its own gets them from its shell: while the
+/// desktop's bar hosts the window, the column in front names the window's
+/// location, the headers' buttons are the bar's actions and run from it, and
+/// the shell draws no header row.
+#[test]
+fn a_hosted_shell_hands_its_header_to_the_window_bar() {
+    use crate::window_toolbar::{ToolbarEvent, declared, deliver};
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
+        .on_click(move || count.set(count.get() + 1));
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", vec![Box::new(add)])
+        .overview_header("Inbox", Vec::new())
+        .content_header("Design review", Vec::new());
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).header_height > 0.0,
+        "with no desktop bar, the header row stands"
+    );
+    assert_eq!(declared(), None, "and the shell declares nothing");
+
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert_eq!(
+        geometry(&h).header_height,
+        0.0,
+        "no header row under the bar"
+    );
+    let toolbar = declared().expect("the shell declares the window's slots");
+    assert_eq!(
+        toolbar
+            .location
+            .as_ref()
+            .map(|location| location.label.as_str()),
+        Some("Design review"),
+        "the content in front names the window"
+    );
+    assert_eq!(
+        toolbar.sidebar,
+        Some(true),
+        "the sidebar's toggle is a slot"
+    );
+    let action = toolbar
+        .actions
+        .iter()
+        .find(|action| action.name == "New mailbox")
+        .expect("the header's button is the bar's action");
+    assert_eq!(action.icon, "plus");
+    assert!(!action.menu, "a button with an icon stands in the row");
+    deliver(ToolbarEvent::Action {
+        id: action.id.clone(),
+    });
+    settle(&mut h, 1280, 800);
+    assert_eq!(pressed.get(), 1, "the bar's press runs the button");
+}
+
+/// A header the bar cannot show (a fill of the app's own beside the title)
+/// keeps its row under the bar, and the shell declares nothing; a window
+/// where another part declares the slots keeps its row too.
+#[test]
+fn a_header_the_bar_cannot_show_keeps_its_row() {
+    use crate::window_toolbar::{WindowToolbar, declare, declared};
+    let shell = mail_shell().content_header_leading(Box::new(Text::new("Path")));
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert!(geometry(&h).header_height > 0.0);
+    assert_eq!(declared(), None);
+    drop(h);
+
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert_eq!(geometry(&h).header_height, 0.0);
+    let app = WindowToolbar {
+        sidebar: Some(false),
+        ..WindowToolbar::default()
+    };
+    declare(Some(app.clone()));
+    settle(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).header_height > 0.0,
+        "the shell steps aside for the app's own slots"
+    );
+    assert_eq!(
+        declared(),
+        Some(app.bounded()),
+        "and leaves them as declared"
+    );
+}

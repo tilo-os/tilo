@@ -99,6 +99,7 @@ mod notices;
 mod parts;
 mod sidebar_resize;
 mod status_action;
+mod window_header;
 mod window_toolbar;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
@@ -487,6 +488,9 @@ struct Inputs {
     /// The app's toolbar is its window bar's slots
     /// ([`NavShell::with_window_toolbar`]): the shell draws no header row.
     toolbar_in_bar: bool,
+    /// The shell declares the window bar's slots from its headers
+    /// ([`window_toolbar::ShellBar`]): it draws no header row.
+    shell_bar: bool,
     /// The person reached for the window's bar.
     bar_revealed: bool,
     /// How far down the window's top edge the bar stands: below the
@@ -577,6 +581,7 @@ impl Default for Inputs {
             leading: [false; 4],
             content_back: false,
             toolbar_in_bar: false,
+            shell_bar: false,
             user_sidebar: None,
             adaptive: None,
             sidebar: FlapState::open_when_docked(),
@@ -638,6 +643,11 @@ impl Inputs {
     /// content, and only while the person reaches for the bar.
     fn header_in_window_bar(&self) -> bool {
         self.header_in_bar && self.window_controls.is_some()
+    }
+
+    /// The window bar shows the shell's own buttons and the app's actions.
+    fn slots_in_bar(&self) -> bool {
+        self.toolbar_in_bar || self.shell_bar
     }
 }
 
@@ -1058,7 +1068,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
 
     // 5. The header row.
-    let needs_header = !inputs.toolbar_in_bar
+    let needs_header = !inputs.slots_in_bar()
         && ((inputs.has_sidebar && !inputs.toggle_in_bar)
             || inputs.has_inspector
             || inputs.history.is_some()
@@ -1300,7 +1310,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     if let Some(column) = back_column
-        && inputs.toolbar_in_bar
+        && inputs.slots_in_bar()
     {
         // Back is the window bar's ([`NavShell::window_toolbar`]).
         g.back_column = Some(column);
@@ -1582,6 +1592,7 @@ pub struct NavShell {
     /// ([`WindowHeader::set_window_presents_search`]): the headers carry no
     /// button of their own that opens the app's search.
     window_search: bool,
+    shell_bar: window_toolbar::ShellBar,
     /// Header actions put away while the host may still hold their nodes,
     /// dropped when the next build replaces the row.
     retired_actions: Vec<Element>,
@@ -1702,6 +1713,7 @@ impl NavShell {
             settling: false,
             built: false,
             window_search: false,
+            shell_bar: window_toolbar::ShellBar::default(),
             retired_actions: Vec::new(),
             structure_dirty: false,
             layout_dirty: true,
@@ -2276,8 +2288,10 @@ impl NavShell {
     }
 
     fn slots_changed(&mut self) {
+        let shell_bar = self.shell_bar_wanted();
         {
             let mut inputs = self.inputs.borrow_mut();
+            inputs.shell_bar = shell_bar;
             let has = |current: bool, pending: Option<&Staged>| match pending {
                 Some(next) => next.is_some(),
                 None => current,
@@ -2300,7 +2314,7 @@ impl NavShell {
             // search, which narrows the list through the same field: the
             // field keeps no band of its own while the bar presents it.
             inputs.has_filter =
-                self.filter.is_some() && !(inputs.toolbar_in_bar && self.window_search);
+                self.filter.is_some() && !(inputs.slots_in_bar() && self.window_search);
             for column in Column::ALL {
                 let header = at(&self.headers, column);
                 *at_mut(&mut inputs.titled, column) = header.title.is_shown();
@@ -3966,6 +3980,12 @@ impl Widget for NavShell {
         self.follow_navigation();
         self.for_each_owned_mut(|child| child.sync(state, path));
         self.sync_filter();
+        self.sync_shell_bar();
+    }
+
+    fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
+        self.run_shell_bar_events(edits, path);
+        super::defaults::settle(self.children_mut(), edits, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -4512,87 +4532,6 @@ fn is_app_search(action: &dyn Widget) -> bool {
 /// Controls in a column the shell is not showing (a hidden sidebar, a
 /// closed drawer, a screen pushed away) still belong to the window: custody,
 /// invocations and availability reach every part the shell owns.
-impl WindowHeader for NavShell {
-    fn set_window_presents_search(&mut self, presents: bool) -> bool {
-        if self.window_search != presents {
-            self.window_search = presents;
-            if presents {
-                self.drop_app_search();
-            }
-            if self.inputs.borrow().toolbar_in_bar {
-                self.slots_changed();
-                self.structure_dirty = true;
-                self.invalidate();
-            }
-        }
-        true
-    }
-
-    fn set_history_control(&mut self, control: Option<HistoryControl>) {
-        if self.inputs.borrow().history == control {
-            return;
-        }
-        self.inputs.borrow_mut().history = control;
-        self.structure_dirty = true;
-        self.invalidate();
-    }
-
-    fn set_sync_status(&mut self, status: Option<&crate::widget::WindowStatus>) -> bool {
-        if self
-            .sync_status
-            .set(status.map(|status| status.text.as_str()))
-        {
-            self.status_dirty = true;
-            self.invalidation.invalidate();
-        }
-        let action = status.and_then(|status| status.action.as_ref());
-        if self.status_action_spec.as_ref() != action {
-            self.status_action_spec = action.cloned();
-            let next = action.map(crate::widget::StatusAction::button);
-            // The host's tree may still point at the button it replaces
-            // until it builds again.
-            if let Some(old) = std::mem::replace(&mut self.status_action, next) {
-                self.retired_status_actions.push(old);
-            }
-            self.inputs.borrow_mut().status_action = self.status_action.is_some();
-            self.structure_dirty = true;
-            self.invalidate();
-        }
-        true
-    }
-
-    fn set_window_bar(&mut self, bar: Option<crate::widget::WindowBar>) -> bool {
-        let controls = bar.map(|bar| bar.controls_width);
-        let revealed = bar.is_some_and(|bar| bar.revealed);
-        let top = bar.map_or(0.0, |bar| bar.top_inset);
-        let relayout = {
-            let mut inputs = self.inputs.borrow_mut();
-            let relayout = inputs.window_controls != controls
-                || (inputs.header_in_bar
-                    && (inputs.bar_revealed != revealed
-                        || (inputs.bar_top - top).abs() > f64::EPSILON));
-            inputs.window_controls = controls;
-            inputs.bar_revealed = revealed;
-            inputs.bar_top = top;
-            relayout
-        };
-        if relayout {
-            self.structure_dirty = true;
-            self.invalidate();
-        }
-        true
-    }
-
-    fn window_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
-        let g = &self.geometry;
-        (g.window_controls.width() > 0.0).then(|| crate::widget::WindowBarSlot {
-            row: g.window_row,
-            controls: g.window_controls,
-            hides_with_bar: self.inputs.borrow().header_in_bar,
-        })
-    }
-}
-
 impl crate::widget::controls::ActionControls for NavShell {
     fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         crate::widget::controls::children_action_control_bindings(self)

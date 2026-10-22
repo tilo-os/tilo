@@ -5943,6 +5943,7 @@ impl FileExplorerWidget {
                 };
                 self.show_remote_account_panel(&account, true);
             }
+            Some("cloud-folder") => self.debug_show_cloud_folder(),
             Some("drives") => self.debug_show_sample_drives(),
             Some("loading") => self.debug_show_loading_state(),
             Some("error") => self.debug_show_error_state(),

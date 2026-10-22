@@ -782,6 +782,17 @@ pub fn declare(toolbar: Option<WindowToolbar>) {
     });
 }
 
+/// Take the slots back, as [`declare`] with `None` does, unless the thread
+/// is ending and they are gone already (a widget dropped with its thread).
+pub(crate) fn retract() {
+    let changed = DECLARED
+        .try_with(|declared| declared.borrow_mut().take().is_some())
+        .unwrap_or(false);
+    if changed {
+        let _ = REVISION.try_with(|revision| revision.set(revision.get().wrapping_add(1)));
+    }
+}
+
 /// The slots last declared on this thread.
 #[must_use]
 pub fn declared() -> Option<WindowToolbar> {

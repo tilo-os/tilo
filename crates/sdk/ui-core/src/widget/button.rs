@@ -2093,6 +2093,24 @@ impl crate::widget::controls::ActionControls for Button {
 }
 
 impl Button {
+    /// This button as a slot in the window's bar, sent back as `id`: its
+    /// icon in the bar's row, or an entry of the bar's menu by its label
+    /// when it has no icon. `None` for a button with no name to show.
+    pub(crate) fn window_slot(&self, id: String) -> Option<crate::window_toolbar::ToolbarAction> {
+        let name = self.accessibility()?.name.filter(|name| !name.is_empty())?;
+        let icon = self.icon.map_or("", crate::icons::Icon::name);
+        let action = crate::window_toolbar::ToolbarAction::new(id, icon, name)
+            .enabled(self.is_enabled())
+            .on(self.toggled == Some(true));
+        Some(if self.icon.is_some() {
+            action
+        } else {
+            action.in_menu()
+        })
+    }
+}
+
+impl Button {
     fn activate(&mut self) {
         if let Some(action) = &mut self.action {
             if let Err(error) = action.emit(()) {
