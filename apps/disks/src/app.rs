@@ -495,8 +495,9 @@ impl DisksApp {
                 ui::window_toolbar::ToolbarEvent::Action { id } => {
                     if id == view::RESCAN {
                         self.rescan();
-                    } else if let Some(action) =
-                        ActionKind::bar().into_iter().find(|action| action.key() == id)
+                    } else if let Some(action) = ActionKind::bar()
+                        .into_iter()
+                        .find(|action| action.key() == id)
                     {
                         self.trigger_action(action, self.part_index());
                     }

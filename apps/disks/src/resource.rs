@@ -295,6 +295,9 @@ impl ResourceApp for DisksShell {
                 // Narrow enough that the drive list collapses into a drawer.
                 "drawer" => Some((640, 600)),
                 _ if name.starts_with("phone") => Some((520, 820)),
+                // Tall enough for the list and the chosen partition's
+                // details under it.
+                "laptop-partitions" => Some((1280, 1280)),
                 _ => None,
             })
             .unwrap_or((1280, 800))

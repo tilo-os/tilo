@@ -199,7 +199,11 @@ impl PartitionMap {
         // is; one whose use is known washes the free part, so the full
         // colour is what is in use.
         let Some(used) = entry.used else {
-            let fill = if hovered { colour.multiply_alpha(0.8) } else { colour };
+            let fill = if hovered {
+                colour.multiply_alpha(0.8)
+            } else {
+                colour
+            };
             ctx.fill_round(rect, radius, fill);
             return;
         };

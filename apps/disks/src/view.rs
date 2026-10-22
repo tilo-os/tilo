@@ -193,7 +193,11 @@ fn operations_menu(
             } else {
                 MenuEntry::new(action.label(), run)
             };
-            entries.push(entry.with_icon(action_icon(action)).with_enabled(offer.is_available()));
+            entries.push(
+                entry
+                    .with_icon(action_icon(action))
+                    .with_enabled(offer.is_available()),
+            );
             if let Offer::Unavailable(reason) = offer {
                 entries.push(MenuEntry::caption(reason));
             }
@@ -303,9 +307,7 @@ pub(crate) fn detail(
             Text::new(line).with_role(TextRole::Caption).dimmed(),
         ));
     }
-    let page = page
-        .push(Box::new(badges(drive)))
-        .push(Box::new(tab));
+    let page = page.push(Box::new(badges(drive))).push(Box::new(tab));
     Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
@@ -397,10 +399,18 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
         vec![Box::new(map)],
     )));
     page = page.push(Box::new(filesystems(drive, model.partition, intents)));
-    page = page.push(Box::new(Section::titled(
-        "Details",
-        vec![Box::new(PropertyList::new(drive_facts(drive)))],
-    )));
+    if let Some(part) = model.partition.and_then(|i| drive.partitions.get(i)) {
+        page = page.push(Box::new(partition_details(drive, part)));
+        page = page.push(Box::new(Section::titled(
+            "Drive",
+            vec![Box::new(PropertyList::new(drive_facts(drive)))],
+        )));
+    } else {
+        page = page.push(Box::new(Section::titled(
+            "Details",
+            vec![Box::new(PropertyList::new(drive_facts(drive)))],
+        )));
+    }
     Box::new(page)
 }
 
@@ -476,8 +486,8 @@ fn drive_facts(drive: &Drive) -> Vec<Property> {
     if let Some(serial) = &drive.serial {
         facts.push(Property::new("Serial number", serial.clone()).with_kind(TextKind::Identifier));
     }
-    if let Some(use_) = drive.system_use() {
-        facts.push(Property::new("In use", use_));
+    if drive.is_system_drive() {
+        facts.push(Property::new("Used for", "Running system"));
     }
     facts
 }
@@ -587,9 +597,7 @@ fn attribute_table(attrs: &[SmartAttr]) -> DataTable<SmartAttr> {
         columns.push(
             ColumnDef::new("id", "ID", ColumnWidth::Auto)
                 .with_kind(TextKind::Numeric)
-                .with_text(|attr: &SmartAttr| {
-                    attr.id.map(|id| id.to_string()).unwrap_or_default()
-                }),
+                .with_text(|attr: &SmartAttr| attr.id.map(|id| id.to_string()).unwrap_or_default()),
         );
     }
     columns.extend([
@@ -602,8 +610,8 @@ fn attribute_table(attrs: &[SmartAttr]) -> DataTable<SmartAttr> {
             .with_text(|attr: &SmartAttr| severity_label(attr.severity).to_owned()),
     ]);
     let mut table = DataTable::new(columns)
-    .with_id("disks-attributes")
-    .with_accessible_name("SMART attributes");
+        .with_id("disks-attributes")
+        .with_accessible_name("SMART attributes");
     table.set_rows(attrs.to_vec());
     table
 }
@@ -618,51 +626,92 @@ fn severity_label(severity: AttrSeverity) -> &'static str {
 
 // ---- Partitions -------------------------------------------------------
 
-/// What a partition's row says under its name: its device when the name is
-/// not the device's, what it holds when that is not the name either, its
-/// filesystem, where that is mounted, and what of the running system it
-/// holds (why it is not formatted or unmounted here).
-fn partition_summary(part: &Partition, title: &str, serves: Option<&str>) -> String {
-    let mut summary = partition_facts(part, title);
-    if let Some(serves) = serves {
-        let mut chars = serves.chars();
-        if let Some(first) = chars.next() {
-            summary.push_str(", ");
-            summary.extend(first.to_lowercase());
-            summary.push_str(chars.as_str());
+/// What a partition is for, in words, when it serves something the person
+/// knows by name.
+fn purpose(drive: &Drive, part: &Partition) -> Option<&'static str> {
+    use crate::model::PartRole;
+    let windows = |name: &str| {
+        let name = name.to_ascii_lowercase();
+        name.contains("microsoft") || name.contains("windows")
+    };
+    match part.role() {
+        PartRole::Root => Some("Running system"),
+        PartRole::Home => Some("Home folders"),
+        PartRole::Efi | PartRole::Boot if drive.is_system_drive() => Some("Starts this device"),
+        PartRole::Swap => Some("Swap space"),
+        _ if part
+            .fstype
+            .as_deref()
+            .is_some_and(|fs| fs.eq_ignore_ascii_case("ntfs"))
+            || part.part_type_name.as_deref().is_some_and(windows) =>
+        {
+            Some("Windows")
         }
+        _ => None,
+    }
+}
+
+/// What a partition's row says under its name: what it is for and its
+/// state, in words ("Home folders, encrypted", "Not in use"). The facts
+/// behind it are on the partition's own page.
+fn partition_summary(drive: &Drive, part: &Partition) -> String {
+    let locked = part
+        .encryption
+        .as_ref()
+        .map(|encryption| encryption.unlocked_as.is_none());
+    // A purpose the name already says ("Windows" called "Windows") gives
+    // way to the state.
+    let purpose = purpose(drive, part)
+        .filter(|purpose| !purpose.eq_ignore_ascii_case(part.display_label().trim()));
+    let mut summary = match purpose {
+        Some(purpose) => purpose.to_owned(),
+        None if part.mountpoint.is_some() => "In use".to_owned(),
+        None => "Not in use".to_owned(),
+    };
+    match locked {
+        Some(true) => summary.push_str(", encrypted and locked"),
+        Some(false) => summary.push_str(", encrypted"),
+        None => {}
     }
     summary
 }
 
-fn partition_facts(part: &Partition, title: &str) -> String {
-    let mut facts: Vec<String> = Vec::new();
-    if title != part.name {
-        facts.push(part.name.clone());
+/// The partition's facts: its device, size, type, filesystem, encryption,
+/// where it is mounted and its room, and what of the running system it holds.
+fn partition_details(drive: &Drive, part: &Partition) -> Section {
+    let mut facts = vec![
+        Property::new("Device", format!("/dev/{}", part.name)).with_kind(TextKind::Identifier),
+        Property::new("Size", size(part.size)).with_kind(TextKind::Numeric),
+    ];
+    if let Some(kind) = part.part_type_name.clone().filter(|kind| !kind.is_empty()) {
+        facts.push(Property::new("Type", kind));
     }
-    facts.extend(part.fstype.clone().filter(|fs| !fs.is_empty()));
+    if let Some(fstype) = part.fstype.clone().filter(|fs| !fs.is_empty()) {
+        facts.push(Property::new("Filesystem", fstype));
+    }
     if let Some(encryption) = &part.encryption {
-        let locked = encryption.unlocked_as.is_none();
-        facts.push(match (facts.is_empty(), locked) {
-            (true, true) => format!("Encrypted with {}, locked", encryption.scheme),
-            (false, true) => format!("encrypted with {}, locked", encryption.scheme),
-            (true, false) => format!("Encrypted with {}", encryption.scheme),
-            (false, false) => format!("encrypted with {}", encryption.scheme),
-        });
-        if locked {
-            return facts.join(", ");
-        }
+        let state = match &encryption.unlocked_as {
+            Some(_) => format!("{}, unlocked", encryption.scheme),
+            None => format!("{}, locked", encryption.scheme),
+        };
+        facts.push(Property::new("Encryption", state));
     }
-    let sentence_start = facts.is_empty();
-    facts.push(match (part.mount_display(), sentence_start) {
-        (Some(mount), true) if mount == "Swap" => "In use".to_owned(),
-        (Some(mount), false) if mount == "Swap" => "in use".to_owned(),
-        (Some(mount), true) => format!("Mounted at {mount}"),
-        (Some(mount), false) => format!("mounted at {mount}"),
-        (None, true) => "Not mounted".to_owned(),
-        (None, false) => "not mounted".to_owned(),
-    });
-    facts.join(", ")
+    facts.push(Property::new(
+        "Mounted at",
+        part.mount_display()
+            .unwrap_or_else(|| "Not mounted".to_owned()),
+    ));
+    if let Some(used) = part.used {
+        facts.push(Property::new("Used", size(used)).with_kind(TextKind::Numeric));
+        facts.push(
+            Property::new("Free", size(part.size.saturating_sub(used)))
+                .with_kind(TextKind::Numeric),
+        );
+    }
+    if let Some(purpose) = purpose(drive, part) {
+        facts.push(Property::new("Used for", purpose));
+    }
+    Section::titled("Details", vec![Box::new(PropertyList::new(facts))])
 }
 
 fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
@@ -679,13 +728,16 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
         .iter()
         .enumerate()
         .map(|(index, part)| -> Element {
-            let title = part.display_label();
-            let summary = partition_summary(part, &title, drive.partition_use(part));
             let pick = intents.clone();
-            let row = ListRow::new(format!("disks-partition-{index}"), title)
+            // Room left where it is known, else the partition's size.
+            let meta = match part.used {
+                Some(used) => format!("{} free", size(part.size.saturating_sub(used))),
+                None => size(part.size),
+            };
+            let row = ListRow::new(format!("disks-partition-{index}"), part.display_label())
                 .icon(Icon::Layers)
-                .secondary(summary)
-                .meta(size(part.size))
+                .secondary(partition_summary(drive, part))
+                .meta(meta)
                 .selected(model.partition == Some(index))
                 .on_view(move || pick.push(Intent::SelectPartition(Some(index))));
             Box::new(ContextMenuArea::new(
@@ -694,7 +746,19 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
             ))
         })
         .collect();
-    Box::new(Section::new(rows))
+    let list = Section::new(rows);
+    match model.partition.and_then(|i| drive.partitions.get(i)) {
+        // The chosen partition's facts under the list, which stays put.
+        Some(part) => Box::new(
+            ui::widget::Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_rhythm(Rhythm::Group)
+                .push(Box::new(list))
+                .push(Box::new(partition_details(drive, part))),
+        ),
+        None => Box::new(list),
+    }
 }
 
 #[cfg(test)]
@@ -717,8 +781,16 @@ mod tests {
             .find(|action| action.id == ActionKind::Format.key())
             .expect("Format is shown");
         assert!(!format.enabled);
-        assert!(format.name.contains(crate::model::HOLDS_SYSTEM), "{}", format.name);
-        assert!(bar.actions.iter().all(|action| action.id != ActionKind::Eject.key()));
+        assert!(
+            format.name.contains(crate::model::HOLDS_SYSTEM),
+            "{}",
+            format.name
+        );
+        assert!(
+            bar.actions
+                .iter()
+                .all(|action| action.id != ActionKind::Eject.key())
+        );
     }
 
     /// A chosen partition is a level under its drive in the bar's location.
@@ -734,5 +806,40 @@ mod tests {
         let levels: Vec<_> = location.segments.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(levels, ["SAMSUNG", "home"]);
         assert_eq!(location.segments[0].value, WHOLE_DRIVE);
+    }
+
+    /// A partition row says what the partition is for and its state, in
+    /// words; its device, filesystem and mount point are on its own page.
+    #[test]
+    fn partition_rows_say_what_each_partition_is_for() {
+        let drive = crate::probe::captured::yoga().unwrap().drives.remove(0);
+        let summaries: Vec<(String, String)> = drive
+            .partitions
+            .iter()
+            .map(|part| (part.name.clone(), partition_summary(&drive, part)))
+            .collect();
+        let of = |name: &str| {
+            summaries
+                .iter()
+                .find(|(part, _)| part == name)
+                .map(|(_, summary)| summary.as_str())
+                .unwrap()
+        };
+        assert_eq!(of("nvme0n1p4"), "Home folders, encrypted");
+        assert_eq!(of("nvme0n1p7"), "Running system, encrypted");
+        assert_eq!(of("nvme0n1p5"), "Starts this device");
+        assert_eq!(
+            of("nvme0n1p3"),
+            "Not in use",
+            "a purpose the name says gives way to the state"
+        );
+        assert_eq!(of("nvme0n1p2"), "Windows", "Microsoft reserved");
+        for (_, summary) in &summaries {
+            assert!(!summary.contains("nvme0n1"), "{summary}");
+            assert!(
+                !summary.contains("ext4") && !summary.contains('/'),
+                "{summary}"
+            );
+        }
     }
 }
