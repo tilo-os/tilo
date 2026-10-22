@@ -82,6 +82,8 @@ pub struct SettingsApp {
     reveal: Option<&'static settings_store::index::Setting>,
     /// The setting whose control the pane scrolls to after this layout.
     reveal_scroll: Option<&'static settings_store::index::Setting>,
+    /// A capture's control to put the keyboard on once its pane is built.
+    capture_focus: Option<&'static str>,
     /// The setting just shown and when: its row is marked for a moment, so
     /// the eye finds it.
     highlight: Option<(&'static settings_store::index::Setting, ui::time::Instant)>,
@@ -172,6 +174,7 @@ impl SettingsApp {
             setting_request: ui::LocalState::new(None),
             reveal: None,
             reveal_scroll: None,
+            capture_focus: None,
             highlight: None,
             pane_scroll: std::cell::RefCell::default(),
             search_state: ui::LocalState::new(String::new()),
@@ -512,10 +515,9 @@ impl SettingsApp {
                 self.select(category);
                 self.search(crate::scenarios::SEARCH_QUERY);
             }
-            Staged::Setting(setting) => {
-                if let Err(error) = self.request_setting(setting) {
-                    tracing::warn!(%error, "the capture's setting is not one Settings shows");
-                }
+            Staged::Focused(category, control) => {
+                self.select(category);
+                self.capture_focus = Some(control);
             }
         }
     }
@@ -930,6 +932,10 @@ impl Widget for SettingsApp {
             clear_control_focus(shell);
             if focus_control(shell, &|id| setting.is_control(id)) {
                 self.reveal_scroll = Some(setting);
+            }
+        } else if let Some(id) = self.capture_focus.filter(|_| !self.pane_waits.get()) {
+            if focus_control(shell, &|control| control == id) {
+                self.capture_focus = None;
             }
         } else if let Some(id) = focused {
             focus_control(shell, &|control| control == id);
