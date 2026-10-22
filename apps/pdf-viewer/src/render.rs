@@ -218,14 +218,12 @@ struct ColumnCursor {
 pub struct TextLine {
     /// Index of the source block on the page (for de-duping / debugging).
     pub block: usize,
-    /// Left edge of the text column for this line, in page points.
     pub x: f64,
     /// Right edge of the actual glyphs on this line (text extent, not the
     /// full column), in page points.
     pub x_end: f64,
     /// Line-box top in page points.
     pub y: f64,
-    /// Line height in page points.
     pub h: f64,
     /// Each word's `[x0, x1)` extent on the line, in page points, in order.
     pub words: Vec<(f64, f64)>,
@@ -1236,7 +1234,6 @@ mod tests {
         let lines = collect_text_lines(&mut tr, page);
         assert!(!lines.is_empty(), "page 1 has body text -> some lines");
         for l in &lines {
-            // Bands sit within the page's text column and below the top.
             assert!(l.x >= MARGIN - 0.5, "line left {} inside margin", l.x);
             assert!(
                 l.x_end <= PAGE_W - MARGIN + 0.5,

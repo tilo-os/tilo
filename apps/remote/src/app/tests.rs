@@ -48,7 +48,6 @@ fn hosted() -> TestApp<RemoteShell> {
     TestApp::<RemoteShell>::new().unwrap()
 }
 
-/// A hosted Remote holding the sample roster.
 fn hosted_sample() -> TestApp<RemoteShell> {
     let mut app = hosted();
     for invoke in RemoteShell::scenario(None) {

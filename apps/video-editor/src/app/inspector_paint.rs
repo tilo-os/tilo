@@ -1012,7 +1012,6 @@ impl VideoEditorApp {
                 rect.contains(self.last_mouse),
             );
         }
-        // ---- tone curves ------------------------------------------------
         if !l.curve_channels.is_empty() {
             let rects: Vec<Rect> = l.curve_channels.iter().map(|(_, r)| *r).collect();
             let labels: Vec<&str> = l.curve_channels.iter().map(|(c, _)| c.label()).collect();
@@ -1038,7 +1037,6 @@ impl VideoEditorApp {
                 shaped,
             );
         }
-        // ---- colour key -----------------------------------------------
         if let Some(rect) = l.key_enable {
             draw_switch_row(
                 &mut PaintCtx::new(scene, tf, tr, theme),
@@ -1093,7 +1091,6 @@ impl VideoEditorApp {
                 have,
             );
         }
-        // ---- mask -------------------------------------------------------
         if !l.mask_shapes.is_empty() {
             let rects: Vec<Rect> = l.mask_shapes.iter().map(|(_, r)| *r).collect();
             let labels: Vec<&str> = l.mask_shapes.iter().map(|(s, _)| s.label()).collect();
@@ -1125,7 +1122,6 @@ impl VideoEditorApp {
                 rect.contains(self.last_mouse),
             );
         }
-        // ---- title ----------------------------------------------------
         if let Some(rect) = l.title_text {
             let text_src = media
                 .as_ref()

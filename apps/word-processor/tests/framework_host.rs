@@ -720,8 +720,6 @@ fn the_persons_own_words_are_spelled_right_in_every_window() {
     );
 }
 
-/// The edits bound to the caret are published on the document itself, and
-/// invoking one there builds it at the caret.
 #[test]
 fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
     let mut app = open();

@@ -7,7 +7,6 @@ use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
-/// One row of the target picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TargetMenuRow {
     Open(SessionTarget),
@@ -16,7 +15,6 @@ enum TargetMenuRow {
     Manage,
 }
 
-/// One row of the target picker as it is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PickerRow {
     label: String,
@@ -646,7 +644,6 @@ impl TerminalWidget {
         rows
     }
 
-    /// Act on one of the picker's rows.
     fn choose_picker_row(&mut self, row: TargetMenuRow) {
         match row {
             TargetMenuRow::Open(target) => {
@@ -734,7 +731,6 @@ impl TerminalWidget {
 
     // --- the environments panel
 
-    /// Open the environments panel.
     pub fn open_environments_panel(&mut self) {
         self.sessions.refresh_environments();
         let placeholder = t("terminal-env-name-placeholder");

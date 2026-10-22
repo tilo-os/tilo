@@ -162,12 +162,6 @@ pub trait RoomRecordsLink: Send + Sync {
     /// Read an exact existing source using already-owned host keys. The host
     /// must check current certified Read under its room lock before key access
     /// and again before returning. Missing keys never cause enrollment.
-    ///
-    /// # Errors
-    ///
-    /// Refuses missing/currently unauthorized sources, unavailable existing keys,
-    /// invalid signatures, incomplete replay, failed retained-file durability
-    /// barriers or exceeded read budgets. A disposable peer cache is not a source.
     fn view_document(
         &self,
         _workspace: u64,
@@ -305,10 +299,6 @@ impl RoomActions {
 
     /// Start serving `link`'s rooms on the service's own thread. A second
     /// call is ignored.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the thread did not start.
     pub fn attach(&self, link: Arc<dyn RoomRecordsLink>) -> Result<(), String> {
         if self.shared.link.set(Arc::clone(&link)).is_err() {
             return Ok(());
@@ -640,7 +630,6 @@ enum Needs<'a> {
 /// What a room's earlier waits for keys gave up on.
 #[derive(Default)]
 struct GaveUp {
-    /// The room's one listing wait is behind it.
     listed: bool,
     /// Records a listing by name waited for in vain.
     records: HashSet<DocumentRoute>,
@@ -2098,7 +2087,6 @@ fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_
     }
 }
 
-/// Whether `given` is the confirmation `policy` asks for.
 fn confirms(policy: &ConfirmationPolicy, given: Option<&Confirmation>) -> bool {
     match (policy, given) {
         (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {

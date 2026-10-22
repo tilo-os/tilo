@@ -591,10 +591,6 @@ impl SpeakerSetup {
 
     /// "It was the left one." Assigning the first speaker of a stereo pair
     /// settles the other one too.
-    ///
-    /// # Errors
-    ///
-    /// When the role is taken or does not fit the arrangement.
     pub fn assign(&mut self, role: SpeakerRoleSpec) -> Result<(), String> {
         let Step::Identify { index, .. } = self.step else {
             return Err(t("speakers-assign-listen-first"));
@@ -706,10 +702,6 @@ impl SpeakerSetup {
     }
 
     /// The create command for the finished draft.
-    ///
-    /// # Errors
-    ///
-    /// When a speaker has no role yet or the name is empty.
     pub fn save_command(&self) -> Result<SpeakerCommand, String> {
         let name = self.name.trim();
         if name.is_empty() {

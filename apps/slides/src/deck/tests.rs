@@ -363,7 +363,6 @@ fn two_replicas_converge() {
     assert!((element.y - 40.0).abs() < f64::EPSILON);
 }
 
-/// Stale, hostile and over-limit changes are refused and write nothing.
 #[test]
 fn hostile_or_over_limit_changes_are_refused_atomically() {
     let mut deck = Replica::<Deck>::new();

@@ -86,9 +86,6 @@ pub struct ToolDefinition {
 impl ToolDefinition {
     /// Validate the structural vocabulary used by the advertised tool schemas.
     /// Permission and application-specific checks still belong to dispatch.
-    ///
-    /// # Errors
-    /// Returns an invalid-response error when arguments do not match the schema.
     pub fn validate_input(&self, input: &Value) -> Result<(), ModelError> {
         validate_input(input, &self.input_schema)
             .map_err(|reason| ModelError::invalid(format!("{}: {reason}", self.name)))

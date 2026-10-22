@@ -448,8 +448,6 @@ impl PreviewPane {
         slots
     }
 
-    // ----- scrolling / zoom input ----------------------------------------
-
     /// Reduce a mouse-wheel event: Ctrl/Cmd → cursor-anchored zoom; Shift →
     /// horizontal pan; otherwise vertical pan. A tilt (horizontal) wheel is
     /// folded into the vertical pan when the page can't scroll sideways, so a
@@ -514,8 +512,6 @@ impl PreviewPane {
         self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
         self.current = i.min(self.images.len().saturating_sub(1));
     }
-
-    // ----- pointer -------------------------------------------------------
 
     /// Handle a left-press. Returns `true` when the app should route subsequent
     /// moves back here as a drag (a scrollbar thumb drag or a text selection).
@@ -777,8 +773,6 @@ impl PreviewPane {
         }
     }
 
-    // ----- selection API used by the app --------------------------------
-
     pub fn has_selection(&self) -> bool {
         !self.selection.is_collapsed()
     }
@@ -820,8 +814,6 @@ impl PreviewPane {
         }
         Some(out)
     }
-
-    // ----- screenshot-only arrangement ----------------------------------
 
     /// Zoom the preview to `display_zoom`× fit-width and scroll to `scroll_frac`
     /// of the way down. Used only by the offscreen `--shots` renderer.
@@ -868,8 +860,6 @@ impl PreviewPane {
             .min(n);
         self.selection = Selection { anchor, cursor };
     }
-
-    // ----- drawing -------------------------------------------------------
 
     /// Paint the preview on the ground of `theme`, which is the region the
     /// pane sits in: the pane fills nothing of its own.
@@ -1209,12 +1199,10 @@ mod tests {
 
     #[test]
     fn preview_zooms_fits_and_switches_pages() {
-        // Case `ctrl_wheel_zooms_toward_cursor`.
         {
             let mut p = pane();
             let z0 = p.viewport.zoom();
             let center = p.viewport.rect().center();
-            // Ctrl + wheel-up zooms in.
             p.on_wheel(
                 &MouseScrollDelta::LineDelta(0.0, 1.0),
                 &ModifiersState::CONTROL,
@@ -1224,7 +1212,6 @@ mod tests {
             assert!(p.viewport.zoom() > z0, "ctrl+wheel-up zooms in");
             assert!(!p.fit_width, "an explicit zoom drops the fit-width intent");
         }
-        // Case `initial_fit_width_keeps_the_document_title_at_the_top`.
         {
             let p = pane();
             assert_eq!(
@@ -1233,7 +1220,6 @@ mod tests {
                 "a first fit-width layout must not centre-scroll past the title"
             );
         }
-        // Case `switching_pages_via_thumb_scrolls`.
         {
             let mut p = PreviewPane::new();
             p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
@@ -1252,7 +1238,6 @@ mod tests {
 
     #[test]
     fn preview_text_selection_copies_words_drags_and_all() {
-        // Case `preview_word_selection_uses_shared_boundaries_and_drag_state`.
         {
             let mut p = pane();
             assert_eq!(p.text_span_at(7, false), (6, 11));
@@ -1269,7 +1254,6 @@ mod tests {
             assert_eq!(p.selected_text().as_deref(), Some("world"));
             p.on_mouse_up();
         }
-        // Case `drag_selects_text_and_copies`.
         {
             let mut p = pane();
             // Press at the first glyph, drag to just before the space (5 chars in).
@@ -1285,7 +1269,6 @@ mod tests {
             assert!(p.has_selection(), "the drag produced a selection");
             assert_eq!(p.selected_text().as_deref(), Some("Hello"));
         }
-        // Case `select_all_covers_every_cell_and_copies_with_line_break`.
         {
             let mut p = PreviewPane::new();
             p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
@@ -1306,14 +1289,12 @@ mod tests {
 
     #[test]
     fn preview_wheel_and_drag_scroll_or_pan() {
-        // Case `plain_wheel_scrolls_when_zoomed_tall`.
         {
             let mut p = pane();
             // Even at fit-width a 200×800pt page overflows the 300px pane vertically.
             assert!(p.viewport.overflows_y(), "tall page overflows vertically");
             p.demo_set_view(1.6, 0.3);
             let y0 = p.viewport.scroll_y();
-            // Plain wheel-down pans further down.
             p.on_wheel(
                 &MouseScrollDelta::LineDelta(0.0, -1.0),
                 &ModifiersState::empty(),
@@ -1325,7 +1306,6 @@ mod tests {
                 "plain wheel scrolls the zoomed page down"
             );
         }
-        // Case `tilt_wheel_scrolls_vertically_when_no_horizontal_overflow`.
         {
             let mut p = pane();
             // Fit-width: nothing to scroll sideways, but the page is tall.
@@ -1346,7 +1326,6 @@ mod tests {
                 "tilt wheel moves a tall page vertically"
             );
         }
-        // Case `drag_pans_when_zoomed_past_fit`.
         {
             let mut p = pane();
             // Zoom in past fit-width so the page overflows horizontally.
@@ -1370,7 +1349,6 @@ mod tests {
             p.on_mouse_up();
             assert!(!p.viewport.is_panning(), "releasing ends the pan");
         }
-        // Case `tilt_wheel_pans_horizontally_when_zoomed_past_fit`.
         {
             let mut p = pane();
             p.demo_set_view(1.6, 0.3);

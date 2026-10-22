@@ -94,9 +94,6 @@ pub trait ProcessSupervisor {
         signed_image: &str,
     ) -> Result<(), ServiceError>;
     /// Prepare a stopped container and return its exact custody before model code runs.
-    ///
-    /// # Errors
-    /// Returns an error when preparation or exact identity verification fails.
     fn prepare(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError>;
     /// Launch the durably recorded `handle` and wait for exact endpoint health.
     ///
@@ -341,7 +338,6 @@ impl ManagedModel {
     }
 }
 
-/// An installed in-process model, as [`installed_in_process_model`] finds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledInProcessModel {
     /// Signed catalog id (`u2net-subject`).
@@ -716,11 +712,6 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
 
     /// Resumes a pinned artifact, verifies its exact digest and size, then
     /// performs an atomic rename into the content-addressed object store.
-    ///
-    /// # Errors
-    /// Returns an error for a non-HTTPS or malformed pin, a partial file
-    /// larger than the pin, a transfer or I/O failure, an incomplete
-    /// download, or a digest mismatch.
     pub fn fetch_verified(&mut self, artifact: &PinnedArtifact) -> Result<PathBuf, ServiceError> {
         self.transport.validate_pin(artifact)?;
         let final_path = self.object_path(&artifact.sha256)?;
@@ -1109,10 +1100,6 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
 
     /// Start vLLM under a supervisor. Runtime/model paths are content addressed
     /// and the runtime must have an accepted signed extension record.
-    ///
-    /// # Errors
-    /// Returns an error when the runtime is not accepted, `port` is zero, the
-    /// model or runtime is not installed, or the supervisor fails to start it.
     pub fn start(
         &mut self,
         runtime: &SignedRuntime,

@@ -272,7 +272,6 @@ mod tests {
 
     #[test]
     fn project_dialogs_are_configured_and_drain_their_channel() {
-        // Case `the_project_dialogs_are_each_configured_for_their_own_job`.
         {
             let open = PickRequest::open("Open project", "Open")
                 .filter(project_filter())
@@ -291,7 +290,6 @@ mod tests {
             assert_eq!(save.suggested_name(), Some("Coastline_Doc_v3.qvp"));
             assert_eq!(save.filter_names(), vec!["Video project"]);
         }
-        // Case `the_project_channel_remembers_which_flow_asked_for_the_path`.
         {
             // The same chosen path means "load this" for one flow and "write
             // here" for the other. Confusing them destroys the file the user
@@ -320,7 +318,6 @@ mod tests {
                 .collect();
             assert_eq!(titles, ["Open project", "Save project", "Open project"]);
         }
-        // Case `an_empty_project_channel_reports_empty_rather_than_blocking`.
         {
             let (_tx, rx) = std::sync::mpsc::channel::<ui::portal::PortalOutcome>();
             let ch = ProjectChannel::Path { rx, save: false };
@@ -375,7 +372,6 @@ mod tests {
 
     #[test]
     fn export_and_import_dialogs_offer_formats_and_drain_cancellation() {
-        // Case `export_destination_is_a_save_dialog_seeded_with_the_project_name`.
         {
             let r = PickRequest::save("Export video", "Export", "Coastline_Doc_v3.mp4")
                 .filter(container_filter("mp4"))
@@ -389,7 +385,6 @@ mod tests {
             );
             assert_eq!(r.filter_names(), vec!["MP4 video", "All files"]);
         }
-        // Case `each_container_offers_its_own_extension`.
         {
             // The dialog must not invite saving an H.264 stream as .webm — the
             // filter follows the container the encode chain will actually mux.
@@ -397,7 +392,6 @@ mod tests {
             assert_eq!(container_filter("mov").name(), "QuickTime video");
             assert_eq!(container_filter("webm").name(), "WebM video");
         }
-        // Case `a_cancelled_export_dialog_drains_like_an_import_does`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             let rx = ui::host::scoped(&services, || {
@@ -406,7 +400,6 @@ mod tests {
             assert_eq!(rx.try_recv(), Ok(ExportDestOutcome::Cancelled));
             assert_eq!(recorder.pick_requests()[0].title(), "Export video");
         }
-        // Case `import_is_multi_select_with_media_then_an_escape_hatch`.
         {
             let r = PickRequest::open_multiple("Import media", "Import")
                 .filter(media_filter())
@@ -415,7 +408,6 @@ mod tests {
             assert!(r.is_multiple(), "a user may import many clips at once");
             assert_eq!(r.filter_names(), vec!["Media", "All files"]);
         }
-        // Case `a_cancelled_import_drains_through_the_channel_the_worker_feeds`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick_multiple(ImportOutcome::Cancelled);

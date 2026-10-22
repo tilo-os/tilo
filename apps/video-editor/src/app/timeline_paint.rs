@@ -621,7 +621,6 @@ impl VideoEditorApp {
             );
         }
 
-        // Add-track buttons under the last lane.
         for (kind, rect) in self.add_track_buttons(r) {
             let face = ButtonFace::new(rect, add_track_label(kind))
                 .icon(Icon::Plus)

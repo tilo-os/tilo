@@ -220,7 +220,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             app.reader_markup_hidden,
             "page images leave the taken-over markup to the records"
         );
-        // A second open of the same record imports nothing again.
         app.existing_request = None;
         app.sync(doc, &state.root);
         assert_eq!(PdfMarkup::of(doc).list_annotations().len(), 4);
@@ -254,7 +253,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         );
         assert_eq!(count(&annots, &tilo_pdf::AnnotationKind::Ink), 1);
         assert_eq!(count(&annots, &tilo_pdf::AnnotationKind::FreeText), 0);
-        // The note and its two replies, each once.
         assert_eq!(count(&annots, &tilo_pdf::AnnotationKind::Text), 3);
         let parent = annots
             .iter()
@@ -277,7 +275,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
                 .any(|r| r.author == "test-author" && r.contents == "Done"),
             "a reply is signed by whoever wrote it"
         );
-        // Unchanged markup keeps its original object.
         let original = engine.open_bytes(&std::fs::read(&path).unwrap()).unwrap();
         let before = original.annotations(PAGE).unwrap();
         let hl_before = before.iter().find(|a| a.name == "hl-1").unwrap();
@@ -285,8 +282,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         assert_eq!(hl_before.quads, hl_after.quads);
         assert_eq!(hl_after.contents, "Original");
 
-        // Opening the export as a new document takes over exactly what it
-        // shows, once.
         let Some((_again, state2)) = open(&out) else {
             break 'phase;
         };
@@ -353,7 +348,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         let bytes = PdfMarkup::planned(2);
         let mut left = AutoCommit::load(&bytes).unwrap();
         let mut right = AutoCommit::load(&bytes).unwrap();
-        // Two peers open the same bytes at once and both take the markup over.
         let import = || crate::actions::import_existing_action(&hash, &plan);
         PdfMarkup::apply_to(&mut left, import());
         PdfMarkup::apply_to(&mut right, import());
@@ -433,7 +427,6 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         assert!(
             (after.0 - before.0 - 20.0).abs() < 0.01 && (after.1 - before.1 - 10.0).abs() < 0.01
         );
-        // A larger size.
         app.selected_anno = Some(id.clone());
         app.resize_free_text(&mut Edits::lend(doc), &id, 4.0);
 

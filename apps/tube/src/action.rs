@@ -101,7 +101,6 @@ impl SettingFlag {
         }
     }
 
-    /// Whether it is on in `settings`.
     pub fn get(self, settings: &Settings) -> bool {
         match self {
             SettingFlag::SponsorBlock => settings.sponsorblock_enabled,

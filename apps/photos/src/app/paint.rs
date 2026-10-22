@@ -233,7 +233,6 @@ impl PhotosApp {
         );
     }
 
-    /// One line of `role` under `theme`.
     pub(super) fn line_of(theme: &Theme, role: ui::TextRole) -> f64 {
         f64::from(theme.text(role).line_height_px())
     }

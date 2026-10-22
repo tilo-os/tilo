@@ -1,4 +1,3 @@
-//! The same decoder serves synchronous completion, native and fetch clients.
 use super::*;
 use agent_provider_config::protocol::{self as neutral, ModelBackend, StreamState, StreamStatus};
 use serde_json::json;

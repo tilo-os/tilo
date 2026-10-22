@@ -19,12 +19,10 @@ use tilo_browser_peer::DocumentRoute;
 pub enum StepAction {
     /// Invoke an operation the record publishes.
     Invoke {
-        /// The action.
         address: ActionAddress,
         /// Its typed arguments.
         arguments: serde_json::Map<String, serde_json::Value>,
     },
-    /// Open the step's app on a new record.
     Open,
     /// Plan the rest of the task again from here, once the steps before
     /// have changed what is published (an app opened, say).
@@ -34,7 +32,6 @@ pub enum StepAction {
 /// One action to perform.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Step {
-    /// The app.
     pub app: String,
     /// The record; `None` uses the record already open in `app`, or opens a
     /// new one.
@@ -81,10 +78,6 @@ pub fn written_steps(task: &str, context: &PlanContext) -> Option<Result<Vec<Ste
 /// agent's session back.
 pub trait Planner: Send {
     /// The steps for `task`, or why there are none.
-    ///
-    /// # Errors
-    ///
-    /// Returns a reason shown to the person who gave the task.
     fn plan(&mut self, task: &str, context: &PlanContext) -> Result<Vec<Step>, String>;
 }
 
@@ -104,10 +97,6 @@ impl Planner for DirectPlanner {
 }
 
 /// Steps from one JSON step or an array of them (see [`DirectPlanner`]).
-///
-/// # Errors
-///
-/// Returns why a step is malformed or names an app outside the context.
 pub fn steps_from_json(
     value: &serde_json::Value,
     context: &PlanContext,

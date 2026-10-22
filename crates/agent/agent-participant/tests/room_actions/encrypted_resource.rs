@@ -1,4 +1,3 @@
-//! Cold discovery of a remote person's actual encrypted native primary.
 use super::resource_support::{
     admit_person, on_messages, open_admitted_peer, part_route, published_message,
 };

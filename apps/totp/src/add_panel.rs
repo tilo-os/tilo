@@ -1045,8 +1045,6 @@ impl AddAccountPanel {
         }
     }
 
-    // ---- account building / actions ------------------------------------
-
     /// Build an account from the current field values, or the problem that
     /// stops it being saved.
     fn build_account(&self) -> Result<Account, Problem> {
@@ -1321,7 +1319,6 @@ pub(crate) mod tests {
             if body.contains(target.center()) {
                 return;
             }
-            // Footer and header actions lie outside the scrollable form.
             if matches!(name, "Cancel" | "Add account" | "Close") {
                 return;
             }

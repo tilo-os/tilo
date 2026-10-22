@@ -253,7 +253,6 @@ pub(super) enum Zone {
     Content,
     /// The slide sidebar.
     Rail,
-    /// The inspector.
     Inspector,
 }
 
@@ -1349,9 +1348,6 @@ impl SlidesApp {
         y + rows * (sh + m.s2) - m.s2
     }
 
-    // --- painting -----------------------------------------------------------
-
-    /// Whether a point falls in the inspector.
     #[cfg(test)]
     pub(super) fn in_inspector(chrome: &Chrome, p: Point) -> bool {
         chrome.inspector.width() > 1.0 && chrome.inspector.contains(p)

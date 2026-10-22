@@ -1,4 +1,3 @@
-//! The normal, trusted-host and legacy entry points enforce one provider contract.
 use super::*;
 use serde_json::json;
 

@@ -224,8 +224,6 @@ impl GrayjaySession {
         self.remote_version
     }
 
-    // -- handshake ---------------------------------------------------------
-
     /// Raw-socket version exchange that precedes the Noise handshake.
     fn version_check(stream: &mut Stream) -> SyncResult<i32> {
         stream
@@ -245,11 +243,6 @@ impl GrayjaySession {
     /// Connect as the Noise **initiator** to a peer whose static public key we
     /// already hold (from pairing). If `pairing_code` is set, its bytes travel
     /// encrypted inside a `Noise_N` sub-handshake in the first frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid peer metadata, a failed Noise handshake, or
-    /// a socket read/write failure.
     pub fn connect_initiator(
         stream: impl Into<Stream>,
         device: &DeviceKey,
@@ -457,8 +450,6 @@ impl GrayjaySession {
             device_name: device_name.to_string(),
         })
     }
-
-    // -- low level framing --------------------------------------------------
 
     /// Encrypt one plaintext frame and write `[len u32][ciphertext]`.
     fn write_encrypted(&mut self, plaintext: &[u8]) -> SyncResult<()> {
@@ -1244,7 +1235,6 @@ mod tests {
                 let deadline = tilo_test_env::hang_deadline();
                 session.complete_authorization(deadline).unwrap();
 
-                // Expect the state-exchange request.
                 let mut asked = false;
                 for _ in 0..8 {
                     if let Incoming::Data {
@@ -1282,7 +1272,6 @@ mod tests {
                 let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
             });
 
-            // Initiator side.
             let stream = TcpStream::connect(addr).unwrap();
             stream
                 .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -1302,7 +1291,6 @@ mod tests {
             let name = session.complete_authorization(deadline).unwrap();
             assert_eq!(name, "responder");
 
-            // Ask for state, then read the subscriptions package back.
             request_all_subscriptions(&mut session, &initiator_key);
 
             let mut urls = Vec::new();
@@ -1493,7 +1481,6 @@ mod tests {
             let b = GrayjaySyncTransport::parse_blob(&wrapped).unwrap();
             assert_eq!(a, b);
         }
-        // Case `pairing_metadata_is_bounded_before_network_or_persistence`.
         {
             assert!(
                 GrayjaySyncTransport::parse_blob(&"x".repeat(MAX_PAIRING_BLOB_BYTES + 1)).is_err()
@@ -1507,7 +1494,6 @@ mod tests {
             .unwrap();
             assert!(GrayjaySyncTransport::parse_blob(&too_many_addresses).is_err());
         }
-        // Case `gzip_expansion_is_bounded`.
         {
             let compressed = gzip_compress(&vec![0; MAX_SYNC_PAYLOAD_BYTES + 1]).unwrap();
             let error = gzip_decompress(&compressed).unwrap_err();

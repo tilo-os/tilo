@@ -385,7 +385,6 @@ impl Video {
         self.live && !media::available(media::Feature::LiveStreams)
     }
 
-    /// The title to display given the `DeArrow` toggle.
     pub fn display_title(&self, dearrow: bool) -> &str {
         if dearrow && let Some(t) = &self.dearrow_title {
             return t;
@@ -1080,7 +1079,6 @@ mod tests {
 
     #[test]
     fn sponsorblock_categories_default_cycle_and_round_trip() {
-        // Case `default_categories_match_sponsorblock_defaults`.
         {
             let s = Settings::default();
             // Sponsor auto-skips by default; Filler is off.
@@ -1090,7 +1088,6 @@ mod tests {
             assert!(!s.category_enabled(Category::Filler));
             assert_eq!(s.mode_of(Category::Filler), SkipMode::Disabled);
         }
-        // Case `sponsorblock_master_switch_overrides_categories`.
         {
             let s = Settings {
                 sponsorblock_enabled: false,
@@ -1100,7 +1097,6 @@ mod tests {
             assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
             assert!(!s.should_auto_skip(Category::Sponsor));
         }
-        // Case `modes_cycle_skip_show_off`.
         {
             let mut s = Settings::default();
             assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip);
@@ -1123,7 +1119,6 @@ mod tests {
                 "cycles back to Auto-skip"
             );
         }
-        // Case `category_roundtrips_api_key`.
         {
             for c in Category::ALL {
                 assert_eq!(Category::from_api_key(c.api_key()), Some(c));
@@ -1133,7 +1128,6 @@ mod tests {
 
     #[test]
     fn dearrow_toggles_gate_titles_and_thumbnails() {
-        // Case `dearrow_sub_toggles_gate_titles_and_thumbnails`.
         {
             let mut s = Settings::default();
             assert!(s.dearrow_titles_on() && s.dearrow_thumbs_on());
@@ -1145,7 +1139,6 @@ mod tests {
                 "master gates both"
             );
         }
-        // Case `dearrow_title_swaps_only_when_present_and_enabled`.
         {
             let mut v = sample_video();
             v.dearrow_title = Some("Calm title".into());
@@ -1158,7 +1151,6 @@ mod tests {
 
     #[test]
     fn search_type_filter_narrows_toggles_and_reverts() {
-        // Case `search_type_filter_defaults_all_selected`.
         {
             let f = SearchTypeFilter::default();
             assert!(f.shows(SearchType::Video));
@@ -1166,7 +1158,6 @@ mod tests {
             assert!(f.shows(SearchType::Creator));
             assert!(f.pristine);
         }
-        // Case `search_type_filter_first_click_narrows_to_that_type`.
         {
             let mut f = SearchTypeFilter::default();
             f.click(SearchType::Playlist);
@@ -1181,7 +1172,6 @@ mod tests {
             assert!(!f.shows(SearchType::Creator));
             assert!(!f.pristine);
         }
-        // Case `search_type_filter_further_clicks_toggle_individually`.
         {
             let mut f = SearchTypeFilter::default();
             f.click(SearchType::Video); // narrow to Video only
@@ -1193,7 +1183,6 @@ mod tests {
             assert!(!f.shows(SearchType::Video));
             assert!(f.shows(SearchType::Creator));
         }
-        // Case `search_type_filter_toggling_all_off_reverts_to_all`.
         {
             let mut f = SearchTypeFilter::default();
             f.click(SearchType::Video); // Video only
@@ -1224,7 +1213,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn channel_records_reconcile_avatars_without_losing_data() {
-        // Case `adopt_channel_avatar_matches_by_id_and_by_normalized_name`.
         {
             let mut m = TubeModel::default();
             // Two records for the same creator: the card reads the id-A stub (empty).
@@ -1239,7 +1227,6 @@ mod tests {
                 "matched by name"
             );
 
-            // A fresh stub matched by exact id.
             m.channels.push(chan("UC_C", "Other Creator", ""));
             m.adopt_channel_avatar("UC_C", "irrelevant name", "https://yt3/c");
             assert_eq!(
@@ -1248,7 +1235,6 @@ mod tests {
                 "matched by id"
             );
         }
-        // Case `adopt_channel_avatar_never_overwrites_an_existing_avatar`.
         {
             let mut m = TubeModel::default();
             m.channels
@@ -1260,7 +1246,6 @@ mod tests {
                 "https://yt3/original"
             );
         }
-        // Case `upsert_channel_keeps_a_real_avatar_when_the_new_record_has_none`.
         {
             let mut m = TubeModel::default();
             m.upsert_channel(chan("UC_A", "Creator", "https://yt3/good"));
@@ -1269,7 +1254,6 @@ mod tests {
             m.upsert_channel(chan("UC_A", "Creator", ""));
             assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/good");
         }
-        // Case `reconcile_bridges_two_records_of_the_same_creator`.
         {
             let mut m = TubeModel::default();
             // The video card's uploader record (id A) has no avatar; a creator-row
@@ -1284,7 +1268,6 @@ mod tests {
                 "avatar-less record filled from the same-name record that had one",
             );
         }
-        // Case `upsert_playlist_preserves_video_ids`.
         {
             let mut m = TubeModel::default();
             m.upsert_playlist(Playlist {
@@ -1319,7 +1302,6 @@ mod tests {
                 "but refreshes other fields"
             );
         }
-        // Case `image_url_fields_round_trip_and_default`.
         {
             // A video/channel carrying real image URLs survives a serde round-trip
             // (the model is mirrored into the CRDT as JSON), and sparse JSON without

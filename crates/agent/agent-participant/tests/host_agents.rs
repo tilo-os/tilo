@@ -1365,7 +1365,6 @@ async fn asked(device: &mut Approver) -> tilo_relay::certify::PendingConfirmatio
     }
 }
 
-/// Whether agent `grant` has `tasks` tasks, the last of them in `state`.
 fn last_task_is(grant: &str, state: TaskState, tasks: usize) -> impl Fn(&AgentsStatus) -> bool {
     move |status| {
         status.agents.iter().any(|agent| {

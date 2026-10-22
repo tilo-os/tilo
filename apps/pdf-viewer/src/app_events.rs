@@ -8,8 +8,6 @@
 // tool, the search query) stays local because it is per-peer.
 
 impl PdfApp {
-    // ---- small view-state helpers -----------------------------------
-
     /// Re-flow the chrome regions after a layout-affecting toggle and keep
     /// the zoom + scroll consistent with the new canvas size.
     fn reflow(&mut self) {
@@ -118,8 +116,6 @@ impl PdfApp {
             (p.y - origin.y) / self.zoom(),
         )
     }
-
-    // ---- pointer hit-testing ----------------------------------------
 
     fn toolbar_hit(&self, p: Point) -> Option<ToolbarHit> {
         if !self.toolbar_rect.contains(p) {
@@ -593,8 +589,6 @@ impl PdfApp {
         }
         false
     }
-
-    // ---- top-level dispatch -----------------------------------------
 
     /// A file dragged in from outside opens when no document is, and
     /// imports as pages into an open one with its page rail shown: the rail
@@ -1998,8 +1992,6 @@ mod event_tests {
 
     #[test]
     fn narrow_toolbar_keeps_the_tools_and_moves_file_commands_into_more() {
-        // The colour well stands beside the tools and opens the colour
-        // popover.
         let (mut app, _st) = sample_app();
         let well = app.toolbar_layout().colour.expect("the colour well");
         let hit = app.toolbar_hit(centre(well)).expect("a toolbar hit");
@@ -2033,7 +2025,6 @@ mod event_tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn wheel_pinch_pixel_scroll_and_arrows_zoom_or_scroll_through_the_event_path() {
-        // Pushing far enough crosses into a later page, which the reader tracks.
         let (mut app, _st) = sample_app();
         let p0 = app.current_page;
         let (sx, m) = (app.scroll_x(), app.viewport.max_scroll_y());
@@ -2487,8 +2478,6 @@ mod event_tests {
             "a pan does not select an annotation"
         );
 
-        // A Select-tool press + release without moving, over an annotation,
-        // selects it.
         let mut rig = Rig::new();
         rig.app.tool = Tool::Select;
         rig.app.go_to_page(1);
@@ -2525,7 +2514,6 @@ mod event_tests {
         app.recompute_regions();
         app.sync_viewport_frame();
         assert!(app.overlay_mode, "narrow window is in overlay mode");
-        // User opens the sidebar as a floating overlay over the canvas.
         app.toggle_sidebar();
         assert!(app.show_sidebar, "sidebar opened as an overlay");
         let mut rig = Rig::with(app, st);
@@ -2648,7 +2636,6 @@ mod event_tests {
                 format!("AB{clip}"),
                 "Ctrl+V inserts the clipboard text at the caret"
             );
-            // Where a working clipboard round-trips our own write, it is "XY".
             if ui::clipboard_paste().as_deref() == Some("XY") {
                 assert_eq!(after, "ABXY", "the pasted text is exactly what was copied");
             }
@@ -2710,7 +2697,6 @@ mod event_tests {
         );
         assert!(app.doc.page_count() >= 1, "the loaded document has pages");
 
-        // A cancelled portal interaction leaves the current view intact.
         let (mut app, mut st) = sample_app(); // sample document already loaded
         let before = app.has_document;
         let name_before = app.doc_name.clone();
@@ -2810,7 +2796,6 @@ mod event_tests {
                 .map(|a| a.id.as_str())
                 .collect::<Vec<_>>()
         );
-        // The palette's delete, applied to a replica of the same document…
         let mut palette = st.doc.fork();
         crate::PdfMarkup::apply_to(
             &mut palette,
@@ -2841,7 +2826,6 @@ mod event_tests {
             "the annotation was deleted via the dispatched action"
         );
 
-        // The context menu's Delete row geometry comes from the shared widget.
         let (mut app, _st) = sample_app();
         app.context_menu = Some(ContextMenu::delete(
             DeleteTarget::Annotation("anno".into()),
@@ -2856,7 +2840,6 @@ mod event_tests {
             "the shared Delete row reports exact hit geometry"
         );
 
-        // Right-click a placed annotation, then click the menu's Delete item.
         let mut rig = Rig::new();
         rig.app.go_to_page(1);
         let note_id = rig.right_click_seeded_note();
@@ -2905,7 +2888,6 @@ mod event_tests {
             "and it is gone from the shared document"
         );
 
-        // ArrowDown + Enter deletes through the shared keyboard route.
         let mut rig = Rig::new();
         rig.app.go_to_page(1);
         let note_id = rig.right_click_seeded_note();

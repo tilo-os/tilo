@@ -171,7 +171,6 @@ pub struct LocalModelSnapshot {
 }
 
 impl LocalModelSnapshot {
-    /// The in-process model `id`.
     #[must_use]
     pub fn in_process_model(&self, id: &str) -> Option<&InProcessLocalModel> {
         self.in_process.iter().find(|model| model.package.id == id)

@@ -374,7 +374,6 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             let body = l.modal.body;
             assert!(!l.modal.body_overflows, "{what}: the card holds its body");
 
-            // Header.
             let mut y = l.filename_top;
             assert!(y >= body.y0, "{what}: the filename starts in the body");
             y += line_sm;
@@ -540,7 +539,6 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             "a 1x row is its line plus one step",
         );
 
-        // And the sheet lays every row out with them, at either scale.
         for scale in [1.0, 2.0] {
             let (mut tr, theme) = scaled(scale);
             let app = app_sized(1280.0, 800.0);
@@ -583,7 +581,6 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
                 l.modal.body_overflows,
                 "{what}: the fixture is a window that cannot hold the natural stack"
             );
-            // The footer is whole and on the card.
             assert!(
                 l.info_top + line_sm <= l.status.y0 + 1e-6,
                 "{what}: the size line runs into the status slot"
@@ -607,7 +604,6 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
                 body.y1 <= l.cancel.y0 && l.cancel.y1 <= card.y1 && l.confirm.y1 <= card.y1,
                 "{what}: the actions sit on the card below the body"
             );
-            // Nothing above it runs into it, and nothing overlaps.
             let last = l.fps.last().expect("frame rates are offered").1;
             assert!(
                 last.y1 <= l.info_top + 1e-6,
@@ -678,7 +674,6 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
         assert!(l.max_scroll > 0.0, "so the body scrolls");
         let hint = l.footer_hint.expect("a scrolling body says so at its foot");
         assert!(hint < l.modal.body.y1, "the hint sits inside the body");
-        // Scrolled to the end, the last row is inside the body, above the hint.
         app.help_scroll = l.max_scroll;
         let scrolled = app.help_layout(&mut tr, &theme);
         let last = scrolled

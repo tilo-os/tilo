@@ -325,7 +325,6 @@ pub fn literal(text: &str, param: &ActionParam) -> Value {
     }
 }
 
-/// The text a literal is edited as.
 #[must_use]
 pub fn literal_text(value: &Value) -> String {
     match value {
@@ -517,7 +516,6 @@ pub struct KindGroup {
 pub struct Offer {
     pub app_id: String,
     pub resource: String,
-    /// The kind of the resource that offers it.
     pub kind: String,
     pub resource_label: String,
     pub action: String,

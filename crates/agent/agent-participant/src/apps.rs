@@ -49,7 +49,6 @@ pub fn component_apps() -> Vec<&'static ApplicationDefinition> {
 }
 
 impl AppCatalogue {
-    /// `apps`.
     #[must_use]
     pub fn new(apps: Vec<&'static ApplicationDefinition>) -> Self {
         Self { apps }
@@ -61,7 +60,6 @@ impl AppCatalogue {
         Self::new(component_apps())
     }
 
-    /// The definition of `app_id`.
     #[must_use]
     pub fn get(&self, app_id: &str) -> Option<&'static ApplicationDefinition> {
         self.apps
@@ -121,7 +119,6 @@ impl AppCatalogue {
 
 /// Which record a [`Replica`] holds.
 pub enum Seed {
-    /// A new record, its resource's genesis.
     New,
     /// A new record under the id a room route names (the room's default
     /// record a host seeds before any member opens it): its genesis names
@@ -129,7 +126,6 @@ pub enum Seed {
     NewAt(RecordId),
     /// An existing record, from the durable changes the host replayed.
     Existing {
-        /// The record's id.
         record: RecordId,
         /// Its Automerge changes (a snapshot, then increments), in order.
         changes: Vec<Vec<u8>>,
@@ -336,7 +332,6 @@ impl Replica {
         })
     }
 
-    /// The app's id.
     #[must_use]
     pub const fn app_id(&self) -> &'static str {
         self.app_id
@@ -349,7 +344,6 @@ impl Replica {
         self.view.checkout().id.route()
     }
 
-    /// The record's id.
     #[must_use]
     pub const fn record_id(&self) -> &RecordId {
         &self.view.checkout().id
@@ -443,10 +437,6 @@ impl Replica {
     /// person's click takes: permission, confirmation and strict argument
     /// binding exactly as for a person. The change it made is taken with
     /// [`Self::take_mutation`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the door's refusal or the action's failure.
     pub fn invoke(
         &mut self,
         address: &ActionAddress,

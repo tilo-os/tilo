@@ -249,7 +249,6 @@ pub fn fill_seeds() -> Vec<Invoke<Workbook>> {
         .collect()
 }
 
-/// The sample workbook, as a replica holds it.
 #[cfg(test)]
 pub(crate) fn replica() -> ui::tilo_resource::Replica<Workbook> {
     let mut replica = ui::tilo_resource::Replica::<Workbook>::new();

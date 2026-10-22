@@ -191,7 +191,6 @@ impl ChromeMetrics {
         (label + 2.0 * self.s3 + dot).clamp(self.s16 * g, self.s16 * 3.0 * g)
     }
 
-    /// Top of a line box centred in `rect`.
     pub(super) fn centred_top(rect: Rect, line_h: f64) -> f64 {
         rect.y0 + (rect.height() - line_h) / 2.0
     }
@@ -308,8 +307,6 @@ impl SheetsApp {
         self.pending.redraw = true;
         true
     }
-
-    // --- painting ------------------------------------------------------------
 
     /// The chrome, top to bottom. The bars stand on the window's own ground;
     /// the framework painted it already.

@@ -6,7 +6,6 @@ use ui::framework::testing::TestApp;
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Edit, Replica, Resource as _};
 
-/// The id file `id` is published under.
 fn file_resource_id(id: &Id) -> String {
     item_resource_id::<Workspace>("files", id)
 }

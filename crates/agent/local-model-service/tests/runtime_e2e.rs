@@ -146,7 +146,6 @@ impl ProcessSupervisor for ExtractedImageSupervisor {
     fn start(&mut self, command: &VllmCommand, handle: &ProcessHandle) -> Result<(), ServiceError> {
         let rootfs = self.root.join("rootfs");
         let inside = |path: &str| rootfs.join(path.trim_start_matches('/'));
-        // The bind mount of the verified model, as a path outside the image.
         let args = command.args.iter().map(|arg| {
             arg.strip_prefix(&command.model_container_path).map_or_else(
                 || arg.clone(),

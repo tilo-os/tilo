@@ -410,9 +410,6 @@ impl Sessions {
     }
 
     /// Create an environment named `name`; returns its record key.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn create_environment(&mut self, name: &str) -> Result<String, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -431,9 +428,6 @@ impl Sessions {
     }
 
     /// Rename the environment `record`.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn rename_environment(&mut self, record: &str, name: &str) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());
@@ -448,9 +442,6 @@ impl Sessions {
     }
 
     /// Grant the environment `record` a folder, read-write or read-only.
-    ///
-    /// # Errors
-    /// Returns the supervisor's reason.
     pub fn grant_folder(&mut self, record: &str, path: &str, writable: bool) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());
@@ -478,9 +469,6 @@ impl Sessions {
 }
 
 /// Decode the supervisor's environment list.
-///
-/// # Errors
-/// Returns the supervisor's reason, or why the reply was not understood.
 pub(crate) fn parse_directory_reply(reply: &str) -> Result<Vec<EnvironmentSummary>, String> {
     #[derive(serde::Deserialize)]
     struct Entry {

@@ -595,8 +595,6 @@ impl Grid {
         }
     }
 
-    // --- data plumbing ------------------------------------------------------
-
     /// Replace the rendered cell data (called every frame from the app's
     /// `sync` after recalculation).
     pub fn set_data(
@@ -641,7 +639,6 @@ impl Grid {
         self.show_formulas
     }
 
-    /// Whether formula view is currently on.
     pub fn formula_view(&self) -> bool {
         self.show_formulas
     }
@@ -927,7 +924,6 @@ impl Grid {
         ((c0, r0), (c1, r1))
     }
 
-    /// Whether a cell's text is bold.
     pub fn cell_is_bold(&self, addr: Addr) -> bool {
         self.bold.contains(&addr)
     }
@@ -998,8 +994,6 @@ impl Grid {
             format!("{}:{}", addr_to_a1(c0, r0), addr_to_a1(c1, r1))
         }
     }
-
-    // --- geometry helpers ---------------------------------------------------
 
     fn col_w(&self, c: u32) -> f64 {
         // A manual resize wins; otherwise use the auto-fitted width; otherwise
@@ -1355,8 +1349,6 @@ impl Grid {
         self.clamp_scroll();
     }
 
-    // --- editing ------------------------------------------------------------
-
     /// Begin editing the active cell. `seed` replaces the content (typed
     /// character) or, when `None`, loads the existing raw for in-place edit.
     pub fn begin_edit(&mut self, seed: Option<String>) {
@@ -1525,8 +1517,6 @@ impl Grid {
         self.ensure_visible();
         self.dirty = true;
     }
-
-    // --- input handlers (called by the app) --------------------------------
 
     pub fn on_scroll(&mut self, dx: f64, dy: f64) {
         self.scroll_x += dx;
@@ -1922,7 +1912,6 @@ impl Grid {
                 true
             }
             Key::Character(s) if !ctrl => {
-                // Begin editing, replacing content with the typed char.
                 self.begin_edit(Some(s.to_string()));
                 true
             }
@@ -2228,8 +2217,6 @@ impl Grid {
         self.insert_text(s);
     }
 
-    // --- rendering ----------------------------------------------------------
-
     /// The role a cell is set in: `Body`, or `Code` while formulas show as
     /// the source they were typed as. A number takes tabular figures and a
     /// bold cell the strong weight of its role.
@@ -2259,7 +2246,6 @@ impl Grid {
         self.auto_col_w.clear();
         let mut widest: HashMap<u32, f64> = HashMap::new();
         for (&(c, r), val) in &self.values {
-            // Skip empties and columns the user pinned to a manual width.
             if val.is_empty() || self.col_widths.contains_key(&c) {
                 continue;
             }
@@ -3304,7 +3290,6 @@ mod tests {
             assert!(!g.needs_autofit);
         }
 
-        // Case `visible_scrollbar_thumb_is_pointer_draggable_on_both_axes`.
         {
             let mut grid = grid_with(&[]);
             // The normal logical grid is larger than this deliberately narrow
@@ -3369,10 +3354,8 @@ mod tests {
         g
     }
 
-    /// Occupancy detection and autofit.
     #[test]
     fn autofit_respects_occupancy_and_manual_sizes() {
-        // Case `occupied_detects_value_and_raw`.
         {
             let mut g = grid_with(&[((1, 0), CellValue::Number(5.0))]);
             assert!(g.cell_is_occupied((1, 0)));
@@ -3385,7 +3368,6 @@ mod tests {
             assert!(g.cell_is_occupied((4, 0)));
         }
 
-        // Case `autofit_grows_column_to_fit_label_past_occupied_neighbour`.
         {
             // A0 holds a label wider than a default column; B0 is occupied so the
             // label can't overflow into it. Auto-fit must widen column A to fit the
@@ -3422,7 +3404,6 @@ mod tests {
             );
         }
 
-        // Case `autofit_leaves_manually_resized_columns_untouched`.
         {
             // A manual resize must win over auto-fit.
             let mut g = grid_with(&[((0, 0), CellValue::Text("Monthly budget total".into()))]);
@@ -3436,7 +3417,6 @@ mod tests {
     /// In-cell editor overflow and clipping.
     #[test]
     fn cell_editor_overflows_only_into_empty_neighbours() {
-        // Case `editor_overflows_into_empty_neighbours`.
         {
             // A0 is being edited; B0.. are all empty. A wide desired width should
             // grow across several empty columns.
@@ -3455,7 +3435,6 @@ mod tests {
             assert!(right <= body_right + 0.5);
         }
 
-        // Case `editor_clips_at_first_occupied_neighbour`.
         {
             // A0 edited; C0 (two cells over) is occupied. The editor may use B0
             // but must STOP before C0 even though it wants more room.
@@ -3472,7 +3451,6 @@ mod tests {
             );
         }
 
-        // Case `editor_at_least_its_own_cell_when_neighbour_adjacent`.
         {
             // B0 occupied directly to the right of A0 → editor stays cell-wide.
             let g = grid_with(&[((1, 0), CellValue::Number(1.0))]);
@@ -3486,9 +3464,7 @@ mod tests {
             );
         }
 
-        // Case `editor_never_exceeds_body`.
         {
-            // Edit the last visible column with a huge desired width.
             let g = grid_with(&[]);
             let body_right = g.body_rect().x1;
             let right =
@@ -3512,7 +3488,6 @@ mod tests {
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn pointer_selection_builds_and_collapses_ranges() {
-        // Case `drag_selects_a_rectangular_range`.
         {
             // Press on B2, move to D5 with the button held, release. This is the
             // exact `pointer_down`/`pointer_move`/`pointer_up` path `handle_event`
@@ -3530,7 +3505,6 @@ mod tests {
             assert!(!g.is_multi_range());
         }
 
-        // Case `shift_click_extends_from_anchor`.
         {
             let mut g = grid_with(&[]);
             let mut out = Vec::new();
@@ -3543,7 +3517,6 @@ mod tests {
             assert!(!g.is_multi_range());
         }
 
-        // Case `ctrl_click_adds_a_discontiguous_range`.
         {
             let mut g = grid_with(&[]);
             let mut out = Vec::new();
@@ -3565,7 +3538,6 @@ mod tests {
             assert!(!cells.contains(&(3, 3)), "gap between ranges not selected");
         }
 
-        // Case `ctrl_drag_adds_a_second_rectangle`.
         {
             let mut g = grid_with(&[]);
             let mut out = Vec::new();
@@ -3586,7 +3558,6 @@ mod tests {
             }
         }
 
-        // Case `multi_range_selection_aggregates_numeric_cells_over_the_real_pointer_path`.
         {
             // Two numeric columns with a non-numeric gap between them. Column B
             // (index 1) holds 100/200/300; column D (index 3) holds 10/20/30; the
@@ -3626,11 +3597,9 @@ mod tests {
                 (sum - 660.0).abs() < 1e-9,
                 "sum over both ranges = 660, got {sum}"
             );
-            // The gap column's label is inside neither rectangle.
             assert!(!g.selected_cells().contains(&(2, 1)), "gap column excluded");
         }
 
-        // Case `arrow_key_collapses_multi_selection`.
         {
             let mut g = grid_with(&[]);
             let mut out = Vec::new();
@@ -3639,19 +3608,15 @@ mod tests {
             g.pointer_down(cell_point(&g, 5, 5), false, true, &mut out);
             g.pointer_up();
             assert!(g.is_multi_range());
-            // A bare arrow key drops the extra ranges back to a single active cell.
             g.move_active(1, 0, false);
             assert!(!g.is_multi_range());
             assert_eq!(g.selected_cells(), vec![(6, 5)]);
         }
     }
 
-    // --- formula point mode (build formulas by clicking) --------------------
-
     /// Point-mode click/drag insertion, operator append, replacement and off-state.
     #[test]
     fn formula_point_mode_inserts_references() {
-        // Case `formula_point_click_inserts_reference_without_moving_selection`.
         {
             // Select A5, start a formula (as typing '=' would), then click B1.
             // This drives the exact grid path `handle_event` runs on a click.
@@ -3670,7 +3635,6 @@ mod tests {
             assert_eq!(g.active(), (0, 4), "selection stayed on the edited cell");
         }
 
-        // Case `formula_point_drag_inserts_range`.
         {
             // Press A1, drag to B4 while editing a formula → inserts A1:B4.
             let mut g = grid_with(&[]);
@@ -3684,7 +3648,6 @@ mod tests {
             assert!(out.is_empty(), "the drag never committed the edit");
         }
 
-        // Case `formula_point_appends_after_operator`.
         {
             // =A1  then type '+'  then click B2  →  =A1+B2.
             let mut g = grid_with(&[]);
@@ -3700,7 +3663,6 @@ mod tests {
             assert_eq!(g.active_display_raw(), "=A1+B2");
         }
 
-        // Case `formula_second_click_replaces_unoperated_reference`.
         {
             // Click A1, then C3 without typing an operator → the ref is replaced
             // (Excel point-mode behaviour), not appended.
@@ -3715,7 +3677,6 @@ mod tests {
             assert_eq!(g.active_display_raw(), "=C3");
         }
 
-        // Case `point_mode_off_when_caret_after_a_value`.
         {
             // A non-pointable click (nothing typed makes the caret ready) commits
             // the edit and moves the selection instead of inserting a reference.
@@ -3741,7 +3702,6 @@ mod tests {
     /// Edit selection replace/paste, grapheme boundaries, cut and shift-arrow delete.
     #[test]
     fn cell_edit_selection_replaces_cuts_and_deletes() {
-        // Case `edit_selection_replace_and_paste`.
         {
             // The exact methods the formula bar drives: set_edit_caret (click /
             // shift-drag), typing over a selection, select-all, and paste.
@@ -3752,16 +3712,13 @@ mod tests {
             g.set_edit_caret(4, true); // shift-drag to select "ell"
             assert_eq!(g.edit_selection(), Some((1, 4)));
             assert_eq!(g.edit_selected_text().as_deref(), Some("ell"));
-            // Typing replaces the selection.
             g.insert_text_public("ELL");
             assert_eq!(g.active_display_raw(), "hELLo");
-            // Ctrl+A then paste replaces the whole field.
             g.select_all_edit();
             g.edit_paste_text("=A1+B2");
             assert_eq!(g.active_display_raw(), "=A1+B2");
         }
 
-        // Case `shared_edit_core_keeps_unicode_selection_on_grapheme_boundaries`.
         {
             let mut g = Grid::new();
             g.begin_edit(Some("a🙂b".into()));
@@ -3773,7 +3730,6 @@ mod tests {
             assert_eq!(g.active_display_raw(), "aXb");
         }
 
-        // Case `edit_cut_removes_selection`.
         {
             let mut g = grid_with(&[]);
             g.select_only((0, 0));
@@ -3785,7 +3741,6 @@ mod tests {
             assert_eq!(g.edit_caret(), Some(2));
         }
 
-        // Case `shift_arrow_extends_then_backspace_deletes_selection`.
         {
             let mut g = grid_with(&[]);
             g.select_only((0, 0));
@@ -3802,7 +3757,6 @@ mod tests {
     /// Formula/header highlights and bounded accessibility windows.
     #[test]
     fn highlights_and_accessibility_windows_track_the_selection() {
-        // Case `selected_formula_cell_highlights_without_editing`.
         {
             let mut g = grid_with(&[]);
             g.raw.insert((0, 0), "=A2+A3".into());
@@ -3810,13 +3764,11 @@ mod tests {
             assert!(!g.is_editing());
             // Refs are available for highlighting even when only selecting.
             assert_eq!(g.highlight_formula_body().as_deref(), Some("A2+A3"));
-            // A plain value cell has nothing to highlight.
             g.raw.insert((1, 0), "42".into());
             g.select_only((1, 0));
             assert_eq!(g.highlight_formula_body(), None);
         }
 
-        // Case `header_highlight_tracks_selected_columns_and_rows`.
         {
             let mut g = grid_with(&[]);
             g.select_range_public((2, 3), (4, 5)); // C4:E6
@@ -3824,13 +3776,11 @@ mod tests {
             assert!(!g.col_in_selection(1) && !g.col_in_selection(5));
             assert!(g.row_in_selection(3) && g.row_in_selection(5));
             assert!(!g.row_in_selection(2) && !g.row_in_selection(6));
-            // A discontiguous range lights up its columns/rows too.
             g.add_range_public((7, 8), (7, 8)); // H9
             assert!(g.col_in_selection(7) && g.row_in_selection(8));
             assert!(g.col_in_selection(2), "original range headers stay lit");
         }
 
-        // Case `accessibility_window_is_viewport_bounded_and_marks_selection`.
         {
             let mut g = grid_with(&[((1, 1), CellValue::Number(42.0))]);
             g.raw.insert((1, 1), "42".into());
@@ -3848,7 +3798,6 @@ mod tests {
             assert!(active.selected);
         }
 
-        // Case `accessibility_window_before_layout_stays_small_near_active_cell`.
         {
             let mut g = Grid::new();
             g.select_only((40, 180));
@@ -3864,7 +3813,6 @@ mod tests {
             );
         }
 
-        // Case `visible_window_at_workbook_limits_is_small_and_reaches_the_end`.
         {
             let mut g = Grid::new();
             g.n_cols = 16_384;

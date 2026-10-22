@@ -104,7 +104,6 @@ fn changing_slides_ends_notes_editing() {
     }
 }
 
-/// The last slide stays.
 #[test]
 fn the_last_slide_cannot_be_deleted() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
@@ -156,7 +155,6 @@ fn arrow_nudge_tab_cycle_and_delete_edit_the_deck() {
     );
 }
 
-/// Clicking an overview card opens that slide in the editor.
 #[test]
 fn clicking_an_overview_card_opens_that_slide() {
     let mut bench = Bench::sample();
@@ -167,7 +165,6 @@ fn clicking_an_overview_card_opens_that_slide() {
     assert_eq!(bench.read(|app| app.cur_slide), index);
 }
 
-/// A viewer's edits change nothing.
 #[test]
 fn a_viewer_cannot_edit_the_deck() {
     let mut bench = Bench::open_as(

@@ -298,7 +298,6 @@ pub struct Landing(Receiver<Erased>);
 pub enum Landed<T> {
     /// Still running.
     Pending,
-    /// Its result.
     Done(T),
     /// The work stopped without a result (it panicked).
     Lost,

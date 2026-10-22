@@ -439,7 +439,6 @@ mod tests {
         .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("tilo_rooms_bridge_lag_seconds 0.000\n"));
-        // The temporary file was renamed away.
         assert_eq!(
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1

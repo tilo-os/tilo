@@ -507,11 +507,6 @@ fn collect_pictures(deck: &Deck, content: &ContentStore) -> Vec<BundledPicture> 
 
 /// Parse the bytes of a `.odp` package back into a [`Deck`], storing its
 /// pictures in `content`.
-///
-/// # Errors
-///
-/// Returns an error if `bytes` isn't a readable ZIP archive, if it has no
-/// `content.xml` entry, or if `content.xml` parses to zero slides.
 pub fn read_odp(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> {
     let mut zip = open_package(bytes)?;
     let content_xml = read_package_xml(&mut zip, "content.xml")?;
@@ -986,7 +981,6 @@ mod tests {
     use crate::model::{ElementKind, seed_deck};
     use std::io::Read;
 
-    /// ODP round-trips the model, mimetype, multiline text and picked fills.
     #[test]
     fn odp_round_trips_model_text_and_fills() {
         // Case `odp_round_trips_the_model_exactly`.
@@ -1001,7 +995,6 @@ mod tests {
             assert_eq!(deck, back, "model → .odp → model must be identity");
         }
 
-        // Case `odp_starts_with_the_presentation_mimetype`.
         {
             let content = ContentStore::memory();
             let deck = seed_deck();
@@ -1012,7 +1005,6 @@ mod tests {
             assert!(head.contains(MIME), "package must declare the ODP mimetype");
         }
 
-        // Case `odp_round_trips_multiline_text_and_alignment`.
         {
             let content = ContentStore::memory();
             let mut deck = seed_deck();
@@ -1028,7 +1020,6 @@ mod tests {
             assert_eq!(el.align, TextAlign::Justify);
         }
 
-        // Case `odp_round_trips_a_picked_hex_fill`.
         {
             let content = ContentStore::memory();
             let mut deck = seed_deck();
@@ -1039,10 +1030,8 @@ mod tests {
         }
     }
 
-    /// Foreign ODP content opens, every element kind and bundled pictures survive.
     #[test]
     fn odp_preserves_foreign_content_kinds_and_pictures() {
-        // Case `foreign_odp_native_text_and_shapes_do_not_open_as_an_empty_slide`.
         {
             let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:body><office:presentation><draw:page draw:name="slide-1"><draw:frame draw:name="title" svg:x="2.54cm" svg:y="1.4288cm" svg:width="20.32cm" svg:height="2.8575cm"><draw:text-box><text:p>Hello from LibreOffice</text:p><text:p>Second line</text:p></draw:text-box></draw:frame><draw:rect draw:name="box" svg:x="5.08cm" svg:y="7.1438cm" svg:width="10.16cm" svg:height="4.2863cm"/></draw:page></office:presentation></office:body></office:document-content>"#;
@@ -1057,7 +1046,6 @@ mod tests {
             assert_eq!(deck.slides[0].elements[1].kind, ElementKind::Rect);
         }
 
-        // Case `odp_preserves_every_element_kind`.
         {
             let content = ContentStore::memory();
             let deck = seed_deck();
@@ -1070,7 +1058,6 @@ mod tests {
             }
         }
 
-        // Case `odp_bundles_local_pictures_and_reopens_them_from_the_package`.
         {
             let content = ContentStore::memory();
             let source = std::env::temp_dir()

@@ -39,7 +39,6 @@ use tilo_lock::MutexRecover as _;
 
 /// What the door needs of the bot's session and replicas.
 pub trait DoorParticipant: Send {
-    /// The room.
     fn room(&self) -> &str;
     /// The held records and what each offers the bot now.
     fn offered(&self) -> Vec<(DocumentRoute, Vec<tilo_actions::door::ActionDescriptor>)>;
@@ -134,7 +133,6 @@ pub struct RunStep {
 }
 
 impl RunStep {
-    /// The run step `context` names, if it is a run's.
     #[must_use]
     pub fn of(context: &ActionContext) -> Option<Self> {
         let group = context
@@ -155,7 +153,6 @@ impl RunStep {
 /// Why a connector did not perform an op.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PerformError {
-    /// The service refused it for good.
     Refused(String),
     /// The service or worker is unavailable now; it may succeed later.
     Unavailable(String),
@@ -174,7 +171,6 @@ pub trait Performer: Send + Sync {
 pub struct OutboxSpec {
     /// The app whose records queue the entries.
     pub app_id: String,
-    /// The field the outbox is stored under.
     pub field: String,
     /// The connector's worker.
     pub connector: Arc<dyn Performer>,

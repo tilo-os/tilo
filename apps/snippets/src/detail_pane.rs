@@ -62,7 +62,6 @@ impl DetailKey {
         }
     }
 
-    /// Whether a snippet is open.
     pub(crate) fn has_snippet(&self) -> bool {
         self.snippet.is_some()
     }

@@ -322,7 +322,6 @@ impl VideoEditorApp {
             // through as unhandled rather than reporting a jump it did not
             // make.
             Key::Character(c) if c.eq_ignore_ascii_case("c") && !ctrl => self.go_to_next_clipping(),
-            // Shift+Z fits the whole project to the window, the NLE standard.
             Key::Character(c) if c.eq_ignore_ascii_case("z") && !ctrl => {
                 self.zoom_to_fit(r);
                 true

@@ -139,8 +139,6 @@ impl FileMenu {
     /// `viewport`. `has_words` says the document has something a template
     /// would replace.
     pub(crate) fn open_anchored(&mut self, anchor: Rect, viewport: Rect, has_words: bool) {
-        // Start each invocation without a stale hover, queued selection or
-        // pending question.
         let text_scale = self.text_scale;
         *self = Self::default();
         self.set_text_scale(text_scale);

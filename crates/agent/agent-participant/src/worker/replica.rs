@@ -64,12 +64,6 @@ fn worker_error(reason: impl Into<String>) -> AppError {
 impl ConfinedReplica {
     /// Hold a record of `app_id` in `room` as `participant`, in a new
     /// confined worker: [`crate::Replica::open`].
-    ///
-    /// # Errors
-    ///
-    /// Returns why the app is unknown, the record's changes were not
-    /// admitted, or the worker did not start, confine itself or hold the
-    /// record.
     pub fn open(
         catalogue: &AppCatalogue,
         app_id: &str,
@@ -145,7 +139,6 @@ impl ConfinedReplica {
         self.inner.lock_recover()
     }
 
-    /// The app's id.
     #[must_use]
     pub fn app_id(&self) -> &str {
         &self.app_id
@@ -157,7 +150,6 @@ impl ConfinedReplica {
         self.record.route()
     }
 
-    /// The record's id.
     #[must_use]
     pub const fn record_id(&self) -> &RecordId {
         &self.record

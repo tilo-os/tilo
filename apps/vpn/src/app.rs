@@ -423,8 +423,6 @@ impl VpnApp {
         self.refresh();
     }
 
-    // ---- view state --------------------------------------------------
-
     fn select(&mut self, id: ConnId) {
         self.local_selected = Some(id);
         self.vault.selected = Some(id);
@@ -671,8 +669,6 @@ impl VpnApp {
             .map_err(|error| error.to_string())
     }
 }
-
-// ---- effects -------------------------------------------------------------
 
 impl VpnApp {
     /// Answer `effect`, from a control, the palette, an agent or a script.
@@ -1665,7 +1661,6 @@ mod tests {
     }
     #[test]
     fn the_live_app_starts_empty_and_selection_follows_the_fleet() {
-        // Case `live_app_starts_empty_and_writes_nothing`.
         {
             let app = TestApp::<VpnShell>::new().unwrap();
             assert!(
@@ -1673,7 +1668,6 @@ mod tests {
                 "the live app fabricates no tunnels"
             );
         }
-        // Case `typed_profile_context_selects_profile_and_config_tab_after_load`.
         {
             let mut app = sample();
             app.pending_tool_intent = Some(os_actions::ToolIntent::Vpn {
@@ -1685,7 +1679,6 @@ mod tests {
             assert_eq!(app.detail_tab, DetailTab::Config);
             assert!(app.pending_tool_intent.is_none());
         }
-        // Case `select_offset_wraps`.
         {
             let mut app = sample();
             let first = app.vault.selected.unwrap();
@@ -1772,7 +1765,6 @@ mod tests {
         assert_eq!(connect.contract.result, ui::tilo_actions::ResultSpec::Job);
         assert_eq!(connect.contract.kind, ui::tilo_actions::ActionKind::Outside);
 
-        // A connect asked for anyway is refused, and nothing claims a tunnel.
         assert!(
             app.effect(&VpnEffect::Connect {
                 connection: home.to_string(),
@@ -1808,7 +1800,6 @@ mod tests {
     }
     #[test]
     fn importing_keeps_secrets_out_of_the_document() {
-        // Case `a_new_import_adds_only_a_secret_free_identity`.
         {
             let mut app = TestApp::<VpnShell>::new().unwrap();
             let path = provider_file("home", "c2VjcmV0", "imported.example:51820");
@@ -1835,7 +1826,6 @@ mod tests {
             assert!(!saved.contains("imported.example"), "no endpoint either");
             let _ = std::fs::remove_file(path);
         }
-        // Case `setting_up_a_shared_profile_keeps_its_id_and_adds_nothing`.
         {
             let mut app = live_with_sample();
             let before = Vault::of(&app.state()).connections.len();
@@ -1864,7 +1854,6 @@ mod tests {
             assert!(!saved.contains("setup.example"));
             let _ = std::fs::remove_file(path);
         }
-        // Case `a_closed_picker_cancels_the_import`.
         {
             let mut app = TestApp::<VpnShell>::new().unwrap();
             let (services, recorder) = ui::host::HostServices::recording();
@@ -1889,7 +1878,6 @@ mod tests {
             );
         }
 
-        // The stand-in device's tunnel states are what the list shows.
         let mut connecting = TestApp::<VpnShell>::capture(Some("connecting")).unwrap();
         let shown = connecting.harness().inspection_json().unwrap();
         assert!(shown.contains("Home, WireGuard, Connected"), "{shown}");
@@ -2037,7 +2025,6 @@ mod tests {
             assert_eq!(app.modal, Modal::None, "the primary click resolved it");
             assert!(app.pending.is_none(), "confirming consumed the action");
         }
-        // Case `connecting_profile_rejects_a_duplicate_transition`.
         {
             let mut app = sample();
             let id = app.vault.selected.expect("a selected profile");
@@ -2081,7 +2068,6 @@ mod tests {
             );
             assert!(app.operation_error.is_some());
         }
-        // Case `readiness_not_seen_is_not_connected`.
         {
             let mut app = sample();
             let work = named(&app, "Work");

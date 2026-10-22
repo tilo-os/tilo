@@ -229,7 +229,6 @@ fn title_rename_edits_and_commits_to_the_deck() {
     }
 }
 
-/// Help overlay in present mode and the deck's accessibility tree and activation.
 #[test]
 fn help_overlay_and_accessibility_expose_the_deck() {
     // Case `help_overlay_is_visible_and_dismissable_in_present_mode`.
@@ -378,8 +377,6 @@ fn the_notes_box_reads_out_the_slides_notes() {
     });
 }
 
-/// Typing in the notes edits the slide's notes through the deck's
-/// dispatcher, and Up/Down move the caret between their lines.
 #[test]
 fn notes_typing_edits_the_notes_and_up_down_move_the_caret() {
     let mut bench = editing_notes("line one\nsecond");
@@ -509,7 +506,6 @@ fn text_box_keys_and_notes_editing() {
     }
 }
 
-/// An agent writes a slide's notes with one field edit at their path.
 #[test]
 fn an_agent_writes_speaker_notes_by_a_field_edit() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));

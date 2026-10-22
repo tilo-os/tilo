@@ -83,7 +83,6 @@ pub struct ParticipantView {
 }
 
 impl ParticipantView {
-    /// A collapsed caret at `caret` in `region`.
     pub fn at(caret: ViewPoint, region: RegionKind) -> Self {
         Self {
             caret,

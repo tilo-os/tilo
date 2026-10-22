@@ -229,7 +229,6 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
             .find(|t| t.y0 >= row.y0 && t.y1 <= row.y1)
             .copied()
             .expect("the High contrast row carries a toggle");
-        // The toggle is centred on the label and its explanation together.
         same_centre_line(
             row.center().y,
             row_toggle.center().y,
@@ -258,7 +257,6 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
     }
 }
 
-/// Region form measure, choice rows and the large-text breakpoint.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -272,7 +270,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let app = lay_out(app, WIDE);
         let (row, wrapped) = row_of_control(&*app, "region.currency");
         let control = by_test_id(&*app, "region.currency");
-        // A wide page keeps the chooser beside its label, centred on the row.
         assert!(!wrapped, "wide: the currency chooser sits beside its label");
         same_centre_line(
             row.center().y,
@@ -286,7 +283,6 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             card_inner <= 720.0 + 0.5,
             "label to control span {card_inner} exceeds the readable measure"
         );
-        // Every chooser in the card shares the same trailing edge.
         for id in [
             "region.date",
             "region.time",

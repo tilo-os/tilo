@@ -78,11 +78,6 @@ pub fn body(protocol: ProviderProtocol, ask: &Ask<'_>) -> Value {
 /// The answer text out of a provider response no longer than `max_bytes`.
 /// A refusal or a cut-off answer is an error rather than text: the caller
 /// would otherwise validate half an answer.
-///
-/// # Errors
-///
-/// The response is unreadable, a refusal, cut off, has no text, or the text
-/// is longer than `max_bytes`.
 pub fn answer(protocol: ProviderProtocol, body: &str, max_bytes: usize) -> Result<String, String> {
     let value: Value =
         serde_json::from_str(body).map_err(|_| "provider response was unreadable".to_string())?;
@@ -331,10 +326,6 @@ const MAX_LISTED_MODELS: usize = 512;
 /// and every compatible provider) or `models[].slug` (the `ChatGPT` backend),
 /// with the provider's display name and context size when it gives them.
 /// Sorted by id; duplicates and blank ids dropped.
-///
-/// # Errors
-///
-/// The body is not a model list.
 pub fn parse_models(body: &str) -> Result<Vec<ModelDescriptor>, String> {
     let value: Value =
         serde_json::from_str(body).map_err(|_| "provider model list was unreadable".to_string())?;

@@ -58,10 +58,6 @@ pub struct RustyPipeBackend {
 }
 
 impl RustyPipeBackend {
-    /// # Errors
-    ///
-    /// Returns `Err` if the app runtime is unusable from the calling thread or
-    /// the rustypipe client fails to build.
     pub fn new() -> Result<Self, BackendError> {
         // rustypipe `tokio::spawn`s background work (the visitor-data
         // prefetch and the connection tasks behind its HTTP client) that must
@@ -104,10 +100,6 @@ impl RustyPipeBackend {
     /// Run one search and split the results into videos, playlists and creator
     /// rows — the enrichment source for the primary backend, which returns only
     /// videos (and no avatars). Real `InnerTube` data in a single call.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the search request fails.
     pub fn search_items(&self, query: &str) -> Result<SearchItems, BackendError> {
         let q = self.rp.query();
         let res = self
@@ -129,10 +121,6 @@ impl RustyPipeBackend {
     }
 
     /// Fetch a playlist page: its metadata + ordered video list.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if the playlist request fails.
     pub fn playlist_page(&self, id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
         let q = self.rp.query();
         let pl = self
@@ -441,7 +429,6 @@ mod tests {
             absolute_url("//yt3.ggpht.com/abc=s176"),
             "https://yt3.ggpht.com/abc=s176",
         );
-        // Already-absolute and empty URLs pass through untouched.
         assert_eq!(
             absolute_url("https://yt3.ggpht.com/x"),
             "https://yt3.ggpht.com/x"

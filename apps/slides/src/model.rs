@@ -1235,17 +1235,14 @@ mod tests {
     /// Seed deck, z increments, kind/align round-trips and palette role fallback.
     #[test]
     fn deck_model_seeds_orders_and_round_trips_kinds() {
-        // Case `seed_deck_has_designed_slides`.
         {
             let d = seed_deck();
             assert_eq!(d.slides.len(), 5);
-            // Every slide has at least one element.
             for s in &d.slides {
                 assert!(!s.elements.is_empty(), "slide {:?} empty", s.layout);
             }
         }
 
-        // Case `add_element_increments_z`.
         {
             let mut s = Slide::new(Layout::Blank);
             let a = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
@@ -1253,7 +1250,6 @@ mod tests {
             assert!(s.element(&a).unwrap().z < s.element(&b).unwrap().z);
         }
 
-        // Case `kind_and_align_round_trip`.
         {
             for k in [
                 ElementKind::Text,
@@ -1269,7 +1265,6 @@ mod tests {
             }
         }
 
-        // Case `palette_resolves_none_role`.
         {
             let p = Palette::resolve(PaletteKind::Indigo, DeckLook::Dark);
             assert!(p.resolve_role("none").is_none());
@@ -1347,7 +1342,6 @@ mod tests {
             let ink = on.resolve_role(role).unwrap();
             assert!(ui::color::contrast_ratio(ink, deep) >= 4.5, "{role}");
         }
-        // The surface keeps the theme's own text colours.
         let surface = palette.on(Background::Surface);
         assert_eq!(surface.text, palette.text);
         assert_eq!(surface.text_dim, palette.text_dim);

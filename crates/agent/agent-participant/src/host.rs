@@ -37,7 +37,6 @@ use crate::model::ModelChoice;
 use crate::participant::{AgentParticipant, ParticipantConfig};
 use tilo_lock::MutexRecover as _;
 
-/// The file under the state directory.
 const STATE_FILE: &str = "agents.json";
 /// The least time between two writes of the state: a burst of changes (an
 /// agent's steps) is written as one.
@@ -49,7 +48,6 @@ pub type CatalogueFactory = Arc<dyn Fn() -> AppCatalogue + Send + Sync>;
 /// How agents reach the host they run on.
 #[derive(Clone)]
 pub struct HostEndpoint {
-    /// The host's endpoint.
     pub host: Host,
     /// Its certificate.
     pub host_cert: DeviceCert,
@@ -82,7 +80,6 @@ struct Shared {
     threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
 }
 
-/// Every agent of one host.
 pub struct AgentHost {
     supervisor: Arc<AgentSupervisor>,
     shared: Arc<Shared>,
@@ -142,10 +139,6 @@ impl AgentHost {
     /// start the agents that were running, and keep checking expiry and
     /// writing the state. Agents' sessions run their I/O on the calling
     /// Tokio runtime, or on one of the host's own outside a runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the state directory or file could not be read.
     pub fn start(
         &mut self,
         endpoint: HostEndpoint,

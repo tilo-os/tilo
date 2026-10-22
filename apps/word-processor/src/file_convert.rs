@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use tilo_doc_codecs::convert;
 
-/// The formats a file can be converted to.
 pub const CONVERSIONS: &[&str] = &["pdf", "docx", "odt", "md", "html", "rtf", "txt"];
 
 /// The most characters one read answers with.
@@ -24,7 +23,6 @@ fn extension(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// The absolute path `file` names.
 fn absolute(file: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(file.trim());
     if !path.is_absolute() {
@@ -76,11 +74,6 @@ pub fn read_file(file: &str, from: Option<usize>) -> Result<serde_json::Value, S
 
 /// What the document kept as `content` in `store` says, read as
 /// [`read_file`] reads a file named `name`.
-///
-/// # Errors
-///
-/// `content` names no content this device holds, it is too large, a PDF,
-/// or its format refuses it.
 pub fn read_content(
     store: &tilo_content::ContentStore,
     (content, name): (&str, &str),

@@ -59,8 +59,6 @@ fn admitted_category_rows(node: &ui::a11y::AccessNode, rows: &mut Vec<(String, S
     }
 }
 
-/// A sidebar row opens its pane through the pane row's open effect, the
-/// one way search and agents open it too.
 #[test]
 fn a_sidebar_click_opens_the_pane_through_its_effect() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");

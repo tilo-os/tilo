@@ -36,7 +36,6 @@ pub const APP_ID: &str = tilo_automation::SHORTCUTS_APP_ID;
 /// The window and launcher title.
 pub const APP_TITLE: &str = "Shortcuts";
 
-/// The app.
 pub struct App;
 
 /// The app as every host mounts it.

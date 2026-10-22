@@ -61,7 +61,6 @@ mod tests {
             set_locale("de");
             assert_eq!(t("toolbar-styles"), "Stile");
             assert_eq!(t("template-report"), "Bericht");
-            // A POSIX-style value resolves the same `de` catalog.
             set_locale("de_DE.UTF-8");
             assert_eq!(t("template-report"), "Bericht");
             set_locale("en-US");
@@ -123,7 +122,6 @@ mod tests {
             assert_eq!(t_args("status-words", &[arg("words", 2)]), "2 words");
             assert_eq!(t_args("status-chars", &[arg("chars", 12)]), "12 characters");
 
-            // Zero takes the plural in English, as CLDR has it.
             assert_eq!(t_args("status-words", &[arg("words", 0)]), "0 words");
 
             // German has the same one/other split, and `Zeichen` is invariant —

@@ -903,7 +903,6 @@ mod interaction_tests {
 
     #[test]
     fn layout_reflows_and_scrolls() {
-        // Case `resize_reflows_between_side_by_side_and_push`.
         {
             // The layout MUST be re-derived from the current allocated width
             // on every layout — not cached from the first frame.
@@ -920,7 +919,6 @@ mod interaction_tests {
             assert_eq!(g.overview, ui::widget::OverviewPlacement::Rail, "{g:?}");
             assert!(g.stack.is_empty(), "the rail keeps the forecast beside it");
 
-            // Simulate a resize down to a narrow width on the SAME instance.
             h.layout(420.0, 720.0);
             assert!(
                 !h.app.nav.geometry().stack.is_empty(),
@@ -934,7 +932,6 @@ mod interaction_tests {
                 "widening reflows back to side by side"
             );
         }
-        // Case `wheel_scrolls_the_forecast_body`.
         {
             let mut h = Harness::new(1280.0, 620.0);
             h.redraw();
@@ -953,7 +950,6 @@ mod interaction_tests {
                 "wheel scrolls the forecast body down"
             );
         }
-        // Case `hourly_strip_scrolls_when_it_overflows`.
         {
             // The 24 hours are laid out at a minimum per-hour width, so they
             // overflow the band and the strip scrolls horizontally via the
@@ -966,7 +962,6 @@ mod interaction_tests {
             );
             assert_eq!(h.app.core.borrow().hourly_scroll_x(), 0.0);
 
-            // A horizontal wheel over the strip scrolls it.
             let vp = h.app.core.borrow().hourly_viewport_rect();
             let p = vp.center();
             h.move_to(p.x, p.y);
@@ -976,13 +971,11 @@ mod interaction_tests {
                 "a horizontal wheel scrolls the overflowing strip"
             );
         }
-        // Case `forecast_title_follows_the_selected_place`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.key(Key::Named(NamedKey::ArrowDown), None);
             h.layout(1280.0, 720.0);
             let second = h.app.core.borrow().model.locations[1].name.clone();
-            // The column titles are the header row's headings.
             let mut headings_found = Vec::new();
             headings(&h.app.nav, &mut headings_found);
             assert!(
@@ -1000,7 +993,6 @@ mod interaction_tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn city_navigation_by_pointer_keyboard_and_accessibility() {
-        // Case `tapping_a_city_pushes_detail_then_back_returns`.
         {
             let mut h = Harness::new(420.0, 720.0);
             assert!(!h.app.nav.geometry().stack.is_empty());
@@ -1010,7 +1002,6 @@ mod interaction_tests {
                 "starts on the full-screen city list"
             );
 
-            // Tap the SECOND city in the overview list.
             h.redraw(); // lay out the rows
             let (x, y) = (h.row_center_x(), h.row_center_y(1));
             h.click(x, y);
@@ -1037,7 +1028,6 @@ mod interaction_tests {
                 "Back returns to the city list"
             );
         }
-        // Case `accessible_city_selection_commits_and_navigates_without_pointer_input`.
         {
             let mut h = Harness::new(420.0, 720.0);
             let results = crate::sample::sample_geocode_results();
@@ -1064,7 +1054,6 @@ mod interaction_tests {
             assert_eq!(app.nav.front_pane(), ui::widget::NavPane::Content);
             assert!(!app.update(&state.doc, &state.root));
         }
-        // Case `arrow_keys_navigate_cities_and_fetch`.
         {
             let mut h = Harness::new(1280.0, 720.0); // side-by-side; detail follows
             h.redraw();
@@ -1093,7 +1082,6 @@ mod interaction_tests {
                 "Arrow Up moves it back"
             );
         }
-        // Case `header_refresh_button_queues_a_fetch`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1108,7 +1096,6 @@ mod interaction_tests {
                 .any(|r| matches!(r, Request::Forecast { .. }));
             assert!(queued, "clicking Refresh queues a forecast fetch");
         }
-        // Case `detail_keyboard_controls_scroll_hourly_forecast_and_refresh`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1137,7 +1124,6 @@ mod interaction_tests {
                 "R refreshes the forecast through the same queued network path as the button"
             );
         }
-        // Case `root_accessibility_announces_weather_status`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1154,7 +1140,6 @@ mod interaction_tests {
 
     #[test]
     fn live_weather_starts_empty_and_fetches_only_restored_or_selected_places() {
-        // Case `onboarding_scenario_matches_the_live_empty_state`.
         {
             // The onboarding capture shows the SAME place-less empty state a
             // live first run shows, not a half-cleared sample.
@@ -1174,7 +1159,6 @@ mod interaction_tests {
                 "each staged place offers its forecast"
             );
         }
-        // Case `initial_refresh_waits_for_restored_locations`.
         {
             let mut app = WeatherApp::new();
             app.live = true;
@@ -1196,7 +1180,6 @@ mod interaction_tests {
             app.ensure_service();
             assert!(app.core.borrow_mut().take_outbox().is_empty());
         }
-        // Case `a_new_window_starts_empty_with_no_fabricated_places_or_readings`.
         {
             // A window invents nothing: neither cities the user never added nor
             // readings for them. It shows the places the framework presents.
@@ -1210,7 +1193,6 @@ mod interaction_tests {
                 "no phantom Loading spinner with nothing to fetch"
             );
         }
-        // Case `selecting_a_city_queues_a_real_fetch`.
         {
             // Proves the select path issues a network request (not a mock): the
             // outbox holds a Forecast request the app would pump to the worker.
@@ -1231,7 +1213,6 @@ mod interaction_tests {
             );
             let _ = KPoint::ZERO;
         }
-        // Case `detail_renders_air_quality_from_real_data`.
         {
             // The sample carries a real air-quality reading; the detail render path
             // must consume it without panicking, and the selected place must
@@ -1243,7 +1224,6 @@ mod interaction_tests {
                 assert!(aq.has_any() && aq.european_aqi.is_some());
             }
             h.redraw(); // paints the air-quality tiles from the real reading
-            // The section extends the scrollable body.
             assert!(h.app.core.borrow().max_scroll() > 0.0);
         }
     }
@@ -1254,7 +1234,6 @@ mod interaction_tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn adding_a_place_picks_geocoded_results() {
-        // Case `the_add_button_opens_the_shared_autocomplete`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             assert!(!h.app.core.borrow().search_is_focused());
@@ -1274,7 +1253,6 @@ mod interaction_tests {
                 "the overlay lists every geocoded match"
             );
         }
-        // Case `picking_a_search_result_adds_and_selects_it`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             let before = h.app.core.borrow().model.locations.len();
@@ -1284,7 +1262,6 @@ mod interaction_tests {
                 .seed_search("Par", crate::sample::sample_geocode_results());
             h.redraw(); // place the field + populate the shared overlay
 
-            // Arrow-key navigation of the shared overlay, then Enter to accept.
             h.key(Key::Named(NamedKey::ArrowDown), None);
             assert_eq!(
                 h.app.core.borrow().search_highlight_label().as_deref(),
@@ -1305,7 +1282,6 @@ mod interaction_tests {
                 "the added city becomes selected"
             );
         }
-        // Case `arrow_nav_picks_the_disambiguated_result`.
         {
             // Two cities named "Paris" (France, then Texas): arrowing to the SECOND
             // and accepting must add THAT one.
@@ -1326,7 +1302,6 @@ mod interaction_tests {
                 "arrowing to the 2nd match adds Paris, Texas — not France"
             );
         }
-        // Case `typing_builds_the_query_and_escape_ends_it`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1361,7 +1336,6 @@ mod interaction_tests {
                 "Escape clears the query"
             );
         }
-        // Case `typing_then_enter_queues_a_debounced_geocode`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
@@ -1396,7 +1370,6 @@ mod interaction_tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn place_menu_and_swipe_gestures_edit_the_city_list() {
-        // Case `right_click_menu_remove_deletes_the_city_and_persists`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1435,7 +1408,6 @@ mod interaction_tests {
                 "the menu closes after an action"
             );
         }
-        // Case `right_click_menu_move_to_top_reorders`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1456,7 +1428,6 @@ mod interaction_tests {
                 "Move to top floats the entry to index 0"
             );
         }
-        // Case `right_click_menu_refresh_queues_a_fetch_for_that_city`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1480,7 +1451,6 @@ mod interaction_tests {
                 "the menu's Refresh queues a real forecast fetch for that city"
             );
         }
-        // Case `swipe_left_past_threshold_deletes_the_city`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1504,7 +1474,6 @@ mod interaction_tests {
                 "the swiped city is gone"
             );
         }
-        // Case `short_swipe_does_not_delete`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1522,15 +1491,12 @@ mod interaction_tests {
         }
     }
 
-    // ---- drag-to-reorder through handle_event ---------------------------
-
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn drag_reorder_reflows_live_commits_on_drop_and_cancels() {
-        // Case `vertical_drag_reorders_the_city`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1561,7 +1527,6 @@ mod interaction_tests {
                 "dropping below the list lands it at the end"
             );
         }
-        // Case `drag_reflows_the_list_live_and_commits_only_on_drop`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1608,13 +1573,11 @@ mod interaction_tests {
                 );
             }
 
-            // Releasing commits the tracked insertion into the model.
             h.release();
             let model = &h.app.core.borrow().model;
             assert_ne!(model.locations[0].id, first, "the drop reordered the model");
             assert_eq!(model.locations.len(), order_before.len());
         }
-        // Case `escape_cancels_an_in_flight_reorder_and_restores_order`.
         {
             let mut h = Harness::new(420.0, 900.0);
             h.redraw();
@@ -1638,7 +1601,6 @@ mod interaction_tests {
                 "a reorder is in flight before Escape"
             );
 
-            // Escape abandons the drag and snaps the list back.
             h.key(Key::Named(NamedKey::Escape), None);
             {
                 let core = h.app.core.borrow();
@@ -1678,7 +1640,6 @@ mod interaction_tests {
 
     #[test]
     fn provider_cache_is_device_local_across_remote_and_local_changes() {
-        // Case `remote_location_change_preserves_device_local_provider_cache`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             let oslo = crate::model::SavedLocation::new(
@@ -1722,7 +1683,6 @@ mod interaction_tests {
                 "local pending provider cache survived the durable-state adoption"
             );
         }
-        // Case `location_rows_offer_views_and_refreshes_beside_document_actions`.
         {
             let h = Harness::new(1280.0, 720.0);
             let rows = h.app.location_rows();
@@ -1741,7 +1701,6 @@ mod interaction_tests {
                 assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
             }
         }
-        // Case `local_navigation_does_not_drop_device_local_provider_cache`.
         {
             let mut h = Harness::new(1280.0, 720.0);
             let id = h.app.core.borrow().model.locations[0].id;
@@ -1908,7 +1867,6 @@ mod refresh_tests {
             assert!(requests.try_iter().next().is_none());
         }
 
-        // Nothing to refresh, or a refresh already running, is refused.
         {
             let (mut app, _requests, _responses) = fixture(&WeatherModel::default());
             assert!(app.admit_refresh(None, |_| {}).is_err());

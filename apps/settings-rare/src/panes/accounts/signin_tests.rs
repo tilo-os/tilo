@@ -1,7 +1,3 @@
-//! The Settings side of cloud sign-in, driven through the pane exactly as
-//! the controls drive it, against fake providers under a private config
-//! root.
-
 use std::sync::{Arc, Mutex};
 
 use account_custody::OAuthCloud;

@@ -20,8 +20,6 @@ use super::{
 };
 
 impl WordProcessorWidget {
-    // ---- Find & Replace -----------------------------------------------------
-
     pub(super) fn open_find(&mut self, state: &AutoCommit) {
         // Seed the query from a single-line selection, if any.
         let seed = if let Some((bid, s, e)) = self.selection_blocks_cached().first().cloned()

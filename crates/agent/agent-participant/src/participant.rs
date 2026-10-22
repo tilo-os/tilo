@@ -110,7 +110,6 @@ struct Running {
     performed: usize,
 }
 
-/// One agent in one room.
 pub struct AgentParticipant {
     identity: AgentIdentity,
     control: Arc<AgentControl>,
@@ -149,10 +148,6 @@ pub struct AgentParticipant {
 impl AgentParticipant {
     /// Connect as `identity` and join `config.room`'s durable and live
     /// planes.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the room is not one the delegation covers.
     pub fn start(
         config: ParticipantConfig,
         identity: AgentIdentity,
@@ -737,10 +732,6 @@ impl AgentParticipant {
 
     /// Open `app_id` on `record` (a record the room already has), or on a
     /// new record it publishes. Returns the record's route.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the app may not or could not be opened.
     pub fn open(&mut self, app_id: &str, record: Option<&str>) -> Result<DocumentRoute, String> {
         if !self.identity.delegation.permits_app(app_id) {
             return Err(format!("the agent is not delegated {app_id}"));

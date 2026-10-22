@@ -140,7 +140,6 @@ fn nextcloud_calendars_reuse_the_canonical_account_and_never_rewrite_its_secret(
             "http://localhost:{}/cloud/calendars/opaque-id/personal/",
             server.port()
         );
-        // New Nextcloud calendar setup defaults to all readable collections.
         pane.submit_form_for_test();
         assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         assert!(!pane.form_open());

@@ -158,7 +158,6 @@ fn present_mode_navigation_keys_and_blanking() {
     });
 }
 
-/// Fullscreen intent, output targeting, audience lifecycle and compositor exits.
 #[test]
 fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
     // Case `fullscreen_intent_tracks_present_mode`.
@@ -271,7 +270,6 @@ fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
     assert!(!editing, "editor mode is not fullscreen");
 }
 
-/// The presenter dashboard, speaker timer, idle rest and reduced motion.
 #[test]
 fn presenter_dashboard_timer_and_idle_frames() {
     // Case `presenter_dashboard_toggles_with_p`.

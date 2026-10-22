@@ -443,7 +443,6 @@ impl VideoEditorApp {
         rows
     }
 
-    /// Open the project menu under the project button.
     pub(super) fn open_project_menu(&mut self, at: Point) {
         let rows = self.project_menu_rows();
         self.project_menu = ContextMenu::new();
@@ -500,7 +499,6 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- export ----------------------------------------------------------
     /// Ask the user where the render should land, then encode there. The
     /// picker is the grant: under a strict sandbox it is what earns the write
     /// to somewhere like `~/Videos`, and without it the file lands in a temp

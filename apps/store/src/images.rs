@@ -216,10 +216,8 @@ mod tests {
         assert!(std::fs::read_dir(dir.path()).unwrap().count() <= 1);
     }
 
-    /// Artwork URLs refuse local networks, ambient credentials and every non-public range.
     #[test]
     fn artwork_urls_refuse_non_public_hosts_and_credentials() {
-        // Case `artwork_urls_refuse_local_network_and_ambient_credentials`.
         {
             for url in [
                 "http://cdn.example/icon.png",
@@ -234,7 +232,6 @@ mod tests {
             assert!(safe_artwork_url("https://cdn.example/icon.png").is_some());
         }
 
-        // Case `artwork_address_filter_refuses_every_non_public_range`.
         {
             for ip in [
                 "127.0.0.1",

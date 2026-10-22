@@ -1,4 +1,3 @@
-//! Exercise the actual PDF CLI, its asynchronous owner worker and durable records.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -154,7 +153,6 @@ fn entries(collection: &Value) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
-/// The kind of a dumped annotation's mark.
 fn mark_kind(annotation: &Value) -> String {
     let mark: Value =
         serde_json::from_str(annotation["mark"].as_str().unwrap_or("null")).unwrap_or(Value::Null);

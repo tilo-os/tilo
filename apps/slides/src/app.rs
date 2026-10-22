@@ -898,8 +898,6 @@ impl SlidesApp {
         self.rail_drawer.layout()
     }
 
-    // --- the presented deck -------------------------------------------------
-
     /// Show the deck the resource holds now: an edit of this participant's,
     /// a collaborator's, an undo or a restore. While a gesture is in flight
     /// its preview stays on screen, and the deck is shown once it ends.
@@ -995,8 +993,6 @@ impl SlidesApp {
         Palette::resolve(self.deck.palette, self.deck.look)
     }
 
-    // --- action dispatch ----------------------------------------------------
-
     /// Submit one edit of the deck through the resource's dispatcher, as
     /// every control, the palette and an agent do: it is checked against
     /// the participant's permission, applied, recorded as one undo step and
@@ -1069,8 +1065,6 @@ impl SlidesApp {
         }
         declarations
     }
-
-    // --- rail scroll geometry ----------------------------------------------
 
     /// The inspector column's painted rect this frame (the same geometry
     /// `compute_chrome` uses), for pointer tests that need only the panel.
@@ -1170,8 +1164,6 @@ impl SlidesApp {
         }
     }
 
-    // --- geometry -----------------------------------------------------------
-
     // --- mouse → slide coords ----------------------------------------------
     #[allow(
         clippy::unused_self,
@@ -1223,8 +1215,6 @@ impl SlidesApp {
             })
             .collect()
     }
-
-    // --- actions ------------------------------------------------------------
 
     fn apply_hit(&mut self, hit: Hit) {
         // Any action other than toggling the overflow menu itself dismisses it
@@ -1407,7 +1397,6 @@ impl SlidesApp {
         }
     }
 
-    /// The editor of the words being edited.
     fn editing_words(&mut self) -> Option<&mut TextBoxEditor> {
         self.editing_text_box()?;
         self.text_editor.as_mut().filter(|editor| editor.focused)
@@ -1813,8 +1802,6 @@ impl SlidesApp {
         self.mode == Mode::Present
     }
 
-    // --- text editing -------------------------------------------------------
-
     /// Start renaming the deck title inline via the shared [`TextInput`] (caret
     /// at the end, ready for full selection editing).
     fn begin_title_edit(&mut self) {
@@ -1998,8 +1985,6 @@ impl SlidesApp {
             .handle_event(routed.event, &mut routed.event_ctx(&mut input_handled));
         input_handled
     }
-
-    // --- drawing ------------------------------------------------------------
 
     /// The canvas slide itself: drop shadow, the rendered slide, its
     /// border, the selection ring/handles or live text caret+selection, the
@@ -2233,8 +2218,6 @@ impl SlidesApp {
         );
         self.presentation.draw(scene, t, tr, theme, &frame);
     }
-
-    // --- overview (slide-sorter) -------------------------------------------
 
     fn compute_overview(&self) -> (Rect, Vec<(usize, Rect)>, f64) {
         self.overview.geometry(self.rect, self.deck.slides.len())

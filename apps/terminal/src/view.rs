@@ -114,7 +114,6 @@ impl TerminalView {
         self.scope.close();
     }
 
-    /// Whether the find bar is open.
     #[must_use]
     pub fn find_is_open(&self) -> bool {
         self.scope.is_open()

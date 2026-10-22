@@ -16,7 +16,6 @@ use std::time::Duration;
 /// How often the device's radios are read again.
 const EVERY: Duration = Duration::from_secs(3);
 
-/// The radios a device has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Present {
     pub bluetooth: bool,
@@ -25,7 +24,6 @@ pub struct Present {
 }
 
 impl Present {
-    /// Every radio.
     #[cfg(test)]
     pub const ALL: Self = Self {
         bluetooth: true,

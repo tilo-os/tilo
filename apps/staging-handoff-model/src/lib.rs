@@ -302,10 +302,6 @@ pub fn validate_profile(
 }
 
 /// `json` followed by ASCII spaces to exactly `len` bytes.
-///
-/// # Errors
-///
-/// When `json` is longer than `len`.
 pub fn pad_json(json: &[u8], len: u64) -> Result<Vec<u8>, String> {
     let len = usize::try_from(len).map_err(|e| e.to_string())?;
     if json.len() > len {

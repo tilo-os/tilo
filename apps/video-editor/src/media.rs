@@ -257,7 +257,6 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_media_env)]
     fn media_paths_resolve_and_report_hydration() {
-        // Case `workspace_path_is_prefixed`.
         {
             assert_eq!(workspace_path("Drone.mov"), "media/Drone.mov");
         }
@@ -324,15 +323,12 @@ mod tests {
             set_project_anchor(None);
             std::fs::remove_dir_all(&root).ok();
         }
-        // Case `hydration_round_trips_through_strings`.
         {
             for h in [Hydration::Projected, Hydration::Local] {
                 assert_eq!(Hydration::from_name(h.as_str()), h);
             }
         }
-        // Case `absolute_import_path_resolves_verbatim_and_reports_hydration`.
         {
-            // A real imported local file resolves to itself and reports Local.
             let dir = std::env::temp_dir();
             let name = format!("tilo-ve-import-{}.mp4", std::process::id());
             let f = dir.join(&name);
@@ -342,12 +338,10 @@ mod tests {
             assert_eq!(src.hydration, Hydration::Local);
             assert!(src.is_decodable());
             std::fs::remove_file(&f).ok();
-            // A non-existent absolute path stays a valid, projected reference.
             let missing = resolve("/definitely/not/here-xyz.mov");
             assert_eq!(missing.abs_path, Path::new("/definitely/not/here-xyz.mov"));
             assert_eq!(missing.hydration, Hydration::Projected);
         }
-        // Case `engine_source_splits_workspace_from_local`.
         {
             let root = std::env::temp_dir().join(format!("tilo-ve-eng-{}", std::process::id()));
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -363,7 +357,6 @@ mod tests {
                 "outside the mount → LocalFile"
             );
         }
-        // Case `stored_path_is_relative_under_mount_absolute_otherwise`.
         {
             let root = std::env::temp_dir().join(format!("tilo-ve-store-{}", std::process::id()));
             let mut env = tilo_test_env::ScopedEnv::new();

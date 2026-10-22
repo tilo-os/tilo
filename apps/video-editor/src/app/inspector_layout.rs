@@ -36,7 +36,6 @@ pub(super) struct InspectorLayout {
     pub(super) add_effect: Rect,
     pub(super) split: Rect,
     pub(super) delete: Rect,
-    // ---- collapsible sections -------------------------------------------
     /// Section header rows, in draw order. Clicking one folds or unfolds it.
     pub(super) sections: Vec<(Section, Rect)>,
     /// Every ranged control currently laid out, with the track to drag.
@@ -53,7 +52,6 @@ pub(super) struct InspectorLayout {
     pub(super) anchor: Vec<((f64, f64), Rect)>,
     /// Rate presets (`0.5×`, `1×`, …) as a segmented row.
     pub(super) speed_presets: Vec<(f64, Rect)>,
-    // ---- the lane's mix ---------------------------------------------------
     /// Baseline y of the line naming which lane these two knobs belong to.
     /// The panel is otherwise entirely about one clip, so a control that
     /// quietly edits something shared has to say what it is editing.
@@ -67,7 +65,6 @@ pub(super) struct InspectorLayout {
     pub(super) mix_reset: Option<Rect>,
     /// The reverse toggle.
     pub(super) reverse: Option<Rect>,
-    // ---- colour key --------------------------------------------------------
     /// Switches the key on and off. The sliders below it only appear once it
     /// is on, so an unkeyed clip does not carry four dead controls.
     pub(super) key_enable: Option<Rect>,
@@ -77,14 +74,12 @@ pub(super) struct InspectorLayout {
     pub(super) key_colors: Vec<([f64; 3], Rect)>,
     /// Samples the key colour out of the frame under the playhead.
     pub(super) key_pick: Option<Rect>,
-    // ---- mask ---------------------------------------------------------------
     /// Shape choice, as a segmented row: Off / Rect / Ellipse.
     pub(super) mask_shapes: Vec<(crate::model::MaskShape, Rect)>,
     /// Snaps the mask onto whatever the transform currently puts on screen.
     pub(super) mask_fit: Option<Rect>,
     /// Keep the outside rather than the inside.
     pub(super) mask_invert: Option<Rect>,
-    // ---- title ------------------------------------------------------------
     /// The words, edited inline through the shared editable label.
     pub(super) title_text: Option<Rect>,
     pub(super) title_align: Vec<(TextAlign, Rect)>,
@@ -94,17 +89,14 @@ pub(super) struct InspectorLayout {
     pub(super) title_colors: Vec<([f64; 4], Rect)>,
     pub(super) title_bold: Option<Rect>,
     pub(super) title_italic: Option<Rect>,
-    // ---- tone curves ------------------------------------------------------
     /// Which channel the editor is showing, as a segmented row.
     pub(super) curve_channels: Vec<(crate::curve::Channel, Rect)>,
     /// The square the curve is drawn and dragged in.
     pub(super) curve_canvas: Option<Rect>,
     /// Puts the shown channel back to the straight line.
     pub(super) curve_reset: Option<Rect>,
-    // ---- keyframes --------------------------------------------------------
     /// The key control at the head of each animatable row.
     pub(super) keys: Vec<(Param, Rect)>,
-    // ---- project format ---------------------------------------------------
     /// Baseline y of the readout that states the project's current format.
     pub(super) project_format_y: f64,
     /// Frame-size presets as a segmented row: the dimensions each writes.
@@ -116,7 +108,6 @@ pub(super) struct InspectorLayout {
     /// behind the one thing a preset row cannot offer, which is whatever the
     /// footage actually is.
     pub(super) project_match: Option<Rect>,
-    // ---- markers ----------------------------------------------------------
     pub(super) marker_rows: Vec<(MarkerRef, Rect)>,
     /// Sub-rects of the row above: the name (click to rename) and the delete.
     pub(super) add_marker: Option<Rect>,

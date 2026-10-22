@@ -1251,7 +1251,6 @@ mod tests {
             w.observe_activity(quiet + Duration::from_secs(121));
             assert!(!w.stalled(quiet + Duration::from_secs(122), limit));
         }
-        // Case `a_render_that_cannot_run_reports_it_rather_than_hanging`.
         {
             // With no encoder linked the job still resolves, promptly, with the
             // same reason the dialog shows.
@@ -1271,7 +1270,6 @@ mod tests {
                 (Some(_), other) => panic!("expected the unavailable status, got {other:?}"),
             }
         }
-        // Case `a_source_that_cannot_be_read_is_named_rather_than_stood_in_for`.
         {
             // The bug: a relative media path resolved to nothing, every layer
             // fell back to its representative fill, and the export wrote a
@@ -1311,7 +1309,6 @@ mod tests {
                 "and no file is left behind looking like a render"
             );
         }
-        // Case `a_title_only_timeline_still_exports_because_it_decodes_nothing`.
         {
             // The refusal must not catch a project that legitimately has no
             // bytes to read: a title's picture comes from the document.
@@ -1341,7 +1338,6 @@ mod tests {
                 "a title has no bytes to be missing"
             );
         }
-        // Case `media_sitting_unused_in_the_bin_never_blocks_an_export`.
         {
             // Importing a file and then not using it must not make the whole
             // project unexportable — it is not in the render either way.
@@ -1535,7 +1531,6 @@ mod tests {
                 },
                 out.clone(),
             );
-            // Let it get going, then stop it.
             tilo_test_env::wait_until("the render writes its first frame", || {
                 !job.is_running()
                     || matches!(job.status(), ExportStatus::Rendering { progress } if progress > 0.0)
@@ -1829,7 +1824,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn encoder_selection_labels_and_bitrates_match_the_pipeline() {
-        // Case `the_audio_branch_targets_the_muxer_and_names_a_real_encoder`.
         {
             for container in Container::ALL {
                 let s = ExportSettings {
@@ -1865,7 +1859,6 @@ mod tests {
                 );
             }
         }
-        // Case `the_label_names_the_codec_the_pipeline_produces`.
         {
             // Every choice in the dialog has to name what the user will get. The
             // *encoder* now varies with the machine, so the label is checked
@@ -1897,7 +1890,6 @@ mod tests {
                 );
             }
         }
-        // Case `the_pipeline_asks_the_selected_encoder_for_the_bitrate_in_its_own_units`.
         {
             // The whole point of carrying units per encoder: the number in the
             // pipeline has to *mean* the bitrate the dialog's size estimate quotes,
@@ -1928,7 +1920,6 @@ mod tests {
                 }
             }
         }
-        // Case `the_export_reports_which_encoder_it_selected_without_claiming_hardware`.
         {
             for container in Container::ALL {
                 let report = selected_encoders(container);
@@ -1957,7 +1948,6 @@ mod tests {
                 assert!(d.contains("audio: "), "{d}");
             }
         }
-        // Case `availability_agrees_with_what_export_actually_does`.
         {
             let p = Project::new("t");
             let s = ExportSettings::default();
@@ -1981,7 +1971,6 @@ mod tests {
                 }
             }
         }
-        // Case `pipeline_desc_wires_the_right_chain_per_container`.
         {
             let mp4 = ExportSettings {
                 container: Container::Mp4,
@@ -2201,7 +2190,6 @@ mod tests {
              this test says nothing about",
             );
         }
-        // Case `size_estimate_scales_with_resolution`.
         {
             let d = 60.0;
             let p720 = ExportSettings {
@@ -2216,7 +2204,6 @@ mod tests {
             .estimated_mb(d, true);
             assert!(p2160 > p720 * 4.0, "4K should be much heavier than 720p");
         }
-        // Case `filename_is_slugged_with_extension`.
         {
             let s = ExportSettings {
                 container: Container::WebM,
@@ -2224,7 +2211,6 @@ mod tests {
             };
             assert_eq!(s.suggested_filename("My Doc v3"), "My_Doc_v3.webm");
         }
-        // Case `output_dims_preserve_aspect_and_stay_even`.
         {
             let mut p = Project::new("t");
             p.width = 1440;
@@ -2686,7 +2672,6 @@ mod tests {
                     }
                     sum / count
                 };
-                // Skip the feathered middle columns.
                 (mean_of(0..5) - mean_of(7..12)).abs()
             };
             let wipe_split = half_split(
@@ -2725,7 +2710,6 @@ mod tests {
             }
         }
     }
-    // --- real footage, end to end ----------------------------------------
 
     /// Deterministic moving footage encoded by the same `GStreamer` stack the
     /// export tests exercise. Generation remains fail-loud.

@@ -608,7 +608,6 @@ mod tests {
 
     #[test]
     fn compile_extracts_text_glyphs_and_pdf_bytes() {
-        // Case `windows_compilation_uses_real_emoji_glyphs`.
         #[cfg(target_os = "windows")]
         {
             let parts = WorldParts::new();
@@ -658,7 +657,6 @@ mod tests {
                 .sum();
             assert!(cells > 0, "extracted glyph cells for the text layer");
 
-            // Within any run, glyph cells advance left-to-right.
             for run in out.page_text.iter().flat_map(|p| p.iter()) {
                 for w in run.cells.windows(2) {
                     assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");

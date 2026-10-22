@@ -109,10 +109,6 @@ struct DailyRaw {
 
 /// Parse a forecast JSON body into a [`WeatherSnapshot`]. The hourly strip
 /// is sliced to the 24 hours starting at the current observation time.
-///
-/// # Errors
-/// Returns an error message if `body` doesn't decode as the expected
-/// Open-Meteo forecast JSON shape.
 pub fn parse_forecast(
     body: &str,
     location_id: LocationId,
@@ -230,10 +226,6 @@ struct AirQualityCurrentRaw {
 
 /// Parse an air-quality JSON body into an [`AirQuality`] reading. Missing
 /// fields decode to `None` (honest "unavailable"), never a fabricated zero.
-///
-/// # Errors
-/// Returns an error message if `body` doesn't decode as the expected
-/// Open-Meteo air-quality JSON shape.
 pub fn parse_air_quality(
     body: &str,
     location_id: LocationId,
@@ -292,10 +284,6 @@ struct GeocodeResult {
 }
 
 /// Parse a geocoding JSON body into a list of candidate locations.
-///
-/// # Errors
-/// Returns an error message if `body` doesn't decode as the expected
-/// Open-Meteo geocoding JSON shape.
 pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
     let raw: GeocodeResponse =
         serde_json::from_str(body).map_err(|e| format!("geocode decode: {e}"))?;
@@ -353,7 +341,6 @@ mod tests {
 
     #[test]
     fn open_meteo_urls_carry_params_and_encoding() {
-        // Case `forecast_url_has_required_params`.
         {
             let u = forecast_url(52.52, 13.41, Units::IMPERIAL);
             assert!(u.contains("latitude=52.5200"));
@@ -363,7 +350,6 @@ mod tests {
             assert!(u.contains("wind_speed_unit=mph"));
             assert!(u.contains("timezone=auto"));
         }
-        // Case `geocode_url_encodes_spaces`.
         {
             let u = geocode_url("New York");
             assert!(u.contains("name=New%20York"), "{u}");
@@ -457,7 +443,6 @@ mod tests {
             );
             assert_eq!(snap.daily.len(), 1);
         }
-        // Case `parse_air_quality_maps_fields_and_nulls`.
         {
             let body = serde_json::json!({
                 "current": {
@@ -478,7 +463,6 @@ mod tests {
             assert!(aq.has_any());
             assert_eq!(aq.fetched_at, 1234);
         }
-        // Case `european_aqi_bands_cover_the_scale`.
         {
             assert_eq!(european_aqi_band(10.0), "Good");
             assert_eq!(european_aqi_band(30.0), "Fair");
@@ -487,7 +471,6 @@ mod tests {
             assert_eq!(european_aqi_band(90.0), "Very poor");
             assert_eq!(european_aqi_band(140.0), "Extremely poor");
         }
-        // Case `parse_geocode_maps_fields`.
         {
             let body = serde_json::json!({
                 "results": [{
@@ -506,7 +489,6 @@ mod tests {
             assert_eq!(locs[0].name, "Berlin");
             assert_eq!(locs[0].timezone, "Europe/Berlin");
         }
-        // Case `parse_geocode_empty_results_ok`.
         {
             let body = serde_json::json!({}).to_string();
             let locs = parse_geocode(&body).unwrap();

@@ -23,7 +23,6 @@ fn temp_path(name: &str) -> PathBuf {
     p
 }
 
-/// `from_path` maps the docx extension, and a rich document round-trips through docx.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -123,7 +122,6 @@ fn docx_files_are_recognised_and_rich_documents_round_trip() {
         let reopened = launched(&path);
         let snap = snapshot(&reopened);
 
-        // Heading survived with its level.
         let heading = snap
             .blocks
             .iter()
@@ -153,7 +151,6 @@ fn docx_files_are_recognised_and_rich_documents_round_trip() {
             "strong covers the whole run"
         );
 
-        // Bullet list item, marked unordered.
         let item = snap
             .blocks
             .iter()

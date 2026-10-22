@@ -855,7 +855,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Neither the wide metadata row nor the stacked dial touches the primary action.
     #[test]
     fn metadata_and_dial_never_touch_the_primary_action() {
         fn bounds(widget: &dyn Widget, name: &str) -> Option<Rect> {

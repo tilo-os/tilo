@@ -1324,7 +1324,6 @@ mod tests {
         open_rows(model.build_composition().as_ref(), &mut opened);
         assert!(opened.is_empty(), "closed until opened: {opened:?}");
 
-        // The person opens Headphones' details.
         DisclosureRow::keyed("Headphones", Box::new(Row::new()), &model.details, "AA")
             .set_open(true);
         for _ in 0..3 {

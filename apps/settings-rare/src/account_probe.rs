@@ -13,9 +13,6 @@ use tokio::time::timeout;
 
 pub trait AccountTester: Send + Sync {
     /// Resolve real calendars during setup. Test doubles must opt in explicitly.
-    ///
-    /// # Errors
-    /// If discovery is unsupported, unsafe, rejected, or finds no calendars.
     fn discover_calendars(
         &self,
         _account: &accounts::Account,
@@ -24,9 +21,6 @@ pub trait AccountTester: Send + Sync {
         Err("Calendar discovery is unavailable".into())
     }
 
-    /// # Errors
-    ///
-    /// Returns a bounded, user-presentable connection or authentication error.
     fn test(
         &self,
         account: &accounts::Account,

@@ -57,7 +57,6 @@ struct ScanState {
     source: ui::LocalState<usize>,
     language: ui::LocalState<usize>,
     crop: ui::LocalState<CropSelection>,
-    /// The page under review, if any.
     result: Option<ScannedPage>,
     pages: Vec<ScannedPage>,
     selected: usize,
@@ -322,7 +321,6 @@ impl Door {
     }
 }
 
-/// The page the surface shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 enum Page {
     #[default]
@@ -818,10 +816,6 @@ impl PrintCentre {
     }
 
     /// Answer `effect`, from a control, the palette or an agent.
-    ///
-    /// # Errors
-    /// Returns why the printer, document or scanner it names is not known,
-    /// or why the work it started failed.
     pub(crate) fn perform(
         &mut self,
         effect: PrintCentreEffect,
@@ -2081,7 +2075,6 @@ mod tests {
         }
     }
 
-    /// The id of the published row of `kind`.
     fn row_id(surface: &ui::serde_json::Value, kind: &str) -> String {
         surface
             .as_array()
@@ -2683,7 +2676,6 @@ mod tests {
         ));
         assert_eq!(app.surface_mut::<PrintCentre>().scan.pages.len(), 2);
 
-        // The visible button goes through the same shared host confirmation.
         app.harness()
             .click_named("print-centre.scan.new-document")
             .unwrap();

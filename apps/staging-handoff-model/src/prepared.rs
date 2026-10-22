@@ -239,9 +239,6 @@ impl SealedPreparation {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// The sidecar is malformed, edited after sealing, or names an unsupported policy.
     pub fn validate(&self) -> std::io::Result<()> {
         if self.schema != SCHEMA
             || self.source_public_key == [0; 32]
@@ -270,9 +267,6 @@ impl SealedPreparation {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// The sidecar is invalid or exceeds its accepted bound.
     pub fn encode(&self) -> std::io::Result<Vec<u8>> {
         self.validate()?;
         let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
@@ -282,9 +276,6 @@ impl SealedPreparation {
         Ok(bytes)
     }
 
-    /// # Errors
-    ///
-    /// The bytes are oversized, malformed, or fail the public binding check.
     pub fn decode(bytes: &[u8]) -> std::io::Result<Self> {
         if bytes.len() as u64 > MAX_SIDECAR {
             return Err(invalid("prepared TPM handoff exceeds its bound"));

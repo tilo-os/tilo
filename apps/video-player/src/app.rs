@@ -382,7 +382,6 @@ pub struct PlayerApp {
     library_focus_id: Option<String>,
     /// Playback watched together with everyone who has the same video open.
     together: Together,
-    /// The playback preferences the player follows.
     preferences: PlaybackPreferences,
     /// This device's settings, where a live window keeps its preferences
     /// and recent videos; `None` for a capture or a past version.
@@ -1665,7 +1664,6 @@ impl PlayerApp {
         self.dispatch_shared(PlayerResource::DELETE_ANNOTATION.with(Id::from_raw(id)));
     }
 
-    /// Delete playlist `id` with its videos.
     fn delete_playlist(&self, id: &str) {
         self.dispatch_shared(PlayerResource::DELETE_PLAYLIST.with(Id::from_raw(id)));
     }
@@ -3204,7 +3202,6 @@ mod tests {
 
     #[test]
     fn opening_sources_sets_identity_without_exposing_paths() {
-        // Case `source_for_path_splits_local_vs_workspace`.
         {
             // Point the mount at a scratch root so the classification is testable.
             let root = std::env::temp_dir().join(format!("tilo-vp-app-{}", std::process::id()));
@@ -3215,7 +3212,6 @@ mod tests {
             let local = source_for_path(Path::new("/home/u/b.mp4"));
             assert!(matches!(local, media::Source::LocalFile(_)));
         }
-        // Case `opening_a_path_sets_title_and_loads_the_engine`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             app.open_path(&PathBuf::from("/tmp/Holiday.mp4"))
@@ -3227,7 +3223,6 @@ mod tests {
                 Some(&media::Source::LocalFile(PathBuf::from("/tmp/Holiday.mp4")))
             );
         }
-        // Case `source_identity_generation_exhaustion_refuses_the_new_open`.
         {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Original.mp4"))
@@ -3253,7 +3248,6 @@ mod tests {
                 original_source.as_ref()
             );
         }
-        // Case `local_source_identity_and_now_playing_never_expose_an_absolute_path`.
         {
             let mut app = synth_app();
             let path = Path::new("/home/alice/Private videos/launch-cut.mp4");
@@ -3264,7 +3258,6 @@ mod tests {
             assert!(!source_id.contains("/home/alice"));
             assert!(!source_id.contains("launch-cut"));
         }
-        // Case `reopening_the_same_uri_invalidates_old_dynamic_targets`.
         {
             let mut app = PlayerApp::for_shot(Some("metadata"));
             let old_source = app.current_source_id.clone().unwrap();
@@ -3287,7 +3280,6 @@ mod tests {
 
     #[test]
     fn portal_open_is_single_flight_generation_fenced_and_retained() {
-        // Case `portal_outcome_opens_the_chosen_file`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
@@ -3301,7 +3293,6 @@ mod tests {
                 "channel cleared after the outcome"
             );
         }
-        // Case `portal_open_is_single_flight_and_a_direct_open_supersedes_it`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             app.trigger_open(None).expect("first picker starts");
@@ -3322,7 +3313,6 @@ mod tests {
                 "a direct open drops the stale picker receiver before it can win later"
             );
         }
-        // Case `portal_generation_exhaustion_fails_closed_without_aliasing_old_requests`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             app.portal_generation = u64::MAX;
@@ -3333,20 +3323,17 @@ mod tests {
             assert!(app.portal_open.is_none());
             assert_eq!(app.portal_generation, u64::MAX);
         }
-        // Case `stale_portal_outcome_cannot_open_media_in_release_or_debug_builds`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Stale.webm")));
             ui::host::scoped(&services, || app.trigger_open(None)).expect("picker starts");
-            // A newer request generation makes the delivered outcome stale.
             app.portal_generation += 1;
             app.drain_portal();
             assert_eq!(app.title, "No media");
             assert!(app.current_source_id.is_none());
             assert!(app.portal_open.is_none());
         }
-        // Case `portal_failure_is_retained_for_the_empty_state`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
@@ -3364,7 +3351,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn markers_and_metadata_targets_stay_fresh_and_canonical() {
-        // Case `durable_marker_media_reference_survives_a_reopen_but_source_actions_stay_fresh`.
         {
             let mut app = synth_app();
             let path = Path::new("/tmp/review-cut.mp4");
@@ -3382,7 +3368,6 @@ mod tests {
                 "the durable reference remains opaque"
             );
         }
-        // Case `marker_jump_seeks_the_video_its_note_belongs_to`.
         {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/review-cut.mp4"))
@@ -3426,7 +3411,6 @@ mod tests {
             );
             assert_eq!(app.player.position_ms(), 12_500);
         }
-        // Case `stale_stream_and_chapter_targets_are_refused_before_engine_mutation`.
         {
             let mut app = PlayerApp::for_shot(Some("metadata"));
             let audio = app.shot_metadata.as_ref().unwrap().audio_tracks[0].clone();
@@ -3465,7 +3449,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn library_controls_emit_canonical_host_actions_and_are_accessible() {
-        // Case `library_play_focus_has_a_real_accessibility_target_and_visual_state`.
         {
             let mut app = PlayerApp::for_shot(Some("library"));
             let focused_id = app.queue[1].id.clone();
@@ -3490,7 +3473,6 @@ mod tests {
                 Some(Rect::new(0.0, 44.0, 44.0, 88.0))
             );
         }
-        // Case `library_close_and_tabs_are_reachable_accessibility_controls`.
         {
             let mut app = PlayerApp::for_shot(Some("library"));
             app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
@@ -3525,7 +3507,6 @@ mod tests {
             app.perform(VideoEffect::HideLibrary).unwrap();
             assert!(!app.library_visible);
         }
-        // Case `library_has_conventional_escape_close_and_complete_hover_help`.
         {
             let mut app = PlayerApp::for_shot(Some("shared"));
             app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
@@ -3549,7 +3530,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn player_resources_and_transport_guards_are_published_honestly() {
-        // Case `picture_in_picture_uses_the_shell_owned_floating_surface_contract`.
         {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Clip.mp4"))
@@ -3569,7 +3549,6 @@ mod tests {
                 matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "so.tilo.video-player" && element_id == "video_surface")
             );
         }
-        // Case `live_rows_cover_the_open_video_its_streams_and_the_library`.
         {
             let app = PlayerApp::for_shot(Some("metadata"));
             let rows: Vec<_> = crate::actions::live_rows(&app.player_rows(), 32)
@@ -3608,7 +3587,6 @@ mod tests {
                 "a row resolves by id"
             );
         }
-        // Case `missing_media_leaves_transport_unavailable`.
         {
             let empty = PlayerApp::new(RunMode::Capture);
             assert!(empty.effect_statuses().iter().any(|status| {
@@ -3637,7 +3615,6 @@ mod tests {
         }
         let mut app = TestApp::<crate::resource::VideoPlayerShell>::new().unwrap();
         surface(&mut app, |player| {
-            // Hermetic authored media, with live framework action admission.
             player
                 .player
                 .set_engine(media::MediaEngine::new_synthesized());
@@ -3856,7 +3833,6 @@ mod tests {
             assert_eq!(app.library_close_rect, Rect::ZERO);
             assert!(app.library_row_hits.is_empty());
         }
-        // Case `fresh_player_shows_a_clean_empty_state_with_no_frame`.
         {
             let mut app = PlayerApp::new(RunMode::Capture);
             let doc = automerge::AutoCommit::new();
@@ -3888,7 +3864,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn decoder_lifecycle_confirms_opens_only_on_a_real_frame() {
-        // Case `opening_a_file_then_syncing_lands_a_frame_and_duration`.
         {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
@@ -3945,7 +3920,6 @@ mod tests {
 
     #[test]
     fn transport_settings_reach_the_engine_and_snapshot() {
-        // Case `autoplay_and_repeat_are_real_settings_not_demo_affordances`.
         {
             let mut app = synth_app();
             app.preferences.autoplay = false;
@@ -3976,7 +3950,6 @@ mod tests {
             assert_eq!(app.player.position_ms(), 0, "repeat restarts at the end");
             assert!(app.player.is_playing(), "repeat resumes playback");
         }
-        // Case `playhead_advances_while_playing_and_a_mid_play_seek_holds`.
         {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
@@ -4001,7 +3974,6 @@ mod tests {
                 position > 50_000
             });
         }
-        // Case `volume_and_mute_propagate_to_the_engine`.
         {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
@@ -4015,7 +3987,6 @@ mod tests {
                 "mute drops the engine volume to zero"
             );
         }
-        // Case `playback_speed_action_changes_the_engine_and_collaborative_snapshot`.
         {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Clip.mp4"))
@@ -4026,7 +3997,6 @@ mod tests {
             assert!((engine.rate() - 2.0).abs() < f32::EPSILON);
             assert!((engine.transport_state(unix_now_ms()).rate - 2.0).abs() < f32::EPSILON);
         }
-        // Case `space_key_routed_through_the_app_toggles_playback`.
         {
             let mut app = synth_app();
             app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
@@ -4135,7 +4105,6 @@ mod tests {
             ),
             TogetherStep::Publish(sought)
         );
-        // Pausing is a move too.
         assert_eq!(
             here.step(
                 "clip",

@@ -171,12 +171,6 @@ fn click_navigates_to(target: Category) {
     );
 }
 
-// Every category is reachable by a real sidebar click: the selection, the
-// rebuild request, the single active row and the content pane all follow
-// (formerly one generated test per category). Each app build is expensive, so
-// the categories are spread over a few tests that run in parallel; every case
-// still builds its own app.
-
 #[test]
 fn clicking_network_bluetooth_or_sound_navigates_to_its_pane() {
     for category in [Category::Network, Category::Bluetooth, Category::Sound] {

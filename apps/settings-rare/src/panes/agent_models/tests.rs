@@ -68,7 +68,6 @@ fn in_process_models_are_set_up_with_the_same_confirmation() {
     {
         let control = mock(with_subject(None));
         let model = model_over(control.clone());
-        // The recommendation's and the subject model's own.
         assert_eq!(
             rendered_names(&model)
                 .iter()
@@ -827,7 +826,6 @@ fn providers_are_the_persons_settings() {
 /// Once let go it reports a model ready.
 struct StalledManager(std::sync::Arc<crate::stall::Stall>);
 
-/// A snapshot with one model called `name` in `phase`.
 fn one_model(name: &str, phase: LocalModelPhase) -> LocalModelSnapshot {
     LocalModelSnapshot {
         models: vec![InstalledLocalModel {

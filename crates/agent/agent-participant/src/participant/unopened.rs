@@ -57,7 +57,6 @@ const BATCH_BYTES: usize = 8 * 1024 * 1024;
 /// ceiling for changes of a few chunks each.
 const BATCH_CHANGES: usize = 4096;
 
-/// The shared desktop's route in `room`.
 pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
@@ -579,7 +578,6 @@ mod tests {
         );
         unopened.receive(desktop_route.clone(), desktop.change("seen"));
         assert_eq!(unopened.people_first()[0].record, "seen");
-        // Reloaded along the way, the desktop is still every change it took.
         let seed = unopened.seed(&desktop_route).unwrap().unwrap();
         assert_seeds(&seed, &mut desktop.doc);
     }
@@ -605,7 +603,6 @@ mod tests {
             unopened.receive(notes.clone(), change.clone());
             most = most.max(unopened.held[&notes].retained());
         }
-        // The tail is merged once a change takes it past the document.
         assert!(
             most <= document.saturating_mul(2).saturating_add(largest),
             "held up to {most} bytes for a {document}-byte document"
@@ -714,7 +711,6 @@ mod tests {
         let seed = unopened.seed(&desktop_route).unwrap().unwrap();
         assert_seeds(&seed, &mut desktop.doc);
 
-        // Room actions' holder of a room's desktop.
         let mut shared = SharedDesktop::new();
         let mut desktop = Desktop::default();
         shared.receive(desktop.change("first"));

@@ -145,7 +145,6 @@ mod tests {
 
     #[test]
     fn gesture_classification_and_primary_actions_agree() {
-        // Case `swipe_and_menu_destructive_action_match`.
         {
             // The parity invariant: swipe-left is the menu's destructive row.
             assert!(EntryAction::menu_for_entry().contains(&EntryAction::swipe_left()));
@@ -156,7 +155,6 @@ mod tests {
                 "the destructive row comes last"
             );
         }
-        // Case `press_classifies_vertical_vs_horizontal`.
         {
             let mut p = PointerPress::new(0, Point::new(100.0, 100.0));
             assert!(!p.moved);
@@ -171,7 +169,6 @@ mod tests {
             assert!(q.is_reorder());
             assert!(!q.is_swipe());
         }
-        // Case `swipe_dx_is_leftward_only`.
         {
             let mut p = PointerPress::new(0, Point::new(100.0, 50.0));
             p.update(Point::new(40.0, 50.0)); // dragged left 60px

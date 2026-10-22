@@ -84,7 +84,6 @@ fn shell(
         while let Ok(bytes) = typed.recv() {
             for byte in bytes {
                 match byte {
-                    // Ctrl-U clears what was typed at the prompt.
                     0x15 => line.clear(),
                     b'\r' => {
                         let command = String::from_utf8_lossy(&line).into_owned();

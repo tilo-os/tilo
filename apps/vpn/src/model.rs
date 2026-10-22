@@ -307,7 +307,6 @@ mod tests {
 
     #[test]
     fn vpn_model_sample_formatting_and_enum_round_trips() {
-        // Case `sample_has_home_connected_and_work_disconnected`.
         {
             let v = sample_vault();
             let home = v.connections.iter().find(|c| c.name == "Home").unwrap();
@@ -319,7 +318,6 @@ mod tests {
             assert_eq!(v.selected, Some(home.id));
             assert_eq!(v.active_count(), 1);
         }
-        // Case `byte_and_rate_formatting`.
         {
             // Transfer counters are transferred sizes: SI units.
             assert_eq!(ui::format::size(512), "512 B");
@@ -327,7 +325,6 @@ mod tests {
             assert_eq!(human_ago(34), "just now");
             assert_eq!(human_ago(240), "4 min ago");
         }
-        // Case `kind_status_round_trip`.
         {
             assert_eq!(
                 ConnKind::parse(ConnKind::OpenVpn.as_str()),

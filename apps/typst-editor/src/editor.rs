@@ -170,8 +170,6 @@ impl SourceEditor {
         self.control_mut().goto_line(line_1based);
     }
 
-    // ----- scrolling -------------------------------------------------------
-
     /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
     /// only scrolls vertically.
     pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
@@ -181,8 +179,6 @@ impl SourceEditor {
     /// Scroll the caret into view. The shared widget follows the caret after
     /// every edit automatically, so this is a no-op kept for call-site parity.
     pub fn ensure_visible(&mut self, _text: &str) {}
-
-    // ----- mouse -----------------------------------------------------------
 
     pub fn on_mouse_down(&mut self, p: Point, shift: bool, _text: &str) {
         self.focused = true;
@@ -221,8 +217,6 @@ impl SourceEditor {
         self.hover = p;
         true
     }
-
-    // ----- keyboard --------------------------------------------------------
 
     /// Handle a keyboard event through the shared widget, submitting what it
     /// edited as one splice of the open file's source. Returns true if
@@ -265,8 +259,6 @@ impl SourceEditor {
         self.submit(doc);
         handled
     }
-
-    // ----- rendering -------------------------------------------------------
 
     /// Paint the pane. The editor stands on the window ground: it fills
     /// nothing of its own. The shared widget paints the gutter, line numbers,
@@ -403,7 +395,6 @@ mod tests {
 
     #[test]
     fn editor_maps_positions_and_diagnostic_spans() {
-        // Case `byte_of_line_col_maps_positions`.
         {
             let t = "ab\ncde\nf";
             assert_eq!(byte_of_line_col(t, 0, 0), 0);
@@ -411,7 +402,6 @@ mod tests {
             assert_eq!(byte_of_line_col(t, 1, 2), 5);
             assert_eq!(byte_of_line_col(t, 2, 0), 7);
         }
-        // Case `diag_byte_span_covers_the_reported_span`.
         {
             // 1-based ln 2 cols 3..6 → 0-based line 1 cols 2..5 → bytes 5..8 in
             // "ab\ncdefg".
@@ -427,7 +417,6 @@ mod tests {
             };
             assert_eq!(diag_byte_span(&d, t), Some((5, 8)));
         }
-        // Case `diag_zero_width_span_is_widened`.
         {
             let t = "abc";
             let d = Diagnostic {
@@ -445,7 +434,6 @@ mod tests {
                 "a zero-width span still underlines at least one byte"
             );
         }
-        // Case `gutter_severity_prefers_error`.
         {
             let warn = Diagnostic {
                 kind: DiagKind::Warning,
@@ -551,7 +539,6 @@ mod tests {
             assert_eq!(source(&doc), "");
             assert_eq!(ed.text(), "");
         }
-        // Case `goto_line_moves_the_caret_to_the_line_start`.
         {
             let (_doc, mut ed) = showing("one\ntwo\nthree");
             ed.goto_line("", 2);

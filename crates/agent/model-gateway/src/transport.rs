@@ -41,9 +41,6 @@ pub struct FetchTransport {
 }
 /// Whether `endpoint` is a model service URL [`FetchTransport`] connects to:
 /// HTTPS, `/model/rpc`, without credentials, query or fragment.
-///
-/// # Errors
-/// Names what is wrong with the URL.
 pub fn check_endpoint(endpoint: &str) -> Result<(), String> {
     let url = tilo_net::Url::parse(endpoint).map_err(|_| "invalid model service URL")?;
     if url.scheme() != "https"
@@ -241,9 +238,6 @@ pub struct ModelClient<T> {
 }
 impl<T: Transport> ModelClient<T> {
     /// A Send-safe single completion over this client's selected route.
-    ///
-    /// # Errors
-    /// Returns transport, validation, provider or decoding errors.
     pub async fn complete_once(
         &self,
         request: &agent_provider_config::protocol::ModelRequest,
@@ -289,9 +283,6 @@ impl<T: Transport> ModelClient<T> {
     }
     /// Presentation deltas survive terminal failure in the caller's `StreamState`.
     /// Returning false cancels the request; partial tools never authorize actions.
-    ///
-    /// # Errors
-    /// Returns transport, cancellation, provider or malformed-response errors.
     pub async fn complete_streaming(
         &self,
         request: &agent_provider_config::protocol::ModelRequest,

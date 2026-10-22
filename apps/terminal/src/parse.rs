@@ -27,7 +27,6 @@ pub fn tool_of(command: &str) -> &'static str {
     }
 }
 
-/// The items of a run of `command` that printed `output`.
 #[must_use]
 pub fn items(command: &str, output: &[u8]) -> Vec<RunItem> {
     let text = strip_ansi(&String::from_utf8_lossy(output));

@@ -60,7 +60,6 @@ pub fn level_scale(level: Level) -> f32 {
     (level as f32 / 4.0).exp2()
 }
 
-/// The grid tiles are cut from.
 pub fn grid() -> tilo_pdf::TileGrid {
     tilo_pdf::TileGrid::default()
 }
@@ -385,7 +384,6 @@ mod tests {
         }
         // The viewport's centre (1500, 1400) lies in tile (2, 2).
         assert_eq!((tiles[0].col, tiles[0].row), (2, 2));
-        // Visible tiles cover the viewport.
         let covered: u64 = tiles[..first_margin]
             .iter()
             .map(|t| {
@@ -396,7 +394,6 @@ mod tests {
             })
             .sum();
         assert_eq!(covered, 1000 * 800);
-        // Nothing far outside the margin is asked for.
         assert!(tiles.iter().all(|t| t.col <= 4 && t.row <= 4));
     }
 

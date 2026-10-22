@@ -109,11 +109,6 @@ impl FlathubFeed {
 
 /// Fetch the whole catalogue from Flathub in `locale`. A failed catalogue
 /// page after the first ends the read with what it has.
-///
-/// # Errors
-///
-/// Returns why not even the popular collection or the first page could be
-/// read.
 pub fn fetch(locale: &str, now_unix: u64) -> Result<FlathubFeed, String> {
     let popular = fetch_collection("popular", FEATURED, locale);
     let mut catalogue = Vec::new();
@@ -170,10 +165,6 @@ pub fn load() -> Option<FlathubFeed> {
 }
 
 /// Keep `feed` for the next refresh and the next window.
-///
-/// # Errors
-///
-/// Returns why it could not be written.
 pub fn save(feed: &FlathubFeed) -> Result<(), String> {
     let path = path().ok_or_else(|| "no cache directory".to_owned())?;
     let bytes = serde_json::to_vec(feed).map_err(|error| error.to_string())?;
@@ -222,10 +213,6 @@ fn from_local_appstream(locale: &str, now_unix: u64) -> Option<FlathubFeed> {
 /// refresh was asked for), else a new fetch, kept for next time. A failed
 /// fetch answers the kept one when there is one, else what Flatpak keeps on
 /// this device.
-///
-/// # Errors
-///
-/// Returns why there is neither a kept, a fetched nor a local catalogue.
 pub fn load_or_fetch(locale: &str, force: bool) -> Result<FlathubFeed, String> {
     let now = crate::catalogue::now_unix();
     let kept = load();

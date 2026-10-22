@@ -129,10 +129,6 @@ impl InnerTube {
     }
 
     /// Videos and creators matching `query`.
-    ///
-    /// # Errors
-    ///
-    /// When `YouTube` does not answer, or answers something else.
     pub async fn search(&self, query: &str) -> anyhow::Result<Found> {
         let answer = self
             .call(
@@ -162,10 +158,6 @@ impl InnerTube {
 
     /// A video's watch page and what it recommends next. The player answer
     /// asked on the way names its stream, which playback then reuses.
-    ///
-    /// # Errors
-    ///
-    /// When the watch-next answer does not come or names no video.
     pub async fn video(&self, id: &str) -> anyhow::Result<(Video, Vec<Video>)> {
         let player = self.player(id).await.ok();
         let next = self
@@ -176,11 +168,6 @@ impl InnerTube {
     }
 
     /// A stream the media element plays for `id`.
-    ///
-    /// # Errors
-    ///
-    /// When the player answer does not come, refuses (a bot check, a
-    /// private video), or names no progressive stream.
     pub async fn stream(&self, id: &str) -> anyhow::Result<Stream> {
         if let Some(stream) = self.kept_stream(id) {
             return Ok(stream);
@@ -190,10 +177,6 @@ impl InnerTube {
     }
 
     /// A channel's page and its newest uploads.
-    ///
-    /// # Errors
-    ///
-    /// When the answer does not come or is not a channel page.
     pub async fn channel(&self, id: &str) -> anyhow::Result<(Channel, Vec<Video>)> {
         let answer = self
             .call(

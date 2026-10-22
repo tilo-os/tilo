@@ -350,7 +350,6 @@ impl WindowsApp {
                 break;
             }
         }
-        // Show, and compare against, what the service runs now.
         let catalogue = self.provider.borrow_mut().catalogue();
         self.reported_routes.report(&catalogue);
         self.catalogue = catalogue;
@@ -1201,8 +1200,6 @@ impl WindowsApp {
         self.invoke_application_operation(type_id, payload)
     }
 }
-
-// --- view --------------------------------------------------------------------
 
 impl WindowsApp {
     fn appliance_busy(&self) -> bool {
@@ -2173,7 +2170,6 @@ mod tests {
         ui::framework::ResourceSurface::present(&mut app, &overridden);
         assert_eq!(route(&app), Some(Route::Proton), "the override is carried");
 
-        // The service reverting it on its own is brought back.
         app.provider
             .borrow_mut()
             .reset_route_override("adobe-reader")
@@ -2181,7 +2177,6 @@ mod tests {
         app.refresh();
         assert_eq!(route(&app), Some(Route::Proton));
 
-        // Clearing the override resets the service.
         ui::framework::ResourceSurface::present(
             &mut app,
             &Rc::new(crate::resource::Windows::default()),
@@ -2294,7 +2289,6 @@ mod tests {
 
     #[test]
     fn portal_pickers_hand_open_descriptors_to_the_right_target() {
-        // Case `installer_portal_handoff_uses_its_open_descriptor_and_display_name`.
         {
             let installed = Arc::new(Mutex::new(None));
             let provider = RecordingProvider {
@@ -2332,7 +2326,6 @@ mod tests {
                 ))
             );
         }
-        // Case `vm_document_picker_hands_the_open_descriptor_to_the_selected_publication`.
         {
             let opened_document = Arc::new(Mutex::new(None));
             let provider = RecordingProvider {
@@ -2376,7 +2369,6 @@ mod tests {
                 Some((entry_id, b"portal document bytes".to_vec()))
             );
         }
-        // Case `pickers_use_the_shared_portal_and_their_filters`.
         {
             let request = installer_pick_request();
             assert_eq!(request.title(), "Add a Windows application");
@@ -2398,7 +2390,6 @@ mod tests {
 
     #[test]
     fn manager_state_is_honest_and_routes_are_stable() {
-        // Case `route_edits_reach_the_shared_document`.
         {
             let mut app =
                 ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
@@ -2412,11 +2403,9 @@ mod tests {
             app.settle();
             assert_eq!(app.state().route(&first), Some(Route::Vm));
         }
-        // Case `an_unconnected_manager_does_not_claim_fixture_apps_are_installed`.
         {
             assert!(WindowsApp::new().catalogue.apps.is_empty());
         }
-        // Case `controls_have_stable_automation_ids`.
         {
             let app = WindowsApp::new_offline();
             assert_eq!(Widget::test_id(&app), Some("windows-app"));
@@ -2440,7 +2429,6 @@ mod tests {
 
     #[test]
     fn destructive_and_escalating_actions_require_explicit_confirmation() {
-        // Case `deleting_private_data_requires_the_dialog_confirmation`.
         {
             let mut app = WindowsApp::new_offline();
             let capsule = app.catalogue.apps[0].capsule.clone();
@@ -2467,7 +2455,6 @@ mod tests {
                     .any(|item| item.capsule == capsule)
             );
         }
-        // Case `cancelling_the_delete_dialog_keeps_the_app`.
         {
             let mut app = WindowsApp::new_offline_scenario("confirm-delete");
             assert!(app.dialog_open());
@@ -2476,7 +2463,6 @@ mod tests {
             assert!(!app.dialog_open());
             assert_eq!(app.catalogue.apps.len(), 3);
         }
-        // Case `escalation_to_the_shared_windows_appliance_is_confirmed_in_a_dialog`.
         {
             let mut app = WindowsApp::new_offline();
             let capsule = app.catalogue.apps[0].capsule.clone();
@@ -2498,7 +2484,6 @@ mod tests {
             );
             assert!(!app.catalogue.apps[0].can_escalate_install_to_vm);
         }
-        // Case `changing_selection_drops_the_previous_apps_confirmation`.
         {
             let mut app = WindowsApp::new_offline();
             apply(&mut app, Intent::Uninstall);
@@ -2517,7 +2502,6 @@ mod tests {
 
     #[test]
     fn navigation_follows_the_selection() {
-        // Case `selecting_a_row_shows_its_page_and_keeps_the_selection_on_back`.
         {
             let mut app = WindowsApp::new_offline();
             apply(&mut app, Intent::SelectApp(1));
@@ -2531,7 +2515,6 @@ mod tests {
                 "the app selection survives a visit to Windows"
             );
         }
-        // Case `accessibility_selects_catalogue_rows_by_id`.
         {
             let mut app = WindowsApp::new_offline();
             assert!(Widget::perform_semantic_action(
@@ -2550,7 +2533,6 @@ mod tests {
                 &automerge::ROOT,
             ));
         }
-        // Case `a_freshly_inspected_installer_asks_where_it_goes`.
         {
             let mut provider = SampleProvider::new();
             provider.seed_install_confirmation();
@@ -2563,7 +2545,6 @@ mod tests {
             assert!(ids.contains(&"windows-confirm-capsule-install".to_owned()));
             assert!(ids.contains(&"windows-confirm-vm-install".to_owned()));
         }
-        // Case `platform_search_finds_apps_by_name_and_opens_them`.
         {
             let mut app = ui::prelude::TestApp::<crate::resource::WindowsShell>::new().unwrap();
             app.with_surface::<WindowsApp, _>(|surface| {
@@ -2597,7 +2578,6 @@ mod tests {
 
     #[test]
     fn failures_and_the_appliance_explain_themselves() {
-        // Case `failed_setup_offers_recovery_and_disables_launch`.
         {
             let app = WindowsApp::new_offline_scenario("error");
             let failed = app.selected_app().expect("failed sample application");
@@ -2607,7 +2587,6 @@ mod tests {
             assert!(ids.contains(&"windows-retry-install".to_owned()));
             assert!(ids.contains(&"windows-escalate-install-to-vm".to_owned()));
         }
-        // Case `a_missing_appliance_offers_set_up_and_hides_the_raw_error`.
         {
             let mut app = WindowsApp::new_offline_scenario("appliance-setup");
             let ids_before = ids(&app);
@@ -2617,7 +2596,6 @@ mod tests {
             apply(&mut app, Intent::ToggleApplianceDetails);
             assert!(app.appliance_details);
         }
-        // Case `a_running_appliance_offers_only_the_power_actions_it_allows`.
         {
             let app = WindowsApp::new_offline_scenario("appliance");
             let ids = ids(&app);

@@ -99,7 +99,6 @@ binding. A binding is {\"literal\": value}, {\"input\": name}, {\"var\": name}, 
 {{input.x}}, {{var.x}} or {{step.id/field}}\"}. Bind every required parameter with a value of \
 its type. Do not invent actions. The person asked for:\n";
 
-/// The arguments of the drafting invocation for `description`.
 #[must_use]
 pub fn arguments(description: &str, catalog: &ActionCatalog) -> Map<String, Value> {
     let description: String = description.chars().take(MAX_DESCRIPTION).collect();
@@ -128,10 +127,6 @@ pub struct Drafted {
 /// Turn the agent's answer into a draft to offer: parse it, give it an id no
 /// saved shortcut has, drop anything that would carry authority, and check
 /// it with the least grant its steps need.
-///
-/// # Errors
-///
-/// Why the answer is not a shortcut at all.
 pub fn adopt(value: Value, saved: &[Shortcut], catalog: &ActionCatalog) -> Result<Drafted, String> {
     let mut object = match value {
         Value::Object(object) => object,

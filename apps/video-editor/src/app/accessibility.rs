@@ -1354,8 +1354,6 @@ impl VideoEditorApp {
             .with_children(kids)
     }
 
-    // ---- keyboard navigation ---------------------------------------------
-
     /// Move to the next / previous pane, clamping each pane's cursor to what it
     /// currently holds so Tab never lands on a row that has since been deleted.
     pub(super) fn focus_pane(&mut self, back: bool) {
@@ -1736,8 +1734,6 @@ impl VideoEditorApp {
         }
         None
     }
-
-    // ---- routed accessibility actions ------------------------------------
 
     #[allow(
         clippy::indexing_slicing,

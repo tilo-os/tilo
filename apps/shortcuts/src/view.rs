@@ -236,7 +236,6 @@ impl Ui {
         }
     }
 
-    /// `button`, invoking one door effect.
     fn door_button(&self, button: Button, effect: &DoorEffect) -> Button {
         self.actions.bind_effect_invocation(button, effect)
     }
@@ -447,8 +446,6 @@ fn draft_label(name: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------- sidebar
-
 /// The sidebar's actions: start a shortcut, read the library again.
 fn sidebar_actions(ui: &Ui) -> Vec<Element> {
     let new_draft = ui.bind(
@@ -537,8 +534,6 @@ impl ui::widget::Decorator for LibraryNav {
     }
 }
 
-// ------------------------------------------------------------------ pages
-
 /// A page: a column of what it shows, under the outcome of the last save or
 /// delete.
 fn page(ui: &Ui, items: Vec<Element>) -> Element {
@@ -579,8 +574,6 @@ fn notice(ui: &Ui) -> Element {
         },
     ))
 }
-
-// --------------------------------------------------------------- overview
 
 /// Whether the workspace offers the agent's transform to draft with.
 fn drafting_offered(door: &DoorState) -> bool {
@@ -789,8 +782,6 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
     Box::new(Section::titled(ui::i18n!("shortcuts-runs"), rows))
 }
 
-// ------------------------------------------------------------ saved shortcut
-
 /// What the last run of `shortcut` came to, in words.
 fn last_run_text(door: &DoorState, shortcut: &str) -> String {
     let Some(run) = door.last_run(shortcut) else {
@@ -924,8 +915,6 @@ fn saved_facts(ui: &Ui, shortcut: &Shortcut) -> Element {
         },
     ))
 }
-
-// ----------------------------------------------------------------- editor
 
 fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
     let builder = ui.clone();

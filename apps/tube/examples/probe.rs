@@ -39,10 +39,6 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-/// # Errors
-///
-/// Returns `Err` if a probe fails to construct its
-/// backend, fetch data, or write its output file.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -649,7 +645,6 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             )?;
             println!("  wrote {}", search_png.display());
 
-            // ---- Home page (same catalogue on the Home route) ----
             let mut hmodel = smodel.clone();
             hmodel.route = Route::Home;
             let home_app = tube::TubeApp::new()

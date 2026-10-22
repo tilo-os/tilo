@@ -85,9 +85,6 @@ pub struct Updates {
 
 impl Updates {
     /// Post `update`, waiting while the queue is full, and wake the window.
-    ///
-    /// # Errors
-    /// The update back when the window is gone.
     pub fn send(&self, update: Update) -> Result<(), std::sync::mpsc::SendError<Update>> {
         self.tx.send(update)?;
         self.wake.wake();
@@ -95,9 +92,6 @@ impl Updates {
     }
 
     /// Post `update` unless the queue is full, and wake the window.
-    ///
-    /// # Errors
-    /// The update back when the queue is full or the window is gone.
     pub fn try_send(&self, update: Update) -> Result<(), std::sync::mpsc::TrySendError<Update>> {
         self.tx.try_send(update)?;
         self.wake.wake();
@@ -256,10 +250,6 @@ async fn get_json(
 /// `GET /api/skipSegments?videoID=<id>&categories=[…]` endpoint. A 404 (the
 /// API's "no segments for this video" response) is treated as an empty list
 /// rather than an error.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response body isn't valid JSON.
 pub async fn fetch_sponsor(
     client: &tilo_net::Client,
     video_id: &str,
@@ -327,10 +317,6 @@ fn category_json() -> String {
 /// Fetch `DeArrow` branding for a video: the top-voted crowdsourced title (when it
 /// outranks the original) and a community thumbnail URL (a frame rendered at the
 /// top-voted timestamp), via `GET /api/branding?videoID=<id>`.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response body isn't valid JSON.
 pub async fn fetch_dearrow(
     client: &tilo_net::Client,
     video_id: &str,
@@ -421,11 +407,6 @@ pub struct Votes {
 
 /// Fetch a video's votes via Return `YouTube` Dislike
 /// (`GET /votes?videoId=<id>`).
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails, the response isn't valid JSON, or it
-/// carries no dislike count.
 pub async fn fetch_votes(client: &tilo_net::Client, video_id: &str) -> anyhow::Result<Votes> {
     fetch_votes_at(client, DISLIKE_ENDPOINT, video_id).await
 }
@@ -1486,7 +1467,6 @@ fn invidious_status() -> Update {
 /// No Invidious instance answered a request.
 #[derive(Debug)]
 struct InvidiousFailure {
-    /// The last instance's failure.
     last: anyhow::Error,
     /// Some instance failed the way a browser hides a cross-origin refusal.
     hidden: bool,
@@ -1676,13 +1656,11 @@ mod tests {
 
     #[test]
     fn sponsorblock_categories_and_segments_parse() {
-        // Case `category_json_lists_all`.
         {
             let j = category_json();
             assert!(j.contains("sponsor"));
             assert!(j.contains("music_offtopic"));
         }
-        // Case `parse_skip_segments_maps_and_sorts`.
         {
             // The shape the direct `?videoID=` endpoint returns: a flat array of
             // segment objects. Unknown categories are dropped; the rest come back
@@ -1701,7 +1679,6 @@ mod tests {
             assert_eq!(segs[2].category, Category::Outro);
             assert_eq!(segs[1].votes, 10);
         }
-        // Case `parse_skip_segments_empty_on_non_array`.
         {
             assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
         }
@@ -1709,7 +1686,6 @@ mod tests {
 
     #[test]
     fn api_workers_queue_and_query_branding_endpoints() {
-        // Case `saturated_worker_queue_returns_the_unqueued_request`.
         {
             let (tx, _hold_queue) = std::sync::mpsc::sync_channel(1);
             let (_unused_tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -1729,7 +1705,6 @@ mod tests {
                 Request::Search { query } if query == "latest intent"
             ));
         }
-        // Case `branding_clients_send_expected_queries_and_parse_http_responses`.
         {
             let (base, server) = serve_http(vec![
                 (
@@ -1805,7 +1780,6 @@ mod tests {
             assert_eq!(classify(true, true, true), failed, "a relay was tried");
             assert_eq!(classify(true, false, false), failed);
         }
-        // Case `a_failing_instance_is_a_failure_not_a_cors_refusal`.
         {
             let (base, server) = serve_http(vec![("/api/v1/trending", 503, "{}")]);
             let closed = {
@@ -1872,7 +1846,6 @@ mod tests {
                 "https://i.ytimg.com/vi/5M2AdP8XVFw/hqdefault.jpg"
             );
         }
-        // Case `a_row_with_data_keeps_its_age`.
         {
             let row = serde_json::json!({
                 "type": "video", "videoId": "dQw4w9WgXcQ", "title": "A video",
@@ -1897,7 +1870,6 @@ mod tests {
                 Some(("https://media.example/22".into(), "720p".into()))
             );
         }
-        // Case `whatever_there_is_otherwise`.
         {
             let detail = serde_json::json!({"formatStreams": [
                 {"itag": 43, "url": "https://media.example/43", "quality": "medium"},

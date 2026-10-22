@@ -415,8 +415,6 @@ impl WordProcessorWidget {
         }
     }
 
-    // ---- horizontal ruler ----------------------------------------------------
-
     /// The caret paragraph's left/hanging indent (px), read from the cached block
     /// views (the `indent` block attr), so the draw pass (which has no
     /// `state`) can read it. `0.0` when unset.
@@ -1298,8 +1296,6 @@ impl WordProcessorWidget {
             self.panel_hits.push((rect, hit));
         }
     }
-
-    // ---- document outline / navigation pane -------------------------------
 
     /// The document outline: one entry per `heading` block (in document order),
     /// derived from the already-materialized `self.blocks` so it works mid-frame

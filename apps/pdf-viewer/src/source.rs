@@ -328,11 +328,6 @@ impl RasterBackend {
     /// into an action. This is deliberately separate from materialisation: it
     /// never mutates the live page plan. Images are decoded inside the engine,
     /// never in this process.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bytes are neither a readable PDF nor a
-    /// decodable image, or when a PDF exceeds the bounded page limit.
     pub fn inspect_import(&self, bytes: &[u8]) -> anyhow::Result<(String, Vec<(f64, f64)>)> {
         let (kind, doc) = if bytes.starts_with(b"%PDF-") {
             let doc = self
@@ -933,11 +928,6 @@ impl RasterBackend {
     /// same bytes always exports to the same file.
     ///
     /// `annotations` and `signatures` must be in PDF user space.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a planned page is still awaiting imported content,
-    /// if the engine fails to export, or if writing `out` fails.
     pub fn save_annotated(&self, markup: &ExportMarkup, out: &Path) -> anyhow::Result<()> {
         let bytes = self.export_bytes(markup)?;
         tilo_files::file_at(out)
@@ -1538,7 +1528,6 @@ pub struct RasterDocument {
     pub geometries: Vec<Option<tilo_pdf::PageGeometry>>,
     /// Each displayed page's recorded rotation, in degrees.
     pub rotations: Vec<i32>,
-    /// The document's form fields.
     pub form_fields: Vec<tilo_pdf::FormField>,
     /// Content hash and length of the opened bytes.
     pub source_hash: String,
@@ -1715,9 +1704,7 @@ struct QueueState {
     open_order: VecDeque<u64>,
     controls: VecDeque<QueuedCommand>,
     renders: VecDeque<QueuedCommand>,
-    /// Each session's current page-render batch.
     view_renders: SessionBatches<RenderRequest>,
-    /// Each session's current tile batch.
     tiles: SessionBatches<TileRequest>,
     texts: VecDeque<QueuedCommand>,
     reconciles: HashMap<u64, ReconcileRequest>,
@@ -1820,11 +1807,6 @@ impl RasterHandle {
 
     /// Queue the newest path to open. Queued opens are deliberately coalesced:
     /// selecting A, then B, then C never makes the worker parse all three.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after shutdown, when worker startup failed, or when
-    /// the non-reusable request-id space is exhausted.
     pub fn open_path(&self, path: impl AsRef<Path>) -> Result<OpenRequest, RasterSubmitError> {
         let request = OpenRequest {
             id: next_open_request_id(&NEXT_OPEN_REQUEST_ID)?,
@@ -1865,22 +1847,12 @@ impl RasterHandle {
 
     /// Commit a matching `Opened` event after the UI has installed its plain
     /// document projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped, is unavailable, or its
-    /// bounded control queue is full.
     pub fn activate_document(&self, document_id: u64) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Activate { document_id })
     }
 
     /// Discard a result the UI did not accept (for example after cancellation
     /// or a newer selection). It is safe before the parse completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped, is unavailable, or its
-    /// bounded control queue is full.
     pub fn discard_document(&self, document_id: u64) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Discard { document_id })
     }
@@ -1913,11 +1885,6 @@ impl RasterHandle {
     }
 
     /// Queue a page render, coalescing the same document/page/zoom bucket.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped or its bounded render
-    /// queue is occupied by distinct work.
     pub fn request_render(&self, request: RenderRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Render(request))
     }
@@ -1925,41 +1892,23 @@ impl RasterHandle {
     /// Replace this session's queued tiles with `batch` (most important
     /// first; at most [`crate::tiles::MAX_TILE_BATCH`] are kept). An empty
     /// batch cancels every queued tile.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped or is unavailable.
     pub fn request_tiles(&self, batch: TileBatch) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Tiles(batch))
     }
 
     /// Replace this viewer's queued page renders with `batch`, most
     /// important first; an empty batch cancels them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped or is unavailable.
     pub fn request_renders(&self, batch: RenderBatch) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Renders(batch))
     }
 
     /// Queue extraction of one page text layer, coalescing duplicate pages.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped or its bounded text queue
-    /// is occupied by distinct work.
     pub fn request_text(&self, request: TextRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Text(request))
     }
 
     /// Queue reading one page's link areas, coalescing duplicate pages. Link
     /// reads share the bounded page-work queue with text extraction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped or its bounded page
-    /// queue is occupied by distinct work.
     pub fn request_links(&self, request: LinksRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Links(request))
     }
@@ -1967,31 +1916,17 @@ impl RasterHandle {
     /// Queue the newest durable page plan.  Reorders/duplicates/deletes are
     /// collaborative state transitions, so unlike paint requests the worker
     /// keeps the newest plan per viewer session and reports its settlement.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the owner worker is stopped or unavailable.
     pub fn reconcile_page_plan(&self, request: ReconcileRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Reconcile(request))
     }
 
     /// Queue the latest export for this session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the owner worker is stopped, unavailable, or its
-    /// bounded control queue is full.
     pub fn save_annotated(&self, request: SaveRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Save(request))
     }
 
     /// Queue an import inspection without reading, parsing, or retaining the
     /// file on the UI thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped, is unavailable, or the
-    /// per-session settlement capacity has been reached.
     pub fn import_path(
         &self,
         document_id: u64,
@@ -2053,11 +1988,6 @@ impl RasterHandle {
 
     /// Atomically publish a prepared private save after the UI has verified
     /// the action has not been cancelled or superseded.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped, is unavailable, or its
-    /// bounded control queue is full.
     pub fn commit_save(
         &self,
         request: SaveRequest,
@@ -2068,11 +1998,6 @@ impl RasterHandle {
 
     /// Cancel a save. A queued request is removed; a prepared temporary file
     /// is deleted on the owner thread. The selected destination is untouched.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the worker has stopped, is unavailable, or its
-    /// bounded control queue is full.
     pub fn cancel_save(&self, request: SaveRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::CancelSave { request })
     }

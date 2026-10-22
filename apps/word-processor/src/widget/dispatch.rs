@@ -165,7 +165,6 @@ impl WordProcessorWidget {
         })
     }
 
-    /// Read the kept state, once there is one.
     pub(super) fn with_live<T>(
         &self,
         read: impl FnOnce(&tilo_document::RichTextState) -> T,
@@ -183,8 +182,6 @@ impl WordProcessorWidget {
             eprintln!("word-processor: paragraphs unreadable: {error}");
         }
     }
-
-    // ---- Tilo action dispatch ------------------------------------------------
 
     /// Dispatch one [`RichTextAction`](crate::actions::RichTextAction) —
     /// the single CRDT-mutation path shared with the Ctrl+K palette — through the
@@ -472,9 +469,6 @@ impl WordProcessorWidget {
 
     /// Move `participant`'s own view (its caret, selection or Find) as
     /// `movement` says. Nothing is written into the document.
-    ///
-    /// # Errors
-    /// Returns the view primitive's refusal (stale range, no caret, …).
     pub(crate) fn move_participant_view(
         &mut self,
         participant: &tilo_actions::ParticipantId,
@@ -713,8 +707,6 @@ impl WordProcessorWidget {
             content: self.inner.content_store().clone(),
         })
     }
-
-    // ---- participant views ---------------------------------------------------
 
     /// This window's own view as a participant view: the caret, the
     /// selection anchor, the active region and the Find bar's query and hits.

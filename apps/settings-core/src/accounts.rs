@@ -181,7 +181,6 @@ impl AccountRoot {
         self
     }
 
-    /// The same root, with the person's accounts kept in `record`.
     #[must_use]
     pub fn with_person(
         mut self,
@@ -239,10 +238,6 @@ impl AccountRoot {
     /// that keeps the record. After that the file only follows the record,
     /// so an account removed on another device is never brought back.
     /// Nothing to do outside a host.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the record refuses an account.
     pub fn take_in_device_accounts(&self) -> std::io::Result<()> {
         let Some(PersonAccountsRecord(record)) = &self.person else {
             return Ok(());
@@ -260,10 +255,6 @@ impl AccountRoot {
     }
 
     /// Publish public metadata through Settings' existing personal record.
-    ///
-    /// # Errors
-    /// Refuses a missing personal record or invalid public identity metadata.
-    /// No fallback file or credential registry is created outside a host.
     pub fn publish_browser_identity(
         &self,
         root: String,
@@ -459,10 +450,6 @@ impl AccountRoot {
 
     /// Journal the pre-mutation stores and vault ciphertext so an
     /// interrupted metadata/vault/status mutation can be rolled back.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the recovery check or durable journal write fails.
     pub fn begin_mutation(
         &self,
         previous_store: &accounts::AccountStore,
@@ -1331,7 +1318,6 @@ mod tests {
         kept.config = serde_json::json!({ "imap": "imap.x.example" });
         record.invoke(&PersonAccounts::saving(&kept)).unwrap();
 
-        // An account without connection settings is kept with empty ones.
         let mut local = accounts::Account::new("cal-1", "caldav");
         let mut device = accounts::AccountStore::new();
         device.upsert(local.clone());

@@ -1,4 +1,3 @@
-//! Exercise Rig's real provider wires through the gateway-owned transport.
 use super::*;
 use agent_provider_config::protocol as neutral;
 use serde_json::json;

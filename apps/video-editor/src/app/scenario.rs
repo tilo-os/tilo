@@ -394,8 +394,6 @@ impl VideoEditorApp {
                 });
             }
             ShotScenario::ExportRunning => {
-                // Part-way through a real encode, with the dialog dismissed:
-                // the state the editor used to have nowhere to show.
                 self.presentation.export_open = false;
                 self.export_status = ExportStatus::Rendering { progress: 0.62 };
             }

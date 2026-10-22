@@ -1361,7 +1361,6 @@ fn anthropic_message() -> serde_json::Value {
     })
 }
 
-/// `text` in pieces of `cut` characters.
 fn pieces(text: &str, cut: usize) -> Vec<String> {
     let chars = text.chars().collect::<Vec<_>>();
     chars

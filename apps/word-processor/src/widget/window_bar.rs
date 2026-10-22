@@ -42,7 +42,6 @@ fn tool_slot(action: ToolAction, name: String, on: bool) -> ToolbarAction {
     ToolbarAction::new(tool_action_id(action), icon, name).on(on)
 }
 
-/// A File command's slot id.
 fn file_slot_id(choice: FileChoice) -> String {
     match choice {
         FileChoice::Open => "file-open".into(),

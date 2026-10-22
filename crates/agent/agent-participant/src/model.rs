@@ -705,10 +705,6 @@ impl ModelChoice {
     /// and key given separately (`--agent-model-name`; `TILO_AGENT_API_KEY`
     /// or `TILO_AGENT_API_KEY_FILE`). `cloud:` defaults to [`CLOUD_MODEL`]
     /// and needs a key.
-    ///
-    /// # Errors
-    ///
-    /// Returns what is wrong with the spelling.
     pub fn parse(spec: &str, model: Option<&str>, api_key: ApiKey) -> Result<Self, String> {
         let model = model.filter(|model| !model.is_empty());
         match spec {

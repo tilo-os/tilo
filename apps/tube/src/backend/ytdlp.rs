@@ -347,8 +347,6 @@ fn playback_source_from_print(v: &Value) -> Option<PlaybackSource> {
     })
 }
 
-// --- small JSON accessors ---------------------------------------------------
-
 fn str_field(v: &Value, key: &str) -> String {
     v.get(key)
         .and_then(|s| s.as_str())
@@ -424,7 +422,6 @@ mod date_tests {
 
     #[test]
     fn upload_dates_read_as_relative_or_absolute() {
-        // Case `relative_ages_read_naturally`.
         {
             assert_eq!(age_label(0, "x"), "today");
             assert_eq!(age_label(1, "x"), "yesterday");
@@ -436,13 +433,11 @@ mod date_tests {
             assert_eq!(age_label(800, "Nov 3, 2023"), "Nov 3, 2023");
             assert_eq!(age_label(-5, "Nov 3, 2023"), "Nov 3, 2023");
         }
-        // Case `full_yyyymmdd_absolute_beyond_a_year`.
         {
             // A date well over a year old renders as a tidy absolute date, never a
             // raw ISO string.
             assert_eq!(humanize_date("20200704"), "Jul 4, 2020");
         }
-        // Case `non_date_passes_through`.
         {
             assert_eq!(humanize_date("3 days ago"), "3 days ago");
             assert_eq!(humanize_date(""), "");
@@ -670,7 +665,6 @@ mod tests {
             assert_eq!(v.channel_id, "UCz75RVbH8q2jdBJ4SnwuZZQ");
             assert_eq!(v.duration, 465);
             assert_eq!(v.views, 10_815_517);
-            // Largest thumbnail is chosen.
             assert_eq!(
                 v.thumbnail_url,
                 "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg"
@@ -733,7 +727,6 @@ mod tests {
             assert_eq!(banner, "https://x/banner", "widest → banner");
             assert_eq!(avatar, "https://x/avatar", "square → avatar");
         }
-        // Case `channel_url_normalises_id_handle_and_url`.
         {
             assert_eq!(
                 YtDlpBackend::channel_videos_url("UCabc"),

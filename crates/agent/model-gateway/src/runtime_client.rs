@@ -9,10 +9,6 @@ mod native;
 
 /// Capture the launcher's authenticated descriptor and use the server default.
 /// Provider credentials and URLs remain within the gateway.
-///
-/// # Errors
-/// Returns unavailable without a supported launcher or app runtime. The server
-/// resolves an enabled default only when an inference starts.
 pub fn from_launcher() -> Result<Rc<dyn ModelBackend>, ModelError> {
     #[cfg(unix)]
     {
@@ -26,9 +22,6 @@ pub fn from_launcher() -> Result<Rc<dyn ModelBackend>, ModelError> {
 
 /// Bind provider administration without requiring a model selection.
 /// The launcher capability and backend still enforce the manager role.
-///
-/// # Errors
-/// Returns unavailable without a launcher capability or app I/O runtime.
 pub fn provider_admin_from_launcher()
 -> Result<std::sync::Arc<dyn agent_provider_config::management::ProviderAdmin>, ModelError> {
     #[cfg(unix)]

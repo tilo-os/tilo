@@ -297,7 +297,6 @@ mod tests {
         eprintln!("phase sgr_sets_color_and_bold");
         {
             let mut g = VtGrid::new(20, 3);
-            // Bold red 'X', then reset, then plain 'y'.
             g.feed(b"\x1b[1;31mX\x1b[0my");
             let row = &g.lines()[0].cells;
             assert_eq!(row[0].ch, 'X');
@@ -325,7 +324,6 @@ mod tests {
             // Home the cursor, erase to end of the first line, write new text.
             g.feed(b"\x1b[1;1H\x1b[Knew");
             assert_eq!(plain_text(&g.lines()[0]), "new");
-            // Second line untouched.
             assert_eq!(plain_text(&g.lines()[1]), "line1");
         }
 

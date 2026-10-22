@@ -281,8 +281,6 @@ impl Core {
         }
     }
 
-    // ---- app-facing coordination ------------------------------------
-
     /// Take raw requests for offline consumers. Live dispatch uses the ticketed
     /// path below, preserving the identity assigned at enqueue time.
     pub fn take_outbox(&mut self) -> Vec<Request> {
@@ -849,8 +847,6 @@ impl Core {
         self.sync_search_view();
     }
 
-    // ---- adding a place (begin / commit / end) ----------------------
-
     /// Show and focus the add-place field with an empty query. Called by the
     /// header's Add button and the empty state's action.
     pub(crate) fn begin_search(&mut self) {
@@ -1318,8 +1314,6 @@ impl Core {
         )
     }
 
-    // ---- overview drag / swipe helpers ------------------------------
-
     fn swipe_dx_for(&self, i: usize) -> f64 {
         match self.press {
             Some(p) if p.is_swipe() && p.index == i => p.swipe_dx(),
@@ -1653,8 +1647,6 @@ impl Core {
         }
         (handled, changed)
     }
-
-    // ---- test / scenario seams --------------------------------------
 
     /// Stage a live mid-drag reorder of the second saved place for a headless
     /// shot: the row floats free as a ghost under the cursor while the rest
@@ -2127,7 +2119,6 @@ mod search_tests {
 
     #[test]
     fn core_search_and_accessibility_drive_real_fetches() {
-        // Case `geocode_failure_does_not_complete_a_forecast_refresh`.
         {
             let model = crate::sample::sample_model();
             let mut core = Core::new(model, Units::METRIC);
@@ -2146,7 +2137,6 @@ mod search_tests {
                 "the forecast notice stays clear while only the place search failed"
             );
         }
-        // Case `accessible_place_search_selects_a_result_and_queues_its_forecast`.
         {
             use std::{cell::RefCell, rc::Rc};
             use ui::a11y::Action;
@@ -2187,7 +2177,6 @@ mod search_tests {
             assert!(core.search_query.is_empty());
             assert!(core.search_deadline().is_none());
         }
-        // Case `weather_accessibility_summarises_saved_places_and_forecast`.
         {
             let model = crate::sample::sample_model();
             let core = Core::new(model, Units::METRIC);
@@ -2217,7 +2206,6 @@ mod history_regressions {
 
     #[test]
     fn history_restore_fences_stale_gestures_searches_and_snapshots() {
-        // Case `history_restore_fences_gestures_queue_search_and_changed_coordinate_responses`.
         {
             let mut core = Core::new(crate::sample::sample_model(), Units::IMPERIAL);
             let loc = core.model.locations[0].clone();
@@ -2290,7 +2278,6 @@ mod history_regressions {
             assert!(core.open_location(loc.id));
             assert!(!core.take_outbox().is_empty());
         }
-        // Case `history_stale_autocomplete_acceptance_cannot_select_new_unrelated_results`.
         {
             let mut core = Core::new(WeatherModel::default(), Units::METRIC);
             let old = SavedLocation::new("Old", "", "", "", 1., 2., "auto");
@@ -2299,7 +2286,6 @@ mod history_regressions {
             assert!(!core.commit_search_pick(&result_value(&old)));
             assert!(core.model.locations.is_empty());
         }
-        // Case `history_deleted_location_rejects_delayed_provider_snapshot`.
         {
             let mut model = crate::sample::sample_model();
             let snapshot = model.snapshots.values().next().unwrap().clone();

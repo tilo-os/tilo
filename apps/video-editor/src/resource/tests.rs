@@ -3,9 +3,6 @@
     reason = "test assertions over exact values written and read back"
 )]
 
-//! The project's verbs through the door, the edits bound to the playhead,
-//! and the project as it is stored and replicated.
-
 use ui::framework::ResourceSurface;
 use ui::tilo_actions::OperationKind;
 use ui::tilo_resource::{Replica, Resource};
@@ -64,8 +61,6 @@ fn one_clip() -> (Project, Uuid) {
 fn round_trip(p: &Project) -> Project {
     Project::read(&crate::seed::document_of(p)).unwrap()
 }
-
-// ---- What the project offers -------------------------------------------
 
 #[test]
 fn the_project_publishes_its_verbs_and_the_editor_binds_the_playhead_edits() {
@@ -206,8 +201,6 @@ fn edits_bound_to_the_playhead_follow_it_and_the_markers_near_it() {
         .unwrap();
     assert_eq!(replica.state().unwrap().mark_in, Some(9.0));
 }
-
-// ---- Verbs ---------------------------------------------------------------
 
 #[test]
 fn speed_markers_titles_and_the_frame_change_through_their_verbs() {
@@ -802,8 +795,6 @@ fn the_mix_is_trimmed_by_what_was_measured_and_lanes_stay_in_range() {
     assert_eq!((t.gain_db, t.pan), (0.0, 0.0));
 }
 
-// ---- Replay and convergence ---------------------------------------------
-
 #[test]
 fn verbs_replay_to_the_same_document_on_a_peer() {
     let sample = crate::seed::sample_project();
@@ -935,8 +926,6 @@ fn two_peers_converge_on_a_moved_clip_and_its_neighbours() {
         "clips sort by where they sit: {starts:?}"
     );
 }
-
-// ---- The project as stored ----------------------------------------------
 
 #[test]
 fn replacing_the_project_removes_what_the_new_one_lacks_and_keeps_shared_ids() {

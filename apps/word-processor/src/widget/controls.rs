@@ -415,8 +415,6 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    // ---- colour picker popover --------------------------------------------
-
     /// Open the shared [`ColorPicker`] seeded with the focused style's colour.
     pub(super) fn open_color_picker(&mut self) {
         let seed = self
@@ -780,8 +778,6 @@ impl WordProcessorWidget {
         self.inner.move_end(state);
     }
 
-    // ---- right-click context menu ------------------------------------------
-
     /// Char span `(start, end)` of the word at char-offset `off` in `text`
     /// (whitespace-delimited, matching `WordProcessor::select_word`). `start ==
     /// end` means the offset sits on whitespace (no word).
@@ -996,8 +992,6 @@ impl WordProcessorWidget {
         true
     }
 
-    // ---- paragraph-style management menu ----------------------------------
-
     /// The style id of the picker chip under `p` in the styles panel, if any.
     /// Reads the current frame's `panel_hits` (rebuilt every draw), so the chip
     /// rects are live at right-click time.
@@ -1039,8 +1033,6 @@ impl WordProcessorWidget {
         }
         self.lifecycle.dirty = true;
     }
-
-    // ---- File menu ---------------------------------------------------------
 
     /// Carry out a choice from the File menu: the file commands go through
     /// the document's effects, as their shortcuts do; a template replaces the

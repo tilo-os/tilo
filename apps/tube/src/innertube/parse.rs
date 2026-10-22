@@ -153,11 +153,6 @@ pub fn watch(next: &Value, player: Option<&Value>, id: &str) -> Option<(Video, V
 
 /// The progressive stream a player answer names, best first; or why the
 /// answer refused (a bot check, a removed or private video).
-///
-/// # Errors
-///
-/// The answer's own reason when it is not playable or names no stream
-/// the media element can play from one URL.
 pub fn stream(player: &Value) -> Result<Stream, String> {
     let status = player
         .pointer("/playabilityStatus/status")

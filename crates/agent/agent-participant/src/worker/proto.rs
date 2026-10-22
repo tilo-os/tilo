@@ -178,7 +178,6 @@ pub(crate) enum Reply {
 pub struct ProbeReport {
     /// The file at the probed path could be opened for reading.
     pub opened_file: bool,
-    /// A file could be created next to it.
     pub created_file: bool,
     /// An internet socket could be bound or connected.
     pub inet_socket: bool,
