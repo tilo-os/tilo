@@ -270,11 +270,11 @@ await settles('and focus follows to the last window', label, order[2]);
 console.log(JSON.stringify({step: 'wheel', ok: true}));
 
 // The workspace's name in the top bar opens its menu: the workspaces to go
-// to, the overview and a new desk.
+// to, the overview and a new strip.
 async function openWorkspaceMenu() {
   const s = await snapshot();
   const shown = s.workspaces.find(w => w.id === s.activeWorkspace).label;
-  await click(...await named(`${shown}: workspaces, overview and desks`));
+  await click(...await named(`${shown}: workspaces, overview and strips`));
   await sleep(500);
 }
 // Goes to the workspace at `index` through that menu.
