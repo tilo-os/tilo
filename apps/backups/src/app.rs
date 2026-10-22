@@ -1037,6 +1037,13 @@ impl BackupsApp {
             )
             .enabled(self.can_act() && job.is_none());
             NavShell::push_window_actions(&mut toolbar, [back_up]);
+        } else {
+            // Before anything is set up nothing is open: the window is
+            // Backups.
+            toolbar.location = Some(ui::window_toolbar::ToolbarLocation {
+                label: "Backups".to_owned(),
+                ..ui::window_toolbar::ToolbarLocation::default()
+            });
         }
         ui::window_toolbar::declare(Some(toolbar));
     }

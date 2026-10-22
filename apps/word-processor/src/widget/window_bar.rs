@@ -1,7 +1,8 @@
 //! The word processor's commands, as slots in the window's bar
 //! ([`ui::window_toolbar`]).
 //!
-//! The bar's sidebar toggle shows and hides the outline. Its row carries the
+//! The bar's location names the document, and its sidebar toggle shows
+//! and hides the outline. Its row carries the
 //! Format menu (the character formats, font, size, colour and lists), the Insert menu
 //! (link, table or the table's edits inside a cell, image, contents) and the
 //! inspector's toggle; its overflow menu the File commands and the ruler.
@@ -9,7 +10,7 @@
 //! ran, with the document in hand; a template on a document with words
 //! asks first, in the editor, before it replaces anything.
 
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 use super::WordProcessorWidget;
 use super::accessibility::tool_action_id;
@@ -150,6 +151,38 @@ impl WordProcessorWidget {
         tools
     }
 
+    /// What the document is called, as the bar's location names it: the
+    /// file it was opened from or saved as, else its first heading, else its
+    /// first line, else "Document".
+    pub(super) fn document_title(&self) -> String {
+        const WORDS: usize = 8;
+        if let Some(stem) = self
+            .path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .filter(|stem| !stem.trim().is_empty())
+        {
+            return stem;
+        }
+        let written = |kind: Option<&str>| {
+            self.blocks
+                .iter()
+                .filter(|block| kind.is_none_or(|kind| block.kind == kind))
+                .map(|block| block.text.trim())
+                .find(|text| !text.is_empty())
+        };
+        let Some(text) = written(Some("heading")).or_else(|| written(None)) else {
+            return t("document-untitled");
+        };
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let mut title = words[..words.len().min(WORDS)].join(" ");
+        if words.len() > WORDS {
+            title.push('…');
+        }
+        title
+    }
+
     /// The window bar's slots, and the command each slot id runs.
     pub(super) fn window_bar_commands(&self) -> (WindowToolbar, Vec<(String, BarCommand)>) {
         let mut commands = Vec::new();
@@ -194,6 +227,10 @@ impl WordProcessorWidget {
         }
         let toolbar = WindowToolbar {
             sidebar: Some(self.outline.is_open()),
+            location: Some(ToolbarLocation {
+                label: self.document_title(),
+                ..ToolbarLocation::default()
+            }),
             actions: vec![
                 ToolbarAction::new(FORMAT_MENU, "type", t("toolbar-format")).with_items(format),
                 ToolbarAction::new(INSERT_MENU, "plus", t("toolbar-insert")).with_items(insert),

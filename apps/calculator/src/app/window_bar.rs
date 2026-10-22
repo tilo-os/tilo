@@ -1,13 +1,16 @@
 //! The Calculator's toolbar, as slots in the window's bar
 //! ([`ui::window_toolbar`]).
 //!
-//! The bar shows the modes as its view switcher (Calculator, Graph 2D,
-//! Graph 3D), the side panel's show/hide button (the graphs' formulas as the
-//! sidebar, the calculations as an action) and the angle unit in its menu.
+//! The bar names the mode as its location and shows the modes as its view
+//! switcher (Calculator, Graph 2D, Graph 3D), the side panel's show/hide
+//! button (the graphs' formulas as the sidebar, the calculations as an
+//! action) and the angle unit in its menu.
 //! Each slot runs the same semantic action an assistive technology runs on
 //! the calculator, so there is one state path for all of them.
 
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarView, ToolbarViews, WindowToolbar};
+use ui::window_toolbar::{
+    ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
+};
 
 use super::CalculatorApp;
 use crate::actions::GraphKind;
@@ -30,6 +33,11 @@ impl CalculatorApp {
     fn window_toolbar(&self) -> WindowToolbar {
         let mode = self.model.mode;
         let mut toolbar = WindowToolbar {
+            // The bar names what the window shows: its mode.
+            location: Some(ToolbarLocation {
+                label: mode.label().into(),
+                ..ToolbarLocation::default()
+            }),
             views: Some(ToolbarViews {
                 name: "Mode".into(),
                 choices: Mode::all()

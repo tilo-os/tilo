@@ -223,33 +223,57 @@ pub(crate) fn bar_items(state: &MailState, first_run: bool) -> Vec<BarItem> {
 
 /// Where the window is: the open folder, every inbox, or how many messages
 /// are selected.
-pub(crate) fn location(state: &MailState) -> String {
+pub(crate) fn location(state: &MailState, composing: Option<&str>) -> String {
+    if let Some(heading) = composing {
+        return heading.to_owned();
+    }
     if state.bulk_selecting {
-        match state.selected_bulk_ids().len() {
+        return match state.selected_bulk_ids().len() {
             0 => "Select messages".to_owned(),
             1 => "1 selected".to_owned(),
             n => format!("{n} selected"),
-        }
-    } else if state.all_inboxes {
+        };
+    }
+    // The open message, where it is in view: beside the list, or pushed
+    // over it in a narrow window.
+    let open = state
+        .selected
+        .filter(|_| !state.narrow || state.detail_pushed)
+        .and_then(|id| state.mailbox.get(id));
+    if let Some(message) = open {
+        return if message.subject.trim().is_empty() {
+            "(no subject)".to_owned()
+        } else {
+            message.subject.clone()
+        };
+    }
+    if state.all_inboxes {
         "All inboxes".to_owned()
     } else {
         state.folder.title().to_owned()
     }
 }
 
-/// The bar's slots: `base` (the shell's own) with the location and `items`.
+/// The bar's slots: `base` (the shell's own) with the location (what is
+/// open: the message being written, the open message, else the folder) and
+/// `items`.
 pub(crate) fn toolbar(
     mut base: WindowToolbar,
     state: &MailState,
     items: &[BarItem],
     first_run: bool,
+    composing: Option<&str>,
 ) -> WindowToolbar {
-    if !first_run {
-        base.location = Some(ToolbarLocation {
-            label: location(state),
-            ..ToolbarLocation::default()
-        });
-    }
+    // Before any account there is nothing open: the window is Mail.
+    let label = if first_run && composing.is_none() {
+        "Mail".to_owned()
+    } else {
+        location(state, composing)
+    };
+    base.location = Some(ToolbarLocation {
+        label,
+        ..ToolbarLocation::default()
+    });
     ui::widget::NavShell::push_window_actions(
         &mut base,
         items.iter().map(|item| item.action.clone()),
@@ -304,7 +328,8 @@ mod tests {
         let items = bar_items(&state, false);
         assert_eq!(names(&items, false), ["Done", "Archive", "Move to Trash"]);
         assert!(names(&items, true).contains(&"Select all"));
-        assert_eq!(location(&state), "Select messages");
+        assert_eq!(location(&state, None), "Select messages");
+        assert_eq!(location(&state, Some("New message")), "New message");
 
         assert!(
             bar_items(&state, true).is_empty(),

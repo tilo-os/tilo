@@ -58,6 +58,23 @@ fn bar_item(app: &SheetsApp, menu: &str, name: &str) -> String {
         .map_or_else(|| panic!("{menu} offers {name}"), |item| item.id)
 }
 
+// USER REQUIREMENT (2026-10-22): "Every app that has a document or item open
+// declares it as the bar's location, so the bar always names what you're
+// looking at." A workbook has no name of its own: the sheet in view.
+#[test]
+fn the_window_bar_names_the_sheet_in_view() {
+    let (app, _doc, _tr, _theme) = painted();
+    let sheet = app
+        .active_sheet_id()
+        .and_then(|id| app.workbook.sheet(&id))
+        .map(|sheet| sheet.name.0.to_string())
+        .expect("a sheet is in view");
+    assert_eq!(
+        app.window_bar().location.map(|location| location.label),
+        Some(sheet)
+    );
+}
+
 /// The commands, the menus and the sheet tabs act on pointer and keyboard.
 #[test]
 fn painted_chrome_answers_pointer_and_keyboard() {

@@ -316,6 +316,14 @@ fn the_window_lists_groups_people_and_the_selected_person() {
     ] {
         assert!(named(&harness, name), "{name} is exposed");
     }
+    // USER REQUIREMENT (2026-10-22): "the bar always names what you're
+    // looking at." Contacts: the person shown.
+    assert_eq!(
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label),
+        Some(shown.display_name())
+    );
     // What can be done to the person is the window bar's.
     for id in [
         BAR_NEW,
@@ -1456,7 +1464,7 @@ fn detail_fields_enter_edit_on_double_click_with_placeholders() {
     let first_rect = form_widget(&h.app, Slot::First).unwrap().get_rect();
     let column = h.app.shell.geometry().content_column;
     assert!(
-        first_rect.y0 >= column.y0 - 0.5,
+        first_rect.y0 >= column.y0,
         "focus reveals the first field inside the content column: {first_rect:?} in {column:?}, scrolled {:?}",
         h.app.form.as_ref().unwrap().scroll.get()
     );
