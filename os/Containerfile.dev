@@ -228,6 +228,7 @@ COPY crates/dev/tilo-vmd/data/tilo-vm-session@.service /usr/lib/systemd/system/t
 COPY crates/dev/tilo-vmd/data/tilo-vm-restore.service /usr/lib/systemd/system/tilo-vm-restore.service
 COPY crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service /usr/lib/systemd/system/tilo-vm-reconcile-image.service
 COPY crates/dev/tilo-vmd/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
+COPY crates/dev/tilo-vmd/data/tilo-vm-community.toml /usr/share/tilo/tilo-vm-community.toml
 COPY os/dev-image/ /
 
 # base.json for tilo-vmd's layer checks, the dev-only update policy and the

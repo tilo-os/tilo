@@ -18,6 +18,7 @@ VM_ONLY_PATHS = (
     'usr/lib/udev/rules.d/72-vkms-seat.rules', 'usr/lib/udev/rules.d/73-uinput-seat.rules',
     'usr/lib/modprobe.d/tilo-vm-vkms.conf', 'usr/lib/modules-load.d/tilo-vm.conf',
     'usr/lib/tmpfiles.d/tilo-vm.conf',
+    'usr/share/tilo/tilo-vm-community.toml',
 )
 REPOSITORY = 'registry.tilo.so/tilo/tilo-vm'
 REQUIREMENT = [{'type': 'sigstoreSigned', 'keyPath': '/usr/share/tilo/cosign.pub',
