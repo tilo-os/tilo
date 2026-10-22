@@ -4,6 +4,7 @@
 use super::*;
 use base64::Engine as _;
 use serde_json::json;
+use std::fmt::Write as _;
 
 /// A `ChatGPT` access token: a JWT naming `account` in `OpenAI`'s claim.
 fn chatgpt_token(account: &str) -> String {
@@ -69,15 +70,16 @@ fn responses_stream(text: &str) -> String {
         json!({"type": "response.output_item.done", "output_index": 0, "sequence_number": 3, "item": message}),
         json!({"type": "response.completed", "sequence_number": 4, "response": response("completed", json!([message]))}),
     ];
-    events
-        .iter()
-        .map(|event| {
-            format!(
-                "event: {}\ndata: {event}\n\n",
-                event["type"].as_str().unwrap()
-            )
-        })
-        .collect()
+    let mut stream = String::new();
+    for event in &events {
+        writeln!(
+            stream,
+            "event: {}\ndata: {event}\n",
+            event["type"].as_str().unwrap()
+        )
+        .unwrap();
+    }
+    stream
 }
 
 #[tokio::test(flavor = "current_thread")]

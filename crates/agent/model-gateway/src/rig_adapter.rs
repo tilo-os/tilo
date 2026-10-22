@@ -479,6 +479,29 @@ pub(super) async fn legacy(
         })
 }
 
+/// Neutral history keeps the opaque extension, not Rig's provider origin.
+/// Bind only these native call items to the selected Chat codec, which
+/// rebuilds ids, names and arguments while replaying the extra fields.
+fn bind_native_calls_to_chat(request: &mut CompletionRequest, model: &str) {
+    for turn in &mut request.chat_history {
+        if let message::Message::Assistant(turn) = turn
+            && turn.content.iter().any(|block| {
+                matches!(block, message::AssistantContent::ToolCall(_))
+                    && block
+                        .native_item()
+                        .and_then(|item| item.get("extra_content"))
+                        .is_some()
+            })
+        {
+            turn.origin = Some(message::Origin::new(
+                "openai.chat",
+                openai::PROVIDER_NAME,
+                model.to_owned(),
+            ));
+        }
+    }
+}
+
 async fn execute(
     mut transport: GatewayHttp,
     secret: Option<&str>,
@@ -503,27 +526,8 @@ async fn execute(
         })
         .collect::<Result<_, ProviderFailure>>()?;
     let budget = transport.budget;
-    // Neutral history keeps the opaque extension, not Rig's provider origin.
-    // Bind only these native call items to the selected Chat codec, which
-    // rebuilds ids, names and arguments while replaying the extra fields.
     if transport.profile.protocol == ProviderProtocol::OpenAiCompatible {
-        for turn in &mut request.chat_history {
-            if let message::Message::Assistant(turn) = turn
-                && turn.content.iter().any(|block| {
-                    matches!(block, message::AssistantContent::ToolCall(_))
-                        && block
-                            .native_item()
-                            .and_then(|item| item.get("extra_content"))
-                            .is_some()
-                })
-            {
-                turn.origin = Some(message::Origin::new(
-                    "openai.chat",
-                    openai::PROVIDER_NAME,
-                    transport.model.clone(),
-                ));
-            }
-        }
+        bind_native_calls_to_chat(&mut request, &transport.model);
     }
     let result = async {
         let model = transport.model.clone();
