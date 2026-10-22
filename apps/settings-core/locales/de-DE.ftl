@@ -1,10 +1,10 @@
 # Displays pane: arrangement canvas
 display-arrangement-title = Anordnung
 display-arrangement-name = Bildschirmanordnung
-display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl, und das Positionsmenü des ausgewählten Bildschirms platziert ihn.
+display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl einen aus, und die Pfeiltasten verschieben ihn.
 display-arrangement-empty = Keine Bildschirme zum Anordnen
 display-arrangement-item = Bildschirm { $number }: { $name }
-display-arrangement-item-primary = Bildschirm { $number }: { $name }, primär
+display-arrangement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
 display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 display-identify = Identifizieren
 display-picker = Ausgewählter Bildschirm
@@ -63,11 +63,10 @@ display-rotation-portrait-left = Hochformat links
 display-none = Keine Bildschirme an diesem Gerät erkannt.
 display-unreadable = Die Bildschirme dieses Geräts können gerade nicht gelesen werden.
 display-use = Diesen Bildschirm nutzen
-display-primary = Primärbildschirm
+display-primary = Hauptbildschirm
 display-primary-marker = Hauptbildschirm
 display-mode-label = { $width } × { $height }, { $hertz } Hz
 display-scale = Skalierung
-display-position = Position
 display-mirroring = Spiegeln
 display-colour-profile = Farbprofil
 display-colour-profile-empty = Systemvorgabe

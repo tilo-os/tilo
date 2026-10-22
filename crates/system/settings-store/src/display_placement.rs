@@ -323,11 +323,98 @@ fn nearest_valid(moving: Placement, others: &[Placement]) -> Option<Placement> {
         .min_by_key(distance)
 }
 
+/// A way an arrow key moves a display on the arrangement canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Where an arrow key moves `moving`: the next valid place that way among
+/// the places flush against a side of another display and aligned with its
+/// start, centre or end. Of those, the one that stays most in line across
+/// the step, then the nearest. `None` when nothing lies that way.
+pub fn step(moving: Placement, others: &[Placement], way: Step) -> Option<Placement> {
+    let across = |start: i32, length: i32, own: i32| {
+        let slack = length.saturating_sub(own);
+        [
+            start,
+            start.saturating_add(slack / 2),
+            start.saturating_add(slack),
+        ]
+    };
+    let gap = |a: i32, b: i32| i64::from(a).saturating_sub(i64::from(b)).abs();
+    others
+        .iter()
+        .flat_map(|other| {
+            let rows = across(other.y, other.height, moving.height);
+            let columns = across(other.x, other.width, moving.width);
+            rows.into_iter()
+                .flat_map(move |y| {
+                    [
+                        moving.at(other.x.saturating_sub(moving.width), y),
+                        moving.at(other.right(), y),
+                    ]
+                })
+                .chain(columns.into_iter().flat_map(move |x| {
+                    [
+                        moving.at(x, other.y.saturating_sub(moving.height)),
+                        moving.at(x, other.bottom()),
+                    ]
+                }))
+        })
+        .filter(|candidate| match way {
+            Step::Left => candidate.x < moving.x,
+            Step::Right => candidate.x > moving.x,
+            Step::Up => candidate.y < moving.y,
+            Step::Down => candidate.y > moving.y,
+        })
+        .filter(|candidate| is_valid(*candidate, others))
+        .min_by_key(|candidate| match way {
+            Step::Left | Step::Right => (gap(candidate.y, moving.y), gap(candidate.x, moving.x)),
+            Step::Up | Step::Down => (gap(candidate.x, moving.x), gap(candidate.y, moving.y)),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const PANEL: Placement = Placement::new(0, 0, 1920, 1080);
+
+    // USER REQUIREMENT (2026-10-22): the arrangement canvas is the one
+    // place a display's position is set, so it works from the keyboard too:
+    // an arrow key moves the selected display to the next place that way,
+    // touching and clear of the others, staying in line where it can.
+    #[test]
+    fn an_arrow_moves_a_display_to_the_next_place_that_way() {
+        let right = Placement::new(1920, 0, 2560, 1440);
+        assert_eq!(
+            step(right, &[PANEL], Step::Left),
+            Some(Placement::new(-2560, 0, 2560, 1440)),
+            "to the other side, in line"
+        );
+        let below = step(right, &[PANEL], Step::Down).unwrap();
+        assert_eq!(below.y, 1080, "under the panel");
+        assert!(is_valid(below, &[PANEL]));
+        assert_eq!(
+            step(below, &[PANEL], Step::Down),
+            None,
+            "nothing further down"
+        );
+        assert_eq!(
+            step(right, &[PANEL], Step::Right),
+            None,
+            "nothing further right"
+        );
+        for way in [Step::Left, Step::Right, Step::Up, Step::Down] {
+            if let Some(next) = step(below, &[PANEL], way) {
+                assert!(is_valid(next, &[PANEL]), "{way:?} lands touching and clear");
+            }
+        }
+    }
 
     #[test]
     fn snapping_pulls_an_edge_onto_a_nearby_edge_only() {

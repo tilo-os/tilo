@@ -1,10 +1,10 @@
 # Displays pane: arrangement canvas
 display-arrangement-title = Arrangement
 display-arrangement-name = Display arrangement
-display-arrangement-description = Press a display to choose it and drag it to place it beside another. The display picker chooses from the keyboard, and the chosen display's position menu places it.
+display-arrangement-description = Press a display to choose it and drag it to place it beside another. From the keyboard, the display picker chooses one and the arrow keys move it.
 display-arrangement-empty = No displays to arrange
 display-arrangement-item = Display { $number }: { $name }
-display-arrangement-item-primary = Display { $number }: { $name }, primary
+display-arrangement-item-primary = Display { $number }: { $name }, main display
 display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }
 display-identify = Identify
 display-picker = Selected display
@@ -63,11 +63,10 @@ display-rotation-portrait-left = Portrait left
 display-none = No displays detected on this device.
 display-unreadable = This device’s displays can’t be read right now.
 display-use = Use this display
-display-primary = Primary display
-display-primary-marker = Primary
+display-primary = Main display
+display-primary-marker = Main display
 display-mode-label = { $width } × { $height }, { $hertz } Hz
 display-scale = Scale
-display-position = Position
 display-mirroring = Mirroring
 display-colour-profile = Colour profile
 display-colour-profile-empty = System default

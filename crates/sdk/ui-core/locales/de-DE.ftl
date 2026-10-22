@@ -672,10 +672,10 @@ host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Be
 
 # Shared native screen topology canvas
 display-arrangement-name = Bildschirmanordnung
-display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl, und das Positionsmenü des ausgewählten Bildschirms platziert ihn.
+display-arrangement-description = Drück auf einen Bildschirm, um ihn auszuwählen, und zieh ihn neben einen anderen, um ihn dort zu platzieren. Per Tastatur wählt die Bildschirmauswahl einen aus, und die Pfeiltasten verschieben ihn.
 display-arrangement-empty = Keine Bildschirme zum Anordnen
 display-arrangement-item = Bildschirm { $number }: { $name }
-display-arrangement-item-primary = Bildschirm { $number }: { $name }, primär
+display-arrangement-item-primary = Bildschirm { $number }: { $name }, Hauptbildschirm
 display-arrangement-item-position = { $width } × { $height } bei { $x }, { $y }
 
 device-display-session-unavailable = Die Tilo-Sitzung ist nicht verfügbar.

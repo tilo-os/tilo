@@ -1206,7 +1206,7 @@ portal-notification-open = Open
 portal-inhibit-unnamed-app = An app
 portal-capture-default-microphone = Default microphone
 portal-capture-default-camera = Default camera
-portal-capture-primary-display = Primary display
+portal-capture-primary-display = Main display
 portal-capture-system-audio = System audio
 
 # A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")

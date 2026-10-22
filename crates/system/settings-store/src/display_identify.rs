@@ -5,7 +5,7 @@
 //! display's number and name on that display for [`IDENTIFY_MS`], or, for a
 //! request naming one display (the one a person points at or picks in
 //! Settings), on that display alone for [`IDENTIFY_FLASH_MS`]. The number
-//! comes from [`display_numbers`] and the name from [`display_label`] on
+//! comes from [`display_numbers`] and the name from [`display_names`] on
 //! both sides, so "2" in the arrangement canvas is the "2" on the physical
 //! screen.
 
@@ -104,25 +104,51 @@ impl IdentifyRequest {
     }
 }
 
-/// The name a person knows a display by, the same in Settings and on the
-/// display itself: `Built-in display` for the laptop's panel (callers
-/// translate it), else the monitor's EDID name with its port (two identical
-/// monitors differ only there), else the port. A connector label two cards
-/// share is told apart by its card, so every name is one display's.
-pub fn display_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
+/// The name a person knows a display by before it is told apart from the
+/// others: `Built-in display` for the laptop's panel (callers translate it),
+/// else the monitor's model from its EDID, else `External display`. Ports
+/// and cards are implementation details and never part of a name; use
+/// [`display_names`] for a set of displays, which tells identical ones apart.
+pub fn display_name(descriptor: &OutputDescriptor, builtin: bool) -> String {
     let monitor_name = descriptor
         .monitor
         .as_ref()
         .map(MonitorIdentity::display_name)
         .filter(|name| !name.is_empty());
-    let base = match (builtin, monitor_name) {
+    match (builtin, monitor_name) {
         (true, _) => "Built-in display".to_string(),
-        (false, Some(name)) => format!("{name} on {}", descriptor.label()),
-        (false, None) => descriptor.label().to_string(),
-    };
-    descriptor
-        .card_qualifier()
-        .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
+        (false, Some(name)) => name,
+        (false, None) => "External display".to_string(),
+    }
+}
+
+/// The names of `outputs`, the same in Settings and on the displays
+/// themselves, in the same order: [`display_name`], and where two connected
+/// displays would share one, each followed by the number Identify shows on
+/// it (`Dell U2724DE (2)`), so every name is one display's.
+pub fn display_names(outputs: &[DisplayOutputSnapshot]) -> Vec<String> {
+    let names: Vec<String> = outputs
+        .iter()
+        .map(|output| display_name(&output.descriptor, output.builtin))
+        .collect();
+    name_apart(names, &display_numbers(outputs))
+}
+
+/// `names` with each one more than one display shares followed by that
+/// display's number from `numbers` (same order).
+pub fn name_apart(names: Vec<String>, numbers: &[usize]) -> Vec<String> {
+    let shared = |name: &String| names.iter().filter(|other| *other == name).count() > 1;
+    names
+        .iter()
+        .zip(numbers)
+        .map(|(name, number)| {
+            if shared(name) {
+                format!("{name} ({number})")
+            } else {
+                name.clone()
+            }
+        })
+        .collect()
 }
 
 /// The number each attached display is known by, starting at 1: the
@@ -205,6 +231,52 @@ mod tests {
             output("eDP-1", true),
         ];
         assert_eq!(display_numbers(&outputs), vec![3, 2, 1]);
+    }
+
+    // USER REQUIREMENT (2026-10-22): a display is named by its model, never
+    // by its port or card; only when two connected displays share a model
+    // does each name gain the number Identify shows on that display.
+    #[test]
+    fn displays_are_named_by_model_and_numbered_only_when_two_share_one() {
+        let monitor = |connector: &str, model: &str| {
+            let mut output = output(connector, false);
+            output.descriptor.monitor = Some(MonitorIdentity {
+                make: "Dell".into(),
+                model: model.into(),
+                ..MonitorIdentity::default()
+            });
+            output
+        };
+        let outputs = [
+            output("eDP-1", true),
+            monitor("DP-1", "DELL U2724DE"),
+            output("HDMI-A-1", false),
+        ];
+        assert_eq!(
+            display_names(&outputs),
+            ["Built-in display", "Dell U2724DE", "External display"]
+        );
+        let mut twins = [
+            output("eDP-1", true),
+            monitor("DP-2", "DELL U2724DE"),
+            monitor("DP-1", "DELL U2724DE"),
+        ];
+        assert_eq!(
+            display_names(&twins),
+            ["Built-in display", "Dell U2724DE (3)", "Dell U2724DE (2)"],
+            "the same numbers Identify shows"
+        );
+        // Identical monitors on two cards' same-named ports: still by number.
+        twins[1].descriptor.connector = "pci:0000:03:00.0/DP-1".into();
+        twins[1].descriptor.connector_label = "DP-1".into();
+        twins[2].descriptor.connector = "pci:0000:01:00.0/DP-1".into();
+        let names = display_names(&twins);
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.contains("DP") && !name.contains("pci"))
+        );
+        assert_ne!(names[1], names[2]);
     }
 
     #[test]
