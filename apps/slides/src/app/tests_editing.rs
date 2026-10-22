@@ -704,3 +704,37 @@ fn the_words_being_edited_show_the_text_beam() {
         );
     });
 }
+
+/// The words being edited are in the accessibility tree where they are
+/// drawn, under their box, and an assistive technology writes them as
+/// typing does.
+#[test]
+fn assistive_technology_reads_and_writes_the_words_being_edited() {
+    let (mut bench, id) = editing("Hello world");
+    let frame = bench.read(|app| app.text_edit_box);
+    let (node, bounds) = bench
+        .app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.value() == Some("Hello world"))
+        .map(|(node_id, node)| (node_id, node.bounds()))
+        .expect("the words are in the tree");
+    let bounds = bounds.expect("the words say where they are");
+    assert!(
+        frame
+            .inflate(1.0, 1.0)
+            .contains(Point::new(bounds.x0, bounds.y0))
+            && frame
+                .inflate(1.0, 1.0)
+                .contains(Point::new(bounds.x1, bounds.y0)),
+        "the words are where the box draws them: {bounds:?} in {frame:?}"
+    );
+    bench
+        .app
+        .harness()
+        .perform_a11y_action(node, &ui::a11y::Action::SetValue("Hallo Welt".into()))
+        .expect("the words take a new value");
+    bench.frame();
+    assert_eq!(element(&bench, &id).text, "Hallo Welt");
+}
