@@ -59,6 +59,18 @@ enum Command {
     ClosePanel,
 }
 
+/// The extensions whose badges the window shows, so whose state is read:
+/// in a Tilo window's bar every extension with an action is an item with its
+/// badge; a window of its own shows only the pinned ones in its row.
+fn badges_shown(installed: &[Installed], hosted: bool) -> Vec<String> {
+    installed
+        .iter()
+        .filter(|extension| extension.enabled && extension.action.is_some())
+        .filter(|extension| hosted || extension.pinned)
+        .map(|extension| extension.id.clone())
+        .collect()
+}
+
 /// A slow step's result.
 enum Outcome {
     Staged(Result<StagedPackage, String>),
@@ -190,13 +202,8 @@ impl ExtensionController {
             changed = true;
         }
         let now = ui::time::now();
-        let pinned: Vec<String> = self
-            .installed
-            .iter()
-            .filter(|extension| extension.enabled && extension.pinned)
-            .map(|extension| extension.id.clone())
-            .collect();
-        self.host.probe(&pinned, now);
+        let shown = badges_shown(&self.installed, ui::window_toolbar::is_hosted());
+        self.host.probe(&shown, now);
         self.host.flush(engine);
         if let Some(Panel::Popup {
             engine: popup,
@@ -829,5 +836,24 @@ mod tests {
         page.push_event(ui::webview::WebViewEvent::TabClosed);
         assert!(controller.sync(&window, ""));
         assert!(controller.panel.is_none());
+    }
+
+    #[test]
+    fn a_tilo_windows_bar_shows_every_extensions_badge() {
+        let extension = |id: &str, pinned: bool, action: bool| Installed {
+            id: id.into(),
+            name: id.into(),
+            root: std::path::PathBuf::new(),
+            enabled: true,
+            pinned,
+            action: action.then(crate::extension_toolbar::ActionManifest::default),
+        };
+        let installed = [
+            extension("pinned", true, true),
+            extension("listed", false, true),
+            extension("actionless", false, false),
+        ];
+        assert_eq!(badges_shown(&installed, true), ["pinned", "listed"]);
+        assert_eq!(badges_shown(&installed, false), ["pinned"]);
     }
 }
