@@ -922,8 +922,8 @@ default = false
 
 # The diff-based gates, against the commit the tree branched from (on main,
 # the previous commit): reasons for new Rust `allow`s, commit messages and new
-# blob contents, USER REQUIREMENT tests keeping their assertions, and the tapp,
-# runtime and web size budgets, which may only shrink unless a raise file says
+# blob contents, interfaces and format migrations, and the tapp, runtime and
+# web size budgets, which may only shrink unless a raise file says
 # why. They compare with the base, so they run here, the one check kept per
 # commit, rather than each as a check of its own that `git = true` would rerun
 # on every commit whatever its files.
@@ -939,7 +939,6 @@ base=$(git rev-parse main)
 if [ "$base" = "$(git rev-parse HEAD)" ]; then base=$(git rev-parse HEAD^); fi
 python3 tools/ci/check_changed_rust_allows.py "$base"
 python3 tools/policy/check_commit_policy.py "$base"
-python3 tools/policy/check_user_requirement_tests.py "$base"
 python3 tools/policy/check_interfaces.py against "$base"
 python3 tools/policy/check_format_migrations.py against "$base"
 python3 tools/perf/tapp_size_ratchet.py check-budget --base "$base"

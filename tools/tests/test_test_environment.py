@@ -165,7 +165,8 @@ class DesktopIsolationHelperTests(unittest.TestCase):
         tracked = subprocess.run(["git", "ls-files", "-z", "dist/*/tests/*", "os/tests/*", "tools/tests/*"],
                                  cwd=ROOT, check=True, capture_output=True).stdout.decode().split("\0")
         rewrite = re.compile(r"s[|#](readonly )?[A-Z_]+=/usr/")
-        for path in filter(None, tracked):
+        # A file the change deletes is still in the index when the change is uncommitted.
+        for path in (path for path in tracked if path and (ROOT / path).exists()):
             text = (ROOT / path).read_text(errors="replace")
             self.assertIsNone(rewrite.search(text),
                               f"{path} rewrites a packaged command by hand; use tilo_stage_script")
