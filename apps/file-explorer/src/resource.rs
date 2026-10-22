@@ -814,6 +814,17 @@ impl FileExplorer {
                 text,
                 replace: Some(replace),
             }),
+            op @ (FileOp::Compress { .. } | FileOp::Extract { .. }) => {
+                return Self::archive_queueing(device, op);
+            }
+            FileOp::Revert { op } => Self::REVERT.with(Id::from_raw(op)),
+            FileOp::ClipboardReceipt { .. } => return None,
+        })
+    }
+
+    /// The verb that queues an archive operation for `device`.
+    fn archive_queueing(device: String, op: FileOp) -> Option<Invoke<Self>> {
+        Some(match op {
             FileOp::Compress {
                 paths,
                 folder,
@@ -842,8 +853,7 @@ impl FileExplorer {
                     .into(),
                 ),
             }),
-            FileOp::Revert { op } => Self::REVERT.with(Id::from_raw(op)),
-            FileOp::ClipboardReceipt { .. } => return None,
+            _ => return None,
         })
     }
 }
@@ -1039,6 +1049,18 @@ fn validate_import_destination(destination: &ImportDestination) -> Result<(), Re
     Ok(())
 }
 
+/// Whether `op` runs on a worker with progress and Cancel: a copy, a move
+/// into an existing folder, an extraction or a packing.
+fn runs_tracked(op: &FileOp) -> bool {
+    matches!(
+        op,
+        FileOp::Copy { .. }
+            | FileOp::Move { create: false, .. }
+            | FileOp::Extract { .. }
+            | FileOp::Compress { .. }
+    )
+}
+
 /// A copy, move, extraction or packing on a worker: its progress reaches
 /// the caller's job and the window, and the caller's cancel stops it.
 fn carry_out_tracked(
@@ -1192,13 +1214,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                                 |(), answer, _| Ok(answer),
                             ));
                         }
-                        if matches!(
-                            task.op,
-                            FileOp::Copy { .. }
-                                | FileOp::Move { create: false, .. }
-                                | FileOp::Extract { .. }
-                                | FileOp::Compress { .. }
-                        ) {
+                        if runs_tracked(&task.op) {
                             // Copies and moves can take minutes: off the UI
                             // thread, with progress and Cancel.
                             return Ok(cx.thread(
