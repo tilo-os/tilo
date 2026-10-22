@@ -7563,9 +7563,12 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn theme_and_language_actions_are_searchable_and_write_the_settings_store() {
+        use settings_store::appearance::{HIGH_CONTRAST, MODE};
         let config = tempfile::tempdir().expect("isolated settings");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", config.path());
+        // The session keeps the person's settings, as it does in a session.
+        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
+        let records = settings_store::SessionSettings::open(paths).expect("records");
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
 
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -7606,31 +7609,21 @@ mod tests {
             "appearance.language"
         );
 
+        // Unset reads as dark, so a change to dark is shown from light: a
+        // field edit stores only what differs from what is read now.
+        invoke_action(&query("light theme"), "appearance.theme.light", &chrome);
+        assert_eq!(MODE.get().as_deref(), Some("light"));
+        let generation = chrome.borrow().appearance_generation;
         invoke_action(&query("dark theme"), "appearance.theme.dark", &chrome);
         assert!(
-            chrome.borrow().appearance_generation > 0,
+            chrome.borrow().appearance_generation > generation,
             "theme actions must wake the live frame, not only write the store"
         );
-        let appearance = settings_store::load_section("appearance");
-        assert_eq!(
-            appearance.get("mode").and_then(serde_json::Value::as_str),
-            Some("dark")
-        );
-        assert_eq!(
-            appearance
-                .get("high_contrast")
-                .and_then(serde_json::Value::as_bool),
-            Some(false)
-        );
+        assert_eq!(MODE.get().as_deref(), Some("dark"));
+        assert!(!HIGH_CONTRAST.get());
 
         invoke_action(&query("high contrast"), "appearance.high-contrast", &chrome);
-        let appearance = settings_store::load_section("appearance");
-        assert_eq!(
-            appearance
-                .get("high_contrast")
-                .and_then(serde_json::Value::as_bool),
-            Some(true)
-        );
+        assert!(HIGH_CONTRAST.get());
 
         let language = query("language")
             .into_iter()
@@ -7660,7 +7653,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_theme_action_records_its_action_id_with_both_leaves_it_sets() {
+    fn a_theme_action_records_the_field_edits_it_makes_with_both_leaves() {
         let config = tempfile::tempdir().expect("isolated settings");
         let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
         let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
@@ -7681,18 +7674,27 @@ mod tests {
                 doc_root: &automerge::ROOT,
             })
         };
+        // High contrast on, so choosing a mode changes both leaves.
+        settings_store::appearance::HIGH_CONTRAST
+            .set(true)
+            .expect("high contrast on");
+        let before =
+            std::fs::read_to_string(paths.change_log()).map_or(0, |log| log.lines().count());
         invoke_action(&rows, "appearance.theme.light", &chrome);
 
         let log = std::fs::read_to_string(paths.change_log()).expect("change log");
         let entries: Vec<serde_json::Value> = log
             .lines()
+            .skip(before)
             .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
             .collect();
         let mut leaves: Vec<_> = entries
             .iter()
             .map(|entry| {
                 assert_eq!(entry["section"], "appearance");
-                assert_eq!(entry["action"], "appearance.theme.light");
+                // The palette changes settings through Settings' own field
+                // edits, so each leaf names the edit that set it.
+                assert_eq!(entry["action"], "settings.appearance/field-edit");
                 assert_eq!(entry["via"], "session");
                 (
                     entry["leaf"].as_str().unwrap_or_default(),
@@ -7707,7 +7709,7 @@ mod tests {
                 ("high_contrast", serde_json::json!(false)),
                 ("mode", serde_json::json!("light")),
             ],
-            "one merge sets both leaves, each attributed to the action"
+            "the action sets both leaves, each attributed to its field edit"
         );
         assert_eq!(
             settings_store::load_at(&paths.copy)["appearance"]["mode"],
