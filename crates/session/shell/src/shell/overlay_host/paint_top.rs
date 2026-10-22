@@ -111,7 +111,7 @@ impl ShellOverlayHost {
         });
 
         // Above every other overlay, including the strip switcher: the
-        // sheet on the asking window is drawn by the compositor rather than
+        // system sheet for the asking window is drawn by the compositor rather than
         // the requesting app so it can't be drawn over, read, or dismissed
         // by that app.
         let place = self.file_picker_place();

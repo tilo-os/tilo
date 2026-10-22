@@ -5384,6 +5384,20 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-save"),
             ],
         },
+        Scenario {
+            name: "file_chooser_window_sizes",
+            description: "The file dialog is a system sheet: the same size and centred on the display whether a narrow or a wide window asks.",
+            actions: vec![
+                Action::SetWindowWidths(250),
+                Action::SeedFilePicker("open"),
+                Action::Wait(6),
+                Action::Snapshot("01-small-window"),
+                Action::SetWindowWidths(1_000),
+                Action::SeedFilePicker("open"),
+                Action::Wait(6),
+                Action::Snapshot("02-large-window"),
+            ],
+        },
     ]
 }
 

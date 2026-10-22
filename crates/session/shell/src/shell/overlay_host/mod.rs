@@ -174,7 +174,7 @@ struct AskingWindow {
     group: GroupId,
     /// The whole window group, tab decoration included.
     window: Rect,
-    /// The app area the sheet hangs from.
+    /// The app area; its centre names the display the sheet centres on.
     content: Rect,
     focused: bool,
 }
