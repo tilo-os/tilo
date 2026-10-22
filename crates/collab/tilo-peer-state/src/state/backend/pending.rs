@@ -21,7 +21,7 @@ pub(in crate::state) fn validate(
     pending: &VecDeque<([u8; 32], NeighbourMsg, bool)>,
     declared: usize,
 ) -> Result<(), PendingError> {
-    if pending.len() > 64 {
+    if pending.len() > crate::state::MAX_HELD_INPUTS {
         return Err(PendingError::Count);
     }
     // The closed NeighbourMsg Serialize graph borrows its fixed scalars and
@@ -32,7 +32,7 @@ pub(in crate::state) fn validate(
             .map_err(PendingError::Encoding)?;
         measured = measured.checked_add(size).ok_or(PendingError::Bytes)?;
     }
-    if measured != declared || declared > 4 * 1024 * 1024 {
+    if measured != declared || declared > crate::state::MAX_HELD_BYTES {
         return Err(PendingError::Bytes);
     }
     Ok(())

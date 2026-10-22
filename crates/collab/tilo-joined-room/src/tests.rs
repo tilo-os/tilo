@@ -19,6 +19,8 @@ use tilo_peer_state::{
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
 };
 
+#[path = "busy_room_tests.rs"]
+mod busy_room;
 #[path = "changes_read_tests.rs"]
 mod changes_read;
 #[path = "member_initialization_tests.rs"]

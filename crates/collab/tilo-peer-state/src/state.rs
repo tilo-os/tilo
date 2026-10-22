@@ -1,7 +1,7 @@
 //! Certified room and document replica. Transport identity is always an input.
 use crate::admission::{
-    AdmissionError, AdmissionReport, DocumentAdmission, ExactAdmissions, InputDisposition,
-    MissingPrerequisite,
+    AdmissionError, AdmissionReport, DocumentAdmission, DroppedInput, ExactAdmissions,
+    InputDisposition, MissingPrerequisite,
 };
 use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
@@ -52,11 +52,14 @@ mod workspace_effects;
 mod workspace_membership;
 mod workspace_tasks;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
+mod held;
 mod media_governance;
 mod native_publication;
 mod room_layout;
 mod room_name;
 mod succession;
+use held::Held;
+pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
 pub use succession::succeeded_authority;
 mod resources;
@@ -201,6 +204,10 @@ pub struct ReceiveOutcome {
     pub rejected: usize,
     pub metadata_changed: bool,
     pub incomplete: Option<String>,
+    /// Held app messages let go unapplied, each with why
+    /// ([`StatePeer`]'s prerequisite queue): never a refusal of the input
+    /// being admitted.
+    pub dropped: Vec<DroppedInput>,
 }
 /// Authenticated carrier inputs. A native publication requires the embedding
 /// adapter's actual pinned owner/session/cursor proof, not an inert event tag.
@@ -1557,7 +1564,15 @@ impl StatePeer {
                     } else {
                         MissingPrerequisite::Certificate
                     };
-                    return self.defer(source, message, retained_replay, prerequisite);
+                    return self.defer(
+                        source,
+                        message,
+                        Held {
+                            retained_replay,
+                            prerequisite,
+                            now,
+                        },
+                    );
                 }
                 self.receive_document(source, message, now, retained_replay, strict_report)
             }
@@ -1676,6 +1691,7 @@ impl StatePeer {
         let mut applied = changed;
         let mut rejected = 0usize;
         let mut settled = Vec::new();
+        let mut dropped = Vec::new();
         for (author, message, replayed) in pending {
             match self.receive_with_context(author, message, now, replayed, strict_report) {
                 Ok(outcome) => {
@@ -1683,6 +1699,7 @@ impl StatePeer {
                     metadata_changed |= outcome.metadata_changed;
                     rejected = rejected.saturating_add(outcome.rejected);
                     settled.extend(outcome.settled);
+                    dropped.extend(outcome.summary.dropped);
                 }
                 Err(error) => {
                     if self.core.native_cut_publisher.is_some() {
@@ -1698,6 +1715,7 @@ impl StatePeer {
             incomplete: self.incomplete_reason(),
             deferred: !self.core.pending.is_empty(),
             rejected,
+            dropped,
             ..Default::default()
         });
         report.settled = settled;
@@ -1737,45 +1755,6 @@ impl StatePeer {
             },
         )
     }
-    fn defer(
-        &mut self,
-        source: [u8; 32],
-        message: NeighbourMsg,
-        retained_replay: bool,
-        prerequisite: MissingPrerequisite,
-    ) -> Result<AdmissionReport, AdmissionError> {
-        let bytes = postcard::to_allocvec(&message).map_err(err)?;
-        if self.core.pending.iter().any(|(key, prior, replayed)| {
-            key == &source && *prior == message && *replayed == retained_replay
-        }) {
-            return Ok(AdmissionReport::new(
-                InputDisposition::RetryLater(prerequisite),
-                ReceiveOutcome {
-                    deferred: true,
-                    ..Default::default()
-                },
-            ));
-        }
-        let pending_bytes = self
-            .core
-            .pending_bytes
-            .checked_add(bytes.len())
-            .filter(|total| *total <= 4 * 1024 * 1024);
-        let Some(pending_bytes) = pending_bytes.filter(|_| self.core.pending.len() < 64) else {
-            return Err("app prerequisite queue full; fresh checkpoint required".into());
-        };
-        self.core.pending_bytes = pending_bytes;
-        self.core
-            .pending
-            .push_back((source, message, retained_replay));
-        Ok(AdmissionReport::new(
-            InputDisposition::RetryLater(prerequisite),
-            ReceiveOutcome {
-                deferred: true,
-                ..Default::default()
-            },
-        ))
-    }
     fn receive_document(
         &mut self,
         source: [u8; 32],
@@ -1798,6 +1777,7 @@ impl StatePeer {
                     outcome.metadata_changed |= applied.metadata_changed;
                     outcome.rejected = outcome.rejected.saturating_add(applied.rejected);
                     outcome.settled.extend(applied.settled);
+                    outcome.dropped.extend(applied.summary.dropped);
                 }
                 Err(error) => {
                     if self.core.native_cut_publisher.is_some() {
@@ -1928,8 +1908,11 @@ impl StatePeer {
                     record_id,
                     envelope,
                 },
-                retained_replay,
-                MissingPrerequisite::AppSurface,
+                Held {
+                    retained_replay,
+                    prerequisite: MissingPrerequisite::AppSurface,
+                    now,
+                },
             );
         };
         let payload = collab_types::validate_whole_document_payload_route(
@@ -2063,8 +2046,11 @@ impl StatePeer {
                             record_id: route.record,
                             envelope,
                         },
-                        retained_replay,
-                        MissingPrerequisite::RecordCheckpoint,
+                        Held {
+                            retained_replay,
+                            prerequisite: MissingPrerequisite::RecordCheckpoint,
+                            now,
+                        },
                     );
                 }
                 return self.admit_sealed(route, candidate, validated_channel, *envelope);
@@ -2095,8 +2081,11 @@ impl StatePeer {
                         record_id: route.record,
                         envelope,
                     },
-                    retained_replay,
-                    MissingPrerequisite::CheckpointCoverage,
+                    Held {
+                        retained_replay,
+                        prerequisite: MissingPrerequisite::CheckpointCoverage,
+                        now,
+                    },
                 );
             };
             if coverage.sequence < envelope.seq {
@@ -2109,8 +2098,11 @@ impl StatePeer {
                         record_id: route.record,
                         envelope,
                     },
-                    retained_replay,
-                    MissingPrerequisite::CheckpointCoverage,
+                    Held {
+                        retained_replay,
+                        prerequisite: MissingPrerequisite::CheckpointCoverage,
+                        now,
+                    },
                 );
             }
             if coverage.sequence > envelope.seq
@@ -2176,8 +2168,11 @@ impl StatePeer {
                     record_id: route.record,
                     envelope,
                 },
-                retained_replay,
-                MissingPrerequisite::RecordCheckpoint,
+                Held {
+                    retained_replay,
+                    prerequisite: MissingPrerequisite::RecordCheckpoint,
+                    now,
+                },
             );
         }
         let changed = match document::merge_committed_with_status(&mut candidate.doc, &mutation)
@@ -2194,8 +2189,11 @@ impl StatePeer {
                         record_id: route.record,
                         envelope,
                     },
-                    retained_replay,
-                    MissingPrerequisite::CausalDependencies,
+                    Held {
+                        retained_replay,
+                        prerequisite: MissingPrerequisite::CausalDependencies,
+                        now,
+                    },
                 );
             }
             document::MergeOutcome::MissingDependencies => {
@@ -3864,6 +3862,9 @@ mod administrators_tests;
 #[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;
+#[cfg(test)]
+#[path = "state/held_queue_tests.rs"]
+mod held_queue_tests;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]
 mod joined_tests;
