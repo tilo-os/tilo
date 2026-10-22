@@ -119,8 +119,8 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
     reason = "a rich-text op is plain data that always serializes, and every field of the tracker offers its edits"
 )]
 fn body_edit(
-    path: &ui::tilo_resource::Path<Tracker, tilo_document::RichText>,
-    op: &tilo_document::RichTextAction,
+    path: &ui::tilo_resource::Path<Tracker, tilo_rich_text::RichText>,
+    op: &tilo_rich_text::RichTextAction,
 ) -> <Tracker as ui::tilo_resource::Resource>::Action {
     Tracker::edit_action(path.perform(op).expect("a rich-text op serializes"))
         .expect("the tracker offers field edits")

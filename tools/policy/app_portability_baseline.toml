@@ -16,7 +16,7 @@ D2 = 2
 D2 = 3
 
 [apps.calendar]
-D2 = 6
+D2 = 5
 
 [apps.camera]
 D1 = 1
@@ -28,7 +28,7 @@ D2 = 2
 
 [apps.chat]
 D1 = 1
-D2 = 8
+D2 = 7
 
 [apps.code-editor]
 D1 = 1
@@ -47,7 +47,7 @@ D2 = 3
 
 [apps.ebook]
 D1 = 1
-D2 = 6
+D2 = 5
 
 [apps.file-explorer]
 D1 = 2
@@ -76,14 +76,14 @@ D2 = 2
 
 [apps.mail]
 D1 = 1
-D2 = 9
+D2 = 8
 
 [apps.music]
 D2 = 3
 
 [apps.notes]
 D1 = 1
-D2 = 6
+D2 = 5
 
 [apps.osk]
 D1 = 3
@@ -96,7 +96,7 @@ D2 = 2
 
 [apps.pdf-viewer]
 D1 = 1
-D2 = 5
+D2 = 4
 
 [apps.photos]
 D1 = 1
@@ -124,7 +124,7 @@ D2 = 2
 
 [apps.slides]
 D1 = 1
-D2 = 7
+D2 = 6
 
 [apps.store]
 D2 = 4
@@ -162,7 +162,7 @@ D2 = 4
 
 [apps.word-processor]
 D1 = 1
-D2 = 10
+D2 = 9
 
 [sdk.settings-store]
 W3 = 11

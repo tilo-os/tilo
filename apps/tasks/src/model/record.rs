@@ -1,6 +1,6 @@
 //! The tracker: every issue of the workspace, and the verbs on them.
 
-use tilo_document::RichText;
+use tilo_rich_text::RichText;
 use ui::tilo_actions::ActorKind;
 use ui::tilo_resource::{self, ActionCx, Collection, Counter, Id, Model, Refusal, Set, resource};
 
