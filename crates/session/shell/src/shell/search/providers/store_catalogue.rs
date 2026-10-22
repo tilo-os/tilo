@@ -78,6 +78,19 @@ impl Scope {
 /// match of an installed app above a better one of an offered app.
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 
+/// `score`, a tiebreak lower ([`NOT_INSTALLED_TIEBREAK`]), but never from a
+/// real match into the band of a typo: a row holding every word typed must
+/// not give way as a loose match because it is not on this device.
+fn below_an_equal_match(score: i32) -> i32 {
+    let real = provider_score(tilo_search::SPANNING_RANK);
+    let lowered = score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1);
+    if score >= real {
+        lowered.max(real)
+    } else {
+        lowered
+    }
+}
+
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
 /// Row ids: a Tilo app keeps the `app:` address its Store offer always had.
@@ -352,14 +365,14 @@ impl StoreCatalogueProvider {
         let score = if here {
             score
         } else {
-            score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1)
+            below_an_equal_match(score)
         };
         match row {
             Row::App(at) => {
                 let entry = snapshot.entries.get(at)?;
                 // One this device cannot run ranks below an equal match it can.
                 let score = if entry.not_built_for_this_device {
-                    score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1)
+                    below_an_equal_match(score)
                 } else {
                     score
                 };
@@ -1381,6 +1394,21 @@ mod tests {
             .resolve("flathub-install:com.spotify.Client", ctx)
             .expect("the install is addressable on its own");
         assert_eq!(resolved.title, "Install and open");
+    }
+
+    /// An app to get ranks a tiebreak below an installed one of equal match,
+    /// but a row holding every word typed stays a real match: it never sinks
+    /// into the band of a typo, where it would give way to any other row.
+    #[test]
+    fn an_offered_app_matching_every_word_stays_a_real_match() {
+        let real = provider_score(tilo_search::SPANNING_RANK);
+        assert_eq!(below_an_equal_match(real), real);
+        assert_eq!(below_an_equal_match(real + 1), real);
+        assert_eq!(below_an_equal_match(100), 99);
+        assert!(
+            below_an_equal_match(real - 1) < real - 1,
+            "a typo stays one"
+        );
     }
 
     // USER REQUIREMENT (2026-10-19): "directly opening tapps without explicit
