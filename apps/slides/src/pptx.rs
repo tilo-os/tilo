@@ -373,7 +373,21 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture], shown: &HashMap<String, f64>)
                                 .map(|(text, bold, italic)| run(text, bold, italic))
                                 .collect()
                         };
-                        format!(r#"<a:p><a:pPr algn="{align}"/>{body}</a:p>"#)
+                        // A list item carries its bullet or number, hung
+                        // in the margin as PowerPoint sets one.
+                        let marker = match block.kind {
+                            ui::widget::BlockKind::Bullet { .. } => Some(r#"<a:buChar char="•"/>"#),
+                            ui::widget::BlockKind::Numbered { .. } => {
+                                Some(r#"<a:buAutoNum type="arabicPeriod"/>"#)
+                            }
+                            _ => None,
+                        };
+                        match marker {
+                            Some(marker) => format!(
+                                r#"<a:p><a:pPr algn="{align}" marL="457200" indent="-342900">{marker}</a:pPr>{body}</a:p>"#
+                            ),
+                            None => format!(r#"<a:p><a:pPr algn="{align}"/>{body}</a:p>"#),
+                        }
                     })
                     .collect::<String>();
                 s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr><a:spAutoFit/></a:bodyPr><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
@@ -574,6 +588,16 @@ fn parse_slide(
                         }
                         b"srgbClr" | b"schemeClr" => {
                             set_pending_color(c, color_target(in_text_style, in_line), &e);
+                        }
+                        // A paragraph's bullet or number makes it a list item.
+                        b"buChar" | b"buAutoNum" => {
+                            if let Some(block) = c.blocks.last_mut() {
+                                block.kind = if n == b"buChar" {
+                                    ui::widget::BlockKind::Bullet { indent: 0 }
+                                } else {
+                                    ui::widget::BlockKind::Numbered { indent: 0 }
+                                };
+                            }
                         }
                         b"noFill" => {
                             set_pending_no_fill(c, color_target(in_text_style, in_line));
