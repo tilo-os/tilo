@@ -2186,6 +2186,22 @@ fn auto_hello_env() -> (String, Uuid) {
     auto_hello_env_uncached()
 }
 
+/// Make the shell's records this process's settings from the start of its
+/// launch, when the launcher handed it the shell's collaboration service.
+/// A setting the app reads or writes while it builds its window, before its
+/// collaboration manager connects, is then the shell's: a write waits in
+/// the channel's outbox and the primary route's join sends it, in the
+/// order it was made. Installed only when the manager was built, an early
+/// write went to the sandbox's own settings file and was lost.
+#[cfg(feature = "native")]
+pub(crate) fn install_channel_settings() {
+    if runtime_portal::service_fd("collab").is_none() {
+        return;
+    }
+    let (app, _) = auto_hello_env();
+    channel_settings::install(&app);
+}
+
 /// The person sitting at this machine. Actions are stamped with this so
 /// undo can tell collaborators apart (see
 /// [`crate::state::State::undo_as`]): the id must be **stable** across a

@@ -11863,6 +11863,77 @@ mod tests {
         crate::testing::in_own_process(&crate::testing::test_path(module_path!(), name))
     }
 
+    // A setting written before the app's settings channel connects is never
+    // lost: it waits, and lands in the person's records in the order it was
+    // made once the channel connects.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
+        use settings_store::{SessionPaths, SessionSettings, SettingsSource};
+        const APP: &str = "so.tilo.monitor";
+        if !in_own_process("a_write_before_the_channel_connects_lands_after_it_connects_in_order") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let records = Arc::new(
+            SessionSettings::open(SessionPaths::beside(dir.path().join("settings.json"))).unwrap(),
+        );
+        let paths = records.paths().clone();
+        records
+            .update_section(
+                "app_personal",
+                serde_json::from_value(serde_json::json!({APP: {"interval_ms": 1000}})).unwrap(),
+            )
+            .unwrap();
+        // As at launch: the channel is the app's settings before anything
+        // reaches the shell.
+        super::super::channel_settings::install(APP);
+        let prefs = crate::storage::Settings::<MonitorPrefs>::for_app(APP);
+        prefs.update(|prefs| prefs.interval_ms = 1500).unwrap();
+        prefs.update(|prefs| prefs.confirm_kill = true).unwrap();
+        prefs.update(|prefs| prefs.interval_ms = 2000).unwrap();
+        assert_eq!(
+            prefs.get(),
+            MonitorPrefs {
+                confirm_kill: true,
+                interval_ms: 2000
+            },
+            "the writes show at once"
+        );
+        assert_eq!(
+            settings_store::load_at(&paths.person)["app_personal"][APP]["interval_ms"],
+            1000,
+            "nothing reached the shell yet"
+        );
+
+        let captures = Captures {
+            settings: Some((
+                APP.to_owned(),
+                Arc::clone(&records) as Arc<dyn SettingsSource>,
+            )),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            ..FakeBroker::default()
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        let _manager = CollaborationManager::from_sdk_fd_for_test(fd, APP, Uuid::new_v4());
+        eventually("the early writes reach the person's record", || {
+            let stored = &settings_store::load_at(&paths.person)["app_personal"][APP];
+            stored["confirm_kill"] == true && stored["interval_ms"] == 2000
+        });
+        assert_eq!(
+            prefs.get(),
+            MonitorPrefs {
+                confirm_kill: true,
+                interval_ms: 2000
+            },
+            "the shell's view, once it answers, is what was written last"
+        );
+        super::super::channel_settings::uninstall();
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_apps_settings_reach_the_shells_records_and_follow_them() {
