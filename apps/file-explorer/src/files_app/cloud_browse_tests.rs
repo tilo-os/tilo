@@ -10,10 +10,11 @@ use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, Import
 fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", root.path());
+    let runtime = tilo_test_env::runtime_tempdir().unwrap();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
     let destination = root.path().join("Chosen");
     std::fs::create_dir(&destination).unwrap();
-    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(runtime.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let mut office = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -236,7 +237,8 @@ fn browse_test_entry() -> ImportEntry {
 fn replacing_folder_or_account_detaches_pending_pages_and_selection() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", root.path());
+    let runtime = tilo_test_env::runtime_tempdir().unwrap();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
     let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
     files.startup_accounts = Some(vec![
         browse_test_account("first"),

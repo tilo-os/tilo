@@ -9,10 +9,11 @@ use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, Import
 fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", root.path());
+    let runtime = tilo_test_env::runtime_tempdir().unwrap();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
     let destination = root.path().join("Chosen");
     std::fs::create_dir(&destination).unwrap();
-    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(runtime.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let entry = ImportEntry {
