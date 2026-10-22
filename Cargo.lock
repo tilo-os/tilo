@@ -16813,6 +16813,7 @@ name = "tilo-archive"
 version = "0.1.0"
 dependencies = [
  "bzip2",
+ "chrono",
  "flate2",
  "lzma-rust2",
  "ruzstd",

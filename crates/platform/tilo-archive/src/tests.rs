@@ -138,6 +138,10 @@ fn every_format_lists_extracts_and_reads_a_member() {
         let named = |path: &str| entries.iter().find(|entry| entry.path == Path::new(path));
         assert_eq!(named("top/a.txt").unwrap().kind, Kind::File, "{format:?}");
         assert_eq!(named("top/sub/b.bin").unwrap().size, 300_000, "{format:?}");
+        assert!(
+            named("top/a.txt").unwrap().modified.is_some(),
+            "{format:?} keeps when a file was changed"
+        );
         let root = children(&entries, Path::new(""));
         assert_eq!(root.len(), 1, "{format:?}: one folder at the top");
         assert_eq!(root[0].kind, Kind::Directory);
@@ -468,6 +472,28 @@ fn names_paths_and_links() {
 
 #[test]
 fn a_folder_named_only_by_its_contents_gets_a_row() {
+    // It was last changed when the newest thing inside it was.
+    let at = |seconds: u64| Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds));
+    let entry = |path: &str, modified| crate::Entry {
+        path: PathBuf::from(path),
+        size: 1,
+        kind: Kind::File,
+        mode: None,
+        modified,
+        link: None,
+    };
+    let implied = children(
+        &[
+            entry("Trip/a.jpg", at(100)),
+            entry("Trip/b.jpg", at(300)),
+            entry("Trip/c.jpg", at(200)),
+        ],
+        Path::new(""),
+    );
+    assert_eq!(implied.len(), 1);
+    assert_eq!(implied[0].kind, Kind::Directory);
+    assert_eq!(implied[0].modified, at(300));
+
     let temp = tempfile::tempdir().unwrap();
     let archive = crafted_tar(
         temp.path(),

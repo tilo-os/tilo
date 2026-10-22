@@ -6218,7 +6218,14 @@ impl FileExplorerWidget {
                 ),
             ],
         );
-        self.notice.show_progress(title, body);
+        // A total not yet known (none counted) draws no bar rather than an
+        // empty one that never fills.
+        let done = transfer.done.load(Ordering::Relaxed);
+        let total = transfer.total.load(Ordering::Relaxed);
+        let progress = (total > 0).then(|| {
+            ui::num::f32_of_f64((ui::num::f64_of_u64(done) / ui::num::f64_of_u64(total)).min(1.0))
+        });
+        self.notice.show_progress(title, body, progress);
         self.structure_dirty = true;
     }
 

@@ -761,6 +761,9 @@ pub struct ToastCard<'a> {
     pub primary_action_hovered: bool,
     /// Whether the shared pointer controller has armed this control.
     pub primary_action_pressed: bool,
+    /// How far the work the card follows is, `0..=1`: a determinate bar
+    /// under the text. `None` draws none.
+    pub progress: Option<f32>,
 }
 
 impl<'a> ToastCard<'a> {
@@ -785,11 +788,18 @@ impl<'a> ToastCard<'a> {
             primary_action_icon: None,
             primary_action_hovered: false,
             primary_action_pressed: false,
+            progress: None,
         }
     }
     #[must_use]
     pub fn body(mut self, body: &'a str) -> Self {
         self.body = body;
+        self
+    }
+    /// Follow work `progress` (`0..=1`) done with a determinate bar.
+    #[must_use]
+    pub fn progress(mut self, progress: f32) -> Self {
+        self.progress = Some(progress);
         self
     }
     /// Lead plain information with `icon` (see [`Self::icon`]).
@@ -1096,12 +1106,35 @@ pub fn paint_card(
         a,
         &mut hit,
     ));
+    let text_bottom = action_top.unwrap_or(rect.y1) - progress_reserve(theme, card);
     let block = paint_card_text(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
-        Rect::new(text_x0, rect.y0, text_right, action_top.unwrap_or(rect.y1)),
+        Rect::new(text_x0, rect.y0, text_right, text_bottom),
         card,
         a,
     );
+    // The work's progress: the standard determinate bar under the text,
+    // as wide as the text may be.
+    if let Some(progress) = card.progress {
+        let y0 = block.bottom + f64::from(theme.tokens.spacing.s2);
+        let bar = Rect::new(
+            text_x0 + pad_x,
+            y0,
+            text_right,
+            y0 + crate::widget::ProgressBarFace::height(theme),
+        );
+        let faded = a < 0.999;
+        if faded {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), a, transform, &bar);
+        }
+        crate::widget::ProgressBarFace::new(progress).paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            bar,
+        );
+        if faded {
+            scene.pop_layer();
+        }
+    }
 
     // The severity is its icon's colour, as on a banner (HIG §9.5): the
     // at-a-glance state form, never a stripe crowding the panel's corner.
@@ -1556,11 +1589,21 @@ fn transient_size(
                 .1,
         );
     }
+    text_h += progress_reserve(theme, card);
     let control = ButtonFace::height(crate::widget::ControlSize::Small, theme);
     let height = (text_h.max(control) + 2.0 * pad_y)
         .max(f64::from(theme.tokens.metrics.panel_row_height) + 2.0 * pad_y)
         .ceil();
     Some(vello::kurbo::Size::new(width, height))
+}
+
+/// The height a card's progress bar and the gap above it take.
+fn progress_reserve(theme: &Theme, card: &ToastCard<'_>) -> f64 {
+    if card.progress.is_some() {
+        f64::from(theme.tokens.spacing.s2) + crate::widget::ProgressBarFace::height(theme)
+    } else {
+        0.0
+    }
 }
 
 /// How much smaller than a small icon the resting dismiss glyph is.
@@ -2470,6 +2513,45 @@ mod tests {
             assert_eq!(hit.card_rect.x1, area.x1 - 24.0);
             assert_eq!(hit.card_rect.y1, area.y1 - 24.0);
             assert!(hit.card_rect.y0 >= area.y0);
+        }
+
+        // Case `a_card_following_work_makes_room_for_its_progress_bar`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let area = Rect::new(0.0, 0.0, 480.0, 320.0);
+            let card = ToastCard::new("Extracting “game.tar.xz”", ToastKind::Info)
+                .body("1.6 GB of 4.6 GB")
+                .action("Cancel", false)
+                .closable(true);
+            let mut plain_scene = Scene::new();
+            let plain = paint_transient(
+                &mut plain_scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                ToastAnchor::BottomCenter,
+                &card,
+            );
+            let mut bar_scene = Scene::new();
+            let with_bar = paint_transient(
+                &mut bar_scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                ToastAnchor::BottomCenter,
+                &card.progress(0.35),
+            );
+            assert!(
+                with_bar.card_rect.height() >= plain.card_rect.height(),
+                "the bar never squeezes the text"
+            );
+            assert!(
+                bar_scene.encoding().draw_tags.len() > plain_scene.encoding().draw_tags.len(),
+                "the bar is painted"
+            );
         }
 
         // Case `partial_alpha_keeps_transient_geometry_and_still_paints`.

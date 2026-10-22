@@ -263,8 +263,7 @@ fn walk_zip<R: Read + Seek>(
             size: if kind == Kind::File { size } else { 0 },
             kind,
             mode: mode.map(|mode| mode & 0o7777),
-            // Zip keeps a local time without a zone: not a moment.
-            modified: None,
+            modified: item.last_modified().and_then(zip_time),
             link,
         };
         let flow = if kind == Kind::File {
@@ -277,6 +276,25 @@ fn walk_zip<R: Read + Seek>(
         }
     }
     Ok(())
+}
+
+/// A zip entry's time, which zip keeps as a local time without a zone:
+/// read in this device's zone, as the tool that wrote it most likely meant.
+fn zip_time(time: zip::DateTime) -> Option<SystemTime> {
+    let local = chrono::NaiveDate::from_ymd_opt(
+        i32::from(time.year()),
+        u32::from(time.month()),
+        u32::from(time.day()),
+    )?
+    .and_hms_opt(
+        u32::from(time.hour()),
+        u32::from(time.minute()),
+        u32::from(time.second()),
+    )?;
+    local
+        .and_local_timezone(chrono::Local)
+        .earliest()
+        .map(SystemTime::from)
 }
 
 fn zip_error(error: zip::result::ZipError) -> io::Error {
