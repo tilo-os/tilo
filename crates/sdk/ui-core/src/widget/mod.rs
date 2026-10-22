@@ -2869,6 +2869,7 @@ pub use sidebar::{
 mod nav_shell;
 /// Remember the sidebar widths of the shells this thread builds in an app's
 /// settings on this device (`nav_shell::memory`).
+#[cfg(feature = "native")]
 pub(crate) use nav_shell::memory::remember_for_app as remember_sidebar_widths_for_app;
 
 /// The narrowest the window `root` lays out still works at
