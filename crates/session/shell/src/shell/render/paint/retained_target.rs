@@ -138,7 +138,7 @@ impl RetainedGpuTarget {
             last_frame_full: false,
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
-            finished_frames: false,
+            finished_frames: 0,
             last_successful_revision: None,
             owed_damage: Vec::new(),
             last_render_attempts: 0,
@@ -256,7 +256,7 @@ impl RetainedGpuTarget {
         // is on a GPU that cannot be brought back (`ui::gpu::recover`).
         self.invalidate();
         self.reset_attempts();
-        self.finished_frames = false;
+        self.finished_frames = 0;
         Ok(())
     }
 
@@ -502,7 +502,7 @@ impl RetainedGpuTarget {
         match &result {
             Ok(()) => {
                 self.retained_target_valid = true;
-                self.finished_frames = true;
+                self.finished_frames = self.finished_frames.saturating_add(1);
                 self.last_successful_revision = Some(revision);
                 if let Some(layers) = self.strip_layers.as_mut() {
                     layers.shown = Some(strip_layers::Shown::of(cache, revision));
@@ -1141,7 +1141,7 @@ impl RetainedGpuTarget {
                 #[cfg(target_os = "linux")]
                 crate::shader_seed::after_frame();
                 self.retained_target_valid = true;
-                self.finished_frames = true;
+                self.finished_frames = self.finished_frames.saturating_add(1);
                 self.last_successful_revision = damage.map(|damage| damage.revision);
             }
             // Every attempt completed and settled its counters, so the renderer is consistent

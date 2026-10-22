@@ -770,20 +770,8 @@ impl SimulatedVblankPresenter {
     /// Render `frame` into the next scanout buffer, as the DRM presenter's
     /// direct path does; `false` when it kept the image already shown.
     fn render(&mut self, frame: &crate::compositor::frame::FramePaint) -> bool {
-        // A lost device is replaced before the frame, as the DRM presenter does; the display
-        // keeps the image it shows until the new renderer's first frame.
-        if crate::shell::render::paint::retire_lost_bridge(&mut self.bridge).is_some() {
-            self.slots.clear();
-            self.scanned_out = None;
-        }
-        if self.bridge.is_none() {
-            let (width, height) = self.view.target_size();
-            let Some((bridge, slots)) = Self::open_renderer(width, height) else {
-                return false;
-            };
-            self.bridge = Some(bridge);
-            self.slots = slots;
-            self.next_slot = 0;
+        if !self.ensure_renderer() {
+            return false;
         }
         let damage = (frame.revision != 0).then_some(SceneDamage {
             revision: frame.revision,
@@ -884,6 +872,26 @@ impl SimulatedVblankPresenter {
 }
 
 impl SimulatedVblankPresenter {
+    /// Replace a lost renderer before the frame, as the DRM presenter does; the display keeps
+    /// the image it shows until the new renderer's first frame. `false` when none could open.
+    fn ensure_renderer(&mut self) -> bool {
+        if crate::shell::render::paint::retire_lost_bridge(&mut self.bridge).is_some() {
+            self.slots.clear();
+            self.scanned_out = None;
+        }
+        if self.bridge.is_some() {
+            return true;
+        }
+        let (width, height) = self.view.target_size();
+        let Some((bridge, slots)) = Self::open_renderer(width, height) else {
+            return false;
+        };
+        self.bridge = Some(bridge);
+        self.slots = slots;
+        self.next_slot = 0;
+        true
+    }
+
     /// Show the frame's client buffer by itself, as the DRM presenter flips
     /// a fullscreen or maximized client's buffer onto the primary plane:
     /// `Some(true)` when a flip of it is queued, `Some(false)` when that
