@@ -462,6 +462,15 @@ impl Scalar {
         }
     }
 
+    /// A text an edit wrote whole (a formula, a title), kept whole without
+    /// control characters: the change carries the text anyway, and a reader
+    /// elides it where it draws it. Other text is cut ([`Self::text`]).
+    pub fn whole_text(text: &str) -> Self {
+        Self(serde_json::Value::String(
+            text.chars().filter(|ch| !ch.is_control()).collect(),
+        ))
+    }
+
     /// Any serializable plain value (a bool, a number, a unit enum, a
     /// string). `None` when it serializes to anything else.
     pub fn of<T: Serialize + ?Sized>(value: &T) -> Option<Self> {

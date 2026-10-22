@@ -215,6 +215,16 @@ impl HistoryGroup {
     /// surface lays out apart ([`crate::widget::primitives::Facts`]), never
     /// joined by a glyph.
     pub fn subtitle_facts(&self, entries: &[HistoryEntry]) -> Vec<String> {
+        self.subtitle_facts_summarised(entries, None)
+    }
+
+    /// [`Self::subtitle_facts`], with what the app says the band amounts to
+    /// (`summary`) in place of how much text moved.
+    pub fn subtitle_facts_summarised(
+        &self,
+        entries: &[HistoryEntry],
+        summary: Option<String>,
+    ) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if self.name.is_some() {
             let count = crate::i18n!("history-group-changes", "count" => self.len());
@@ -224,7 +234,9 @@ impl HistoryGroup {
         if !who.is_empty() {
             parts.push(who);
         }
-        if let Some((ins, del)) = self.text_delta
+        if let Some(summary) = summary {
+            parts.push(summary);
+        } else if let Some((ins, del)) = self.text_delta
             && (ins > 0 || del > 0)
         {
             // Same spelling as a row's own summary: a group that wrote its

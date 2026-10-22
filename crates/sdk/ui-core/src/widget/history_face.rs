@@ -27,6 +27,14 @@ use crate::widget::history::HistoryEntry;
 pub trait HistoryEntryPresenter {
     /// How `entry` shows, or `None` for its sentence.
     fn face(&self, entry: &HistoryEntry) -> Option<EntryFace>;
+
+    /// What a band of `entries` amounts to, said on its second line in
+    /// place of how many characters moved ("4 functions, 7 calculations").
+    /// `None` keeps the default, which suits text.
+    fn group_summary(&self, entries: &[HistoryEntry]) -> Option<String> {
+        let _ = entries;
+        None
+    }
 }
 
 /// The content of one History row, painted by the app inside the row's
