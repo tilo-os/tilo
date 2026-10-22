@@ -8783,6 +8783,16 @@ mod tests {
         assert!(send_key(&mut b, Key::Named(NamedKey::Escape), None));
         assert!(!b.editing_location(), "Esc puts the location back");
         assert!(b.take_toolbar_events().is_empty());
+        assert_eq!(
+            b.take_location_drafts(),
+            vec![(
+                1,
+                crate::window_toolbar::ToolbarEvent::Edit {
+                    text: "https://duckduckgo.com/".into()
+                }
+            )],
+            "the app hears its location put back"
+        );
 
         assert!(b.edit_location(), "Ctrl+L edits it too");
         for ch in "example.org".chars() {

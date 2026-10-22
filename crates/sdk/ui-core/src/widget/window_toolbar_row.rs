@@ -424,7 +424,7 @@ impl ToolbarRow {
         if next_tab != previous_tab {
             // Another tab: what the person typed belongs to the tab they
             // typed it in, and goes with it.
-            self.end_edit();
+            self.abandon_edit();
             self.menu.close();
             self.hover = None;
             self.pressed = None;
@@ -594,7 +594,7 @@ impl ToolbarRow {
                 self.place_suggestions();
             } else {
                 // No room for the field any more.
-                self.end_edit();
+                self.abandon_edit();
             }
         }
         // The open menu follows what it hangs from, and goes with it.
@@ -791,8 +791,26 @@ impl ToolbarRow {
     /// Put the location back, discarding what was typed.
     pub(crate) fn cancel_edit(&mut self) -> bool {
         let editing = self.field.is_some();
-        self.end_edit();
+        self.abandon_edit();
         editing
+    }
+
+    /// End the edit without committing it: the field holds the location
+    /// again, and the app hears so ([`ToolbarEvent::Edit`] with the
+    /// location's value), as it heard each change, so nothing it does for
+    /// typed text goes on for text no longer there.
+    fn abandon_edit(&mut self) {
+        if self.field.is_none() {
+            return;
+        }
+        let location = self
+            .toolbar()
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .map(|location| location.value.clone());
+        self.end_edit();
+        if let Some(text) = location {
+            self.draft(text);
+        }
     }
 
     fn shown_tab(&self) -> Option<u64> {
@@ -1279,7 +1297,7 @@ impl ToolbarRow {
     pub(crate) fn press(&mut self, p: Point) -> bool {
         let slot = self.slots.hit(p);
         if self.field.is_some() && slot != Some(Slot::Location) {
-            self.end_edit();
+            self.abandon_edit();
         }
         match slot {
             Some(Slot::Location) if self.field.is_none() => {
@@ -1335,7 +1353,7 @@ impl ToolbarRow {
         {
             match &key.logical_key {
                 Key::Named(NamedKey::Escape) => {
-                    self.end_edit();
+                    self.abandon_edit();
                     *ctx.handled = true;
                     return true;
                 }
@@ -2232,6 +2250,16 @@ mod tests {
         assert!(row.cancel_edit());
         assert!(!row.is_editing());
         assert!(row.take_events().is_empty(), "nothing was committed");
+        assert_eq!(
+            row.take_drafts(),
+            vec![(
+                7,
+                ToolbarEvent::Edit {
+                    text: "https://duckduckgo.com/".into()
+                }
+            )],
+            "the app hears its location put back"
+        );
     }
 
     /// A terminal's slots: where its shell runs, one of a few places.
