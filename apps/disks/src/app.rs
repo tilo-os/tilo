@@ -232,8 +232,6 @@ pub struct DisksApp {
     /// The detail page's scroll offset, kept across rebuilds.
     scroll: Rc<Cell<(f32, f32)>>,
     built: Option<ViewKey>,
-    /// The header is in the window's bar (the desktop hosts its slots).
-    header_in_bar: bool,
     /// The slots last declared to the bar.
     declared_bar: Option<ui::window_toolbar::WindowToolbar>,
 }
@@ -260,7 +258,7 @@ impl DisksApp {
         let intents = Intents::default();
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
-            .sidebar_header("Drives", vec![Box::new(view::rescan_button(&intents))])
+            .with_window_toolbar()
             .with_id("disks-shell");
         Self {
             shell,
@@ -280,7 +278,6 @@ impl DisksApp {
             dirty: true,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
             built: None,
-            header_in_bar: false,
             declared_bar: None,
         }
     }
@@ -413,27 +410,12 @@ impl DisksApp {
                 .set_content(view::empty_state(self.unreadable.as_deref(), &self.intents));
             return;
         };
-        let location = self.location(drive);
         let model = DetailModel {
             drive,
             tab: self.tab,
             partition: key.partition,
-            drive_line: location
-                .partition
-                .as_ref()
-                .filter(|_| !self.header_in_bar)
-                .map(|_| location.drive.clone()),
         };
         let content = view::detail(&model, &self.intents, &self.scroll);
-        let offers = offer::shown(drive, self.selected_partition(drive));
-        if self.header_in_bar {
-            self.shell.set_content_header("", Vec::new());
-        } else {
-            self.shell.set_content_header(
-                location.title(),
-                view::header_actions(&offers, &self.intents),
-            );
-        }
         self.shell.set_content(content);
     }
 
@@ -446,48 +428,17 @@ impl DisksApp {
         }
     }
 
-    /// Hand the header to the window's bar while the desktop hosts it, and
-    /// take it back when it does not: the location, Rescan and the
-    /// selection's operations become the bar's slots. Returns whether
-    /// anything changed.
-    fn sync_window_toolbar(&mut self) -> bool {
-        let hosted = ui::window_toolbar::is_hosted();
+    /// Apply what the person did in the window's bar: the shell's own
+    /// slots, the location's drive level, Rescan and the selection's
+    /// operations. Returns whether anything changed.
+    fn take_window_toolbar_events(&mut self) -> bool {
         let mut changed = false;
-        if hosted != self.header_in_bar {
-            self.header_in_bar = hosted;
-            self.shell.set_sidebar_toggle_in_window_bar(hosted);
-            let rescan: Vec<ui::widget::Element> = if hosted {
-                Vec::new()
-            } else {
-                vec![Box::new(view::rescan_button(&self.intents))]
-            };
-            self.shell.set_sidebar_header("Drives", rescan);
-            if !hosted {
-                ui::window_toolbar::declare(None);
-                self.declared_bar = None;
-            }
-            self.built = None;
-            changed = true;
-        }
-        if !hosted {
-            return changed;
-        }
-        let bar = view::window_toolbar(
-            self.drive().map(|drive| {
-                (
-                    self.location(drive),
-                    offer::shown(drive, self.selected_partition(drive)),
-                )
-            }),
-            self.shell.is_sidebar_open(),
-        );
-        if self.declared_bar.as_ref() != Some(&bar) {
-            ui::window_toolbar::declare(Some(bar.clone()));
-            self.declared_bar = Some(bar);
-        }
         for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                changed = true;
+                continue;
+            }
             match event {
-                ui::window_toolbar::ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
                 // The location's drive level: back to the whole drive.
                 ui::window_toolbar::ToolbarEvent::Commit { text } if text == view::WHOLE_DRIVE => {
                     self.select_part(None);
@@ -509,6 +460,25 @@ impl DisksApp {
         changed
     }
 
+    /// Declare the window bar's slots: the shell's own, where the window
+    /// is (the drive, and the partition when one is chosen), and the
+    /// selection's operations followed by Rescan.
+    fn declare_window_toolbar(&mut self) {
+        let bar = view::window_toolbar(
+            self.shell.window_toolbar(),
+            self.drive().map(|drive| {
+                (
+                    self.location(drive),
+                    offer::shown(drive, self.selected_partition(drive)),
+                )
+            }),
+        );
+        if self.declared_bar.as_ref() != Some(&bar) {
+            ui::window_toolbar::declare(Some(bar.clone()));
+            self.declared_bar = Some(bar);
+        }
+    }
+
     /// Apply what the window's controls asked for.
     fn drain_intents(&mut self) {
         for intent in self.intents.take() {
@@ -516,7 +486,6 @@ impl DisksApp {
                 Intent::SelectDrive(index) => self.select(index),
                 Intent::SelectPartition(part) => self.select_part(part),
                 Intent::SetTab(tab) => self.set_tab(tab),
-                Intent::Run(action) => self.trigger_action(action, self.part_index()),
                 Intent::RunOn { action, partition } => self.trigger_action(action, partition),
                 Intent::Rescan => self.rescan(),
             }
@@ -846,16 +815,18 @@ impl ui::widget::Decorator for DisksApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.sync_window_toolbar();
+        self.take_window_toolbar_events();
         self.drain_intents();
         self.refresh_view();
+        self.declare_window_toolbar();
         self.shell.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let bar = self.sync_window_toolbar();
+        let bar = self.take_window_toolbar_events();
         self.drain_intents();
         self.refresh_view();
+        self.declare_window_toolbar();
         self.shell.update(state, path) || self.dirty || bar
     }
 
@@ -986,11 +957,15 @@ mod tests {
                 ui::framework::testing::TestApp::<crate::resource::DisksShell>::capture(None)
                     .unwrap();
             let nodes = window.harness().a11y_nodes();
-            assert!(
-                nodes
+            // Rescan and the operations are the window bar's slots.
+            let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+            let named = |id: &str| {
+                bar.actions
                     .iter()
-                    .any(|(_, node)| node.label() == Some("Rescan drives"))
-            );
+                    .find(|action| action.id == id)
+                    .map(|action| action.name.clone())
+            };
+            assert_eq!(named(view::RESCAN).as_deref(), Some("Rescan drives"));
             assert!(
                 nodes
                     .iter()
@@ -998,10 +973,8 @@ mod tests {
                 "the sample drive is accessible"
             );
             assert!(
-                nodes
-                    .iter()
-                    .any(|(_, node)| node.label() == Some("Format…")),
-                "the drive's format action is accessible"
+                named(ActionKind::Format.key()).is_some(),
+                "the drive's format action is in the bar"
             );
             let smart = window
                 .harness()
@@ -1162,10 +1135,12 @@ mod tests {
             let mut app = at_width(1280.0);
             // Formatting the drive the running system lives on is shown,
             // and unavailable.
-            Framed::harness_mut(&mut app)
-                .click_named("disks-action-format")
-                .unwrap();
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                id: ActionKind::Format.key().to_owned(),
+            });
+            app.take_window_toolbar_events();
             assert!(app.status.is_empty());
+            assert!(app.running.is_none());
         }
     }
 

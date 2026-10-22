@@ -16,9 +16,9 @@ use ui::tokens::{Rhythm, TextRole};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, Chip, ChipStyle, ContextMenuArea, Element, EmptyState, ListRow, MenuEntry, NavItem,
-    NavList, NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section,
-    SegmentedStyle, StatGroup, StatTile, Text, ToggleGroup, Tone,
+    Chip, ChipStyle, ContextMenuArea, Element, EmptyState, ListRow, MenuEntry, NavItem, NavList,
+    NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section, SegmentedStyle,
+    StatGroup, StatTile, Text, ToggleGroup, Tone,
 };
 use ui::window_toolbar::{LocationSegment, ToolbarAction, ToolbarLocation, WindowToolbar};
 
@@ -38,8 +38,6 @@ pub(crate) enum Intent {
     /// A partition of the selected drive, or `None` for the whole disk.
     SelectPartition(Option<usize>),
     SetTab(Tab),
-    /// An operation on the current selection (the window bar, the header).
-    Run(ActionKind),
     /// An operation on partition `partition` of the selected drive (`None`:
     /// the whole drive), from that row's context menu.
     RunOn {
@@ -57,9 +55,6 @@ pub(crate) struct DetailModel<'a> {
     pub drive: &'a Drive,
     pub tab: Tab,
     pub partition: Option<usize>,
-    /// The drive's name over the page, when the header names a partition
-    /// of it and no window bar shows the path.
-    pub drive_line: Option<String>,
 }
 
 /// The bar action that rescans the machine.
@@ -101,33 +96,12 @@ fn action_name(action: ActionKind, offer: Offer) -> String {
     }
 }
 
-/// The selection's operations as the content header's buttons, for a
-/// window no desktop bar hosts (Rescan stays in the drive list's header).
-pub(crate) fn header_actions(offers: &[(ActionKind, Offer)], intents: &Intents) -> Vec<Element> {
-    offers
-        .iter()
-        .map(|&(action, offer)| -> Element {
-            let intents = intents.clone();
-            Box::new(
-                Button::icon_only(
-                    &format!("disks-action-{}", action.key()),
-                    action_icon(action),
-                    action.label(),
-                )
-                .with_enabled(offer.is_available())
-                .tooltip(action_name(action, offer))
-                .on_effect(move || intents.push(Intent::Run(action))),
-            )
-        })
-        .collect()
-}
-
-/// The window bar's slots: the sidebar toggle, where the window is (the
-/// drive, and the partition when one is chosen), and the selection's
+/// The window bar's slots: the shell's own (`shell`), where the window is
+/// (the drive, and the partition when one is chosen), and the selection's
 /// operations followed by Rescan.
 pub(crate) fn window_toolbar(
+    mut shell: WindowToolbar,
     selection: Option<(Location, Vec<(ActionKind, Offer)>)>,
-    sidebar_open: bool,
 ) -> WindowToolbar {
     let (location, offers) = selection.unwrap_or_default();
     let mut actions: Vec<ToolbarAction> = offers
@@ -140,36 +114,31 @@ pub(crate) fn window_toolbar(
             ..ToolbarAction::default()
         })
         .collect();
-    actions.push(ToolbarAction {
-        id: RESCAN.to_owned(),
-        icon: Icon::Refresh.name().to_owned(),
-        name: "Rescan drives".to_owned(),
-        enabled: true,
-        ..ToolbarAction::default()
+    actions.push(ToolbarAction::new(
+        RESCAN,
+        Icon::Refresh.name(),
+        "Rescan drives",
+    ));
+    ui::widget::NavShell::push_window_actions(&mut shell, actions);
+    shell.location = (!location.drive.is_empty()).then(|| ToolbarLocation {
+        label: location.title().to_owned(),
+        // A partition is a level under its drive: the path goes back up.
+        segments: match &location.partition {
+            Some(partition) => vec![
+                LocationSegment {
+                    label: location.drive.clone(),
+                    value: WHOLE_DRIVE.to_owned(),
+                },
+                LocationSegment {
+                    label: partition.clone(),
+                    value: "partition".to_owned(),
+                },
+            ],
+            None => Vec::new(),
+        },
+        ..ToolbarLocation::default()
     });
-    WindowToolbar {
-        sidebar: Some(sidebar_open),
-        location: (!location.drive.is_empty()).then(|| ToolbarLocation {
-            label: location.title().to_owned(),
-            // A partition is a level under its drive: the path goes back up.
-            segments: match &location.partition {
-                Some(partition) => vec![
-                    LocationSegment {
-                        label: location.drive.clone(),
-                        value: WHOLE_DRIVE.to_owned(),
-                    },
-                    LocationSegment {
-                        label: partition.clone(),
-                        value: "partition".to_owned(),
-                    },
-                ],
-                None => Vec::new(),
-            },
-            ..ToolbarLocation::default()
-        }),
-        actions,
-        ..WindowToolbar::default()
-    }
+    shell
 }
 
 /// A context menu of what `part` of `drive` offers (`partition`: its
@@ -253,13 +222,6 @@ fn drive_id(index: usize) -> String {
     format!("drive:{index}")
 }
 
-/// The sidebar header's rescan control.
-pub(crate) fn rescan_button(intents: &Intents) -> Button {
-    let intents = intents.clone();
-    Button::icon_only("disks-rescan", Icon::Refresh, "Rescan drives")
-        .on_effect(move || intents.push(Intent::Rescan))
-}
-
 /// Nothing to show: the system reported no block devices.
 /// No drives to show: none attached, or (with `unreadable`, the reason) the
 /// machine's storage could not be read.
@@ -299,15 +261,11 @@ pub(crate) fn detail(
             Tab::Smart => health(drive),
             Tab::Partitions => partitions(model, intents),
         });
-    let mut page = ui::widget::Column::new()
+    let page = ui::widget::Column::new()
         .with_intrinsic_height()
-        .with_rhythm(Rhythm::Group);
-    if let Some(line) = &model.drive_line {
-        page = page.push(Box::new(
-            Text::new(line).with_role(TextRole::Caption).dimmed(),
-        ));
-    }
-    let page = page.push(Box::new(badges(drive))).push(Box::new(tab));
+        .with_rhythm(Rhythm::Group)
+        .push(Box::new(badges(drive)))
+        .push(Box::new(tab));
     Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
@@ -774,7 +732,10 @@ mod tests {
             drive: drive.model.clone(),
             partition: None,
         };
-        let bar = window_toolbar(Some((location, offer::shown(&drive, None))), true);
+        let bar = window_toolbar(
+            WindowToolbar::default(),
+            Some((location, offer::shown(&drive, None))),
+        );
         let format = bar
             .actions
             .iter()
@@ -800,7 +761,7 @@ mod tests {
             drive: "SAMSUNG".into(),
             partition: Some("home".into()),
         };
-        let bar = window_toolbar(Some((location, Vec::new())), true);
+        let bar = window_toolbar(WindowToolbar::default(), Some((location, Vec::new())));
         let location = bar.location.expect("a location");
         assert_eq!(location.label, "home");
         let levels: Vec<_> = location.segments.iter().map(|s| s.label.as_str()).collect();
