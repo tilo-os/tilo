@@ -171,6 +171,7 @@ pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
 pub mod settings_failures;
+pub(crate) mod settings_records;
 pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod software_dim;

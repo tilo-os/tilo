@@ -1,30 +1,27 @@
-//! The machine's own settings as typed resources with actions: when the
-//! screen blanks, when the machine suspends, the scale and refresh
-//! rate of a display, the keyboard layout and the appearance mode.
+//! The machine's own settings as rows of the palette: when the screen locks
+//! and blanks, when the machine suspends, the scale and refresh rate of a
+//! display, the keyboard layout and the appearance mode.
 //!
-//! The session serves them, so a script, an agent or the palette reaches them
-//! whether or not the Settings app is open. Each setting is addressed
-//! `system-settings:<setting>.<verb>`:
+//! Each setting is addressed `system-settings:<setting>.<verb>`:
 //!
 //! - `.get` answers the current value and the values that are allowed;
-//! - `.set` takes the typed value, validates it against the same choices the
-//!   Settings pane offers and stores it through the settings store, so the
-//!   running session applies it as it does a change made in Settings;
+//! - `.set` takes the typed value, offered as the Settings pane offers it,
+//!   and changes it through the section's own field edit or verb, which the
+//!   session keeps whether or not Settings is open
+//!   ([`crate::shell::settings_records`]): a change that weakens the
+//!   person's security asks them first (`confirm`);
 //! - `.toggle` flips a boolean setting.
 //!
 //! Display changes are staged through the keep-or-restore handshake every
 //! display change goes through, and answer when staged; `display.change.keep`
 //! and `display.change.revert` settle them.
-//!
-//! When the screen locks is not served here: a longer delay weakens the
-//! lock, which only Settings' own field edit judges, so it is changed there.
 
 use std::rc::Rc;
 
 use serde_json::{Value, json};
 use settings_store::display_tuning;
 use settings_store::hardware::{DisplayHardwareSnapshot, RichInputConfig};
-use settings_store::{ChangeOrigin, SectionWrite, keyboard_sources, power};
+use settings_store::{keyboard_sources, power};
 use tilo_actions::{ActionContract, ConfirmationPolicy, OperationKind, RetryPolicy, RiskLevel};
 use ui::search::FieldWeight;
 
@@ -40,6 +37,7 @@ pub const PROVIDER_ID: &str = "system-settings";
 /// What a setting is, which decides how it is read, validated and stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
+    LockAfter,
     BlankAfter,
     SuspendAfter,
     AutoSuspend,
@@ -62,6 +60,12 @@ struct Spec {
 }
 
 const SPECS: &[Spec] = &[
+    Spec {
+        id: "power.lock-after",
+        kind: Kind::LockAfter,
+        name: "setting-power-lock-after",
+        words: "lock screen after auto lock timeout idle never",
+    },
     Spec {
         id: "power.blank-after",
         kind: Kind::BlankAfter,
@@ -280,6 +284,7 @@ fn input_config() -> RichInputConfig {
 /// read (no display has been published).
 fn read(kind: Kind) -> Option<Reading> {
     Some(match kind {
+        Kind::LockAfter => minutes_reading(&power::LOCK_MINUTES, power::LOCK_CHOICES),
         Kind::BlankAfter => minutes_reading(&power::BLANK_MINUTES, power::BLANK_CHOICES),
         Kind::SuspendAfter => {
             let mut reading = minutes_reading(&power::SUSPEND_MINUTES, power::SUSPEND_CHOICES);
@@ -385,22 +390,26 @@ fn set_params(kind: Kind) -> Vec<ActionParam> {
         )
     };
     match kind {
+        Kind::LockAfter => vec![
+            minutes(
+                "Minutes of inactivity before the session locks; 0 means never.",
+                power::LOCK_CHOICES,
+            ),
+            ActionParam::optional_owned(
+                "confirm",
+                ParamType::Boolean,
+                "Confirm a later lock or none, which makes the device less safe.",
+            )
+            .with_labelled_choices([("true", t("setting-confirm-weaker"))]),
+        ],
         Kind::BlankAfter => vec![minutes(
             "Minutes of inactivity before the screen turns off; 0 means never.",
             power::BLANK_CHOICES,
         )],
-        Kind::SuspendAfter => vec![
-            minutes(
-                "Minutes of inactivity before the machine suspends; 0 means never.",
-                power::SUSPEND_CHOICES,
-            ),
-            ActionParam::optional_owned(
-                "profile",
-                ParamType::Text,
-                "Only this power profile. Default: every profile.",
-            )
-            .with_choices(power::PROFILES.iter().copied()),
-        ],
+        Kind::SuspendAfter => vec![minutes(
+            "Minutes of inactivity before the machine suspends while plugged in; 0 means never.",
+            power::SUSPEND_CHOICES,
+        )],
         Kind::AutoSuspend => vec![ActionParam::required_owned(
             "enabled",
             ParamType::Boolean,
@@ -508,37 +517,30 @@ fn changed(spec: &Spec, previous: &Reading, value: &Value) -> Value {
     json!({"setting": spec.id, "value": value, "previous": previous.value})
 }
 
-/// Store `write` as `id`'s change, so it is attributed to the action and
-/// applied by the running session like any change made in Settings.
-fn store(id: &str, write: SectionWrite) -> Result<(), ActionError> {
-    write.commit_by(&ChangeOrigin::action(id)).map_err(refuse)
-}
-
-/// Run a non-display `.set` or `.toggle`.
+/// Run a non-display `.set` or `.toggle` through the section's field edit
+/// or verb, as the person at this seat.
 fn apply(
     chrome: &Chrome,
     spec: &Spec,
     verb: Verb,
     args: &ActionArgs,
 ) -> Result<Value, ActionError> {
-    let id = format!("{}.{}", spec.id, verb.suffix());
+    use crate::shell::settings_records::{address, change, set_field};
     let previous = read(spec.kind).ok_or_else(|| refuse("this setting is not available here"))?;
-    let value = match spec.kind {
-        Kind::BlankAfter => {
-            let minutes =
-                power::check_minutes("blank timeout", power::BLANK_CHOICES, minutes_arg(args)?)
-                    .map_err(refuse)?;
-            store(
-                &id,
-                SectionWrite::new().set(&power::BLANK_MINUTES, &minutes),
-            )?;
-            json!(minutes)
-        }
+    let of_power = |action: &str| address("settings.power", action);
+    let (action, arguments) = match spec.kind {
+        Kind::LockAfter => (
+            of_power("field-edit"),
+            set_field("lock_minutes", &json!(minutes_arg(args)?)),
+        ),
+        Kind::BlankAfter => (
+            of_power("field-edit"),
+            set_field("blank_minutes", &json!(minutes_arg(args)?)),
+        ),
         Kind::SuspendAfter => {
-            let minutes = minutes_arg(args)?;
-            let write = power::suspend_write(args.text("profile"), minutes).map_err(refuse)?;
-            store(&id, write)?;
-            json!(minutes)
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("minutes".into(), json!(minutes_arg(args)?));
+            (of_power("set-suspend-plugged-in"), arguments)
         }
         Kind::AutoSuspend => {
             let enabled = match verb {
@@ -547,41 +549,33 @@ fn apply(
                     .boolean("enabled")
                     .ok_or_else(|| refuse("enabled must be true or false"))?,
             };
-            store(&id, SectionWrite::new().set(&power::AUTO_SUSPEND, &enabled))?;
-            json!(enabled)
+            (
+                of_power("field-edit"),
+                set_field("auto_suspend", &json!(enabled)),
+            )
         }
         Kind::KeyboardLayout => {
-            let wanted = args.text("layout").unwrap_or_default();
-            let input = RichInputConfig::from_section(&settings_store::load_section(
-                settings_store::hardware::INPUT_SECTION,
-            ));
-            let next = keyboard_sources::plan_active_source(&input, wanted).map_err(refuse)?;
-            store(
-                &id,
-                SectionWrite::new()
-                    .set(&keyboard_sources::LAYOUTS, &next.keyboard_layouts)
-                    .set(&keyboard_sources::LAYOUT, &next.keyboard_layout),
-            )?;
-            json!(next.keyboard_layout)
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                "layout".into(),
+                json!(args.text("layout").unwrap_or_default()),
+            );
+            (address("settings.input", "choose-layout"), arguments)
         }
         Kind::AppearanceMode => {
-            let mode = args.text("mode").unwrap_or_default();
-            if ![
-                "dark",
-                "light",
-                settings_store::day_schedule::AUTOMATIC_MODE,
-            ]
-            .contains(&mode)
-            {
-                return Err(refuse(format!("{mode:?} is not an appearance mode")));
-            }
-            super::actions::set_mode(&mut chrome.borrow_mut(), &id, mode)?;
-            json!(mode)
+            super::actions::set_mode(
+                &mut chrome.borrow_mut(),
+                args.text("mode").unwrap_or_default(),
+            )?;
+            let value = read(spec.kind).map_or(Value::Null, |reading| reading.value);
+            return Ok(changed(spec, &previous, &value));
         }
         Kind::DisplayScale | Kind::DisplayRefreshRate => {
             return Err(refuse("display changes require lifecycle dispatch"));
         }
     };
+    change(&action, &arguments, args.boolean("confirm") == Some(true))?;
+    let value = read(spec.kind).map_or(Value::Null, |reading| reading.value);
     Ok(changed(spec, &previous, &value))
 }
 
@@ -768,6 +762,7 @@ impl SearchProvider for SystemSettingsProvider {
         use ui::icons::Icon;
         let (spec, _) = parse(&result.id)?;
         Some(match spec.kind {
+            Kind::LockAfter => Icon::Lock,
             Kind::BlankAfter | Kind::DisplayScale | Kind::DisplayRefreshRate => Icon::Monitor,
             Kind::SuspendAfter | Kind::AutoSuspend => Icon::Moon,
             Kind::KeyboardLayout => Icon::Keyboard,
@@ -1013,6 +1008,8 @@ mod tests {
         {
             let ids: Vec<String> = rows(&chrome, "").into_iter().map(|row| row.id).collect();
             for expected in [
+                "power.lock-after.get",
+                "power.lock-after.set",
                 "power.blank-after.get",
                 "power.blank-after.set",
                 "power.suspend-after.get",
@@ -1030,10 +1027,6 @@ mod tests {
             assert!(
                 !ids.iter().any(|id| id.starts_with("display.")),
                 "no display has been published, so there is none to change"
-            );
-            assert!(
-                !ids.iter().any(|id| id.starts_with("power.lock-after")),
-                "when the screen locks is changed through Settings' field edit"
             );
             let blank = rows(&chrome, "")
                 .into_iter()
@@ -1165,12 +1158,45 @@ mod tests {
             assert!(
                 origin
                     .iter()
-                    .any(|entry| entry["action"] == "power.blank-after.set"),
-                "the change is attributed to the action: {origin:?}"
+                    .any(|entry| entry["action"] == "settings.power/field-edit"),
+                "the change is the section's field edit: {origin:?}"
             );
         }
 
-        // Phase `suspend_after_writes_every_profile_unless_one_is_named`.
+        // Phase `with_settings_closed_the_lock_changes_through_its_field_edit`.
+        {
+            let lock = |minutes: i64, confirm: Option<bool>| {
+                let mut args = arg("minutes", ArgValue::Integer(minutes));
+                if let Some(confirm) = confirm {
+                    args.push(("confirm".into(), ArgValue::Boolean(confirm)));
+                }
+                run(&chrome, "power.lock-after.set", args)
+            };
+            assert_eq!(
+                lock(1, None).unwrap()["value"],
+                1,
+                "locking sooner asks nothing"
+            );
+            assert_eq!(power::LOCK_MINUTES.get(), 1);
+            for weaker in [10, 0] {
+                assert!(
+                    matches!(lock(weaker, None), Err(ActionError::ConfirmationRequired)),
+                    "locking later or never asks first"
+                );
+            }
+            assert_eq!(power::LOCK_MINUTES.get(), 1, "nothing changed unconfirmed");
+            assert_eq!(lock(0, Some(true)).unwrap()["previous"], 1);
+            assert_eq!(power::LOCK_MINUTES.get(), 0);
+            let origin = session.change_log();
+            assert!(
+                origin
+                    .last()
+                    .is_some_and(|entry| entry["action"] == "settings.power/field-edit"),
+                "Settings' own field edit made it: {origin:?}"
+            );
+        }
+
+        // Phase `suspend_after_is_the_plugged_in_timer`.
         {
             run(
                 &chrome,
@@ -1178,13 +1204,7 @@ mod tests {
                 arg("minutes", ArgValue::Integer(30)),
             )
             .unwrap();
-            assert_eq!(power::BALANCED_SUSPEND_MINUTES.get(), 30);
-            assert_eq!(power::SAVER_SUSPEND_MINUTES.get(), 30);
-            let mut only = arg("minutes", ArgValue::Integer(5));
-            only.push(("profile".into(), ArgValue::Text("saver".into())));
-            run(&chrome, "power.suspend-after.set", only).unwrap();
-            assert_eq!(power::SAVER_SUSPEND_MINUTES.get(), 5);
-            assert_eq!(power::PERFORMANCE_SUSPEND_MINUTES.get(), 30);
+            assert_eq!(power::SUSPEND_MINUTES.get(), 30);
         }
 
         // Phase `a_boolean_toggles_and_sets`.
