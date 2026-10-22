@@ -16,4 +16,10 @@ def isolated_git_environment(**overrides):
     """Copy the caller environment, removing only repository-local Git inputs."""
     environment = {key: value for key, value in os.environ.items()
                    if key not in GIT_REPOSITORY_ENV}
+    # A fixture's commits must not start a detached `git maintenance`: it
+    # would write into the repository (and hold its lock) while the test reads it.
+    for index, (key, value) in enumerate((("maintenance.auto", "false"), ("gc.auto", "0"))):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
+    environment["GIT_CONFIG_COUNT"] = "2"
     return dict(environment, **overrides)
