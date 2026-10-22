@@ -194,10 +194,6 @@ impl HtmlBody {
         self.measured
     }
 
-    pub fn measuring(&self) -> Option<f64> {
-        self.measuring
-    }
-
     pub fn hovered(&self) -> Option<&str> {
         (!self.hovered.is_empty()).then_some(self.hovered.as_str())
     }
@@ -359,11 +355,11 @@ impl HtmlBody {
             .loaded
             .is_some_and(|setting| !self.prepared(setting).is_some_and(|prepared| prepared.dark));
         let radius = f64::from(theme.tokens.radii.control);
-        let Some(view) = self.view() else {
+        self.rect = None;
+        let Some(view) = self.view.as_mut() else {
             return;
         };
         let rect = view.get_rect();
-        self.rect = None;
         if measuring {
             return;
         }

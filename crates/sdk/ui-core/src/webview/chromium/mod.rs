@@ -500,6 +500,7 @@ impl UnavailableEngine {
                 guarded_edit_history: AtomicBool::new(false),
                 native_caret_text_input: AtomicBool::new(false),
                 document_size: DocumentSizeReports::default(),
+                selection_text: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),

@@ -874,7 +874,7 @@ impl MessageReader {
             self.region.set_offset(Vec2::ZERO);
         }
         let scroll = self.region.offset().y;
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        let ctx = PaintCtx::new(scene, t, tr, theme);
         ctx.scene
             .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
         let mut flow = Flow {

@@ -726,7 +726,6 @@ impl<'p> Sanitizer<'p> {
                 break;
             };
             self.text(src.get(i..lt).unwrap_or_default());
-            i = lt;
             match bytes.get(lt + 1).copied() {
                 Some(b'!') => i = self.declaration(src, lt),
                 Some(b'?') => i = past(src, lt, ">"),
