@@ -1,6 +1,7 @@
 import {createMediaPump} from './voice-controls.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createDataLoader} from './data-loader.mjs';
+import {createImageDecoder} from './image-decode.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
 import {MountRegistry,applyEditorHints,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
@@ -65,20 +66,11 @@ export function prepareGpu(){
   if(!navigator.gpu||webgpuRefusal()||isWebKit(navigator))return;
   void ready().then(()=>runtime.prepare_gpu()).catch(()=>{});
 }
-/** Decode an image's bytes with the browser's own decoders into unpremultiplied
- * RGBA, scaled down to fit `maxDimension` on either side: the page's module
- * carries no image decoders of its own. */
-async function decodeImage(bytes,maxDimension){
-  const source=await createImageBitmap(new Blob([bytes]),{premultiplyAlpha:'none'});
-  try{
-    const scale=Math.min(1,maxDimension/Math.max(source.width,source.height));
-    const width=Math.max(1,Math.round(source.width*scale)),height=Math.max(1,Math.round(source.height*scale));
-    const canvas=new OffscreenCanvas(width,height);
-    const context=canvas.getContext('2d',{willReadFrequently:true});
-    context.imageSmoothingQuality='high';
-    context.drawImage(source,0,0,width,height);
-    return {width,height,rgba:new Uint8Array(context.getImageData(0,0,width,height).data.buffer)};
-  }finally{source.close();}
+/** Every mount's images decode in one worker, started on the first. */
+let imageDecoder;
+function decodeImage(bytes,maxDimension){
+  imageDecoder??=createImageDecoder();
+  return imageDecoder(bytes,maxDimension);
 }
 /** Fetch and compile the module of application `app` once the runtime's
  * own is in, before the page mounts it, so the app the page is about to
