@@ -24,12 +24,9 @@ package_store::interfaces::read_interfaces
 runtime_identity::unix::list_identities_unlocked
 rustix::backend::arch::asm::syscall4_readonly
 settings_store::watch::watch_settings_at
-shell::compositor::native::peer_shares_host_security_namespaces::{closure}
-shell::compositor::native::public_client_state::{closure}
 shell::compositor::xwayland::claim_lock
 shell::compositor::xwayland::ensure_socket_dir
 shell::compositor::xwayland::write_xauthority
-shell::shell::launcher::proc_stat
 shell::shell::network::community::site_from
 shell::shell::network::personal_room_ids
 shell::shell::remote_capture::adapter::remote_camera_loopback

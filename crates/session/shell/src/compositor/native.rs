@@ -1308,13 +1308,50 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
     unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
         .then(|| {
             Arc::new(ClientState {
-                pid: Some(pid),
                 legacy_guest: std::fs::read(format!("/proc/{pid}/environ")).ok().and_then(
                     |environ| legacy_agent_protocol::window::guest_from_environ(&environ),
                 ),
-                ..ClientState::default()
+                ..ClientState::admitted(pid)
             })
         })
+}
+
+/// Start the worker that attributes each new public Wayland connection
+/// ([`public_client_state`]) off the loop, and the loop source that inserts
+/// the clients it admits. Kernel credentials bind a sandboxed connection to
+/// the exact compositor-supervised package/workspace launch; a direct host
+/// client has no record and remains explicitly unconfined. Attributing reads
+/// `/proc` (the process's ancestry, start times, namespaces and
+/// environment), which the loop never waits for. Answers where to send each
+/// accepted connection.
+fn admit_public_clients(
+    handle: &calloop::LoopHandle<'static, State>,
+) -> std::io::Result<std::sync::mpsc::Sender<UnixStream>> {
+    let (accepted, connections) = std::sync::mpsc::channel::<UnixStream>();
+    let (admit, admissions) = calloop::channel::channel::<(UnixStream, Arc<ClientState>)>();
+    handle
+        .insert_source(admissions, |event, (), state| {
+            if let calloop::channel::Event::Msg((stream, client_state)) = event
+                && let Err(err) = state.display_handle.insert_client(stream, client_state)
+            {
+                eprintln!("tilo compositor: failed to insert client: {err}");
+            }
+        })
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    std::thread::Builder::new()
+        .name("client-admission".into())
+        .spawn(move || {
+            while let Ok(stream) = connections.recv() {
+                let Some(client_state) = public_client_state(&stream) else {
+                    tracing::warn!("rejected unattributed Wayland client outside host namespaces");
+                    continue;
+                };
+                if admit.send((stream, client_state)).is_err() {
+                    return;
+                }
+            }
+        })?;
+    Ok(accepted)
 }
 
 fn external_floating_id(connection: u64, id: &str) -> String {
@@ -10120,22 +10157,22 @@ pub fn run() {
         }
     };
 
+    // A connection is attributed on a worker, which reads its process's
+    // ancestry and namespaces under /proc; the loop only inserts the
+    // client with what the worker found, in the order they connected.
+    let admitted = match admit_public_clients(&event_loop.handle()) {
+        Ok(admitted) => admitted,
+        Err(err) => {
+            eprintln!("tilo compositor: cannot start the client admission worker: {err}");
+            std::process::exit(1);
+        }
+    };
     if let Err(err) =
         event_loop
             .handle()
-            .insert_source(listening_socket, move |client_stream, (), state| {
-                // Kernel credentials bind a sandboxed connection to the exact
-                // compositor-supervised package/workspace launch. A direct host
-                // client has no record and remains explicitly unconfined.
-                let Some(client_state) = public_client_state(&client_stream) else {
-                    tracing::warn!("rejected unattributed Wayland client outside host namespaces");
-                    return;
-                };
-                if let Err(err) = state
-                    .display_handle
-                    .insert_client(client_stream, client_state)
-                {
-                    eprintln!("tilo compositor: failed to insert client: {err}");
+            .insert_source(listening_socket, move |client_stream, (), _| {
+                if admitted.send(client_stream).is_err() {
+                    tracing::warn!("the client admission worker stopped; a client was refused");
                 }
             })
     {

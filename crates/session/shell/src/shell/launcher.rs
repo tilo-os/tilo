@@ -5764,14 +5764,14 @@ pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
 /// An accepted toplevel's kernel peer, after ordinary workspace admission.
 /// A client-announced application id cannot produce a startup receipt.
 pub(crate) fn record_startup_window(
-    pid: u32,
+    ancestry: &[(u32, u64)],
     adoption: Option<tilo_action_broker::services::LaunchAdoption>,
 ) {
     LaunchSession::current()
         .startup
-        .adopted_window(pid, adoption);
+        .adopted_window(ancestry, adoption);
     #[cfg(target_os = "linux")]
-    window_doors::window_mapped(pid);
+    window_doors::window_mapped(ancestry);
 }
 
 /// Live unconfined launches a close of an unmatched toolkit window may stop.

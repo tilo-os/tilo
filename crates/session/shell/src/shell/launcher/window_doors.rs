@@ -319,8 +319,7 @@ pub(super) fn open_in_running(
 /// behind its door has not said it opens windows by now it never will: it
 /// was built before the door. The windows that waited go where its answer
 /// says.
-pub(crate) fn window_mapped(pid: u32) {
-    let ancestry = ancestry(pid);
+pub(crate) fn window_mapped(ancestry: &[(u32, u64)]) {
     let (open, alone) = {
         let mut doors = lock(&DOORS);
         let Some(door) = doors.as_mut().and_then(|doors| {
@@ -328,7 +327,7 @@ pub(crate) fn window_mapped(pid: u32) {
                 door.serves == Serves::Unknown
                     && door
                         .launcher_pid
-                        .is_some_and(|launcher| ancestry.contains(&launcher))
+                        .is_some_and(|launcher| ancestry.iter().any(|(pid, _)| *pid == launcher))
             })
         }) else {
             return;
@@ -359,22 +358,6 @@ pub(crate) fn window_mapped(pid: u32) {
         tracing::info!("an app built before the window door starts a process per window");
     }
     start_alone(alone);
-}
-
-/// `pid` and the processes it descends from, nearest first.
-fn ancestry(mut pid: u32) -> Vec<u32> {
-    let mut out = Vec::new();
-    for _ in 0..32 {
-        out.push(pid);
-        let Some((parent, _)) = super::proc_stat(pid) else {
-            break;
-        };
-        if parent == 0 || parent == pid {
-            break;
-        }
-        pid = parent;
-    }
-    out
 }
 
 /// Start each of `queued` in a process of its own, off the caller's thread:
@@ -682,7 +665,7 @@ mod tests {
             Routed::Opened,
             "waits for the app to answer"
         );
-        window_mapped(4_100_002);
+        window_mapped(&[(4_100_002, 0)]);
         waiting
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the waiting window starts a process of its own");
@@ -707,7 +690,7 @@ mod tests {
         let (_held, launcher_end) = running(package, room, 4_100_003);
         assert_eq!(open_in_running(&app, room, &never_alone), Routed::Opened);
         runtime_portal::windows::send_serves(&launcher_end).unwrap();
-        window_mapped(4_100_003);
+        window_mapped(&[(4_100_003, 0)]);
         assert!(
             ui::window_door::receive(&launcher_end)
                 .expect("a request")
