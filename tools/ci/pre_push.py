@@ -10,8 +10,7 @@ release"). So a push runs only what is cheap to catch and annoying to break, in 
     `policy/tests/*`, only when the change touches tools/policy/);
   * the generated-file and manifest checks whose inputs it touches (lockfile, deny, hakari,
     t-toml, codemap, sdk-policy, workspace-layout);
-  * `changes`, the diff gates (allow reasons, commit policy, user-requirement tests,
-    interfaces);
+  * `changes`, the diff gates (allow reasons, commit policy, interfaces);
   * clippy of the packages whose files it changes, not of their dependents.
 
 No tests, VM checks, images, suites or dependents: main's CI runs those on every commit and

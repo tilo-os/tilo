@@ -38,8 +38,7 @@ python3 tools/dev/install-git-hooks.py
   - the policy steps (`policy/*`) and the generated-file and manifest checks (`t-toml`,
     `codemap`, `sdk-policy`, `workspace-layout`, `lockfile`, `hakari`, `deny`) whose inputs it
     touches; the policy suite's own tests only when it touches `tools/policy/`;
-  - `changes`, the diff gates (allow reasons, commit messages, user-requirement tests,
-    interfaces);
+  - `changes`, the diff gates (allow reasons, commit messages, interfaces);
   - clippy of the packages whose files it changes, not of their dependents.
 
   No tests, VM checks, images, suites or dependents: `main` runs those on every commit, or on
