@@ -19,7 +19,6 @@ hex.workspace = true
 iroh.workspace = true
 n0-future = "0.3.2"
 postcard = { workspace = true, features = ["alloc"] }
-serde.workspace = true
 serde_json.workspace = true
 socket2 = "0.6"
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

@@ -475,8 +475,9 @@ repository = "https://code.tilo.so/tilo/tilo"
 homepage = "https://tilo.so"
 
 # workspace-hack is never named in code: it only unifies third-party features.
+# tilo-winit-x11 has no items: depending on it turns on winit's X11 backend.
 [workspace.metadata.cargo-machete]
-ignored = ["workspace-hack"]
+ignored = ["workspace-hack", "tilo-winit-x11"]
 
 [workspace.lints.rust]
 # `tilo_no_js`: a wasm32-unknown-unknown build for a host that is not a
