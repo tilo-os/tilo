@@ -992,6 +992,9 @@ pub struct NavList {
     /// The app declared its places come under headings, even while none
     /// has loaded yet ([`Self::with_headings`]).
     headings: bool,
+    /// The feed the list answers "which place is here?" through, for a
+    /// drag the app runs over it ([`NavFeed::place_at`]).
+    feed: Option<NavFeed>,
 }
 
 /// What a followed list reads: the sections and the chosen destination, or
@@ -1111,6 +1114,7 @@ impl NavList {
             unfiltered_open: None,
             source: None,
             headings: false,
+            feed: None,
         };
         list.install_presentation(false);
         list.refresh_keys();
@@ -1973,6 +1977,31 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         let mut access = crate::widget::Widget::accessibility(&self.tree)?;
         refresh(&mut access, &self.shared.borrow());
         Some(access)
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut crate::text_render::TextRenderer,
+        theme: &crate::Theme,
+        presence: &crate::PresenceCtx,
+    ) {
+        crate::widget::Widget::draw(&mut self.tree, scene, transform, text, theme, presence);
+        if let Some(feed) = &self.feed {
+            let model = self.tree.model();
+            let rows = self
+                .tree
+                .visible_rows()
+                .into_iter()
+                .filter_map(|(node, _, _)| {
+                    let key = model.key(node)?;
+                    let rect = self.tree.row_rect(node)?;
+                    Some((key.to_owned(), rect))
+                })
+                .collect();
+            feed.publish_rows(rows);
+        }
     }
 
     fn name(&self) -> &'static str {

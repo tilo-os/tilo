@@ -3101,7 +3101,7 @@ pub use page_preview::PagePreview;
 pub mod spinner;
 pub use spinner::Spinner;
 pub mod date_picker;
-pub use date_picker::{DatePicker, ExternalDatePickerHit};
+pub use date_picker::{DateFeed, DatePicker, DateShown, ExternalDatePickerHit};
 pub mod time_picker;
 pub mod timeline_density;
 pub use time_picker::{TimePicker, TimeValue};
