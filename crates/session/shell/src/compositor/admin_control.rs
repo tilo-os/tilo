@@ -267,8 +267,31 @@ pub(crate) fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
 
 /// Whether this process runs with the administrator group among its groups.
 /// The kernel's group list is what PAM set up at login; it is not something
-/// the session can claim for itself.
+/// the session can claim for itself, and it does not change while the
+/// process lives, so it is resolved once.
+///
+/// Resolving it reads the group database through NSS, which loads its
+/// modules and reads `/etc`: a wait on the disk the compositor's main loop
+/// must not make (the palette's actions ask while it is open).
+/// [`resolve_admin_group_in_background`] answers it on a startup thread; a call before that
+/// finishes waits for its answer instead of asking again.
 fn in_admin_group() -> bool {
+    *IN_ADMIN_GROUP.get_or_init(admin_group_now)
+}
+
+static IN_ADMIN_GROUP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Resolve [`in_admin_group`] on a thread of its own, started at startup so
+/// the main loop finds the answer.
+pub(crate) fn resolve_admin_group_in_background() {
+    let _ = std::thread::Builder::new()
+        .name("tilo-admin-group".into())
+        .spawn(|| {
+            in_admin_group();
+        });
+}
+
+fn admin_group_now() -> bool {
     let Some(admin) = group_id(ADMIN_GROUP) else {
         return false;
     };
