@@ -841,8 +841,9 @@ export async function startEntryPage({mode}) {
     identityActions = attachIdentity();
     void followProfile(page, name => { displayName = name; });
     // A drawn name someone else here already goes by is drawn again; a
-    // name the person chose stays theirs.
-    page.peer.setNameDrawer?.((current, lines) => {
+    // name the person chose stays theirs. A page with no host to join has
+    // no peer and nobody to share a name with.
+    page.peer?.setNameDrawer?.((current, lines) => {
       const key = page.peer.userPublicKey;
       if (chosenDisplayName(key)) return null;
       const redrawn = redrawnDisplayName(key, current, lines);
