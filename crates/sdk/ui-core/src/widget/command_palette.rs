@@ -220,6 +220,10 @@ pub struct CommandEntry {
     /// The application's own artwork, painted in place of `icon` when it
     /// decodes.
     pub image: Option<icons::AppImage>,
+    /// A person (an identity, a collaborator) as `(name, key)`: painted as
+    /// their avatar in place of `icon`, its initials from the name and its
+    /// colour from the key.
+    pub avatar: Option<(String, String)>,
     pub on_select: Option<Arc<SelectFn>>,
     /// Other ways to activate the row, each behind a held modifier. The
     /// selected row shows the one whose modifier is down, or the first as a
@@ -255,6 +259,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("group_total", &self.group_total)
             .field("icon", &self.icon)
             .field("image", &self.image)
+            .field("avatar", &self.avatar)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .field("alternates", &self.alternates)
             .field("description_is_path", &self.description_is_path)
@@ -280,6 +285,7 @@ impl CommandEntry {
             group_total: None,
             icon: None,
             image: None,
+            avatar: None,
             on_select: None,
             alternates: Vec::new(),
             description_is_path: false,
@@ -359,6 +365,14 @@ impl CommandEntry {
     #[must_use]
     pub fn image(mut self, image: icons::AppImage) -> Self {
         self.image = Some(image);
+        self
+    }
+
+    /// Show the row as a person ([`Self::avatar`]): `name` gives the
+    /// initials, `key` (a stable identity) the colour.
+    #[must_use]
+    pub fn avatar(mut self, name: impl Into<String>, key: impl Into<String>) -> Self {
+        self.avatar = Some((name.into(), key.into()));
         self
     }
 
@@ -2134,6 +2148,19 @@ impl CommandPalette {
         )
     }
 
+    /// Where a person's avatar sits: the icon's place, a little larger, so
+    /// its initials read.
+    fn row_avatar_rect(row: Rect) -> Rect {
+        let icon = Self::row_icon_rect(row);
+        let grow = 2.0;
+        Rect::new(
+            icon.x0,
+            icon.y0 - grow,
+            icon.x1 + 2.0 * grow,
+            icon.y1 + grow,
+        )
+    }
+
     /// The row's application artwork; the x its label starts at, or `None`
     /// when the artwork has no pixels and the glyph must stand in.
     fn draw_row_image(
@@ -2402,6 +2429,13 @@ impl CommandPalette {
             .and_then(|image| Self::draw_row_image(scene, transform, row, image));
         if let Some(x) = image_x {
             text_x = x;
+        } else if let Some((name, key)) = &entry.avatar {
+            let face = Self::row_avatar_rect(row);
+            crate::widget::AvatarFace::new(name, key).paint(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                face,
+            );
+            text_x = face.x1 + 10.0;
         } else if let Some(icon) = entry.icon {
             let icon_ink = if selected { label_ink } else { colors.text_dim };
             text_x = Self::draw_row_icon(scene, transform, row, icon, icon_ink);

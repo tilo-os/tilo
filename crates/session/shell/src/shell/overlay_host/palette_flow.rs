@@ -21,29 +21,56 @@ pub(super) const CHOICE_PREFIX: &str = "choice:";
 /// How one argument is asked for.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Step {
-    /// Rows to pick from: each value and how it reads.
-    Choices(Vec<(Value, String)>),
+    /// Rows to pick from.
+    Choices(Vec<Choice>),
     /// A field of a kind.
     Field(ArgumentSpec),
+}
+
+/// One value offered in an argument step: what it binds, how it reads, and
+/// for a person (an identity), the key of their avatar.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Choice {
+    pub value: Value,
+    pub label: String,
+    pub person: Option<String>,
+}
+
+impl Choice {
+    fn plain(value: Value, label: String) -> Self {
+        Self {
+            value,
+            label,
+            person: None,
+        }
+    }
 }
 
 /// The step that asks for `param` of the action titled `title`. Declared
 /// values are rows to pick from; a switch is On or Off; a number steps with
 /// the arrows inside its schema's bounds; a secret is masked.
 pub(super) fn step_for(param: &ActionParam, title: &str) -> Step {
-    if !param.choices.is_empty() {
+    if !param.choices.is_empty() || param.has_labelled_choices() {
+        // A choice reads as its label: an identity by its name, never by its
+        // fingerprint.
         return Step::Choices(
             param
                 .choices
                 .iter()
-                .filter_map(|choice| Some((value_of(param.ty, choice).ok()?, choice.to_string())))
+                .filter_map(|choice| {
+                    Some(Choice {
+                        value: value_of(param.ty, choice).ok()?,
+                        label: param.choice_label(choice).unwrap_or(choice).to_string(),
+                        person: param.choice_is_person(choice).then(|| choice.to_string()),
+                    })
+                })
                 .collect(),
         );
     }
     if param.ty == ParamType::Boolean {
         return Step::Choices(vec![
-            (Value::Bool(true), t("palette-value-on")),
-            (Value::Bool(false), t("palette-value-off")),
+            Choice::plain(Value::Bool(true), t("palette-value-on")),
+            Choice::plain(Value::Bool(false), t("palette-value-off")),
         ]);
     }
     let bound = |key: &str| {
@@ -168,11 +195,13 @@ pub(super) fn inline_argument(
     let name = param.name.to_string();
     if !param.choices.is_empty() {
         let wanted = fold(&text);
-        let exact = param.choices.iter().find(|c| fold(c) == wanted);
+        // A labelled choice is named by its label ("Alice"), as it reads.
+        let reads = |c: &str| fold(param.choice_label(c).unwrap_or(c));
+        let exact = param.choices.iter().find(|c| reads(c) == wanted);
         let mut prefixed = param
             .choices
             .iter()
-            .filter(|c| fold(c).starts_with(&wanted));
+            .filter(|c| reads(c).starts_with(&wanted));
         let choice = exact.or_else(|| match (prefixed.next(), prefixed.next()) {
             (Some(only), None) => Some(only),
             _ => None,
@@ -324,6 +353,47 @@ impl SecondaryAction {
 mod tests {
     use super::*;
 
+    // REQUIREMENT (2026-10-22): ""Use identity in this workspace" must never
+    // ask for a raw 64-character fingerprint. It offers a picker of the
+    // identities this device has (name and avatar, from the identity store)"
+    #[test]
+    fn choosing_an_identity_offers_names_and_avatars_never_a_fingerprint() {
+        use crate::shell::search::providers::actions::identity_select_params;
+        let (alice, bob) = ("a1".repeat(32), "b2".repeat(32));
+        let params =
+            identity_select_params(&[(alice.clone(), "Alice".into()), (bob.clone(), "Bob".into())]);
+        let id = params.iter().find(|param| param.name == "id").unwrap();
+        let Step::Choices(rows) = step_for(id, "Use identity in this workspace") else {
+            panic!("the identity is picked from a list, never typed");
+        };
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Alice", "Bob"],
+            "each reads as its name"
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.person.clone())
+                .collect::<Vec<_>>(),
+            [Some(alice.clone()), Some(bob)],
+            "each wears its avatar"
+        );
+        assert_eq!(rows[0].value, Value::String(alice), "and binds its id");
+        assert!(
+            !id.description.contains("fingerprint"),
+            "nobody is asked for a fingerprint"
+        );
+
+        let none = identity_select_params(&[]);
+        let id = none.iter().find(|param| param.name == "id").unwrap();
+        assert!(
+            matches!(step_for(id, "Use identity in this workspace"), Step::Choices(rows) if rows.is_empty()),
+            "with none connected the list is empty, never a field for a fingerprint"
+        );
+    }
+
     #[test]
     fn each_parameter_type_gets_its_own_step() {
         let choices = ActionParam::required("minutes", ParamType::Integer, "Minutes")
@@ -331,7 +401,7 @@ mod tests {
         let Step::Choices(rows) = step_for(&choices, "Lock after") else {
             panic!("declared values are rows");
         };
-        assert_eq!(rows[1], (Value::from(5), "5".to_string()));
+        assert_eq!(rows[1], Choice::plain(Value::from(5), "5".to_string()));
 
         let switch = ActionParam::required("enabled", ParamType::Boolean, "On or off");
         assert!(matches!(step_for(&switch, "Wi-Fi"), Step::Choices(rows) if rows.len() == 2));

@@ -395,13 +395,20 @@ impl ShellOverlayHost {
         let title = flow.result.title.clone();
         match palette_flow::step_for(&param, &title) {
             palette_flow::Step::Choices(rows) => {
-                flow.choices = rows.iter().map(|(value, _)| value.clone()).collect();
+                flow.choices = rows.iter().map(|choice| choice.value.clone()).collect();
                 let entries = rows
                     .into_iter()
                     .enumerate()
-                    .map(|(i, (_, label))| {
-                        CommandEntry::new(format!("{}{i}", palette_flow::CHOICE_PREFIX), label)
-                            .group(title.clone())
+                    .map(|(i, choice)| {
+                        let entry = CommandEntry::new(
+                            format!("{}{i}", palette_flow::CHOICE_PREFIX),
+                            choice.label.clone(),
+                        )
+                        .group(title.clone());
+                        match choice.person {
+                            Some(key) => entry.avatar(choice.label, key),
+                            None => entry,
+                        }
                     })
                     .collect();
                 self.palette.cancel_argument();
