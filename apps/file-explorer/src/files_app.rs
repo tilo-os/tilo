@@ -14,7 +14,7 @@ use ui::widget::TaffyTreeExt;
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
-use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
+use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, sort_entries};
 use crate::places_sidebar::{self, FavStore, Places};
 use crate::views::file_view::{FileView, ThumbCtx};
 use crate::{config, favorites, fileops, templates};
@@ -45,7 +45,6 @@ use vello::peniko::ImageData as PenikoImage;
 mod applications;
 mod clipboard_client;
 mod cloud_browse;
-mod directory_refresh;
 mod drives;
 mod entry_rows;
 mod mounted_cloud;
@@ -57,7 +56,7 @@ pub(crate) use clipboard_client::UndoRequest;
 mod archives;
 #[cfg(test)]
 use archives::archive_member_copy;
-use archives::{ArchiveMembers, archive_member_cached, archive_rows};
+use archives::{ArchiveMembers, archive_member_cached};
 mod clash;
 mod notice;
 mod preview;
@@ -66,6 +65,8 @@ mod read_text;
 use clash::{ClashChoice, PendingClash};
 mod selection_actions;
 use notice::{Notice, NoticeAction, NoticeClick};
+mod folder_read;
+use folder_read::{Purpose, Then};
 mod shown_selection;
 
 /// A copy or move shows its progress once it has run this long.
@@ -391,11 +392,8 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
 
 /// Template create Effects, rows of the window.
 /// The catalogue is the user's Templates directory, not the live folder listing.
-pub(crate) fn published_template_resources() -> Vec<Resource> {
-    let Some(template_dir) = templates::templates_dir() else {
-        return Vec::new();
-    };
-    templates::list_templates(&template_dir)
+pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<Resource> {
+    templates
         .into_iter()
         .map(|template| {
             let template_path = template.to_string_lossy().into_owned();
@@ -625,13 +623,17 @@ pub struct FileExplorerWidget {
     selection: SelectionModel,
     shown_selection: shown_selection::ShownSelection,
     shown_folder: Option<Arc<host_fs::RetainedObject>>,
+    /// Whether the folder shown is a folder on the disk, as its last read
+    /// found: not Recent, not inside an archive, not a failed read.
+    shown_is_folder: bool,
+    /// The read of the folder shown still outstanding, if any.
+    folder_reads: folder_read::FolderReads,
     local_clipboard: clipboard_client::Client,
     selected_open: selected_open::Client,
     error: Option<String>,
     is_loading: bool,
     /// Reads the archive being browsed off the window's thread.
     archive_listing: crate::archive::Listing,
-    directory_refresh: directory_refresh::DirectoryRefresh,
     /// Files being read out of archives to be opened.
     archive_members: ArchiveMembers,
     /// Archives waiting for the folder Extract to… asks for.
@@ -753,7 +755,9 @@ pub struct FileExplorerWidget {
     shots_status: bool,
     staged_hover: Option<usize>,
     staged_move_drag: bool,
-    templates_dir: Option<PathBuf>,
+    /// The user's template files, for the "New File" menus and the
+    /// published rows; read from memory on the frame loop.
+    templates: templates::Catalog,
     /// Shared indeterminate progress indicator for the loading state. Its
     /// reduced-motion behaviour and frame scheduling come from `Spinner`.
     state_spinner: Spinner,
@@ -1425,7 +1429,7 @@ impl FileExplorerWidget {
         let Some(device) = self.device.clone() else {
             return Vec::new();
         };
-        if self.is_trash_view() || !self.current_path.is_dir() {
+        if self.is_trash_view() || !self.shown_is_folder {
             return Vec::new();
         }
         let folder = self.current_path.display().to_string();
@@ -1756,7 +1760,8 @@ impl FileExplorerWidget {
                 local_clipboard: false,
             }),
         );
-        widget.templates_dir = Some(scene.home.join("Templates"));
+        widget.templates =
+            templates::Catalog::new(Some(scene.home.join("Templates")), ui::WakeHandle::new());
         if scene.start != scene.home {
             widget.navigate(scene.start.clone());
         }
@@ -1806,17 +1811,6 @@ impl FileExplorerWidget {
         let remote_accounts = inputs.remote_accounts;
         let remote_accounts_search =
             crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
-        let shown_folder = shown_selection::folder(&cwd);
-        let mut entries = if injected {
-            crate::model::read_dir_with_workspace_roots(&cwd, &workspace_roots)
-        } else {
-            read_dir_sync(&cwd)
-        }
-        .unwrap_or_default();
-        if !show_hidden {
-            entries.retain(|e| !e.name.starts_with('.'));
-        }
-        sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
         // The places list and the file view are swapped in on the first
         // `build_layout`; the toolbar is the content header's one action and
@@ -1835,24 +1829,23 @@ impl FileExplorerWidget {
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
         let state_retry = recovery_button(true);
-        Self {
+        let mut widget = Self {
             services,
             startup_accounts,
-            current_path: cwd,
+            current_path: cwd.clone(),
             home_path: home,
-            entries,
+            // Shown once the first read of `cwd` is (see below).
+            entries: Vec::new(),
             selection: SelectionModel::new(),
             shown_selection: shown_selection::ShownSelection::default(),
-            shown_folder,
+            shown_folder: None,
+            shown_is_folder: false,
+            folder_reads: folder_read::FolderReads::new(ui::WakeHandle::new()),
             error: None,
             is_loading: false,
             archive_listing: {
                 let wake = ui::WakeHandle::new();
                 crate::archive::Listing::new(move || wake.wake())
-            },
-            directory_refresh: {
-                let wake = ui::WakeHandle::new();
-                directory_refresh::DirectoryRefresh::new(move || wake.wake())
             },
             extract_chooser: None,
             archive_members: {
@@ -1921,7 +1914,10 @@ impl FileExplorerWidget {
             shots_status: false,
             staged_hover: None,
             staged_move_drag: false,
-            templates_dir: crate::templates::templates_dir(),
+            templates: crate::templates::Catalog::new(
+                crate::templates::templates_dir(),
+                ui::WakeHandle::new(),
+            ),
 
             composed_once: false,
             cmds,
@@ -2009,7 +2005,12 @@ impl FileExplorerWidget {
             app_chooser: ui::widget::command_palette::CommandPalette::commands(),
             app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
-        }
+        };
+        // Nothing is shown yet: until the first read is, that is the
+        // loading state.
+        widget.is_loading = true;
+        widget.read_shown_folder(cwd, Then::Nothing);
+        widget
     }
 
     /// The thumbnail context (service + peniko memo) handed to each rebuilt file
@@ -3649,90 +3650,6 @@ impl FileExplorerWidget {
         self.load(path);
     }
 
-    /// Re-read `path` into the view without touching history (shared by
-    /// navigate/back/forward/refresh).
-    fn load(&mut self, path: PathBuf) {
-        // `~/Applications` is part of the Applications place.
-        let path = self.place_of(path);
-        self.leave_cloud_browse();
-        self.typing.reset();
-        self.is_loading = true;
-        self.selection.clear();
-        self.retain_shown_selection();
-        self.error = None;
-        self.last_click = None;
-        self.status = None;
-        // A new directory starts at the top; the persisted scroll offset only
-        // survives *structural* rebuilds within the same directory.
-        self.scroll_offset.set((0.0, 0.0));
-        self.list_slot.reset_scroll();
-        self.invalidate_open_with();
-        self.close_app_chooser();
-        // Opening the Trash for the first time (nothing deleted yet) should show
-        // an empty folder, not a "no such directory" error, so materialise it.
-        if fileops::is_trash_dir(&path) {
-            let _ = fileops::ensure_trash_dir();
-        }
-        let recent = crate::recent::is_location(&path);
-        self.shown_folder = shown_selection::folder(&path);
-        // Watch before reading, so a change landing between the two is
-        // reported (and costs one more read) rather than lost.
-        let watched = self.watched_directory(&path);
-        self.directory_watch.point_at(watched.as_deref());
-        self.directory_changed = false;
-        self.directory_refresh.stop();
-        // The new directory's watch decides whether and how often it is
-        // polled; the next sync schedules that.
-        self.next_metadata_refresh = None;
-        self.last_directory_read = ui::time::now();
-        let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
-            let Some(entries) = crate::archive::cached(&archive_path) else {
-                // A compressed tar is decoded front to back to list it,
-                // which can take minutes: the window keeps running and
-                // shows the folder once it is read.
-                self.archive_listing.start(&archive_path);
-                self.current_path = path;
-                return;
-            };
-            crate::archive::children_of(&entries, &prefix)
-                .map(|rows| archive_rows(&archive_path, rows))
-                .map_err(|error| error.to_string())
-        } else {
-            self.archive_listing.stop();
-            self.read_directory(&path)
-        };
-        match loaded {
-            Ok(mut entries) => {
-                if !self.show_hidden {
-                    entries.retain(|e| !e.name.starts_with('.'));
-                }
-                // Recent is ordered by when you last used each item.
-                if !recent {
-                    sort_entries(self.sort_by, self.sort_order, &mut entries);
-                }
-                self.entries = entries;
-            }
-            Err(e) => {
-                // Drop stale entries so the error view isn't backed by the old
-                // directory's contents.
-                self.entries.clear();
-                self.shown_folder = None;
-                let may_pass = crate::fileops::FolderFailure::of(&e).may_pass();
-                self.state_retry = recovery_button(may_pass);
-                self.error = Some(t_args("files-directory-read-failed", &[arg("error", e)]));
-            }
-        }
-        // Always record the path we attempted, even on error, so a Refresh
-        // ("Try again") retries the same target rather than reloading the
-        // previous valid directory and silently clearing the error.
-        self.current_path = path;
-        if self.error.is_none() && crate::archive::location(&self.current_path).is_some() {
-            self.status = Some(t("files-archive-read-only"));
-        }
-        self.is_loading = false;
-        self.refresh_external_search_catalogs();
-    }
-
     /// Go to the parent directory (history-aware).
     pub fn back(&mut self) {
         if self.is_recent_view() || self.is_applications_view() {
@@ -3778,12 +3695,14 @@ impl FileExplorerWidget {
     /// rename/move metadata; ordinary files fall back to their path. Scroll
     /// and transient operation status remain untouched.
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
-        let refreshed = self.take_directory_refresh();
         // The first sync after construction starts the watches; changes made
-        // before a watch started are covered by one more read.
-        let watched = self.watched_directory(&self.current_path);
-        if self.directory_watch.point_at(watched.as_deref()) {
-            self.directory_changed = true;
+        // before a watch started are covered by one more read. A folder read starts the watch of the folder it reads; this
+        // starts it only for a folder shown without one.
+        if !self.folder_reads.is_pending() {
+            let watched = self.watched_directory(&self.current_path);
+            if self.directory_watch.point_at(watched.as_deref()) {
+                self.directory_changed = true;
+            }
         }
         let identities_watched = self.startup_accounts.is_none()
             && self.identity_watch.point_at(
@@ -3821,7 +3740,7 @@ impl FileExplorerWidget {
         let change_readable = self.directory_changed
             && now
                 >= self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len());
-        let changed = refreshed || identities_changed || catalog_changed;
+        let changed = identities_changed || catalog_changed;
         if !(directory_polled || change_readable) || self.directory_read_deferred() {
             return changed;
         }
@@ -3830,14 +3749,13 @@ impl FileExplorerWidget {
         let _ = self.directory_watch.take_changes();
         self.directory_changed = false;
         self.last_directory_read = now;
-        self.start_directory_refresh();
-        changed
+        self.refresh_metadata_preserving_view() || changed
     }
 
     /// A rename or pin drag defers reading the listing, and a read under way
     /// covers every change before it started.
     fn directory_read_deferred(&self) -> bool {
-        self.renaming.is_some() || self.pin_drag.is_some() || self.directory_refresh.is_reading()
+        self.renaming.is_some() || self.pin_drag.is_some() || self.folder_reads.is_pending()
     }
 
     /// The directory to watch for `path`'s listing: `None` for listings that
@@ -3900,11 +3818,72 @@ impl FileExplorerWidget {
     /// this path because their xattr response changes row metadata but is not
     /// navigation.
     fn refresh_metadata_preserving_view(&mut self) -> bool {
-        // A transient unmount/reconnect must not replace a still-useful
-        // view with an error page. Explicit Refresh remains the path that
-        // surfaces directory errors to the user.
-        self.read_directory(&self.current_path)
-            .is_ok_and(|entries| self.show_refreshed_entries(entries))
+        // A read still outstanding is newer than what is shown.
+        if self.folder_reads.is_pending() {
+            return false;
+        }
+        let job = self.folder_job(self.current_path.clone(), true);
+        self.folder_reads
+            .start(job, Purpose::Update)
+            .is_some_and(|(purpose, read)| self.apply_read(purpose, read))
+    }
+
+    /// Show `listing`, a new read of the folder shown, keeping the
+    /// selection (by stable record identity, else by path), the scroll and
+    /// the status.
+    fn update_from(&mut self, listing: Result<Vec<Entry>, String>) -> bool {
+        let selected = self
+            .selection
+            .selected()
+            .into_iter()
+            .filter_map(|index| self.entries.get(index))
+            .map(|entry| (entry.record_id, entry.path.clone()))
+            .collect::<Vec<_>>();
+        let primary = self
+            .selection
+            .primary()
+            .and_then(|index| self.entries.get(index))
+            .map(|entry| (entry.record_id, entry.path.clone()));
+        let Ok(mut entries) = listing else {
+            // A transient unmount/reconnect must not replace a still-useful
+            // view with an error page. Explicit Refresh remains the path that
+            // surfaces directory errors to the user.
+            return false;
+        };
+        if !self.show_hidden {
+            entries.retain(|entry| !entry.name.starts_with('.'));
+        }
+        if !self.is_recent_view() {
+            sort_entries(self.sort_by, self.sort_order, &mut entries);
+        }
+        if entries == self.entries {
+            return false;
+        }
+        let matches_key = |entry: &Entry, key: &(Option<[u8; 16]>, PathBuf)| {
+            key.0.map_or_else(
+                || entry.path == key.1,
+                |record| entry.record_id == Some(record),
+            )
+        };
+        let selected_indices = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                selected
+                    .iter()
+                    .any(|key| matches_key(entry, key))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let primary_index = primary
+            .as_ref()
+            .and_then(|key| entries.iter().position(|entry| matches_key(entry, key)));
+        self.entries = entries;
+        self.selection
+            .replace_indices(selected_indices, primary_index);
+        self.retain_shown_selection();
+        self.structure_dirty = true;
+        true
     }
 
     /// Single/double click handler retained for tests + the command path.
@@ -5360,11 +5339,8 @@ impl FileExplorerWidget {
         match templates::create_from_template(template, &self.current_path) {
             Ok(path) => {
                 self.note_recent(&path, crate::recent::RecentUse::Changed);
-                self.refresh();
-                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
-                    self.selection.select_only(i);
-                    self.retain_shown_selection();
-                    self.begin_rename();
+                if !self.cloud.active {
+                    self.load_then(self.current_path.clone(), Then::Rename(path));
                 }
                 self.status = Some(t("files-created-file"));
                 Ok(())
@@ -7577,10 +7553,7 @@ impl FileExplorerWidget {
     /// the current selection and clipboard.
     /// The template files currently available for the "New File ▸" submenu.
     pub fn available_templates(&self) -> Vec<PathBuf> {
-        self.templates_dir
-            .as_deref()
-            .map(templates::list_templates)
-            .unwrap_or_default()
+        self.templates.templates()
     }
 
     /// The menu item specs for the current selection / clipboard / state, given
@@ -8145,8 +8118,7 @@ impl FileExplorerWidget {
     /// The stored place of the folder shown, when it is a folder a person
     /// can pin (not Recent, Trash or an archive).
     pub(crate) fn current_place(&self) -> Option<String> {
-        (self.current_path.is_dir() && !self.is_trash_view())
-            .then(|| self.place_for(&self.current_path))
+        (self.shown_is_folder && !self.is_trash_view()).then(|| self.place_for(&self.current_path))
     }
 
     /// Whether the folder shown is one of the Favourites.
@@ -9605,7 +9577,7 @@ impl FileExplorerWidget {
         use ui::framework::LiveRow;
         let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites())
             .into_iter()
-            .chain(published_template_resources())
+            .chain(published_template_resources(self.available_templates()))
             .map(LiveRow::from_resource)
             .collect();
         rows.extend(self.live_entry_rows());
@@ -10009,8 +9981,8 @@ impl Widget for FileExplorerWidget {
         let sprang = self.spring_open_if_due(ui::time::now());
         // A folder's item count came in: the list shows it.
         let counted = self.folder_counts.take_arrived();
-        let listed = self.take_archive_listing()
-            | self.take_directory_refresh()
+        let listed = self.take_folder_read()
+            | self.take_archive_listing()
             | self.poll_extract_chooser()
             | self.open_read_members();
         self.structure_dirty |= notice_expired | counted;
