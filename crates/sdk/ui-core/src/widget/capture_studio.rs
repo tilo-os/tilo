@@ -1625,12 +1625,7 @@ impl CaptureStudio {
     /// what is chosen and the top is clear of it.
     fn setup_bar(&self) -> Rect {
         let m = &self.metrics;
-        let w = 2.0 * m.pad
-            + 3.0 * m.output_w
-            + 4.0 * m.target_w
-            + m.shutter
-            + m.icon_button
-            + 3.0 * m.gap;
+        let w = 2.0 * m.pad + 2.0 * self.setup_side() + m.shutter;
         let w = w.min(self.rect.width());
         let h = self.bar_height();
         let cx = self.rect.center().x;
@@ -1665,6 +1660,22 @@ impl CaptureStudio {
                 || (self.recording_finished_at.is_some()
                     && self.recording_receipt_layout().pill.contains(p))
                 || (self.shows_status() && self.status_bar().contains(p)))
+    }
+
+    /// How far each half of the setup bar reaches from the shutter: the
+    /// targets and the options on the right, the outputs on the left, with
+    /// the gap before the shutter. Both halves are this wide, so the shutter
+    /// is the bar's centre whatever is chosen.
+    fn setup_side(&self) -> f64 {
+        let m = &self.metrics;
+        let targets = TARGETS.len() as f64 * m.target_w + m.gap + m.icon_button;
+        targets.max(OUTPUTS.len() as f64 * m.output_w) + m.gap
+    }
+
+    /// One output segment's width: its label's, or wider so the outputs fill
+    /// their half of the bar as the targets and the options fill theirs.
+    fn output_segment_w(&self) -> f64 {
+        (self.setup_side() - self.metrics.gap) / OUTPUTS.len() as f64
     }
 
     /// The bar while recording, counting down or keeping the last 30
@@ -1732,23 +1743,26 @@ impl CaptureStudio {
         let cy = bar.center().y;
         let strip =
             |x: f64, w: f64| Rect::new(x, cy - m.strip_h / 2.0, x + w, cy + m.strip_h / 2.0);
+        // The shutter is the bar's centre: what comes out on its left, what
+        // it is of and the options on its right.
+        let cx = bar.center().x;
         let mut items = Vec::with_capacity(9);
-        let mut x = bar.x0 + m.pad;
+        let output_w = self.output_segment_w();
+        let mut x = cx - m.shutter / 2.0 - m.gap - OUTPUTS.len() as f64 * output_w;
         for i in 0..OUTPUTS.len() {
-            items.push((BarItem::Output(i), strip(x, m.output_w)));
-            x += m.output_w;
+            items.push((BarItem::Output(i), strip(x, output_w)));
+            x += output_w;
         }
-        x += m.gap;
+        items.push((
+            BarItem::Shutter,
+            Rect::from_center_size(Point::new(cx, cy), (m.shutter, m.shutter)),
+        ));
+        x = cx + m.shutter / 2.0 + m.gap;
         for i in 0..TARGETS.len() {
             items.push((BarItem::Target(i), strip(x, m.target_w)));
             x += m.target_w;
         }
         x += m.gap;
-        items.push((
-            BarItem::Shutter,
-            Rect::from_center_size(Point::new(x + m.shutter / 2.0, cy), (m.shutter, m.shutter)),
-        ));
-        x += m.shutter + m.gap;
         items.push((
             BarItem::Options,
             Rect::new(
@@ -2187,13 +2201,13 @@ impl CaptureStudio {
                     .style(SegmentedStyle::Quiet)
                     .hovered(targets.iter().position(|r| r.contains(self.cursor))),
             );
-            // Two separate choices, a rule between them and before the
-            // shutter: what comes out, then what it is of.
+            // Two separate choices with the shutter between them, set off
+            // by a rule on each side: what comes out, then what it is of.
             let ground = crate::chrome::panel_ground(theme);
             let inset = f64::from(theme.tokens.spacing.s2);
             for (left, right) in [
-                (BarItem::Output(OUTPUTS.len() - 1), BarItem::Target(0)),
-                (BarItem::Target(TARGETS.len() - 1), BarItem::Shutter),
+                (BarItem::Output(OUTPUTS.len() - 1), BarItem::Shutter),
+                (BarItem::Shutter, BarItem::Target(0)),
             ] {
                 let x = (self.bar_item(left).x1 + self.bar_item(right).x0) / 2.0;
                 crate::surface::vertical_separator(
