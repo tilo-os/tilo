@@ -29,7 +29,7 @@ use ui::motion::Presence;
 use ui::paint::PaintCtx;
 use ui::time::{Duration, Instant};
 use ui::widget::{Button, ButtonRole, ControlSize, Row, Toggle};
-use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Point, Rect};
 
 use super::{AlbumDisp, ArtistDisp, Look, PlaylistDisp, TrackTable};
 use crate::app::{Action, MusicApp, View};
@@ -677,13 +677,7 @@ impl MusicApp {
                 ctx.theme.border_focus,
                 ui::num::f32_of_f64(progress),
             );
-            ctx.scene.stroke(
-                &Stroke::new(2.0),
-                ctx.transform,
-                ink,
-                None,
-                &RoundedRect::from_rect(hit.rect.inflate(reach, reach), radius + reach),
-            );
+            ctx.stroke_round(hit.rect.inflate(reach, reach), radius + reach, ink, 2.0);
         }
     }
 
@@ -843,7 +837,7 @@ impl MusicApp {
             };
             let mut row = Row::new()
                 .no_wrap()
-                .with_gap(12.0)
+                .with_rhythm(ui::tokens::Rhythm::Sibling)
                 .with_justify(ui::taffy::JustifyContent::SpaceBetween)
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(facet_bar(&offers, &query, &on_change, &open));
@@ -1202,13 +1196,10 @@ impl MusicApp {
                 .iter()
                 .find(|hit| matches!(&hit.action, Action::Nav(View::Playlist(id)) if *id == target))
         {
-            ctx.scene.stroke(
-                &Stroke::new(2.0),
-                ctx.transform,
-                ctx.theme.border_focus,
-                None,
-                &RoundedRect::from_rect(hit.rect.inset(-1.0), 6.0),
-            );
+            // A playlist row's corner, concentric with the ring just outside it.
+            let radius = f64::from(ctx.theme.tokens.radii.item) + 1.0;
+            let ink = ctx.theme.border_focus;
+            ctx.stroke_round(hit.rect.inset(-1.0), radius, ink, 2.0);
         }
         let label = match drag.tracks.as_slice() {
             [one] => self.track_title(one),

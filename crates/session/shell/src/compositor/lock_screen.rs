@@ -908,6 +908,27 @@ pub fn draw_lock_scene_at_time(
     let (ext_w, ext_h) = combined_extent(outputs);
     if ext_w > 0.0 && ext_h > 0.0 {
         let backdrop = Rect::new(0.0, 0.0, ext_w, ext_h);
+        let visible_wallpaper = wallpaper.filter(|image| image.width > 0 && image.height > 0);
+        let wallpaper_layer = visible_wallpaper.is_some();
+        if let Some(image) = visible_wallpaper {
+            for output in outputs {
+                draw_wallpaper_on(
+                    &mut scene,
+                    image,
+                    LockLayout::for_output(*output, theme).output,
+                );
+            }
+            // A firm dark scrim over every display's picture leaves the lock
+            // experience legible and does not expose a bright image through
+            // password/notification chrome.
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                0.68,
+                Affine::IDENTITY,
+                &backdrop,
+            );
+        }
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
@@ -915,15 +936,8 @@ pub fn draw_lock_scene_at_time(
             None,
             &backdrop,
         );
-        if let Some(image) = wallpaper.filter(|image| image.width > 0 && image.height > 0) {
-            for output in outputs {
-                draw_wallpaper_on(
-                    &mut scene,
-                    image,
-                    LockLayout::for_output(*output, theme).output,
-                    theme,
-                );
-            }
+        if wallpaper_layer {
+            scene.pop_layer();
         }
     }
 
@@ -987,10 +1001,9 @@ pub fn draw_lock_scene_at_time(
     scene
 }
 
-/// `image` covering one display's `rect` (centred, cropped to its shape),
-/// under the firm scrim that keeps the lock chrome legible and never shows
-/// a bright picture through the password or notification surfaces.
-fn draw_wallpaper_on(scene: &mut Scene, image: &ImageData, rect: Rect, theme: &Theme) {
+/// `image` covering one display's `rect` (centred, cropped to its shape).
+/// The lock scene lays one firm scrim over every display's picture.
+fn draw_wallpaper_on(scene: &mut Scene, image: &ImageData, rect: Rect) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
@@ -1009,13 +1022,6 @@ fn draw_wallpaper_on(scene: &mut Scene, image: &ImageData, rect: Rect, theme: &T
         Affine::IDENTITY,
         &brush,
         Some(brush_transform),
-        &rect,
-    );
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        theme.tokens.colors.surfaces.base.with_alpha(0.68),
-        None,
         &rect,
     );
 }
