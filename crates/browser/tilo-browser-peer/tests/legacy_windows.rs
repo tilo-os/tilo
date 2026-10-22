@@ -15,6 +15,22 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{TestHost, enrol, ready, start_host, start_peer, workspace};
 
+/// The next stream-index frame in `group`, or `None` for a group that carries
+/// no index. The live track seals a quiet track with a group holding one empty
+/// frame (`tilo_moq::live::SEAL_AFTER`), and a group the publisher superseded
+/// before it was read reads as dropped; the page skips both, and so does this
+/// reader, waiting for the next index group instead.
+macro_rules! index_frame {
+    ($group:expr) => {
+        $group
+            .read_frame()
+            .await
+            .ok()
+            .flatten()
+            .filter(|frame| !frame.payload.is_empty())
+    };
+}
+
 fn publish(client: &RelayClient, author: [u8; 32], message: &NeighbourMsg) {
     client
         .send(Envelope::Presence {
@@ -234,7 +250,7 @@ async fn native_window_scenario() {
     tilo_test_env::within("the stream index", async {
         loop {
             if let Some(mut group) = index.recv_group().await.unwrap()
-                && let Some(frame) = group.read_frame().await.unwrap()
+                && let Some(frame) = index_frame!(group)
                 && wire::Frame::decode(&frame.payload).unwrap()
                     == wire::Frame::Index(vec![expected.clone()])
             {
@@ -324,7 +340,7 @@ async fn native_window_scenario() {
     tilo_test_env::within("the revoked stream index", async {
         loop {
             if let Some(mut group) = index.recv_group().await.unwrap()
-                && let Some(frame) = group.read_frame().await.unwrap()
+                && let Some(frame) = index_frame!(group)
                 && matches!(wire::Frame::decode(&frame.payload), Ok(wire::Frame::Index(streams)) if streams.is_empty()) {
                     break;
                 }
@@ -575,7 +591,7 @@ async fn a_session_without_an_h264_encoder_streams_vp9_to_a_browser_that_decodes
     tilo_test_env::within("the VP9 stream index", async {
         loop {
             if let Some(mut group) = index.recv_group().await.unwrap()
-                && let Some(frame) = group.read_frame().await.unwrap()
+                && let Some(frame) = index_frame!(group)
                 && wire::Frame::decode(&frame.payload).unwrap()
                     == wire::Frame::Index(vec![expected.clone()])
             {
