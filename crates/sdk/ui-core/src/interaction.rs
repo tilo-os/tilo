@@ -357,6 +357,22 @@ pub(crate) fn back_key_as_escape(
     }
 }
 
+/// What a contact means to the widget where it begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TouchClaim {
+    /// Ordinary content: a tap clicks, a drag scrolls, a hold is the
+    /// secondary click.
+    #[default]
+    Pointer,
+    /// A drag moves something (a canvas item, a text selection): past the
+    /// tap's slop it is a left-button drag; a tap and a hold are as for
+    /// [`Self::Pointer`] ([`Widget::drags_by_touch`](crate::widget::Widget::drags_by_touch)).
+    Drag,
+    /// The widget reads the raw contact stream itself
+    /// ([`Widget::claims_raw_touch`](crate::widget::Widget::claims_raw_touch)).
+    Raw,
+}
+
 /// Pointer events synthesised from direct touch, so ordinary widgets work on a
 /// touchscreen without interpreting contact streams themselves.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -415,8 +431,11 @@ struct ActiveTouch {
     start: winit::dpi::PhysicalPosition<f64>,
     last: winit::dpi::PhysicalPosition<f64>,
     started_at: crate::time::Instant,
+    /// Travelled past the tap's slop: scrolling, or dragging when `drag`.
     scrolling: bool,
     long_pressed: bool,
+    /// A drag of this contact is a pointer drag ([`TouchClaim::Drag`]).
+    drag: bool,
 }
 
 /// Two or more fingers on ordinary content: pinch zooms, a joint drag pans.
@@ -430,7 +449,9 @@ struct MultiTouch {
 /// Converts direct touch into the toolkit's ordinary pointer contract.
 ///
 /// * One finger: a tap is a left click, a drag scrolls, and a still 500 ms
-///   hold is a secondary click (the context menu). Press is deliberately
+///   hold is a secondary click (the context menu). Where the widget moves
+///   things by dragging ([`TouchClaim::Drag`]) a drag is a left-button drag
+///   instead, pressed where the finger landed once it passes the slop. Press is deliberately
 ///   delayed until touch-end: many controls activate on pointer-down, so
 ///   emitting it earlier would toggle a checkbox before a scroll or edge
 ///   swipe had enough movement to cancel the tap.
@@ -465,10 +486,31 @@ impl TouchPointerEmulator {
         touch: &winit::event::Touch,
         claims_raw: impl FnOnce(winit::dpi::PhysicalPosition<f64>) -> bool,
     ) -> Vec<TouchPointerEvent> {
+        self.events_claimed(touch, |at| {
+            if claims_raw(at) {
+                TouchClaim::Raw
+            } else {
+                TouchClaim::Pointer
+            }
+        })
+    }
+
+    /// Translate one contact update. `claim` is asked only when a contact
+    /// begins, with its physical position.
+    pub fn events_claimed(
+        &mut self,
+        touch: &winit::event::Touch,
+        claim: impl FnOnce(winit::dpi::PhysicalPosition<f64>) -> TouchClaim,
+    ) -> Vec<TouchPointerEvent> {
         use crate::gesture::GesturePhase;
         use winit::event::TouchPhase;
         self.device_id = Some(touch.device_id);
-        if touch.phase == TouchPhase::Started && claims_raw(touch.location) {
+        let claim = if touch.phase == TouchPhase::Started {
+            claim(touch.location)
+        } else {
+            TouchClaim::Pointer
+        };
+        if claim == TouchClaim::Raw {
             self.raw.insert(touch.id);
             return Vec::new();
         }
@@ -487,7 +529,7 @@ impl TouchPointerEmulator {
         };
         let gestures = self.arena.on_touch(touch.id, point, phase);
         if touch.phase == TouchPhase::Started {
-            return self.begin(touch);
+            return self.begin(touch, claim == TouchClaim::Drag);
         }
         if let Some(multi) = self.multi {
             return self.multi_touch(multi, touch.phase, &gestures);
@@ -495,7 +537,7 @@ impl TouchPointerEmulator {
         self.single_touch(touch)
     }
 
-    fn begin(&mut self, touch: &winit::event::Touch) -> Vec<TouchPointerEvent> {
+    fn begin(&mut self, touch: &winit::event::Touch, drag: bool) -> Vec<TouchPointerEvent> {
         if self.multi.is_some() {
             return Vec::new();
         }
@@ -507,6 +549,7 @@ impl TouchPointerEmulator {
                 started_at: crate::time::now(),
                 scrolling: false,
                 long_pressed: false,
+                drag,
             });
             return Vec::new();
         };
@@ -518,6 +561,10 @@ impl TouchPointerEmulator {
         });
         if first.long_pressed {
             Vec::new()
+        } else if first.scrolling && first.drag {
+            // A drag in progress ends where the finger is, as a lifted
+            // button would.
+            Self::drag_end(first.last)
         } else if first.scrolling {
             vec![TouchPointerEvent::Scroll {
                 delta: winit::dpi::PhysicalPosition::new(0.0, 0.0),
@@ -618,6 +665,22 @@ impl TouchPointerEmulator {
                 let total_y = touch.location.y - active.start.y;
                 if !active.scrolling && total_x.hypot(total_y) <= Self::TAP_SLOP {
                     Vec::new()
+                } else if active.drag {
+                    use winit::event::MouseButton;
+                    self.active = Some(ActiveTouch {
+                        last: touch.location,
+                        scrolling: true,
+                        ..active
+                    });
+                    if active.scrolling {
+                        vec![TouchPointerEvent::Move(touch.location)]
+                    } else {
+                        vec![
+                            TouchPointerEvent::Move(active.start),
+                            TouchPointerEvent::Press(MouseButton::Left),
+                            TouchPointerEvent::Move(touch.location),
+                        ]
+                    }
                 } else {
                     let delta = winit::dpi::PhysicalPosition::new(
                         touch.location.x - active.last.x,
@@ -641,6 +704,8 @@ impl TouchPointerEmulator {
                 self.active = None;
                 if active.long_pressed {
                     Vec::new()
+                } else if active.scrolling && active.drag {
+                    Self::drag_end(touch.location)
                 } else if active.scrolling {
                     vec![TouchPointerEvent::Scroll {
                         delta: winit::dpi::PhysicalPosition::new(0.0, 0.0),
@@ -660,6 +725,8 @@ impl TouchPointerEmulator {
                 self.active = None;
                 if active.long_pressed {
                     Vec::new()
+                } else if active.scrolling && active.drag {
+                    Self::drag_end(active.last)
                 } else if active.scrolling {
                     vec![TouchPointerEvent::Scroll {
                         delta: winit::dpi::PhysicalPosition::new(0.0, 0.0),
@@ -670,6 +737,16 @@ impl TouchPointerEmulator {
                 }
             }
         }
+    }
+
+    /// The end of a pointer drag at `at`: the button lifts there and the
+    /// pointer leaves, as after a tap.
+    fn drag_end(at: winit::dpi::PhysicalPosition<f64>) -> Vec<TouchPointerEvent> {
+        vec![
+            TouchPointerEvent::Move(at),
+            TouchPointerEvent::Release(winit::event::MouseButton::Left),
+            TouchPointerEvent::Move(Self::CANCEL_POINT),
+        ]
     }
 
     /// When a still single-finger hold becomes a long press, if one is armed.
@@ -1004,6 +1081,90 @@ mod tests {
         assert!(emulator.poll(deadline).is_none(), "fires once");
         assert!(feed(&mut emulator, TouchPhase::Moved, 4, 90.0, 60.0).is_empty());
         assert!(feed(&mut emulator, TouchPhase::Ended, 4, 90.0, 60.0).is_empty());
+    }
+
+    fn feed_drag(
+        emulator: &mut TouchPointerEmulator,
+        phase: winit::event::TouchPhase,
+        id: u64,
+        x: f64,
+        y: f64,
+    ) -> Vec<TouchPointerEvent> {
+        emulator.events_claimed(&touch(phase, id, x, y), |_| TouchClaim::Drag)
+    }
+
+    #[test]
+    fn where_a_drag_moves_things_a_finger_drags_taps_and_holds() {
+        use TouchPointerEvent::{Move, Press, Release};
+        use winit::event::{MouseButton, TouchPhase};
+        let gone = Move((-1.0, -1.0).into());
+        // Case `a_drag_presses_where_the_finger_landed_and_releases_where_it_lifts`.
+        {
+            let mut emulator = TouchPointerEmulator::default();
+            assert!(feed_drag(&mut emulator, TouchPhase::Started, 1, 50.0, 60.0).is_empty());
+            assert!(
+                feed_drag(&mut emulator, TouchPhase::Moved, 1, 54.0, 60.0).is_empty(),
+                "within the slop nothing moves yet"
+            );
+            assert_eq!(
+                feed_drag(&mut emulator, TouchPhase::Moved, 1, 90.0, 60.0),
+                vec![
+                    Move((50.0, 60.0).into()),
+                    Press(MouseButton::Left),
+                    Move((90.0, 60.0).into())
+                ]
+            );
+            assert_eq!(emulator.long_press_deadline(), None, "a drag is no hold");
+            assert_eq!(
+                feed_drag(&mut emulator, TouchPhase::Moved, 1, 120.0, 70.0),
+                vec![Move((120.0, 70.0).into())]
+            );
+            assert_eq!(
+                feed_drag(&mut emulator, TouchPhase::Ended, 1, 121.0, 70.0),
+                vec![Move((121.0, 70.0).into()), Release(MouseButton::Left), gone]
+            );
+        }
+        // Case `a_tap_still_clicks`.
+        {
+            let mut emulator = TouchPointerEmulator::default();
+            feed_drag(&mut emulator, TouchPhase::Started, 2, 10.0, 20.0);
+            assert_eq!(
+                feed_drag(&mut emulator, TouchPhase::Ended, 2, 11.0, 20.0),
+                vec![
+                    Move((11.0, 20.0).into()),
+                    Press(MouseButton::Left),
+                    Release(MouseButton::Left),
+                    gone
+                ]
+            );
+        }
+        // Case `a_still_hold_is_still_the_secondary_click`.
+        {
+            let mut emulator = TouchPointerEmulator::default();
+            feed_drag(&mut emulator, TouchPhase::Started, 3, 50.0, 60.0);
+            let deadline = emulator.long_press_deadline().expect("armed");
+            let (_, events) = emulator.poll(deadline).expect("the hold fires");
+            assert_eq!(
+                events,
+                vec![
+                    Move((50.0, 60.0).into()),
+                    Press(MouseButton::Right),
+                    Release(MouseButton::Right)
+                ]
+            );
+            assert!(feed_drag(&mut emulator, TouchPhase::Moved, 3, 90.0, 60.0).is_empty());
+            assert!(feed_drag(&mut emulator, TouchPhase::Ended, 3, 90.0, 60.0).is_empty());
+        }
+        // Case `a_second_finger_ends_the_drag_with_a_release`.
+        {
+            let mut emulator = TouchPointerEmulator::default();
+            feed_drag(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
+            feed_drag(&mut emulator, TouchPhase::Moved, 4, 90.0, 60.0);
+            assert_eq!(
+                feed_drag(&mut emulator, TouchPhase::Started, 5, 200.0, 60.0),
+                vec![Move((90.0, 60.0).into()), Release(MouseButton::Left), gone]
+            );
+        }
     }
 
     #[test]

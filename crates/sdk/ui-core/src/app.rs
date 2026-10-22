@@ -2207,6 +2207,28 @@ impl App {
         })
     }
 
+    /// What a contact beginning at `point` (logical coords) means: raw for a
+    /// widget that reads fingers itself, a pointer drag where a widget moves
+    /// things by dragging, else ordinary pointer emulation.
+    #[cfg(feature = "native")]
+    fn touch_claim_at(&self, point: Point) -> crate::interaction::TouchClaim {
+        use crate::interaction::TouchClaim;
+        if self.claims_raw_touch_at(point) {
+            return TouchClaim::Raw;
+        }
+        let drags = self.layout.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.drags_by_touch(point)
+            })
+            .unwrap_or(false)
+        });
+        if drags {
+            TouchClaim::Drag
+        } else {
+            TouchClaim::Pointer
+        }
+    }
+
     /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.

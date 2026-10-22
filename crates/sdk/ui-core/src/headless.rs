@@ -6483,8 +6483,8 @@ impl FrameHarness {
         if let WindowEvent::Touch(touch) = event {
             let scale = self.input_scale;
             let mut touch_pointer = std::mem::take(&mut self.touch_pointer);
-            let pointer_events = touch_pointer.events(touch, |position| {
-                self.claims_raw_touch_at(Point::new(position.x / scale, position.y / scale))
+            let pointer_events = touch_pointer.events_claimed(touch, |position| {
+                self.touch_claim_at(Point::new(position.x / scale, position.y / scale))
             });
             self.touch_pointer = touch_pointer;
             self.dispatch_touch_pointer(touch.device_id, pointer_events);
@@ -8570,6 +8570,27 @@ impl FrameHarness {
             })
             .unwrap_or(false)
         })
+    }
+
+    /// What a contact beginning at `point` (logical coords) means: raw for a
+    /// widget that reads fingers itself, a pointer drag where a widget moves
+    /// things by dragging, else ordinary pointer emulation.
+    fn touch_claim_at(&self, point: Point) -> crate::interaction::TouchClaim {
+        use crate::interaction::TouchClaim;
+        if self.claims_raw_touch_at(point) {
+            return TouchClaim::Raw;
+        }
+        let drags = self.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.drags_by_touch(point)
+            })
+            .unwrap_or(false)
+        });
+        if drags {
+            TouchClaim::Drag
+        } else {
+            TouchClaim::Pointer
+        }
     }
 
     /// Fire a touch long-press whose hold deadline passed at `now`.
