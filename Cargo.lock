@@ -108,6 +108,7 @@ name = "account-custody"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "agent-provider-config",
  "base64",
  "browser-continuity-core",
  "cloud-source",
@@ -327,6 +328,7 @@ dependencies = [
 name = "agent-provider-config"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
  "settings-store",

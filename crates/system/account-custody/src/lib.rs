@@ -17,9 +17,13 @@
 //!   [`Custodian::oauth_access_token`] for a current access token before
 //!   each `XOAUTH2` login; refresh and resealing happen here.
 //! - **The model gateway** asks [`Custodian::oauth_access_token_with_expiry`]
-//!   for Google Vertex AI requests, from a grant Settings sealed for one
-//!   agent model provider. That grant carries only the Google Cloud scope
-//!   ([`Capability::Models`]), apart from any Mail or Files grant.
+//!   for signed-in agent model providers (Google Vertex AI and the Gemini
+//!   API, a `ChatGPT` or GitHub Copilot subscription, Hugging Face), from a
+//!   grant Settings sealed for one provider. That grant carries only its
+//!   models scope ([`Capability::Models`]), apart from any Mail or Files
+//!   grant. Copilot signs in by device code
+//!   ([`Custodian::begin_device_sign_in`]); `OpenRouter` hands back an API
+//!   key instead of a grant ([`openrouter`]).
 //! - **The daemon** reads one account's short-lived credential from the
 //!   handoff store ([`accounts::handoff`]) through
 //!   [`accounts::HandoffCredentialSource`]. When it is missing, due or
@@ -45,6 +49,8 @@ pub mod icloud;
 #[cfg(feature = "custody")]
 pub mod nextcloud;
 #[cfg(feature = "custody")]
+pub mod openrouter;
+#[cfg(feature = "custody")]
 pub mod portable;
 pub mod providers;
 #[cfg(feature = "custody")]
@@ -56,7 +62,7 @@ pub mod storage;
 #[cfg(feature = "custody")]
 pub use spotify_identity::{SpotifyIdentity, with_verified_spotify_access_token};
 
-pub use clients::{ClientEntry, ClientTable, Scopes};
+pub use clients::{COPILOT_TOKEN_ENDPOINT, ClientEntry, ClientTable, Scopes};
 #[cfg(feature = "custody")]
 pub use custodian::{
     Custodian, CustodyError, GrantState, ImportedRegistration, SIGN_IN_TIMEOUT, copied_secret,
@@ -67,6 +73,8 @@ pub use custodian::{
 pub use providers::{Capability, OAuthCloud, OAuthIssuer, OAuthUse};
 #[cfg(feature = "custody")]
 pub use tilo_oauth::client::Authorization;
+#[cfg(feature = "custody")]
+pub use tilo_oauth::device::{DeviceAuthorization, DeviceCancel};
 pub use tilo_oauth::loopback::LoopbackCancel;
 pub use tilo_oauth::{Registration, TokenSet};
 

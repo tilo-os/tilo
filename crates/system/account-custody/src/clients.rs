@@ -10,12 +10,15 @@
 use std::sync::OnceLock;
 
 use serde::Deserialize;
-use tilo_oauth::{Provider, RedirectPorts, Registration};
+use tilo_oauth::{Provider, Redirect, RedirectPorts, Refresh, Registration};
 
 use crate::providers::{Capability, OAuthCloud, OAuthIssuer, OAuthUse};
 
 /// The committed defaults.
 const DEFAULTS: &str = include_str!("../oauth-clients.toml");
+
+/// Where a Copilot subscription's GitHub token is traded for Copilot tokens.
+pub const COPILOT_TOKEN_ENDPOINT: &str = "https://api.github.com/copilot_internal/v2/token";
 
 /// The scopes each use of one client asks for. An empty list: this issuer
 /// is not used for that.
@@ -53,6 +56,12 @@ pub struct ClientEntry {
     pub client_secret: String,
     /// Empty: any free loopback port.
     pub redirect_ports: Vec<u16>,
+    /// The redirect's host when the issuer registered one other than
+    /// `127.0.0.1`; empty for that.
+    pub redirect_host: String,
+    /// The redirect's path when the issuer registered one other than
+    /// `/oauth`; empty for that.
+    pub redirect_path: String,
     pub paste_code_fallback: bool,
     pub scopes: Scopes,
 }
@@ -65,6 +74,9 @@ pub struct ClientTable {
     pub microsoft: ClientEntry,
     pub dropbox: ClientEntry,
     pub spotify: ClientEntry,
+    pub openai: ClientEntry,
+    pub github: ClientEntry,
+    pub huggingface: ClientEntry,
 }
 
 impl ClientTable {
@@ -94,6 +106,9 @@ impl ClientTable {
             OAuthIssuer::Microsoft => &self.microsoft,
             OAuthIssuer::Dropbox => &self.dropbox,
             OAuthIssuer::Spotify => &self.spotify,
+            OAuthIssuer::OpenAi => &self.openai,
+            OAuthIssuer::GitHub => &self.github,
+            OAuthIssuer::HuggingFace => &self.huggingface,
         }
     }
 
@@ -110,10 +125,19 @@ impl ClientTable {
             .of(oauth_use.capability)
     }
 
-    /// The issuer's descriptor with the scopes of `oauth_use`.
+    /// The issuer's descriptor with the scopes of `oauth_use`. A GitHub
+    /// grant for models is a Copilot subscription's: it is renewed by
+    /// trading the GitHub token for a Copilot token.
     pub fn descriptor(&self, oauth_use: OAuthUse) -> Provider {
+        let refresh = match (oauth_use.issuer, oauth_use.capability) {
+            (OAuthIssuer::GitHub, Capability::Models) => Refresh::CopilotToken {
+                endpoint: COPILOT_TOKEN_ENDPOINT.into(),
+            },
+            _ => Refresh::RefreshToken,
+        };
         Provider {
             scopes: self.scopes(oauth_use).to_vec(),
+            refresh,
             ..oauth_use.issuer.endpoints()
         }
     }
@@ -142,6 +166,13 @@ impl ClientTable {
                 RedirectPorts::Any
             } else {
                 RedirectPorts::Registered(entry.redirect_ports.clone())
+            },
+            redirect: {
+                let default = Redirect::default();
+                Redirect {
+                    host: non_empty(&entry.redirect_host).unwrap_or(default.host),
+                    path: non_empty(&entry.redirect_path).unwrap_or(default.path),
+                }
             },
             paste_code_fallback: entry.paste_code_fallback,
         })
@@ -267,6 +298,53 @@ mod tests {
         assert_eq!(gmail_client, drive_client);
         assert_eq!(gmail.token_endpoint, drive.token_endpoint);
         assert_ne!(gmail.scopes, drive.scopes);
+    }
+
+    #[test]
+    fn the_model_subscriptions_sign_in_as_their_issuers_require() {
+        let table = ClientTable::parse(DEFAULTS).expect("oauth-clients.toml");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_OAUTH_OPENAI_CLIENT_ID")
+            .remove("TILO_OAUTH_GITHUB_CLIENT_ID")
+            .remove("TILO_OAUTH_HUGGINGFACE_CLIENT_ID");
+        let chatgpt = OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models);
+        let (provider, client) = table.config(chatgpt).expect("ChatGPT is configured");
+        // OpenAI matches the whole redirect URI it registered.
+        assert_eq!(client.redirect_ports, RedirectPorts::Registered(vec![1455]));
+        assert_eq!(client.redirect.host, "localhost");
+        assert_eq!(client.redirect.path, "/auth/callback");
+        assert!(
+            provider
+                .scopes
+                .iter()
+                .any(|scope| scope == "offline_access")
+        );
+        assert_eq!(provider.refresh, Refresh::RefreshToken);
+
+        let copilot = OAuthUse::new(OAuthIssuer::GitHub, Capability::Models);
+        let (provider, client) = table.config(copilot).expect("Copilot is configured");
+        assert!(provider.device_authorization_endpoint.is_some());
+        assert_eq!(
+            provider.refresh,
+            Refresh::CopilotToken {
+                endpoint: COPILOT_TOKEN_ENDPOINT.into()
+            }
+        );
+        assert_eq!(client.redirect, Redirect::default());
+        // A GitHub grant for anything else would be refreshed as usual.
+        assert_eq!(
+            table
+                .descriptor(OAuthUse::identity(OAuthIssuer::GitHub))
+                .refresh,
+            Refresh::RefreshToken
+        );
+
+        // Hugging Face needs a distributor's own registration.
+        let hugging_face = OAuthUse::new(OAuthIssuer::HuggingFace, Capability::Models);
+        if option_env!("TILO_OAUTH_HUGGINGFACE_CLIENT_ID").is_none() {
+            assert!(!table.is_configured(hugging_face));
+        }
+        assert!(!table.scopes(hugging_face).is_empty());
     }
 
     #[test]
