@@ -22,7 +22,9 @@ use serde_json::{Value, json};
 use settings_store::display_tuning;
 use settings_store::hardware::{DisplayHardwareSnapshot, RichInputConfig};
 use settings_store::{keyboard_sources, power};
-use tilo_actions::{ActionContract, ConfirmationPolicy, OperationKind, RetryPolicy, RiskLevel};
+use tilo_actions::{
+    ActionAddress, ActionContract, ConfirmationPolicy, OperationKind, RetryPolicy, RiskLevel,
+};
 use ui::search::FieldWeight;
 
 use crate::shell::chrome_state::Chrome;
@@ -406,10 +408,21 @@ fn set_params(kind: Kind) -> Vec<ActionParam> {
             "Minutes of inactivity before the screen turns off; 0 means never.",
             power::BLANK_CHOICES,
         )],
-        Kind::SuspendAfter => vec![minutes(
-            "Minutes of inactivity before the machine suspends while plugged in; 0 means never.",
-            power::SUSPEND_CHOICES,
-        )],
+        Kind::SuspendAfter => vec![
+            minutes(
+                "Minutes of inactivity before the machine suspends; 0 means never.",
+                power::SUSPEND_CHOICES,
+            ),
+            ActionParam::optional_owned(
+                "power",
+                ParamType::Text,
+                "The timer of this power source. Default: the one the device runs on now.",
+            )
+            .with_labelled_choices([
+                (PLUGGED_IN, t("setting-suspend-plugged-in")),
+                (ON_BATTERY, t("setting-suspend-on-battery")),
+            ]),
+        ],
         Kind::AutoSuspend => vec![ActionParam::required_owned(
             "enabled",
             ParamType::Boolean,
@@ -517,6 +530,50 @@ fn changed(spec: &Spec, previous: &Reading, value: &Value) -> Value {
     json!({"setting": spec.id, "value": value, "previous": previous.value})
 }
 
+/// The `power` choices of `power.suspend-after.set`.
+const PLUGGED_IN: &str = "plugged-in";
+const ON_BATTERY: &str = "battery";
+
+/// The change setting the suspend timer to `minutes` as Settings' Power
+/// pane shows it: where the profiles' own timers truly differ, the selected
+/// profile's; otherwise the timer of the power source `args` names, else of
+/// the one the device runs on now (on battery only where it has one).
+fn suspend_change(
+    st: &crate::shell::chrome_state::ChromeState,
+    minutes: u32,
+    args: &ActionArgs,
+) -> Result<(ActionAddress, serde_json::Map<String, Value>), ActionError> {
+    use crate::shell::quick_settings::PowerProfile;
+    use crate::shell::settings_records::{address, set_field};
+    let timers = power::SuspendTimers::from_section(&settings_store::load_section(power::SECTION));
+    if timers.profiles_differ() {
+        let profile = match st.quick_settings.power_profile {
+            PowerProfile::Saver => "saver",
+            PowerProfile::Balanced => "balanced",
+            PowerProfile::Performance => "performance",
+        };
+        return Ok((
+            address("settings.power", "field-edit"),
+            set_field(&format!("{profile}_suspend_minutes"), &json!(minutes)),
+        ));
+    }
+    let on_battery = match args.text("power") {
+        None => st.quick_settings.battery.runs_on_battery(),
+        Some(PLUGGED_IN) => false,
+        Some(ON_BATTERY) if st.quick_settings.battery.present => true,
+        Some(ON_BATTERY) => return Err(refuse("this device has no battery")),
+        Some(other) => return Err(refuse(format!("{other:?} is not a power source"))),
+    };
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("minutes".into(), json!(minutes));
+    let verb = if on_battery {
+        "set-suspend-on-battery"
+    } else {
+        "set-suspend-plugged-in"
+    };
+    Ok((address("settings.power", verb), arguments))
+}
+
 /// Run a non-display `.set` or `.toggle` through the section's field edit
 /// or verb, as the person at this seat.
 fn apply(
@@ -539,11 +596,7 @@ fn apply(
             of_power("field-edit"),
             set_field("blank_minutes", &json!(minutes_arg(args)?)),
         ),
-        Kind::SuspendAfter => {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert("minutes".into(), json!(minutes_arg(args)?));
-            (of_power("set-suspend-plugged-in"), arguments)
-        }
+        Kind::SuspendAfter => suspend_change(&chrome.borrow(), minutes_arg(args)?, args)?,
         Kind::AutoSuspend => {
             let enabled = match verb {
                 Verb::Toggle => !power::AUTO_SUSPEND.get(),
@@ -1204,15 +1257,48 @@ mod tests {
             );
         }
 
-        // Phase `suspend_after_is_the_plugged_in_timer`.
+        // Phase `suspend_after_sets_the_timer_settings_shows`.
         {
-            run(
-                &chrome,
-                "power.suspend-after.set",
-                arg("minutes", ArgValue::Integer(30)),
-            )
-            .unwrap();
-            assert_eq!(power::SUSPEND_MINUTES.get(), 30);
+            let suspend = |minutes: i64, source: Option<&str>| {
+                let mut args = arg("minutes", ArgValue::Integer(minutes));
+                if let Some(source) = source {
+                    args.push(("power".into(), ArgValue::Text(source.into())));
+                }
+                run(&chrome, "power.suspend-after.set", args)
+            };
+            let timers = || {
+                power::SuspendTimers::from_section(&settings_store::load_section(power::SECTION))
+            };
+            // No battery: the one timer, plugged in.
+            suspend(30, None).unwrap();
+            assert_eq!(timers().plugged_in(), 30);
+            assert!(
+                suspend(5, Some("battery")).is_err(),
+                "no battery timer without a battery"
+            );
+            // On battery: its own timer, the other source still named.
+            chrome.borrow_mut().quick_settings.battery = tilo_power_mgmt::BatterySnapshot {
+                present: true,
+                percent: 50,
+                state: tilo_power_mgmt::BatteryState::Discharging,
+            };
+            suspend(5, None).unwrap();
+            suspend(60, Some("plugged-in")).unwrap();
+            assert_eq!((timers().on_battery(), timers().plugged_in()), (5, 60));
+            // Profiles that keep their own timers: the selected profile's.
+            settings_store::SectionWrite::new()
+                .set(&power::SAVER_SUSPEND_MINUTES, &10)
+                .commit_by(&settings_store::ChangeOrigin::action("test"))
+                .unwrap();
+            chrome.borrow_mut().quick_settings.power_profile =
+                crate::shell::quick_settings::PowerProfile::Saver;
+            suspend(15, None).unwrap();
+            assert_eq!(timers().of_profile("saver"), Some(15));
+            assert_eq!(
+                timers().of_profile("balanced"),
+                Some(60),
+                "the others keep theirs"
+            );
         }
 
         // Phase `a_boolean_toggles_and_sets`.
