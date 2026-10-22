@@ -356,8 +356,9 @@ catalogue payload and verifier are internal to its CLI. It has no speech engine
 launch verb or checked-in speech release. Extend that shared lifecycle rather
 than inventing a second unsigned installer or an ambient executable path.
 
-Current main supplies the existing release route in
-`.forgejo/workflows/release-local-model-catalog.yml`, documented by
+Current main supplies the existing release route in t's model catalog checks
+(`model-catalog-compiler`, `review-speech-catalog`, `sign-model-catalog`,
+`publish-model-catalog`), documented by
 `crates/agent/local-model-service/RELEASE.md`. Its production catalogue source is
 `dist/local-models/catalog-source.json`, and its public key identifier is
 `tilo-local-model-release-2026-10`. Immutable Forgejo package URLs already host
@@ -665,9 +666,9 @@ hashes, full notices, CPU capability and hardware requirements. It rejects
 insecure transport, altered receipts, excess bytes and overwriting. Its output
 is staging, not installation or permission to record.
 
-The existing protected `release-local-model-catalog.yml` has two explicit modes:
+The release route has two explicit modes, both t checks dispatched on stable:
 
-1. `review-speech` stages public inputs without credentials, signs a candidate
+1. `review-speech-catalog` stages public inputs without credentials, signs a candidate
    with the existing `TILO_MODEL_CATALOG_SIGNING_KEY`, compares the resulting
    public key with the installed image key, and uploads only signed catalog,
    public key, declarative source and review hashes. It publishes no weights,
@@ -675,9 +676,9 @@ The existing protected `release-local-model-catalog.yml` has two explicit modes:
 2. Review those exact artifact bytes and commit the matching source and signed
    image catalog through the normal protected PR path. A development key or
    removal of the reproduction comparison cannot bootstrap a release.
-3. Default `publish` supports the prior U²-Net-only release or these exact four
+3. `publish-model-catalog` supports the prior U²-Net-only release or these exact four
    models. It stages verified speech inputs, publishes weights and full MIT
-   notices using the existing `RELEASE_TOKEN`, and verifies anonymous readback
+   notices using the package token, and verifies anonymous readback
    before signing. Authentication, rate-limit or server read failures never
    become an upload; an existing receipt conflict fails without overwriting.
    It reproduces the checked-in catalog and key bytes before catalog publication.
@@ -685,7 +686,7 @@ The existing protected `release-local-model-catalog.yml` has two explicit modes:
    license-acceptance and installation actions obtain a model. Installation
    neither starts recognition nor grants microphone permission.
 
-Both modes run only from protected main with the existing release key id
+Both modes run only from stable or a release tag with the existing release key id
 `tilo-local-model-release-2026-10`. Live microphone consent remains a separate
 local decision for each recording. The source candidate and workflow extension
 alone leave the currently installed catalog unchanged.
@@ -1440,12 +1441,11 @@ still contain only U²-Net, so an ordinary installed desktop still refuses to
 load speech until the reviewed release is approved. No new signing identity,
 trust root, account, API charge or microphone permission is introduced.
 
-The normal route is the existing manual
-`.forgejo/workflows/release-local-model-catalog.yml` on `main`: `review-speech`
-fetches exact upstream receipts and creates a review artifact using the
+The normal route is the existing manual t dispatch on stable:
+`review-speech-catalog` fetches exact upstream receipts and creates a review artifact using the
 existing protected catalogue identity, with trust-key equality checked.
 After explicit release approval and promotion of reviewed source/signed image
-inputs, `publish` uses the existing protected package credential, immutable
+inputs, `publish-model-catalog` uses the existing protected package credential, immutable
 model/license URLs and anonymous exact readback, then reproduces and compares
 the signed image inputs before publishing the catalogue. Image deployment is
 a separate authorized operation. Source support for the four-entry candidate

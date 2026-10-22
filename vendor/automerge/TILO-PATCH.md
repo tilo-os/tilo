@@ -295,9 +295,9 @@ are `TILO(work-count)` in `src/work.rs`, `batch.rs`, `op_set.rs`,
 # Tilo change: the fork's own tests run in CI
 
 The workspace builds this crate as a path dependency and never runs its
-tests, so `tools/ci/test-vendored-crates.sh` runs them: check.yml's
-`vendored` job whenever this directory or `vendor/automerge-test` changes,
-and the nightly. The manifest therefore declares its own `[workspace]` (so
+tests, so `tools/ci/test-vendored-crates.sh` runs them: t's `vendored`
+check whenever this directory or `vendor/automerge-test` changes, and the
+nightly. The manifest therefore declares its own `[workspace]` (so
 its tests run from this directory however the checkout is nested) and
 restores upstream's `automerge-test` dev-dependency, which crates.io
 publication drops and `tests/test.rs` needs, from `vendor/automerge-test`

@@ -14,7 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE_WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
-KERNEL_WORKFLOW = ROOT / ".forgejo/workflows/build-kernel.yml"
+KERNEL_BUILD = ROOT / "tools/ci/publish/kernel.sh"
 APPS_WORKFLOW = ROOT / ".forgejo/workflows/release-apps.yml"
 DESKTOP_WORKFLOW = ROOT / ".forgejo/workflows/release-desktop.yml"
 
@@ -60,12 +60,6 @@ def run_script(step: str, env: dict[str, str], files: dict[str, str] | None = No
             name, _, value = line.partition("=")
             values[name] = value
     return values, text
-
-
-def runner_cache() -> dict[str, str]:
-    """What the runner gives every job for its compiler cache."""
-    return {"ACTIONS_CACHE_URL": "http://runner-cache:8088/run/", "ACTIONS_RUNTIME_TOKEN": "runner-token",
-            "SCCACHE_GHA_ENABLED": "on", "RUSTC_WRAPPER": "/ci-tools/sccache"}
 
 
 class ImagePublicationTests(unittest.TestCase):
@@ -121,49 +115,30 @@ class ImagePublicationTests(unittest.TestCase):
 
 
 class KernelPublicationTests(unittest.TestCase):
+    """t's image-kernel-<arch> (tools/ci/publish/kernel.sh build) compiles the kernel t signs."""
+
     def setUp(self):
-        self.workflow = KERNEL_WORKFLOW.read_text()
-        self.steps = steps(self.workflow)
-        self.bind = self.steps["Bind the runner compiler cache"]
+        self.script = KERNEL_BUILD.read_text()
+        self.build = self.script.split("  build)\n", 1)[1].split("\n    ;;", 1)[0]
 
     def test_published_kernels_never_read_the_cache(self):
-        with self.subTest(phase='only pull requests read the shared cache; publications only write it'):
-            self.assertIn("PULL_REQUEST: ${{ github.event_name == 'pull_request' }}", self.bind)
-            values, _ = run_script(self.bind, {"PULL_REQUEST": "false", **runner_cache()})
-            self.assertEqual(values["KERNEL_COMPILER_CACHE"], "populate")
-            self.assertEqual(values["KERNEL_REQUIRE_COMPILER_CACHE"], "0")
-            values, _ = run_script(self.bind, {"PULL_REQUEST": "true", **runner_cache()})
-            self.assertEqual(values["KERNEL_COMPILER_CACHE"], "shared")
-            self.assertEqual(values["KERNEL_REQUIRE_COMPILER_CACHE"], "1")
-            self.assertEqual(values["KERNEL_COMPILER_CACHE_SECRETS"].splitlines(), [
-                "actions_cache_url=ACTIONS_CACHE_URL",
-                "actions_runtime_token=ACTIONS_RUNTIME_TOKEN",
-            ])
-            for pull_request in ("true", "false"):
-                values, _ = run_script(self.bind, {"PULL_REQUEST": pull_request})
-                self.assertEqual(values["KERNEL_COMPILER_CACHE"], "off")
-                self.assertEqual(values["KERNEL_COMPILER_CACHE_SECRETS"], "")
+        with self.subTest(phase='every kernel build compiles with the cache off'):
+            self.assertIn("--build-arg TILO_COMPILER_CACHE=off --build-arg TILO_REQUIRE_COMPILER_CACHE=0)",
+                          self.build)
+            builds = re.findall(r'^    b build .*', self.build.replace("\\\n", " "), re.M)
+            self.assertEqual(len(builds), 2, builds)
+            for build in builds:
+                self.assertIn('"${args[@]}"', build)
         with self.subTest(phase='populate compiles every object before writing it'):
             text = (ROOT / "os/kernel/Containerfile").read_text()
             self.assertIn("populate:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_RECACHE=1 ;;", text)
-        with self.subTest(phase='kernel builds pass credentials only through the bind'):
-            self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE=1", self.workflow)
-            build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
-            self.assertIn("TILO_COMPILER_CACHE=${{ env.KERNEL_COMPILER_CACHE }}", build)
-            self.assertIn("secret-envs: ${{ env.KERNEL_COMPILER_CACHE_SECRETS }}", build)
-            probe = self.steps["Prove firmware rejects unsigned EFI and executes the signed image"]
-            self.assertIn('"TILO_COMPILER_CACHE=$KERNEL_COMPILER_CACHE"', probe)
-            self.assertIn("if [[ $KERNEL_COMPILER_CACHE != off ]]; then", probe)
-            outside = probe.replace(probe[probe.index("cache_secrets=(--secret"):probe.index("          fi\n")], "")
-            self.assertNotIn("--secret id=actions_cache_url", outside)
-            for forbidden in ("SCCACHE_AWS", "SCCACHE_BUCKET", "aws_access_key_id", "compiler_cache_env.sh"):
-                self.assertNotIn(forbidden, self.workflow)
+        with self.subTest(phase='kernel builds pass no cache credentials'):
+            for forbidden in ("--secret", "ACTIONS_CACHE_URL", "ACTIONS_RUNTIME_TOKEN", "SCCACHE_AWS",
+                              "SCCACHE_BUCKET", "aws_access_key_id", "compiler_cache_env.sh",
+                              "TILO_COMPILER_CACHE=shared", "TILO_COMPILER_CACHE=populate"):
+                self.assertNotIn(forbidden, self.script)
         with self.subTest(phase='a published kernel imports no layer cache'):
-            build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
-            self.assertIn(
-                "cache-from: ${{ github.event_name == 'pull_request' && "
-                "format('type=gha,scope=kernel-{0}', matrix.arch) || '' }}", build)
-            self.assertEqual(self.workflow.count("cache-from:"), 1)
+            self.assertNotIn("--cache-from", self.script)
 
 
 class AppCollectionPublicationTests(unittest.TestCase):

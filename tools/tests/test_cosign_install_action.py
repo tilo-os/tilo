@@ -7,12 +7,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ".forgejo/actions/install-cosign"
 CONSUMERS = {
-    "build-ci-builder.yml": 2,
+    "build-env-tools.yml": 2,
     "build-image.yml": 2,
-    "build-kernel.yml": 3,
-    "build-buildroots.yml": 3,
-    "build-rpms.yml": 1,
-    "release-relay.yml": 2,
+    "dev-disk.yml": 2,
 }
 
 
@@ -39,18 +36,6 @@ class CosignInstallActionTests(unittest.TestCase):
                 path.read_text(encoding="utf-8") for path in workflows.glob("*.y*ml")
             )
             self.assertNotIn("path: os/external-assets/cosign-cache", combined)
-        with self.subTest(phase='path filtered consumers track the shared action'):
-            workflows = ROOT / ".forgejo" / "workflows"
-            for name in (
-                "build-ci-builder.yml",
-                "build-kernel.yml",
-                "build-buildroots.yml",
-                "build-rpms.yml",
-                "release-relay.yml",
-            ):
-                with self.subTest(workflow=name):
-                    source = (workflows / name).read_text(encoding="utf-8")
-                    self.assertIn(f'"{ACTION_PATH}/**"', source)
 
 
 if __name__ == "__main__":

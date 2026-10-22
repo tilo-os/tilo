@@ -1,6 +1,6 @@
 //! The guest image: a signed, digest-pinned disk from the registry.
 //!
-//! CI builds the Linux guest (`.forgejo/workflows/build-legacy-guest.yml`),
+//! CI builds the Linux guest (`tools/ci/publish/legacy-guest.sh`),
 //! wraps its qcow2 in an OCI image, signs it with the release key and pins
 //! the digest in `os/legacy-guest-snapshot.env`, which is compiled in here.
 //! `skopeo` fetches by that digest, and `/etc/containers/policy.json`

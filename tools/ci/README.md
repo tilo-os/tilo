@@ -91,7 +91,7 @@ They need:
   a fork can pull them as they are. To build its own, publish
   `os/Containerfile.ci-fast`, `os/Containerfile.ci-control` and
   `os/Containerfile.builder` (t's `image-ci-fast` and `image-ci-control`
-  checks in `t.toml`, and `build-ci-builder.yml`), change the pins, and set
+  and `image-ci-builder` checks in `t.toml`), change the pins, and set
   `TILO_CI_REGISTRY`, `TILO_CI_BUILDER_REPOSITORY` and
   `TILO_CI_REGISTRY_TOKEN_REALM` for the builder lookup.
 - **Artifact actions.** The `actions/upload-artifact` and
@@ -115,6 +115,6 @@ Jobs that need more than an unprivileged container:
 |---|---|
 | `ci-filesystem.yml` cloud-servers | service containers (WebDAV, Nextcloud, PostgreSQL) |
 | `build-env-tools.yml` | a privileged container |
-| `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
+| `dev-disk.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |
-| Image, kernel and buildroot builds | Docker with Buildx |
+| `build-image.yml` | Docker with Buildx |

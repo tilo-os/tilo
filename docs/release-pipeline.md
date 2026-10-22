@@ -398,7 +398,7 @@ To find the current tag, read the `org.opencontainers.image.version` label of
   variables with the repository-scoped `secrets.RELEASE_TOKEN`; it needs no OIDC.
 - Dev VM disks are development artifacts, never release-signed, so
   `os/dev/publish-dev-disk.sh` (in the OS lane and in `dev-disk.yml`) uploads them with the CI account's package token
-  (`secrets.REGISTRY_TOKEN`, as `build-kernel.yml` uses) rather than an
+  (`secrets.REGISTRY_TOKEN`) rather than an
   Authorized Integration; the job token pushes the dev image to
   `registry.tilo.so`. Disk uploads go to
   `TILO_PACKAGE_PUBLIC_BASE_URL`, because the 100 GiB runners do not resolve the

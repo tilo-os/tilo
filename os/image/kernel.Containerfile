@@ -12,8 +12,8 @@ ARG RPMS_REF
 # ---------------------------------------------------------------------------
 # Custom Tilo kernel: swap Fedora's kernel-core for our tuned tilo-kernel-core.
 # ---------------------------------------------------------------------------
-# The kernel image (see os/kernel/Containerfile + .forgejo/workflows/
-# build-kernel.yml) rebuilds Fedora's kernel with a config fragment that:
+# The kernel image (see os/kernel/Containerfile and
+# tools/ci/publish/kernel.sh) rebuilds Fedora's kernel with a config fragment that:
 #   * links storage/USB/HID boot-path drivers statically while keeping network
 #     drivers signed and modular because networking is off the login path, so the
 #     boot path needs no module loading to reach the root device, and

@@ -623,7 +623,7 @@ jobs:
           BASE_CHILD_DIGEST: ${{ steps.base.outputs.child-digest }}
           CHANNEL: ${{ needs.plan.outputs.channel }}
           # Dev disks are development artifacts, never release-signed; the CI
-          # account's package token (as build-kernel.yml uses) writes them.
+          # account's package token writes them.
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: ./os/dev/publish-dev-disk.sh

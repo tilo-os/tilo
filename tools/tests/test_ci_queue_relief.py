@@ -8,12 +8,15 @@ from pathlib import Path
 import re
 import os
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools/ci"))
+import t_matrix  # noqa: E402
 
 
 def workflow(name):
@@ -66,7 +69,9 @@ class QueueReliefTests(unittest.TestCase):
         with self.subTest(phase='builder recipe does not run e2e against the old image'):
             legacy_events = section(workflow("ci-legacy-apps"), "on")
             self.assertNotIn('os/Containerfile.builder', legacy_events)
-            self.assertIn('os/Containerfile.builder', section(workflow("build-ci-builder"), "on"))
+            checks = {check["name"]: check for check in t_matrix.checks(ROOT)}
+            for arch in ("x86_64", "aarch64"):
+                self.assertIn('os/Containerfile.builder', checks[f"image-ci-builder-{arch}"]["inputs"])
         with self.subTest(phase='os candidate can run after skipped signing preflight'):
             build = section(workflow("build-image"), "build-and-push", 2)
             self.assertIn("always()", build)

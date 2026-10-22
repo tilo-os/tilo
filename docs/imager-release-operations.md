@@ -578,27 +578,24 @@ listed in the header of `os/dev/internal-bundle.py`.
 
 ## Kernel buildroot snapshot credentials
 
-`build-buildroots.yml` authenticates, signs and lands its pins exactly
-like `build-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
-variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
+t's kernel buildroot chain (`image-kernel-buildroot-<arch>`, `sign-kernel-buildroot`,
+`publish-kernel-buildroot`, `pin-kernel-buildroot`; `tools/ci/publish/kernel-buildroot.sh`)
+authenticates, signs and lands its pins like the RPM snapshot and kernel chains; it
+needs no stored secret of its own:
 
-- The job token (`secrets.GITHUB_TOKEN`, logged in with
-  `docker/login-action`) pushes `tilo/tilo-kernel-buildroot` to
-  `registry.tilo.so`; the mirrored base is anonymously readable there.
-- `COSIGN_KEY_REF` (a KMS/HSM URI) and `AWS_SIGNING_ROLE_ARN` sign each native
-  buildroot through `os/dev/configure-cosign-kms.sh` and Forgejo OIDC. A
-  preflight job refuses to start the multi-hour builds unless the KMS public
-  key equals `keys/cosign.pub`.
-- The job token pushes an `automation/kernel-buildroot-snapshot-<digest>` branch
-  and `RELEASE_TOKEN` opens the protected-main pull request through
-  `os/dev/open-snapshot-pr.py`.
+- The builds hold no credentials. Each architecture builds natively and must carry a
+  matching `/usr/lib/tilo/kernel-buildroot-arch` marker and base, a recorded package
+  list, exactly one signature-checked kernel SRPM and no remaining yum repositories.
+- `sign-kernel-buildroot`, on stable, exchanges a t identity token for the KMS signing
+  role (`os/dev/configure-cosign-kms.sh`) and signs both digests with a transparency
+  log entry; `publish-kernel-buildroot` pushes them with a `registry.tilo.so` identity
+  token and sets the `kernel-buildroot` pointer.
+- `pin-kernel-buildroot`, on main, pins stable's buildroots only when main would build
+  the same ones (the inputs digest in the pointer), verifies both signatures with
+  `keys/cosign.pub`, writes `os/kernel-buildroot-snapshot.env` through
+  `os/dev/open-snapshot-pr.py pins`, and t commits and pushes it.
 
-Each architecture builds on its native runner with `no-cache`, publishes by
-digest, and must carry a matching `/usr/lib/tilo/kernel-buildroot-arch` marker,
-a recorded package list, and no remaining yum repositories. Both signatures
-are verified with `keys/cosign.pub` before either reference is recorded, and
-promotion refuses to proceed if any snapshot input changed on main while the
-builds ran. Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
+Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
 
 ## Package indexes
 

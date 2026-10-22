@@ -297,7 +297,7 @@ name = "no-cisco-openh264"
 requirement = { cores = 1, memory = "1GiB" }
 # No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
 # finished-rootfs gate, and the CI/developer environments that alone may carry it.
-inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
+inputs = ["os/", "t.toml", "tools/ci/t_matrix.py", "dist/ci/install-build-deps.sh"]
 suites = ["os/tests/test_no_cisco_openh264.py"]
 
 [[group]]
@@ -1514,10 +1514,6 @@ suite = "apps/imager/packaging/test_release_catalog.py"
 by = "os/tests/imager_release_invariants.sh"
 
 [[covered]]
-suite = "os/containers/tilo-relay/test-base-retry.sh"
-by = "os/containers/tilo-relay/test-contract.sh"
-
-[[covered]]
 suite = "os/tests/test_require_cosign_authority.py"
 by = "os/tests/workflow_dependency_invariants.sh"
 
@@ -1690,8 +1686,7 @@ reason = "needs make and a kernel source tree"
 
 [[unrequired]]
 suite = "os/kernel/tests/test-rpm.sh"
-reason = "needs the built kernel RPM"
-workflow = "build-kernel.yml"
+reason = "needs the built kernel RPM; kernel-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/test-vm-headless.sh"
@@ -1903,8 +1898,7 @@ reason = "needs FEX sources and a guest rootfs container"
 
 [[unrequired]]
 suite = "os/tests/secureboot_vm_probe.sh"
-reason = "needs a compiled kernel, OVMF and QEMU"
-workflow = "build-kernel.yml"
+reason = "needs a compiled kernel, OVMF and QEMU; kernel-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/session-context-check.sh"

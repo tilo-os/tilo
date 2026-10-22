@@ -260,7 +260,7 @@ if [ -z "${ENV_RUNTIME_REF:-}" ] && [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
     ENV_RUNTIME_REF=scratch
   fi
 fi
-# The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
+# The digest-pinned tilo-kernel image (built by t's image-kernel-<arch> checks
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.
 # An explicit digest is useful while validating a newly published kernel, but
@@ -279,7 +279,7 @@ case "$(uname -m)" in
   *) die "unsupported kernel architecture: $(uname -m)" ;;
 esac
 KERNEL_RPMS_REF="${_tilo_kernel_ref_override:-$_tilo_native_kernel_ref}"
-[ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
+[ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run t test image-kernel-$(uname -m) (or podman build -f os/kernel/Containerfile) first"
 fi
 # Pre-flight: every host-side COPY source exists. Decidable in a second, and the
 # alternative is finding out ~20 minutes in from a message naming a path with a

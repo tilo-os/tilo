@@ -10,36 +10,45 @@ fail=0
 
 manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/release-desktop.yml"
-kernel_workflow="$workflows/build-kernel.yml"
-rpm_snapshot_workflow="$workflows/build-rpms.yml"
 containerfile="$repo/os/Containerfile"
 visual_baselines="$repo/tools/ci/visual-baselines.sh"
+# t builds, signs and publishes the kernel, the RPM snapshot, the kernel buildroot, the relay,
+# the env-runtime, the legacy guest and the CI builder (t.toml, generated from
+# tools/ci/products.toml); these scripts are what its checks run.
+t_toml="$repo/t.toml"
+publish="$repo/tools/ci/publish"
+kernel_script="$publish/kernel.sh"
 github_cache_workflows=(
-  "$workflows/build-ci-builder.yml"
   "$workflows/build-image.yml"
   "$workflows/release-desktop.yml"
   "$workflows/release-imager.yml"
-  "$workflows/build-rpms.yml"
 )
 cosign_workflows=(
-  "$workflows/build-ci-builder.yml"
   "$workflows/build-image.yml"
-  "$workflows/build-kernel.yml"
-  "$workflows/release-relay.yml"
   "$workflows/release-imager.yml"
-  "$workflows/build-rpms.yml"
-  "$workflows/build-buildroots.yml"
   "$workflows/dev-disk.yml"
 )
 dev_disk_workflow="$workflows/dev-disk.yml"
 syft_workflow="$workflows/build-image.yml"
 release_signed_workflows=(
-  "$workflows/build-ci-builder.yml"
   "$workflows/build-image.yml"
-  "$workflows/build-kernel.yml"
-  "$workflows/release-relay.yml"
-  "$workflows/build-rpms.yml"
 )
+# A t check's field, one value per line (a string as itself, an array per element, a table as
+# key=value); fails when t.toml declares no such check, so a renamed check cannot pass unobserved.
+tcheck() {
+  python3 - "$t_toml" "$1" "$2" <<'PY'
+import sys, tomllib
+config = tomllib.load(open(sys.argv[1], "rb"))
+for check in config.get("check", []):
+    if check.get("name") == sys.argv[2]:
+        value = check.get(sys.argv[3], [])
+        if isinstance(value, dict):
+            value = [f"{key}={item}" for key, item in value.items()]
+        print("\n".join(map(str, value)) if isinstance(value, list) else value)
+        sys.exit(0)
+sys.exit(f"t.toml declares no check {sys.argv[2]}")
+PY
+}
 
 if python3 "$repo/tools/policy/check_workflow_actions.py"; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
@@ -47,23 +56,19 @@ else
   fail=1
 fi
 
-if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.sha }}" "$rpm_snapshot_workflow" \
-   && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
-   && grep -Fq 'python3 os/dev/rpm-snapshot-fingerprint.py' "$rpm_snapshot_workflow" \
-   && grep -Fq './os/dev/resolve-rpm-snapshot.sh' "$rpm_snapshot_workflow" \
-   && ! grep -Fq 'workflow_call:' "$rpm_snapshot_workflow" \
-   && grep -Fq 'git checkout --detach FETCH_HEAD' "$kernel_workflow"; then
-  printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
-else
-  printf 'RPM snapshot refreshes may be cancelled indefinitely or publish stale pins\n' >&2
-  fail=1
-fi
-
-if [ "$(grep -Fc '"crates/system/tilo-crypto/Cargo.toml"' "$kernel_workflow")" -eq 2 ] \
-   && [ "$(grep -Fc '"crates/system/tilo-crypto/src/lib.rs"' "$kernel_workflow")" -eq 2 ] \
-   && [ "$(grep -Fc '"crates/system/tilo-crypto/src/main.rs"' "$kernel_workflow")" -eq 2 ] \
-   && ! grep -Fq '"crates/system/tilo-crypto/**"' "$kernel_workflow" \
-   && ! grep -Fq 'tls_fixture' "$kernel_workflow" \
+# The kernel is rebuilt for the module signer's own sources, not for the TLS fixtures beside
+# them: its fingerprint (kernel.sh inputs_digest) and its build check's inputs name exactly them.
+kernel_inputs="$(tcheck image-kernel-{arch} inputs)" || fail=1
+kernel_digest="$(sed -n '/^inputs_digest() {/,/^}/p' "$kernel_script")"
+if [ -n "$kernel_digest" ] \
+   && grep -Fq 'crates/system/tilo-crypto/Cargo.toml' <<<"$kernel_digest" \
+   && grep -Fq 'crates/system/tilo-crypto/src/lib.rs' <<<"$kernel_digest" \
+   && grep -Fq 'crates/system/tilo-crypto/src/main.rs' <<<"$kernel_digest" \
+   && ! grep -Eq 'tilo-crypto( |/\*|$)|tls_fixture' <<<"$kernel_digest" \
+   && grep -Fxq 'crates/system/tilo-crypto/Cargo.toml' <<<"$kernel_inputs" \
+   && grep -Fxq 'crates/system/tilo-crypto/src/lib.rs' <<<"$kernel_inputs" \
+   && grep -Fxq 'crates/system/tilo-crypto/src/main.rs' <<<"$kernel_inputs" \
+   && ! grep -Eq '^crates/system/tilo-crypto/(\*\*|src/?\*?\*?)$|tls_fixture' <<<"$kernel_inputs" \
    && grep -Fq 'COPY crates/system/tilo-crypto/src/lib.rs' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'COPY crates/system/tilo-crypto/src/main.rs' "$repo/os/kernel/Containerfile" \
    && ! grep -Fq 'COPY crates/system/tilo-crypto/src /work/tilo-crypto/src' "$repo/os/kernel/Containerfile" \
@@ -71,15 +76,6 @@ if [ "$(grep -Fc '"crates/system/tilo-crypto/Cargo.toml"' "$kernel_workflow")" -
   printf 'ok    kernel CI retriggers for signer sources, not TLS fixtures\n'
 else
   printf 'kernel CI does not isolate signer sources from TLS fixture inputs\n' >&2
-  fail=1
-fi
-
-if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$kernel_workflow" \
-   && grep -Fqx '    needs: signing-preflight' "$kernel_workflow" \
-   && grep -Fq "(needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')" "$kernel_workflow"; then
-  printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
-else
-  printf 'release kernel compilation can start before its signing authority is identity-bound\n' >&2
   fail=1
 fi
 
@@ -94,20 +90,36 @@ else
   fail=1
 fi
 
-relay_workflow="$workflows/release-relay.yml"
-if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$relay_workflow" \
-   && grep -Fq 'needs: [signing-preflight, ensure-rpms]' "$relay_workflow"; then
-  printf 'ok    release relay build starts only after KMS identity preflight\n'
+# On t the signing checks hold the KMS key and nothing else, and bind it to keys/cosign.pub by
+# verifying every signature they make against it before handing it on (oci-sign.sh), so no
+# build waits on a separate preflight.
+if grep -Fq 'public_key=$repo_root/keys/cosign.pub' "$publish/oci-sign.sh" \
+   && grep -Fq '. "$repo_root/os/dev/configure-cosign-kms.sh"' "$publish/oci-sign.sh" \
+   && grep -Fq 'cosign verify-blob --key "$public_key" --bundle "$out/bundle.json" "$out/payload.json"' "$publish/oci-sign.sh" \
+   && grep -Fq 'cosign verify-blob --insecure-ignore-tlog=true --key "$public_key" \' "$publish/oci-sign.sh"; then
+  printf 'ok    release signing verifies every KMS signature against keys/cosign.pub\n'
 else
-  printf 'release relay build can start before its signing authority is identity-bound\n' >&2
+  printf 'release signing does not bind its KMS key to keys/cosign.pub\n' >&2
   fail=1
 fi
 
-if [ "$(grep -Fc '"os/tests/secureboot_vm_*"' "$kernel_workflow")" -eq 2 ] \
-   && grep -Fq -- '--target secureboot-probe-inputs' "$kernel_workflow" \
-   && grep -Fq 'bash os/tests/secureboot_vm_probe.sh' "$kernel_workflow" \
-   && grep -Fq 'TILO_SECUREBOOT_VM_ARCH="${{ matrix.arch }}"' "$kernel_workflow" \
-   && grep -Fq 'TILO_SECUREBOOT_VM_APP="$probe/secureboot_vm_app.efi"' "$kernel_workflow" \
+# The kernel's acceptance (module signatures and OVMF Secure Boot enforcement, against the
+# exact build) passes before it is signed or published, and reruns when the probe changes.
+acceptance="$publish/kernel-acceptance.sh"
+acceptance_inputs="$(tcheck kernel-acceptance-{arch} inputs)" || fail=1
+sign_kernel_needs="$(tcheck sign-kernel needs)" || fail=1
+publish_kernel_needs="$(tcheck publish-kernel needs)" || fail=1
+if grep -Fxq 'os/tests/secureboot_vm_*' <<<"$acceptance_inputs" \
+   && grep -Fxq 'image-kernel-{arch}' <<<"$(tcheck kernel-acceptance-{arch} needs)" \
+   && grep -Fxq 'bash tools/ci/publish/kernel-acceptance.sh {arch} /target/publish/kernel/{arch}' <<<"$(tcheck kernel-acceptance-{arch} run)" \
+   && grep -Fxq 'kernel-acceptance-x86_64' <<<"$sign_kernel_needs" \
+   && grep -Fxq 'kernel-acceptance-aarch64' <<<"$sign_kernel_needs" \
+   && grep -Fxq 'kernel-acceptance-x86_64' <<<"$publish_kernel_needs" \
+   && grep -Fxq 'kernel-acceptance-aarch64' <<<"$publish_kernel_needs" \
+   && grep -Fq -- '--target secureboot-probe-inputs' "$kernel_script" \
+   && grep -Fq 'bash os/tests/secureboot_vm_probe.sh' "$acceptance" \
+   && grep -Fq 'TILO_SECUREBOOT_VM_ARCH="$arch"' "$acceptance" \
+   && grep -Fq 'TILO_SECUREBOOT_VM_APP="$probe/secureboot_vm_app.efi"' "$acceptance" \
    && grep -Fq 'ld.lld -flavor link /subsystem:efi_application' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'FROM scratch AS secureboot-probe-inputs' "$repo/os/kernel/Containerfile" \
    && [ "$(grep '^FROM ' "$repo/os/kernel/Containerfile" | tail -1)" = 'FROM scratch AS publish' ]; then
@@ -222,12 +234,29 @@ fi
 if [ "$fail" = 0 ]; then
   printf 'ok    OS, kernel, RPM, and relay releases use KMS signing, transparency, and digest verification\n'
 fi
-builder_workflow="$workflows/build-ci-builder.yml"
-if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$builder_workflow" \
-   && grep -Fq 'needs: [plan, signing-preflight]' "$builder_workflow"; then
-  printf 'ok    native builder work starts only after KMS authority matches the pinned public key\n'
-else
-  printf 'native builder can start before its signing authority is identity-bound\n' >&2
+# t's release signing checks: the release key in KMS through the check's own identity token,
+# only on release references, through oci-sign.sh; the images release builds verify with a
+# plain `cosign verify --key keys/cosign.pub` (all but the CI builder) also enter the public
+# transparency log. Publication verifies against keys/cosign.pub again and refuses any digest
+# but the build's.
+for check in sign-kernel sign-rpms sign-relay sign-kernel-buildroot sign-env-runtime \
+    sign-legacy-guest sign-ci-builder; do
+  env="$(tcheck "$check" env)" && on="$(tcheck "$check" on)" \
+    && id_token="$(tcheck "$check" id_token)" && run="$(tcheck "$check" run)" || { fail=1; continue; }
+  if ! grep -q '^COSIGN_KEY_REF=awskms:///' <<<"$env" \
+     || grep -q '^COSIGN_PRIVATE_KEY\|^COSIGN_PASSWORD' <<<"$env" \
+     || ! grep -Fxq 'sts.amazonaws.com' <<<"$id_token" \
+     || [ -z "$on" ] || grep -Eqx 'main|dispatch' <<<"$on" \
+     || ! grep -q '^bash tools/ci/publish/oci-sign.sh ' <<<"$run" \
+     || { [ "$check" != sign-ci-builder ] && ! grep -Fxq 'TILO_SIGN_TLOG=1' <<<"$env"; }; then
+    printf 'release artifact bypasses KMS, transparency, or release-only signing: t.toml#%s\n' "$check" >&2
+    fail=1
+  fi
+done
+if ! grep -Fq 'verify_key=$repo_root/keys/cosign.pub' "$publish/oci-publish.sh" \
+   || ! grep -Fq 'cosign verify --key "$verify_key" "$repository@$digest"' "$publish/oci-publish.sh" \
+   || ! grep -Fq '[[ sha256:$pushed == "$digest" ]] || die' "$publish/oci-publish.sh"; then
+  printf 'publication does not verify the pushed digest and its signature against keys/cosign.pub\n' >&2
   fail=1
 fi
 if ! grep -Fq 'cache-github-assets.sh" "$asset"' \
