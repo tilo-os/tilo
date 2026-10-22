@@ -712,8 +712,12 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
 
     // The player sits under the header row, whose Back returns to the page
     // this one was opened from; the details below it stand in the gutter.
-    let content = stack()
-        .with_gap(theme.tokens.spacing.s0)
+    let mut content = stack().with_gap(theme.tokens.spacing.s0);
+    if v.plays_only_in_app() {
+        // Said where the picture would play, not left as a still poster.
+        content = content.push(Box::new(Banner::info(t("tube-live-in-app"))));
+    }
+    let content = content
         .push(Box::new(stage))
         .push(Box::new(Column::new().with_intrinsic_height().push(lower)));
     Scrollable::new_vertical().with_child(Box::new(content))

@@ -1215,6 +1215,14 @@ impl TubeApp {
                 // source so a new video starts clean once its URL lands.
                 self.player_video = None;
                 self.player.borrow_mut().pause();
+                // Nothing here plays it; the page says where it does.
+                if self
+                    .model
+                    .video(&id)
+                    .is_some_and(crate::model::Video::plays_only_in_app)
+                {
+                    return;
+                }
                 // The decoder starts up while the stream URL resolves.
                 media::MediaEngine::prepare_in_background();
                 self.request_live(Request::PlayVideo(id));
