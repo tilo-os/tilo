@@ -223,6 +223,30 @@ fn places<'a>(
     }
 }
 
+/// Move to strip and Move to workspace, each a nested menu of places.
+fn move_rows(facts: &WindowMenuFacts) -> [WindowMenuRow; 2] {
+    [
+        places(
+            MOVE_TO_STRIP_KEY,
+            t("shell-window-menu-move-to-strip"),
+            Icon::ArrowUpDown,
+            facts
+                .strips
+                .iter()
+                .map(|(id, name)| (WindowMenuAction::MoveToStrip(*id), name)),
+        ),
+        places(
+            MOVE_TO_WORKSPACE_KEY,
+            t("shell-window-menu-move-to-workspace"),
+            Icon::Layers,
+            facts
+                .workspaces
+                .iter()
+                .map(|(id, name)| (WindowMenuAction::MoveToWorkspace(*id), name)),
+        ),
+    ]
+}
+
 /// The window menu's rows for a window `facts` describes, with the
 /// shortcuts `config` binds:
 ///
@@ -269,24 +293,9 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
             bound(config, ShortcutAction::ToggleMaximize),
         ),
         WindowMenuRow::Separator,
-        places(
-            MOVE_TO_STRIP_KEY,
-            t("shell-window-menu-move-to-strip"),
-            Icon::ArrowUpDown,
-            facts
-                .strips
-                .iter()
-                .map(|(id, name)| (WindowMenuAction::MoveToStrip(*id), name)),
-        ),
-        places(
-            MOVE_TO_WORKSPACE_KEY,
-            t("shell-window-menu-move-to-workspace"),
-            Icon::Layers,
-            facts
-                .workspaces
-                .iter()
-                .map(|(id, name)| (WindowMenuAction::MoveToWorkspace(*id), name)),
-        ),
+    ];
+    rows.extend(move_rows(facts));
+    rows.extend([
         WindowMenuRow::Separator,
         entry(
             WindowMenuAction::NewTab,
@@ -294,7 +303,7 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
             Icon::Plus,
             fixed("fixed-duplicate-tab"),
         ),
-    ];
+    ]);
     if tabbed {
         rows.push(entry(
             WindowMenuAction::SplitRight,
