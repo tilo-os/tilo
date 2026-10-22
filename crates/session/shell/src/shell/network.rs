@@ -808,24 +808,31 @@ struct HomePeerInputs {
     /// Rooms an enrollment delivered (`personal-rooms.json`).
     enrolled_rooms: Vec<RoomId>,
     registrations: Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String>,
+    /// The person's fleet, when this device has a person and a fleet store.
+    own_fleet: Option<Arc<crate::device_fleet::DeviceFleet>>,
 }
 
 impl HomePeerInputs {
-    /// Read the files. Waits for the disk: the compositor's loop never calls
-    /// this, its reader thread does.
-    fn read() -> Self {
+    /// Read the files, and the fleet of `fleet`'s person. Waits for the disk:
+    /// the compositor's loop never calls this, its reader thread does.
+    fn read(fleet: Option<&([u8; 32], crate::device_fleet::DeviceFleetStore)>) -> Self {
         let peers = personal_device_peer_path();
         Self {
             enrolled_rooms: personal_room_ids(&peers.with_file_name("personal-rooms.json")),
             registrations: read_home_peer_registry(),
+            own_fleet: fleet
+                .and_then(|(person, store)| personal_device_peers::load_fleet(person, store)),
         }
     }
 
     /// [`Self::read`] after the state writer has written what this process
-    /// queued, so the refresh sees the rooms export it just made.
-    fn read_after_pending_writes() -> Self {
+    /// queued, so the refresh sees the rooms export it just made (and the
+    /// fleet the devices this session met were kept in).
+    fn read_after_pending_writes(
+        fleet: Option<&([u8; 32], crate::device_fleet::DeviceFleetStore)>,
+    ) -> Self {
         crate::shell::durable_writer::global().flush();
-        Self::read()
+        Self::read(fleet)
     }
 }
 
@@ -1505,6 +1512,9 @@ pub struct ShellNetwork {
     /// Private LAN discovery of the person's devices, when this session runs
     /// it: asked again for each of them this session has not reached.
     lan_discovery: Option<tilo_lan_discovery::LanDiscovery>,
+    /// The person's fleet as the home-peer reader last loaded it, off the
+    /// compositor's loop; what the own-device set is re-validated against.
+    own_device_fleet_loaded: Mutex<Option<Arc<crate::device_fleet::DeviceFleet>>>,
     /// Last bounded scan of the enrollment registry. A paired home peer may
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
@@ -2269,13 +2279,15 @@ impl ShellNetwork {
             live_room_peers: Mutex::new(std::collections::HashSet::new()),
             registered_home_device_ids: Mutex::new(home_device_ids),
             personal_device_peers,
+            home_peer_reader: home_peer_reader::HomePeerReader::spawn({
+                let fleet = personal_continuity_user.zip(own_device_fleet.clone());
+                move || HomePeerInputs::read_after_pending_writes(fleet.as_ref())
+            }),
             own_device_fleet,
             lan_discovery,
+            own_device_fleet_loaded: Mutex::new(None),
             last_home_peer_refresh: Mutex::new(None),
             session_reach_checked: Mutex::new(None),
-            home_peer_reader: home_peer_reader::HomePeerReader::spawn(
-                HomePeerInputs::read_after_pending_writes,
-            ),
             last_sync_kick: Mutex::new(None),
             next_sync_pull: Mutex::new(None),
             peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -4585,7 +4597,10 @@ impl ShellNetwork {
     /// and waiting for the disk. The compositor's loop does not call this: its
     /// refresh reads them on a worker ([`Self::refresh_home_peer_hosts_periodically`]).
     pub fn refresh_home_peer_hosts(&self) -> bool {
-        self.apply_home_peer_inputs(&HomePeerInputs::read())
+        let fleet = self
+            .personal_continuity_user
+            .zip(self.own_device_fleet.clone());
+        self.apply_home_peer_inputs(&HomePeerInputs::read(fleet.as_ref()))
     }
 
     /// Apply what the reader published, if it published anything. Reads and
@@ -4598,6 +4613,7 @@ impl ShellNetwork {
     }
 
     fn apply_home_peer_inputs(&self, inputs: &HomePeerInputs) -> bool {
+        self.note_own_device_fleet(inputs.own_fleet.clone());
         // An enrollment can deliver rooms after this session started. Adopt
         // them and join their topics, or a request sent to this device on
         // such a room never arrives.
@@ -8943,11 +8959,12 @@ pub(crate) fn shell_network_for_test(
         personal_device_peers: Arc::default(),
         own_device_fleet: None,
         lan_discovery: None,
+        own_device_fleet_loaded: Mutex::new(None),
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
-        home_peer_reader: home_peer_reader::HomePeerReader::spawn(
-            HomePeerInputs::read_after_pending_writes,
-        ),
+        home_peer_reader: home_peer_reader::HomePeerReader::spawn(|| {
+            HomePeerInputs::read_after_pending_writes(None)
+        }),
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),

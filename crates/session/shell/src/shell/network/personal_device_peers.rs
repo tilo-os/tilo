@@ -11,8 +11,11 @@
 //! frame, each forwarded input event — and the per-frame owner-view pump
 //! consult the set, so reading and parsing the files per call put disk I/O on
 //! the compositor thread. Instead the set is re-validated at most once per
-//! [`RECHECK`]: a `stat` of each file, and a re-read only when one changed.
-//! Removing a device therefore stops sends to it within [`RECHECK`]; a
+//! [`RECHECK`] against the enrolment file's `stat`, re-read only when it
+//! changed, and against the fleet the caller last loaded: the compositor's
+//! fleet is loaded by the home-peer reader's thread, never on its loop.
+//! Removing a device therefore stops sends to it within [`RECHECK`] (the
+//! fleet within one home-peer refresh more); a
 //! revocation this session learns ([`PersonalDevicePeers::revoke`]) applies at
 //! once, and route revocation stays independent and immediate.
 
@@ -50,26 +53,33 @@ impl FileStamp {
     }
 }
 
-/// Where this person's own devices are recorded.
+/// This person's own devices as recorded: the enrolment file, and the fleet
+/// already loaded. The fleet is loaded by whoever builds this, off the
+/// compositor's loop (see `ShellNetwork::own_device_sources`).
 pub(super) struct Sources {
     /// The enrolment file.
     pub(super) peers: PathBuf,
-    /// The person and the store keeping their fleet; `None` on a device
-    /// without a person.
-    pub(super) fleet: Option<([u8; 32], DeviceFleetStore)>,
+    /// The person; `None` on a device without one.
+    pub(super) person: Option<[u8; 32]>,
+    /// The person's fleet as last loaded, if it was.
+    pub(super) fleet: Option<Arc<DeviceFleet>>,
 }
 
 impl Sources {
     /// Just the enrolment file at `peers`.
     #[cfg(test)]
     pub(super) fn peers(peers: PathBuf) -> Self {
-        Self { peers, fleet: None }
+        Self {
+            peers,
+            person: None,
+            fleet: None,
+        }
     }
+}
 
-    fn load_fleet(&self) -> Option<Arc<DeviceFleet>> {
-        let (person, store) = self.fleet.as_ref()?;
-        store.load_cached(&hex::encode(person)).ok()
-    }
+/// `person`'s fleet kept by `store`, read now: waits for the disk.
+pub(super) fn load_fleet(person: &[u8; 32], store: &DeviceFleetStore) -> Option<Arc<DeviceFleet>> {
+    store.load_cached(&hex::encode(person)).ok()
 }
 
 /// The certified recipient set, valid for one local device and one version
@@ -217,8 +227,7 @@ impl PersonalDevicePeers {
             self.stamp = stamp;
             changed = true;
         }
-        let fleet = sources.load_fleet();
-        let person = sources.fleet.as_ref().map(|(person, _)| *person);
+        let Sources { person, fleet, .. } = sources;
         let same_fleet = match (&fleet, &self.fleet) {
             (Some(new), Some(old)) => Arc::ptr_eq(new, old),
             (None, None) => true,
