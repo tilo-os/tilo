@@ -3849,7 +3849,7 @@ bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/pub
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64"]
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
@@ -3865,7 +3865,7 @@ bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/pub
 bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64"]
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
 id_token = ["tilo-dev-signing"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
@@ -3881,7 +3881,7 @@ bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /tar
 bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index 'dev:dev-{commit}' 'release:{commit}' 'release:{rust}'
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "rust-toolchain.toml"]
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64"]
 optional_needs = ["sign-ci-builder", "sign-dev-ci-builder"]
 outputs = ["/target/publish/ci-builder/x86_64/receipt.json", "/target/publish/ci-builder/aarch64/receipt.json", "/target/publish/ci-builder/index/receipt.json"]
 id_token = ["registry.tilo.so"]
