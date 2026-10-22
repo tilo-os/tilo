@@ -59,6 +59,8 @@ sha2.workspace = true
 hex.workspace = true
 tempfile.workspace = true
 tilo-paths.workspace = true
+# Where the files a person chose for the app are served (the paths only).
+tilo-documents.workspace = true
 fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
