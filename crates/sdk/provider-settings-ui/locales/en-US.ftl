@@ -187,11 +187,8 @@ agent-model-use-default = Use the default
 agent-model-choice-incomplete = Name both the provider and its model, or neither to use the default.
 
 agent-hub-title = Models from Hugging Face
-agent-hub-caption = Pick any model on Hugging Face, or a GGUF file of your own. A model is data: it runs in Tilo's signed runtimes on this device, and its license is shown before anything downloads.
-agent-hub-search = Search models
-agent-hub-search-hint = A model name, for example qwen or llama
-agent-hub-search-gguf = Search GGUF (llama.cpp)
-agent-hub-search-safetensors = Search safetensors (vLLM)
+agent-hub-caption = Search Hugging Face with the window's search, open any model by its name or link, or add a GGUF file of your own. A model is data: it runs in Tilo's signed runtimes on this device, and its license is shown before anything downloads.
+agent-hub-format = Format
 agent-hub-reference = Add by name or link
 agent-hub-reference-hint = owner/model or a huggingface.co link
 agent-hub-show = Show
@@ -203,7 +200,14 @@ agent-hub-add-file = Add file
 agent-hub-working = Asking Hugging Face…
 agent-hub-search-error = Can't search Hugging Face: { $error }
 agent-hub-no-results = No models match.
-agent-hub-result-stats = { $downloads } downloads · { $likes } likes
+agent-hub-result-downloads = { $downloads ->
+    [one] { $downloads } download
+   *[other] { $downloads } downloads
+}
+agent-hub-result-likes = { $likes ->
+    [one] { $likes } like
+   *[other] { $likes } likes
+}
 agent-hub-result-license = License: { $license }
 agent-hub-gated = Its terms must be accepted on Hugging Face first
 agent-hub-model-title = From Hugging Face
@@ -243,4 +247,5 @@ agent-hub-token-saved = Hugging Face token saved on this device.
 agent-hub-token-removed = Hugging Face token removed from this device.
 agent-hub-changed = The model changed since it was shown; show it again.
 agent-hub-query-empty = Enter what to search for.
+agent-hub-format-unknown = Choose gguf or safetensors.
 agent-hub-unavailable = The local model service can't do this here.

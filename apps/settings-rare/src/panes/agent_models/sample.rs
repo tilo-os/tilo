@@ -1,5 +1,7 @@
 //! The model manager a screenshot shows, standing in for the device's.
 
+use agent_provider_config::local::hub::{HubFormat, HubSearchResult};
+
 use super::{
     HardwareFit, HardwareRecommendation, LocalModelControl, LocalModelPackage, LocalModelSnapshot,
 };
@@ -61,5 +63,33 @@ impl LocalModelControl for SampleManager {
     fn stage_accelerator(&self) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         Ok(())
+    }
+    /// Two sample models on Hugging Face, one per file family, found by
+    /// any part of their name.
+    fn hub_search(&self, query: &str, format: &str) -> Result<Vec<HubSearchResult>, String> {
+        crate::device_read::off_ui_thread();
+        let sample = |repo: &str, downloads, likes, format| HubSearchResult {
+            repo: repo.into(),
+            downloads,
+            likes,
+            gated: false,
+            pipeline: Some("text-generation".into()),
+            license: Some("apache-2.0".into()),
+            formats: vec![format],
+        };
+        let query = query.to_lowercase();
+        Ok([
+            sample("sample/helpful-7b-gguf", 48_210, 1, HubFormat::Gguf),
+            sample("sample/helpful-7b", 1, 312, HubFormat::Safetensors),
+        ]
+        .into_iter()
+        .filter(|result| {
+            result.repo.contains(&query)
+                && result
+                    .formats
+                    .iter()
+                    .any(|family| super::hub::format_name(*family) == format)
+        })
+        .collect())
     }
 }

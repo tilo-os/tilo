@@ -6,9 +6,12 @@ use agent_provider_config::local::hub::{ApiModelInfo, HubAccount, HubModelOffer,
 use test_http::{Reply, Responder};
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 
+use agent_provider_config::local::hub::{HubFormat, HubSearchResult};
+use ui::widget::{InPlace, SearchDriver};
+
 use crate::panes::model::PaneModel as _;
 
-use super::super::tests::{mock, model_over, rendered_names, snapshot};
+use super::super::tests::{collect_accessibility, mock, model_over, rendered_names, snapshot};
 use super::super::{AgentModelsEffect, LocalModelPhase, ModelAction, model_actions};
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -220,4 +223,144 @@ fn an_ended_sign_in_asks_to_sign_in_again() {
             .any(|line| line.contains("sign-in of ada has ended")),
         "{text:?}"
     );
+}
+
+/// The pane draws no search field: the window bar's search is the only
+/// one, and on Agent Models what is typed there searches Hugging Face. The
+/// window's search drives the pane through the same driver the window bar
+/// runs, results land as rows, and closing the search returns the pane to
+/// what it showed before. Elsewhere the search still narrows the sidebar.
+#[test]
+fn the_window_bar_search_searches_hugging_face_on_agent_models() {
+    use crate::categories::Category;
+    use crate::settings_app::SettingsApp;
+
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
+        .expect("settings opens headlessly");
+    crate::effects::show_pane(&mut app, Category::AgentModels);
+    app.settle();
+    for gone in [
+        "Search models",
+        "Search GGUF (llama.cpp)",
+        "Search safetensors (vLLM)",
+    ] {
+        assert!(
+            app.harness().a11y_node_named(gone).is_none(),
+            "the pane draws no search of its own: {gone}"
+        );
+    }
+    assert!(app.harness().a11y_node_named("Format").is_some());
+
+    let mut driver = SearchDriver::default();
+    {
+        let settings = app.surface_mut::<SettingsApp>();
+        let offer = InPlace::of(settings);
+        assert_eq!(
+            offer,
+            InPlace::Query,
+            "the window's search queries the pane"
+        );
+        driver.open(offer);
+        assert!(driver.drive(settings, "helpful", None, false));
+    }
+    assert!(
+        app.harness()
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
+                harness.a11y_node_named("sample/helpful-7b-gguf").is_some()
+            }),
+        "what is typed in the window bar finds GGUF models on Hugging Face"
+    );
+    assert!(
+        app.harness().a11y_node_named("sample/helpful-7b").is_none(),
+        "the search looks for the chosen file family only"
+    );
+
+    {
+        let settings = app.surface_mut::<SettingsApp>();
+        driver.drive(settings, "helpful", None, true);
+    }
+    app.settle();
+    assert!(
+        app.harness()
+            .a11y_node_named("sample/helpful-7b-gguf")
+            .is_none(),
+        "closing the search returns the pane to what it showed before"
+    );
+
+    crate::effects::show_pane(&mut app, Category::DEFAULT);
+    app.settle();
+    let settings = app.surface_mut::<SettingsApp>();
+    assert_eq!(
+        InPlace::of(settings),
+        InPlace::List,
+        "on a pane without a query the window's search narrows the sidebar"
+    );
+}
+
+/// One search at a time, however fast the person types: typing while a
+/// search is on its way starts nothing, and its landing searches what is
+/// typed by then. Emptying the search shows what the pane showed before.
+#[test]
+fn typing_searches_once_at_a_time_and_lands_on_what_is_typed() {
+    let mut pane = model_over(mock(snapshot(None)));
+    let hub = &mut pane.hub;
+    let search = |query: &str, format: &str| AgentModelsEffect::SearchHubModels {
+        query: query.into(),
+        format: Some(format.into()),
+    };
+    assert_eq!(hub.typed(" q "), Some(search("q", "gguf")));
+    hub.searching = 1;
+    assert_eq!(hub.typed("qw"), None, "a search is on its way");
+    assert_eq!(hub.typed("qwen"), None);
+    hub.searching = 0;
+    assert_eq!(
+        hub.follow_up("q", "gguf"),
+        Some(search("qwen", "gguf")),
+        "the landing searches what is typed now"
+    );
+    assert_eq!(hub.follow_up("qwen", "gguf"), None, "nothing new was typed");
+    hub.format = HubFormat::Safetensors;
+    assert_eq!(
+        hub.follow_up("qwen", "gguf"),
+        Some(search("qwen", "safetensors")),
+        "another file family is searched again"
+    );
+
+    hub.results = Some(Ok(Vec::new()));
+    let cleared = hub.cleared;
+    assert_eq!(hub.typed("  "), None);
+    assert!(hub.results.is_none(), "an emptied search shows no results");
+    assert!(hub.query.is_empty());
+    assert_ne!(
+        hub.cleared, cleared,
+        "a search started before shows nothing"
+    );
+    assert_eq!(hub.follow_up("qwen", "safetensors"), None);
+}
+
+/// A result says its downloads and likes as facts of their own, never one
+/// string joined by a separator.
+#[test]
+fn a_result_states_downloads_and_likes_as_separate_facts() {
+    let mut pane = model_over(mock(snapshot(None)));
+    pane.hub.results = Some(Ok(vec![HubSearchResult {
+        repo: "acme/Chat-GGUF".into(),
+        downloads: 1,
+        likes: 312,
+        gated: false,
+        pipeline: None,
+        license: None,
+        formats: vec![HubFormat::Gguf],
+    }]));
+    let composition = pane.build_composition();
+    let mut nodes = Vec::new();
+    collect_accessibility(composition.as_ref(), &mut nodes);
+    let row = nodes
+        .iter()
+        .find(|node| node.name.as_deref() == Some("acme/Chat-GGUF"))
+        .expect("the result is a row");
+    let value = row.value.clone().unwrap_or_default();
+    let facts: Vec<&str> = value.lines().map(str::trim).collect();
+    assert!(facts.contains(&"1 download"), "{value:?}");
+    assert!(facts.contains(&"312 likes"), "{value:?}");
 }
