@@ -1325,6 +1325,10 @@ fn a_short_flat_set_of_places_starts_as_a_rail_and_anything_more_as_a_list() {
     );
     let headed = NavList::new(vec![NavSection::new("p", "Library", six.clone())]);
     assert!(!headed.rail_by_default(&theme), "a heading");
+    assert!(
+        !flat(six.clone()).with_headings().rail_by_default(&theme),
+        "a sidebar that can hold headings, before any has loaded"
+    );
     let mut iconless = six.clone();
     iconless[0] = NavItem::new("home", "Home");
     assert!(

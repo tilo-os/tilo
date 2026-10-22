@@ -3,12 +3,17 @@
 //! arrow keys) one to one and is remembered per app.
 
 use super::*;
+use crate::widget::nav_list::AdaptiveNav as _;
 use crate::widget::{NavItem, NavList, NavSection};
 
 /// Tube's destinations: a short, flat set of places, each with an icon.
 fn places() -> NavList {
+    NavList::new(place_sections()).with_id("places")
+}
+
+fn place_sections() -> Vec<NavSection> {
     let item = |id: &str, label: &str, icon: Icon| NavItem::new(id, label).icon(icon);
-    NavList::new(vec![NavSection::untitled(
+    vec![NavSection::untitled(
         "destinations",
         vec![
             item("home", "Home", Icon::Home),
@@ -18,8 +23,7 @@ fn places() -> NavList {
             item("history", "History", Icon::History),
             item("settings", "Settings", Icon::Settings),
         ],
-    )])
-    .with_id("places")
+    )]
 }
 
 /// Mailboxes under headings, with a "New folder" action: a list.
@@ -217,6 +221,60 @@ fn a_list_with_headings_opens_as_a_list_and_narrows_into_a_rail() {
         h.root::<NavShell>().is_sidebar_open(),
         "the toggle shows it again"
     );
+}
+
+// USER REQUIREMENT (2026-10-22): "once a window has shown its sidebar,
+// the rule never re-runs during that window's life. Only the person's drag
+// changes it." / "a sidebar whose items arrive after first layout doesn't
+// change mode."
+/// The rail-or-list rule runs once, when the window first shows its
+/// sidebar. Places that load afterwards (and would on their own have made
+/// a rail) leave the width and the form alone; the person's drag still
+/// moves both.
+#[test]
+fn places_that_arrive_after_the_first_layout_leave_the_form_alone() {
+    let theme = Theme::dark();
+    let mut h = harness(
+        shell_with(NavList::new(Vec::new()).with_id("places")),
+        W,
+        H,
+        theme.clone(),
+    );
+    settle(&mut h, W, H);
+    assert!(!adaptive(&h).rail_default, "nothing loaded yet: a list");
+    assert!(!shows_rail(&h));
+    let start = sidebar_width(&h);
+    assert!(
+        (start - f64::from(theme.tokens.metrics.sidebar_width)).abs() < 0.5,
+        "{start}"
+    );
+
+    h.root_mut::<NavShell>()
+        .sidebar_mut::<NavList>()
+        .expect("the sidebar is the list")
+        .set_sections(place_sections());
+    h.root_mut::<NavShell>().invalidate();
+    settle(&mut h, W, H);
+    assert!(
+        NavList::new(place_sections()).rail_by_default(&theme),
+        "on their own these places would open as a rail"
+    );
+    assert!(!adaptive(&h).rail_default, "the rule does not run again");
+    assert!(
+        !shows_rail(&h),
+        "the items arriving do not turn it into a rail"
+    );
+    assert!(
+        (sidebar_width(&h) - start).abs() < 0.5,
+        "nor move its edge ({} vs {start})",
+        sidebar_width(&h)
+    );
+
+    let rail = adaptive(&h).rail;
+    let edge = press_edge(&mut h);
+    move_pointer(&mut h, edge.x - (start - rail), edge.y);
+    release(&mut h);
+    assert!(shows_rail(&h), "the person's drag still makes it a rail");
 }
 
 /// Remembers where the window's host keeps it, and forgets on drop.
