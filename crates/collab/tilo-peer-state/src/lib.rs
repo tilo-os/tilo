@@ -1,5 +1,6 @@
 //! Shared native/browser neighbour wire and certified state admission.
 pub mod governance;
+pub mod join_ledger;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.

@@ -13,6 +13,7 @@
 //! re-exported by `tilo-relay-protocol`.
 
 pub mod delegation;
+pub mod invitations;
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, Verifier as _};
