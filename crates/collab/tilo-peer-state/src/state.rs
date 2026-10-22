@@ -208,6 +208,10 @@ pub struct ReceiveOutcome {
     /// ([`StatePeer`]'s prerequisite queue): never a refusal of the input
     /// being admitted.
     pub dropped: Vec<DroppedInput>,
+    /// Something a message let go earlier waited for has landed: ask the
+    /// room's host to replay what it retains, so that message is decided
+    /// again.
+    pub replay_wanted: bool,
 }
 /// Authenticated carrier inputs. A native publication requires the embedding
 /// adapter's actual pinned owner/session/cursor proof, not an inert event tag.
@@ -354,6 +358,8 @@ pub struct StatePeer {
     /// The app surface each app's changes this peer signs are decided
     /// against, by app id: what the host launched the app with.
     app_surfaces: AppSurfaces,
+    /// What app messages let go unapplied waited for. Never persisted.
+    missed: held::Missed,
 }
 
 fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {
@@ -555,6 +561,7 @@ impl StatePeer {
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,
+            missed: held::Missed::default(),
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
@@ -1323,7 +1330,10 @@ impl StatePeer {
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
         let mut candidate = self.clone();
-        let report = candidate.receive_with_context(source, message, now, retained_replay, true)?;
+        let mut report =
+            candidate.receive_with_context(source, message, now, retained_replay, true)?;
+        let landed = report.summary.changed || report.summary.metadata_changed;
+        report.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
         Ok(report)
     }
@@ -1509,9 +1519,11 @@ impl StatePeer {
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now).map_err(err)?;
         let mut candidate = self.clone();
-        let outcome = candidate
+        let mut outcome = candidate
             .receive_with_context(source, message, now, retained_replay, false)
             .map_err(err)?;
+        let landed = outcome.summary.changed || outcome.summary.metadata_changed;
+        outcome.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
         Ok(outcome.summary)
     }
@@ -3366,6 +3378,7 @@ impl StatePeer {
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,
+            missed: held::Missed::default(),
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(

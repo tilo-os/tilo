@@ -174,3 +174,62 @@ fn a_held_message_whose_prerequisite_arrived_is_applied_when_its_place_is_needed
     );
     assert_eq!(receiver.pending_count(), MAX_HELD_INPUTS);
 }
+
+#[test]
+fn a_message_let_go_is_asked_for_again_once_what_it_waited_for_lands_and_then_applies() {
+    let (mut receiver, key, _, _, now) = seeded();
+    receiver.select_admission_v5().unwrap();
+    let mut author = receiver.clone();
+    let first = incremental(&mut author, &key, now, "first");
+    let second = incremental(&mut author, &key, now, "second");
+    let member = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+    let held = receiver
+        .receive_from_report(member, second.clone(), now)
+        .unwrap();
+    assert_eq!(
+        held.primary(),
+        &InputDisposition::RetryLater(MissingPrerequisite::CausalDependencies)
+    );
+    // The queue fills behind it, and the change it builds on has not come.
+    let stranger = SigningKey::from_bytes(&[79; 32]);
+    let origin = TransportOrigin::RelayDelta(stranger.verifying_key().to_bytes());
+    let mut let_go = Vec::new();
+    for seq in 1..=u64::try_from(MAX_HELD_INPUTS).unwrap() {
+        let report = receiver
+            .receive_from_report(origin, as_author(&first, &stranger, seq), now)
+            .unwrap();
+        assert!(
+            !report.summary().replay_wanted,
+            "nothing it waited for landed yet"
+        );
+        let_go.extend(report.summary().dropped.iter().cloned());
+    }
+    assert!(
+        let_go
+            .iter()
+            .any(|input| input.author == key.verifying_key().to_bytes()
+                && input.waiting_for == Some(MissingPrerequisite::CausalDependencies)),
+        "the member's change was let go: {let_go:?}"
+    );
+    assert_eq!(value(&receiver, "second"), None);
+    // What it built on arrives: the room's host is asked to replay.
+    let landed = receiver.receive_from_report(member, first, now).unwrap();
+    assert!(matches!(landed.primary(), InputDisposition::Accepted(_)));
+    assert!(
+        landed.summary().replay_wanted,
+        "a message let go must not be gone for good: its prerequisite landed, so it is asked for again"
+    );
+    // The host's replay delivers it again, and now it applies.
+    let replayed = receiver.receive_from_report(member, second, now).unwrap();
+    assert!(matches!(replayed.primary(), InputDisposition::Accepted(_)));
+    assert_eq!(value(&receiver, "second").as_deref(), Some("second"));
+    // Asked once: what landed is forgotten.
+    let again = receiver
+        .receive_from_report(
+            origin,
+            as_author(&incremental(&mut author, &key, now, "x"), &stranger, 900),
+            now,
+        )
+        .unwrap();
+    assert!(!again.summary().replay_wanted);
+}

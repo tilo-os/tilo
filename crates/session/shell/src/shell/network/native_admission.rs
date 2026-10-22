@@ -38,6 +38,12 @@ struct Held {
     again: std::collections::VecDeque<native_ingress::Input>,
     /// [`ui::app_surface::registered`] when `waiting` was last taken.
     seen: u64,
+    /// Rooms whose oldest held inputs were let go to keep the bound: once
+    /// a surface is named their hosts replay what they retain, so nothing
+    /// let go is lost.
+    let_go: std::collections::BTreeSet<super::RoomId>,
+    /// [`ui::app_surface::registered`] when `let_go` was last replayed.
+    replayed_at: u64,
 }
 
 /// The most inputs held at once. A replay holds one per record change it
@@ -49,11 +55,28 @@ impl State {
     /// Keep `input` until a surface is named.
     pub(super) fn hold(&self, input: native_ingress::Input) {
         let mut held = self.held.lock_recover();
-        if held.waiting.len() >= MAX_HELD {
-            held.waiting.pop_front();
-            tracing::warn!("a held relay input was dropped: too many waiting for app surfaces");
+        if held.waiting.len() >= MAX_HELD
+            && let Some(oldest) = held.waiting.pop_front()
+        {
+            tracing::warn!(
+                room = %oldest.room(),
+                "a held relay input was let go: too many waiting for app surfaces; the room is replayed once one is named"
+            );
+            held.let_go.insert(oldest.room());
         }
         held.waiting.push_back(input);
+    }
+
+    /// The rooms to replay because inputs held for a surface were let go,
+    /// once a surface was named since: what they let go comes back.
+    pub(super) fn take_replays(&self) -> Vec<super::RoomId> {
+        let mut held = self.held.lock_recover();
+        let named = ui::app_surface::registered();
+        if held.let_go.is_empty() || named == held.replayed_at {
+            return Vec::new();
+        }
+        held.replayed_at = named;
+        std::mem::take(&mut held.let_go).into_iter().collect()
     }
 
     /// The next held input to admit again, once a surface was named since

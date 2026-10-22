@@ -287,8 +287,11 @@ impl Joined {
                     None => break,
                     Some(Inbound::Ready { .. }) => replay = false,
                     Some(Inbound::Delta { author, data }) => {
-                        if let Ok(message) = postcard::from_bytes(&data) {
-                            self.admit(&scope.input(author, replay, message));
+                        if let Ok(message) = postcard::from_bytes(&data)
+                            && self.admit(&scope.input(author, replay, message))
+                            && let Err(error) = session.resubscribe()
+                        {
+                            tracing::debug!(%error, %room, "joined room replay not asked");
                         }
                         self.publish(&scope, &session);
                     }
@@ -356,21 +359,23 @@ impl Joined {
     }
 
     /// Admit a relayed delta; another member's admitted document write then
-    /// reaches this device's apps on its route.
-    fn admit(&self, input: &Input) {
+    /// reaches this device's apps on its route. Answers whether the room's
+    /// host should replay what it retains ([`tilo_peer_state::ReceiveOutcome::replay_wanted`]).
+    fn admit(&self, input: &Input) -> bool {
         let report = match input.admit(&self.custody) {
             Ok(report) => report,
             Err(error) => {
                 tracing::warn!(%error, room = %input.room(), "joined room admission denied");
-                return;
+                return false;
             }
         };
+        let replay = report.summary().replay_wanted;
         if !matches!(
             report.primary(),
             InputDisposition::Accepted(_) | InputDisposition::Duplicate(_)
         ) || input.author() == self.custody.device_signing_key.verifying_key().to_bytes()
         {
-            return;
+            return replay;
         }
         let NeighbourMsg::AppDocument {
             app_id,
@@ -380,13 +385,13 @@ impl Joined {
             ..
         } = input.message()
         else {
-            return;
+            return replay;
         };
         let Ok(author_standing) = input.standing() else {
-            return;
+            return replay;
         };
         if cluster_id != &input.room().to_string() {
-            return;
+            return replay;
         }
         let author = input.author();
         collab_inbound::deliver(
@@ -402,6 +407,7 @@ impl Joined {
             },
             |_| format!("peer@{}", hex::encode(author)),
         );
+        replay
     }
 
     /// `room`'s connected session, while there is one.

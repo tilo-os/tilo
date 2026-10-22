@@ -302,6 +302,12 @@ pub enum NetCmd {
     Replay {
         ws: WorkspaceId,
     },
+    /// Ask the host of the joined room on `ws` to replay what it retains:
+    /// something an app message let go earlier waited for has arrived, and
+    /// the message is decided again when it comes back.
+    NativeReplay {
+        ws: WorkspaceId,
+    },
     /// Publish one canonical live frame (presence, previews) on `ws`'s
     /// workspace hosts' live planes, where browsers and agents meet this
     /// device. Lossy.
@@ -1581,6 +1587,13 @@ impl ActorState {
                             .store(true, std::sync::atomic::Ordering::Release);
                         let _ = runtime.session.resubscribe();
                     }
+                }
+            }
+            Some(NetCmd::NativeReplay { ws }) => {
+                if let Some(session) = native_ingress::native_session(&self.host_sessions, ws)
+                    && let Err(error) = session.resubscribe()
+                {
+                    tracing::debug!(ws, %error, "joined room replay not asked: not connected");
                 }
             }
             Some(NetCmd::PublishLive { ws, frame }) => {

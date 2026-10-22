@@ -399,6 +399,14 @@ impl ShellNetwork {
         }
     }
 
+    /// Ask `room`'s host to replay what it retains, for app messages this
+    /// device let go before what they waited for arrived.
+    pub(super) fn request_native_replay(&self, room: RoomId) {
+        let _ = self.cmd_tx.try_send(NetCmd::NativeReplay {
+            ws: room_topic_id(room),
+        });
+    }
+
     /// What follows an admission, on the thread handling inbound events.
     pub(super) fn complete_native_input(&self, admitted: super::native_admission::Admitted) {
         let super::native_admission::Admitted {
@@ -418,6 +426,9 @@ impl ShellNetwork {
                 return;
             }
         };
+        if report.summary().replay_wanted {
+            self.request_native_replay(input.room());
+        }
         tracing::debug!(
             room = %input.room(),
             author = %hex::encode(&input.author()[..4]),
