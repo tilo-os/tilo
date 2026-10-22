@@ -30,6 +30,8 @@ fn run() -> TrackerRun {
         starter: "ada".into(),
         active: true,
         budget: None,
+        subject: None,
+        model: None,
         directions: vec![direction("a", true), direction("b", false)],
         question: None,
     }

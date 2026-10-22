@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tilo_rich_text::RichText;
 use ui::tilo_resource::{self, Atom, Collection, Id, JsonSchema, Model, Refusal, Set};
 
-use crate::model::run::{Budget, Run};
+use crate::model::run::{Budget, ModelChoice, Run};
 
 /// The longest title an issue keeps.
 pub const MAX_TITLE_CHARS: usize = 240;
@@ -159,6 +159,17 @@ pub struct Issue {
     /// changes it: an agent is not swapped under its own run.
     #[model(readonly)]
     pub assignee: Option<Atom>,
+    /// Model
+    ///
+    /// The model its agent's runs plan with; the one chosen for the agent
+    /// without. Only `choose-model` changes it, never under a run.
+    #[model(readonly)]
+    pub model: Option<ModelChoice>,
+    /// What the issue is about, when it was asked about a selection: the
+    /// resource and the exact place (`tilo_actions::SelectionSubject`). It
+    /// tells its agent where to act and grants nothing.
+    #[model(readonly)]
+    pub subject: Option<serde_json::Value>,
     /// Labels
     pub labels: Set<String>,
     /// Parent
@@ -285,6 +296,26 @@ pub fn agent_assignee(id: &str) -> Atom {
     } else {
         Atom(format!("{AGENT_PREFIX}{id}"))
     }
+}
+
+/// What an agent is asked: the issue `ask-agent` makes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentRequest {
+    /// The new issue's id, chosen by the asker so it can follow the issue.
+    pub id: Id,
+    /// What the agent is asked, in a line.
+    pub title: String,
+    /// What the agent is asked, in markdown.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// The agent, as `agent:<id>`.
+    pub agent: String,
+    /// The model its run plans with; the agent's own without.
+    #[serde(default)]
+    pub model: Option<ModelChoice>,
+    /// What the request is about: a `tilo_actions::SelectionSubject`.
+    #[serde(default)]
+    pub subject: Option<serde_json::Value>,
 }
 
 /// A task kept in the workspace's room before the tracker, as the import

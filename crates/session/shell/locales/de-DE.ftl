@@ -2891,6 +2891,9 @@ portal-chooser-file-grant-unavailable = Die ausgewählte Datei ist nicht mehr ve
 ## Der Agent-Verfasser: ein Feld, um einen Agenten zu fragen oder ihm zu sagen, was er tun soll
 agent-quick-title = { $agent }
 agent-quick-agent = Agent
+agent-quick-model = Modell
+agent-quick-model-own = Das eigene Modell des Agenten
+agent-quick-model-of = { $model } ({ $provider })
 agent-quick-about-selection = Zu deiner Auswahl in { $app }: „{ $selection }“
 agent-quick-about-window = Zu { $app }; nichts ist ausgewählt
 agent-quick-accessible-name = Agent-Verfasser

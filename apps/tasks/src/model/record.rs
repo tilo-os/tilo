@@ -4,9 +4,11 @@ use tilo_rich_text::RichText;
 use ui::tilo_actions::ActorKind;
 use ui::tilo_resource::{self, ActionCx, Collection, Counter, Id, Model, Refusal, Set, resource};
 
-use crate::model::issue::{Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, MessageKind, Status};
+use crate::model::issue::{
+    AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, MessageKind, Status,
+};
 use crate::model::run::{
-    Budget, Confirmation, ConfirmationState, Question, Run, RunOutcome, RunPhase,
+    Budget, Confirmation, ConfirmationState, ModelChoice, Question, Run, RunOutcome, RunPhase,
 };
 
 /// A workspace's issues.
@@ -227,6 +229,76 @@ impl Tracker {
         Ok(())
     }
 
+    /// Choose the model the issue's agent plans with, or let it plan with
+    /// the one chosen for the agent.
+    ///
+    /// # Errors
+    /// Refuses while a run of the issue is going, or a choice that names no
+    /// provider or model.
+    #[action(writes = issues)]
+    pub fn choose_model(&mut self, issue: &Id, model: Option<ModelChoice>) -> Result<(), Refusal> {
+        if model
+            .as_ref()
+            .is_some_and(|model| model.profile.trim().is_empty() || model.model.trim().is_empty())
+        {
+            return Err(Refusal::new("A model names its provider and itself"));
+        }
+        let target = self.issue_mut(issue)?;
+        if target.active_run().is_some() {
+            return Err(Refusal::new("Change the model when no run is going"));
+        }
+        target.model = model;
+        Ok(())
+    }
+
+    /// Ask an agent to do something: an issue assigned to it whose run
+    /// starts at once, approved by the asking itself.
+    ///
+    /// # Errors
+    /// Refuses an id already taken, a blank title, an invoker who is not a
+    /// person, or an agent that is not named.
+    #[action(audience = "people", writes = issues)]
+    pub fn ask_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param(flatten)] ask: AgentRequest,
+    ) -> Result<(), Refusal> {
+        let starter = person(cx)?;
+        if self.issues.contains(&ask.id) {
+            return Err(Refusal::new("That issue exists already"));
+        }
+        let agent = crate::model::agent_assignee(ask.agent.trim());
+        if agent.0.trim_start_matches("agent:").is_empty() {
+            return Err(Refusal::new("Name the agent to ask"));
+        }
+        let number = self.next_number();
+        let now = cx.now_ms();
+        let issue = Issue {
+            number,
+            title: ask.title.trim().to_owned(),
+            body: RichText::from_markdown(ask.body.unwrap_or_default()),
+            status: Status::InProgress,
+            assignee: Some(agent.clone()),
+            model: ask.model.clone(),
+            subject: ask.subject,
+            author: starter.clone(),
+            created_ms: now,
+            run: Some(Run {
+                epoch: 1,
+                agent,
+                starter,
+                phase: RunPhase::Approved,
+                model: ask.model,
+                started_ms: now,
+                updated_ms: now,
+                confirmation: None,
+            }),
+            ..Issue::default()
+        };
+        self.issues.push(ask.id, issue);
+        Ok(())
+    }
+
     /// Label an issue.
     ///
     /// # Errors
@@ -365,10 +437,12 @@ impl Tracker {
             .as_ref()
             .map_or(0, |run| run.epoch)
             .saturating_add(1);
+        let model = target.model.clone();
         target.run = Some(Run {
             epoch,
             agent: ui::tilo_resource::Atom(agent),
             starter,
+            model,
             phase: RunPhase::Approved,
             started_ms: now,
             updated_ms: now,

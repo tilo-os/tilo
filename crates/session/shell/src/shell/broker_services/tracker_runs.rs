@@ -92,6 +92,17 @@ fn run_of(id: &Id, issue: &Issue) -> Option<TrackerRun> {
                 turn_ms: u32::try_from(budget.turn_ms).unwrap_or(u32::MAX),
                 total_ms: u32::try_from(budget.total_ms).unwrap_or(u32::MAX),
             }),
+        subject: issue
+            .subject
+            .as_ref()
+            .and_then(|subject| serde_json::from_value(subject.clone()).ok()),
+        model: run
+            .model
+            .as_ref()
+            .map(|model| runtime_collab::TaskRunModel {
+                profile: model.profile.clone(),
+                model: model.model.clone(),
+            }),
         directions,
         question,
     })

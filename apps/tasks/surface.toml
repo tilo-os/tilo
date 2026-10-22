@@ -11,6 +11,10 @@ fields = [
   { path = "issues.*.body", type = "RichText", ops = "sha256:32d3007b3b137974" },
   { path = "issues.*.status", type = "Status" },
   { path = "issues.*.assignee", type = "Option<Atom>", readonly = true },
+  { path = "issues.*.model", type = "Option<ModelChoice>", readonly = true, stored = "record" },
+  { path = "issues.*.model.profile", type = "String" },
+  { path = "issues.*.model.model", type = "String" },
+  { path = "issues.*.subject", type = "Option<serde_json::Value>", readonly = true },
   { path = "issues.*.labels", type = "Set<String>" },
   { path = "issues.*.parent", type = "Option<Id>", readonly = true },
   { path = "issues.*.links", type = "Collection<Link>", stored = "collection" },
@@ -36,6 +40,9 @@ fields = [
   { path = "issues.*.run.agent", type = "Atom" },
   { path = "issues.*.run.starter", type = "String" },
   { path = "issues.*.run.phase", type = "RunPhase" },
+  { path = "issues.*.run.model", type = "Option<ModelChoice>", stored = "record" },
+  { path = "issues.*.run.model.profile", type = "String" },
+  { path = "issues.*.run.model.model", type = "String" },
   { path = "issues.*.run.started_ms", type = "i64" },
   { path = "issues.*.run.updated_ms", type = "i64" },
   { path = "issues.*.run.confirmation", type = "Option<Confirmation>", stored = "record" },
@@ -81,6 +88,28 @@ writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
   { name = "assignee", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "choose-model"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "model", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { model = { type = "string" }, profile = { type = "string" } }, required = ["profile", "model"] } },
+]
+
+[[resources.verbs]]
+id = "ask-agent"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "body", required = false, schema = { type = ["string", "null"] } },
+  { name = "agent", required = true, schema = { type = "string" } },
+  { name = "model", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { model = { type = "string" }, profile = { type = "string" } }, required = ["profile", "model"] } },
+  { name = "subject", required = false, schema = {} },
 ]
 
 [[resources.verbs]]

@@ -17,7 +17,8 @@ kind `tasks.tracker`), written the one way every app is
 | `title` | `String`, the label | field edit |
 | `body` | `RichText`, a child resource | the rich-text editor's actions |
 | `status` | Backlog, Todo, In progress, In review, Done, Cancelled | field edit; `place` from the board |
-| `assignee` | nobody, a person or an agent | field edit |
+| `assignee` | nobody, a person or an agent | `assign` (never under a run) |
+| `model` | a provider's model, or the agent's own | `choose-model` (never under a run) |
 | `labels` | `Set<String>` | `add-label`; removing one is a field edit |
 | `parent` | `Option<Id>`, read-only | `create`, `move-under` (refuses cycles) |
 | `links` | `Collection<Link>` (app, kind, resource, label) | `link`, `unlink` |
@@ -58,6 +59,8 @@ system and an entry in its history:
 
 | Action | Who | What |
 |---|---|---|
+| `ask-agent` | people | an issue assigned to an agent whose run the asking starts (the "Tell an agent" composer) |
+| `choose-model` | anyone who may edit | the model the issue's runs plan with, while no run is going |
 | `approve-run` | people | starts run *n*+1 for the assigned agent, acting for the approver |
 | `stop-run` | people | stops the run; what it already changed stays |
 | `set-execution-budget` | people | turn and total time ceilings while no run is active |
@@ -72,8 +75,9 @@ system and an entry in its history:
 The broker reads the tracker (`TrackerRuns`, served by the shell from the
 room's committed record) and delivers each going run to its agent under the
 native task lease: the instruction is the issue's title and description, the
-steering is the thread's messages to the run, and a run the tracker no longer
-holds as going is cancelled. The agent writes the run's reports, questions and
+model is the one the run captured from the issue (the agent's own without),
+the steering is the thread's messages to the run, and a run the tracker no
+longer holds as going is cancelled. The agent writes the run's reports, questions and
 end itself, through the tracker's actions above, as children of its run.
 
 Each of the agent's actions, the tracker's included, is admitted as the agent

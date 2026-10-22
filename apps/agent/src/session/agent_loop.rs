@@ -3736,6 +3736,7 @@ mod tests {
         });
         let mut run = runtime_collab::TaskRunEnvelope {
             paused: None,
+            model: None,
             version: 1,
             task_id: "task:loop".into(),
             title: title.into(),
