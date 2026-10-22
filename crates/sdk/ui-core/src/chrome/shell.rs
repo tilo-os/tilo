@@ -556,17 +556,32 @@ pub fn panel_shadow(
     scene.pop_layer();
 }
 
+/// A painted floating Panel: its outline, for callers that clip their
+/// content to it, and the theme to draw that content with.
+#[must_use = "draw the panel's contents with `theme`, not the window's"]
+pub struct PaintedPanel {
+    /// The body's outline at the Panel radius.
+    pub body: RoundedRect,
+    /// The window theme as seen from the [`panel_ground`]
+    /// ([`Theme::on_ground`]): text tiers measured against the panel, and
+    /// fields and secondary buttons stepped off it as they step off a
+    /// window. In dark the overlay rung sits right under `raised`, so a
+    /// control drawn with the window's theme all but vanishes into the
+    /// panel.
+    pub theme: Theme,
+}
+
 /// Paint a floating [`ChromeRole::Panel`] body: its shadow at
 /// `shadow_intensity`, the [`panel_ground`] fill and the 1 px
 /// [`panel_border`], all at the Panel radius. Returns the body's outline
-/// for callers that clip their content to it.
+/// and the theme the panel's contents are drawn with.
 pub fn paint_panel(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,
     theme: &Theme,
     shadow_intensity: f32,
-) -> RoundedRect {
+) -> PaintedPanel {
     let radius = ChromeRole::Panel.radius(theme, rect.height());
     panel_shadow(scene, transform, rect, radius, theme, shadow_intensity);
     let body = RoundedRect::from_rect(rect, radius);
@@ -578,7 +593,19 @@ pub fn paint_panel(
         None,
         &body,
     );
-    body
+    PaintedPanel {
+        body,
+        theme: on_panel(theme),
+    }
+}
+
+/// The theme a floating Panel's contents are drawn with: `theme` as seen
+/// from the [`panel_ground`] ([`Theme::on_ground`]). [`paint_panel`]
+/// returns it; a surface that paints its panel in one pass and its
+/// contents in another derives it here.
+#[must_use]
+pub fn on_panel(theme: &Theme) -> Theme {
+    theme.on_ground(panel_ground(theme))
 }
 
 /// A separator or edge drawn on a chrome surface. Derived against the
@@ -713,6 +740,41 @@ mod tests {
             ("light", Theme::light()),
             ("high_contrast", Theme::high_contrast()),
         ]
+    }
+
+    /// A secondary button or field on a floating panel has the same
+    /// visible step off the panel in dark as in light: the panel hands its
+    /// contents a theme whose ground is the panel, so `raised` steps off
+    /// the panel instead of the window (the dark overlay rung sits right
+    /// under the raised one).
+    #[test]
+    fn a_panels_contents_stand_on_the_panel() {
+        use crate::color::Oklch;
+        let l = |c: Color| Oklch::from_color(c).l;
+        for (name, theme) in themes() {
+            let colors = &theme.tokens.colors;
+            let window_step = (l(colors.surfaces.raised) - l(colors.surfaces.content)).abs();
+            let mut scene = Scene::new();
+            let painted = paint_panel(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 320.0, 200.0),
+                &theme,
+                1.0,
+            );
+            let ground = panel_ground(&theme);
+            let on = &painted.theme.tokens.colors;
+            assert_eq!(
+                on.surfaces.content, ground,
+                "{name}: contents stand on the panel"
+            );
+            let panel_step = (l(on.surfaces.raised) - l(ground)).abs();
+            assert!(
+                panel_step + 1e-4 >= window_step / 2.0,
+                "{name}: a secondary face stands {panel_step:.3} off the panel, \
+                 {window_step:.3} off the window"
+            );
+        }
     }
 
     #[test]

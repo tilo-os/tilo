@@ -631,9 +631,10 @@ impl DirectorySheet {
         theme: &Theme,
     ) {
         let rect = self.rect;
+        let painted = ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
+        let theme = &painted.theme;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let _ = ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
         let pad = f64::from(tokens.spacing.s4);
         let gap = f64::from(tokens.spacing.s2);
         let control_h = f64::from(tokens.metrics.min_pointer_target);

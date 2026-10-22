@@ -263,7 +263,6 @@ impl DisplayIdentify {
         if !self.painted.get() {
             return;
         }
-        let colors = &theme.tokens.colors;
         let type_scale = &theme.tokens.typography;
         for label in labels {
             let side = (label.output.width().min(label.output.height()) * 0.36).clamp(160.0, 420.0);
@@ -281,7 +280,9 @@ impl DisplayIdentify {
                     ),
                 );
             }
-            ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
+            let painted = ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
+            let theme = &painted.theme;
+            let colors = &theme.tokens.colors;
             let number = label.number.to_string();
             #[allow(
                 clippy::cast_possible_truncation,

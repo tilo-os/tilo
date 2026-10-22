@@ -244,7 +244,9 @@ impl ArrivalLine {
         let Some(drawn) = pose.begin(scene, transform, rect.inflate(32.0, 32.0)) else {
             return;
         };
-        let _ = ui::chrome::shell::paint_panel(scene, drawn, rect, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, drawn, rect, theme, 1.0);
+        let theme = &painted.theme;
+        let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let cy = rect.y0 + pad + FACE / 2.0;
         let mut x = rect.x0 + pad;

@@ -17,6 +17,7 @@ use ui::ColorCompat;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::ButtonRole;
 
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{DesktopTree, UserId};
@@ -1091,7 +1092,8 @@ impl WorkspaceSettingsOverlay {
         // Panel role (HIG §9.1–§9.3): the Panel radius, an elevation-token
         // shadow that follows the sheet's own corners and fades with it,
         // `panel_ground` and the derived Panel border.
-        ui::chrome::shell::paint_panel(scene, panel_transform, rect, theme, 1.0);
+        // `draw_contents` draws on it with `ui::chrome::shell::on_panel`.
+        let _ = ui::chrome::shell::paint_panel(scene, panel_transform, rect, theme, 1.0);
         Some(DrawPlan {
             transform: panel_transform,
             layered: in_flight,
@@ -1217,6 +1219,10 @@ impl WorkspaceSettingsOverlay {
         theme: &Theme,
         model: &WorkspaceSettingsModel<'_>,
     ) {
+        // Everything here stands on the sheet's panel ground, not the
+        // window's: fields and secondary buttons step off the panel as they
+        // step off a window, in dark as in light (`Theme::on_ground`).
+        let theme = &ui::chrome::shell::on_panel(theme);
         let tokens = &theme.tokens;
 
         // `ws_settings_rect()` is the single source of truth for the
@@ -1398,7 +1404,8 @@ impl WorkspaceSettingsOverlay {
         // Panel role (HIG §9.1–§9.3): Panel radius, elevation-token shadow,
         // `panel_ground` and the derived border — not a sprite shadow off a
         // ramp slot over a declared border.
-        ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
+        let painted = ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
+        let theme = &painted.theme;
 
         let (title, description, subject): (String, String, Option<String>) = match &sheet {
             MemberSheet::Role(user) => {
@@ -2542,33 +2549,9 @@ impl WorkspaceSettingsOverlay {
             local_x,
             card.y0 + 18.0 * scale,
         );
-        let button = |scene: &mut Scene,
-                      text_renderer: &mut TextRenderer,
-                      rect: Rect,
-                      label: &str,
-                      fill,
-                      ink| {
-            paint_card_button(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &style,
-                CardButton {
-                    rect,
-                    label,
-                    fill,
-                    ink,
-                },
-            );
+        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
+            paint_card_button(scene, transform, text_renderer, theme, face);
         };
-        // A shown device is selected: the lift of the card, never an accent.
-        let lifted = ui::chrome::shell::selection_tier_on(
-            theme,
-            ui::chrome::SelectionState::active(true),
-            colors.surfaces.raised,
-        )
-        .fill;
         self.device_toggle_rects.clear();
         let mut y = card.y0 + 48.0 * scale;
         for device in model.devices {
@@ -2594,21 +2577,19 @@ impl WorkspaceSettingsOverlay {
                 card.x1 - 16.0,
                 y + 32.0 * scale,
             );
+            // A shown device is the toggle pressed in, never an accent.
+            let label = t(if device.shown {
+                "workspace-settings-device-shown"
+            } else {
+                "workspace-settings-device-hidden"
+            });
             button(
                 scene,
                 text_renderer,
-                toggle,
-                &t(if device.shown {
-                    "workspace-settings-device-shown"
-                } else {
-                    "workspace-settings-device-hidden"
-                }),
-                if device.shown {
-                    lifted
-                } else {
-                    colors.surfaces.base
+                CardButton {
+                    toggled: device.shown,
+                    ..CardButton::new(toggle, &label)
                 },
-                colors.text_primary,
             );
             self.device_toggle_rects.push(toggle);
             y += 40.0 * scale;
@@ -2640,16 +2621,13 @@ impl WorkspaceSettingsOverlay {
             (earlier, "workspace-settings-move-earlier", !first),
             (later, "workspace-settings-move-later", !last),
         ] {
+            let label = t(key);
             button(
                 scene,
                 text_renderer,
-                rect,
-                &t(key),
-                colors.surfaces.base,
-                if enabled {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
+                CardButton {
+                    enabled,
+                    ..CardButton::new(rect, &label)
                 },
             );
         }
@@ -2658,8 +2636,15 @@ impl WorkspaceSettingsOverlay {
             if last { Rect::ZERO } else { later },
         ];
         let deletable = model.desktop.workspaces.len() > 1;
+        let delete_label = t("workspace-settings-delete");
+        // As wide as its label needs on the shared face, never narrower
+        // than the row's other buttons.
+        let delete_w = ui::widget::ButtonFace::new(Rect::ZERO, &delete_label)
+            .role(ButtonRole::Destructive)
+            .intrinsic_width(text_renderer, theme)
+            .max(120.0 * scale);
         let delete = Rect::new(
-            card.x1 - 16.0 - 120.0 * scale,
+            card.x1 - 16.0 - delete_w,
             row,
             card.x1 - 16.0,
             row + 32.0 * scale,
@@ -2667,13 +2652,10 @@ impl WorkspaceSettingsOverlay {
         button(
             scene,
             text_renderer,
-            delete,
-            &t("workspace-settings-delete"),
-            colors.surfaces.base,
-            if deletable {
-                colors.semantic.danger
-            } else {
-                colors.text_dim
+            CardButton {
+                role: ButtonRole::Destructive,
+                enabled: deletable,
+                ..CardButton::new(delete, &delete_label)
             },
         );
         self.delete_rect = if deletable { delete } else { Rect::ZERO };
@@ -2715,22 +2697,9 @@ impl WorkspaceSettingsOverlay {
             None,
             &theme.text(TextRole::Body),
         );
-        let button =
-            |scene: &mut Scene, text_renderer: &mut TextRenderer, rect: Rect, label: &str, ink| {
-                paint_card_button(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &style,
-                    CardButton {
-                        rect,
-                        label,
-                        fill: colors.surfaces.base,
-                        ink,
-                    },
-                );
-            };
+        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
+            paint_card_button(scene, transform, text_renderer, theme, face);
+        };
         let mut y = card.y0 + 48.0 * scale;
         for archived in model.archived {
             let delete = Rect::new(
@@ -2758,19 +2727,20 @@ impl WorkspaceSettingsOverlay {
                 None,
                 &style,
             );
+            let restore_label = t("workspace-settings-archived-restore");
             button(
                 scene,
                 text_renderer,
-                restore,
-                &t("workspace-settings-archived-restore"),
-                colors.text_primary,
+                CardButton::new(restore, &restore_label),
             );
+            let delete_label = t("workspace-settings-archived-delete");
             button(
                 scene,
                 text_renderer,
-                delete,
-                &t("workspace-settings-archived-delete"),
-                colors.semantic.danger,
+                CardButton {
+                    role: ButtonRole::Destructive,
+                    ..CardButton::new(delete, &delete_label)
+                },
             );
             self.archived_rects.push([restore, delete]);
             y += 40.0 * scale;
@@ -2848,45 +2818,28 @@ impl WorkspaceSettingsOverlay {
         // The host answers the listing only to someone the room lets change
         // its settings, and decides each change again: a known listing has
         // working controls.
-        let lifted = ui::chrome::shell::selection_tier_on(
-            theme,
-            ui::chrome::SelectionState::active(true),
-            colors.surfaces.raised,
-        )
-        .fill;
-        let button =
-            |scene: &mut Scene, text_renderer: &mut TextRenderer, rect: Rect, label: &str, fill| {
-                paint_card_button(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &caption,
-                    CardButton {
-                        rect,
-                        label,
-                        fill,
-                        ink: colors.text_primary,
-                    },
-                );
-            };
-        // The switch, at the title's end: lifted while public.
+        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
+            paint_card_button(scene, transform, text_renderer, theme, face);
+        };
+        // The switch, at the title's end: pressed in while public.
         let switch = Rect::new(
             card.x1 - 16.0 - 96.0 * scale,
             card.y0 + 12.0 * scale,
             card.x1 - 16.0,
             card.y0 + 44.0 * scale,
         );
+        let switch_label = t(if public {
+            "workspace-settings-public-switch-on"
+        } else {
+            "workspace-settings-public-switch-off"
+        });
         button(
             scene,
             text_renderer,
-            switch,
-            &t(if public {
-                "workspace-settings-public-switch-on"
-            } else {
-                "workspace-settings-public-switch-off"
-            }),
-            if public { lifted } else { colors.surfaces.base },
+            CardButton {
+                toggled: public,
+                ..CardButton::new(switch, &switch_label)
+            },
         );
         // Who joins as what, and what it says, once it is public.
         let row = card.y0 + 76.0 * scale;
@@ -2909,16 +2862,13 @@ impl WorkspaceSettingsOverlay {
         button(
             scene,
             text_renderer,
-            role_rect,
-            &role_label,
-            colors.surfaces.base,
+            CardButton::new(role_rect, &role_label),
         );
+        let describe_label = t("workspace-settings-public-describe");
         button(
             scene,
             text_renderer,
-            description_rect,
-            &t("workspace-settings-public-describe"),
-            colors.surfaces.base,
+            CardButton::new(description_rect, &describe_label),
         );
         self.public_rects = [switch, role_rect, description_rect];
     }
@@ -3074,55 +3024,50 @@ pub(crate) struct TabStripPlan {
     pub icons: bool,
 }
 
-/// A card's button: its label centred on a control-radius fill.
+/// A card's button: the shared [`ui::widget::ButtonFace`] of `role`,
+/// pressed in while `toggled`, dimmed and inert while not `enabled`.
 #[derive(Clone, Copy)]
 struct CardButton<'a> {
     rect: Rect,
     label: &'a str,
-    fill: vello::peniko::Color,
-    ink: vello::peniko::Color,
+    role: ButtonRole,
+    toggled: bool,
+    enabled: bool,
+}
+
+impl<'a> CardButton<'a> {
+    fn new(rect: Rect, label: &'a str) -> Self {
+        Self {
+            rect,
+            label,
+            role: ButtonRole::Secondary,
+            toggled: false,
+            enabled: true,
+        }
+    }
 }
 
 /// Paints one [`CardButton`] the way every General-tab card draws its
-/// buttons, so the cards cannot drift apart.
+/// buttons, so the cards cannot drift apart: the shared button face, drawn
+/// with the theme as seen from the card's raised ground, so a secondary
+/// button steps off the card as it steps off a window.
 fn paint_card_button(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
-    style: &TextStyle,
     button: CardButton<'_>,
 ) {
-    let CardButton {
-        rect,
-        label,
-        fill,
-        ink,
-    } = button;
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        fill,
-        None,
-        &RoundedRect::from_rect(
-            rect,
-            ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
-        ),
-    );
-    let (width, height) = text_renderer.measure_style(label, None, style);
-    text_renderer.draw_style(
+    let on_card = theme.on_ground(theme.tokens.colors.surfaces.raised);
+    ui::widget::Button::paint(
         scene,
-        label,
-        ink,
-        transform.pre_translate(
-            (
-                rect.x0 + (rect.width() - f64::from(width)) / 2.0,
-                rect.y0 + (rect.height() - f64::from(height)) / 2.0,
-            )
-                .into(),
-        ),
-        None,
-        style,
+        transform,
+        text_renderer,
+        &on_card,
+        &ui::widget::ButtonFace::new(button.rect, button.label)
+            .role(button.role)
+            .toggled(button.toggled)
+            .disabled(!button.enabled),
     );
 }
 
