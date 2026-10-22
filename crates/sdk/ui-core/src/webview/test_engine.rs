@@ -123,6 +123,23 @@ impl TestEngine {
         }
     }
 
+    /// Paint the view's white background at its current size, as Chromium
+    /// paints a resized view before the page has drawn there.
+    pub fn paint_before_page(&self) {
+        let inner = self.lock_inner();
+        let (width, height) = (inner.width.max(1), inner.height.max(1));
+        let bytes = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX))
+            .saturating_mul(4);
+        *self.lock_frames() = Some(Frame {
+            trace_id: None,
+            rgba: Arc::new(vec![0xFF; bytes]),
+            width,
+            height,
+        });
+    }
+
     /// Deliver `event` on the next drain, as the engine would on its own (a
     /// page reporting its document size).
     pub fn push_event(&self, event: WebViewEvent) {

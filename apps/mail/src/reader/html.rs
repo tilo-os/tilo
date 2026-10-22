@@ -146,6 +146,28 @@ pub(super) struct HtmlBody {
     found: Option<(usize, Option<usize>)>,
 }
 
+/// Whether `view` holds the page's own frame at the size it is shown at: a
+/// frame of that size with the document's end mark
+/// ([`crate::html_mail::END_MARK`]) in its bottom-right corner. A frame the
+/// engine painted at a new size before the page drew there shows the view's
+/// white background (or nothing) in that corner instead.
+fn shows_page(view: &WebView) -> bool {
+    if !view.has_fitting_frame() {
+        return false;
+    }
+    let slot = view.engine().frames();
+    let Ok(guard) = slot.lock() else {
+        return false;
+    };
+    guard.as_ref().is_some_and(|frame| {
+        let (width, height) = (frame.width as usize, frame.height as usize);
+        let at = (height.saturating_sub(2) * width + width.saturating_sub(2)) * 4;
+        frame.rgba.get(at..at + 4).is_some_and(
+            |pixel| matches!(pixel, [r, g, b, a] if *a != 0 && [*r, *g, *b] != [0xff; 3]),
+        )
+    })
+}
+
 impl HtmlBody {
     pub fn new() -> Self {
         Self {
@@ -389,10 +411,11 @@ impl HtmlBody {
             return;
         }
         // Grown to its document's height, the view has nothing of the page
-        // until the engine paints at that size: a blank sheet. The message's
-        // body appears with its first painted frame; later resizes keep
-        // showing the last one until the next arrives.
-        if view.has_fitting_frame() {
+        // until the engine paints at that size: the engine paints the new
+        // size first with the page's old frame and a blank rest. The
+        // message's body appears with the page's own frame at its size;
+        // later resizes keep showing the last one until the next arrives.
+        if shows_page(view) {
             self.painted = true;
         } else if !self.painted {
             return;
@@ -685,10 +708,10 @@ impl HtmlBody {
             .is_some_and(Widget::needs_animation_frame)
     }
 
-    /// The view holds a frame of the page at the size it is shown at.
+    /// The view holds the page's own frame at the size it is shown at.
     #[cfg(test)]
-    pub fn has_fitting_frame(&self) -> bool {
-        self.view.as_ref().is_some_and(WebView::has_fitting_frame)
+    pub fn shows_page(&self) -> bool {
+        self.view.as_ref().is_some_and(shows_page)
     }
 
     /// The loaded document is not on screen yet.
@@ -702,7 +725,7 @@ impl HtmlBody {
                     let placed = view.get_rect().height();
                     self.measured
                         .is_none_or(|doc| (placed - doc.height.ceil().max(1.0)).abs() < 0.5)
-                        && view.has_fitting_frame()
+                        && shows_page(view)
                 }))
     }
 
