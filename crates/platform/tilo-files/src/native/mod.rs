@@ -17,6 +17,16 @@ mod change_watch;
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
 pub use change_watch::{ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes};
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+mod watched;
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub use watched::Watched;
 pub mod bounded;
 pub mod checked;
 pub mod identity;
