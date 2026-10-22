@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn observations_expire_with_the_compositor_lease() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("device-display-state.json");
         let snapshot = DeviceDisplaySnapshot {
             publisher_pid: 4_000_000,
@@ -165,7 +165,7 @@ mod publication_regressions {
 
     #[test]
     fn unchanged_live_device_observations_keep_the_published_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", dir.path());
         let (publisher_pid, publisher_start_ticks) = crate::hardware::publisher_identity().unwrap();

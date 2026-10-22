@@ -2146,7 +2146,7 @@ mod quick_settings_tests {
         }
         // Phase `quick_settings_order_survives_restart_without_replacing_other_settings`.
         {
-            let temp = tempfile::tempdir().unwrap();
+            let temp = crate::test_dir();
             let path = temp.path().join("tilo/settings.json");
             crate::update_section_at(
                 &path,
@@ -3371,7 +3371,7 @@ mod tests {
         }
         // Phase `saved_shortcuts_reload_as_the_same_valid_effective_config`.
         {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = crate::test_dir();
             let path = dir.path().join("tilo/settings.json");
 
             let mut saved = ShortcutConfig::default();
@@ -3475,7 +3475,7 @@ mod tests {
 
     #[test]
     fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("tilo/settings.json");
         let target = |resource: &str| ActionChordTarget {
             provider: "workspace:room".into(),
@@ -3651,7 +3651,7 @@ mod tests {
 
     #[test]
     fn publisher_liveness_is_its_held_lease_not_its_proc_entry() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         // No process has this PID, so /proc cannot vouch for it, as it cannot
         // for a non-dumpable compositor. Holding its lease can.
         let (pid, start_ticks) = (4_000_000, 7);

@@ -6,7 +6,7 @@ fn word(spelling: &str, language: Option<&str>) -> Word {
 
 #[test]
 fn add_edit_remove_reset_and_restart_use_one_persisted_dictionary() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_dir();
     let service = Service::new(root.path().join("vocabulary")).unwrap();
     let osk = service.bind(Some([1; 32])).unwrap();
     let dictation = osk.clone();
@@ -60,7 +60,7 @@ fn add_edit_remove_reset_and_restart_use_one_persisted_dictionary() {
 
 #[test]
 fn unicode_languages_and_duplicate_intent_are_preserved() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_dir();
     let service = Service::new(root.path().to_owned()).unwrap();
     let reader = service.bind(Some([2; 32])).unwrap();
     let mut snapshot = reader.snapshot().unwrap();
@@ -91,7 +91,7 @@ fn unicode_languages_and_duplicate_intent_are_preserved() {
 
 #[test]
 fn account_switching_revokes_old_consumers_and_anonymous_access() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_dir();
     let service = Service::new(root.path().to_owned()).unwrap();
     assert!(service.bind(None).is_none());
     let alice = service.bind(Some([1; 32])).unwrap();
@@ -130,7 +130,7 @@ fn account_switching_revokes_old_consumers_and_anonymous_access() {
 
 #[test]
 fn stale_edits_cannot_clobber_another_consumer_or_resurrect_removed_words() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_dir();
     let first = Service::new(root.path().to_owned()).unwrap();
     let second = Service::new(root.path().to_owned()).unwrap();
     let a = first.bind(Some([1; 32])).unwrap();
@@ -151,7 +151,7 @@ fn stale_edits_cannot_clobber_another_consumer_or_resurrect_removed_words() {
 
 #[test]
 fn corrupt_storage_fails_closed_without_destroying_it_and_files_are_private() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_dir();
     let service = Service::new(root.path().join("private")).unwrap();
     let reader = service.bind(Some([1; 32])).unwrap();
     service
@@ -182,7 +182,7 @@ fn corrupt_storage_fails_closed_without_destroying_it_and_files_are_private() {
 
 #[test]
 fn expected_account_reader_cannot_cross_a_concurrent_switch() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_dir();
     let service = Arc::new(Service::new(root.path().to_owned()).unwrap());
     for (owner, spelling) in [([1; 32], "Alice"), ([2; 32], "Bob")] {
         let reader = service.bind(Some(owner)).unwrap();
@@ -211,7 +211,7 @@ fn expected_account_reader_cannot_cross_a_concurrent_switch() {
 #[cfg(feature = "watch")]
 #[test]
 fn another_host_edit_and_corruption_wake_live_dictionary_consumers() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_dir();
     let service = Service::new(root.path().to_owned()).unwrap();
     let reader = service.bind(Some([1; 32])).unwrap();
     let (send, receive) = std::sync::mpsc::channel();

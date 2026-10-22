@@ -692,7 +692,7 @@ mod compare_tests {
 
     #[test]
     fn session_records_do_not_overwrite_a_newer_compositor_decision() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_dir();
         let paths = SessionPaths::beside(directory.path().join("settings.json"));
         let session = SessionSettings::open(paths).unwrap();
         refuses_stale_confirmation(&session);
@@ -702,7 +702,7 @@ mod compare_tests {
 
     #[test]
     fn host_transaction_accepts_durable_state_when_the_copy_needs_repair() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_dir();
         let paths = SessionPaths::beside(directory.path().join("settings.json"));
         let session = SessionSettings::open(paths.clone()).unwrap();
         let before = session.load();

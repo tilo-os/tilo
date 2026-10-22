@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn an_apps_write_reaches_the_record_its_scope_names_and_the_copy() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = session(dir.path());
         let paths = session.paths().clone();
         update_for_app(
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn an_app_cannot_write_another_apps_entry_or_a_shared_section() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = session(dir.path());
         session
             .update_section(
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn theme_studio_writes_the_active_theme_and_nothing_else_of_the_look() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = session(dir.path());
         session
             .update_section("appearance", object(json!({"high_contrast": true})))
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn a_personal_entry_too_large_to_roam_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = session(dir.path());
         let words = vec!["x".repeat(1024); 80];
         let error = update_for_app(

@@ -536,7 +536,7 @@ mod tests {
     /// settings read after the change type the new layout.
     #[test]
     fn a_hand_edited_keyboard_layout_reaches_the_live_document_and_its_readers() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let paths = crate::SessionPaths::beside(dir.path().join("settings.json"));
         let session = Arc::new(crate::SessionSettings::open(paths.clone()).unwrap());
         // No copy watch in this test: the view polls the copy itself, as a
