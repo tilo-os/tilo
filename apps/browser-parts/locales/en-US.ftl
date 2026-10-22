@@ -108,3 +108,4 @@ browser-menu-extensions = Extensions
 browser-menu-manage-extensions = Manage extensions
 browser-extension-add = Add to Tilo Browser
 browser-extension-adding = Adding extension
+browser-page-stopped = This page stopped working

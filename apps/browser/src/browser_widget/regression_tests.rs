@@ -232,3 +232,102 @@ fn an_address_abandoned_in_the_bar_is_not_suggested_for_again() {
     assert_eq!(widget.bar_query, None);
     assert!(widget.bar_suggestions().is_empty());
 }
+
+#[test]
+fn a_page_whose_renderer_died_says_so_and_reloads() {
+    let engine = TestEngine::new();
+    let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    widget.current_uri = "https://heavy.test/".into();
+    widget.set_loading_progress(0.4);
+    engine.push_event(WebViewEvent::RendererTerminated);
+    widget.apply_engine_events();
+    assert_eq!(
+        widget.load_error.as_deref(),
+        Some("This page stopped working")
+    );
+    assert!((widget.progress - 1.0).abs() < f64::EPSILON, "no load runs");
+    // Try again opens the page afresh.
+    widget
+        .perform_browser_operation(BrowserOperation::Reload)
+        .unwrap();
+    assert_eq!(
+        engine.commands().last(),
+        Some(&WebViewCommand::Navigate("https://heavy.test/".into()))
+    );
+}
+
+#[test]
+fn escape_in_the_address_is_the_addresss_not_the_loads() {
+    let mut widget = BrowserWidget::new_headless();
+    architecture_tests::compose(&mut widget);
+    widget.set_loading_progress(0.4);
+    widget
+        .daily
+        .act(crate::daily_controls::Action::Open, &widget.engine);
+    architecture_tests::compose(&mut widget);
+    assert!(widget.focus_address_input());
+    let escape = architecture_tests::key(WNamedKey::Escape);
+    assert!(
+        !widget.handle_browser_shortcut(&escape, winit::event::Modifiers::default()),
+        "the field takes it"
+    );
+    assert!(widget.daily.open, "Find stays open");
+    assert!(
+        !widget
+            .pending_controls
+            .iter()
+            .any(|invocation| invocation.address.action == "stop"),
+        "the page goes on loading"
+    );
+}
+
+#[test]
+fn the_active_download_notice_goes_once_the_download_does() {
+    let mut widget = BrowserWidget::new_headless();
+    let download = |state: &str| WebViewEvent::DownloadUpdated {
+        id: 7,
+        state: state.into(),
+        path: "/home/person/Downloads/file.zip".into(),
+        name: "file.zip".into(),
+        url: "https://files.test/file.zip".into(),
+        retryable: false,
+        received: 10,
+        total: 100,
+        error: String::new(),
+    };
+    widget.capabilities.apply(download("progress"));
+    architecture_tests::compose(&mut widget);
+    // The tab was closed while it downloaded: it stayed, and says why.
+    widget.close_blocked = true;
+    architecture_tests::compose(&mut widget);
+    assert!(widget.close_blocked, "still downloading");
+    widget.capabilities.apply(download("complete"));
+    architecture_tests::compose(&mut widget);
+    assert!(!widget.close_blocked, "nothing keeps the tab open now");
+}
+
+#[test]
+fn a_jump_within_the_page_keeps_find_and_reader_view() {
+    let engine = TestEngine::new();
+    let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    engine.push_event(WebViewEvent::UriChanged("https://docs.test/guide".into()));
+    engine.push_event(WebViewEvent::TitleChanged("Guide".into()));
+    widget.apply_engine_events();
+    widget
+        .daily
+        .act(crate::daily_controls::Action::Open, &widget.engine);
+    widget.reader_view = true;
+    // A footnote link, or the page marking the section scrolled to.
+    engine.push_event(WebViewEvent::UriChanged(
+        "https://docs.test/guide#install".into(),
+    ));
+    widget.apply_engine_events();
+    assert!(widget.daily.open, "Find stays open on the same page");
+    assert!(widget.reader_view);
+    assert_eq!(widget.title, "Guide");
+    // Another page is another document.
+    engine.push_event(WebViewEvent::UriChanged("https://docs.test/api".into()));
+    widget.apply_engine_events();
+    assert!(!widget.reader_view);
+    assert!(widget.title.is_empty());
+}
