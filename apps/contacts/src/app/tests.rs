@@ -1464,7 +1464,9 @@ fn detail_fields_enter_edit_on_double_click_with_placeholders() {
     let first_rect = form_widget(&h.app, Slot::First).unwrap().get_rect();
     let column = h.app.shell.geometry().content_column;
     assert!(
-        first_rect.y0 >= column.y0,
+        // Fractional layout rounds a field resting at the column's top a
+        // few hundred-thousandths of a pixel either side.
+        first_rect.y0 >= column.y0 - 0.01,
         "focus reveals the first field inside the content column: {first_rect:?} in {column:?}, scrolled {:?}",
         h.app.form.as_ref().unwrap().scroll.get()
     );
