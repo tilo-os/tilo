@@ -3823,6 +3823,9 @@ impl BlockEditor {
             menu.bounds = Some(self.slash_menu.get_rect().into());
             children.push(std::sync::Arc::new(menu));
         }
+        if let Some(menu) = self.text_menu_access_node() {
+            children.push(std::sync::Arc::new(menu));
+        }
         let mentions = self.mention_picker.access_rows();
         if !mentions.is_empty() {
             let mut list = AccessNode::new(crate::a11y::Role::List)
@@ -4322,108 +4325,6 @@ impl BlockEditor {
         let ops = self.take_edit_ops();
         self.pending_semantic_ops.extend(ops);
         edits
-    }
-
-    /// Cut, copy, paste or select all (`command`), as the shortcuts and the
-    /// text menu do, over the document selection, the focused paragraph's
-    /// or the focused table cell's. An edit it makes is left for the owner
-    /// to take ([`Self::take_edit_ops`]); within an event, the event's edit
-    /// scope covers it. `false` when `command` is none of those.
-    pub(super) fn clipboard_command(&mut self, command: &str) -> bool {
-        if let Some((index, result)) = self.blocks.iter().enumerate().find_map(|(index, block)| {
-            self.table_editors
-                .get_mut(&block.id)
-                .and_then(|table| table.projected_clipboard(command))
-                .map(|result| (index, result))
-        }) {
-            if let Some((row, column, value)) = result {
-                self.begin_edit();
-                self.apply_table_cell_edit(index, row, column, &value);
-            }
-            self.dirty = true;
-            return true;
-        }
-        if !matches!(command, "cut" | "copy" | "paste" | "select-all") {
-            return false;
-        }
-        if command == "select-all" {
-            self.handle_document_selection_ctrl_key(&Key::Character("a".into()));
-            self.dirty = true;
-            return true;
-        }
-        // A preview's source is the clipboard candidate, not a live text
-        // selection until a replacement actually succeeds.
-        let image_selection = self.focused.and_then(|index| {
-            let block = self.blocks.get(index)?;
-            self.image_attachments
-                .get(&block.id)
-                .filter(|image| !image.editing)
-                .map(|_| DocumentSelection {
-                    anchor: DocumentPosition {
-                        block: index,
-                        byte: 0,
-                    },
-                    cursor: DocumentPosition {
-                        block: index,
-                        byte: block.text().len(),
-                    },
-                })
-        });
-        let selection = self.document_selection.or(image_selection).or_else(|| {
-            let index = self.focused?;
-            let line = &self.blocks.get(index)?.line;
-            let (start, end) = line
-                .selection_range()
-                .unwrap_or_else(|| (line.cursor_pos(), line.cursor_pos()));
-            Some(DocumentSelection {
-                anchor: DocumentPosition {
-                    block: index,
-                    byte: start,
-                },
-                cursor: DocumentPosition {
-                    block: index,
-                    byte: end,
-                },
-            })
-        });
-        let Some(selection) = selection else {
-            return true;
-        };
-        if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
-            return true;
-        }
-        if command == "paste" && self.paste_image() {
-            return true;
-        }
-        // An unavailable clipboard must never turn Paste into Delete.
-        let replacement = if command == "paste" {
-            let Some(value) = clipboard_paste() else {
-                return true;
-            };
-            value
-        } else {
-            String::new()
-        };
-        let prior = self.document_selection;
-        self.document_selection = Some(selection);
-        if matches!(command, "copy" | "cut") {
-            let accepted = self
-                .selected_text()
-                .is_some_and(|text| clipboard_copy_accepted(&text));
-            if command == "cut" && !accepted {
-                self.document_selection = prior;
-                return true;
-            }
-        }
-        if command == "copy" {
-            self.document_selection = prior;
-        } else {
-            self.begin_edit();
-            self.replace_document_selection(&replacement);
-            self.set_focus(true);
-        }
-        self.dirty = true;
-        true
     }
 
     fn try_move_focused_block_shortcut(
@@ -7724,22 +7625,11 @@ impl BlockEditor {
                 Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("c") => {
-                if let Some(selected) = self.selected_text() {
-                    clipboard_copy(&selected);
-                }
-                Some(true)
+                Some(self.clipboard_command("copy"))
             }
-            Key::Character(c) if c.eq_ignore_ascii_case("x") => {
-                if self
-                    .selected_text()
-                    .is_some_and(|selected| clipboard_copy_accepted(&selected))
-                {
-                    self.replace_document_selection("");
-                }
-                Some(true)
-            }
+            Key::Character(c) if c.eq_ignore_ascii_case("x") => Some(self.clipboard_command("cut")),
             Key::Character(c) if c.eq_ignore_ascii_case("v") => {
-                Some(clipboard_paste().is_none_or(|paste| self.replace_document_selection(&paste)))
+                Some(self.clipboard_command("paste"))
             }
             // The format shortcuts a paragraph takes, over every paragraph
             // the selection spans; within one paragraph its line takes them.
@@ -11075,6 +10965,9 @@ impl Widget for BlockEditor {
         {
             return self.open_block_type_menu(index);
         }
+        if let Some(handled) = self.perform_text_menu_action(target, action, state, path) {
+            return handled;
+        }
         if let Some(target) = target.strip_prefix("notes.slash-menu:") {
             let handled = self
                 .slash_menu
@@ -12458,8 +12351,13 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
     CODE_HEADER_HEIGHT * scale
 }
 
+#[path = "block_editor_clipboard.rs"]
+mod clipboard;
 #[path = "block_editor_format.rs"]
 mod format;
+#[path = "block_editor_html.rs"]
+mod html;
+pub use html::{blocks_from_html, blocks_to_html};
 #[path = "block_editor_handle_reveal.rs"]
 mod handle_reveal;
 #[path = "block_editor_inline_markdown.rs"]
@@ -12504,6 +12402,10 @@ mod outline_tests;
 #[cfg(test)]
 #[path = "block_editor_image_paste_tests.rs"]
 mod image_paste_tests;
+
+#[cfg(test)]
+#[path = "block_editor_clipboard_tests.rs"]
+mod clipboard_tests;
 
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
@@ -13675,6 +13577,10 @@ impl BlockEditor {
         }
 
         if self.try_paste_image_key(event, ctx) {
+            return;
+        }
+
+        if self.try_clipboard_key(event, ctx) {
             return;
         }
 

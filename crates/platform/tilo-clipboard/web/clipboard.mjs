@@ -3,6 +3,16 @@
 // copy event. Async Clipboard.writeText cannot satisfy that contract.
 // `report(true)` or `report(false, reason)` hears the outcome.
 export function writeClipboardText(text, report, document=globalThis.document) {
+  return writeClipboard({'text/plain':text}, report, document);
+}
+
+// Formatted text: `html` as text/html with `plain` as its text/plain fallback,
+// through the same synchronous copy event.
+export function writeClipboardRich(html, plain, report, document=globalThis.document) {
+  return writeClipboard({'text/html':html,'text/plain':plain}, report, document);
+}
+
+function writeClipboard(data, report, document) {
   let written=false, failure;
   const transfer=event=>{
     // Do not reenter the WASM keyboard handler while it is dispatching a menu.
@@ -10,7 +20,7 @@ export function writeClipboardText(text, report, document=globalThis.document) {
     event.preventDefault();
     try {
       if(!event.clipboardData)throw Error('Clipboard transfer is unavailable');
-      event.clipboardData.setData('text/plain',text);
+      for(const [type,value] of Object.entries(data))event.clipboardData.setData(type,value);
       written=true;
     } catch(error) { failure=error; }
   };

@@ -66,6 +66,9 @@ use tilo_lock::MutexRecover as _;
 /// aliases are also offered for X11-heritage clients via Xwayland.
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
+/// Formatted text, as browsers, office suites and Tilo's editors offer it.
+pub const HTML_MIME: &str = "text/html";
+
 /// Mime types a compositor-owned selection advertises, most-specific first.
 pub fn text_mime_types() -> Vec<String> {
     [TEXT_MIME, "text/plain", "UTF8_STRING", "STRING", "TEXT"]
@@ -729,6 +732,36 @@ pub fn set_mirror_secret_text(store: &SharedSelection, text: &str) -> bool {
     bump_revision(slot, &watchers, true);
     slot.publish_pending = true;
     slot.clear_pending = false;
+    true
+}
+
+/// A formatted copy from chrome: `plain` as text and `html` as `text/html`,
+/// one offer replacing whatever the clipboard held, published on the next
+/// tick and kept in history as one entry.
+pub fn set_mirror_rich_text(store: &SharedSelection, html: &str, plain: &str) -> bool {
+    if html.len().saturating_add(plain.len()) > MAX_SELECTION_BYTES {
+        return false;
+    }
+    let Ok(mut store) = store.lock() else {
+        return false;
+    };
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
+    {
+        let slot = store.slot_mut(Target::Clipboard);
+        wipe_if_secret(slot);
+        slot.values.clear();
+        slot.values
+            .insert(TEXT_MIME.to_owned(), plain.as_bytes().to_vec());
+        slot.values
+            .insert(HTML_MIME.to_owned(), html.as_bytes().to_vec());
+        slot.mime_types = normalized_mimes(slot.values.keys().cloned());
+        slot.generation = slot.generation.wrapping_add(1).max(1);
+        slot.compositor_owned = true;
+        bump_revision(slot, &watchers, true);
+        slot.publish_pending = true;
+        slot.clear_pending = false;
+    }
+    record_clipboard_history(&mut store);
     true
 }
 
@@ -1624,6 +1657,25 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
             return false;
         }
         set_mirror_secret_text(&self.store, text)
+    }
+
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        if html.len() > ui::clipboard::MAX_CLIPBOARD_HTML_BYTES
+            || plain.len() > ui::clipboard::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES
+        {
+            return false;
+        }
+        set_mirror_rich_text(&self.store, html, plain)
+    }
+
+    fn rich_text(&self) -> Option<ui::clipboard::RichTextOffer> {
+        let html =
+            String::from_utf8(mirror_bytes(&self.store, Target::Clipboard, HTML_MIME)?).ok()?;
+        Some(ui::clipboard::RichTextOffer {
+            html,
+            plain: mirror_text(&self.store, Target::Clipboard),
+        })
+        .filter(ui::clipboard::RichTextOffer::is_valid)
     }
 
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
@@ -2544,6 +2596,36 @@ mod tests {
             assert_eq!(
                 mirror_mime_types(&s, Target::Clipboard),
                 vec!["image/png".to_string()]
+            );
+        }
+        // USER REQUIREMENT (2026-10-22): "rich copy and paste: a rich mode in
+        // every clipboard implementation including the compositor's"
+        // Phase `a_chrome_rich_copy_offers_html_and_text_as_one_copy`.
+        {
+            let s = store();
+            set_mirror_text(&s, Target::Clipboard, "copied before");
+            let host = HostClipboard {
+                store: Arc::clone(&s),
+            };
+            assert!(host.set_rich_text("<p>plain <b>bold</b></p>", "plain bold"));
+            assert_eq!(
+                mirror_text(&s, Target::Clipboard).as_deref(),
+                Some("plain bold")
+            );
+            assert_eq!(
+                mirror_bytes(&s, Target::Clipboard, HTML_MIME).as_deref(),
+                Some(b"<p>plain <b>bold</b></p>".as_slice())
+            );
+            let mimes = mirror_mime_types(&s, Target::Clipboard);
+            assert!(mimes.iter().any(|mime| mime == HTML_MIME), "{mimes:?}");
+            assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"), "{mimes:?}");
+            let rich = host.rich_text().expect("the formatting pastes back");
+            assert_eq!(rich.html, "<p>plain <b>bold</b></p>");
+            assert_eq!(rich.plain.as_deref(), Some("plain bold"));
+            assert!(host.set_text(ui::clipboard::ClipboardTarget::Clipboard, "later"));
+            assert!(
+                host.rich_text().is_none(),
+                "a plain copy drops the formatting"
             );
         }
         // Phase `chrome_image_copy_rejects_invalid_dimensions_and_payload_size`.

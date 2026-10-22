@@ -121,6 +121,7 @@ impl ResourceApp for SlidesShell {
             "reorder",
             "edit_text",
             "words_menu",
+            "words_menu_edge",
             "delete_zone",
             "inspector_widgets",
             "dark_deck",
@@ -131,7 +132,7 @@ impl ResourceApp for SlidesShell {
         match scenario {
             Some(
                 "narrow" | "narrow_closed" | "inspector" | "many_rail" | "toolbar_menu"
-                | "inspector_widgets",
+                | "inspector_widgets" | "words_menu_edge",
             ) => NARROW_VIEWPORT,
             _ => ui::launch::DEFAULT_VIEWPORT,
         }

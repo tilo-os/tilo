@@ -17,6 +17,13 @@ use std::rc::Rc;
 pub trait EventTransfer {
     /// Offer `text` as `text/plain`. Returns whether the event took it.
     fn set_text(&self, text: &str) -> bool;
+    /// Offer `html` as `text/html` with `plain` as its `text/plain`
+    /// fallback. Returns whether the event took both. The default offers
+    /// only `plain`.
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        let _ = html;
+        self.set_text(plain)
+    }
     /// The event's `text/plain`, if any.
     fn text(&self) -> Option<String>;
     /// Paired HTML/plain payloads from this same event. Optional and bounded;
@@ -131,6 +138,19 @@ pub(crate) fn write(text: &str) -> Option<bool> {
     })
 }
 
+/// Write formatted text to the event being dispatched. `None` when there is
+/// none.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn write_rich(html: &str, plain: &str) -> Option<bool> {
+    TRANSFER.with_borrow_mut(|slot| {
+        let t = slot.as_mut()?;
+        if !t.copied {
+            t.copied = t.data.set_rich_text(html, plain);
+        }
+        Some(t.copied)
+    })
+}
+
 /// Read the event being dispatched, once. `None` when there is none, it was
 /// already read, or it holds no text.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
@@ -191,6 +211,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         offered: RefCell<Vec<String>>,
+        offered_html: RefCell<Vec<String>>,
         text: Option<String>,
         refuse: bool,
         reads: Cell<usize>,
@@ -203,6 +224,10 @@ mod tests {
         fn set_text(&self, text: &str) -> bool {
             self.offered.borrow_mut().push(text.to_owned());
             !self.refuse
+        }
+        fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+            self.offered_html.borrow_mut().push(html.to_owned());
+            self.set_text(plain)
         }
         fn rich_text(&self) -> Option<crate::RichTextOffer> {
             self.rich_reads.set(self.rich_reads.get().saturating_add(1));
@@ -255,6 +280,19 @@ mod tests {
         assert!(!copied());
         assert_eq!(*fake.offered.borrow(), ["first"]);
         assert_eq!(fake.reads.get(), 1);
+    }
+
+    #[test]
+    fn a_rich_copy_writes_its_html_and_its_words_to_the_event_once() {
+        let fake = Rc::new(Fake::default());
+        assert_eq!(write_rich("<b>x</b>", "x"), None);
+        during(fake.clone(), || {
+            assert_eq!(write_rich("<b>first</b>", "first"), Some(true));
+            assert_eq!(write("second"), Some(true));
+            assert!(copied());
+        });
+        assert_eq!(*fake.offered_html.borrow(), ["<b>first</b>"]);
+        assert_eq!(*fake.offered.borrow(), ["first"]);
     }
 
     #[test]

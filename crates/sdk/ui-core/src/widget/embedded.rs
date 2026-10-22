@@ -49,6 +49,9 @@ pub struct Embedded<W: Widget> {
     /// Build-time theme inputs must match the paint-time theme even when the
     /// rectangle and document have not changed (for example, larger text).
     layout_theme: Option<Theme>,
+    /// The owner's viewport as its last draw saw it, in the owner's space:
+    /// what a panel the child opens is kept inside.
+    owner_viewport: Option<Rect>,
 }
 
 impl<W: Widget + 'static> Embedded<W> {
@@ -67,6 +70,7 @@ impl<W: Widget + 'static> Embedded<W> {
             focus_request: false,
             fill: false,
             layout_theme: None,
+            owner_viewport: None,
         }
     }
 
@@ -226,9 +230,28 @@ impl<W: Widget + 'static> Embedded<W> {
     ) {
         let recoloured = self.recoloured(theme);
         let theme = recoloured.as_ref().unwrap_or(theme);
+        let owner = self.child_viewport(presence);
         self.widget
             .draw(scene, transform * self.transform, text, theme, presence);
+        presence.viewport.set(owner);
         self.widget.mark_drawn();
+    }
+
+    /// Note the owner's viewport, and show it to the child in the child's
+    /// own space for the child's draw: a panel the child places (a menu, a
+    /// picker) is kept inside what the owner shows. Returns the owner's, to
+    /// put back after.
+    fn child_viewport(&mut self, presence: &PresenceCtx) -> Option<Rect> {
+        let owner = presence.viewport.get();
+        if owner.is_some() {
+            self.owner_viewport = owner;
+        }
+        if self.transform.determinant().abs() > f64::EPSILON {
+            presence
+                .viewport
+                .set(owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport)));
+        }
+        owner
     }
 
     /// Paint what the widget floats over everything (its menus, a link's
@@ -244,20 +267,43 @@ impl<W: Widget + 'static> Embedded<W> {
     ) {
         let recoloured = self.recoloured(theme);
         let theme = recoloured.as_ref().unwrap_or(theme);
+        let owner = self.child_viewport(presence);
         let placed = self.overlay_transform().unwrap_or(self.transform);
         self.widget
             .draw_overlay(scene, transform * placed, text, theme, presence);
+        presence.viewport.set(owner);
     }
 
     /// While the child has a panel open over everything (a menu,
     /// [`Widget::modal_capture`]), what places the child's space for it: the
     /// panel stands where the child drawn under [`Self::set_transform`] puts
     /// its corner, at the owner's own scale, so a menu opened on words drawn
-    /// small on a canvas reads and is hit as a menu anywhere else does.
+    /// small on a canvas reads and is hit as a menu anywhere else does; and
+    /// moved as little as keeps it inside the owner's viewport, as a menu
+    /// near a window's edge is.
     fn overlay_transform(&self) -> Option<Affine> {
         let panel = self.widget.modal_capture()?;
         let corner = panel.origin();
-        Some(Affine::translate((self.transform * corner) - corner))
+        let offset = (self.transform * corner) - corner;
+        let placed = panel + offset;
+        let inside = |low: f64, high: f64, min: f64, max: f64| {
+            if high - low > max - min || low < min {
+                min - low
+            } else if high > max {
+                max - high
+            } else {
+                0.0
+            }
+        };
+        let nudge = self
+            .owner_viewport
+            .map_or(vello::kurbo::Vec2::ZERO, |viewport| {
+                vello::kurbo::Vec2::new(
+                    inside(placed.x0, placed.x1, viewport.x0, viewport.x1),
+                    inside(placed.y0, placed.y1, viewport.y0, viewport.y1),
+                )
+            });
+        Some(Affine::translate(offset + nudge))
     }
 
     /// The panel the child has open over everything, in the owner's space
@@ -532,6 +578,56 @@ mod tests {
         assert!(
             drawn.inflate(1.0, 1.0).contains(caret.center()),
             "{caret:?} within {drawn:?}"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-22): "Fix the text menu's edge clamping and
+    // accessibility along the way."
+    #[test]
+    fn a_menu_opened_on_small_words_near_an_edge_stays_inside_the_owner() {
+        let theme = Theme::dark();
+        let mut text = crate::font_catalog::fixture_renderer();
+        let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
+        host.widget_mut()
+            .present_blocks(&[BlockContent::paragraph("a", "words at the edge")]);
+        // Laid out 400 wide and drawn at half size against the right and
+        // bottom edges of an 800 x 600 owner.
+        host.set_transform(Affine::translate((600.0, 570.0)) * Affine::scale(0.5));
+        host.layout(Rect::new(0.0, 0.0, 400.0, 0.0), &theme, &mut text);
+        let owner = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let presence = PresenceCtx::empty();
+        presence.viewport.set(Some(owner));
+        host.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &presence,
+        );
+        assert_eq!(
+            presence.viewport.get(),
+            Some(owner),
+            "the owner's viewport is put back"
+        );
+        assert!(host.widget_mut().open_text_menu(Point::new(380.0, 10.0)));
+        host.draw_overlay(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &presence,
+        );
+        let menu = host.modal_capture().expect("the menu is open");
+        assert!(
+            menu.x0 >= owner.x0 - 1e-6
+                && menu.x1 <= owner.x1 + 1e-6
+                && menu.y0 >= owner.y0 - 1e-6
+                && menu.y1 <= owner.y1 + 1e-6,
+            "{menu:?} inside {owner:?}"
+        );
+        assert!(
+            menu.width() > 100.0,
+            "drawn at the owner's scale, not the words': {menu:?}"
         );
     }
 
