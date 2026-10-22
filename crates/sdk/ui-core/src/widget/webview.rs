@@ -87,6 +87,13 @@ fn frame_quantization_slack(scale_factor: f32) -> u32 {
     })
 }
 
+/// The largest page frame the engine renders, in device pixels: each side,
+/// and in all (its 64 MiB frame packet of four-byte pixels), each a little
+/// under the engine's own bound, which its rounding of a fractional scale
+/// can pass by a pixel or two. The engine closes on a larger request.
+const MAX_FRAME_SIDE: f64 = 8192.0 - 16.0;
+const MAX_FRAME_PIXELS: f64 = 16.0 * 1024.0 * 1024.0 * 0.99;
+
 /// See module docs.
 pub struct WebView {
     text_input: crate::webview::text_input::Guard,
@@ -96,8 +103,9 @@ pub struct WebView {
     )>,
     rect: Rect,
     engine: SharedEngine,
-    /// Physical pixels per logical pixel the page is rendered at (see the
-    /// module docs, "Device scale").
+    /// Physical pixels per logical pixel of the device the page is shown on
+    /// (see the module docs, "Device scale"); the engine renders at it unless
+    /// that passes its limits ([`Self::engine_scale`]).
     scale_factor: f32,
     /// `scale_factor` is the live host surface's: draws leave it alone.
     host_scaled: bool,
@@ -108,6 +116,8 @@ pub struct WebView {
     last_mouse: Point,
     /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
+    /// The engine scale last sent with it.
+    last_sent_scale: f32,
     /// Last expected/observed mismatch for which we requested a repaint.
     /// A matching frame clears it, so a stalled backend cannot cause a
     /// redraw-command loop on every UI frame.
@@ -136,6 +146,7 @@ impl WebView {
             focused: false,
             last_mouse: Point::ZERO,
             last_sent_size: (0, 0),
+            last_sent_scale: 0.0,
             stale_resize_retry: None,
             native_mounted: false,
             cached_image: None,
@@ -173,7 +184,7 @@ impl WebView {
                     paint::queue_share(paint::SharedFrame {
                         payload: bytes,
                         page,
-                        scale: f64::from(self.scale_factor),
+                        scale: f64::from(self.engine_scale()),
                     });
                 }
                 _ => {
@@ -229,6 +240,24 @@ impl WebView {
         self.scale_factor
     }
 
+    /// The density the engine renders the page at: the device's, lowered
+    /// only where a frame that dense would pass the engine's limits (a page
+    /// filling an 8K display), which would close the engine and every page
+    /// in it. Engine pixels, input and frames are all at this scale.
+    fn engine_scale(&self) -> f32 {
+        let (width, height) = (self.rect.width(), self.rect.height());
+        if width <= 0.0 || height <= 0.0 {
+            return self.scale_factor;
+        }
+        let limit =
+            (MAX_FRAME_SIDE / width.max(height)).min((MAX_FRAME_PIXELS / (width * height)).sqrt());
+        if f64::from(self.scale_factor) <= limit {
+            self.scale_factor
+        } else {
+            f32_of_f64(limit)
+        }
+    }
+
     /// Render the page at `scale` from now on: once, and only when it is new.
     fn rescale(&mut self, scale: f32) {
         if !scale.is_finite() || scale <= 0.0 || scale.to_bits() == self.scale_factor.to_bits() {
@@ -248,31 +277,38 @@ impl WebView {
 
     /// Engine-space (physical, view-relative) coordinates for a logical point.
     fn to_engine(&self, p: Point) -> (f32, f32) {
+        let scale = f64::from(self.engine_scale());
         (
-            f32_of_f64((p.x - self.rect.x0) * f64::from(self.scale_factor)),
-            f32_of_f64((p.y - self.rect.y0) * f64::from(self.scale_factor)),
+            f32_of_f64((p.x - self.rect.x0) * scale),
+            f32_of_f64((p.y - self.rect.y0) * scale),
         )
     }
 
     fn send_resize_if_needed(&mut self) {
-        let w = round_to_u32_px(self.rect.width() * f64::from(self.scale_factor));
-        let h = round_to_u32_px(self.rect.height() * f64::from(self.scale_factor));
-        if w == 0 || h == 0 || (w, h) == self.last_sent_size {
+        let scale = self.engine_scale();
+        let w = round_to_u32_px(self.rect.width() * f64::from(scale));
+        let h = round_to_u32_px(self.rect.height() * f64::from(scale));
+        if w == 0
+            || h == 0
+            || ((w, h) == self.last_sent_size && scale.to_bits() == self.last_sent_scale.to_bits())
+        {
             return;
         }
         self.last_sent_size = (w, h);
-        crate::webview::profile::record_resize(w, h, self.scale_factor);
+        self.last_sent_scale = scale;
+        crate::webview::profile::record_resize(w, h, scale);
         self.engine.send(WebViewCommand::Resize {
             width: w,
             height: h,
-            scale_factor: self.scale_factor,
+            scale_factor: scale,
         });
     }
 
     fn retry_resize_for_stale_frame(&mut self, observed: (u32, u32)) -> bool {
+        let scale = self.engine_scale();
         let expected = (
-            round_to_u32_px(self.rect.width() * f64::from(self.scale_factor)),
-            round_to_u32_px(self.rect.height() * f64::from(self.scale_factor)),
+            round_to_u32_px(self.rect.width() * f64::from(scale)),
+            round_to_u32_px(self.rect.height() * f64::from(scale)),
         );
         if expected.0 == 0 || expected.1 == 0 {
             self.stale_resize_retry = None;
@@ -281,7 +317,7 @@ impl WebView {
         // This shared check rejects stale density/viewport frames without
         // requiring every engine to use CEF's exact allocation geometry.
         // Chromium additionally enforces its exact paint size in the host.
-        let slack = frame_quantization_slack(self.scale_factor);
+        let slack = frame_quantization_slack(scale);
         let matches =
             observed.0.abs_diff(expected.0) <= slack && observed.1.abs_diff(expected.1) <= slack;
         if matches {
@@ -291,11 +327,11 @@ impl WebView {
         let retry = (expected, observed);
         if self.stale_resize_retry != Some(retry) {
             self.stale_resize_retry = Some(retry);
-            crate::webview::profile::record_resize(expected.0, expected.1, self.scale_factor);
+            crate::webview::profile::record_resize(expected.0, expected.1, scale);
             self.engine.send(WebViewCommand::Resize {
                 width: expected.0,
                 height: expected.1,
-                scale_factor: self.scale_factor,
+                scale_factor: scale,
             });
         }
         false
@@ -581,7 +617,7 @@ impl Widget for WebView {
             // — scale down so hi-DPI frames map 1:1 to device pixels.
             // Keep the last frame at its physical pixel size while a resize
             // awaits paint. Stretching each axis independently distorts text.
-            let scale = 1.0 / f64::from(self.scale_factor);
+            let scale = 1.0 / f64::from(self.engine_scale());
             let brush_transform = Affine::translate((self.rect.x0, self.rect.y0)).pre_scale(scale);
             let painted = self.rect.intersect(Rect::new(
                 self.rect.x0,
@@ -703,7 +739,7 @@ impl Widget for WebView {
                     return;
                 }
                 // Engine pixels are the page's: logical pixels at its scale.
-                let page = f64::from(self.scale_factor);
+                let page = f64::from(self.engine_scale());
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
                         f32_of_f64(f64::from(*x) * WHEEL_LINE_PX * page),
@@ -1236,6 +1272,45 @@ mod tests {
         .unwrap();
         w.apply_layout(&tree, node, Point::ZERO);
         (w, tree, node)
+    }
+
+    #[test]
+    fn a_page_too_dense_for_the_engine_renders_at_the_density_it_can() {
+        // A page filling an 8K display at 2x: 7680 x 4320 device pixels,
+        // past both the engine's 8192 side and its 64 MiB frame.
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
+        view.set_viewport(Rect::new(0.0, 0.0, 3840.0, 2160.0), 2.0);
+        let Some(WebViewCommand::Resize {
+            width,
+            height,
+            scale_factor,
+        }) = engine.commands().last().cloned()
+        else {
+            panic!("the page is sized");
+        };
+        assert!(scale_factor < 2.0, "{scale_factor}");
+        assert!(
+            u64::from(width) * u64::from(height) * 4 + 9 <= 64 * 1024 * 1024,
+            "{width} x {height}"
+        );
+        assert!(width.max(height) <= 8192);
+        assert_eq!(view.device_scale(), 2.0, "the device is still 2x");
+        // The engine's frame at that size is the page, not a stale one.
+        assert!(view.retry_resize_for_stale_frame((width, height)));
+        // Input lands where the engine drew: its far corner is the frame's.
+        let (x, y) = view.to_engine(Point::new(3840.0, 2160.0));
+        assert!((x - width as f32).abs() <= 1.0 && (y - height as f32).abs() <= 1.0);
+        // A display the engine can fill keeps the device's scale.
+        view.set_viewport(Rect::new(0.0, 0.0, 1920.0, 1080.0), 2.0);
+        assert_eq!(
+            engine.commands().last(),
+            Some(&WebViewCommand::Resize {
+                width: 3840,
+                height: 2160,
+                scale_factor: 2.0,
+            })
+        );
     }
 
     fn dispatch(w: &mut WebView, tree: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
