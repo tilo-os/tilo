@@ -66,6 +66,56 @@ impl TouchRoute {
     }
 }
 
+/// The pointer input one raw contact update stands for, if any (see
+/// [`crate::compositor::touch_pointer`]), for the DRM backend and test
+/// control alike. A contact is translated when it begins outside every
+/// touch-capable client (`taken_by_client` is
+/// [`crate::compositor::state::State::touch_down_taken`]) and on no chrome
+/// widget that handles raw touch itself; a shell gesture claiming the
+/// stream later withdraws whatever the translation still had pending.
+pub(crate) fn pointer_events_for_touch(
+    touch_pointer: &mut TouchPointer,
+    touch: &winit::event::Touch,
+    chrome_handled: bool,
+    taken_by_client: bool,
+    fb: &crate::compositor::frame::FrameBuilder,
+) -> Vec<WindowEvent> {
+    if chrome_handled
+        && touch.phase == winit::event::TouchPhase::Moved
+        && touch_pointer.is_emulated(touch.id)
+    {
+        return touch_pointer.cancel(touch);
+    }
+    touch_pointer.events(touch, || {
+        touch_route(
+            chrome_handled || taken_by_client,
+            fb,
+            touch.location.x,
+            touch.location.y,
+        )
+    })
+}
+
+/// How a contact that begins at `(x, y)` is handled: raw by whoever already
+/// took it; as the pointer held down on a shell surface that reads press,
+/// drag and release (selecting what to capture, marking up a screenshot);
+/// else by what the chrome there does with a pointer.
+fn touch_route(
+    taken: bool,
+    fb: &crate::compositor::frame::FrameBuilder,
+    x: f64,
+    y: f64,
+) -> TouchRoute {
+    let point = vello::kurbo::Point::new(x, y);
+    if taken || fb.claims_raw_touch_at(point) {
+        TouchRoute::Raw
+    } else if fb.host().touch_works_as_held_pointer() {
+        TouchRoute::Drag
+    } else {
+        TouchRoute::for_cursor(fb.chrome_cursor_at(point))
+    }
+}
+
 /// Per-session translation of raw touch into pointer input.
 #[derive(Default)]
 pub struct TouchPointer {

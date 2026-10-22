@@ -124,15 +124,26 @@ impl ShellOverlayHost {
     /// Whether the pointer is on the top bar the person hides while it shows
     /// over the windows: it takes the pointer from the window under it, and
     /// only the pointer.
-    pub(crate) fn top_bar_captures_pointer(&self) -> bool {
+    pub(crate) fn top_bar_captures_pointer_at(&self, p: Point) -> bool {
         let shown = self.chrome.as_ref().is_some_and(|chrome| {
             chrome.borrow().top_bar_presence() == tilo_desktop::chrome::TopBarPresence::Shown
         });
         shown
-            && self.last_cursor.is_some_and(|p| {
-                self.top_bar_reveal_geometry()
-                    .is_some_and(|(_, bar)| bar.contains(p))
-            })
+            && self
+                .top_bar_reveal_geometry()
+                .is_some_and(|(_, bar)| bar.contains(p))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn presence_notice_captures_pointer(&self) -> bool {
+        self.presence_notice_captures_pointer_at(self.last_cursor)
+    }
+
+    /// The pointer is on the line under the top bar: its press is the
+    /// line's, not the window's beneath.
+    fn presence_notice_captures_pointer_at(&self, p: Option<Point>) -> bool {
+        self.presence_notice_press
+            || (!self.transient_overlay_open() && p.is_some_and(|p| self.arrival_line.change_at(p)))
     }
 
     /// Whether the pointer is on a notification banner, or a click begun on
@@ -140,17 +151,7 @@ impl ShellOverlayHost {
     /// were the window under one given the pointer, a click on the banner
     /// would land in the app and the banner could be neither opened nor
     /// dismissed.
-    /// The pointer is on the line under the top bar: its press is the
-    /// line's, not the window's beneath.
-    pub(crate) fn presence_notice_captures_pointer(&self) -> bool {
-        self.presence_notice_press
-            || (!self.transient_overlay_open()
-                && self
-                    .last_cursor
-                    .is_some_and(|p| self.arrival_line.change_at(p)))
-    }
-
-    pub(crate) fn notification_banner_captures_pointer(&self) -> bool {
+    fn notification_banner_captures_pointer_at(&self, p: Option<Point>) -> bool {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
@@ -158,9 +159,27 @@ impl ShellOverlayHost {
             return false;
         }
         self.notification_stack.wants_pointer_capture()
-            || self
-                .last_cursor
-                .is_some_and(|p| self.notification_stack.rect().contains(p))
+            || p.is_some_and(|p| self.notification_stack.rect().contains(p))
+    }
+
+    /// Whether the shell takes pointer input at `p` (the pointer's place, or
+    /// where a finger lands) though no modal holds input: the bar a maximized
+    /// window shows over its client, the open strip switcher, the top bar
+    /// shown over the windows, the capture tool's receipt and recording bar,
+    /// a notification banner, the line under the top bar. A press there is the shell's, never the window's beneath.
+    pub(crate) fn chrome_band_captures_pointer_at(&self, p: Option<Point>) -> bool {
+        p.is_some_and(|p| {
+            self.maximized_chrome_captures_pointer_at(p)
+                || self.strip_switcher_captures_pointer_at(p)
+                || self.top_bar_captures_pointer_at(p)
+                || self.capture_studio.takes_pointer_at(p)
+        }) || self.notification_banner_captures_pointer_at(p)
+            || self.presence_notice_captures_pointer_at(p)
+    }
+
+    /// [`Self::chrome_band_captures_pointer_at`] where the pointer is.
+    pub(crate) fn chrome_band_captures_pointer(&self) -> bool {
+        self.chrome_band_captures_pointer_at(self.last_cursor)
     }
 
     /// Where the notification banners were last drawn.

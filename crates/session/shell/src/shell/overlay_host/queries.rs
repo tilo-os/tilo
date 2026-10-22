@@ -352,14 +352,6 @@ impl ShellOverlayHost {
         self.strip_navigator.takes_keys()
     }
 
-    /// Whether the pointer is on the open strip switcher, its ribbon or one
-    /// of its labels: its presses, wheel and motion are the shell's, not the
-    /// window's beneath it.
-    pub fn strip_switcher_captures_pointer(&self) -> bool {
-        self.last_cursor
-            .is_some_and(|p| self.strip_switcher_captures_pointer_at(p))
-    }
-
     /// Whether the last draw found the layout it was handed isn't what
     /// it needs (the filter band growing a row is only measurable by
     /// painting). A peek, not a take, so a caller that paints once (a

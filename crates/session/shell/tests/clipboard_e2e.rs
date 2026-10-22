@@ -438,6 +438,17 @@ impl Compositor {
         let mut command = Command::new(tilo_test_env::package_binary!("shell"));
         if let Some(home) = home {
             command.env("HOME", home).env("TILO_USER_HOME", home);
+            // A fixture home may carry stand-ins for system tools (an audio
+            // device's `wpctl`, say) in `bin/`; they come first on PATH.
+            let tools = home.join("bin");
+            if tools.is_dir() {
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                let paths = std::iter::once(tools).chain(std::env::split_paths(&path));
+                command.env(
+                    "PATH",
+                    std::env::join_paths(paths).expect("a joinable PATH"),
+                );
+            }
         }
         command.args(["--mode", "native", "--backend", "headless"]);
         if host_desktop {
@@ -7086,3 +7097,7 @@ fn closing_an_x11_window_returns_keyboard_focus_to_the_previous_wayland_window()
         "keyboard focus never returned to the Wayland window after the X11 window closed",
     );
 }
+
+/// Touch on shell overlays, on this suite's compositor and client harness.
+#[path = "overlay_touch_e2e.rs"]
+mod overlay_touch_e2e;
