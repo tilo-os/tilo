@@ -65,7 +65,7 @@
 
 use crate::num::f32_of_f64;
 use crate::num::f64_of_usize;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_sort::CompactSort as _;
@@ -105,6 +105,8 @@ use header_parts::{HeaderTitle, MoreActions};
 use notices::TOAST_ACTION;
 use sidebar_resize::AdaptiveSidebar;
 use status_action::place_status_action;
+use window_toolbar::Requests;
+pub use window_toolbar::WindowBarLink;
 
 /// What the sidebar becomes when the window is too narrow to dock it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1441,14 +1443,6 @@ fn unit_f32(v: f64) -> f32 {
     v.clamp(0.0, 1.0) as f32
 }
 
-/// The shell's buttons report presses here.
-#[derive(Default)]
-struct Requests {
-    toggle: Cell<bool>,
-    back: Cell<bool>,
-    inspector: Cell<bool>,
-}
-
 /// A drag of the sidebar's trailing edge.
 #[derive(Clone, Copy, Debug)]
 struct Resize {
@@ -2509,6 +2503,7 @@ impl NavShell {
         {
             state.binding.publish(&inspector);
         }
+        self.publish_window_slots();
     }
 
     /// Bring the sidebar and inspector in line with bound states that

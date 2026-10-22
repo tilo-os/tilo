@@ -113,9 +113,26 @@ fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
 fn lay_out_header(app: &mut PhotosApp, width: f64) {
     let theme = Theme::dark();
     app.rect = Rect::new(0.0, 0.0, width, 800.0);
-    app.chrome.drawer.scale_for(&theme);
-    app.chrome.drawer.resolve(app.rect);
-    app.place_chrome(&theme);
+    app.chrome.inspector.scale_for(&theme);
+    app.place_chrome();
+}
+
+/// The window's shell laid out at `width`, and the link the window bar
+/// reaches its own buttons through. The harness keeps the shell alive.
+fn laid_out_shell(width: f64) -> (ui::headless::FrameHarness, ui::widget::WindowBarLink) {
+    use ui::widget::{ContentKind, NavList, NavShell};
+    let shell = NavShell::new()
+        .with_window_toolbar()
+        .content_kind(ContentKind::Grid);
+    let link = shell.window_bar_link();
+    let shell = shell
+        .sidebar(Box::new(NavList::new(Vec::new())))
+        .content(Box::new(ui::widget::Spacer::new()));
+    let size = (width as u32, 800);
+    let mut harness =
+        ui::headless::FrameHarness::for_root(ui::State::new(), shell, size, Theme::dark());
+    harness.relayout_at(size).expect("the shell lays out");
+    (harness, link)
 }
 
 /// The names of the commands the window bar offers.
@@ -466,6 +483,8 @@ fn the_commands_are_the_window_bars_and_no_header_row_is_drawn() {
             app.show_library();
         }
         sync(&mut app, &mut doc);
+        let (_shell, link) = laid_out_shell(width);
+        app.chrome.bar = Some(link);
         lay_out_header(&mut app, width);
         let toolbar = app.window_bar();
         assert!(
@@ -2881,4 +2900,77 @@ fn the_empty_library_open_button_asks_the_host_chooser() {
         app.harness().control_failures()
     );
     assert_eq!(asked[0].title(), tr("photos-open-title"));
+}
+
+/// The sidebar is the window shell's list, declared from the library: the
+/// destinations with the Timeline's and Favorites' counts, then the albums
+/// under their heading; what is shown is the chosen row, and a row the
+/// person chooses opens what it names.
+#[test]
+fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
+    use ui::chrome::NavCount;
+    let mut app = test_app();
+    let mut doc = crate::test_doc::new_doc();
+    let mut library = crate::model::PhotoLibrary::default();
+    let mut first = LibraryPhoto::from_image(OpenImage::fixture("/photos/one.png", 20, 10));
+    first.favorite = true;
+    let second = LibraryPhoto::from_image(OpenImage::fixture("/photos/two.png", 20, 10));
+    library.add_photo(first.clone());
+    library.add_photo(second);
+    library.add_album(Album {
+        id: "photos.album:trip".into(),
+        name: "Trip".into(),
+        photo_ids: crate::model::labels([first.id]),
+    });
+    crate::test_doc::set_library(&mut doc, &library);
+    sync(&mut app, &mut doc);
+    app.show_library();
+    sync(&mut app, &mut doc);
+    app.place_chrome();
+    let (sections, selected) = app.chrome.places.shown().expect("the places are shown");
+    let row = |id: &str| {
+        sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .find(|item| item.id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} is a row"))
+    };
+    assert_eq!(selected.as_deref(), Some("photos:library:timeline"));
+    assert_eq!(
+        row("photos:library:timeline").count,
+        Some(NavCount::Neutral(2))
+    );
+    assert_eq!(
+        row("photos:library-favorites").count,
+        Some(NavCount::Neutral(1))
+    );
+    let albums = sections.last().expect("an albums section");
+    assert_eq!(albums.title, tr("photos-albums"));
+    assert_eq!(albums.items[0].label, "Trip");
+
+    // The person chooses the album in the shell's list.
+    let shell = ui::widget::NavShell::new()
+        .sidebar(Box::new(
+            ui::widget::NavList::new(Vec::new()).fed_by(&app.chrome.places),
+        ))
+        .content(Box::new(ui::widget::Spacer::new()));
+    let size = (1280, 800);
+    let mut harness =
+        ui::headless::FrameHarness::for_root(ui::State::new(), shell, size, Theme::dark());
+    harness.relayout_at(size).expect("the shell lays out");
+    let trip = harness
+        .root::<ui::widget::NavShell>()
+        .sidebar_ref::<ui::widget::NavList>()
+        .and_then(|list| list.row_rect("photos:library-album:photos.album:trip"))
+        .expect("the album is a row");
+    harness.click_at(trip.center().x, trip.center().y);
+    sync(&mut app, &mut doc);
+    assert_eq!(app.active_album.as_deref(), Some("photos.album:trip"));
+    app.place_chrome();
+    let (_, selected) = app.chrome.places.shown().expect("the places are shown");
+    assert_eq!(
+        selected.as_deref(),
+        Some("photos:library-album:photos.album:trip")
+    );
 }

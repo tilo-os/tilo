@@ -71,8 +71,7 @@ impl Widget for PhotosApp {
 
     fn needs_animation_frame(&self) -> bool {
         let now = ui::time::now();
-        self.chrome.drawer.is_animating()
-            || self.chrome.inspector.is_animating()
+        self.chrome.inspector.is_animating()
             || self.status_bubble.needs_frame(now)
             || (!self.places_motion_reduced
                 && (self
@@ -110,6 +109,7 @@ impl Widget for PhotosApp {
             self.notice = Some(tr("photos-copy-failed"));
         }
         self.apply_window_toolbar();
+        self.open_chosen_places();
         let (doc, _) = ui::doc::document_ref(doc, path);
         self.follow_cancellations();
         self.open_launched();
@@ -223,6 +223,7 @@ impl Widget for PhotosApp {
             .values()
             .filter(|photo| matches_filter(photo))
             .count();
+        self.library_photo_count = library.photos.len();
         self.library_favorite_count = library
             .photos
             .values()
@@ -469,13 +470,11 @@ impl Widget for PhotosApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        self.chrome.drawer.scale_for(theme);
-        // A docked sidebar or inspector takes its column beside the content;
-        // in a narrow window each floats over it and takes nothing.
+        // A docked inspector takes its column beside the content; in a
+        // narrow window it floats over it and takes nothing. The sidebar is
+        // the shell's, beside this window's content.
         self.chrome.inspector.scale_for(theme);
         self.sync_inspector();
-        let content = self.chrome.drawer.resolve(self.rect);
-        let sidebar_inset = (content.x0 - self.rect.x0).max(0.0);
         let beside = self.chrome.inspector.resolve(self.rect);
         let inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
         // The layout tree points at the People buttons, and the framework
@@ -490,7 +489,7 @@ impl Widget for PhotosApp {
             flex_direction: FlexDirection::Column,
             size: Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
-                left: LengthPercentage::length(sidebar_inset as f32),
+                left: LengthPercentage::length(0.0),
                 right: LengthPercentage::length(inspector_inset as f32),
                 top: LengthPercentage::length(0.0),
                 bottom: LengthPercentage::length(0.0),
@@ -570,12 +569,10 @@ impl Widget for PhotosApp {
         presence: &PresenceCtx,
     ) {
         // No window ground: the framework paints `surfaces.content` under
-        // the app, and the sidebar paints its own region.
-        self.chrome.drawer.tick(theme);
-        self.chrome.drawer.resolve(self.rect);
+        // the app; the sidebar is the shell's.
         self.chrome.inspector.tick(theme);
         self.chrome.inspector.resolve(self.rect);
-        self.place_chrome(theme);
+        self.place_chrome();
 
         if self.library_mode {
             if self.library_destination == LibraryDestination::Albums {
@@ -633,7 +630,6 @@ impl Widget for PhotosApp {
             self.canvas_rect,
             now,
         );
-        self.paint_sidebar(scene, transform, text_renderer, theme);
     }
 
     fn draw_overlay(
@@ -729,7 +725,7 @@ impl Widget for PhotosApp {
                 return;
             }
         }
-        if !self.selection_album_chooser && self.handle_chrome_event(event, ctx) {
+        if !self.selection_album_chooser && self.handle_chrome_event(ctx) {
             self.drain_pending();
             return;
         }

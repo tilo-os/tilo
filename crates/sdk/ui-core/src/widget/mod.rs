@@ -2893,7 +2893,7 @@ pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
     ContentKind, InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
-    SidebarPlacement,
+    SidebarPlacement, WindowBarLink,
 };
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
@@ -2901,7 +2901,7 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSearchTerm, NavSection,
+    NavAction, NavDrop, NavFeed, NavItem, NavItemStatus, NavList, NavSearchTerm, NavSection,
 };
 mod document_viewport;
 pub use document_viewport::{

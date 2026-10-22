@@ -1,7 +1,60 @@
 //! The shell's own buttons as slots in the window's bar
 //! ([`NavShell::with_window_toolbar`]).
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use super::{InspectorPlacement, NavShell};
+use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
+
+/// The shell's buttons, and an app inside it ([`WindowBarLink`]), report
+/// presses here; the shell runs them at its next sync or update.
+#[derive(Default)]
+pub(super) struct Requests {
+    pub(super) toggle: Cell<bool>,
+    pub(super) back: Cell<bool>,
+    pub(super) inspector: Cell<bool>,
+    /// The shell's own slots for the window's bar as of its last layout.
+    slots: RefCell<WindowToolbar>,
+}
+
+/// The shell's own buttons in the window's bar, for an app that paints
+/// inside the shell's content column and declares the bar itself: it
+/// starts its declaration from [`Self::slots`] (the sidebar toggle, Back
+/// while it goes anywhere, the inspector's toggle) and hands what the
+/// person did in the bar to [`Self::event`] first, as an app that owns its
+/// shell does with [`NavShell::window_toolbar`] and
+/// [`NavShell::window_toolbar_event`].
+#[derive(Clone)]
+pub struct WindowBarLink(Rc<Requests>);
+
+impl WindowBarLink {
+    /// The shell's own slots, as it last laid out.
+    #[must_use]
+    pub fn slots(&self) -> WindowToolbar {
+        self.0.slots.borrow().clone()
+    }
+
+    /// Whether the shell shows its sidebar, as it last laid out.
+    #[must_use]
+    pub fn is_sidebar_open(&self) -> bool {
+        self.0.slots.borrow().sidebar == Some(true)
+    }
+
+    /// Run what the person did in the window's bar on the shell's own
+    /// slots. Returns whether it was one of them; the app handles the rest.
+    pub fn event(&self, event: &ToolbarEvent) -> bool {
+        let request = match event {
+            ToolbarEvent::ToggleSidebar => &self.0.toggle,
+            ToolbarEvent::Back => &self.0.back,
+            ToolbarEvent::Action { id } if id == WINDOW_BACK => &self.0.back,
+            ToolbarEvent::Action { id } if id == WINDOW_INSPECTOR => &self.0.inspector,
+            _ => return false,
+        };
+        request.set(true);
+        true
+    }
+}
 
 /// The action ids of the shell's own slots in the window's bar
 /// ([`NavShell::window_toolbar`]).
@@ -67,8 +120,8 @@ impl NavShell {
     /// toggle while there is an inspector (the last action). The app adds
     /// its location, views and actions; the inspector's toggle stays last.
     #[must_use]
-    pub fn window_toolbar(&self) -> crate::window_toolbar::WindowToolbar {
-        use crate::window_toolbar::{ToolbarAction, WindowToolbar};
+    pub fn window_toolbar(&self) -> WindowToolbar {
+        use crate::window_toolbar::ToolbarAction;
         let lookup = crate::i18n::I18nManager::lookup_plain;
         let mut toolbar = WindowToolbar {
             sidebar: self.has_sidebar().then(|| self.is_sidebar_open()),
@@ -99,6 +152,22 @@ impl NavShell {
         toolbar
     }
 
+    /// The link an app painting inside the content column uses to put the
+    /// shell's own buttons in the window's bar ([`WindowBarLink`]). Use with
+    /// [`Self::with_window_toolbar`].
+    #[must_use]
+    pub fn window_bar_link(&self) -> WindowBarLink {
+        WindowBarLink(Rc::clone(&self.requests))
+    }
+
+    /// Keep the shell's own slots where its [`WindowBarLink`] reads them.
+    pub(super) fn publish_window_slots(&self) {
+        let slots = self.window_toolbar();
+        if *self.requests.slots.borrow() != slots {
+            *self.requests.slots.borrow_mut() = slots;
+        }
+    }
+
     /// Add the app's own actions to [`Self::window_toolbar`]'s, before the
     /// inspector's toggle, which stays the last of the row.
     pub fn push_window_actions(
@@ -121,8 +190,7 @@ impl NavShell {
 
     /// Run what the person did in the window's bar on the shell's own
     /// slots. Returns whether it was one of them; the app handles the rest.
-    pub fn window_toolbar_event(&mut self, event: &crate::window_toolbar::ToolbarEvent) -> bool {
-        use crate::window_toolbar::ToolbarEvent;
+    pub fn window_toolbar_event(&mut self, event: &ToolbarEvent) -> bool {
         match event {
             ToolbarEvent::ToggleSidebar => self.toggle_sidebar(),
             ToolbarEvent::Back => {
