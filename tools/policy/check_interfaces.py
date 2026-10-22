@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """One version number per interface, bumped whenever the interface breaks.
 
-Tilo has four interfaces between separately updated parts: app and shell
-(``shell-ui``), app and runtime (``runtime``), device and device (``peer``)
-and the store's package formats (``package``). Each one has a single version
+Tilo has five interfaces between separately updated parts: app and shell
+(``shell-ui``), app and runtime (``runtime``), app and app host
+(``app-host``, the few apps handed it), device and device (``peer``) and the
+store's package formats (``package``). Each one has a single version
 number in the code and a committed schema, ``interface.toml`` in the crate
 that owns the number, written from the code the way ``tilo-app surface``
 writes an app's ``surface.toml``. Two sides speak to each other only when
@@ -1028,6 +1029,16 @@ def files_at(revision: str, root: Path = ROOT) -> dict[str, str]:
 def against(base: str, root: Path = ROOT) -> list[str]:
     problems = []
     before = files_at(base, root)
+    # What each interface declares now, so a member that moved to another
+    # interface (its own number, served on its own) is judged there, not
+    # taken for one gone from the interface it left.
+    now_schemas: dict[str, dict[str, str]] = {}
+    for path in interface_files(root):
+        try:
+            spec, _ = load_spec(path)
+            now_schemas[spec.name] = schema_of(spec, root)
+        except (InterfaceError, KeyError, OSError, tomllib.TOMLDecodeError):
+            continue
     for path in interface_files(root):
         rel = path.relative_to(root).as_posix()
         try:
@@ -1046,6 +1057,17 @@ def against(base: str, root: Path = ROOT) -> list[str]:
         except (InterfaceError, KeyError, OSError) as error:
             problems.append(f"{rel}: {error}")
             continue
+        elsewhere = {
+            key
+            for other, other_schema in now_schemas.items()
+            if other != spec.name
+            for key in other_schema
+        }
+        old_schema = {
+            key: value
+            for key, value in old_schema.items()
+            if key in schema or key not in elsewhere
+        }
         reasons = incompatible(old_schema, schema, spec.encoding)
         if reasons and version <= old_version:
             shown = "; ".join(reasons[:8]) + ("; ..." if len(reasons) > 8 else "")
