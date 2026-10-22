@@ -457,6 +457,36 @@ impl Entry {
     }
 }
 
+/// List every live member of the workspace in `reply`, `members` being each
+/// device publishing there with the person its grant certified: one whose
+/// page has not posted yet gets a bare line (no name, no status) that pairs
+/// their device with their person. A page learns whose device a member is,
+/// and so the colour the room settles for them, from the first answer after
+/// that member appears, not once their own page gets round to posting.
+pub(crate) fn pair_members(reply: &mut HereReply, members: &[([u8; 32], [u8; 32])]) {
+    let listed: HashSet<[u8; 32]> = reply.people.iter().map(|person| person.device).collect();
+    let bare = members
+        .iter()
+        .filter(|(device, _)| !listed.contains(device))
+        .map(|(device, user)| HerePerson {
+            device: *device,
+            user: *user,
+            label: String::new(),
+            window: None,
+            status: String::new(),
+            recent: String::new(),
+            sources: Vec::new(),
+            generated: false,
+            updated_ms: 0,
+        })
+        .collect::<Vec<_>>();
+    if bare.is_empty() {
+        return;
+    }
+    reply.people.extend(bare);
+    reply.people.sort_by_key(|person| person.device);
+}
+
 /// A model call reserved by [`Here::post`], for [`Here::summarize`].
 pub(crate) struct Job {
     workspace_id: u64,
@@ -865,6 +895,38 @@ mod tests {
             "source_ids": ids.iter().map(|id| hex::encode([*id; 16])).collect::<Vec<_>>(),
         })
         .to_string()
+    }
+
+    /// A member who just joined is paired with their person in the very
+    /// first answer anyone gets after they appear, though their own page
+    /// has not posted yet: the colour the room settles for them is known on
+    /// the first frame, never guessed and corrected later.
+    #[test]
+    fn the_first_answer_pairs_a_member_whose_page_has_not_posted() {
+        let here = Here::new(None);
+        let joined = ([9; 32], [8; 32]);
+        let (mut reply, _) = here.post(
+            request(7, vec![action(1, "Edited the text", "Welcome", 1)]),
+            DEVICE,
+            USER,
+            Instant::now(),
+            10,
+        );
+        pair_members(&mut reply, &[(DEVICE, USER), joined]);
+        let people: Vec<_> = reply
+            .people
+            .iter()
+            .map(|person| (person.device, person.user, person.status.is_empty()))
+            .collect();
+        assert_eq!(
+            people,
+            [(DEVICE, USER, false), (joined.0, joined.1, true)],
+            "the joiner is listed bare, paired with their person; the poster keeps their line"
+        );
+        assert!(
+            reply.people[1].label.is_empty(),
+            "no name the host does not know"
+        );
     }
 
     fn request(workspace_id: u64, actions: Vec<HereAction>) -> HereRequest {

@@ -70,6 +70,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   let posting = false;
   let watchedAt = -Infinity;
   let lines = [];
+  let again = false; // asked to check while busy: check once it is done
   const arrivedAt = new Map(); // publisher -> when it joined, while unpaired
 
   function pushPeople() {
@@ -122,6 +123,11 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
       const answer = await peer.here(state.window, state.actions);
       lines = Array.isArray(answer) ? answer : [];
       if (!stopped && active()) runtime.desktop_set_here(mountId(), JSON.stringify(answer));
+    } catch (error) {
+      // Not posted: try again on the next tick, not at the next refresh.
+      postedKey = undefined;
+      postedAt = -Infinity;
+      throw error;
     } finally {
       posting = false;
     }
@@ -151,10 +157,12 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
     } catch (error) {
       onError(error);
     }
-    if (!stopped) timer = setTimer(tick, TICK_MS);
+    if (!stopped) timer = setTimer(tick, again ? 0 : TICK_MS);
+    again = false;
   }
   function wake() {
-    if (!stopped && !posting && timer !== undefined) { clearTimer(timer); void tick(); }
+    if (stopped) return;
+    if (!posting && timer !== undefined) { clearTimer(timer); void tick(); } else again = true;
   }
   void tick();
 

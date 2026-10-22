@@ -162,3 +162,49 @@ test('someone arriving is paired with their person at once, so their face is nev
   await h.runTimer();
   assert.ok(h.posts.length <= asked + 1, 'gave up waiting for its line');
 });
+
+test('someone arriving while the page is asking is asked about as soon as that answer is in', async () => {
+  const h = harness();
+  let release;
+  let known = [{device: 'me', user: 'ab'.repeat(32)}];
+  h.peer.here = (win, list) => {
+    h.posts.push({window: win, actions: list});
+    return new Promise(resolve => { release = () => resolve(known); });
+  };
+  const layer = fakeLayer();
+  createHere({runtime: h.runtime, mountId: () => 1, active: () => true, layer: () => layer, peer: h.peer,
+    fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => true});
+  assert.equal(h.posts.length, 1, 'the first post is in flight');
+  // That answer was made before Bob came: it does not know him.
+  layer.join('bob');
+  release();
+  await settle();
+  assert.equal(h.timers.at(-1).ms, 0, 'checks again at once, not in a tick');
+  known = [...known, {device: 'bob', user: 'cd'.repeat(32)}];
+  const ran = h.runTimer();
+  await settle();
+  assert.equal(h.posts.length, 2);
+  release();
+  await ran;
+  assert.deepEqual(h.calls.filter(([kind]) => kind === 'here').at(-1)[1], known);
+});
+
+test('a post that failed is tried again on the next tick, not at the next refresh', async () => {
+  const h = harness();
+  let fail = true;
+  h.peer.here = async (win, list) => {
+    h.posts.push({window: win, actions: list});
+    if (fail) throw new Error('not admitted yet');
+    return [{device: 'me', user: 'ab'.repeat(32)}];
+  };
+  const layer = fakeLayer();
+  createHere({runtime: h.runtime, mountId: () => 1, active: () => true, layer: () => layer, peer: h.peer,
+    fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => true});
+  await settle();
+  assert.equal(h.posts.length, 1);
+  fail = false;
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.equal(h.posts.length, 2);
+  assert.equal(h.calls.filter(([kind]) => kind === 'here').length, 1);
+});
