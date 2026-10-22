@@ -11,6 +11,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use ui_core::vello::kurbo::Rect;
+use ui_core::widget::context_menu::{ContextMenu, MenuItem};
 use ui_core::widget::{Chip as ChipWidget, Element, Row};
 
 use super::engine::QueryResults;
@@ -252,4 +254,54 @@ pub fn facet_bar(
         row = row.push(Box::new(chip));
     }
     Box::new(row)
+}
+
+/// The values of one value filter, opened over its chip: each with how many
+/// results share it and a check on those chosen, since any number may be.
+/// Choosing one toggles it in the query; the menu closes, and opening it
+/// again chooses another. An app that paints its own surface owns one,
+/// draws it over its page and routes events to it while it is open.
+#[derive(Default)]
+pub struct FacetMenu {
+    menu: ContextMenu,
+    /// What choosing each row asks, in row order.
+    choices: Vec<QuerySpec>,
+}
+
+impl FacetMenu {
+    /// Open `offer`'s values for `query` beside `anchor` (its chip), kept
+    /// inside `viewport`.
+    pub fn open(&mut self, offer: &FacetOffer, query: &QuerySpec, anchor: Rect, viewport: Rect) {
+        let mut menu = ContextMenu::new();
+        self.choices.clear();
+        for value in &offer.values {
+            let mut item = MenuItem::selection(value.value.clone())
+                .with_checked(value.chosen)
+                // A typed token is taken away by editing the field.
+                .with_enabled(!value.typed);
+            if value.count > 0 {
+                item = item.with_detail(value.count.to_string());
+            }
+            menu.push(item);
+            self.choices.push(offer.toggled(query, &value.value));
+        }
+        menu.open_anchored(anchor, viewport);
+        self.menu = menu;
+    }
+
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    /// The menu, to draw and to route events to.
+    pub fn menu_mut(&mut self) -> &mut ContextMenu {
+        &mut self.menu
+    }
+
+    /// The query a chosen value asks for, once one was chosen.
+    pub fn take_choice(&mut self) -> Option<QuerySpec> {
+        let chosen = self.menu.take_selection()?;
+        self.choices.get(chosen).cloned()
+    }
 }

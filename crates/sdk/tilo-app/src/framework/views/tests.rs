@@ -680,3 +680,232 @@ fn matching_actions_come_as_their_controls() {
     assert_eq!(hits[0].control, ControlDecl::button("new-playlist"));
     assert!(action_hits(&specs, &controls, "", 5).is_empty());
 }
+
+// ---- an app's search entries, and prose ----------------------------------
+
+const BOOK: &str = "test.book";
+const PASSAGE: &str = "test.passage";
+
+fn book_kinds() -> Vec<KindDecl> {
+    vec![
+        KindDecl::new(BOOK, "Book", "Books", Form::Tile)
+            .field(FieldDecl::title("title", "Title"))
+            .field(
+                FieldDecl::new("author", "Author")
+                    .role(FieldRole::Subtitle)
+                    .searchable()
+                    .filter(FilterKind::Value),
+            )
+            .field(FieldDecl::new("book", "Book").filter(FilterKind::Value)),
+        KindDecl::new(PASSAGE, "Passage", "Passages", Form::Row)
+            .field(FieldDecl::title("title", "Where"))
+            .field(FieldDecl::new("where", "In").role(FieldRole::Subtitle))
+            .field(FieldDecl::new("excerpt", "Passage").role(FieldRole::Excerpt))
+            .field(FieldDecl::new("book", "Book").filter(FilterKind::Value)),
+    ]
+}
+
+/// A book's prose: a paragraph per segment, each a location of its own.
+struct Prose {
+    book: &'static str,
+    paragraphs: Vec<&'static str>,
+}
+
+impl tilo_resource::SearchText for Prose {
+    fn segment_count(&self) -> usize {
+        self.paragraphs.len()
+    }
+
+    fn piece_count(&self, segment: usize) -> usize {
+        usize::from(segment < self.paragraphs.len())
+    }
+
+    fn piece(&self, segment: usize, piece: usize) -> Option<tilo_resource::SearchPiece<'_>> {
+        (piece == 0).then_some(tilo_resource::SearchPiece {
+            text: self.paragraphs.get(segment)?,
+            space_before: segment > 0,
+        })
+    }
+
+    fn locates(&self, segment: usize) -> bool {
+        segment < self.paragraphs.len()
+    }
+
+    fn location(&self, segment: usize) -> Option<tilo_resource::SearchEntry> {
+        Some(
+            tilo_resource::SearchEntry::new(format!("Paragraph {}", segment.saturating_add(1)), "")
+                .anchored(format!("{}#{segment}", self.book))
+                .grouped("Passages")
+                .subtitled(self.book),
+        )
+    }
+}
+
+fn book_entry(id: &'static str, title: &str, author: &str, prose: Vec<&'static str>) -> Item {
+    let entry = tilo_resource::SearchEntry::new(title, "")
+        .anchored(id)
+        .grouped("Books")
+        .subtitled(author)
+        .facet("author", "Author", author)
+        .facet("book", "Book", title)
+        .field(
+            "Whaling; Sea stories",
+            tilo_resource::SearchWeight::Metadata,
+        )
+        .with_body(tilo_resource::SearchBody::new(Arc::new(Prose {
+            book: id,
+            paragraphs: prose,
+        })));
+    Item::from_entry(&book_kinds(), &entry).expect("a book entry is a book")
+}
+
+fn shelf() -> Vec<Item> {
+    vec![
+        book_entry(
+            "moby",
+            "Moby-Dick",
+            "Herman Melville",
+            vec![
+                "Call me Ishmael. Some years ago, never mind how long precisely.",
+                "There now is your insular city of the Manhattoes, belted round by wharves.",
+            ],
+        ),
+        book_entry(
+            "bartleby",
+            "Bartleby",
+            "Herman Melville",
+            vec!["I would prefer not to, said Bartleby, at his desk by the wharves."],
+        ),
+    ]
+}
+
+#[test]
+fn an_entry_is_an_item_of_the_type_its_group_names() {
+    let item = &shelf()[0];
+    assert_eq!(item.kind, BOOK);
+    assert_eq!(item.id, "moby");
+    assert_eq!(item.value("title"), Some("Moby-Dick"));
+    assert_eq!(item.value("author"), Some("Herman Melville"));
+    assert_eq!(item.value("book"), Some("Moby-Dick"));
+    assert!(item.body.is_some());
+    assert_eq!(
+        item.entry().and_then(|entry| entry.anchor.as_deref()),
+        Some("moby")
+    );
+    let mut engine = QueryEngine::new(book_kinds());
+    engine.sync_local(shelf());
+    engine.set_query(QuerySpec::text("sea stories"));
+    assert!(
+        engine
+            .results()
+            .order()
+            .contains(&(BOOK, "moby".to_owned())),
+        "what an entry is found by finds its item"
+    );
+}
+
+// USER REQUIREMENT (2026-10-21): a full-text match in a book is a hit at its
+// passage, showing the words around the match.
+#[test]
+fn a_match_in_prose_is_a_hit_at_its_passage() {
+    let pumped = Pumped::new();
+    let mut engine = QueryEngine::new(book_kinds()).with_background(pumped.background());
+    engine.sync_local(shelf());
+    engine.set_query(QuerySpec::text("manhattoes"));
+    assert!(
+        engine.results().is_empty(),
+        "the prose is indexed off the UI thread"
+    );
+    pumped.run_pending();
+    assert!(
+        engine.poll(),
+        "its matches join the open query when it lands"
+    );
+    let results = engine.results();
+    let passages = results
+        .local
+        .iter()
+        .find(|group| group.kind == PASSAGE)
+        .expect("a passage group");
+    assert_eq!(passages.label, "Passages");
+    let hit = &passages.items[0];
+    assert_eq!(hit.id, "moby#1");
+    assert_eq!(hit.value("title"), Some("Paragraph 2"));
+    assert_eq!(
+        hit.value("book"),
+        Some("Moby-Dick"),
+        "it carries its book's filters"
+    );
+    let excerpt = hit.value("excerpt").expect("the passage around the match");
+    assert!(excerpt.contains("Manhattoes"), "{excerpt}");
+    assert_eq!(
+        hit.entry().and_then(|entry| entry.anchor.as_deref()),
+        Some("moby#1"),
+        "opening it opens the location"
+    );
+
+    // Narrowed to one book, the other book's passages leave.
+    engine.set_query(QuerySpec::text("wharves"));
+    assert_eq!(engine.results().order().len(), 2);
+    engine.set_query(QuerySpec::text("wharves").toggled(&Chip::value("book", "Bartleby")));
+    let ids: Vec<_> = engine
+        .results()
+        .order()
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+    assert_eq!(ids, ["bartleby#0"]);
+}
+
+#[test]
+fn an_excerpt_shows_the_words_around_the_match_cut_at_words() {
+    let passage = "It was the best of times, it was the worst of times, it was the age of \
+                   wisdom, it was the age of foolishness, it was the epoch of belief, it was \
+                   the epoch of incredulity, it was the season of Light, it was the season of \
+                   Darkness, it was the spring of hope, it was the winter of despair.";
+    let shown = excerpt(passage, "darkness");
+    assert!(shown.starts_with('\u{2026}'), "{shown}");
+    assert!(shown.contains("Darkness"), "{shown}");
+    assert!(!shown.contains("best of times"), "{shown}");
+    let words = shown.trim_matches('\u{2026}');
+    assert!(passage.contains(words), "cut at word boundaries: {shown}");
+    assert_eq!(excerpt("Short.", "short"), "Short.");
+    // USER REQUIREMENT (2026-10-22): an excerpt is centred on the first
+    // match.
+    let shown = excerpt(passage, "foolishness");
+    let at = shown.find("foolishness").expect("the match is shown");
+    let after = shown.len() - at - "foolishness".len();
+    assert!(
+        at.abs_diff(after) < 24,
+        "the match in the middle: {at} before, {after} after: {shown}"
+    );
+}
+
+#[test]
+fn prose_is_indexed_again_only_when_the_bodies_change() {
+    let pumped = Pumped::new();
+    let mut engine = QueryEngine::new(book_kinds()).with_background(pumped.background());
+    let books = shelf();
+    engine.sync_local(books.clone());
+    assert_eq!(pumped.run_pending(), 1, "one prose index for the shelf");
+    // A book renamed keeps its prose: only its fields are indexed again.
+    let mut renamed = books.clone();
+    renamed[1] = renamed[1].clone().with("title", "Bartleby, the Scrivener");
+    engine.sync_local(renamed);
+    assert_eq!(
+        pumped.run_pending(),
+        0,
+        "the same bodies are not read again"
+    );
+    // A book gone changes the prose.
+    engine.sync_local(books.into_iter().take(1));
+    assert_eq!(pumped.run_pending(), 1);
+    engine.set_query(QuerySpec::text("wharves"));
+    let ids: Vec<_> = engine
+        .results()
+        .order()
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+    assert_eq!(ids, ["moby#1"]);
+}

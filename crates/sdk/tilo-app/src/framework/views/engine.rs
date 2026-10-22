@@ -25,11 +25,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use tilo_resource::SearchBody;
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::WakeHandle;
 use ui_core::background::Background;
 use ui_core::time::{Duration, Instant};
 
+use super::super::root::{BodyText, field_weight};
 use super::kind::{FieldRole, Form, Item, KindDecl};
 use super::query::QuerySpec;
 
@@ -301,11 +303,48 @@ impl RemoteSlot {
 }
 
 /// The app's local items and their index.
+///
+/// Items' fields are indexed here, a change at a time, in the frame it is
+/// handed over. Their prose is indexed apart ([`ProseIndex`]): reading a
+/// library's books takes longer than a frame, so it is built off the UI
+/// thread, again only when the bodies themselves change, and searches
+/// answer from the last one built until the next lands.
 struct LocalIndex {
     index: SearchIndex,
     keys: HashMap<(&'static str, String), u64>,
     items: HashMap<u64, (Item, u64)>,
     next_key: u64,
+    prose: Option<ProseIndex>,
+    /// The bodies the newest prose index asked for holds, by item key.
+    prose_wanted: HashMap<u64, usize>,
+}
+
+/// The prose of the items that have a body, indexed by item key: a match
+/// names the segment it is in.
+struct ProseIndex {
+    /// Which build this is; a build older than one already in is dropped.
+    build: u64,
+    index: SearchIndex,
+}
+
+impl ProseIndex {
+    fn built(build: u64, bodies: Vec<(u64, SearchBody)>) -> Self {
+        let mut index = SearchIndex::new(Matching::LOOSE);
+        index.replace_all(
+            bodies
+                .into_iter()
+                .map(|(key, body)| Document::new(key).body(Arc::new(BodyText(body.shared())))),
+        );
+        if let Err(error) = index.commit() {
+            tracing::warn!(%error, "could not index a view's prose");
+        }
+        Self { build, index }
+    }
+}
+
+/// Where a body's text lives: what tells one body from another.
+fn body_address(body: &SearchBody) -> usize {
+    Arc::as_ptr(&body.shared()).cast::<()>().addr()
 }
 
 impl Default for LocalIndex {
@@ -316,6 +355,8 @@ impl Default for LocalIndex {
             keys: HashMap::new(),
             items: HashMap::new(),
             next_key: 0,
+            prose: None,
+            prose_wanted: HashMap::new(),
         }
     }
 }
@@ -323,6 +364,9 @@ impl Default for LocalIndex {
 fn fingerprint(item: &Item) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     item.fields.hash(&mut hasher);
+    item.found_by.hash(&mut hasher);
+    // A body is the same body only while it shares one text.
+    item.body.as_ref().map(body_address).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -336,10 +380,17 @@ fn weight(role: Option<FieldRole>) -> FieldWeight {
 
 impl LocalIndex {
     /// Take `items` as the whole local set: what changed is indexed again,
-    /// what is gone leaves. Returns whether anything changed.
-    fn sync(&mut self, kinds: &[KindDecl], items: impl IntoIterator<Item = Item>) -> bool {
+    /// what is gone leaves. Returns whether anything changed, and the
+    /// bodies a new prose index is to hold when they changed.
+    fn sync(
+        &mut self,
+        kinds: &[KindDecl],
+        items: impl IntoIterator<Item = Item>,
+    ) -> (bool, Option<Vec<(u64, SearchBody)>>) {
         let mut seen = HashSet::new();
         let mut changed = false;
+        let mut bodies = Vec::new();
+        let mut wanted = HashMap::new();
         for item in items {
             let print = fingerprint(&item);
             let key = if let Some(key) = self.keys.get(&(item.kind, item.id.clone())) {
@@ -351,6 +402,10 @@ impl LocalIndex {
                 key
             };
             seen.insert(key);
+            if let Some(body) = &item.body {
+                wanted.insert(key, body_address(body));
+                bodies.push((key, body.clone()));
+            }
             if self.items.get(&key).is_some_and(|(_, held)| *held == print) {
                 continue;
             }
@@ -365,6 +420,11 @@ impl LocalIndex {
                         .map(|decl| (value.as_str(), weight(decl.role))),
                     None => Some((value.as_str(), FieldWeight::METADATA)),
                 })
+                .chain(
+                    item.found_by
+                        .iter()
+                        .map(|(text, weight)| (text.as_str(), field_weight(*weight))),
+                )
                 .fold(Document::new(key), |document, (value, weight)| {
                     document.field(value, weight)
                 });
@@ -388,7 +448,24 @@ impl LocalIndex {
         if changed && let Err(error) = self.index.commit() {
             tracing::warn!(%error, "could not index a view's local items");
         }
-        changed
+        let prose = (wanted != self.prose_wanted).then(|| {
+            self.prose_wanted = wanted;
+            bodies
+        });
+        (changed, prose)
+    }
+
+    /// Answer from `prose` from now on, unless a newer build is in.
+    fn land_prose(&mut self, prose: ProseIndex) -> bool {
+        if self
+            .prose
+            .as_ref()
+            .is_some_and(|held| held.build > prose.build)
+        {
+            return false;
+        }
+        self.prose = Some(prose);
+        true
     }
 
     /// The local items that match `query`, best first. A query of chips
@@ -410,15 +487,141 @@ impl LocalIndex {
             });
             return found.into_iter().map(|(_, item)| item.clone()).collect();
         }
+        let mut seen = HashSet::new();
+        // Matches in fields first, then in prose, as one index would rank
+        // them.
+        let prose = self.prose.as_ref().map(|prose| {
+            prose
+                .index
+                .search(&query.text, Page::first(LOCAL_CANDIDATES))
+                .hits
+        });
         self.index
             .search(&query.text, Page::first(LOCAL_CANDIDATES))
             .hits
             .into_iter()
-            .filter_map(|hit| self.items.get(&hit.key).map(|(item, _)| item))
+            .chain(prose.into_iter().flatten())
+            .filter_map(|hit| {
+                let (item, _) = self.items.get(&hit.key)?;
+                Some(match hit.segment {
+                    Some(segment) => located(kinds, item, segment, &query.text)?,
+                    None => item.clone(),
+                })
+            })
             .filter(|item| query.admits(item))
-            .cloned()
+            .filter(|item| seen.insert((item.kind, item.id.clone())))
             .collect()
     }
+}
+
+/// The hit a match in `segment` of `item`'s body is: the location the body
+/// names there, as an item of the location's type, carrying the filter
+/// values of the item it is in and the passage the match is in. `None`
+/// when the body does not locate the segment or no type is the location's.
+fn located(kinds: &[KindDecl], item: &Item, segment: usize, text: &str) -> Option<Item> {
+    let body = item.body.as_ref()?.text();
+    if !body.locates(segment) {
+        return None;
+    }
+    let mut location = Item::from_entry(kinds, &body.location(segment)?)?;
+    let decl = kinds.iter().find(|kind| kind.kind == location.kind)?;
+    for (key, value) in &item.fields {
+        let filters = decl
+            .field_of(key)
+            .is_some_and(|field| field.filter.is_some());
+        if filters && location.value(key).is_none() {
+            location.fields.push((*key, value.clone()));
+        }
+    }
+    if let Some(field) = decl
+        .fields
+        .iter()
+        .find(|field| field.role == Some(FieldRole::Excerpt))
+    {
+        let passage = segment_text(body, segment);
+        location = location.with(field.key, excerpt(&passage, text));
+    }
+    Some(location)
+}
+
+/// The prose of `segment`, its pieces joined.
+fn segment_text(body: &dyn tilo_resource::SearchText, segment: usize) -> String {
+    let mut text = String::new();
+    for at in 0..body.piece_count(segment) {
+        if let Some(piece) = body.piece(segment, at) {
+            if piece.space_before && !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(piece.text);
+        }
+    }
+    text
+}
+
+/// How far back from where it would start an excerpt looks for a word's
+/// start.
+const EXCERPT_REACH: usize = 96;
+
+/// How many characters an excerpt shows in all.
+const EXCERPT_LENGTH: usize = 180;
+
+/// The part of `passage` around the first word of `query` it holds, the
+/// match in its middle, cut at word boundaries and marked where it was cut:
+/// what a hit inside prose shows of it.
+#[must_use]
+pub fn excerpt(passage: &str, query: &str) -> String {
+    let chars: Vec<(usize, char)> = passage.char_indices().collect();
+    // The passage folded a character at a time, each folded character
+    // pointing back at the one it came from.
+    let mut folded = String::new();
+    let mut origin = Vec::new();
+    for (at, (_, ch)) in chars.iter().enumerate() {
+        tilo_search::fold_char(*ch, &mut |folded_char| {
+            folded.push(folded_char);
+            origin.extend(std::iter::repeat_n(at, folded_char.len_utf8()));
+        });
+    }
+    let (found, word_len) = query
+        .split_whitespace()
+        .map(tilo_search::fold)
+        .filter(|word| !word.is_empty() && !word.contains(':'))
+        .find_map(|word| {
+            let byte = folded.find(&word)?;
+            Some((*origin.get(byte)?, word.chars().count()))
+        })
+        .unwrap_or((0, 0));
+    // The match in the middle, or as near it as the passage's ends allow.
+    let before = EXCERPT_LENGTH.saturating_sub(word_len) / 2;
+    let mut start = found
+        .saturating_sub(before)
+        .min(chars.len().saturating_sub(EXCERPT_LENGTH));
+    let planned = start;
+    // Back to the word's start, unless the word runs on for long.
+    while start > 0
+        && planned.saturating_sub(start) < EXCERPT_REACH
+        && !chars
+            .get(start.saturating_sub(1))
+            .is_some_and(|(_, ch)| ch.is_whitespace())
+    {
+        start = start.saturating_sub(1);
+    }
+    let mut end = start.saturating_add(EXCERPT_LENGTH).min(chars.len());
+    while end < chars.len() && !chars.get(end).is_some_and(|(_, ch)| ch.is_whitespace()) {
+        end = end.saturating_add(1);
+    }
+    let byte = |at: usize| chars.get(at).map_or(passage.len(), |(byte, _)| *byte);
+    let mut shown = passage
+        .get(byte(start)..byte(end))
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    if start > 0 {
+        shown.insert(0, '\u{2026}');
+    }
+    if end < chars.len() {
+        shown.push('\u{2026}');
+    }
+    shown
 }
 
 /// The value of `item`'s title field, as its type declares it; its first
@@ -481,6 +684,10 @@ pub struct QueryEngine {
     wake: WakeHandle,
     send: Sender<Answer>,
     answers: Receiver<Answer>,
+    /// How many prose indexes have been asked for.
+    prose_builds: u64,
+    prose_send: Sender<ProseIndex>,
+    prose_built: Receiver<ProseIndex>,
 }
 
 impl QueryEngine {
@@ -490,6 +697,7 @@ impl QueryEngine {
     #[must_use]
     pub fn new(kinds: Vec<KindDecl>) -> Self {
         let (send, answers) = channel();
+        let (prose_send, prose_built) = channel();
         Self {
             kinds,
             local: LocalIndex::default(),
@@ -503,6 +711,9 @@ impl QueryEngine {
             wake: WakeHandle::new(),
             send,
             answers,
+            prose_builds: 0,
+            prose_send,
+            prose_built,
         }
     }
 
@@ -551,8 +762,16 @@ impl QueryEngine {
     /// catalogue song in the results brings it and its album into the
     /// library, and neither may push the row the person just pressed from
     /// under the pointer.
+    ///
+    /// Prose ([`Item::body`]) is indexed off the UI thread when the bodies
+    /// change; the matches in it join the open query's rows when it lands
+    /// ([`Self::poll`]), after the rows shown.
     pub fn sync_local(&mut self, items: impl IntoIterator<Item = Item>) {
-        if !self.local.sync(&self.kinds, items) || !self.open {
+        let (changed, prose) = self.local.sync(&self.kinds, items);
+        if let Some(bodies) = prose {
+            self.build_prose(bodies);
+        }
+        if !changed || !self.open {
             return;
         }
         let fresh: HashMap<(&'static str, String), Item> = self
@@ -569,6 +788,66 @@ impl QueryEngine {
                 .collect();
         }
         self.results.local.retain(|group| !group.items.is_empty());
+    }
+
+    /// Index `bodies` off the UI thread, or here when nothing runs work in
+    /// the background.
+    fn build_prose(&mut self, bodies: Vec<(u64, SearchBody)>) {
+        self.prose_builds = self.prose_builds.wrapping_add(1);
+        let build = self.prose_builds;
+        let send = self.prose_send.clone();
+        let wake = self.wake.clone();
+        let spawned = self.background.spawn("view-prose-index", {
+            let bodies = bodies.clone();
+            move || {
+                let _ = send.send(ProseIndex::built(build, bodies));
+                wake.wake();
+            }
+        });
+        if spawned.is_err() {
+            self.land_prose(ProseIndex::built(build, bodies));
+        }
+    }
+
+    /// Answer from `prose`, and add what it finds for the open query after
+    /// the rows shown: a row the person sees never moves for it.
+    fn land_prose(&mut self, prose: ProseIndex) -> bool {
+        if !self.local.land_prose(prose) || !self.open {
+            return false;
+        }
+        let shown: HashSet<(&'static str, String)> = self
+            .results
+            .local
+            .iter()
+            .flat_map(|group| &group.items)
+            .map(|item| (item.kind, item.id.clone()))
+            .collect();
+        let found: Vec<Item> = self
+            .local
+            .search(&self.kinds, &self.results.query)
+            .into_iter()
+            .filter(|item| !shown.contains(&(item.kind, item.id.clone())))
+            .collect();
+        if found.is_empty() {
+            return false;
+        }
+        for group in grouped(&self.kinds, found, GROUP_LIMIT) {
+            match self
+                .results
+                .local
+                .iter_mut()
+                .find(|held| held.kind == group.kind)
+            {
+                Some(held) => {
+                    let room = GROUP_LIMIT.saturating_sub(held.items.len());
+                    let extra = group.items.len().saturating_sub(room);
+                    held.items.extend(group.items.into_iter().take(room));
+                    held.more = held.more.saturating_add(group.more).saturating_add(extra);
+                }
+                None => self.results.local.push(group),
+            }
+        }
+        true
     }
 
     /// The person focused the search field: open the remote sources'
@@ -617,6 +896,10 @@ impl QueryEngine {
             remote_first: vec![None; self.remotes.len()],
             remote_done: vec![None; self.remotes.len()],
         };
+        // Prose indexed since the last poll answers this query already.
+        while let Ok(prose) = self.prose_built.try_recv() {
+            self.local.land_prose(prose);
+        }
         let measure = ui_core::time::now();
         self.answer_locally();
         self.timings.local = Some(ui_core::time::now().saturating_duration_since(measure));
@@ -727,6 +1010,9 @@ impl QueryEngine {
         }
         while let Ok(answer) = self.answers.try_recv() {
             changed |= self.take(answer, now);
+        }
+        while let Ok(prose) = self.prose_built.try_recv() {
+            changed |= self.land_prose(prose);
         }
         self.arm(now);
         changed
