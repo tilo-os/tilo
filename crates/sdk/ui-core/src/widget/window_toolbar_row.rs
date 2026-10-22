@@ -33,7 +33,8 @@
 //!
 //! When the window shows another tab, the row's content cross-fades in place
 //! ([`crate::motion::CrossFade`]): the outgoing tab's slots fade out where
-//! they stood while the incoming ones fade in.
+//! they stood while the incoming ones fade in. Slots shown where none stood
+//! appear at once.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -432,8 +433,15 @@ impl ToolbarRow {
                 .shown
                 .take()
                 .map(|(_, toolbar)| (toolbar, self.slots.clone()));
-            self.fade
-                .show(next_tab, theme_motion, MotionSource::Pointer, now);
+            if previous_tab.is_some() {
+                self.fade
+                    .show(next_tab, theme_motion, MotionSource::Pointer, now);
+            } else {
+                // Nothing stood here to fade from: a window's first slots
+                // arrive with it, and are at rest at once, so a window that
+                // only declared them asks for no frames of its own.
+                self.fade = CrossFade::new(next_tab);
+            }
         }
         self.shown = next;
         self.sync_crumbs();
@@ -2328,6 +2336,22 @@ mod tests {
                     text: "target:environment:work".into()
                 }
             )]
+        );
+    }
+
+    #[test]
+    fn slots_shown_where_none_stood_are_at_rest_at_once() {
+        let mut row = ToolbarRow::new();
+        let now = crate::time::now();
+        row.show(7, Some(&browser()), Theme::dark().motion(), now);
+        assert!(
+            !row.needs_animation_frame(now),
+            "nothing faded out, so nothing fades in"
+        );
+        row.show(8, Some(&browser()), Theme::dark().motion(), now);
+        assert!(
+            row.needs_animation_frame(now),
+            "another tab's slots cross-fade"
         );
     }
 
