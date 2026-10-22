@@ -71,6 +71,13 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// hold with no application message sent while idle; before the transport
 /// carried liveness, both were 15 to 16 s after the last 5 s heartbeat.
 const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
+/// A neighbour's identity hello is answered with this device's own unless
+/// it announced itself on the topic this recently. A neighbour announces
+/// itself on a link it sees as new, such as after it restarted, which this
+/// side may not have seen as new and so not answered: without its answer
+/// the neighbour never learns who this device is. The bound keeps two
+/// devices from answering each other's answers.
+const IDENTITY_ANSWER_INTERVAL: Duration = Duration::from_secs(10);
 /// How often each workspace host session is asked for a fresh checkpoint
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
@@ -306,6 +313,12 @@ pub enum NetCmd {
     /// for a first subscription: a local app joined a record whose earlier
     /// traffic this device dropped because nothing held it then.
     Replay {
+        ws: WorkspaceId,
+    },
+    /// A neighbour on `ws` sent something this device cannot place without
+    /// the neighbour's identity: announce this device's own, which the
+    /// neighbour answers with its ([`IDENTITY_ANSWER_INTERVAL`]).
+    AnnounceIdentity {
         ws: WorkspaceId,
     },
     /// Ask the host of the joined room on `ws` to replay what it retains:
@@ -750,6 +763,9 @@ struct TopicRuntime {
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
     identity_sent: Option<[u8; 32]>,
+    /// When this device last announced its identity to the topic's
+    /// neighbours ([`IDENTITY_ANSWER_INTERVAL`]).
+    identity_announced: Option<Instant>,
     /// Whether gossip has had a neighbour on the topic: a `NeighborUp`, or a
     /// lag that may have hidden one. Until then nothing is handed to gossip
     /// (see [`Self::broadcast`]).
@@ -757,11 +773,19 @@ struct TopicRuntime {
 }
 
 impl TopicRuntime {
+    /// Whether this device announced its identity here within
+    /// [`IDENTITY_ANSWER_INTERVAL`].
+    fn announced_identity_lately(&self) -> bool {
+        self.identity_announced
+            .is_some_and(|announced| announced.elapsed() < IDENTITY_ANSWER_INTERVAL)
+    }
+
     fn new(sender: GossipSender, pump: tokio::task::JoinHandle<()>) -> Self {
         Self {
             sender,
             pump,
             identity_sent: None,
+            identity_announced: None,
             linked: false,
         }
     }
@@ -1300,10 +1324,9 @@ struct PeerMembership {
     /// liveness check (see [`DEPARTURE_GRACE`]).
     expires: Option<Instant>,
     epoch: MembershipEpoch,
-    /// Fingerprints of the last identity and codec adverts taken from the
-    /// peer during this membership: a repeated advert changes nothing, but
-    /// one repeated after the peer was evicted and came back is new again.
-    identity_advert: Option<[u8; 32]>,
+    /// Fingerprint of the last codec advert taken from the peer during this
+    /// membership: a repeated advert changes nothing, but one repeated after
+    /// the peer was evicted and came back is new again.
     caps_advert: Option<[u8; 32]>,
 }
 
@@ -1312,7 +1335,6 @@ impl PeerMembership {
         Self {
             expires: Some(later(now, PEER_TIMEOUT)),
             epoch,
-            identity_advert: None,
             caps_advert: None,
         }
     }
@@ -1325,15 +1347,10 @@ impl PeerMembership {
         }
     }
 
-    /// Take advert `fingerprint` (identity when `identity`, codecs
-    /// otherwise), answering whether it is news from this peer.
-    fn take_advert(&mut self, identity: bool, fingerprint: [u8; 32]) -> bool {
-        let last = if identity {
-            &mut self.identity_advert
-        } else {
-            &mut self.caps_advert
-        };
-        last.replace(fingerprint) != Some(fingerprint)
+    /// Take codec advert `fingerprint`, answering whether it is news from
+    /// this peer.
+    fn take_caps_advert(&mut self, fingerprint: [u8; 32]) -> bool {
+        self.caps_advert.replace(fingerprint) != Some(fingerprint)
     }
 }
 
@@ -1626,6 +1643,15 @@ impl ActorState {
                     if let Some(task) = self.content_discovery_tasks.remove(&key) {
                         task.abort();
                     }
+                }
+            }
+            Some(NetCmd::AnnounceIdentity { ws }) => {
+                if self
+                    .topics
+                    .get(&ws)
+                    .is_some_and(|topic| !topic.announced_identity_lately())
+                {
+                    self.announce_identity(ws).await;
                 }
             }
             Some(NetCmd::Replay { ws }) => {
@@ -3044,10 +3070,13 @@ impl ActorState {
 
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
-    /// Whether a message `peer` sent on `ws` is news. An advert describes
-    /// its sender rather than reporting an event: it is news when it differs
-    /// from the last one this membership took, so a peer evicted and back is
-    /// heard again though it says the same thing.
+    /// Whether a message `peer` sent on `ws` is news. A codec advert
+    /// describes its sender rather than reporting an event: it is news when
+    /// it differs from the last one this membership took, so a peer evicted
+    /// and back is heard again though it says the same thing. An identity
+    /// hello is always news: it comes once per link or as an answer
+    /// ([`IDENTITY_ANSWER_INTERVAL`]), and the session binds the peer's
+    /// current membership to the identity each time.
     fn is_news(
         &mut self,
         ws: WorkspaceId,
@@ -3055,17 +3084,13 @@ impl ActorState {
         decoded: Option<&NeighbourMsg>,
         fingerprint: [u8; 32],
     ) -> bool {
-        let advert = match decoded {
-            Some(NeighbourMsg::IdentityHello { .. }) => Some(true),
-            Some(NeighbourMsg::MediaCapabilities { .. }) => Some(false),
-            _ => None,
-        };
-        match advert {
-            Some(identity) => self
+        match decoded {
+            Some(NeighbourMsg::IdentityHello { .. }) => true,
+            Some(NeighbourMsg::MediaCapabilities { .. }) => self
                 .peers_seen
                 .get_mut(&(ws, peer))
-                .is_some_and(|membership| membership.take_advert(identity, fingerprint)),
-            None => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
+                .is_some_and(|membership| membership.take_caps_advert(fingerprint)),
+            _ => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
         }
     }
 
@@ -3120,6 +3145,14 @@ impl ActorState {
                     );
                 }
                 let fingerprint = message_fingerprint(&message.content);
+                if matches!(decoded, Ok(NeighbourMsg::IdentityHello { .. }))
+                    && self
+                        .topics
+                        .get(&ws)
+                        .is_some_and(|topic| !topic.announced_identity_lately())
+                {
+                    self.announce_identity(ws).await;
+                }
                 if !self.is_news(ws, peer, decoded.as_ref().ok(), fingerprint) {
                     // A restarted device repeats a message already seen, such
                     // as its identity hello. The payload is old but the
@@ -3664,6 +3697,7 @@ impl ActorState {
             return;
         };
         topic.identity_sent = Some(message_fingerprint(&bytes));
+        topic.identity_announced = Some(Instant::now());
         if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
@@ -3692,6 +3726,7 @@ impl ActorState {
             return;
         }
         tracing::info!(ws, "device identity material changed; announcing it again");
+        topic.identity_announced = Some(Instant::now());
         if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }

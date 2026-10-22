@@ -7369,6 +7369,13 @@ impl ShellNetwork {
         }
     }
 
+    /// A neighbour on `ws` sent what this device cannot place without its
+    /// identity for the current membership: announcing this device's own
+    /// has the neighbour answer with its.
+    fn ask_identity(&self, ws: u64) {
+        let _ = self.cmd_tx.try_send(NetCmd::AnnounceIdentity { ws });
+    }
+
     fn dispatch_personal_fabric(
         &self,
         ws: u64,
@@ -7380,6 +7387,7 @@ impl ShellNetwork {
         let origin = crate::shell::state::PeerOrigin::peer(&peer);
         let Some(identity) = self.peer_identities.get(&origin) else {
             tracing::warn!(peer = %peer, "dropping unauthenticated personal fabric frame");
+            self.ask_identity(ws);
             return;
         };
         // The device's own root carries the whole fabric; a workspace
@@ -7406,6 +7414,7 @@ impl ShellNetwork {
                 && route.device.as_str() == hex::encode(identity.device_pubkey)
         }) else {
             tracing::warn!(peer = %peer, "dropping personal fabric frame without current authenticated route");
+            self.ask_identity(ws);
             return;
         };
         match payload {
@@ -7882,6 +7891,7 @@ impl ShellNetwork {
             } else {
                 tracing::warn!(peer = %peer, ws, kind = msg.kind(), "dropping collaboration message from an unauthenticated device");
             }
+            self.ask_identity(ws);
             return;
         }
         if self.require_peer_identity
