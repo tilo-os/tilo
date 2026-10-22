@@ -134,7 +134,12 @@ pairing="$root/crates/session/shell/src/shell/device_pairing.rs"
 grep -q 'bounded_command::spawn_prepared' "$pairing"
 grep -q 'const DISCOVERY_TIMEOUT' "$pairing"
 grep -q 'const APPROVAL_TIMEOUT' "$pairing"
-grep -q '/usr/libexec/tilo-home-peer-control' "$pairing"
+# The approval command line, helper path included, is the identity host's,
+# shared with the tilo-identity shell; the pairing builds its approval from it.
+device_admin="$root/crates/runtime/tilo-identity-host/src/device_admin.rs"
+grep -Fq 'pub const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";' "$device_admin"
+grep -Fq 'let mut args: Vec<OsString> = [CONTROL_HELPER, approval.role.approve_command()]' "$device_admin"
+grep -Fq 'args: approval_args(approval, paths, workspace_ids),' "$pairing"
 ! grep -q '\.spawn()' "$pairing"
 grep -q 'impl Drop for AsyncCommand' "$runner"
 grep -q 'self.cancel.store(true' "$runner"
