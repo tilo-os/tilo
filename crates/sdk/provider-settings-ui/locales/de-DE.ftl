@@ -187,11 +187,8 @@ agent-model-use-default = Standard verwenden
 agent-model-choice-incomplete = Nenne den Anbieter und sein Modell, oder keins von beiden für den Standard.
 
 agent-hub-title = Modelle von Hugging Face
-agent-hub-caption = Wähle ein beliebiges Modell auf Hugging Face oder eine eigene GGUF-Datei. Ein Modell sind Daten: Es läuft in Tilos signierten Laufzeiten auf diesem Gerät, und seine Lizenz wird angezeigt, bevor etwas heruntergeladen wird.
-agent-hub-search = Modelle suchen
-agent-hub-search-hint = Ein Modellname, zum Beispiel qwen oder llama
-agent-hub-search-gguf = GGUF suchen (llama.cpp)
-agent-hub-search-safetensors = safetensors suchen (vLLM)
+agent-hub-caption = Durchsuche Hugging Face mit der Suche des Fensters, öffne ein beliebiges Modell per Name oder Link oder füge eine eigene GGUF-Datei hinzu. Ein Modell sind Daten: Es läuft in Tilos signierten Laufzeiten auf diesem Gerät, und seine Lizenz wird angezeigt, bevor etwas heruntergeladen wird.
+agent-hub-format = Format
 agent-hub-reference = Per Name oder Link hinzufügen
 agent-hub-reference-hint = besitzer/modell oder ein huggingface.co-Link
 agent-hub-show = Anzeigen
@@ -203,7 +200,14 @@ agent-hub-add-file = Datei hinzufügen
 agent-hub-working = Hugging Face wird gefragt …
 agent-hub-search-error = Hugging Face kann nicht durchsucht werden: { $error }
 agent-hub-no-results = Keine passenden Modelle.
-agent-hub-result-stats = { $downloads } Downloads · { $likes } Likes
+agent-hub-result-downloads = { $downloads ->
+    [one] { $downloads } Download
+   *[other] { $downloads } Downloads
+}
+agent-hub-result-likes = { $likes ->
+    [one] { $likes } Like
+   *[other] { $likes } Likes
+}
 agent-hub-result-license = Lizenz: { $license }
 agent-hub-gated = Seine Bedingungen müssen zuerst auf Hugging Face akzeptiert werden
 agent-hub-model-title = Von Hugging Face
@@ -243,4 +247,5 @@ agent-hub-token-saved = Hugging-Face-Token auf diesem Gerät gespeichert.
 agent-hub-token-removed = Hugging-Face-Token von diesem Gerät entfernt.
 agent-hub-changed = Das Modell hat sich geändert, seit es angezeigt wurde; zeige es erneut an.
 agent-hub-query-empty = Gib ein, wonach gesucht werden soll.
+agent-hub-format-unknown = Wähle gguf oder safetensors.
 agent-hub-unavailable = Der lokale Modelldienst kann das hier nicht.

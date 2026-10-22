@@ -57,11 +57,30 @@ pub trait PaneArea: Any {
     /// A collaboration event for the area's host actions.
     fn handle_collab_event(&mut self, _event: &ui::collaboration::CollabEvent) {}
 
+    /// What the window bar's search queries while `category`'s pane is
+    /// shown, when the pane lists the answer to a query (models on Hugging
+    /// Face) rather than a page the search narrows. `None`: the search
+    /// narrows the sidebar.
+    fn query(&self, _category: Category) -> Option<&dyn PaneQuery> {
+        None
+    }
+
     /// The area, to find it by its type.
     fn as_any(&self) -> &dyn Any;
 
     /// The area, to replace it by its type.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// A pane's query over what lies beyond the window (models on Hugging
+/// Face), driven by the window bar's search: what is typed there is the
+/// query, and the pane draws no field of its own ([`ui::widget::Queryable`]).
+pub trait PaneQuery {
+    /// What is typed is now `text` (empty when nothing is yet).
+    fn set_query_text(&self, text: &str);
+
+    /// The search closed: the pane shows what it showed before it opened.
+    fn query_closed(&self);
 }
 
 /// Implement [`PaneArea`]'s conversions for an area type, with any hooks it

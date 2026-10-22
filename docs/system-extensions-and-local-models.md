@@ -117,12 +117,14 @@ whose content identity belongs exclusively to that model.
 ## A person's own models
 
 The signed catalogue's recommendation is a starting point, not the only
-source of models. In Agent Models a person can search Hugging Face, open any
+source of models. In Agent Models a person can search Hugging Face from the
+window bar's search (the pane draws no field: what is typed there queries the
+Hub, for GGUF or safetensors as the pane's format choice says), open any
 model by its id or link (`owner/name`, a model, tree, blob or resolve URL),
 including their own fine-tunes and private repositories, or add a GGUF file
 from the device. The model manager answers all of it; Settings only shows
 the answers and asks through typed effects (`search-hub-models`,
-`show-hub-model`, `install-hub-model`, `add-model-file`), which agents reach
+`set-hub-format`, `show-hub-model`, `install-hub-model`, `add-model-file`), which agents reach
 through the same action system. A file from the device is chosen in the file
 chooser, which hands Settings the open file; Settings passes that handle on and
 the model service copies from it. Neither ever opens a path it was given.

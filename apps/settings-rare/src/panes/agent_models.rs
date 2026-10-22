@@ -59,6 +59,11 @@ crate::area::pane_area! {
     fn poll(&self) {
         self.poll_admin();
     }
+    // The window bar's search searches Hugging Face here.
+    fn query(&self, category: crate::categories::Category) -> Option<&dyn crate::area::PaneQuery> {
+        (category == crate::categories::Category::AgentModels)
+            .then_some(self as &dyn crate::area::PaneQuery)
+    }
     fn busy(&self) -> bool {
         self.admin_busy()
     }
@@ -138,6 +143,13 @@ pub enum AgentModelsEffect {
         query: String,
         #[param("`gguf` for llama.cpp, the default, or `safetensors` for vLLM")]
         format: Option<String>,
+    },
+    /// Look for another file family on Hugging Face: what the window bar's
+    /// search holds is searched again.
+    #[effect(view)]
+    SetHubFormat {
+        #[param("`gguf` for llama.cpp or `safetensors` for vLLM")]
+        format: String,
     },
     /// Show a Hugging Face model's variants with their size, fit for this
     /// device and licence. Answers with them; downloads nothing.
@@ -462,6 +474,7 @@ pub(crate) fn answer(
         effect @ (AgentModelsEffect::ReviewHubVariant { .. }
         | AgentModelsEffect::OpenHubModelPage { .. }
         | AgentModelsEffect::SearchHubModels { .. }
+        | AgentModelsEffect::SetHubFormat { .. }
         | AgentModelsEffect::ShowHubModel { .. }
         | AgentModelsEffect::SaveHubToken { .. }
         | AgentModelsEffect::RemoveHubToken

@@ -127,6 +127,9 @@ pub struct SettingsApp {
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
     shell_text_scale: f32,
+    /// The pane whose query the window bar's open search drives
+    /// ([`crate::area::PaneQuery`]), from when it opened until it closes.
+    queried: Option<Category>,
 }
 
 impl Default for SettingsApp {
@@ -185,6 +188,7 @@ impl SettingsApp {
             declared_bar: None,
             shell_text_scale: 1.0,
             wallpaper_status: ui::LocalState::new(None),
+            queried: None,
         }
     }
 
@@ -727,11 +731,62 @@ impl ui::widget::Collaborative for SettingsApp {
     }
 }
 
+/// The window bar's search queries the shown pane where it offers a query
+/// ([`crate::area::PaneArea::query`]), and otherwise narrows the sidebar
+/// ([`ui::widget::NavList`] is the window's `Filterable`).
+impl SettingsApp {
+    /// What the window bar's search queries now: the pane it opened on while
+    /// it stays open, else the shown pane, when that pane offers a query.
+    fn pane_query(&self) -> Option<&dyn crate::area::PaneQuery> {
+        let category = self.queried.unwrap_or(self.selected);
+        self.areas.iter().find_map(|area| area.query(category))
+    }
+}
+
+impl ui::widget::Queryable for SettingsApp {
+    fn query_opened(&mut self) {
+        self.queried.get_or_insert(self.selected);
+    }
+
+    fn set_query_text(&mut self, text: &str) {
+        self.queried.get_or_insert(self.selected);
+        if let Some(query) = self.pane_query() {
+            query.set_query_text(text);
+        }
+    }
+
+    fn query_closed(&mut self) {
+        if let Some(query) = self.pane_query() {
+            query.query_closed();
+        }
+        self.queried = None;
+    }
+}
+
 impl Widget for SettingsApp {
-    ui::provides!(
-        dyn ui::widget::Collaborative,
-        dyn ui::application_view::ApplicationViewState
-    );
+    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn ui::widget::Queryable>() {
+            if self.pane_query().is_some() {
+                request.provide::<dyn ui::widget::Queryable>(self);
+            }
+        } else if request.wants::<dyn ui::widget::Collaborative>() {
+            request.provide::<dyn ui::widget::Collaborative>(self);
+        } else if request.wants::<dyn ui::application_view::ApplicationViewState>() {
+            request.provide::<dyn ui::application_view::ApplicationViewState>(self);
+        }
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn ui::widget::Queryable>() {
+            if self.pane_query().is_some() {
+                request.provide::<dyn ui::widget::Queryable>(self);
+            }
+        } else if request.wants::<dyn ui::widget::Collaborative>() {
+            request.provide::<dyn ui::widget::Collaborative>(self);
+        } else if request.wants::<dyn ui::application_view::ApplicationViewState>() {
+            request.provide::<dyn ui::application_view::ApplicationViewState>(self);
+        }
+    }
 
     fn native_input_snapshot(
         &self,

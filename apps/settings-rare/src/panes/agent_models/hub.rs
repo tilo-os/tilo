@@ -1,8 +1,10 @@
 //! Hugging Face in Agent Models.
 //!
 //! The signed catalog's recommendation is a starting point, not the only
-//! source: a person searches the Hub, opens any model by its id or link
-//! (their own fine-tunes and private models included), reviews each
+//! source: a person searches the Hub with the window bar's search (the
+//! pane's [`crate::area::PaneQuery`]; it draws no field of its own), opens
+//! any model by its id or link (their own fine-tunes and private models
+//! included), reviews each
 //! variant's files, size, fit for this device and licence, and downloads
 //! one, or adds a GGUF file from this device. Gated models download with
 //! the person's Hugging Face sign-in (in the browser, or with a code entered
@@ -24,7 +26,7 @@ use agent_provider_config::local::snapshot::HardwareFit;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
-use ui::widget::{Button, ButtonRole, ProgressBar, Row, Text, TextInput};
+use ui::widget::{Button, ButtonRole, ProgressBar, Row, Segment, Text, TextInput, ToggleGroup};
 
 use super::{
     AgentModelsEffect, AgentModelsModel, LocalModelControl, area, byte_size, fit_label, fit_tone,
@@ -42,7 +44,15 @@ use crate::widgets::{
 
 /// What Agent Models keeps of the Hub between frames.
 pub(crate) struct HubBrowser {
-    query: LocalState<String>,
+    /// What the window bar's search holds while it searches the Hub.
+    pub(crate) query: String,
+    /// The file family searches look for.
+    pub(crate) format: HubFormat,
+    /// Searches on their way.
+    pub(crate) searching: usize,
+    /// Bumped whenever the window bar's search is emptied or closed: a
+    /// search started before lands without showing its results.
+    pub(crate) cleared: u64,
     reference: LocalState<String>,
     token: LocalState<String>,
     /// The last search's results, or why it failed.
@@ -62,7 +72,10 @@ pub(crate) struct HubBrowser {
 impl HubBrowser {
     pub(crate) fn new(token_state: Result<HubTokenState, String>) -> Self {
         Self {
-            query: LocalState::new(String::new()),
+            query: String::new(),
+            format: HubFormat::Gguf,
+            searching: 0,
+            cleared: 0,
             reference: LocalState::new(String::new()),
             token: LocalState::new(String::new()),
             results: None,
@@ -197,6 +210,43 @@ impl HubBrowser {
         }
     }
 
+    /// What the window bar's search holds is now `text`: the search to
+    /// start, unless one is on its way already, whose landing starts the
+    /// search for what is typed by then ([`Self::follow_up`]). One search at
+    /// a time, however fast the person types.
+    pub(crate) fn typed(&mut self, text: &str) -> Option<AgentModelsEffect> {
+        text.trim().clone_into(&mut self.query);
+        if self.query.is_empty() {
+            self.clear();
+            return None;
+        }
+        (self.searching == 0).then(|| self.search_typed())
+    }
+
+    /// The window bar's search was emptied or closed: the pane shows what
+    /// it showed before a search.
+    pub(crate) fn clear(&mut self) {
+        self.query.clear();
+        self.results = None;
+        self.cleared += 1;
+    }
+
+    /// After a search for `query` in `format` landed, the search what is
+    /// typed now asks for, when that is another.
+    pub(crate) fn follow_up(&self, query: &str, format: &str) -> Option<AgentModelsEffect> {
+        (self.searching == 0
+            && !self.query.is_empty()
+            && (self.query != query || format_name(self.format) != format))
+            .then(|| self.search_typed())
+    }
+
+    fn search_typed(&self) -> AgentModelsEffect {
+        AgentModelsEffect::SearchHubModels {
+            query: self.query.clone(),
+            format: Some(format_name(self.format).to_owned()),
+        }
+    }
+
     /// The token typed into the token field, emptied as it is taken.
     pub(crate) fn take_typed_token(&self) -> String {
         let token = self.token.with(|token| token.trim().to_owned());
@@ -249,46 +299,30 @@ impl HubBrowser {
     }
 
     fn find_section(&self, cx: &PaneCx, available: bool) -> SettingsSection {
+        let formats = [HubFormat::Gguf, HubFormat::Safetensors];
+        let choice = ToggleGroup::new(
+            vec![
+                Segment::new(t("agent-hub-format-gguf")),
+                Segment::new(t("agent-hub-format-safetensors")),
+            ],
+            usize::from(self.format == HubFormat::Safetensors),
+        )
+        .with_id("agent-models-hub-format")
+        .with_accessible_name(t("agent-hub-format"))
+        .with_enabled(available);
         let mut body = vec![
             note(&t("agent-hub-caption")),
             field_row(
-                &t("agent-hub-search"),
-                Box::new(
-                    TextInput::from_state(&self.query)
-                        .with_id("agent-models-hub-query")
-                        .with_accessible_name(t("agent-hub-search"))
-                        .with_placeholder(t("agent-hub-search-hint")),
-                ),
+                &t("agent-hub-format"),
+                Box::new(cx.bind(
+                    choice,
+                    effect(AgentModelsEffect::SET_HUB_FORMAT).map(move |index: usize| {
+                        format_name(formats.get(index).copied().unwrap_or(HubFormat::Gguf))
+                            .to_owned()
+                    }),
+                )),
             ),
         ];
-        let mut buttons = Row::new();
-        for (index, (format, label)) in [
-            (HubFormat::Gguf, "agent-hub-search-gguf"),
-            (HubFormat::Safetensors, "agent-hub-search-safetensors"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if index > 0 {
-                buttons = buttons.push(crate::widgets::gap(ui::tokens::SpacingStep::S2));
-            }
-            let query = self.query.clone();
-            let mut button = Button::new(&format!("agent-models-hub-search-{index}"), &t(label))
-                .with_enabled(available && !self.working);
-            if index == 0 {
-                button = button.role(ButtonRole::Primary);
-            }
-            buttons = buttons.push(Box::new(cx.bind(
-                button,
-                effect(AgentModelsEffect::SEARCH_HUB_MODELS).map(move |()| {
-                    (
-                        query.with(|query| query.trim().to_owned()),
-                        Some(format_name(format).to_owned()),
-                    )
-                }),
-            )));
-        }
-        body.push(row(Box::new(buttons)));
         Self::push_field(
             cx,
             &mut body,
@@ -314,7 +348,7 @@ impl HubBrowser {
                 AgentModelsEffect::AddModelFile,
             ),
         )));
-        if self.working {
+        if self.working || self.searching > 0 {
             body.push(row(Box::new(
                 ProgressBar::indeterminate().with_label(t("agent-hub-working")),
             )));
@@ -558,6 +592,26 @@ impl HubBrowser {
     }
 }
 
+/// The window bar's search on Agent Models searches Hugging Face.
+impl crate::area::PaneQuery for super::AgentModelsArea {
+    fn set_query_text(&self, text: &str) {
+        let search = {
+            let mut model = self.model().borrow_mut();
+            model.changed = true;
+            model.hub.typed(text)
+        };
+        if let Some(search) = search {
+            self.cx.invoke(search);
+        }
+    }
+
+    fn query_closed(&self) {
+        let mut model = self.model().borrow_mut();
+        model.hub.clear();
+        model.changed = true;
+    }
+}
+
 /// Answer one of the Hub's effects; the download itself is manager work
 /// ([`super::ManagerWork`]).
 pub(crate) fn answer(
@@ -579,26 +633,16 @@ pub(crate) fn answer(
             drop(model.opener.open(&model_page_url(&reference.repo)));
             Ok(Effected::done())
         }
-        AgentModelsEffect::SearchHubModels { query, format } => {
-            let format = format.unwrap_or_else(|| format_name(HubFormat::Gguf).into());
-            if query.trim().is_empty() {
-                return Err(t("agent-hub-query-empty"));
+        AgentModelsEffect::SearchHubModels { query, format } => search(model, &query, format, cx),
+        AgentModelsEffect::SetHubFormat { format } => {
+            model.hub.format =
+                parse_format(&format).ok_or_else(|| t("agent-hub-format-unknown"))?;
+            if model.hub.searching == 0 && !model.hub.query.is_empty() {
+                let search = model.hub.search_typed();
+                model.cx.invoke(search);
             }
-            model.hub.working = true;
-            let control = Arc::clone(&model.control);
-            drop(model);
-            Ok(crate::device_read::job(
-                cx,
-                move || control.hub_search(query.trim(), &format),
-                |app: &mut SettingsApp, results: Result<Vec<HubSearchResult>, String>, _| {
-                    let shared = area(app).ok_or_else(crate::area::missing)?.model();
-                    let mut model = shared.borrow_mut();
-                    model.hub.working = false;
-                    model.hub.results = Some(results.clone());
-                    model.changed = true;
-                    results.map(Effected::value)
-                },
-            ))
+            model.changed = true;
+            Ok(Effected::done())
         }
         AgentModelsEffect::ShowHubModel { model: reference } => {
             model.hub.working = true;
@@ -660,6 +704,48 @@ pub(crate) fn answer(
         }
         _ => Err("not a Hugging Face effect".into()),
     }
+}
+
+/// Search the Hub for `query` in `format` (GGUF when none): a search the
+/// window bar's search starts, or an agent's.
+fn search(
+    mut model: std::cell::RefMut<'_, AgentModelsModel>,
+    query: &str,
+    format: Option<String>,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let format = format.unwrap_or_else(|| format_name(HubFormat::Gguf).into());
+    let query = query.trim().to_owned();
+    if query.is_empty() {
+        return Err(t("agent-hub-query-empty"));
+    }
+    if let Some(known) = parse_format(&format) {
+        model.hub.format = known;
+    }
+    model.hub.searching += 1;
+    let cleared = model.hub.cleared;
+    let control = Arc::clone(&model.control);
+    drop(model);
+    Ok(crate::device_read::job(
+        cx,
+        {
+            let (query, format) = (query.clone(), format.clone());
+            move || control.hub_search(&query, &format)
+        },
+        move |app: &mut SettingsApp, results: Result<Vec<HubSearchResult>, String>, _| {
+            let shared = area(app).ok_or_else(crate::area::missing)?.model();
+            let mut model = shared.borrow_mut();
+            model.hub.searching = model.hub.searching.saturating_sub(1);
+            if model.hub.cleared == cleared {
+                model.hub.results = Some(results.clone());
+            }
+            if let Some(next) = model.hub.follow_up(&query, &format) {
+                model.cx.invoke(next);
+            }
+            model.changed = true;
+            results.map(Effected::value)
+        },
+    ))
 }
 
 /// Change the stored Hugging Face token on a worker, then read back
@@ -747,13 +833,13 @@ fn push_confirm(
 }
 
 fn result_row(cx: &PaneCx, result: &HubSearchResult, available: bool) -> ui::widget::ListRow {
-    let mut details = vec![t_args(
-        "agent-hub-result-stats",
-        &[
-            ("downloads", result.downloads.into()),
-            ("likes", result.likes.into()),
-        ],
-    )];
+    let mut details = vec![
+        t_args(
+            "agent-hub-result-downloads",
+            &[("downloads", result.downloads.into())],
+        ),
+        t_args("agent-hub-result-likes", &[("likes", result.likes.into())]),
+    ];
     if let Some(license) = &result.license {
         details.push(t_args(
             "agent-hub-result-license",
@@ -780,6 +866,13 @@ fn result_row(cx: &PaneCx, result: &HubSearchResult, available: bool) -> ui::wid
             ),
         )),
     )
+}
+
+/// The file family named `name` on the model manager's command line.
+fn parse_format(name: &str) -> Option<HubFormat> {
+    [HubFormat::Gguf, HubFormat::Safetensors]
+        .into_iter()
+        .find(|format| format_name(*format) == name)
 }
 
 /// The search filter's name on the model manager's command line.
