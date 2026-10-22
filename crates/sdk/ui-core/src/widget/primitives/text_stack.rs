@@ -24,7 +24,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::{TaffyTreeExt, Widget};
+use crate::widget::{TaffyTreeExt, Tone, Widget};
 
 /// The gap between two lines of a stack: half the tight step.
 fn line_gap(theme: &Theme) -> f64 {
@@ -48,6 +48,8 @@ pub struct TextStackFace<'a> {
     secondary: Option<&'a str>,
     tertiary: Option<&'a str>,
     size: StackSize,
+    /// The secondary line's status ink ([`Tone::Neutral`]: secondary ink).
+    secondary_tone: Tone,
 }
 
 /// The styles and inks of a stack in one theme.
@@ -77,7 +79,16 @@ impl<'a> TextStackFace<'a> {
             secondary: None,
             tertiary: None,
             size: StackSize::Regular,
+            secondary_tone: Tone::Neutral,
         }
+    }
+
+    /// The secondary line says a status (a playback error): it reads in
+    /// `tone`'s ink.
+    #[must_use]
+    pub fn secondary_tone(mut self, tone: Tone) -> Self {
+        self.secondary_tone = tone;
+        self
     }
 
     /// The secondary line. An empty string shows no line.
@@ -170,7 +181,11 @@ impl<'a> TextStackFace<'a> {
         };
         y += line(ctx, self.title, &styles.title, colors.text_primary, y) + line_gap(theme);
         if let Some(secondary) = self.secondary {
-            y += line(ctx, secondary, &styles.caption, colors.text_dim, y) + line_gap(theme);
+            let ink = match self.secondary_tone {
+                Tone::Neutral => colors.text_dim,
+                tone => tone.colour(theme),
+            };
+            y += line(ctx, secondary, &styles.caption, ink, y) + line_gap(theme);
         }
         if let Some(tertiary) = self.tertiary {
             line(ctx, tertiary, &styles.caption, colors.text_tertiary, y);
@@ -194,6 +209,7 @@ pub struct TextStack {
     secondary: String,
     tertiary: String,
     size: StackSize,
+    secondary_tone: Tone,
     rect: Rect,
     dirty: bool,
     /// The theme the last layout was built with, for measuring.
@@ -208,6 +224,7 @@ impl TextStack {
             secondary: String::new(),
             tertiary: String::new(),
             size: StackSize::Regular,
+            secondary_tone: Tone::Neutral,
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
@@ -242,10 +259,20 @@ impl TextStack {
         }
     }
 
+    /// Set the secondary line's status ink
+    /// ([`TextStackFace::secondary_tone`]).
+    pub fn set_secondary_tone(&mut self, tone: Tone) {
+        if self.secondary_tone != tone {
+            self.secondary_tone = tone;
+            self.dirty = true;
+        }
+    }
+
     fn face(&self) -> TextStackFace<'_> {
         let face = TextStackFace::new(&self.title)
             .secondary(&self.secondary)
-            .tertiary(&self.tertiary);
+            .tertiary(&self.tertiary)
+            .secondary_tone(self.secondary_tone);
         match self.size {
             StackSize::Regular => face,
             StackSize::Dense => face.dense(),
