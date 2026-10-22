@@ -325,6 +325,25 @@ Never `#[ignore]` a failing test, never weaken an assertion, always assert on th
 path rather than a tautological helper. It applies to **all** tests; the rest of the testing
 rules are in [`docs/policies.md`](docs/policies.md#testing-and-verification).
 
+## Comments
+
+Code says what it does; names, types and tests carry the meaning. Write a comment only to
+explain **why**, and only when the code can't be made to say it without costing brevity,
+performance or correctness. Before writing one, try a better name, a smaller function or a
+type instead.
+
+- No comments that restate a name or signature ("Returns the width." on `fn width`) or
+  narrate the next line.
+- No history: nothing about what code used to do, what changed, what was fixed, or "now".
+  That belongs in the commit message.
+- No comments on tests that their names and assertions already say. No file or module
+  headers that summarise what follows.
+- No `# Errors` / `# Panics` sections unless they say something the signature doesn't.
+- Doc comments on public API only where a caller needs something the name and types don't
+  give them (a precondition, a unit, a surprising cost).
+
+When you touch code with a comment that breaks these rules, delete it.
+
 ## Self-contained repository
 
 This is an open-source repository; everything in it must stand on its own. Never reference

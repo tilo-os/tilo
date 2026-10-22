@@ -63,7 +63,6 @@
 //!   token and validates it, but does not send it.
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 pub mod approval;
 pub mod canonical;
 pub mod cert;

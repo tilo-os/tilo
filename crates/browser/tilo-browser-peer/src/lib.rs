@@ -22,7 +22,6 @@
 //! machine".
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 
 mod channels;
 mod clock;
