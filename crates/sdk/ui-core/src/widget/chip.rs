@@ -1390,15 +1390,15 @@ mod tests {
     // chip with a value chosen is active though its press opens its menu.
     #[test]
     fn a_menu_chip_with_a_choice_is_drawn_chosen() {
-        let chosen = ChipWidget::new("Book: Tideglass")
+        let chosen = Chip::new("Book: Tideglass")
             .menu()
             .current(true)
             .removable();
         assert!(chosen.shows_chosen());
-        let idle = ChipWidget::new("Author").menu().current(false);
+        let idle = Chip::new("Author").menu().current(false);
         assert!(!idle.shows_chosen());
-        assert!(ChipWidget::new("Liked").selected(true).shows_chosen());
-        assert!(!ChipWidget::new("Liked").selected(false).shows_chosen());
+        assert!(Chip::new("Liked").selected(true).shows_chosen());
+        assert!(!Chip::new("Liked").selected(false).shows_chosen());
     }
 
     fn draw(w: &mut dyn Widget) {
