@@ -945,15 +945,47 @@ pub fn application_action_target(
     }
 }
 
+/// [`application_action_target`] in `app_id`'s record `record`: the host
+/// delivers to the app showing that record, or launches the app on it.
+/// Opening a reference is the resource's `open` on this target.
+#[must_use]
+pub fn application_record_target(
+    room: &str,
+    app_id: &str,
+    record: &str,
+    resource: impl Into<String>,
+    action: impl Into<String>,
+) -> RemoteActionTarget {
+    let mut target = application_action_target(room, app_id, resource, action);
+    target.provider = format!("{}:{record}", target.provider);
+    target
+}
+
 /// The room and application an [`application_action_target`] provider
 /// token names, or `None` for any other provider.
 #[must_use]
 pub fn application_provider(provider: &str) -> Option<(&str, &str)> {
-    let (room, app_id) = provider
+    application_parts(provider).map(|(room, app_id, _)| (room, app_id))
+}
+
+/// The record an [`application_record_target`] provider token names, or
+/// `None` when it names none.
+#[must_use]
+pub fn application_provider_record(provider: &str) -> Option<&str> {
+    application_parts(provider).and_then(|(_, _, record)| record)
+}
+
+fn application_parts(provider: &str) -> Option<(&str, &str, Option<&str>)> {
+    let (room, rest) = provider
         .strip_prefix(APPLICATION_PROVIDER)?
         .strip_prefix(':')?
         .split_once(':')?;
-    (!room.is_empty() && !app_id.is_empty() && !app_id.contains(':')).then_some((room, app_id))
+    let (app_id, record) = match rest.split_once(':') {
+        Some((app_id, record)) => (app_id, Some(record)),
+        None => (rest, None),
+    };
+    (!room.is_empty() && !app_id.is_empty() && record.is_none_or(|record| !record.is_empty()))
+        .then_some((room, app_id, record))
 }
 
 /// Where an invocation stands, as reported to its caller.
@@ -2106,10 +2138,23 @@ mod tests {
             "application:room-1",
             "application::so.tilo.chat",
             "application:room-1:",
-            "application:room-1:a:b",
+            "application:room-1:a:",
         ] {
             assert_eq!(application_provider(other), None, "{other}");
         }
+        assert_eq!(application_provider_record(&target.provider), None);
+
+        let target =
+            application_record_target("room-1", "so.tilo.notes", "uuid:7", "notes.page:1", "open");
+        assert_eq!(
+            application_provider(&target.provider),
+            Some(("room-1", "so.tilo.notes"))
+        );
+        assert_eq!(
+            application_provider_record(&target.provider),
+            Some("uuid:7")
+        );
+        assert_eq!(target.address, ActionAddress::new("notes.page:1", "open"));
     }
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {

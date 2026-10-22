@@ -17,7 +17,8 @@ use tilo_actions::remote::{
     ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Caller, CallerPrincipal, CataloguePage,
     CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer, Confirmation,
     InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
-    Reservation, application_provider, pending, workspace_provider, workspace_provider_room,
+    Reservation, application_provider, application_provider_record, pending, workspace_provider,
+    workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
@@ -527,7 +528,7 @@ impl CapnpBrokerState {
                     .then(|| person.clone())
             }
             RemoteActionMessage::Invoke(request) => {
-                if self.app_owns(person, app_id, request) || link_request(request) {
+                if self.app_owns(person, app_id, request) || reference_request(request) {
                     Some(person.clone())
                 } else {
                     access.invoke.then_some(as_app)
@@ -1728,7 +1729,13 @@ impl CapnpBrokerState {
                         })
                     })
                     .or_else(|| self.manifest_offer(app_id, address));
-                (room.to_owned(), app_id.to_owned(), None, offered)
+                let record = application_provider_record(&request.target.provider);
+                (
+                    room.to_owned(),
+                    app_id.to_owned(),
+                    record.map(str::to_owned),
+                    offered,
+                )
             } else {
                 let retained = self
                     .launchable
@@ -3110,14 +3117,19 @@ fn own_view_lookup(app_id: &str, query: &tilo_actions::remote::CatalogueQuery) -
             .is_some_and(|(app, _)| app == app_id)
 }
 
-/// Whether `request` asks for the link to a resource: `share-link`, which
-/// the framework answers for every app and no app may publish itself. It
-/// reads where the resource is shown and grants nothing, so an app showing a
-/// reference (a chat message carrying a page) may ask for it as the person
-/// using it without declared `invoke` access; the person's own grant on the
-/// resource still decides.
-fn link_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
-    request.target.address.action == "share-link"
+/// Whether `request` asks for the link to a resource or opens it:
+/// `share-link`, which the framework answers for every app and no app may
+/// publish itself, or the resource's `open` in its app
+/// ([`application_action_target`](tilo_actions::remote::application_action_target)),
+/// which shows it. Neither grants anything, so an app showing a reference (a
+/// chat message carrying a page, an issue's link) asks as the person using it
+/// without declared `invoke` access; the person's own grants on the app and
+/// the resource still decide.
+fn reference_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
+    let action = request.target.address.action.as_str();
+    action == "share-link"
+        || (action == APPLICATION_OPEN_ACTION
+            && application_provider(&request.target.provider).is_some())
 }
 
 #[cfg(test)]
@@ -3158,12 +3170,12 @@ mod own_view_lookup_tests {
     }
 
     #[test]
-    fn only_the_link_action_is_open_to_every_app() {
-        let request = |action: &str| tilo_actions::remote::InvokeRequest {
+    fn only_linking_and_opening_a_resource_are_open_to_every_app() {
+        let request = |provider: &str, action: &str| tilo_actions::remote::InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: "record:so.tilo.notes:".into(),
+                provider: provider.into(),
                 address: tilo_actions::ActionAddress::new("notes.page:1", action),
             },
             argument: tilo_actions::remote::InvokeArgument::None,
@@ -3173,9 +3185,20 @@ mod own_view_lookup_tests {
             wait_ms: None,
             appearance: None,
         };
-        assert!(super::link_request(&request("share-link")));
-        assert!(!super::link_request(&request("share-invite-link")));
-        assert!(!super::link_request(&request("rename")));
+        let record = "record:so.tilo.notes:";
+        let app = "application:room-1:so.tilo.notes:uuid:1";
+        assert!(super::reference_request(&request(record, "share-link")));
+        assert!(!super::reference_request(&request(
+            record,
+            "share-invite-link"
+        )));
+        assert!(!super::reference_request(&request(record, "rename")));
+        assert!(super::reference_request(&request(app, "open")));
+        assert!(!super::reference_request(&request(app, "rename")));
+        assert!(
+            !super::reference_request(&request("7", "open")),
+            "only the resource's own app opens it"
+        );
     }
 }
 
