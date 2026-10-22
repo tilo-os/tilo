@@ -554,9 +554,9 @@ pub enum Staged {
     List(Category),
     /// `category` with the sidebar filtered by [`SEARCH_QUERY`].
     Search(Category),
-    /// The setting with this index id, scrolled to with the keyboard on its
-    /// control, as opening it from search does.
-    Setting(&'static str),
+    /// `category`'s content with the keyboard on the control with this id,
+    /// as Tab leaves it.
+    Focused(Category, &'static str),
 }
 
 /// What `scenario` shows.
@@ -567,7 +567,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             DEVICE_DISPLAYS | DISPLAYS_TWO | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
             | DISPLAYS_IDENTIFY,
         ) => Staged::Pane(Category::Displays),
-        Some(DISPLAYS_KEYBOARD) => Staged::Setting("display.arrangement"),
+        Some(DISPLAYS_KEYBOARD) => Staged::Focused(Category::Displays, "display.arrangement"),
         Some(STORAGE_DRIVES) => Staged::Pane(Category::Storage),
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
             Staged::Pane(Category::Keyboard)
@@ -730,7 +730,7 @@ mod tests {
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
-            Staged::Setting("display.arrangement")
+            Staged::Focused(Category::Displays, "display.arrangement")
         );
         for scenario in [
             DISPLAYS_TWO,

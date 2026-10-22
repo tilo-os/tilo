@@ -1698,6 +1698,10 @@ mod tests {
         let mapping = canvas.mapping();
         let monitor = mapping.to_canvas(displays()[1].placement);
         let panel = mapping.to_canvas(displays()[0].placement);
+        // One frame's instant throughout: the view grows to take in the held
+        // display, so a drop read later than its move lands where the grown
+        // view puts the hand, which a loaded test machine would make vary.
+        let _frame = crate::motion::pin_frame();
         assert!(canvas.press(monitor.center()));
         // Drop it roughly under the panel, a little off every edge.
         let target = Point::new(
