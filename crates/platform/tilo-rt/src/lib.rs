@@ -288,7 +288,8 @@ pub fn lower_current_thread_priority() {
 /// a frame cost its thread, apart from time spent preempted or waiting.
 #[must_use]
 pub fn thread_cpu_time() -> Option<std::time::Duration> {
-    #[cfg(target_os = "linux")]
+    // macOS has kept the clock since 10.12.
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     {
         let mut now = libc::timespec {
             tv_sec: 0,
@@ -304,7 +305,7 @@ pub fn thread_cpu_time() -> Option<std::time::Duration> {
             u32::try_from(now.tv_nsec).ok()?,
         ))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
     {
         None
     }
@@ -332,6 +333,23 @@ mod tests {
                 .unwrap();
             assert_eq!(background, (spawner + BACKGROUND_NICE).min(19));
         }
+    }
+
+    /// A thread's CPU clock counts its own work and not time it spends
+    /// asleep, where the platform keeps one.
+    #[test]
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    fn a_threads_cpu_clock_counts_its_work_and_not_its_sleep() {
+        let start = thread_cpu_time().expect("the thread's CPU clock");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let slept = thread_cpu_time().unwrap().saturating_sub(start);
+        assert!(slept < std::time::Duration::from_millis(100), "{slept:?}");
+        let busy = std::time::Instant::now();
+        let mut spin = 0_u64;
+        while busy.elapsed() < std::time::Duration::from_millis(50) {
+            spin = std::hint::black_box(spin.wrapping_add(1));
+        }
+        assert!(thread_cpu_time().unwrap() > start.saturating_add(slept));
     }
 
     #[test]
