@@ -31,13 +31,18 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use ui::num::f32_of_f64;
 
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::{PresenceCtx, PresenceKey};
 
 use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
 use crate::shell::network::ShellNetwork;
+use tilo_relay_protocol::live::ShownStrip;
+
+mod desk_pointers;
+pub use desk_pointers::{
+    HeardPointer, desk_layout, fold_live_desk_pointers, place_heard_pointers, place_pointers,
+};
 
 /// A room's last-published cursor and when it went out, keyed by room —
 /// what [`should_publish_cursor`] rate-limits against.
@@ -225,6 +230,10 @@ pub struct PeerPresence {
     /// The record each window shows, by tab, as learned from the local app
     /// pointing in it ([`Self::window_record`]).
     window_records: WindowRecords,
+    /// The strip this desktop shows and how far it is scrolled, as of the
+    /// last layout: what a pointer on a strip showing no window is placed
+    /// in ([`Self::set_shown_strip`]).
+    shown_strip: Mutex<Option<ShownStrip>>,
     /// The window cursor chat last went to: a message keeps going there
     /// while the pointer crosses a gap between windows.
     last_chat_target: Mutex<Option<ChatTarget>>,
@@ -601,6 +610,7 @@ impl PeerPresence {
             participants_epoch,
             roster_seen: Mutex::new(None),
             window_records: Arc::default(),
+            shown_strip: Mutex::new(None),
             last_chat_target: Mutex::new(None),
             net: Arc::clone(net),
         }
@@ -834,6 +844,13 @@ impl PeerPresence {
         moved || roster_changed
     }
 
+    /// The strip this desktop shows, the area it is drawn in and how far it
+    /// is scrolled, as of the last layout; `None` while it shows none. A
+    /// live member's pointer on a strip showing no window is placed in it.
+    pub fn set_shown_strip(&self, strip: Option<ShownStrip>) {
+        *self.shown_strip.lock_recover() = strip;
+    }
+
     /// Fold everything that arrived from other hosts into `presence`,
     /// returning whether anything landed or moved. Every peer pointer is
     /// placed over this device's own tile for its tab — `tiles` is what this
@@ -848,11 +865,7 @@ impl PeerPresence {
     /// [`ui::presence::POINTER_IDLE`] fades out and is retired; while one is
     /// fading this returns `true`, so the fade is painted frame by frame.
     pub fn pump_at(&self, presence: &mut PresenceCtx, tiles: &TabTiles, now: Instant) -> bool {
-        let certified = self
-            .certified_people_inbound
-            .lock()
-            .map(|mut inbound| std::mem::take(&mut *inbound))
-            .unwrap_or_default();
+        let certified = std::mem::take(&mut *self.certified_people_inbound.lock_recover());
         for (room, people) in certified {
             self.set_certified_people(&room, people);
         }
@@ -872,7 +885,8 @@ impl PeerPresence {
                 presence.set_presence_hue(ui::permissions::UserId(format!("peer@{peer}")), hue);
             }
         }
-        let folded = !drained.is_empty();
+        let desk_pointers = self.net.take_live_desk_pointers();
+        let folded = !drained.is_empty() || !desk_pointers.is_empty();
         let said = self.net.take_live_chat();
         let net = Arc::clone(&self.net);
         // Rooms whose pointers this person sees: theirs, unless they show
@@ -902,6 +916,15 @@ impl PeerPresence {
                 &|room| mine.iter().any(|r| r == room),
                 now,
             );
+            let (arrived, cleared) = fold_live_desk_pointers(
+                desk_pointers,
+                &mut anchored,
+                presence,
+                &|room| net.peer_labels(room),
+                &|room| mine.iter().any(|r| r == room),
+                now,
+            );
+            fresh.extend(arrived);
             chat_changed = fold_live_chat(
                 said,
                 &mut anchored,
@@ -910,7 +933,10 @@ impl PeerPresence {
                 &|room| mine.iter().any(|r| r == room),
                 now,
             );
-            place_pointers(&anchored, &fresh, presence, tiles, now)
+            let records = self.window_records.lock_recover();
+            let strip = *self.shown_strip.lock_recover();
+            let layout = |room: &str| desk_layout(room, tiles, &*records, strip);
+            place_heard_pointers(&anchored, &fresh, presence, tiles, &layout, now) || cleared
         });
         // A room left, or one where this person now shows nothing: its
         // pointers go at once.
@@ -1331,7 +1357,7 @@ pub type PeerLabels = std::collections::BTreeMap<u64, String>;
 /// (`peer@<handle>`): the room it was sent in, where it is anchored, and
 /// when it was last heard. Kept after it goes quiet — somebody who pointed
 /// at the room's work is still in the room — but no longer placed.
-pub type AnchoredPointers = HashMap<String, (String, PointerAnchor, Instant)>;
+pub type AnchoredPointers = HashMap<String, (String, HeardPointer, Instant)>;
 
 /// Fold inbound presence into `anchored`, naming each sender in
 /// `presence`, and return the ids of the peers whose pointer arrived.
@@ -1387,7 +1413,7 @@ pub fn fold_inbound(
             x: entry.point.0,
             y: entry.point.1,
         };
-        anchored.insert(user.clone(), (room, anchor, now));
+        anchored.insert(user.clone(), (room, HeardPointer::Tab(anchor), now));
         arrived.push(user);
     }
     arrived
@@ -1441,76 +1467,11 @@ pub fn fold_live_chat(
     changed || presence.chats.animating(now)
 }
 
-/// Put every pointer in `anchored` where its tab's tile is on this device
-/// (`tiles`), filed under its room the way the overlay paints them, and
-/// take off screen any whose tab this device doesn't show. `fresh` peers
-/// are restated even when they haven't moved, so a keepalive keeps them
-/// current. Each is stamped with when it was last *heard*, not placed, so
-/// a pointer riding a scrolling tile still goes quiet on time: one not
-/// heard for [`ui::presence::POINTER_IDLE`] is retired
-/// ([`PresenceCtx::prune_pointers`]) and not placed again until it is.
-/// The same stamp is what tells the presence store a tile carrying the
-/// pointer from the peer moving it: only a newly heard position glides
-/// ([`PresenceCtx::pointer_position_at`]).
-/// Returns whether anything landed, moved, went, or is fading or gliding.
 /// How long a peer's pointer stays painted after it was last heard: while
 /// it is in the room's windows, however still (presence.md: only its name
 /// steps aside). It goes when its person takes it away (`PresenceCleared`),
 /// leaves the room, or stops showing where they are.
 pub const POINTER_STAYS: Duration = Duration::MAX;
-
-pub fn place_pointers(
-    anchored: &AnchoredPointers,
-    fresh: &[String],
-    presence: &mut PresenceCtx,
-    tiles: &TabTiles,
-    now: Instant,
-) -> bool {
-    use ui::presence::POINTER_FADE;
-    let mut changed = false;
-    for (user, (room, anchor, heard)) in anchored {
-        let Some((x, y)) = place_pointer(tiles, *anchor) else {
-            changed |= presence.clear_pointer(user);
-            continue;
-        };
-        let key = PresenceKey::Workspace { id: room.clone() };
-        let at = (f32_of_f64(x), f32_of_f64(y));
-        let placed = presence
-            .pointers
-            .get(&key)
-            .and_then(|list| list.iter().find(|(u, _)| u.0 == *user))
-            .map(|(_, at)| *at);
-        // Restated where it already is (a late joiner's welcome, or an older
-        // build's keepalive): heard again, so it does not fade, but nothing
-        // on screen moves unless it had started fading.
-        let restated = placed == Some(at);
-        if restated && !fresh.contains(user) {
-            continue;
-        }
-        let fading = restated
-            && presence.pointer_opacity(
-                &key,
-                &ui::permissions::UserId(user.clone()),
-                now,
-                POINTER_STAYS,
-                POINTER_FADE,
-            ) < 1.0;
-        // Stamped with when it was heard rather than now: moving with a
-        // tile is not the peer saying anything.
-        presence.apply_remote_presence_at(
-            user.clone(),
-            key,
-            PresencePayload::Pointer { x: at.0, y: at.1 },
-            *heard,
-        );
-        changed |= !restated || fading;
-    }
-    changed |= presence.prune_pointers(now, POINTER_STAYS);
-    changed
-        || presence.pointers_fading(now, POINTER_STAYS, POINTER_FADE)
-        || presence.pointers_easing(now)
-        || presence.pointer_names_fading(now, POINTER_FADE)
-}
 
 /// The people in `ws`'s room. Two sources, neither sufficient alone:
 /// `labels` is the room document's answer (everyone its authority has
@@ -4371,6 +4332,9 @@ mod two_sessions {
 
     #[path = "in_app_tests.rs"]
     mod in_app;
+
+    #[path = "desk_pointer_tests.rs"]
+    mod desk_pointer;
 
     /// The moments after start, before the desktop has handed over what the
     /// person chose in a room: that room is held to the most private choice,
