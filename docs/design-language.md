@@ -220,6 +220,35 @@ is one glyph at the row's trailing edge that reads as on while History
 shows; no app draws a History button of its own. Narrow windows collapse the
 sidebar into a floating drawer instead of squeezing content.
 
+**Rail or list.** A navigation sidebar reads by its width. Narrow, it is a
+rail: each destination a tile, its icon over a short caption. Wider, it is
+a list: the icon beside the label. The person drags the sidebar's edge
+(pointer, finger, or the arrow keys on its separator) and the width follows
+one to one, from the rail's width to the sidebar's maximum; the rows change
+form where every label stands whole beside its icon, never past the
+sidebar's minimum, so nothing jumps under the pointer. Dragged past the
+rail it hides, as the sidebar toggle hides it. The width is remembered per
+app on this device. Rail tiles never stand in a wide sidebar, and list rows
+never in a rail.
+
+Which form a sidebar starts in follows its destinations, not the app:
+
+| Starts as | When |
+|---|---|
+| Rail | One flat set of at most seven destinations, each with an icon and a label that stands whole in a tile (two caption lines, broken only at spaces), with no headings, folding, "New" action or filter, no actions in the sidebar's header, and no row that says more than its label (a second line, a figure, a check, a status, a colour, people) or nests or renames |
+| List | Anything else: headings, many or growing sets of places, nesting, long labels, rows with more to say |
+
+Today that makes these sidebars rails: Tube (six places), Clocks (four
+screens), Containers (four places; their counts show once widened), and
+Contacts until it has groups; and these lists: Settings, Mail, Files,
+Contacts with groups, Feeds (its header adds a subscription), Passwords,
+Snippets, Shortcuts, Backups, Themes, Database client, Disks (sizes and
+health), Firewall (no icons, the active zone's label). Remote's rail is
+always a rail (`NavMode::Docked`). A sidebar that is not a navigation list
+alone (API tester's environment picker over its lists, Notes' notebook
+column) keeps its list width. Apps that paint their own sidebar (Photos,
+Music, Chat, Calendar) do not have the rail yet.
+
 ## Space and density
 
 - Spacing is the 4 px rhythm used by role, never by number

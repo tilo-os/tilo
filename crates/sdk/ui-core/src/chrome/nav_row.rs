@@ -455,9 +455,11 @@ pub fn nav_rail_item_height(
     nav_rail_row_height(theme) + caption * f64_of_usize(lines.len().saturating_sub(1))
 }
 
-/// The run a rail caption is set in, inside a tile `width` wide.
+/// The run a rail caption is set in, inside a tile `width` wide: the tile's
+/// selection inset and the caption's own inset on each side, `s1` each, as
+/// [`rail_layout`] places it.
 fn rail_caption_width(theme: &Theme, width: f64) -> f64 {
-    (width - 2.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
+    (width - 4.0 * f64::from(theme.tokens.spacing.s1)).max(0.0)
 }
 
 /// How wide a rail of these destination `labels` is: its stock width, grown
@@ -472,10 +474,34 @@ pub fn rail_width_fitting<'a>(
     labels: impl IntoIterator<Item = &'a str>,
 ) -> f64 {
     let metrics = &theme.tokens.metrics;
+    let cap = f64::from(metrics.rail_width) * f64::from(theme.text_growth());
+    rail_width_up_to(theme, text_renderer, labels, cap)
+}
+
+/// How wide a sidebar's rail of these destination `labels` is: its stock
+/// width, grown so its longest single word fits whole, up to
+/// `metrics.rail_max_width`. A sidebar the person can widen into a list
+/// grows its rail to the word before it shortens one ("Subscriptions",
+/// never "Subscript…"); a fixed rail keeps [`rail_width_fitting`]'s cap.
+#[must_use]
+pub fn sidebar_rail_width_fitting<'a>(
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    labels: impl IntoIterator<Item = &'a str>,
+) -> f64 {
+    let cap = f64::from(theme.tokens.metrics.rail_max_width);
+    rail_width_up_to(theme, text_renderer, labels, cap)
+}
+
+fn rail_width_up_to<'a>(
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    labels: impl IntoIterator<Item = &'a str>,
+    cap: f64,
+) -> f64 {
+    let metrics = &theme.tokens.metrics;
     let floor = f64::from(metrics.rail_width);
-    let cap = (floor * f64::from(theme.text_growth()))
-        .min(f64::from(metrics.rail_max_width))
-        .max(floor);
+    let cap = cap.min(f64::from(metrics.rail_max_width)).max(floor);
     let style = label_measure_style(theme, NavRowStyle::Rail);
     let pad = floor - rail_caption_width(theme, floor);
     let longest = labels
@@ -484,6 +510,54 @@ pub fn rail_width_fitting<'a>(
         .map(|word| f64::from(text_renderer.measure_style(word, None, &style).0))
         .fold(0.0, f64::max);
     (longest + pad).ceil().clamp(floor, cap)
+}
+
+/// How wide an icon-led list of these destination `labels` must be for
+/// every label to stand whole beside its icon: the row's padding, its
+/// icon and gap, and the widest label. Where a sidebar is narrower than
+/// this, its destinations read better as a rail's tiles than as cut-off
+/// rows, so this is where a navigation sidebar turns from rail into list.
+#[must_use]
+pub fn nav_list_width_fitting<'a>(
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    labels: impl IntoIterator<Item = &'a str>,
+) -> f64 {
+    // The padding around the label of a plain icon-led row, read off the
+    // row's own layout so it can never disagree with what paints.
+    let probe_width = 1000.0;
+    let probe = NavRowFace::new(Rect::new(0.0, 0.0, probe_width, 32.0), "").icon(Icon::Home);
+    let layout = list_layout(theme, text_renderer, &probe);
+    let pad = layout.label_x0 + (probe_width - layout.label_x1);
+    let style = label_measure_style(theme, NavRowStyle::List);
+    let longest = labels
+        .into_iter()
+        .map(|label| f64::from(text_renderer.measure_style(label, None, &style).0))
+        .fold(0.0, f64::max);
+    (longest + pad).ceil()
+}
+
+/// Whether `label` stands whole in a rail tile `width` wide: on at most two
+/// caption lines, broken only at spaces, with nothing elided.
+#[must_use]
+pub fn rail_caption_fits(
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    label: &str,
+    width: f64,
+) -> bool {
+    let lines = rail_caption_lines(
+        theme,
+        text_renderer,
+        label,
+        rail_caption_width(theme, width),
+    );
+    let shown: Vec<&str> = lines
+        .iter()
+        .flat_map(|line| line.split_whitespace())
+        .collect();
+    let words: Vec<&str> = label.split_whitespace().collect();
+    shown == words
 }
 
 /// A rail caption broken into at most two lines of `max_w`, only at

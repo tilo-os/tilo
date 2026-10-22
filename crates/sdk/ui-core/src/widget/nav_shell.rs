@@ -41,8 +41,10 @@
 //!   remembered per window size class. The narrowest window the shell works
 //!   at is its compact layout ([`NavShell::minimum_width`]), which the host
 //!   states to the window system.
-//! - **Resizable:** dragging the sidebar's trailing edge resizes it;
-//!   dragging it below its minimum width hides it.
+//! - **Resizable:** dragging the sidebar's trailing edge (pointer, finger
+//!   or arrow keys) resizes it, below its narrowest hides it, and a
+//!   navigation list reads as a rail while narrow and a list while wide;
+//!   the width is remembered per app (`sidebar_resize`, `memory`).
 //! - **Regions:** the sidebar stands on `Region::Sidebar`, the inspector on
 //!   `Region::Inspector`, the overview and content on the window ground;
 //!   each column's children draw with that region's theme.
@@ -91,6 +93,7 @@ use crate::widget::{
 };
 
 mod header_parts;
+pub(crate) mod memory;
 mod notices;
 mod sidebar_resize;
 mod status_action;
@@ -99,6 +102,7 @@ use crate::widget::toast::ToastKind;
 use crate::widget::toast::ToastStack;
 use header_parts::{HeaderTitle, MoreActions};
 use notices::TOAST_ACTION;
+use sidebar_resize::AdaptiveSidebar;
 use status_action::place_status_action;
 
 /// What the sidebar becomes when the window is too narrow to dock it.
@@ -483,6 +487,8 @@ struct Inputs {
     content_back: bool,
     /// The docked sidebar width a person dragged to, authored at 1×.
     user_sidebar: Option<f64>,
+    /// A navigation-list sidebar: rail while narrow, list while wide.
+    adaptive: Option<AdaptiveSidebar>,
     sidebar: FlapState,
     inspector: FlapState,
     pane: NavPane,
@@ -558,6 +564,7 @@ impl Default for Inputs {
             leading: [false; 4],
             content_back: false,
             user_sidebar: None,
+            adaptive: None,
             sidebar: FlapState::open_when_docked(),
             inspector: FlapState::open_when_docked(),
             pane: NavPane::Content,
@@ -576,9 +583,10 @@ impl Inputs {
         if self.mode == NavMode::Docked {
             return m.rail;
         }
+        let (default, narrowest) = (self.sidebar_default(), self.sidebar_narrowest());
         self.user_sidebar
-            .map_or(m.sidebar, |authored| authored * m.scale)
-            .clamp(m.sidebar_min, m.sidebar_max)
+            .map_or(default, |authored| authored * m.scale)
+            .clamp(narrowest, m.sidebar_max.max(narrowest))
     }
 
     /// The narrowest the content still works at, for its kind.
@@ -740,8 +748,9 @@ impl NavGeometry {
             parts.push(Part::Body(column));
             let i = column.index();
             if shows(self.header(column)) {
-                let docked_rail = inputs.mode == NavMode::Docked && column == Column::Sidebar;
-                if inputs.titled.get(i).copied().unwrap_or(false) && !docked_rail {
+                let rail = column == Column::Sidebar
+                    && inputs.sidebar_reads_as_rail(self.body(column).width());
+                if inputs.titled.get(i).copied().unwrap_or(false) && !rail {
                     parts.push(Part::Title(column));
                 }
                 if inputs.leading.get(i).copied().unwrap_or(false) {
@@ -1533,6 +1542,7 @@ pub struct NavShell {
     /// The sidebar's resize edge holds keyboard focus (given through its
     /// accessible separator); arrows then resize.
     resize_focused: bool,
+    edge: sidebar_resize::Edge,
     last_cursor: Point,
     /// Reduced motion: the sidebar and drawers fade in instead of sliding.
     fade: crate::motion::Presence,
@@ -1664,6 +1674,7 @@ impl NavShell {
             pane_chosen: false,
             resize: None,
             resize_focused: false,
+            edge: sidebar_resize::Edge::default(),
             last_cursor: Point::ZERO,
             fade: crate::motion::Presence::opened(),
             switch_fade: crate::motion::Presence::opened(),
@@ -4077,26 +4088,19 @@ impl Widget for NavShell {
                 f64::from(theme.tokens.metrics.compact_breakpoint),
             )
         };
-        let parts = {
+        let (metrics, adaptive) = self.sidebar_metrics(theme);
+        let (parts, sidebar_width) = {
             let mut inputs = self.inputs.borrow_mut();
-            inputs.metrics = Metrics::resolve(theme);
-            // A rail grows with the text to fit its longest word, up to its cap.
-            let fitted = [self.rail.as_deref(), self.sidebar.as_deref()]
-                .into_iter()
-                .flatten()
-                .filter_map(|part| crate::widget::nav_list::fitted_rail_width(part, theme))
-                .reduce(f64::max);
-            if let Some(rail) = fitted {
-                inputs.metrics.rail = rail;
-            }
+            (inputs.metrics, inputs.adaptive) = (metrics, adaptive);
             let g = plan(&inputs, size.0, size.1);
             if self.last_stack.is_none() {
                 self.planned = Some((g.stack.clone(), inputs.pane));
             }
             let parts = g.visible_parts(&inputs);
             inputs.parts.clone_from(&parts);
-            parts
+            (parts, g.body(Column::Sidebar).width())
         };
+        self.follow_sidebar_width(sidebar_width);
         self.update_toggle_names();
         let mut nodes = Vec::with_capacity(parts.len());
         for part in &parts {
@@ -4142,6 +4146,7 @@ impl Widget for NavShell {
         // The side of each threshold this layout stands on: the next one
         // switches back only past the hysteresis band.
         self.inputs.borrow_mut().held = Held::of(&self.geometry);
+        self.follow_sidebar_width(self.geometry.body(Column::Sidebar).width());
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         let child_nodes = taffy.children(node).unwrap_or_default();
         let parts = self.host_parts.clone();
@@ -4404,6 +4409,11 @@ impl Widget for NavShell {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.resize.is_some() || self.geometry.resize_handle.contains(point))
             .then_some(winit::window::CursorIcon::ColResize)
+    }
+
+    /// A finger on the sidebar's edge drags it; it never scrolls.
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.sidebar_resize_touch_band().contains(point)
     }
 
     /// The window's group: keyed by the shell's id, so what stands under a
@@ -4782,13 +4792,13 @@ impl NavShell {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.resize.take().is_some() {
-                    self.structure_dirty = true;
-                    self.invalidate();
+                if self.resize.is_some() && self.edge.touch.is_none() {
+                    self.end_sidebar_resize();
                     return true;
                 }
                 false
             }
+            WindowEvent::Touch(touch) => self.handle_resize_touch(touch, ctx),
             _ => false,
         }
     }

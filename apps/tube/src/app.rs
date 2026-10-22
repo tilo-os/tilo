@@ -258,7 +258,7 @@ impl TubeApp {
         changed
     }
 
-    /// The window shell: a docked icon rail of destinations beside the
+    /// The window shell: a docked sidebar of destinations beside the
     /// screen, with the screen's title and actions in the header row, and
     /// the shell's Back for the pages reached by browsing (a video, its
     /// creator, a playlist). Escape, Alt+Left, the mouse back button and an
@@ -664,6 +664,11 @@ impl TubeApp {
                 self.shell.open_sidebar();
                 self.shell.snap();
             }
+            // The sidebar as a person who dragged its edge out left it: a
+            // list, each icon beside its label.
+            "sidebar-list" => self
+                .shell
+                .stage_sidebar_width(f64::from(ui::tokens::Metrics::BASE.sidebar_width)),
             "trending" => self.show_route(Route::Trending),
             "subscriptions" => self.show_route(Route::Subscriptions),
             "queue" => self.show_route(Route::Queue),
@@ -1065,7 +1070,9 @@ impl TubeApp {
         Box::new(content.with_persisted_offset(self.scroll_cell_for(&self.model.route)))
     }
 
-    /// The navigation rail: Tube's destinations, the current one selected.
+    /// The navigation sidebar: Tube's destinations, the current one
+    /// selected. The shell shows them as a rail by default and as a list
+    /// once the person widens it.
     /// Choosing one invokes the same published navigation action an agent or
     /// the palette uses.
     fn build_rail(&self) -> NavList {
@@ -1088,7 +1095,6 @@ impl TubeApp {
                 item(&Route::Settings, &t("tube-nav-settings"), Icon::Settings),
             ],
         )])
-        .rail()
         .with_id("tube_rail")
         .with_accessible_name(t("tube-nav-name"))
         .on_select({
@@ -3123,10 +3129,12 @@ mod tests {
             .expect("the viewer is mounted");
         }
         // The shared shell docks the rail while the grid keeps its minimum
-        // width beside it; narrower, the rail is a screen of its own.
+        // width beside it; narrower, the rail is a screen of its own. The
+        // sidebar starts as its rail (a short flat set of places), so it
+        // stays docked down to the rail beside the grid's minimum.
         {
             use ui::widget::SidebarPlacement::{Docked, Screen};
-            for (width, placement) in [(1280, Docked), (800, Docked), (560, Docked), (420, Screen)]
+            for (width, placement) in [(1280, Docked), (800, Docked), (420, Docked), (340, Screen)]
             {
                 let mut framed = ui::headless::Framed::new(
                     ui::State::new(),

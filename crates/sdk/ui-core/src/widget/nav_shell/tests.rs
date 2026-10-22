@@ -4,6 +4,7 @@ use crate::state::State;
 use crate::widget::Text;
 use std::rc::Rc as SharedRc;
 
+mod adaptive;
 mod capabilities;
 
 /// A pane that fills what it is given and counts the input it receives.

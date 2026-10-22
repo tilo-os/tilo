@@ -108,15 +108,18 @@ fn semantic_alarm_open_rejects_missing_targets_without_changing_selection() {
 
 #[test]
 fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
-    // The shared navigation is a grouped list. Back exposes it on a phone;
-    // every screen retains a full, independent pointer target.
+    // The shared navigation is a rail of four screens. Back exposes it as
+    // a list on a phone; a little wider, the rail docks beside the screen.
+    // Every destination retains a full, independent pointer target.
     for width in [360_u32, 520_u32] {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
         let harness = app.harness();
         harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
-        harness
-            .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
-            .unwrap();
+        if width < 400 {
+            harness
+                .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
+                .unwrap();
+        }
         assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
         for label in ["World", "Alarms", "Timers", "Stopwatch"] {
             let (_, row) = harness

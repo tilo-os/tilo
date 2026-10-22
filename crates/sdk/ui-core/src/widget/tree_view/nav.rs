@@ -181,6 +181,27 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.paint_dirty = true;
     }
 
+    /// Paint the rows as a rail's tiles (`true`) or as list rows, keeping
+    /// everything else the presentation holds: its callbacks, the theme it
+    /// was laid out with, and the tree's selection, focus and scroll.
+    /// Returns whether the presentation changed.
+    pub(crate) fn set_nav_rail(&mut self, rail: bool) -> bool {
+        let Some(nav) = self.nav.as_mut() else {
+            return false;
+        };
+        if nav.rail == rail {
+            return false;
+        }
+        nav.rail = rail;
+        let theme = nav.theme.clone();
+        self.apply_nav_metrics(&theme);
+        // The rows change shape in place; nothing slides between the two.
+        self.transitions.clear();
+        self.refresh_transition_snapshot();
+        self.paint_dirty = true;
+        true
+    }
+
     pub(crate) fn nav_mut(&mut self) -> Option<&mut NavPresentation<M>> {
         self.nav.as_mut()
     }
