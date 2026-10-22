@@ -14896,6 +14896,7 @@ dependencies = [
  "tilo-dialogs",
  "tilo-doc",
  "tilo-doc-codecs",
+ "tilo-documents",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-handoff",

@@ -17,9 +17,10 @@
 //! mount topology never changes, only the contents, edited from outside
 //! and visible inside immediately. This is how `xdg-document-portal` solves the same problem.
 //!
-//! The bind is unconditional: every sandbox gets `/run/tilo/documents`
-//! whether or not a file has been picked yet, empty at launch — no
-//! ambient authority. An app can't enumerate another app's documents
+//! That store is `tilo_documents`, which the shell's own chooser gives
+//! through (`compositor::chooser_service`). The bind is unconditional: every
+//! sandbox launched into a room gets `/run/tilo/documents` whether or not a
+//! file has been picked yet, empty at launch — no ambient authority. An app can't enumerate another app's documents
 //! (the bind is of its own subtree, not the store root), can't guess its
 //! way to one, and can't keep one after the grant is removed — strictly
 //! narrower than the portal it replaces, which granted

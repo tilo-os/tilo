@@ -1816,6 +1816,7 @@ fn start_chooser_service(
     portal: Option<&PortalBackend>,
     attended: Arc<AtomicBool>,
     wake: crate::session_runtime::Wake,
+    documents: Option<tilo_documents::Documents>,
 ) -> Option<crate::compositor::chooser_service::ChooserService> {
     let portal = portal?;
     let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
@@ -1833,6 +1834,7 @@ fn start_chooser_service(
                 .map(|profile| profile.is_some())
                 .map_err(|error| error.to_string())
         }),
+        documents,
     };
     match crate::compositor::chooser_service::ChooserService::start(context) {
         Ok(service) => {
@@ -1841,6 +1843,34 @@ fn start_chooser_service(
         }
         Err(error) => {
             tracing::warn!(%error, "file chooser service unavailable");
+            None
+        }
+    }
+}
+
+/// Mount the documents filesystem: the files people choose for apps in the
+/// shell's chooser, which the launcher binds into each app's sandbox, one
+/// app's view each (`tilo_documents`). Mounted before any app starts, for the
+/// session; without FUSE a chooser reaches only what workspaces grant.
+fn mount_documents() -> Option<(tilo_documents::Documents, tilo_documents::mount::Mounted)> {
+    let at = tilo_documents::mountpoint()?;
+    // Kept beside the person's other private portal answers, so a file
+    // chosen in an earlier session reopens where it was.
+    let documents = match crate::portal::private_state_root() {
+        Some(root) => tilo_documents::Documents::kept_in(root.join("tilo/documents.json")),
+        None => tilo_documents::Documents::new(),
+    };
+    match tilo_documents::mount::mount(documents.clone(), &at) {
+        Ok(mounted) => {
+            tracing::info!(at = %at.display(), "serving the files people choose for apps");
+            Some((documents, mounted))
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                at = %at.display(),
+                "no documents filesystem: choosers reach only what workspaces grant"
+            );
             None
         }
     }
@@ -10281,10 +10311,15 @@ pub fn run() {
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
     let mut published_room = published_room();
+    // Held for the session, like the chooser service that gives into it.
+    let chosen_documents = mount_documents();
     let chooser_service = start_chooser_service(
         portal_backend.as_ref(),
         Arc::clone(&chooser_attended),
         Arc::clone(&session_wake),
+        chosen_documents
+            .as_ref()
+            .map(|(documents, _)| documents.clone()),
     );
     // Toolkit apps' frames are drawn by their room's render service; the
     // broker picks the service and keeps it running.

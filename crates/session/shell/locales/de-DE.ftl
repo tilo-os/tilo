@@ -482,6 +482,7 @@ portal-chooser-no-file = Es gibt keine Datei zum Öffnen.
 portal-chooser-session-closing = Die Sitzung wird beendet.
 portal-chooser-other-workspace = Der Arbeitsbereich der App ist nicht der angezeigte.
 portal-chooser-open-uri-undeclared = Diese App hat nicht angegeben, dass sie Links öffnet.
+portal-chooser-save-disabled = Speichern auf dem Datenträger ist auf diesem Gerät ausgeschaltet.
 portal-launcher-icon-compass = Tilo-Webkompass
 portal-background-title = Hintergrundaktivität erlauben?
 portal-background-resource = Die App kann weiterarbeiten, nachdem ihr Fenster geschlossen wurde.

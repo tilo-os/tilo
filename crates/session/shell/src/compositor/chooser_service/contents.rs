@@ -103,7 +103,7 @@ fn refused(id: u64) -> Reply {
         reason: crate::shell::i18n::t("portal-chooser-file-grant-unavailable"),
     }
 }
-fn owner(context: &ChooserContext, caller: &PortalCaller) -> bool {
+pub(super) fn owner(context: &ChooserContext, caller: &PortalCaller) -> bool {
     let handle = context.grants.tree_handle();
     let tree = handle.read();
     tree.desktop.active_workspace().is_some_and(|workspace| {
