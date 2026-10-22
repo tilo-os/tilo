@@ -18,10 +18,6 @@ pub(crate) fn order_hash(entries: &[crate::model::Entry]) -> String {
 /// Create 1,200 real entries, including 299 distinct PNGs and four folders.
 /// The directory must not exist; no existing file or symlink is overwritten.
 /// On an I/O error a partial NEW fixture remains for diagnosis.
-///
-/// # Errors
-/// Returns an error if directory creation, file encoding/writing or the final
-/// production directory read fails.
 pub fn seed(directory: &Path) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     fs::create_dir(directory)?;
     for index in 0..1200_u32 {

@@ -5,14 +5,12 @@
 
 use serde_json::Value;
 
-/// A Tilo category.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Category {
     pub id: String,
     pub name: String,
 }
 
-/// A Tilo channel.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Channel {
     pub id: String,
@@ -227,7 +225,6 @@ pub fn messages(chat: &Value) -> Vec<Message> {
         .collect()
 }
 
-/// The Chat message `id`, when `chat` holds it.
 #[must_use]
 pub fn message(chat: &Value, id: &str) -> Option<Message> {
     let (id, v) = entries(chat, "messages")
@@ -269,7 +266,6 @@ pub fn message(chat: &Value, id: &str) -> Option<Message> {
     })
 }
 
-/// The person `id` of `chat`.
 #[must_use]
 pub fn person(chat: &Value, id: &str) -> Option<Person> {
     let people = chat.get("people")?.as_array()?;

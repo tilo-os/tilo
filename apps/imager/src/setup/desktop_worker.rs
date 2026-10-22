@@ -205,7 +205,6 @@ mod tests {
     /// Elevation request, protocol validation, disconnection and log locator.
     #[test]
     fn desktop_worker_protocol_completes_only_on_exact_verified_exit() {
-        // Phase `elevation_passes_only_exact_request_and_digest`.
         {
             let request = DesktopInstallRequest {
                 schema: 1,
@@ -226,7 +225,6 @@ mod tests {
             );
         }
 
-        // Phase `malformed_or_nonzero_protocol_never_reports_complete`.
         {
             for script in [
                 "printf '%s\\n' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'",
@@ -247,7 +245,6 @@ mod tests {
             }
         }
 
-        // Phase `disconnected_ui_does_not_kill_helper_and_terminal_exit_is_tracked`.
         {
             let directory = tempfile::tempdir().unwrap();
             let marker = directory.path().join("finished");
@@ -258,7 +255,6 @@ mod tests {
             assert!(marker.is_file());
         }
 
-        // Phase `protected_log_locator_does_not_change_completion_order`.
         {
             let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"DiagnosticLog\",\"detail\":\"/var/tmp/tilo-desktop-fixture/native.log\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'"]).stdout(Stdio::piped()).spawn().unwrap();
             let (tx, rx) = std::sync::mpsc::channel();

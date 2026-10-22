@@ -270,7 +270,6 @@ fn repeat_options(event: &Event) -> Vec<(String, String)> {
     options
 }
 
-/// Apply a repeat pick to `event`.
 fn apply_repeat(event: &mut Event, value: &str) {
     let (recurrence, interval) = match value {
         "daily" => (Recurrence::Daily, 1),
@@ -899,7 +898,6 @@ impl CalendarApp {
         f
     }
 
-    /// The "Notes" heading at `y` and the notes editor below it.
     fn notes_heading(
         f: &mut FormRects,
         body: Rect,

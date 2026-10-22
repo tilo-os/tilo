@@ -31,9 +31,7 @@ const MAX_TOPIC_CHARS: usize = 1024;
 /// What the sheet makes or changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SheetMode {
-    /// A new channel of the room.
     NewChannel,
-    /// A new category of the room.
     NewCategory,
     /// An existing channel: its name, category and topic.
     EditChannel(Id),
@@ -62,7 +60,6 @@ pub(crate) enum SheetOutcome {
     Done(SheetAnswer),
 }
 
-/// Which of the sheet's fields has the caret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Name,
@@ -139,7 +136,6 @@ impl ChannelSheet {
         sheet
     }
 
-    /// A new category.
     pub(crate) fn new_category() -> Self {
         Self::new(SheetMode::NewCategory)
     }

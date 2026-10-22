@@ -178,7 +178,6 @@ mod tests {
             assert_eq!(stream.format, "m4a");
         }
 
-        // Phase `player_response_fails_closed`.
         {
             assert!(
                 parse_player_response("v", br#"{"playabilityStatus":{"status":"LOGIN_REQUIRED"}}"#)

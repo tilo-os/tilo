@@ -1419,7 +1419,6 @@ pub(super) fn staging_bytes(plan: &Plan) -> u64 {
     )
 }
 
-/// Size of the target extent in `plan`, in bytes.
 #[must_use]
 pub(super) fn target_extent_bytes(plan: &Plan) -> u64 {
     partition_bytes(
@@ -1858,7 +1857,6 @@ pub(super) mod tests {
         }
     }
 
-    /// Gate, readiness, remedies and copy.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1951,7 +1949,6 @@ pub(super) mod tests {
             );
         }
 
-        // Phase `every_blocker_and_step_has_copy`.
         {
             for blocker in [
                 Blocker::NotUefi,
@@ -2222,7 +2219,6 @@ pub(super) mod tests {
             );
         }
 
-        // Phase `operation_ids_are_distinct_version_four_uuids`.
         {
             let a = new_operation_id();
             let b = new_operation_id();
@@ -2232,8 +2228,6 @@ pub(super) mod tests {
             assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"));
         }
 
-        // Phase `scripted_helper_reports_progress_before_its_outcome`.
-        // `wait_state` is shared with the download-flow consumer tests.
         {
             let mut fakes = Fakes::new(vec![Blocker::PendingOperation]);
             fakes.records = vec![record("op-1")];

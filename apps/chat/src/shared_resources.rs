@@ -592,7 +592,6 @@ mod tests {
         let _scope = ui::host::enter(&services);
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
-        // What each frame does with the collaboration requests.
         app.surface_mut::<ChatApp>().settle_resource_navigation();
         app.surface_mut::<ChatApp>().settle_resource_navigation();
         let asked = door.asked.lock().unwrap().len();

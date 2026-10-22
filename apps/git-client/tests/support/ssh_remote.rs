@@ -202,7 +202,6 @@ pub(super) fn verify_transport() {
                         let config = config.clone();
                         let handler = GitServer { repository: fixture_root.join("remote.git"), identity: identity.public_key().clone(), channels: HashMap::new() };
                         tokio::spawn(async move {
-                            // The final test deliberately rejects the host during handshake.
                             if let Ok(session) = server::run_stream(config, stream, handler).await {
                                 let _ = session.await;
                             }

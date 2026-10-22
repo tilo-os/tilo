@@ -211,7 +211,6 @@ fn captures_browse_their_own_scene() {
     );
 }
 
-/// A launch naming a folder opens it.
 #[test]
 fn a_launch_opens_the_folder_it_names() {
     let directory = tempfile::tempdir().unwrap();

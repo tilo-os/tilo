@@ -316,9 +316,6 @@ fn select_release<'a>(
 
 /// Start read-only discovery on a named worker. Poll `is_finished` or receive the
 /// result on a controller worker; never join a running probe on the UI thread.
-///
-/// # Errors
-/// Returns a thread creation error without doing host IO on the caller's thread.
 pub fn probe_desktop_host() -> std::io::Result<std::thread::JoinHandle<DesktopHost>> {
     std::thread::Builder::new()
         .name("desktop-readiness".into())
@@ -861,7 +858,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn host_evidence_refuses_sandboxes_chroots_and_special_files() {
-        // Phase `sandbox_environment_markers_refuse_even_empty_present_values`.
         {
             for marker in [
                 "FLATPAK_ID",
@@ -881,7 +877,6 @@ mod tests {
             assert!(!sandbox_environment_marker_present(|_| false));
         }
 
-        // Phase `mount_evidence_rejects_chroot_namespace_and_ambiguous_roots`.
         #[cfg(unix)]
         {
             let host = "45 1 8:3 / / rw,relatime shared:1 - xfs /dev/sda3 rw,seclabel\n";
@@ -918,7 +913,6 @@ mod tests {
             );
         }
 
-        // Phase `host_evidence_reader_refuses_special_files_without_waiting`.
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStrExt;
@@ -938,7 +932,6 @@ mod tests {
             );
         }
 
-        // Phase `read_only_command_runner_bounds_time_and_output`.
         #[cfg(unix)]
         {
             use std::time::Duration;
@@ -952,7 +945,6 @@ mod tests {
             assert!(start.elapsed() < bound);
         }
 
-        // Phase `session_and_confinement_evidence_fail_closed`.
         #[cfg(unix)]
         {
             assert_eq!(
@@ -994,14 +986,12 @@ mod tests {
         }
     }
 
-    /// Package queries and installed version matching.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn native_package_status_and_installed_version_are_exact() {
-        // Phase `native_package_status_refuses_query_errors_and_ambiguous_versions`.
         {
             assert_eq!(
                 parse_package_status(PackageManager::Dnf, 0, "0\t1.0\t2.fc44\n", "").unwrap(),
@@ -1070,7 +1060,6 @@ mod tests {
             }
         }
 
-        // Phase `installed_version_is_exact_and_existing_different_versions_block`.
         {
             let mut host = fedora();
             host.installed_package = Ok(InstalledPackage::Installed {
@@ -1087,14 +1076,12 @@ mod tests {
         }
     }
 
-    /// Readiness decisions.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn readiness_accepts_only_verified_ordinary_supported_hosts() {
-        // Phase `worker_reports_real_platform_without_gui`.
         {
             let host = probe_desktop_host().unwrap().join().unwrap();
             assert_eq!(host.operating_system, std::env::consts::OS);
@@ -1103,7 +1090,6 @@ mod tests {
             }
         }
 
-        // Phase `readiness_requires_exact_release_and_verified_runtime`.
         {
             let host = fedora();
             let good = release();
@@ -1140,7 +1126,6 @@ mod tests {
             }
         }
 
-        // Phase `readiness_rejects_unknown_immutable_sandboxed_and_non_linux_hosts`.
         {
             let release = release();
             for change in 0..11 {
@@ -1162,7 +1147,6 @@ mod tests {
             }
         }
 
-        // Phase `readiness_accepts_only_explicit_ordinary_distribution_adapters`.
         {
             for (id, version, manager, format) in [
                 (
@@ -1203,7 +1187,6 @@ mod tests {
             }
         }
 
-        // Phase `derivative_does_not_inherit_fedora_support`.
         {
             let host = parse_os_release("ID=example\nID_LIKE=fedora\nVERSION_ID=44\n").unwrap();
             assert_eq!(host.id, "example");
@@ -1259,17 +1242,14 @@ mod tests {
         );
     }
 
-    /// os-release parsing and arch mapping.
     #[test]
     fn os_release_parses_literally_and_rejects_ambiguity() {
-        // Phase `os_release_parses_quoted_values_without_shell_evaluation`.
         {
             let host = parse_os_release("# Fedora fixture\nNAME=\"Fedora Linux\"\nID='fedora'\nVERSION_ID=\"44\"\nPRETTY_NAME=\"Fedora \\\"44\\\" \\$HOME\"\n").unwrap();
             assert_eq!(host.id, "fedora");
             assert_eq!(host.version_id.as_deref(), Some("44"));
         }
 
-        // Phase `os_release_rejects_ambiguous_or_malformed_data`.
         {
             for value in [
                 "",
@@ -1288,7 +1268,6 @@ mod tests {
             }
         }
 
-        // Phase `missing_version_is_preserved_and_arch_mapping_is_explicit`.
         {
             assert_eq!(parse_os_release("ID=fedora\n").unwrap().version_id, None);
             assert_eq!(catalog_architecture("aarch64"), Some("aarch64"));

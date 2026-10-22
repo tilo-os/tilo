@@ -904,7 +904,6 @@ fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
             let region = app.overlay_content_region();
             let tiles = app.overlay_tiles();
             assert_eq!(tiles.len(), 4, "w={w}: host + three remotes → four tiles");
-            // Every tile inside the region.
             for t in &tiles {
                 assert!(
                     t.x0 >= region.x0 - 0.5
@@ -1255,7 +1254,6 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.reconcile_flaps();
         assert!(!app.left_overlay(), "a wide window docks the sidebar");
-        // Resize narrow on the SAME instance.
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 540.0, 720.0);
         app.reconcile_flaps();
         assert!(
@@ -1263,7 +1261,6 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
             "narrowing reflows to one column at a time"
         );
         assert!(app.left_flap.is_push());
-        // And widen again.
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.reconcile_flaps();
         assert!(!app.left_overlay(), "widening reflows back to docked");
@@ -1381,7 +1378,6 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
             app.thread_open.is_none(),
             "a second Escape closes the thread"
         );
-        // Pinned messages are a layer too.
         app.pins_open = true;
         app.right_flap.open();
         app.right_flap.snap(true);

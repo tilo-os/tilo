@@ -10,7 +10,6 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
 mod tests {
     use super::*;
 
-    /// Leap-year month lengths.
     #[test]
     fn month_lengths() {
         assert_eq!(days_in_month(2000, 2), 29);

@@ -68,7 +68,6 @@ pub enum StreamRequest {
     Home,
     /// Fetch a real artist page by `YouTube` channel id.
     Artist(String),
-    /// Fetch a real album's track list by `YouTube` album id.
     Album(String),
     /// Fetch a real playlist's track list by `YouTube` playlist id.
     Playlist(String),
@@ -213,11 +212,6 @@ impl StreamWorker {
 
     /// Queue a request. A failed worker is explicit so callers can settle
     /// loading UI rather than spinning forever behind an undeliverable job.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when worker startup failed or its receiving thread has
-    /// exited before the request could be delivered.
     pub fn request(&self, req: StreamRequest) -> Result<(), String> {
         if let Some(error) = &self.startup_error {
             return Err(error.clone());
@@ -507,7 +501,6 @@ mod tests {
 
     #[test]
     fn stream_worker_is_bounded_honest_and_non_blocking() {
-        // Phase `worker_announces_backend_and_offline_resolve_fails_gracefully`.
         {
             let w = StreamWorker::spawn_offline();
             // Pin the hermetic backend: a unit test must never depend on the host's
@@ -542,7 +535,6 @@ mod tests {
             );
         }
 
-        // Phase `unavailable_worker_rejects_enqueue_instead_of_silently_losing_work`.
         {
             let worker = StreamWorker::unavailable_for_test();
             let error = worker
@@ -554,7 +546,6 @@ mod tests {
             assert!(error.contains("startup failure"));
         }
 
-        // Phase `request_boundary_rejects_oversized_values`.
         {
             let worker = StreamWorker::spawn_offline();
             let error = worker
@@ -575,7 +566,6 @@ mod tests {
             assert!(error.contains("too long"));
         }
 
-        // Phase `request_queue_is_bounded_and_never_blocks_the_caller`.
         {
             let (tx, request_rx) = std::sync::mpsc::sync_channel(REQUEST_QUEUE_LIMIT);
             let (_update_tx, rx) = std::sync::mpsc::channel();

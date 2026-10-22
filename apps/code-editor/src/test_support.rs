@@ -37,7 +37,6 @@ impl Sample {
         with_doc(&mut self.app, visit)
     }
 
-    /// Run `read` on the editor.
     pub(crate) fn editor<T>(&mut self, read: impl FnOnce(&mut CodeApp) -> T) -> T {
         editor(&mut self.app, read)
     }

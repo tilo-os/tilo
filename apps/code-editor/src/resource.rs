@@ -346,11 +346,9 @@ mod tests {
     #[test]
     fn effects_open_files_and_reveal_symbols_and_search_results() {
         let mut sample = sample();
-        // Opening a file reads the folders on its way into the tree.
         sample.open("src/main.rs");
         let prime = file_id(&sample.app.state(), "ferris-cli/src/prime.rs");
 
-        // A file's own row opens it, as a search hit on it does.
         sample
             .app
             .call_on(
@@ -364,7 +362,6 @@ mod tests {
             Some("prime.rs".to_string())
         );
 
-        // A symbol the scan found reveals where it is declared.
         sample.app.settle();
         let (address, line) = editor(&mut sample.app, |app| {
             let source =
@@ -391,7 +388,6 @@ mod tests {
             "the caret lands on the declaration"
         );
 
-        // A hit of the project search shows it beside the results.
         sample
             .app
             .effect(&CodeEditorEffect::Reveal {

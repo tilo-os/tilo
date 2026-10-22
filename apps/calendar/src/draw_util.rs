@@ -102,7 +102,6 @@ pub(crate) fn text_in_band(
     ctx.text(&shown, style, color, Point::new(x, top), None);
 }
 
-/// The measured height of one line in `style`.
 pub(crate) fn line_height(ctx: &mut PaintCtx<'_>, style: &TextStyle) -> f64 {
     f64::from(ctx.text.measure_style("Ag", None, style).1)
 }

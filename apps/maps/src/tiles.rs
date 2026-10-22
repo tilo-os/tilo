@@ -279,7 +279,6 @@ pub struct TileLayer {
     /// The active basemap style: the tone the worker decodes tiles into, so the
     /// resident tiles always match the theme.
     style: TileStyle,
-    /// The tile server the worker fetches from.
     base_url: String,
     /// Whether the tile server's terms permit fetching tiles nobody is viewing
     /// (offline areas). [`TILE_SERVER`]'s do not.
@@ -718,12 +717,10 @@ impl TileLayer {
         dir_size(self.cache_root.as_deref().unwrap_or(&self.cache_dir))
     }
 
-    // --- internal ----------------------------------------------------------
     fn insert(&mut self, id: TileId, tile: DecodedTile) {
         self.mem.put(id, tile);
     }
 
-    // --- test hooks --------------------------------------------------------
     /// A live layer whose worker fetches from `base_url` instead of the public
     /// OSM server — so a test can drive the real fetch→fail→negative-cache path
     /// against a local (closed-port) endpoint without any external traffic.
@@ -1243,7 +1240,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn tile_addressing_decoding_and_label_free_styles() {
-        // Phase `tile_zoom_rounds_and_clamps`.
         {
             assert_eq!(TileLayer::tile_zoom(14.4), 14);
             assert_eq!(TileLayer::tile_zoom(14.6), 15);
@@ -1251,7 +1247,6 @@ mod tests {
             assert_eq!(TileLayer::tile_zoom(99.0), 19);
         }
 
-        // Phase `parent_walks_up_the_pyramid`.
         {
             let t = TileId::new(14, 8800, 5680);
             let p = t.parent().unwrap();
@@ -1259,7 +1254,6 @@ mod tests {
             assert!(TileId::new(0, 0, 0).parent().is_none());
         }
 
-        // Phase `visible_tiles_cover_viewport_and_are_in_range`.
         {
             let center = LatLon::new(48.1371, 11.5754);
             let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -1279,13 +1273,11 @@ mod tests {
             assert!(covers_center);
         }
 
-        // Phase `geobounds_tile_count_grows_with_zoom`.
         {
             let b = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
             let small = b.tiles_in_range(12, 12).len();
             let big = b.tiles_in_range(12, 14).len();
             assert!(big > small);
-            // Range is inclusive and non-empty.
             assert!(small >= 1);
         }
 
@@ -1389,8 +1381,6 @@ mod tests {
             assert_eq!(TileStyle::from_theme(&Theme::light()), TileStyle::Light);
         }
     }
-
-    // --- Non-blocking guarantees -------------------------------------------
 
     /// Encode a solid-colour RGBA tile to PNG bytes (so a test can seed the
     /// on-disk cache without any network).
@@ -1587,7 +1577,6 @@ mod tests {
             let (z0, z1) = (13u8, 14u8);
             let ids = bounds.tiles_in_range(z0, z1);
             assert!(ids.len() >= 3, "expected several tiles, got {}", ids.len());
-            // None are on disk yet.
             for id in &ids {
                 assert!(!cache.join(id.cache_rel()).exists());
             }
@@ -1637,7 +1626,6 @@ mod tests {
         {
             let cache = temp_cache();
             let id = TileId::new(16, 35210, 22696);
-            // Persist the tile as if a prior download had written it.
             let path = cache.join(id.cache_rel());
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, solid_png(256, 256, [12, 34, 56, 255])).unwrap();
@@ -1691,8 +1679,6 @@ mod tests {
             let _ = std::fs::remove_dir_all(&cache);
         }
     }
-
-    // --- Failed-tile negative cache ----------------------------------------
 
     /// A closed local port: connecting is refused immediately, so a fetch fails
     /// fast and hermetically — no external server is ever contacted.

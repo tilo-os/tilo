@@ -27,7 +27,6 @@ pub fn title(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) ->
             zoom_readout(&zoom_tools)
         }
     });
-    // Finish editing the title as one resource action and undo step.
     let titled = cx.value(|art: &Artwork| art.title.clone());
     let title = cx.switch(&titled, |cx, title| {
         Box::new(

@@ -493,7 +493,6 @@ impl Graph3dScreen {
     }
 }
 
-/// Stroke `path` in `color` at `width`.
 fn stroke_path(scene: &mut Scene, t: Affine, width: f64, color: Color, path: &BezPath) {
     scene.stroke(&Stroke::new(width), t, color, None, path);
 }
@@ -636,7 +635,6 @@ mod tests {
             s.ensure_surfaces(&m);
             assert_eq!(s.surface_cache.rebuilds, 1);
             assert!(!s.surface_cache.cells.is_empty(), "expected sampled grids");
-            // Cells from more than one series prove multiple surfaces are drawn.
             let distinct: std::collections::BTreeSet<usize> =
                 s.surface_cache.cells.iter().map(|c| c.series).collect();
             assert!(

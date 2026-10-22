@@ -155,7 +155,6 @@ mod tests {
 
     #[test]
     fn info_sheet_is_modal_only_while_open() {
-        // Phase `escape_dismisses_and_consumes`.
         {
             let mut sheet = MapInfoSheet::default();
             sheet.open(MapInfo::Attribution);
@@ -168,7 +167,6 @@ mod tests {
             assert!(!sheet.is_open());
         }
 
-        // Phase `closed_sheet_does_not_capture_input`.
         {
             let mut sheet = MapInfoSheet::default();
             let press = ui::synthetic_input::mouse_press();
@@ -180,7 +178,6 @@ mod tests {
             ));
         }
 
-        // Phase `open_sheet_exposes_shared_modal_semantics`.
         {
             let mut sheet = MapInfoSheet::default();
             sheet.open(MapInfo::Licenses);

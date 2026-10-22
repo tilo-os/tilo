@@ -62,8 +62,6 @@ impl UdisksCall {
     }
 }
 
-// ---- D-Bus call plans --------------------------------------------------
-
 pub fn mount_call(dev_leaf: &str) -> UdisksCall {
     UdisksCall::new(dev_leaf, IFACE_FS, "Mount")
 }
@@ -84,13 +82,7 @@ pub fn eject_call(dev_leaf: &str) -> UdisksCall {
     UdisksCall::new(dev_leaf, IFACE_DRIVE, "PowerOff")
 }
 
-// ---- execution ---------------------------------------------------------
-
 /// Make a udisks2 call over the system bus; polkit authorises it.
-///
-/// # Errors
-///
-/// Returns an error if the D-Bus call fails or is not authorised.
 #[cfg(feature = "live")]
 pub fn run_udisks(call: &UdisksCall) -> Result<(), String> {
     let udisks = block_devices::udisks::Udisks::system().map_err(|e| format!("system bus: {e}"))?;
@@ -185,10 +177,6 @@ fn benchmark_reader(f: &mut (impl Read + Seek), path: &str) -> Result<String, St
 
 /// Execute an operation for real, through udisks2. Returns a status
 /// message either way.
-///
-/// # Errors
-///
-/// Returns an error if the operation fails or is not authorised.
 pub fn run(op: Op, dev_leaf: &str, fstype: Option<&str>) -> Result<String, String> {
     let dev = format!("/dev/{dev_leaf}");
     let (call, done) = match op {
@@ -277,7 +265,6 @@ mod tests {
         assert_eq!(f.method, "Format");
         assert_eq!(f.fstype, "ext4");
 
-        // Eject powers the drive off, reached through the device's block.
         let e = eject_call("sdc");
         assert_eq!(e.interface, IFACE_DRIVE);
         assert_eq!(e.method, "PowerOff");

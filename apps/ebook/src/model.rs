@@ -34,8 +34,6 @@ use ui::tilo_resource::{self, Bytes, JsonSchema, Model, Refusal};
 use uuid::Uuid;
 use vello::peniko::Color;
 
-// --- Book content ------------------------------------------------------------
-
 /// Decoded, downscaled cover artwork extracted from an EPUB. Held behind an
 /// `Arc` so a [`Book`] stays cheap to clone and the pixels are decoded
 /// exactly once (at load), never per frame.
@@ -1104,8 +1102,6 @@ impl Progress {
         fraction >= 0.985
     }
 }
-
-// --- Library shelf preferences -----------------------------------------------
 
 /// How the library shelf orders its books. Persisted so the shelf keeps the
 /// reader's chosen ordering across sessions and collaborators.

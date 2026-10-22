@@ -23,7 +23,6 @@ use crate::model::PlotFn;
 /// The words one kind of formula list uses.
 #[derive(Clone, Copy, Debug)]
 pub struct Words {
-    /// Panel title.
     pub title: &'static str,
     /// What leads each formula (`y =`).
     pub prefix: &'static str,
@@ -188,8 +187,6 @@ impl PlotPanel {
         self.m = PanelMetrics::of(theme);
     }
 
-    // -- editors -------------------------------------------------------------
-
     /// Reconcile the editors with the model's rows: one per row, fed the
     /// row's current formula. Local edits survive because `set_source` is a
     /// no-op when the string is unchanged.
@@ -261,8 +258,6 @@ impl PlotPanel {
         }
     }
 
-    // -- layout --------------------------------------------------------------
-
     /// Resolve the panel, the content column and every row for the window
     /// `area` and `count` formulas.
     pub fn layout(&mut self, area: Rect, count: usize) {
@@ -321,8 +316,6 @@ impl PlotPanel {
         );
     }
 
-    // -- geometry for tests and the accessibility tree ----------------------
-
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
         self.rows.get(i).map(|r| r.row)
     }
@@ -357,8 +350,6 @@ impl PlotPanel {
         let grow_y = ((self.target - face.height()) / 2.0).max(0.0);
         face.inflate(grow_x, grow_y)
     }
-
-    // -- hit-testing ---------------------------------------------------------
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
         self.rows.iter().position(|r| r.row.contains(p))
@@ -403,8 +394,6 @@ impl PlotPanel {
     pub fn hover(&self) -> Hover {
         self.hover
     }
-
-    // -- paint ---------------------------------------------------------------
 
     /// Paint the panel: its ground,
     /// its header, the rows, the add button and the show/hide button. The

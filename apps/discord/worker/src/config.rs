@@ -41,10 +41,6 @@ pub struct Config {
 
 impl Config {
     /// Read the settings through `var`.
-    ///
-    /// # Errors
-    /// A base URL that does not parse or is outside the egress allowlist,
-    /// or a guild id that is not a snowflake.
     pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let flag = |name: &str| var(name).is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
         let egress = Egress {

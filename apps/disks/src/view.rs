@@ -362,8 +362,6 @@ fn tabs(selected: Tab, intents: &Intents) -> ToggleGroup {
     })
 }
 
-// ---- Overview ---------------------------------------------------------
-
 fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
     let drive = model.drive;
     let mut entries: Vec<MapEntry> = drive
@@ -490,8 +488,6 @@ fn drive_facts(drive: &Drive) -> Vec<Property> {
     }
     facts
 }
-
-// ---- Health -----------------------------------------------------------
 
 fn health(drive: &Drive) -> Element {
     let status = drive.smart_status();
@@ -622,8 +618,6 @@ fn severity_label(severity: AttrSeverity) -> &'static str {
         AttrSeverity::Crit => "Critical",
     }
 }
-
-// ---- Partitions -------------------------------------------------------
 
 /// What a partition is for, in words, when it serves something the person
 /// knows by name.
@@ -794,7 +788,6 @@ mod tests {
         );
     }
 
-    /// A chosen partition is a level under its drive in the bar's location.
     #[test]
     fn a_partition_is_a_level_under_its_drive() {
         let location = Location {

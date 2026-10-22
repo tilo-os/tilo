@@ -33,7 +33,6 @@ fn parse_relation(key: &str) -> Option<RelationRef> {
     })
 }
 
-/// The row id of a connection.
 fn connection_key(id: Uuid) -> String {
     id.to_string()
 }
@@ -128,7 +127,6 @@ fn catalog_section(name: &str, schema: &DatabaseSchema) -> NavSection {
         .filterable()
 }
 
-/// Every section of the list.
 fn sections(rows: &[ConnectionRow], open: Option<(Uuid, &DatabaseSchema)>) -> Vec<NavSection> {
     let mut sections = vec![connection_section(rows, open.map(|(id, _)| id))];
     if let Some((id, schema)) = open

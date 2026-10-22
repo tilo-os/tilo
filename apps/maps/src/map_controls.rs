@@ -327,7 +327,6 @@ mod tests {
 
     #[test]
     fn map_controls_own_hit_testing_hover_gaps_and_traffic_state() {
-        // Phase `every_drawn_control_hit_tests_to_one_semantic_action`.
         {
             let controls = controls();
             for action in [
@@ -344,7 +343,6 @@ mod tests {
             assert_eq!(controls.hit_test(Point::new(640.0, 400.0)), None);
         }
 
-        // Phase `hover_and_tooltip_state_are_owned_by_the_component`.
         {
             let mut controls = controls();
             let zoom = controls.rect(MapControlAction::ZoomIn);
@@ -385,7 +383,6 @@ mod tests {
             }
         }
 
-        // Phase `the_history_control_heads_the_column_while_offered`.
         {
             let mut controls = controls();
             let sp = Theme::dark().tokens.spacing;
@@ -406,7 +403,6 @@ mod tests {
             assert_eq!(controls.rects().count(), 5);
         }
 
-        // Phase `traffic_visual_state_is_not_duplicated_in_the_app`.
         {
             let mut controls = controls();
             assert!(!controls.traffic_enabled());

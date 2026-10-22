@@ -1301,7 +1301,6 @@ mod tests {
             ("left.txt", "right.txt")
         );
 
-        // The recording host cancels once its queued answers run out.
         let cancelled = ui::host::scoped(&services, || {
             app.effect(&DiffmergeEffect::OpenFiles {
                 left: None,
@@ -1366,7 +1365,6 @@ mod tests {
         app.settle();
         assert_eq!(app.state().merged, before, "undo took exactly it back");
 
-        // A click on the drawn chip, in the merge view.
         app.call("show-merge", serde_json::json!({})).unwrap();
         let theirs = target_bounds(&mut app, &format!("diffmerge.merge.resolve:{hunk}:theirs"))
             .expect("the take-theirs chip is drawn");
@@ -1382,8 +1380,6 @@ mod tests {
         assert!(app.undo());
         app.settle();
 
-        // Typing in the merged result.
-        // The merged result fills the bottom of the window.
         let [width, height] = app.harness().inspection().viewport;
         app.harness()
             .click_at(f64::from(width) / 2.0, f64::from(height) - 40.0);
@@ -2103,8 +2099,6 @@ mod tests {
         );
     }
 
-    /// A chip's accessibility action resolves its hunk through the same
-    /// path a click takes.
     #[test]
     fn a_chip_accessibility_action_resolves_its_hunk() {
         let (app, state) = demo();

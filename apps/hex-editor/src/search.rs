@@ -154,7 +154,6 @@ mod tests {
             needle("PNG", SearchKind::Text),
             Some(vec![0x50, 0x4E, 0x47])
         );
-        // The PNG magic bytes.
         assert_eq!(
             needle("50 4e 47", SearchKind::Hex),
             Some(vec![0x50, 0x4E, 0x47])

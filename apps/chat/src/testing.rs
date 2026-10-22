@@ -49,7 +49,6 @@ pub(crate) fn starter(doc: &mut AutoCommit, me: &str, name: &str, initials: &str
     crate::demo::start(doc, me, name, initials).unwrap();
 }
 
-/// Introduce `me` into the chat in `doc`.
 pub(crate) fn introduce(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) {
     crate::demo::introduce(doc, me, name, initials).unwrap();
 }
@@ -167,12 +166,10 @@ pub(crate) fn top_level(doc: &Room, channel: &str) -> usize {
     doc.messages().top_level(&Id::from_raw(channel))
 }
 
-/// `user`'s read mark in `channel`.
 pub(crate) fn read_mark(doc: &AutoCommit, channel: &str, user: &str) -> crate::parts::ReadMark {
     crate::projection::read(doc).read_mark(channel, user)
 }
 
-/// The draft `key`'s text.
 pub(crate) fn draft_text(doc: &AutoCommit, key: &str) -> String {
     crate::projection::draft_text(doc, key)
 }
@@ -229,7 +226,6 @@ pub(crate) fn agent_reply() -> String {
     .to_string()
 }
 
-/// `record-work` of `work` on the message `summons`.
 pub(crate) fn record_work(
     summons: &str,
     work: &crate::model::AgentWork,
@@ -246,7 +242,6 @@ pub(crate) fn call_row(channel: &str) -> String {
     format!("{}/call", item("channels", channel))
 }
 
-/// `work` as an agent reports it.
 pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::WorkUpdate {
     use crate::model::{AgentRoute, AgentStepOutcome, AgentWorkState};
 

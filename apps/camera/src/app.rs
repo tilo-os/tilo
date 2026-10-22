@@ -2046,7 +2046,6 @@ impl CameraApp {
         self.mode = mode;
     }
 
-    /// The capture mode on screen.
     pub fn capture_mode(&self) -> CaptureMode {
         self.mode
     }
@@ -3684,7 +3683,6 @@ mod tests {
         let (app, doc, _) = sample_app();
         let mut frame = render_at(app, doc, 390.0, 844.0);
         let captures = frame.captures.len();
-        // The viewfinder supports the same gesture as the mode strip.
         let start = Point::new(195.0, 300.0);
         let harness = Framed::harness_mut(&mut frame);
         harness.touch(1, Started, start.x, start.y);
@@ -3942,7 +3940,6 @@ mod tests {
 
     #[test]
     fn viewfinder_controls_stay_inside_the_window_and_apart_at_every_size() {
-        // Phase `controls_fit_and_never_overlap`.
         for (w, h) in [(1366.0, 768.0), (800.0, 600.0), (390.0, 844.0)] {
             for scale in [1.0_f32, 2.0] {
                 let (app, doc, _root) = sample_app();
@@ -3974,7 +3971,6 @@ mod tests {
                 );
             }
         }
-        // Phase `mode_switcher_segments_are_equal_and_in_order`.
         {
             let (app, doc, _root) = sample_app();
             let app = render_at(app, doc, 1280.0, 800.0);
@@ -3996,7 +3992,6 @@ mod tests {
                 assert!((pair[0].width() - pair[1].width()).abs() < 0.5);
             }
         }
-        // Phase `viewfinder_layout_remains_local`.
         {
             let (app, mut doc, _root) = sample_app();
             let heads = doc.get_heads();
@@ -4009,7 +4004,6 @@ mod tests {
                 "viewfinder layout remains local"
             );
         }
-        // Phase `resize_reflows_the_same_instance`.
         {
             // One instance rendered wide then narrow reflows its scan feed
             // rather than keeping the first frame's layout.
@@ -4071,7 +4065,6 @@ mod tests {
 
     #[test]
     fn the_settings_sheet_opens_over_the_viewfinder_and_applies_changes() {
-        // Phase `sheet_is_a_modal_over_the_viewfinder`.
         {
             let (mut app, mut doc, root) = sample_app();
             app.apply(
@@ -4093,7 +4086,6 @@ mod tests {
 
     #[test]
     fn semantic_controls_are_plainly_named_and_dispatch_camera_actions() {
-        // Phase `detected_label_has_single_space`.
         {
             let tag = scanner_view::detected_label("QR Code");
             assert_eq!(tag, "QR code detected");
@@ -4102,13 +4094,11 @@ mod tests {
                 "detected label must not contain a double space: {tag:?}"
             );
         }
-        // Phase `lens_label_never_reads_as_navigation`.
         {
             // The lens selector caption must not be the word "Back".
             assert_eq!(Facing::Back.label(), "Rear");
             assert_ne!(Facing::Back.label(), "Back");
         }
-        // Phase `accessibility_exports_named_controls_from_the_painted_hit_map`.
         {
             let (app, doc, _root) = sample_app();
             let app = render_at(app, doc, 900.0, 700.0);
@@ -4132,7 +4122,6 @@ mod tests {
             }));
             assert!(tree.children.iter().all(|node| node.bounds.is_some()));
         }
-        // Phase `capture_switcher_exposes_document_capture_without_a_gallery_surface`.
         {
             let (app, doc, _root) = sample_app();
             let app = render_at(app, doc, 1_200.0, 760.0);
@@ -4150,7 +4139,6 @@ mod tests {
                     .is_some_and(|target| target.contains("gallery") || target.contains("library"))
             }));
         }
-        // Phase `browse_photos_uses_the_typed_owner_handoff_without_a_gallery`.
         {
             let (app, doc, root) = sample_app();
             let mut app = render_at(app, doc, 900.0, 700.0);
@@ -4171,7 +4159,6 @@ mod tests {
                 "Camera still owns no gallery cache"
             );
         }
-        // Phase `accessibility_activation_reuses_camera_action_dispatch`.
         {
             let (app, doc, root) = sample_app();
             let mut app = render_at(app, doc, 900.0, 700.0);
@@ -4191,7 +4178,6 @@ mod tests {
 
     #[test]
     fn unavailable_camera_recovery_is_honest_semantic_and_fits_touch_rows() {
-        // Phase `permission_recovery_is_one_semantic_action`.
         {
             let dir = std::env::temp_dir().join("camera-recovery-test-no-device");
             let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
@@ -4210,7 +4196,6 @@ mod tests {
             let target = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
             assert!(bounds.x1 - bounds.x0 >= target && bounds.y1 - bounds.y0 >= target - 0.5);
         }
-        // Phase `refresh_reports_the_discovered_state`.
         {
             let dir = std::env::temp_dir().join("camera-recovery-test-refresh");
             let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
@@ -4235,7 +4220,6 @@ mod tests {
             };
             assert_eq!(app.toast.as_deref(), Some(expected));
         }
-        // Phase `sample_fixture_can_render_the_same_honest_permission_recovery`.
         {
             // The screenshot harness uses `Storage::Sample` to avoid both a real
             // camera and private imagery. An explicit permission result still
@@ -4251,7 +4235,6 @@ mod tests {
                     .any(|node| { node.name.as_deref() == Some("Open camera privacy settings") })
             );
         }
-        // Phase `sample_fixture_can_render_the_honest_no_device_state`.
         {
             let (mut app, _doc, _root) = sample_app();
             app.camera_issue = Some(CameraIssue::NoDevice);
@@ -4372,14 +4355,12 @@ mod tests {
 
     #[test]
     fn storage_sources_never_fabricate_media_or_capture_without_a_feed() {
-        // Phase `sample_source_populates_without_touching_disk`.
         {
             let (app, _doc, _root) = sample_app();
             assert_eq!(app.screen, Screen::Camera);
             assert_eq!(app.captures.len(), 1);
             assert!(app.captures.iter().all(|c| c.path.is_none()));
         }
-        // Phase `disk_source_starts_empty_and_seeds_no_content`.
         {
             // Point at a directory that does not exist → no fabricated media, never
             // fabricated samples.
@@ -4391,7 +4372,6 @@ mod tests {
             assert!(app.captures.is_empty());
             assert!(app.scans.is_empty());
         }
-        // Phase `disk_shutter_without_frame_is_honest`.
         {
             let dir =
                 std::env::temp_dir().join(format!("camera-noframe-test-{}", std::process::id()));
@@ -4409,7 +4389,6 @@ mod tests {
                 "no directory created when there is nothing to save"
             );
         }
-        // Phase `disk_video_record_without_feed_is_honest`.
         {
             let dir =
                 std::env::temp_dir().join(format!("camera-vidrec-noframe-{}", std::process::id()));
@@ -4436,7 +4415,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn photo_shutter_captures_admitted_frames_and_replaces_the_recent_handoff() {
-        // Phase `self_timer_is_a_local_cancellable_countdown_before_capture`.
         {
             let (mut app, mut doc, root) = sample_app();
             app.apply(
@@ -4463,7 +4441,6 @@ mod tests {
             app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(!app.is_counting_down(), "second shutter cancels safely");
         }
-        // Phase `sample_shutter_replaces_the_recent_handoff`.
         {
             let (mut app, mut doc, root) = sample_app();
             let before = app.captures[0].id.clone();
@@ -4476,7 +4453,6 @@ mod tests {
                 "the new thumbnail is the confirmation; no toast repeats it"
             );
         }
-        // Phase `disk_shutter_writes_a_real_jpeg_via_handle_event`.
         {
             use winit::event::ElementState;
             use winit::keyboard::{Key, NamedKey};
@@ -4495,7 +4471,6 @@ mod tests {
                 PhotoFormat::Jpeg,
                 "default format is JPEG"
             );
-            // Simulate a camera frame arriving.
             app.push_camera_frame(frame::viewfinder(1, 64, 48));
 
             let ev = ui::synthetic_input::key_event(
@@ -4536,7 +4511,6 @@ mod tests {
             assert!(app.captures[0].path.is_none());
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `malformed_or_exhausted_frames_cannot_replace_the_current_frame`.
         {
             let (mut app, _doc, _root) = sample_app();
             assert!(app.push_camera_frame(frame::viewfinder(1, 32, 24)));
@@ -4559,7 +4533,6 @@ mod tests {
 
     #[test]
     fn video_recording_locks_mode_requests_frames_and_saves_a_real_clip() {
-        // Phase `set_mode_locks_while_recording`.
         {
             let (mut app, mut doc, root) = sample_app();
             assert_eq!(app.mode, CaptureMode::Photo);
@@ -4581,7 +4554,6 @@ mod tests {
             );
             assert_eq!(app.mode, CaptureMode::Video, "mode locked while recording");
         }
-        // Phase `recording_requests_frames_and_reduced_motion_uses_a_wake_deadline`.
         {
             let (mut app, mut doc, root) = sample_app();
             app.apply(
@@ -4595,7 +4567,6 @@ mod tests {
             assert!(!Widget::needs_animation_frame(&app));
             assert!(Widget::next_wake_deadline(&app).is_some());
         }
-        // Phase `sample_video_record_replaces_the_recent_handoff`.
         {
             let (mut app, mut doc, root) = sample_app();
             app.apply(
@@ -4682,7 +4653,6 @@ mod tests {
             assert_eq!((w, h), (128, 96));
             assert!(dur > 0);
 
-            // Recent captures rescans it as a video with dimensions + duration.
             assert_eq!(app.captures.len(), 1);
             assert!(app.captures[0].is_video());
             assert_eq!((app.captures[0].w, app.captures[0].h), (128, 96));
@@ -4787,7 +4757,6 @@ mod tests {
 
     #[test]
     fn capture_effects_answer_once_the_capture_is_registered() {
-        // Phase `a_photo_answers_with_the_registered_capture`.
         {
             let (mut app, dir) = disk_camera("photo-effect");
             push_frame(&mut app, 1);
@@ -4806,7 +4775,6 @@ mod tests {
             assert_eq!((recent.id, recent.kind), (capture_id, CaptureKind::Photo));
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `a_clip_answers_once_it_is_saved_and_registered`.
         {
             let (mut app, dir) = disk_camera("video-effect");
             app.effect(&CameraEffect::UseMode {
@@ -4849,7 +4817,6 @@ mod tests {
             assert!(recent.dur_ms > 0);
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `sample_document_capture_answers_after_adding_the_page`.
         {
             let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
             app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::CapturePage)
@@ -4867,7 +4834,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn document_scanning_captures_edits_and_recognizes_real_pages() {
-        // Phase `document_route_captures_real_session_pages_in_sample_mode`.
         {
             let (mut app, mut doc, root) = sample_app();
             app.apply(
@@ -4938,7 +4904,6 @@ mod tests {
             );
             assert!(app.document_scan.pages.is_empty());
         }
-        // Phase `document_capture_never_falls_back_to_a_different_scanner`.
         {
             let (mut app, _doc, _root) = sample_app();
             app.scanner_devices.push(tilo_capture::scanner::Scanner {
@@ -4956,7 +4921,6 @@ mod tests {
             assert_eq!(app.document_scan.pages.len(), 1);
             assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
         }
-        // Phase `document_text_status_detects_stale_language_and_copy_uses_real_ocr_text`.
         {
             let (mut app, mut doc, root) = sample_app();
             app.apply(Action::CaptureDocument, &mut Edits::lend(&mut doc), &root);
@@ -4992,7 +4956,6 @@ mod tests {
             app.document_settings.ocr_language = OcrLanguage::German;
             assert_eq!(app.document_text_status(), "Language changed; update text");
         }
-        // Phase `document_ocr_failures_never_expose_engine_diagnostics`.
         {
             let (mut app, _, _) = sample_app();
             let (sender, receiver) = mpsc::channel();
@@ -5021,7 +4984,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn document_choices_update_worker_settings_on_touch_release() {
-        // Phase `document_controls_update_the_typed_worker_settings`.
         {
             let (mut app, mut doc, root) = sample_app();
             assert_eq!(app.document_settings, DocumentSettings::default());
@@ -5059,7 +5021,6 @@ mod tests {
                 Some("sample:office-scanner")
             );
         }
-        // Phase `the_document_screen_hosts_standard_dropdowns`.
         {
             let (mut app, mut doc, root) = sample_app();
             app.apply(
@@ -5079,7 +5040,6 @@ mod tests {
                 );
             }
         }
-        // Phase `touch_activates_on_release_and_cancels_after_dragging_off`.
         {
             use winit::event::TouchPhase;
 
@@ -5152,7 +5112,6 @@ mod tests {
 
     #[test]
     fn capture_preferences_and_screens_change_no_record() {
-        // Phase `screen_reveals_are_presentation_only`.
         {
             let (mut app, mut doc, root) = sample_app();
             let before = doc.get_heads();
@@ -5164,7 +5123,6 @@ mod tests {
             assert_eq!(app.screen, Screen::Settings);
             assert_eq!(doc.get_heads(), before);
         }
-        // Phase `cycle_facing`.
         {
             let (mut app, mut doc, root) = sample_app();
             let before = doc.get_heads();
@@ -5173,7 +5131,6 @@ mod tests {
             assert_eq!(app.facing, Facing::Front);
             assert_eq!(doc.get_heads(), before);
         }
-        // Phase `toggle_grid`.
         {
             let (mut app, mut doc, root) = sample_app();
             let before = app.settings.grid;
@@ -5182,7 +5139,6 @@ mod tests {
             assert_eq!(app.settings.grid, !before);
             assert_eq!(doc.get_heads(), heads);
         }
-        // Phase `resolution_cycles`.
         {
             let (mut app, mut doc, root) = sample_app();
             assert_eq!(app.settings.resolution, Resolution::R12MP);
@@ -5193,7 +5149,6 @@ mod tests {
 
     #[test]
     fn scanned_codes_record_history_and_scanner_actions_are_searchable() {
-        // Phase `scan_action_records_history`.
         {
             let mut app = CameraApp::sample();
             let mut doc = AutoCommit::new();
@@ -5216,7 +5171,6 @@ mod tests {
             assert_eq!(scans[0].raw, SCAN_PAYLOAD);
             assert_eq!(app.scans.len(), 1);
         }
-        // Phase `wifi_scan_parses_and_primary_action_copies_password`.
         {
             // The Wi-Fi payload is parsed into its fields and the primary action
             // copies the password: the parse and copy path, end to end.
@@ -5305,7 +5259,6 @@ mod tests {
         let _host = ui::host::enter(&services);
         let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
 
-        // Phase `a_chosen_image_decodes_a_real_qr_into_the_history`.
         let payload = "https://example.test/scanned-from-a-saved-photo";
         let image = dir.join("code.png");
         std::fs::write(&image, qr_png(payload)).unwrap();
@@ -5321,12 +5274,10 @@ mod tests {
             .flatten()
             .expect("the scanned code is shown");
         assert_eq!(scanned.raw, payload);
-        // The decode is recorded to history like a live scan.
         let scans = app.state().scans;
         assert_eq!(scans.len(), 1);
         assert_eq!(scans[0].raw, payload);
 
-        // Phase `a_cancelled_chooser_answers_and_closes`.
         recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
         let cancelled = app
             .effect_on(crate::actions::SCANNER_ROW, &CameraEffect::ImportImage)
@@ -5340,7 +5291,6 @@ mod tests {
         );
         assert_eq!(app.state().scans.len(), 1);
 
-        // Phase `scanned_pages_export_as_a_searchable_pdf`.
         assert!(
             app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::ExportPdf)
                 .is_err(),

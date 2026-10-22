@@ -243,7 +243,6 @@ fn the_session_publishes_changes_and_change_blocks() {
     assert!(session.state().unwrap().merged.contains("THEIRS"));
 }
 
-/// The sample merge has a conflict to resolve through the palette.
 #[test]
 fn the_sample_merge_exposes_a_conflict() {
     let mut session = Replica::<Session>::new();

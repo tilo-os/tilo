@@ -380,7 +380,6 @@ struct Bridge {
 }
 
 impl Bridge {
-    /// The bridge, and the runner that runs its bot.
     async fn start() -> (Self, BotRunner) {
         Self::start_with(Setup::default()).await
     }
@@ -430,7 +429,6 @@ impl Bridge {
         let owner = hex::encode(cert.user_public_key);
         let ada = hex::encode(ADA);
 
-        // The room's Chat, with Ada in it.
         room.rooms
             .prepare_application(&room.id, &cert, &room.catalogue, CHAT, "")
             .await
@@ -464,7 +462,6 @@ impl Bridge {
                 .await;
         }
 
-        // The guild record, connected to the fake server and the room's Chat.
         room.rooms
             .prepare_application(&room.id, &cert, &room.catalogue, APP, "")
             .await
@@ -492,7 +489,6 @@ impl Bridge {
             .await
             .unwrap();
 
-        // The worker, holding the bot token in the host's store.
         let secrets = ui::secrets::SecretStore::memory(APP);
         secrets
             .item("bot-token", "default")
@@ -522,12 +518,10 @@ impl Bridge {
         .await
         .unwrap();
 
-        // The bridge, installed from its program file.
         let program = concat!(env!("CARGO_MANIFEST_DIR"), "/../bridge/program.json");
         let bot = installed::install(&scratch.path().join("bot"), program, serde_json::Map::new())
             .await
             .unwrap();
-        // A member of the room, signing what it changes with its own device.
         let certifier = HostRootCertifier::new(SigningKey::from_bytes(&[1; 32]));
         keep_member(&room.rooms, &room.id, &cert, &certifier, &bot)
             .await
@@ -598,7 +592,6 @@ impl Bridge {
             .expect("the post is in a part")
     }
 
-    /// The Chat message with `text`, by id.
     async fn chat_message(&self, text: &str) -> Option<(String, chat::record::Message)> {
         chat::messages::read_part(&self.room.part().await)
             .messages

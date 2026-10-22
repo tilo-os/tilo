@@ -721,7 +721,6 @@ struct ClosePrompt {
 /// The three ways out of an unsaved-close prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloseChoice {
-    /// Save the buffer, then close the tab.
     Save,
     /// Close the tab, discarding the unsaved edits.
     Discard,
@@ -2221,8 +2220,6 @@ impl CodeApp {
             .set_terminal_note(Some("No terminal is running".to_string()));
     }
 
-    // ---- headless `--shots` scenario staging ------------------------------
-
     /// Open the Terminal dock tab and spawn the live shell (for a screenshot of
     /// the embedded terminal).
     pub fn shots_open_terminal(&mut self) {
@@ -3352,7 +3349,6 @@ impl Widget for CodeApp {
             self.request_open_file();
         }
 
-        // Drain whatever the children produced, then refresh derived views.
         self.drain_child_events();
         self.refresh_diagnostics(ctx.state.doc());
         self.refresh_status();

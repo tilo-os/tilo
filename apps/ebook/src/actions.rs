@@ -60,7 +60,6 @@ pub(crate) fn bound(effect: &BooksEffect, label: &str) -> ActionSpec {
     spec
 }
 
-/// The passage at `chapter` and `block` of `book`, opened.
 pub(crate) fn open_at(book: &str, chapter: usize, block: Option<usize>, label: &str) -> ActionSpec {
     bound(
         &BooksEffect::Open {

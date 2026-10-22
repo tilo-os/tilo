@@ -76,7 +76,6 @@ fn migrate(
                 doc.delete(ROOT, dropped)?;
             }
         }
-        // Read marks start over as positions in the parts.
         let read = ui::tilo_resource::Slot::Key(&ROOT, "read");
         read.remove(doc)?;
         read.object(doc, ui::automerge::ObjType::Map)?;

@@ -87,9 +87,6 @@ pub struct ColourQuery {
 
 /// The colour `find` asks for (at, the magic wand, or colour everywhere)
 /// in `art`; `None` when it asks for the subject or a refined edge.
-///
-/// # Errors
-/// Returns why the query is malformed.
 pub fn colour_query(find: &FindArea, art: &Artwork) -> Result<Option<ColourQuery>, String> {
     if find.subject == Some(true) || find.refine.is_some() {
         if find.colour.is_some() || find.tolerance.is_some() {
@@ -142,9 +139,6 @@ pub fn colour_query(find: &FindArea, art: &Artwork) -> Result<Option<ColourQuery
 }
 
 /// Run `look` with what the canvas shows.
-///
-/// # Errors
-/// Returns that no canvas shows the artwork, or `look`'s own error.
 pub fn with_sight<T>(
     look: impl FnOnce(&mut Renderer, &mut TextRenderer, &Artwork) -> Result<T, String>,
 ) -> Result<T, String> {
@@ -171,9 +165,6 @@ pub fn with_sight<T>(
 /// of it. The wand looks at the whole artwork first, then again closer at
 /// the part it found, so its edge follows the paint finely on a big
 /// artwork too.
-///
-/// # Errors
-/// Returns a point outside the artwork, or a render failure.
 pub fn colour_region(
     renderer: &mut Renderer,
     text: &mut TextRenderer,

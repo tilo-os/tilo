@@ -1,5 +1,3 @@
-//! Pictures an invoke answered with, shown to a model that sees.
-
 use super::super::pictures::{MOST_PICTURE_BYTES, picture_type};
 use super::*;
 

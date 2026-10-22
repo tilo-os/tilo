@@ -122,7 +122,6 @@ mod tests {
         assert_eq!(normalized, at((2026, 3, 29), 3, 0));
         assert_eq!(resolution, Resolution::ShiftedForward { minutes: 30 });
 
-        // DST fold chooses the earlier instant.
         let wall = at((2026, 10, 25), 2, 30);
         let (instant, resolution) = wall_to_utc("Europe/Berlin", wall).unwrap();
         assert_eq!(instant.naive_utc(), at((2026, 10, 25), 0, 30));

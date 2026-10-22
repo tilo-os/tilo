@@ -135,7 +135,6 @@ fn duplicate_playlist_or_invalid_member_refuses_atomically() {
         if invalid == "member" {
             let list = doc.get(ROOT, "playlists").unwrap().unwrap().1;
             let row = doc.get(&list, 0).unwrap().unwrap().1;
-            // A typed patch deliberately represents the historical malformed scalar.
             fixtures::InvalidMembership {
                 track_membership: [("tk_a1".into(), Atom("not a boolean".into()))].into(),
             }

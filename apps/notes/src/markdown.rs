@@ -371,7 +371,6 @@ pub fn parse_inline(line: &str) -> InlineText {
             plain.push_str(&body_parsed.text);
             let stop = plain.len();
             marks.push(MarkSpan::new(start..stop, Mark::Bold));
-            // Shift inner marks by `start`.
             for m in body_parsed.marks {
                 marks.push(MarkSpan::new(
                     (m.range.start + start)..(m.range.end + start),
@@ -635,7 +634,6 @@ pub fn serialize_inline(text: &InlineText) -> String {
                 break;
             }
         }
-        // Open any marks whose range.start == i.
         while let Some(m) = marks.get(mi).filter(|m| m.range.start == i) {
             open.push(m);
             out.push_str(open_marker(&m.mark));
@@ -1433,7 +1431,6 @@ Last paragraph.
             ),
             // A lone `*` with no partner stays as plain text.
             ("*hello world", "*hello world", vec![]),
-            // Unsafe or relative external destinations stay literal.
             (
                 "[script](javascript:alert(1))",
                 "[script](javascript:alert(1))",

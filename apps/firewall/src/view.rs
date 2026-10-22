@@ -479,8 +479,6 @@ fn tab_bar(selected: Tab, intents: &Intents) -> Row {
     ))
 }
 
-// ---- rules ---------------------------------------------------------------
-
 /// One row of the rules table.
 #[derive(Clone)]
 struct RuleRow {
@@ -793,8 +791,6 @@ fn delete_dialog(rule: &Rule, intents: &Intents) -> ModalDialog<Text> {
     .on_dismiss(move || dismiss.push(Intent::CancelDelete))
     .open(true)
 }
-
-// ---- services ------------------------------------------------------------
 
 /// One row of the services table.
 #[derive(Clone)]

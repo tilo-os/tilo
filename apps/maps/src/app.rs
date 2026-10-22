@@ -98,7 +98,6 @@ enum Hit {
     /// Select a nearby POI from the Explore list: centre the map on it and open
     /// its info card, linking the list to the marker layer.
     SelectPoi(String),
-    /// Dismiss the open POI info card.
     ClosePoi,
     /// Route to the POI whose info card is open.
     PoiDirections,
@@ -717,7 +716,6 @@ impl MapsApp {
         }
     }
 
-    // --- geometry helpers --------------------------------------------------
     fn view_center(&self) -> Point {
         Point::new(
             f64::midpoint(self.rect.x0, self.rect.x1),
@@ -858,8 +856,6 @@ impl MapsApp {
         GeoBounds::new(nw, se)
     }
 
-    // --- offline regions ---------------------------------------------------
-
     /// The tile ids a saved region covers — used for delete/keep set arithmetic
     /// so removing one area doesn't drop imagery another still needs.
     fn region_tile_ids(region: &crate::model::DownloadedRegion) -> Vec<TileId> {
@@ -974,7 +970,6 @@ impl MapsApp {
         }
     }
 
-    // --- actions -----------------------------------------------------------
     /// Submit one verb or field edit of the shared map through the
     /// framework's door. Callers show its result in this window right away;
     /// the door checks, applies, records and replicates it, and the state it
@@ -1703,8 +1698,6 @@ impl MapsApp {
         self.schedule_pois();
     }
 
-    // --- POI layer (Overpass) ----------------------------------------------
-
     /// Arm the viewport POI refetch. Debounced so a drag/zoom gesture fires one
     /// Overpass query when it settles, not per pointer event.
     fn schedule_pois(&mut self) {
@@ -2023,7 +2016,6 @@ impl MapsApp {
                                 found.truncate(POI_MAX);
                                 let n = found.len();
                                 self.pois = found;
-                                // Drop the open card if its POI is gone.
                                 if let Some(sel) = &self.selected_poi
                                     && !self.pois.iter().any(|p| &p.id == sel)
                                 {
@@ -2115,7 +2107,6 @@ impl MapsApp {
         }
     }
 
-    // --- click dispatch ----------------------------------------------------
     fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
         if self.info_sheet.modal_capture().is_some()
             || self.offline_panel.is_open()
@@ -4638,7 +4629,6 @@ impl Widget for MapsApp {
         self.drain_net();
         // Fold in a device-location fix if the portal worker has one.
         self.drain_location();
-        // Send the platform search's newest place query to the geocoder.
         self.pump_place_search();
         // Refetch viewport POIs once a pan/zoom settles.
         self.tick_poi_debounce(ui::time::now());

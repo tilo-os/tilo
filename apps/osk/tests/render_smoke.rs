@@ -68,7 +68,6 @@ fn osk_renders_keys_and_toolbar() {
             .expect("taffy compute_layout");
         osk.apply_layout(&taffy, child, Point::ORIGIN);
 
-        // The keyboard laid out a full grid of keys.
         assert!(
             osk.key_geometry().len() > 30,
             "expected a full key grid, got {}",
@@ -118,7 +117,6 @@ fn a_live_swipe_trail_paints_and_cancellation_removes_it_in_every_theme() {
         let start = keys[0].1.center();
         let end = keys[9].1.center();
         let middle = start.lerp(end, 0.5);
-        // Observe the path between keys, away from the pressed cap and ink.
         let x = (0..w)
             .find(|x| (f64::from(*x) - middle.x).abs() <= 0.5)
             .unwrap();

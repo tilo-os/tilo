@@ -334,9 +334,6 @@ fn short(revision: &str) -> &str {
 /// of its edge first, so the cut-out keeps no halo of it. The cleaned
 /// pictures are kept as content and named in the action, so every replica
 /// gives the marks the same pixels; undo brings the originals back.
-///
-/// # Errors
-/// Returns why a picture could not be read or cleaned.
 pub fn clean(using: &mut UseSelection) -> Result<(), String> {
     if !matches!(using.what.as_str(), "mask" | "clear") || using.defringe == Some(false) {
         return Ok(());

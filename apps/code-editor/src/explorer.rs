@@ -52,7 +52,6 @@ pub struct ProjectTree {
     entries: HashMap<NodeId, Entry>,
 }
 
-/// The tree key of a project node.
 pub fn node_key(id: ProjectId) -> NodeId {
     NodeId::try_from(id).unwrap_or(NodeId::MAX)
 }
@@ -248,7 +247,6 @@ mod tests {
             assert_eq!(labels, ["assets", "src", "README.md"]);
         }
 
-        // The root is hidden and expansion comes from the project.
         {
             let mut project = sample();
             let src = project
@@ -276,7 +274,6 @@ mod tests {
             );
         }
 
-        // File rows get their type icon.
         {
             let project = sample();
             let tree = ProjectTree::from_project(&project);

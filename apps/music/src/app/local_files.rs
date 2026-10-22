@@ -322,7 +322,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn local_file_intents_are_canonical_and_uris_are_validated() {
-        // Phase `raw_path_operation_is_not_remotely_decodable`.
         {
             let mut app = MusicApp::without_profile();
             let _doc = automerge::AutoCommit::new();
@@ -336,7 +335,6 @@ mod tests {
             assert!(!app.audio.has_stream());
         }
 
-        // Phase `empty_home_bar_slot_emits_canonical_picker_intent`.
         {
             let mut app = MusicApp::without_profile();
             app.disconnect();
@@ -369,7 +367,6 @@ mod tests {
             );
         }
 
-        // Phase `header_actions_are_in_host_focus_order_on_every_destination`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
@@ -427,7 +424,6 @@ mod tests {
             }
         }
 
-        // Phase `local_paths_and_file_uris_are_equivalent_and_reject_unsupported_sources`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("音楽 #1.wav");
@@ -600,7 +596,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn local_source_switches_wait_for_decoder_and_retire_old_audio() {
-        // Phase `fully_prerolled_finite_source_resume_waits_for_confirmed_playing`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("one-buffer.wav");
@@ -670,7 +665,6 @@ mod tests {
             app.audio.stop();
         }
 
-        // Phase `switching_to_cached_source_uses_new_output_baseline`.
         {
             check_cached_source_switch(false);
             check_cached_source_switch(true);
@@ -685,17 +679,14 @@ mod tests {
             }
         }
 
-        // Phase `paused_queue_removal_retires_old_audio_before_resuming_selected_uri`.
         {
             check_replaced_paused_source(false);
         }
 
-        // Phase `continuation_retires_old_audio_before_resuming_selected_uri`.
         {
             check_replaced_paused_source(true);
         }
 
-        // Phase `local_file_row_restart_previous_and_repeat_match_canonical_restart_position`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("restart.wav");
@@ -1064,7 +1055,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn local_file_effects_settle_only_on_real_playback_or_real_failure() {
-        // Phase `positional_local_file_uses_live_factory_without_polluting_shared_library`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("local song.wav");
@@ -1156,7 +1146,6 @@ mod tests {
             app.audio.stop();
         }
 
-        // Phase `exported_file_effect_settles_only_after_real_pcm_and_preserves_document`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("effect.wav");
@@ -1214,7 +1203,6 @@ mod tests {
             app.audio.stop();
         }
 
-        // Phase `restored_file_resumes_saved_position_and_missing_file_fails_the_effect`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("resume.wav");
@@ -1281,7 +1269,6 @@ mod tests {
             }
         }
 
-        // Phase `already_decoded_local_source_settles_after_late_invocation_registration`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("short.wav");
@@ -1305,7 +1292,6 @@ mod tests {
             app.audio.stop();
         }
 
-        // Phase `undecodable_file_fails_the_actual_operation_without_fake_playback`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("corrupt.wav");

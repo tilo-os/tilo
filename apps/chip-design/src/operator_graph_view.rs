@@ -20,7 +20,6 @@ pub struct Selection {
 fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)
 }
-/// Connecting `edge`, as the project's verb.
 fn connect(edge: Edge) -> Invoke<ChipProject> {
     ChipProject::CONNECT.with(project::Connect {
         from_node: edge.from_node,

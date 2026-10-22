@@ -437,8 +437,6 @@ impl FirewallApp {
         self.available
     }
 
-    // ---- the shell's content ------------------------------------------
-
     fn view_key(&self) -> ViewKey {
         ViewKey {
             rev: self.rev,
@@ -598,7 +596,6 @@ impl FirewallApp {
         }
     }
 
-    // ---- mutations ------------------------------------------------------
     fn select_zone(&mut self, kind: ZoneKind) {
         if self.selected_zone != kind {
             self.selected_zone = kind;

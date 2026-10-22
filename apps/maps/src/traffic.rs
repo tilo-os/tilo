@@ -171,14 +171,12 @@ mod tests {
 
     #[test]
     fn traffic_levels_start_empty_and_sample_overlay_is_realistic() {
-        // Phase `default_traffic_is_empty_the_honest_live_state`.
         {
             let t = TrafficData::default();
             assert!(t.is_empty(), "live traffic starts with no reports");
             assert_eq!(t.counts(), [0, 0, 0, 0]);
         }
 
-        // Phase `sample_overlay_colours_the_basemap_roads`.
         {
             let base = crate::sample::basemap();
             let t = TrafficData::sample(&base);
@@ -211,7 +209,6 @@ mod tests {
             );
         }
 
-        // Phase `sample_overlay_shows_a_realistic_congestion_spread`.
         {
             // A believable traffic picture uses the whole ramp, not one flat colour.
             let base = crate::sample::basemap();
@@ -233,7 +230,6 @@ mod tests {
             );
         }
 
-        // Phase `primary_avenues_never_flow_free`.
         {
             // Primaries carry the most traffic — every sub-segment on a primary road
             // is at least Moderate, so the overlay reads like a real arterial net.

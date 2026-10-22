@@ -442,10 +442,6 @@ pub(crate) fn pg_config(profile: &crate::model::ConnectionProfile) -> Config {
 impl PostgresEngine {
     /// Open a real connection. A refused socket or a failed auth surfaces as
     /// the driver's own error string — never a fabricated success.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if the TCP connection is refused or
-    /// authentication fails.
     pub fn connect(profile: &crate::model::ConnectionProfile) -> Result<Self, String> {
         let cfg = pg_config(profile);
         let client = cfg.connect(NoTls).map_err(|e| e.to_string())?;
@@ -458,11 +454,6 @@ impl PostgresEngine {
 
     /// Introspect every user schema (skipping `pg_catalog` /
     /// `information_schema`) into the shared [`DatabaseSchema`] shape.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if any of the underlying catalog
-    /// queries (listing schemas/tables, or a table's columns, foreign keys
-    /// or indexes) fail.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let rows = self
             .client
@@ -644,10 +635,6 @@ impl PostgresEngine {
     /// Run a single SQL statement. Uses a prepared statement to learn column
     /// names + whether the statement returns rows, then streams bounded rows
     /// through the prepared cursor. Multiple statements are rejected.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if `sql` fails to execute, either
-    /// through the prepared-statement path.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         let trimmed = sql.trim();
         if trimmed.is_empty() {
@@ -891,7 +878,6 @@ mod tests {
             assert_eq!(cfg.get_ports(), &[6543]);
             assert_eq!(cfg.get_user(), Some("reader"));
             assert_eq!(cfg.get_dbname(), Some("analytics"));
-            // Host list carries the TCP host.
             assert!(
                 cfg.get_hosts()
                     .iter()

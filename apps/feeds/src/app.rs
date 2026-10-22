@@ -492,8 +492,6 @@ impl Core {
         self.selected.as_ref().and_then(|id| self.store.article(id))
     }
 
-    // --- titles ----------------------------------------------------------
-
     /// The overview's title: what the chosen place is called.
     pub(crate) fn filter_title(&self) -> String {
         match &self.filter {
@@ -524,8 +522,6 @@ impl Core {
             .map(|f| f.title.clone())
             .unwrap_or_default()
     }
-
-    // --- places and selection --------------------------------------------
 
     pub(crate) fn set_filter(&mut self, filter: Filter) {
         self.filter = filter;
@@ -659,8 +655,6 @@ impl Core {
         }
     }
 
-    // --- action model -----------------------------------------------------
-
     /// Submit one field edit or verb through the library's door, now: the
     /// single mutation path, shared with the palette and agents. One event's
     /// submissions are one undo step.
@@ -678,8 +672,6 @@ impl Core {
         }
     }
 
-    // --- reading settings -------------------------------------------------
-
     /// Change the reading settings and persist them, so the change survives
     /// restarts and converges with collaborators.
     pub(crate) fn bump_setting(
@@ -691,8 +683,6 @@ impl Core {
             self.set_toast(error);
         }
     }
-
-    // --- folders and subscriptions -----------------------------------------
 
     /// Add a folder through the same verb the palette uses; it is shown
     /// once the library holds it.
@@ -920,8 +910,6 @@ impl Core {
         added
     }
 
-    // --- menus --------------------------------------------------------------
-
     /// Open a menu of `actions` under `anchor`; `row` is the row it acts on.
     fn open_menu(
         &mut self,
@@ -1112,8 +1100,6 @@ impl Core {
         }
     }
 
-    // --- dialogs ------------------------------------------------------------
-
     fn open_modal(&mut self, modal: FeedsModal) {
         self.menu = None;
         self.pending_modal = Some(modal);
@@ -1184,8 +1170,6 @@ impl Core {
             );
         }
     }
-
-    // --- fetch results ------------------------------------------------------
 
     /// Fold what the fetch worker produced into the store and the refresh
     /// progress, without touching the document (safe while painting).
@@ -1324,8 +1308,6 @@ impl Core {
         self.drain_open_link();
     }
 
-    // --- links --------------------------------------------------------------
-
     pub(crate) fn open_selected_link(&mut self) {
         if let Some(url) = self.open_article().map(|a| a.url.clone())
             && !url.is_empty()
@@ -1366,8 +1348,6 @@ impl Core {
             self.set_toast(format!("{}: {error}", ui::i18n!("feeds-open-link-failed")));
         }
     }
-
-    // --- requests -----------------------------------------------------------
 
     /// Apply what a retained control asked for.
     fn apply(&mut self, request: Request, doc: &mut ui::widget::Edits<'_>) {
@@ -1661,7 +1641,6 @@ pub struct FeedsApp {
     article_actions: bool,
     /// The reading settings, open under their header button.
     settings_panel: Option<Popover<Column>>,
-    /// The open dialog.
     pub(crate) modal: Option<FeedsModal>,
     /// The dialog opened or closed: the retained tree must be rebuilt.
     overlays_dirty: bool,
@@ -1754,8 +1733,6 @@ impl FeedsApp {
         }
     }
 
-    // --- capture staging ----------------------------------------------------
-
     /// Stage a screenshot scenario once the window has its final size:
     ///
     /// * `"sidebar-open"` — the sidebar drawer open over a narrow window.
@@ -1845,14 +1822,10 @@ impl FeedsApp {
         };
     }
 
-    // --- framework host ---------------------------------------------------------
-
     /// Attach the framework dispatcher when hosted as a resource surface.
     pub(crate) fn attach_framework(&self, dispatcher: ui::framework::Dispatcher<Library>) {
         self.core.borrow_mut().dispatcher = Some(dispatcher);
     }
-
-    // --- observation --------------------------------------------------------------
 
     /// The open article.
     pub fn selected_article(&self) -> Option<Id> {
@@ -1904,8 +1877,6 @@ impl FeedsApp {
     pub(crate) fn settings_panel_open(&self) -> bool {
         self.settings_panel.as_ref().is_some_and(Popover::is_open)
     }
-
-    // --- the loop -------------------------------------------------------------------
 
     /// Present the dialog the core asked for.
     fn take_pending_modal(&mut self) {

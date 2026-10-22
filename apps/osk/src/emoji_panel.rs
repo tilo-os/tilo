@@ -95,7 +95,6 @@ pub struct PanelBands {
     pub row_height: f64,
     /// Smallest grid cell, a comfortable touch target.
     pub min_cell: f64,
-    /// Height of a section heading in the grid.
     pub heading_height: f64,
     /// Inset of the search field and the grid's headings from their band.
     pub inset: f64,
@@ -148,7 +147,6 @@ pub struct EmojiPanel {
 }
 
 impl EmojiPanel {
-    /// A closed panel over `catalogue`.
     pub fn new(catalogue: &'static Catalogue) -> Self {
         Self {
             catalogue,
@@ -174,8 +172,6 @@ impl EmojiPanel {
             pressed: None,
         }
     }
-
-    // --- state ----------------------------------------------------------
 
     pub fn mode(&self) -> PanelMode {
         self.mode
@@ -356,8 +352,6 @@ impl EmojiPanel {
         self.scroll = (self.scroll + dy).clamp(0.0, max);
         self.tones = None;
     }
-
-    // --- geometry -------------------------------------------------------
 
     /// Lay the current face out in `bands`, reading `recents` for the grid.
     pub fn layout(&mut self, bands: PanelBands, recents: &Recents) {
@@ -574,7 +568,6 @@ impl EmojiPanel {
             .map(|(_, r)| *r)
     }
 
-    /// Whether `p` is over the scrolling grid.
     pub fn over_grid(&self, p: Point) -> bool {
         self.mode == PanelMode::Browse && self.grid.contains(p)
     }
@@ -588,8 +581,6 @@ impl EmojiPanel {
     pub fn take_pressed(&mut self) -> Option<PanelHit> {
         self.pressed.take()
     }
-
-    // --- drawing --------------------------------------------------------
 
     /// Paint the current face.
     #[allow(
@@ -742,8 +733,6 @@ impl EmojiPanel {
             );
         }
     }
-
-    // --- accessibility --------------------------------------------------
 
     /// The panel's semantic nodes: every control it paints, each with the
     /// action target [`crate::widget::OskWidget`] resolves.

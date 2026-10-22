@@ -90,7 +90,6 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     assert_eq!(found["pages"][0]["resource"], resource.as_str());
     assert_eq!(found["pages"][0]["title"], "Todo");
 
-    // Read as Markdown, an id on every line.
     let note = read(&mut app, &resource);
     assert_eq!(lines(&note), ["buy milk", "buy eggs", "call mum"]);
     let first_read = ids(&note);
@@ -127,7 +126,6 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
         "the blocks are the ones that were there"
     );
 
-    // Tick one, reword one, add one.
     let milk = id_of(&note, "- [ ] buy milk");
     let eggs = id_of(&note, "- [ ] buy eggs");
     let ticked = call(
@@ -151,7 +149,6 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     );
     assert_eq!(added["created"].as_array().unwrap().len(), 1, "{added}");
 
-    // Find text returns the block to edit by.
     let hits = call(
         &mut app,
         "notes.notebook",

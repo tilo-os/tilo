@@ -89,7 +89,6 @@ fn tag(n: u128) -> TagId {
     uuid::Uuid::from_u128(0x7461_6767_0000_4000_8000_0000_0000_0000 | n)
 }
 
-/// Scenarios in which a person types into a new note.
 fn types_into_new_note(scenario: Option<&str>) -> bool {
     matches!(
         scenario,
@@ -373,9 +372,6 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
 }
 
 /// What a person does in `scenario`, through the window's event path.
-///
-/// # Errors
-/// Returns what the scenario could not find on screen.
 #[allow(
     clippy::too_many_lines,
     reason = "one table of every scenario's input keeps them comparable"

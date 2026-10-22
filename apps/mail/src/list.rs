@@ -122,7 +122,6 @@ pub(crate) struct RowFrame {
 }
 
 impl RowFrame {
-    /// The frame of rows `row_h` tall in `list`.
     pub(crate) fn new(list: Rect, row_h: f64, scrolls: bool, theme: &Theme) -> Self {
         let spacing = &theme.tokens.spacing;
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
@@ -145,13 +144,11 @@ impl RowFrame {
         self.pitch * rows as f64 + 2.0 * f64::from(theme.tokens.spacing.s2)
     }
 
-    /// Row `index`'s band, scrolled by `scroll`.
     pub(crate) fn band(&self, index: usize, scroll: f64) -> Rect {
         let y0 = self.top + index as f64 * self.pitch - scroll;
         Rect::new(self.x0, y0, self.x1, y0 + self.pitch)
     }
 
-    /// Row `index` as painted, scrolled by `scroll`.
     pub(crate) fn row(&self, index: usize, scroll: f64) -> Rect {
         self.band(index, scroll).inset((0.0, -self.gap))
     }
@@ -166,7 +163,6 @@ struct Press {
     offset: f64,
 }
 
-/// The text of one row.
 struct RowText<'a> {
     sender: String,
     email: &'a str,
@@ -401,7 +397,6 @@ fn action_rects(starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
 #[derive(Clone, Copy, Debug)]
 struct RowState {
     selected: bool,
-    /// Whether the row above is selected.
     previous_selected: bool,
     /// Whether the row below is selected; `None` for the last row.
     next_selected: Option<bool>,
@@ -831,7 +826,6 @@ mod tests {
             "rows stack without overlap"
         );
 
-        // A press on the second row opens it.
         let (second, rect) = rows[1];
         let mut doc = crate::resource::TestMail::doc();
         assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), rect.center()));

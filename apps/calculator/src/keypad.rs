@@ -612,8 +612,6 @@ impl CalcScreen {
         }
     }
 
-    // -- hit-testing ---------------------------------------------------------
-
     pub fn key_at(&self, p: Point) -> Option<usize> {
         self.key_rects.iter().position(|r| r.contains(p))
     }
@@ -704,7 +702,6 @@ mod tests {
             // (width, height, keys must keep the minimum height)
             (1200.0, 800.0, true),
             (440.0, 800.0, true),
-            // Landscape phone.
             (914.0, 270.0, true),
             // A 420 dpi phone in landscape, less its navigation bar.
             (825.0, 274.0, true),

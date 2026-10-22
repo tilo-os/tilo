@@ -697,8 +697,6 @@ impl BackupsApp {
             },
         )
     }
-
-    // ---- semantic colour mapping (all sourced from the Theme) -----------
 }
 impl BackupsApp {
     pub(crate) fn answer_effect(
@@ -807,8 +805,6 @@ impl BackupsApp {
         self.dirty = true;
     }
 
-    // ---- intents ------------------------------------------------------------
-
     fn drain_intents(&mut self) {
         for intent in self.intents.take() {
             self.dirty = true;
@@ -884,8 +880,6 @@ impl BackupsApp {
                 .map(|snapshot| snapshot.id.clone());
         }
     }
-
-    // ---- the shell's content ----------------------------------------------
 
     fn setup_key(&self) -> Option<SetupKey> {
         if let Some(error) = &self.repository_error {
@@ -1003,8 +997,6 @@ impl BackupsApp {
         }
     }
 
-    // ---- the window's bar ----------------------------------------------------
-
     /// Declare the window bar's slots ([`ui::window_toolbar`]): the shell's
     /// own (the sources list, Back, the snapshot's details), the page as the
     /// window's location and Back up now; and run what the person did there.
@@ -1047,8 +1039,6 @@ impl BackupsApp {
         }
         ui::window_toolbar::declare(Some(toolbar));
     }
-
-    // ---- overlays -----------------------------------------------------------
 
     fn paint_status(
         &mut self,
@@ -1327,7 +1317,6 @@ mod tests {
             3,
             "backing up, verifying and restoring are unavailable; setup is not"
         );
-        // Every snapshot row offers its effects as unavailable too.
         let rows: Vec<_> =
             crate::actions::live_rows(&Catalog::sample(now()), app.blocked().as_ref())
                 .into_iter()
@@ -1386,7 +1375,6 @@ mod tests {
     }
     #[test]
     fn rail_paints_and_scrolls_only_when_needed() {
-        // Narrow, the list is a screen of its own the window goes back to.
         let mut narrow = frame(demo(), 390.0, 844.0, 1.0);
         assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Screen);
         assert!(
@@ -1430,7 +1418,6 @@ mod tests {
         for width in [340.0, 390.0] {
             for scale in [1.0, 2.0] {
                 let mut app = frame(demo(), width, 844.0, scale);
-                // Back up now is the window bar's, at every width.
                 let declared =
                     ui::window_toolbar::declared().expect("the window declares its slots");
                 assert!(

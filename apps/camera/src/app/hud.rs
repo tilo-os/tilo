@@ -37,7 +37,6 @@ pub(super) struct HudMetrics {
     pub pad: f64,
     /// Height of one control.
     pub control: f64,
-    /// Between two clusters.
     pub gap: f64,
     /// Between two controls of one cluster.
     pub item_gap: f64,

@@ -109,7 +109,6 @@ impl Preset {
             .unwrap_or_default()
     }
 
-    /// The presets' names, for a refusal.
     pub fn names() -> String {
         Self::ALL.map(Self::name).join(", ")
     }
@@ -185,7 +184,6 @@ impl Dynamics {
         dynamics
     }
 
-    /// The dynamics a mark is drawn with.
     pub fn of_mark(mark: &Mark) -> Self {
         Self::of(Preset::of(&mark.style), &mark.style.params)
     }
@@ -1283,7 +1281,6 @@ mod tests {
         let light = laid("pencil", 0.2);
         let firm = laid("pencil", 1.0);
         assert!(darkness(&firm) > darkness(&light) * 2.5);
-        // Within a pixel or two the same width either way.
         assert!(light.height.abs_diff(firm.height) <= 2);
     }
 
@@ -1433,7 +1430,6 @@ mod tests {
             let near = nearest(&line, *corner);
             assert!(near < 2.0, "corner {corner:?} missed by {near}");
         }
-        // Along the middle of the top side the shake is smoothed out.
         for at in line
             .iter()
             .filter(|at| at.y < 50.0 && (60.0..190.0).contains(&at.x))
@@ -1513,7 +1509,6 @@ mod tests {
             .unwrap();
         // A straight segment would be at y 15 there; the spline is higher.
         assert!(at_quarter.y > 18.0, "{at_quarter:?}");
-        // It is the same line a pen lays its width along.
         let pen = silhouette(&[(points, 2.0)], &style("pen")).bounding_box();
         assert!((pen.max_y() - curve.bounding_box().max_y()).abs() < 1.6);
     }

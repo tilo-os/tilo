@@ -146,8 +146,6 @@ pub const NOTHING_FITS: &str = "none";
 mod tests {
     use super::*;
 
-    // -- Instruction::Perform, and the floor that reaches it -------------
-
     /// An offer built from a real descriptor, so what these tests check is
     /// what a gate checks against a real survey.
     fn offer(
@@ -200,7 +198,6 @@ mod tests {
         reason = "each case keeps its original fixture and assertions"
     )]
     fn an_instruction_resolves_only_to_a_surveyed_bound_and_confirmed_operation() {
-        // Case `an_operation_that_collects_content_is_not_asked_for_words`.
         {
             let offers = vec![offer(
                 "word-processor",
@@ -225,7 +222,6 @@ mod tests {
             );
         }
 
-        // Case `text_collecting_operations_need_a_literal_or_are_refused`.
         {
             let offers = vec![offer(
                 "files",
@@ -280,7 +276,6 @@ mod tests {
             );
         }
 
-        // Case `structured_answers_preserve_types_and_are_bound_before_dispatch`.
         {
             let mut rich = offer("sheets", "sheets.range:r1", "fill", "Fill range", None);
             rich.descriptor.params = vec![
@@ -322,7 +317,6 @@ mod tests {
             ));
         }
 
-        // Case `consequential_actions_require_and_strip_explicit_confirmation_metadata`.
         {
             let mut destructive = offer(
                 "files",
@@ -375,7 +369,6 @@ mod tests {
             );
         }
 
-        // Case `phrase_confirmation_must_match_exactly_before_an_instruction_can_dispatch`.
         {
             let phrase = "delete all archived messages";
             let mut destructive =
@@ -418,6 +411,4 @@ mod tests {
             );
         }
     }
-
-    // -- Sequences: Plan, Step, clauses -----------------------------------
 }

@@ -569,8 +569,6 @@ fn triggers() -> Vec<TriggerSpec> {
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
-        // A Moderator's block removes what was already mirrored of the
-        // Discord author.
         TriggerSpec::RecordChanged {
             kind: KIND.into(),
             actions: vec!["block-persona".to_owned()],

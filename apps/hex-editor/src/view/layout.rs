@@ -219,14 +219,12 @@ impl Geo {
         self.ascii_x0 + c as f64 * self.ascii_pitch
     }
 
-    /// The column under `x` in the hex region.
     pub fn hex_column_at(&self, x: f64, bytes_per_row: usize) -> Option<usize> {
         let half = self.byte_gap / 2.0;
         (0..bytes_per_row)
             .find(|&c| x >= self.hex_x(c) - half && x < self.hex_x(c) + self.byte_w + half)
     }
 
-    /// The column under `x` in the ASCII region.
     pub fn ascii_column_at(&self, x: f64, bytes_per_row: usize) -> Option<usize> {
         if x < self.ascii_x0 || x >= self.ascii_x1 || self.ascii_pitch <= 0.0 {
             return None;

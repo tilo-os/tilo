@@ -446,7 +446,6 @@ pub fn bound_reply(reply: &str) -> String {
 // The definitions
 // ---------------------------------------------------------------------------
 
-/// The [`LIST_APPLICATIONS`] tool definition.
 fn list_applications_definition() -> ToolDefinition {
     ToolDefinition {
         name: LIST_APPLICATIONS.into(),
@@ -461,7 +460,6 @@ fn list_applications_definition() -> ToolDefinition {
     }
 }
 
-/// The [`LIST_OPERATIONS`] tool definition.
 fn list_operations_definition() -> ToolDefinition {
     ToolDefinition {
         name: LIST_OPERATIONS.into(),
@@ -498,7 +496,6 @@ fn list_operations_definition() -> ToolDefinition {
     }
 }
 
-/// The [`DESCRIBE_OPERATION`] tool definition.
 fn describe_operation_definition() -> ToolDefinition {
     ToolDefinition {
         name: DESCRIBE_OPERATION.into(),
@@ -629,7 +626,6 @@ const ARGUMENTS_DESCRIPTION: &str = "The complete JSON argument object described
     arrays, objects or null. Never add `confirm` or `confirmation_phrase`: an operation marked \
     needs confirmation asks the person when you invoke it, and only they answer.";
 
-/// The [`INVOKE`] tool definition.
 fn invoke_definition() -> ToolDefinition {
     // Byte-stable across turns and tasks (no per-conversation enum), so the
     // provider's prompt cache keeps the whole tool prefix; `read_invoke`
@@ -1906,7 +1902,6 @@ mod tests {
         );
         assert!(summary.contains("{value: text}"), "{summary}");
         assert!(summary.contains("In word-processor:"), "{summary}");
-        // A listing by the closed application's id reaches its open.
         let listed = operations(
             &json!({"application": "so.tilo.notes"}),
             &catalogue,
@@ -2151,7 +2146,6 @@ mod tests {
 
     #[test]
     fn discovery_answers_list_and_describe_only_what_the_room_offers() {
-        // Case `a_kind_is_asked_about_across_the_room_and_not_within_one_app`.
         {
             let mut revealed = Revealed::new();
             let out = operations(
@@ -2163,7 +2157,6 @@ mod tests {
             assert!(!out.contains("harbour.png#rename"), "{out}");
         }
 
-        // Case `a_cut_listing_says_how_to_reach_what_it_left_out`.
         {
             let mut room = room();
             for i in 0..MOST_LISTED + 5 {
@@ -2180,7 +2173,6 @@ mod tests {
             let out = operations(&json!({}), &room, &mut revealed);
             assert!(out.contains("more not listed"), "{out}");
             assert!(out.contains("narrower"), "{out}");
-            // And the narrower question reaches what the wide one cut.
             let narrowed = operations(
                 &json!({"resource": format!("files.entry:/home/q/f{}.md", MOST_LISTED + 4)}),
                 &room,
@@ -2192,7 +2184,6 @@ mod tests {
             );
         }
 
-        // Case `describing_an_operation_carries_its_prompt_its_example_and_the_resources_own_facts`.
         {
             let out = describe(
                 &json!({"operation": "files.entry:/home/q/harbour.png#rename"}),
@@ -2203,7 +2194,6 @@ mod tests {
             assert!(out.contains("512 x 320 pixels"), "{out}");
         }
 
-        // Case `an_operation_that_collects_content_is_not_asked_for_a_value`.
         {
             let out = describe(
                 &json!({"operation": "word-processor.document#place-image"}),
@@ -2214,7 +2204,6 @@ mod tests {
             assert!(out.contains("bound from the prior step"), "{out}");
         }
 
-        // Case `an_operation_that_is_not_offered_is_answered_as_though_it_did_not_exist`.
         {
             let hidden_id = "word-processor.document#imaginary-crop";
             let absent_id = "nothing.at#all";
@@ -2254,7 +2243,6 @@ mod tests {
 
     #[test]
     fn a_plan_is_read_only_from_revealed_operations_within_the_step_cap() {
-        // Case `only_what_a_listing_returned_can_be_planned`.
         {
             let mut revealed = Revealed::new();
             assert!(!revealed.contains("files.entry:/home/q/harbour.png#rename"));
@@ -2287,7 +2275,6 @@ mod tests {
             );
         }
 
-        // Case `one_published_operation_can_be_planned_repeatedly_with_distinct_arguments`.
         {
             let mut revealed = Revealed::new();
             let _ = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
@@ -2305,7 +2292,6 @@ mod tests {
             assert_ne!(answer.arguments.first(), answer.arguments.last());
         }
 
-        // Case `a_plan_longer_than_a_sentence_is_refused_rather_than_truncated`.
         {
             let mut revealed = Revealed::new();
             revealed.reveal("a#b");
@@ -2321,7 +2307,6 @@ mod tests {
             assert!(err.contains("more than the"), "{err}");
         }
 
-        // Case `what_the_room_cannot_name_yet_is_carried_as_words`.
         {
             let mut revealed = Revealed::new();
             revealed.reveal("chat.app#open");
@@ -2349,7 +2334,6 @@ mod tests {
             assert_eq!(blank.then, None);
         }
 
-        // Case `a_plan_naming_an_address_never_revealed_is_refused_not_attempted`.
         {
             let mut revealed = Revealed::new();
             // Revealed by one call, so the check below is genuinely about the
@@ -2480,7 +2464,6 @@ mod tests {
             [plan::NOTHING_FITS]
         );
 
-        // A prefix-less copy of a routed id names the one shown operation.
         let mut routed = Revealed::new();
         routed.reveal("broker:3:word-processor.document#insert-table");
         let answer = read_plan(

@@ -81,8 +81,6 @@ fn is_staged(path: &Path, file: &str) -> bool {
     })
 }
 
-// =====================================================================
-
 /// Whole-file index operations and commits: stage, unstage, stage-untracked then
 /// commit, empty-message and missing-identity rejection, and stash save/apply.
 /// Each phase is a former test with its own fresh fixture.
@@ -424,7 +422,6 @@ fn fetch_and_pull_against_a_local_remote() {
     let local = local_dir.path().to_path_buf();
     Repository::clone(up.to_str().unwrap(), &local).unwrap();
 
-    // Advance upstream with a second commit.
     let c1_commit = work_repo.find_commit(c1).unwrap();
     fs::write(work.join("a.txt"), "one\ntwo\n").unwrap();
     let mut idx = work_repo.index().unwrap();
@@ -503,7 +500,6 @@ fn app_stage_and_commit_through_production_actions() {
     app.test_commit("wire real git");
     assert_eq!(app.test_last_error(), None, "commit must not error");
 
-    // Verify a real commit landed at HEAD with both files in its tree.
     let repo = open(&path);
     let head = repo.head().unwrap().peel_to_commit().unwrap();
     assert_eq!(head.summary(), Ok(Some("wire real git")));
@@ -935,8 +931,6 @@ fn untracked_files_preview_their_contents_before_staging() {
     assert!(diff.lines.iter().any(|line| line.content == "// new file"));
     assert!(!is_staged(&path, "nested/new.rs"));
 }
-
-// --- helpers ---------------------------------------------------------
 
 /// Render a git2 diff to its full patch text for substring assertions.
 fn diff_to_string(diff: &git2::Diff) -> String {

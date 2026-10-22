@@ -67,7 +67,6 @@ mod tests {
     /// environment key: the desktop-owned gateway is the only way out.
     #[test]
     fn a_provider_is_reached_only_through_the_gateway_with_an_explicit_model_and_no_secret() {
-        // Case `task_selection_captures_a_model_but_not_a_secret`.
         {
             let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
             profile.models.push(ModelDescriptor::new("claude-test"));
@@ -84,7 +83,6 @@ mod tests {
             assert!(!serialised.contains("sk-ant-"));
         }
 
-        // Case `incomplete_provider_requires_an_explicit_model_choice`.
         {
             let profile = ProviderProfile::local_vllm();
             let config = ProviderConfig {
@@ -95,8 +93,6 @@ mod tests {
             assert!(ProviderSelection::from_config(&config).is_none());
         }
 
-        // Case `packaged_agent_has_no_direct_provider_or_environment_key_route`,
-        // moved here from the one-test `tests/hosted_gateway_boundary.rs`.
         {
             let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/");
             let model = std::fs::read_to_string(format!("{root}model.rs")).unwrap();

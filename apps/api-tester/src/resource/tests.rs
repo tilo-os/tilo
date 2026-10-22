@@ -191,7 +191,6 @@ fn verbs_make_open_save_and_remove_records() {
     assert!(workspace.state().unwrap().collections.is_empty());
 }
 
-/// The builder's request is edited field by field, rows by their ids.
 #[test]
 fn field_edits_change_the_builder_and_rows_in_place() {
     let mut workspace = seeded();
@@ -364,7 +363,6 @@ fn credentials_never_enter_the_record() {
     );
 }
 
-/// The active environment names one the workspace has.
 #[test]
 fn the_active_environment_names_an_environment() {
     let mut workspace = seeded();

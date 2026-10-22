@@ -328,7 +328,6 @@ mod tests {
         assert!(notice.is_shown());
         assert!(!notice.press(Point::new(400.0, 10.0)));
         assert_eq!(notice.release(Point::new(400.0, 10.0)), None);
-        // A press that slides off the button onto the card does nothing.
         assert!(notice.press(Point::new(220.0, 20.0)));
         assert_eq!(
             notice.release(Point::new(10.0, 10.0)),

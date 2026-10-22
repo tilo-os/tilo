@@ -77,7 +77,6 @@ impl Choices {
         }
     }
 
-    /// The action starting the artwork chosen.
     pub fn action(&self) -> Option<Invoke<Artwork>> {
         let (width, height) = self.dimensions()?;
         let title = self.title.get().trim().to_owned();
@@ -468,7 +467,6 @@ fn replacing(cx: &ViewCx<Artwork>) -> Element {
     Box::new(replacing)
 }
 
-/// The new-artwork dialog's body.
 pub fn body(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let choices = tools.new.clone();
     let lookup = ui::i18n::I18nManager::lookup_plain;

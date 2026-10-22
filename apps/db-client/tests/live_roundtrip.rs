@@ -81,7 +81,6 @@ fn postgres_real_round_trip_and_cancellation() {
             "CREATE failed: {:?}",
             s.status
         );
-        // DDL is non-select.
         assert!(create.is_none_or(|r| !r.is_select));
 
         s.run_query(&format!(

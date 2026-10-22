@@ -386,7 +386,6 @@ mod tests {
         }
     }
 
-    /// A press on a caret folds its block away, and the next press unfolds it.
     #[test]
     fn pressing_a_caret_folds_and_unfolds_its_block() {
         let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();

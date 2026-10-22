@@ -1219,7 +1219,6 @@ mod tests {
         BookSearchProvider::new(&books, &[])
     }
 
-    /// Body pages are clamped and complete and resume inside oversized blocks and spans without prose copies.
     #[test]
     fn body_pages_clamp_and_resume_without_prose_copies() {
         // --- phase: body_pages_are_clamped_and_complete ---

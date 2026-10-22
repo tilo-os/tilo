@@ -27,7 +27,6 @@ use crate::model::Column;
 /// Hex digits, so a cell's two characters need no allocation.
 const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
 
-/// The hex digit of a nibble.
 fn digit(nibble: u8) -> u8 {
     DIGITS
         .get(usize::from(nibble & 0x0F))

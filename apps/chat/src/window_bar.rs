@@ -13,7 +13,6 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToo
 use crate::app::{ChatApp, Hit};
 
 impl ChatApp {
-    /// The window bar's actions, each with the hit it runs.
     fn window_bar_actions(&self) -> Vec<(ToolbarAction, Hit)> {
         let mut actions = Vec::new();
         if self.sharing_context {
@@ -111,7 +110,6 @@ impl ChatApp {
         }
     }
 
-    /// Declare the window bar's slots.
     pub(crate) fn declare_window_toolbar(&self) {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }

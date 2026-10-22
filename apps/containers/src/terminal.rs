@@ -9,7 +9,6 @@
 
 use runtime_portal::tools::{ContainerEngine, ToolIntent};
 
-/// Terminal entering the distrobox `box_name`.
 pub fn distrobox_enter_intent(box_name: &str) -> ToolIntent {
     ToolIntent::ContainerShell {
         container: box_name.to_owned(),
@@ -27,12 +26,6 @@ pub fn exec_attach_intent(container_id: &str) -> ToolIntent {
 }
 
 /// Ask the shell to open `intent` in Terminal.
-///
-/// # Errors
-///
-/// Returns the reason when the intent is invalid (for example a container name
-/// that is not a plain identifier), there is no Tilo session to ask, or the
-/// shell could not open Terminal.
 pub fn open(intent: ToolIntent) -> Result<(), String> {
     runtime_portal::tools::open_tool(intent)
 }

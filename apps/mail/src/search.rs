@@ -157,7 +157,6 @@ mod tests {
             mailbox.insert(message.clone());
             assert!(
                 search(&mailbox)
-                    // A match inside a word takes four letters.
                     .search("ÁLAG")
                     .iter()
                     .any(|hit| hit.title == message.subject),

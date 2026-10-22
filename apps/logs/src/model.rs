@@ -266,7 +266,6 @@ mod tests {
         for p in Priority::ALL {
             assert_eq!(Priority::from_level(p.level()), p, "case {p:?}");
         }
-        // Out-of-range levels clamp to Debug.
         for level in [42, -1] {
             assert_eq!(
                 Priority::from_level(level),
@@ -301,7 +300,6 @@ mod tests {
 
     #[test]
     fn entry_filters_and_unit_labels() {
-        // The priority threshold excludes more verbose entries.
         let mut e = sample();
         e.priority = Priority::Info; // level 6
         let f = Filter {
@@ -315,7 +313,6 @@ mod tests {
         e.priority = Priority::Err; // level 3
         assert!(f.passes(&e));
 
-        // Search is case-insensitive over message and unit.
         let mut e = sample();
         e.message = "Mount FAILED for /var/workspace".into();
         for (search, passes) in [("failed", true), ("absent", false)] {

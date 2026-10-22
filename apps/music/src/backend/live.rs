@@ -56,11 +56,6 @@ pub struct RustyPipeBackend {
 impl RustyPipeBackend {
     /// Audio resolves via the iOS/TV player clients, which need no `PoToken`,
     /// so rustypipe's `BotGuard` path stays disabled.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BackendError`] if the app runtime or the rustypipe
-    /// client fails to build.
     pub fn new() -> Result<Self, BackendError> {
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
         // rustypipe's reqwest client takes the process-default TLS provider.
@@ -705,7 +700,6 @@ mod bounded_transport_tests {
 
     #[test]
     fn live_transport_is_bounded_utf8_safe_and_signature_capable() {
-        // Phase `native_quickjs_bindings_execute_stream_signature_operations`.
         #[cfg(all(windows, target_arch = "aarch64"))]
         {
             let runtime = rquickjs::Runtime::new().expect("native QuickJS runtime");
@@ -724,7 +718,6 @@ mod bounded_transport_tests {
             });
         }
 
-        // Phase `live_request_deadline_cancels_a_stalled_future`.
         {
             let result = block_with_deadline(
                 ui::rt::app(),
