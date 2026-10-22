@@ -861,6 +861,10 @@ impl ResourceApp for EbookShell {
     /// A book to open (`ebook book.epub`).
     const ARGUMENTS: usize = 1;
 
+    fn commands() -> &'static [ui::framework::Command] {
+        crate::commands::COMMANDS
+    }
+
     fn view(cx: &mut ViewCx<Ebook>) -> Element {
         let app = BooksApp::new(cx.dispatcher(), bundled_library());
         // A search hit, or an agent's `open`, shows the book, chapter,

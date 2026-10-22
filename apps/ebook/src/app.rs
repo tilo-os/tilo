@@ -10524,6 +10524,8 @@ fn draw_progress_label(ctx: &mut PaintCtx<'_>, rect: Rect, fraction: f32, color:
 mod query_view;
 mod stage;
 
+pub(crate) use query_view::kinds as query_kinds;
+
 #[cfg(test)]
 #[path = "app/interaction_tests.rs"]
 mod interaction_tests;
