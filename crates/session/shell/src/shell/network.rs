@@ -6641,13 +6641,15 @@ impl ShellNetwork {
         }
     }
 
-    /// The continuity master switch, unless the setup machine enrolled
-    /// personal devices: that enrollment is itself the grant.
+    /// Whether this device talks to the person's other devices on their
+    /// continuity topic: once it knows one, enrolled or kept since in the
+    /// person's fleet, even with the continuity switch off, since knowing
+    /// it is itself the grant. Knowing none, there is no one to tell, and
+    /// the topic is not kept up for nobody.
     fn personal_fabric_allowed(&self) -> bool {
-        self.continuity_policy().enabled()
-            || !self
-                .enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()))
-                .is_empty()
+        !self
+            .enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()))
+            .is_empty()
     }
 
     fn publish_device_fabric_request(&self) {
@@ -6698,7 +6700,7 @@ impl ShellNetwork {
     }
 
     fn publish_personal_continuity_if_changed(&self) {
-        if !self.enforce_app_continuations_policy() {
+        if !self.enforce_app_continuations_policy() || !self.personal_fabric_allowed() {
             return;
         }
         let Some(user_public_key) = self.personal_continuity_user else {
@@ -11863,7 +11865,7 @@ mod tests {
         };
         let topic = personal_continuity_topic_id(&user);
         net.continuity_policy_override =
-            Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::default());
+            Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::OFF);
         net.dispatch_personal_fabric(topic, peer.public(), epoch, user, payload.clone());
         assert!(net.device_fabric().display_outputs(&owner).is_none());
         net.continuity_policy_override = allowed;

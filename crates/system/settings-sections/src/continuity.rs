@@ -20,10 +20,9 @@ pub struct AuditEntry {
     pub enabled: bool,
 }
 
-/// The release policy, the person's `continuity` settings.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
-)]
+/// The release policy, the person's `continuity` settings. Each switch is on
+/// until the person turns it off ([`settings_store::continuity_privacy::ON_UNLESS_SET`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -52,6 +51,25 @@ pub struct ContinuityPrivacy {
     pub app_continuations: bool,
     #[model(readonly)]
     pub audit: Vec<AuditEntry>,
+}
+
+impl Default for ContinuityPrivacy {
+    fn default() -> Self {
+        let on = settings_store::continuity_privacy::ON_UNLESS_SET;
+        Self {
+            enabled: on,
+            clipboard: on,
+            notifications: on,
+            wifi_settings: on,
+            media: on,
+            display_input: on,
+            file_transfer: on,
+            realtime_sessions: on,
+            typed_gamepad: on,
+            app_continuations: on,
+            audit: Vec::new(),
+        }
+    }
 }
 
 impl ui::storage::SettingsSchema for ContinuityPrivacy {
@@ -144,19 +162,30 @@ impl ContinuityPrivacy {
 mod tests {
     use super::*;
 
-    /// Privacy facets are opt-in behind a master switch, and audit entries hold only time, capability and state.
+    /// Every facet is on until turned off, the master switch stops them all,
+    /// and audit entries hold only time, capability and state.
     #[test]
-    fn continuity_privacy_is_opt_in_and_its_audit_is_payload_free() {
+    fn continuity_privacy_is_on_unless_turned_off_and_its_audit_is_payload_free() {
         {
             let mut policy = ContinuityPrivacy::default();
             for capability in Capability::ALL {
-                assert!(!policy.allowed(capability));
-                assert!(!policy.effective(capability));
+                assert!(policy.effective(capability));
             }
+            policy.set_allowed(Capability::Clipboard, false);
+            assert!(!policy.effective(Capability::Clipboard));
+            assert!(policy.effective(Capability::Media));
+            policy.enabled = false;
             policy.set_allowed(Capability::Clipboard, true);
             assert!(!policy.effective(Capability::Clipboard));
-            policy.enabled = true;
-            assert!(policy.effective(Capability::Clipboard));
+            assert!(!policy.effective(Capability::Media));
+        }
+        // A settings document written before a facet existed keeps it on.
+        {
+            let read: ContinuityPrivacy =
+                serde_json::from_value(serde_json::json!({"enabled": true, "media": false}))
+                    .unwrap();
+            assert!(!read.effective(Capability::Media));
+            assert!(read.effective(Capability::AppContinuations));
         }
 
         {

@@ -478,7 +478,9 @@ authorization.
   or Media is turned off. A member without an estimate is shown syncing, and
   after a bounded wait fails with a reason, instead of playing silence.
 
-The Devices surface exposes these capabilities individually. Disabling a
+The Devices surface exposes these capabilities individually. All of them, the
+continuity switch and automatic display input are on until the person turns
+them off: they act only between the person's own certified devices. Disabling a
 capability tears down its active leases; disabling continuity tears down all of
 them. Device identities and transport routes stay compositor-owned rather than
 being disclosed to applications.
