@@ -5,6 +5,19 @@ use crate::floating_surface::{
 };
 use crate::vello::kurbo::Vec2;
 
+/// What the shell was last told on this connection, where telling it
+/// nothing yet differs from telling it "none".
+pub enum Told<T> {
+    Nothing,
+    Was(T),
+}
+
+impl<T: PartialEq> Told<T> {
+    fn was(&self, value: &T) -> bool {
+        matches!(self, Self::Was(told) if told == value)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct AuxiliaryCaptureFrames {
     painting: bool,
@@ -73,7 +86,7 @@ pub(super) struct FloatingRuntime {
     /// The shell was told this app answers selection requests.
     pub selection_capable_sent: bool,
     /// The window resource last told the shell on this connection.
-    pub window_resource_sent: Option<Option<tilo_actions::ActionResource>>,
+    pub window_resource_sent: Told<Option<tilo_actions::ActionResource>>,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
     /// The [`crate::window_toolbar::revision`] of the slots last sent to
@@ -135,7 +148,7 @@ impl FloatingRuntime {
             auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
             selection_capable_sent: false,
-            window_resource_sent: None,
+            window_resource_sent: Told::Nothing,
             close_window_requested: false,
             toolbar_sent: None,
             window_bar: window_bar::WindowBarRuntime::default(),
@@ -588,13 +601,13 @@ impl App {
         // What this window shows, so the desktop's own menus for it (its
         // window menu) attach it as the apps' menus do.
         let window = self.window_resource();
-        if self.floating.window_resource_sent.as_ref() != Some(&window) {
+        if !self.floating.window_resource_sent.was(&window) {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::WindowResource {
                     resource: window.clone(),
                 },
             )?;
-            self.floating.window_resource_sent = Some(window);
+            self.floating.window_resource_sent = Told::Was(window);
         }
         for request in crate::shared_selection::take_agent_requests() {
             let (selection, bounds) = self.agent_reference(request);
@@ -980,7 +993,7 @@ impl App {
         // connection is told them afresh.
         crate::window_toolbar::set_hosted(false);
         self.floating.toolbar_sent = None;
-        self.floating.window_resource_sent = None;
+        self.floating.window_resource_sent = Told::Nothing;
         // Nothing presents the app's search and History any more: it shows
         // its own again.
         self.floating.window_bar.disconnected();
