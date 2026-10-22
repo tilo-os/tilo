@@ -12,9 +12,7 @@ use automerge::{AutoCommit, ChangeHash};
 use ui::headless::Framed;
 use ui::widget::Widget;
 use winit::event::{ElementState, WindowEvent};
-use winit::keyboard::{Key, PhysicalKey};
-
-const SEARCH: &str = "settings.search";
+use winit::keyboard::PhysicalKey;
 
 fn root() -> automerge::ObjId {
     automerge::ROOT
@@ -53,15 +51,19 @@ fn select(h: &mut Framed<SettingsApp>, category: Category) {
     rebuild(h);
 }
 
-/// One Backspace press handed to the root against the last frame's layout;
-/// the next [`rebuild`] runs the frame that follows it.
-fn press_backspace(h: &mut Framed<SettingsApp>) {
-    let mut ev = ui::synthetic_input::char_key("");
-    if let WindowEvent::KeyboardInput { event, .. } = &mut ev {
-        event.logical_key = Key::Named(winit::keyboard::NamedKey::Backspace);
-        event.text = None;
+/// Type `query` into the window bar's search, as the bar hands it to the
+/// app: the search narrows the sidebar's list in place. Settings draws no
+/// search field of its own.
+fn bar_search(h: &mut Framed<SettingsApp>, search: &mut ui::widget::SearchDriver, query: &str) {
+    let app: &mut SettingsApp = h;
+    if search.in_place() == ui::widget::InPlace::Nothing {
+        search.open(ui::window_toolbar::SearchOffer::of(app).into());
     }
-    Framed::harness_mut(h).dispatch_to_root(&ev);
+    assert!(
+        search.drive(app, query, None, false),
+        "the bar's search reached the sidebar"
+    );
+    rebuild(h);
 }
 
 fn sidebar_row_count(root: &dyn Widget) -> usize {
@@ -78,42 +80,27 @@ fn sidebar_row_count(root: &dyn Widget) -> usize {
 /// The native observer tracks search rebuilds/backspace and never commits pending changes.
 #[test]
 fn native_observer_tracks_search_without_committing_pending_changes() {
-    // Case `native_observer_tracks_search_rebuild_and_backspace`.
+    // Case `native_observer_tracks_the_bar_search`.
     {
         let config = crate::prefs::test_env::ScratchConfig::new();
         let mut h = wide(&config);
-        Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
+        let mut search = ui::widget::SearchDriver::default();
         let before = snapshot(&h);
         assert_eq!(before["ready"], true);
+        assert_eq!(before["search_query"], "");
         assert_eq!(before["rendered_result_count"], sidebar_row_count(&*h));
-        assert_eq!(
-            before["search_focused"],
-            true,
-            "observer={before:#}; focused={:?}",
-            Framed::harness(&h).focused()
-        );
         let original_heads = heads(&mut h);
-        Framed::harness_mut(&mut h).type_text("z");
+        bar_search(&mut h, &mut search, "z");
         let typed = snapshot(&h);
-        assert_eq!(typed["local_search_text"], "z");
-        assert_eq!(typed["synchronized_search_query"], "z");
-        assert_eq!(typed["search_widget_text"], "z");
-        assert_eq!(typed["search_caret_byte"], 1);
-        assert_eq!(typed["search_focused"], true);
+        assert_eq!(typed["search_query"], "z");
         assert_eq!(typed["rendered_result_count"], sidebar_row_count(&*h));
         assert_ne!(
             typed["rendered_category_ids"],
             before["rendered_category_ids"]
         );
-        // Native key construction, delivered through the same root widget route.
-        press_backspace(&mut h);
-        let immediate = snapshot(&h);
-        assert_eq!(immediate["local_search_text"], "");
-        assert_eq!(immediate["synchronized_search_query"], "z");
-        rebuild(&mut h);
+        bar_search(&mut h, &mut search, "");
         let after = snapshot(&h);
-        assert_eq!(after["search_caret_byte"], 0);
-        assert_eq!(after["search_focused"], true);
+        assert_eq!(after["search_query"], "");
         assert_eq!(
             after["rendered_category_ids"],
             before["rendered_category_ids"]
@@ -167,8 +154,7 @@ fn search_preserves_production_network_pane_but_category_switch_replaces_it() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = wide(&config);
     let network = named_widget_identity(&*h, "NetworkPane").unwrap();
-    Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
-    Framed::harness_mut(&mut h).type_text("z");
+    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "z");
     assert_eq!(named_widget_identity(&*h, "NetworkPane"), Some(network));
     select(&mut h, Category::About);
     assert_eq!(h.selected(), super::Category::About);
@@ -176,7 +162,7 @@ fn search_preserves_production_network_pane_but_category_switch_replaces_it() {
 }
 
 #[test]
-fn narrow_search_retains_focus_through_filter_and_backspace() {
+fn narrow_search_narrows_the_open_list_and_keeps_it_open() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = hosted(&config, 440.0, 820.0);
     assert!(h.is_narrow());
@@ -186,20 +172,19 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     Framed::harness_mut(&mut h).click_at(back.center().x, back.center().y);
     rebuild(&mut h);
     assert!(h.sidebar_open());
-    Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
-    Framed::harness_mut(&mut h).type_text("z");
+    let all = sidebar_row_count(&*h);
+    let mut search = ui::widget::SearchDriver::default();
+    bar_search(&mut h, &mut search, "z");
     let typed = snapshot(&h);
-    assert_eq!(typed["search_focused"], true);
-    assert_eq!(typed["search_caret_byte"], 1);
-    assert_eq!(typed["local_search_text"], "z");
+    assert_eq!(typed["search_query"], "z");
     assert_eq!(typed["sidebar_open"], true);
     assert_eq!(typed["narrow"], true);
-    press_backspace(&mut h);
-    rebuild(&mut h);
+    assert!(sidebar_row_count(&*h) < all);
+    bar_search(&mut h, &mut search, "");
     let restored = snapshot(&h);
-    assert_eq!(restored["search_focused"], true);
-    assert_eq!(restored["search_caret_byte"], 0);
-    assert_eq!(restored["local_search_text"], "");
+    assert_eq!(restored["search_query"], "");
+    assert_eq!(restored["sidebar_open"], true);
+    assert_eq!(sidebar_row_count(&*h), all);
 }
 
 #[test]
@@ -258,37 +243,34 @@ fn dispatch_preview_event(h: &mut Framed<SettingsApp>, event: &WindowEvent) {
 }
 
 #[test]
-fn keyboard_map_observes_foreground_physical_keys_while_search_keeps_editing() {
+fn keyboard_map_observes_foreground_physical_keys_while_the_list_is_narrowed() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = wide(&config);
     select(&mut h, Category::Keyboard);
-    Framed::harness_mut(&mut h).click_named(SEARCH).unwrap();
+    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "k");
     let compiled = crate::keyboard_preview::compilation_count();
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
     let original_heads = heads(&mut h);
     assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
     dispatch_preview_key(&mut h, ElementState::Pressed);
     assert_eq!(keyboard_map_pressed(&*h, key), Some(true));
-    assert_eq!(h.search_state.with(Clone::clone), "z");
     assert_eq!(
         heads(&mut h),
         original_heads,
         "pressed positions stay ephemeral"
     );
-    // Search invalidates the retained content. The same held physical position
-    // survives that ordinary recomposition while editing remains focused.
+    // The same held physical position survives an ordinary recomposition
+    // while the bar's search keeps the list narrowed.
     rebuild(&mut h);
     assert_eq!(keyboard_map_pressed(&*h, key), Some(true));
     assert_eq!(
         crate::keyboard_preview::compilation_count(),
         compiled,
-        "search recomposition must retain the bounded compiled preview"
+        "recomposition must retain the bounded compiled preview"
     );
-    let snapshot = snapshot(&h);
-    assert_eq!(snapshot["search_focused"], true);
+    assert_eq!(snapshot(&h)["search_query"], "k");
     dispatch_preview_key(&mut h, ElementState::Released);
     assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
-    assert_eq!(h.search_state.with(Clone::clone), "z");
     dispatch_preview_key(&mut h, ElementState::Pressed);
     dispatch_preview_event(&mut h, &WindowEvent::Focused(false));
     assert_eq!(keyboard_map_pressed(&*h, key), Some(false));

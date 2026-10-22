@@ -35,10 +35,10 @@
 use crate::categories::Category;
 use crate::sidebar;
 use ui::tokens::Metrics;
+use ui::widget::NavMode;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Container, NavPane, NavShell, Scrollable, Widget};
-use ui::widget::{NavMode, SearchField};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
 /// One scroller's offset, shared with every scroller rebuilt in its place.
@@ -61,18 +61,14 @@ pub struct SettingsApp {
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
-    /// The text scale used to construct the retained shell. A custom-painted
-    /// sidebar has scale-dependent geometry, so a system text-scale change
-    /// rebuilds the shell while preserving only durable/local app state.
-    /// The live, local-only search query typed into the sidebar's search
-    /// field. When non-empty the sidebar shows a filtered results list instead
-    /// of the sectioned category list.
-    search_query: String,
     /// The pane asked for, taken in at the next sync: the open effect (and,
     /// outside a host, a sidebar row) writes it, so the shell is rebuilt
     /// between frames, never under an event being dispatched. Selection
     /// stays out of collaboration, persistence and undo.
     sidebar_selection: ui::LocalState<Option<Category>>,
+    /// What a staged scene narrowed the sidebar to before the shell
+    /// existed; the shell's first sidebar starts narrowed to it.
+    staged_filter: String,
     /// The setting a link or a search hit asked to be shown, taken in with
     /// the pane it is on.
     setting_request: ui::LocalState<Option<&'static settings_store::index::Setting>>,
@@ -91,9 +87,6 @@ pub struct SettingsApp {
     /// pane's structure changes (a control applied, a category opened), so the
     /// offset lives here, per category, rather than in the rebuilt widget.
     pane_scroll: std::cell::RefCell<std::collections::HashMap<Category, ScrollOffset>>,
-    /// Process-local backing state for the sidebar search field. Search is a
-    /// transient filter, never a durable setting or CRDT text object.
-    search_state: ui::LocalState<String>,
     /// Retained, revision-aware catalogue behind Ctrl+K. Cloning its provider
     /// for the host is O(1), so a palette continuation always talks to the
     /// same generation instead of rebuilding an index on every frame.
@@ -167,15 +160,14 @@ impl SettingsApp {
             cx,
             narrow_screen: NavPane::Content,
             width_hint: None,
-            search_query: String::new(),
             sidebar_selection: ui::LocalState::new(None),
+            staged_filter: String::new(),
             setting_request: ui::LocalState::new(None),
             reveal: None,
             reveal_scroll: None,
             capture_focus: None,
             highlight: None,
             pane_scroll: std::cell::RefCell::default(),
-            search_state: ui::LocalState::new(String::new()),
             account_root,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
@@ -307,9 +299,14 @@ impl SettingsApp {
         self.shell.as_ref().is_some_and(NavShell::is_sidebar_open)
     }
 
-    /// The current search query (empty when not searching).
+    /// What the window's search narrowed the sidebar to (empty when not
+    /// searching). The search is the window bar's: the sidebar's list is
+    /// what it filters in place.
     pub fn search_query(&self) -> &str {
-        &self.search_query
+        self.shell
+            .as_ref()
+            .and_then(NavShell::sidebar_ref::<ui::widget::NavList>)
+            .map_or("", ui::widget::NavList::filter)
     }
 
     /// The on-screen rect of the narrow content screen's back-arrow button
@@ -319,15 +316,6 @@ impl SettingsApp {
         self.shell
             .as_ref()
             .map_or(vello::kurbo::Rect::ZERO, |shell| shell.geometry().back)
-    }
-
-    /// Filter the sidebar by `query`, as typing it into the search field
-    /// does.
-    pub fn search(&mut self, query: &str) {
-        self.search_state.set(query.to_string());
-        if let Some(field) = self.shell.as_mut().and_then(NavShell::filter_mut) {
-            field.set_query(query);
-        }
     }
 
     /// Build the content pane: an unboxed category heading followed by the
@@ -496,6 +484,19 @@ impl SettingsApp {
         &self.cx
     }
 
+    /// Narrow the sidebar to `query`, as the window bar's search does (a
+    /// staged scene has no bar to type into).
+    fn narrow_sidebar(&mut self, query: &str) {
+        match self
+            .shell
+            .as_mut()
+            .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
+        {
+            Some(nav) => nav.set_filter(query),
+            None => query.clone_into(&mut self.staged_filter),
+        }
+    }
+
     /// Lay out what a screenshot scenario shows.
     pub fn stage_scene(&mut self, staged: crate::scenarios::Staged) {
         use crate::scenarios::Staged;
@@ -510,7 +511,7 @@ impl SettingsApp {
             }
             Staged::Search(category) => {
                 self.select(category);
-                self.search(crate::scenarios::SEARCH_QUERY);
+                self.narrow_sidebar(crate::scenarios::SEARCH_QUERY);
             }
             Staged::Focused(category, control) => {
                 self.select(category);
@@ -573,20 +574,15 @@ impl SettingsApp {
         let nav = sidebar::build(
             &self.cx,
             self.selected,
-            &self.search_query,
+            &self.staged_filter,
             &self.sidebar_selection,
         );
-        let mut filter = SearchField::filter()
-            .with_id("settings.search")
-            .with_placeholder(&crate::i18n::t("settings-search-placeholder"));
-        filter.set_query(&self.search_query);
         let mut shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("settings.shell")
             .mode(NavMode::Push)
             .sidebar(nav)
             .sidebar_header("", Vec::new())
-            .with_filter(filter)
             .content(self.build_content())
             .content_header(self.selected.label(), Vec::new());
         shell.show(self.narrow_screen);
@@ -603,7 +599,6 @@ impl SettingsApp {
             // Keep the retained navigation's viewport and focus when only
             // the selected pane changes.
             if let Some(nav) = shell.sidebar_mut::<ui::widget::NavList>() {
-                nav.set_filter(&self.search_query);
                 if nav.selected_id().as_deref() != Some(self.selected.slug()) {
                     nav.set_selected(Some(self.selected.slug()));
                 }
@@ -611,7 +606,7 @@ impl SettingsApp {
                 shell.set_sidebar(Some(sidebar::build(
                     &self.cx,
                     self.selected,
-                    &self.search_query,
+                    "",
                     &self.sidebar_selection,
                 )));
             }
@@ -731,21 +726,11 @@ impl Widget for SettingsApp {
         }
         fn inspect(
             widget: &dyn Widget,
-            search: &mut Option<serde_json::Value>,
             categories: &mut Vec<&'static str>,
             nav_id: &mut Option<&'static str>,
         ) {
             if widget.test_id() == Some(sidebar::NAV_ID) {
                 *nav_id = Some(sidebar::NAV_ID);
-            }
-            if widget.test_id() == Some("settings.search") {
-                let review = widget.text_review();
-                *search = Some(serde_json::json!({
-                    "rect": rect(widget.get_rect()),
-                    "focused": widget.is_focused(),
-                    "caret_byte": review.as_ref().map(|(caret, _)| *caret),
-                    "text": review.map(|(_, text)| text),
-                }));
             }
             if let Some(list) = widget
                 .as_any()
@@ -757,13 +742,12 @@ impl Widget for SettingsApp {
                     }
                 }
             }
-            widget.for_each_child(&mut |child| inspect(child, search, categories, nav_id));
+            widget.for_each_child(&mut |child| inspect(child, categories, nav_id));
         }
         let (state, path) = ui::doc::document_ref(state, path);
-        let mut search = None;
         let mut categories = Vec::new();
         let mut nav_id = None;
-        inspect(self, &mut search, &mut categories, &mut nav_id);
+        inspect(self, &mut categories, &mut nav_id);
         // get_heads closes pending transactions. Only a disposable clone may
         // perform that operation: the original document stays untouched.
         let mut witness = state.clone();
@@ -776,28 +760,13 @@ impl Widget for SettingsApp {
         let valid = |value: vello::kurbo::Rect| {
             value.is_finite() && value.width() > 0.0 && value.height() > 0.0
         };
-        let search_rect = search.as_ref().and_then(|value| value.get("rect")).cloned();
-        let search_ready = search_rect
-            .as_ref()
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|r| {
-                r.iter().all(|v| v.as_f64().is_some_and(f64::is_finite))
-                    && matches!(
-                        r.as_slice(),
-                        [x0, y0, x1, y1, ..] if x1.as_f64() > x0.as_f64() && y1.as_f64() > y0.as_f64()
-                    )
-            });
+        // The search is the window bar's, outside the app: what it narrowed
+        // the sidebar to is what the app shows of it.
         Some(serde_json::json!({
             "app": "so.tilo.settings",
-            "search_id": "settings.search",
             "nav_id": nav_id,
-            "ready": valid(self.rect) && search_ready,
-            "local_search_text": self.search_state.with(Clone::clone),
-            "synchronized_search_query": self.search_query,
-            "search_widget_text": search.as_ref().and_then(|value| value.get("text")),
-            "search_caret_byte": search.as_ref().and_then(|value| value.get("caret_byte")),
-            "search_focused": search.as_ref().and_then(|value| value.get("focused")),
-            "search_rect": search_rect,
+            "ready": valid(self.rect) && nav_id.is_some(),
+            "search_query": self.search_query(),
             "root_rect": rect(self.rect),
             "selected_category": self.selected.slug(),
             "rendered_result_count": categories.len(),
@@ -867,31 +836,6 @@ impl Widget for SettingsApp {
             self.keyboard_partial.set(false);
             self.structure_dirty = true;
             self.refresh_shell_children();
-        }
-        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
-            && self.search_state.with(|query| query == &self.search_query)
-            && field.value() != self.search_query
-        {
-            self.search_state.set(field.value().to_owned());
-        }
-        let query = self.search_state.with(Clone::clone);
-        if query != self.search_query {
-            self.search_query = query;
-            if let Some(field) = self.shell.as_mut().and_then(NavShell::filter_mut) {
-                field.set_query(&self.search_query);
-            }
-            // Filtering changes only navigation. Reconstructing the active
-            // pane here would discard its transient state and reseed its
-            // document bindings on every search character, and flagging the
-            // composition dirty would rebuild the whole layout tree for it.
-            // The navigation list is virtualised: it re-measures itself.
-            if let Some(nav) = self
-                .shell
-                .as_mut()
-                .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
-            {
-                nav.set_filter(&self.search_query);
-            }
         }
 
         if let Some(shell) = &mut self.shell {
@@ -1052,11 +996,6 @@ impl Widget for SettingsApp {
             && let Some(&shell_node) = children.first()
         {
             shell.handle_event(event, &mut ctx.reborrow(ctx.path, shell_node));
-        }
-        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
-            && self.search_state.with(|query| query != field.value())
-        {
-            self.search_state.set(field.value().to_owned());
         }
     }
 
@@ -1467,6 +1406,15 @@ mod tests {
         );
     }
 
+    fn find_by_test_id<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+        if root.test_id() == Some(id) {
+            return Some(root);
+        }
+        root.children()
+            .into_iter()
+            .find_map(|child| find_by_test_id(child, id))
+    }
+
     fn layout_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
         layout_at_with_theme(app, w, h, &ui::Theme::dark())
     }
@@ -1801,64 +1749,63 @@ mod tests {
         }
     }
 
-    /// Search queries stay local and reach the field.
+    // Settings' search is the window bar's field: it narrows the sidebar in place,
+    // and the sidebar draws no search field of its own.
     #[test]
-    fn search_query_is_local_and_reaches_the_field() {
-        // A local query narrows the retained navigation without recomposing the pane.
+    fn the_window_bar_search_narrows_the_sidebar_in_place() {
+        use automerge::ReadDoc;
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let app = config.app();
+        let mut app = layout_at(app, 1200.0, 760.0);
+        // The pane shown reads off the UI thread and is built again once its
+        // read lands; that rebuild is not the query's.
+        tilo_test_env::wait_for("the pane shown has read", || {
+            let _ = Framed::harness_mut(&mut app).poll_frame();
+            (!app.pane_waits.get() && !app.pane_reading()).then_some(())
+        });
+        let _ = app.take_structure_dirty();
+        assert_eq!(app.search_query(), "", "starts with no query");
+        assert!(
+            find_by_test_id(&*app, "settings.search").is_none(),
+            "the sidebar draws no search field of its own"
+        );
+
+        let doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut search = ui::widget::SearchDriver::default();
         {
-            use automerge::ReadDoc;
-            let config = crate::prefs::test_env::ScratchConfig::new();
-
-            let app = config.app();
-            let mut app = layout_at(app, 1200.0, 760.0);
-            assert_eq!(app.search_query(), "", "starts with no query");
-
-            let doc = automerge::AutoCommit::new();
-            let root = automerge::ROOT;
-            app.search_state.set("night light".to_string());
-            app.sync(&doc, &root);
-            assert_eq!(app.search_query(), "night light");
-            assert!(
-                !app.take_structure_dirty(),
-                "a new query filters navigation in place without rebuilding the pane"
-            );
-            let nav = app
-                .shell
-                .as_mut()
-                .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
-                .expect("the actual sidebar is mounted");
-            assert_eq!(nav.filter(), "night light");
-            let filtered = nav.visible_item_ids();
-            nav.set_filter("");
-            assert!(nav.visible_item_ids().len() > filtered.len());
-            nav.set_filter("night light");
-            assert_eq!(nav.visible_item_ids(), filtered);
-            // Re-syncing the same query is a no-op (no spurious rebuild).
-            app.sync(&doc, &root);
-            assert!(!app.take_structure_dirty());
-            assert!(
-                doc.get(&root, "settings.search.edit").unwrap().is_none(),
-                "a local filter must not create a shared search draft"
-            );
-        }
-
-        // Case `a_search_reaches_the_local_field`.
-        {
-            let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config.app().with_category(Category::Displays);
-            app.search("light");
-            let mut doc = automerge::AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&doc, &root);
+            let settings: &mut SettingsApp = &mut app;
+            search.open(ui::window_toolbar::SearchOffer::of(settings).into());
             assert_eq!(
-                app.search_query(),
-                "light",
-                "the local field must retain the requested filter"
+                search.in_place(),
+                ui::widget::InPlace::List,
+                "the bar's search narrows Settings' list"
             );
-            assert_eq!(app.search_state.with(Clone::clone), "light");
-            assert!(doc.get_heads().is_empty());
-            let _app = layout_at(app, 1200.0, 760.0);
+            assert!(search.drive(settings, "night light", None, false));
         }
+        app.sync(&doc, &root);
+        assert_eq!(app.search_query(), "night light");
+        assert!(
+            !app.take_structure_dirty(),
+            "a new query filters navigation in place without rebuilding the pane"
+        );
+        let nav = app
+            .shell
+            .as_mut()
+            .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
+            .expect("the actual sidebar is mounted");
+        let filtered = nav.visible_item_ids();
+        nav.set_filter("");
+        assert!(nav.visible_item_ids().len() > filtered.len());
+        nav.set_filter("night light");
+        // Re-syncing keeps the bar's query and rebuilds nothing.
+        app.sync(&doc, &root);
+        assert_eq!(app.search_query(), "night light");
+        assert!(!app.take_structure_dirty());
+        assert!(
+            doc.get(&root, "settings.search.edit").unwrap().is_none(),
+            "a local filter must not create a shared search draft"
+        );
     }
 
     /// No app-name header, and the root landmark survives rebuilds.
@@ -1866,9 +1813,9 @@ mod tests {
     fn chrome_draws_no_app_header_and_keeps_its_landmark() {
         // Case `draws_no_app_name_header`.
         // The app must NOT draw its own title / app-name header — the OS window
-        // pill carries the name. The shell's chrome is exactly the search field,
-        // the nav list, and the content pane (no title element). We assert on the
-        // real composed tree: the shell's children are those three, in order.
+        // pill carries the name, and its search is Settings' search. The shell's
+        // chrome is the nav list and the content pane (no title element, no
+        // search field). We assert on the real composed tree.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             let app = config.app();
@@ -1877,8 +1824,8 @@ mod tests {
             let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
             assert!(names.contains(&"NavList"), "the category list is admitted");
             assert!(
-                names.contains(&"SearchField"),
-                "the search field is admitted"
+                !names.contains(&"SearchField"),
+                "the window bar's search is Settings' search: the sidebar draws no field"
             );
             for child in shell.children() {
                 assert_ne!(

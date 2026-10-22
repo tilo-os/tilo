@@ -121,9 +121,11 @@ impl NavSection {
         self
     }
 
-    /// Let the window's filter field ([`super::NavShell::with_filter`])
-    /// narrow this section's items. Sections that do not opt in (a list of
-    /// connections above the tables being filtered) stay as they are.
+    /// Let the window's search narrow this section's items: the window
+    /// bar's field, or a shell's own [`super::NavShell::with_filter`] field.
+    /// The section draws no field itself. Sections that do not opt in (a
+    /// list of connections above the tables being filtered) stay as they
+    /// are.
     #[must_use]
     pub fn filterable(mut self) -> Self {
         self.filterable = true;

@@ -71,34 +71,21 @@ fn a_setting_opens_scrolled_to_its_control_with_the_keyboard_on_it() {
     }
 }
 
-/// A reveal takes the keyboard from the retained filter and can cause a
-/// follow-up layout. Resizing must retain that target, but moving to the filter must
-/// stop retaining it: a reveal is not a permanent focus request.
+/// A reveal takes the keyboard and can cause a follow-up layout. Resizing
+/// must retain that target, but moving the keyboard on must stop retaining
+/// it: a reveal is not a permanent focus request.
 #[test]
 fn a_revealed_control_keeps_focus_across_layouts_until_the_keyboard_moves() {
-    fn filter_focused(widget: &dyn Widget) -> bool {
-        (widget.test_id() == Some("settings.search") && focused(widget))
-            || widget.children().into_iter().any(filter_focused)
-    }
     ui::i18n::I18nManager::init("en-US");
     let setting = settings_store::index::setting("appearance.hide_top_bar").expect("indexed");
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
     app.harness().resize(VIEWPORT).unwrap();
-    app.harness().click_named("settings.search").unwrap();
-    assert!(
-        filter_focused(app.harness().root_widget()),
-        "the filter starts with the keyboard"
-    );
     app.call(
         "open",
         serde_json::json!({ "anchor": format!("{}{}", crate::effects::SETTING_ANCHOR, setting.id) }),
     )
     .expect("the setting opens");
     settle(&mut app);
-    assert!(
-        !filter_focused(app.harness().root_widget()),
-        "revealing transfers the keyboard away from the filter"
-    );
     for viewport in [(1200, 700), VIEWPORT] {
         app.harness().resize(viewport).unwrap();
         app.harness().recompose().expect("a full pane layout");
@@ -113,7 +100,7 @@ fn a_revealed_control_keeps_focus_across_layouts_until_the_keyboard_moves() {
             "the control remains on screen at {rect:?}"
         );
     }
-    app.harness().click_named("settings.search").unwrap();
+    app.harness().tab(false);
     settle(&mut app);
     assert!(
         !control(app.harness().root_widget(), setting).unwrap().1,
@@ -125,10 +112,6 @@ fn a_revealed_control_keeps_focus_across_layouts_until_the_keyboard_moves() {
     assert!(
         !control(app.harness().root_widget(), setting).unwrap().1,
         "layout must not return the keyboard to a previous reveal"
-    );
-    assert!(
-        filter_focused(app.harness().root_widget()),
-        "the filter keeps the keyboard"
     );
 }
 
