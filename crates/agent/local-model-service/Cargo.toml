@@ -79,6 +79,9 @@ path = "src/main.rs"
 [dependencies]
 tilo-paths.workspace = true
 agent-provider-config = { path = "../provider-config" }
+# The person's Hugging Face token, read from the device vault Settings
+# stores it in.
+accounts = { path = "../../system/accounts" }
 system-extension = { path = "../../system/system-extension" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
@@ -87,6 +90,7 @@ serde.workspace = true
 serde_json.workspace = true
 wire-frame = { path = "../../system/wire-frame" }
 sha2.workspace = true
+sha1 = "0.11"
 hex.workspace = true
 getrandom.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }

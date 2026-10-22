@@ -13,6 +13,7 @@ use std::num::NonZeroU16;
 
 use serde::{Deserialize, Serialize};
 
+pub mod hub;
 pub mod snapshot;
 
 /// One accelerator the trusted hardware probe observed.
@@ -89,12 +90,15 @@ impl RuntimeRelease {
     /// Whether this signed engine accepts the explicitly declared layout.
     pub const fn supports_format(&self, format: ModelArtifactFormat) -> bool {
         match &self.execution {
-            Some(RuntimeExecution::LlamaCpp { .. }) => {
-                matches!(format, ModelArtifactFormat::LlamaCppGguf)
-            }
+            Some(RuntimeExecution::LlamaCpp { .. }) => matches!(
+                format,
+                ModelArtifactFormat::LlamaCppGguf | ModelArtifactFormat::LlamaCppGgufShards
+            ),
             None | Some(RuntimeExecution::Vllm { .. }) => matches!(
                 format,
-                ModelArtifactFormat::HfSnapshotTarZst | ModelArtifactFormat::VllmGguf
+                ModelArtifactFormat::HfSnapshotTarZst
+                    | ModelArtifactFormat::VllmGguf
+                    | ModelArtifactFormat::HfSnapshotFiles
             ),
         }
     }
@@ -167,6 +171,14 @@ pub enum ModelArtifactFormat {
     VllmGguf,
     /// A GGUF release explicitly assigned to llama.cpp server.
     LlamaCppGguf,
+    /// A GGUF split into numbered shards (`name-00001-of-00003.gguf`),
+    /// served by llama.cpp from one directory of verified files. Only a
+    /// person's own Hugging Face pick ([`hub`]) has this layout.
+    LlamaCppGgufShards,
+    /// A Hugging Face snapshot (safetensors weights, config, tokenizer)
+    /// assembled from individually verified files and served by vLLM. Only
+    /// a person's own Hugging Face pick ([`hub`]) has this layout.
+    HfSnapshotFiles,
     /// One ONNX graph that a per-user service loads into its own process and
     /// runs on the CPU. It needs no signed runtime, container or service
     /// start: the verified content-addressed object is the whole install.
@@ -194,6 +206,20 @@ impl ModelArtifactFormat {
 
     pub const fn is_speech(self) -> bool {
         matches!(self, Self::WhisperGgml | Self::WhistleCact)
+    }
+
+    /// Whether the model is a directory of files rather than one object.
+    pub const fn is_directory(self) -> bool {
+        matches!(
+            self,
+            Self::HfSnapshotTarZst | Self::HfSnapshotFiles | Self::LlamaCppGgufShards
+        )
+    }
+
+    /// Whether the layout is assembled from several separately verified
+    /// files, which no single signed artifact can describe.
+    pub const fn is_per_file(self) -> bool {
+        matches!(self, Self::HfSnapshotFiles | Self::LlamaCppGgufShards)
     }
 }
 
@@ -314,8 +340,10 @@ impl LocalModelRelease {
     ///
     /// Returns an error naming the first contradiction.
     pub fn validate_shape(&self) -> Result<(), ProvisionError> {
-        if self.artifact_format == ModelArtifactFormat::LlamaCppGguf
-            && (self.vision || self.face_recognition)
+        if matches!(
+            self.artifact_format,
+            ModelArtifactFormat::LlamaCppGguf | ModelArtifactFormat::LlamaCppGgufShards
+        ) && (self.vision || self.face_recognition)
         {
             return Err(ProvisionError::InvalidCatalog(
                 "single-file llama.cpp release has no vision projection",
@@ -400,6 +428,11 @@ impl LocalModelCatalog {
                 return Err(ProvisionError::InvalidCatalog("model ids must be unique"));
             }
             model.validate_shape()?;
+            if model.artifact_format.is_per_file() {
+                return Err(ProvisionError::InvalidCatalog(
+                    "per-file layouts come only from a person's own Hugging Face pick",
+                ));
+            }
             model.artifact.validate()?;
             if model.description.trim().is_empty()
                 || model.license_id.trim().is_empty()

@@ -2320,6 +2320,7 @@ impl LocalModelControl for SampleManager {
                 face_recognition: false,
                 in_process: false,
                 segmentation: false,
+                no_runtime: false,
             }),
             models: Vec::new(),
             in_process: Vec::new(),
@@ -2370,6 +2371,7 @@ mod tests {
             face_recognition: false,
             in_process: false,
             segmentation: false,
+            no_runtime: false,
         }
     }
 
@@ -2388,6 +2390,7 @@ mod tests {
             face_recognition: false,
             in_process: true,
             segmentation: true,
+            no_runtime: false,
         }
     }
 

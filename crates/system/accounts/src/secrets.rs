@@ -456,6 +456,30 @@ pub enum BrokerError {
     Randomness,
 }
 
+impl std::fmt::Display for BrokerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Denied => {
+                formatter.write_str("the credential belongs to another service or purpose")
+            }
+            Self::NotFound => formatter.write_str("no such credential is stored"),
+            Self::OriginMismatch => formatter.write_str("the credential belongs to another origin"),
+            Self::InvalidOrigin => formatter.write_str("the credential's origin is not valid"),
+            Self::InvalidAppId => formatter.write_str("the credential's id is not valid"),
+            Self::InvalidPurpose => {
+                formatter.write_str("the credential or its purpose is not valid")
+            }
+            Self::CorruptItem => formatter.write_str("the stored credential is damaged"),
+            Self::Storage(reason) => {
+                write!(formatter, "the credential vault is unavailable: {reason}")
+            }
+            Self::Randomness => formatter.write_str("the system could not provide randomness"),
+        }
+    }
+}
+
+impl std::error::Error for BrokerError {}
+
 /// Session broker. The UI/portal supplies the decision callback; only a user
 /// gesture can create a grant. `AllowOnce` is consumed immediately.
 pub struct CredentialBroker {

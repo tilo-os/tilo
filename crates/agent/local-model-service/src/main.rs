@@ -1,9 +1,11 @@
 //! `tilo-model-manager` — the small production CLI Settings invokes.
 //!
-//! It accepts only signed catalog selections, writes only its private store,
-//! downloads only pinned HTTPS URLs, and delegates process lifetime to a
-//! fixed-argv systemd user service. No subcommand accepts a URL, command, tag,
-//! model path, or arbitrary process argument.
+//! It accepts signed catalog selections and a person's own picks: a Hugging
+//! Face model reference it resolves to a commit and verifies file by file,
+//! or a GGUF file it copies into its store. It writes only its private store,
+//! downloads only pinned HTTPS objects, and delegates process lifetime to a
+//! fixed-argv systemd user service. No subcommand accepts a command, image
+//! tag, runtime, or arbitrary process argument.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -14,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use agent_provider_config::local::hub::{HubFormat, HubModelOffer, HubRef, UserModel};
 use agent_provider_config::local::snapshot::{
     AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
     InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
@@ -38,6 +41,7 @@ use local_model_service::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod hub_client;
 mod memory_capacity;
 
 #[derive(Parser)]
@@ -95,6 +99,37 @@ enum Action {
     /// Ask the root-owned hardware policy for this machine's exact signed
     /// `BootPack` and enqueue it for immutable deployment staging.
     StageAccelerator,
+    /// Search Hugging Face for models with GGUF or safetensors files.
+    HubSearch {
+        #[arg(long)]
+        query: String,
+        /// `gguf` or `safetensors`.
+        #[arg(long, default_value = "gguf")]
+        format: String,
+    },
+    /// Describe a Hugging Face model, named by id or URL, at a pinned
+    /// commit: its variants, their sizes and fit, and its licence.
+    HubModel {
+        #[arg(long)]
+        reference: String,
+    },
+    /// Download one variant of a Hugging Face model at a commit `hub-model`
+    /// reported, accepting its licence.
+    HubInstall {
+        #[arg(long)]
+        repo: String,
+        #[arg(long)]
+        revision: String,
+        #[arg(long)]
+        variant: String,
+        #[arg(long)]
+        accept_license: bool,
+    },
+    /// Copy a GGUF file on this device into the model store.
+    ImportFile {
+        #[arg(long)]
+        path: String,
+    },
     #[command(hide = true)]
     Worker {
         #[arg(long)]
@@ -106,6 +141,12 @@ enum Action {
     /// already-installed model can be restarted without blocking Settings.
     #[command(hide = true)]
     WorkerStart {
+        #[arg(long)]
+        model: String,
+    },
+    /// Durable background install of a person's own model.
+    #[command(hide = true)]
+    WorkerUser {
         #[arg(long)]
         model: String,
     },
@@ -142,6 +183,22 @@ enum RpcAction {
         model: String,
     },
     StageAccelerator,
+    HubSearch {
+        query: String,
+        format: String,
+    },
+    HubModel {
+        reference: String,
+    },
+    HubInstall {
+        repo: String,
+        revision: String,
+        variant: String,
+        accept_license: bool,
+    },
+    ImportFile {
+        path: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -229,64 +286,21 @@ impl HttpsTransport for ReqwestTransport {
             .header(reqwest::header::RANGE, format!("bytes={start}-"))
             .send()
             .map_err(|error| ServiceError::Backend(error.to_string()))?;
-        if start > 0 && response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Err(ServiceError::Backend(
-                "resumed HTTPS request did not return 206 Partial Content".into(),
-            ));
-        }
         if start == 0 && !response.status().is_success() {
             return Err(ServiceError::Backend(format!(
                 "HTTPS download returned {}",
                 response.status()
             )));
         }
-        if start > 0 {
-            let range = response
-                .headers()
-                .get(reqwest::header::CONTENT_RANGE)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("");
-            if !range.starts_with(&format!("bytes {start}-")) {
-                return Err(ServiceError::Backend(
-                    "resumed HTTPS response had an invalid Content-Range".into(),
-                ));
-            }
-        }
-        if response
-            .content_length()
-            .is_some_and(|length| length > maximum_bytes)
-        {
-            return Err(ServiceError::PartialTooLarge);
-        }
-        let mut response = response;
-        let mut count = 0_u64;
-        let mut buffer = vec![0_u8; 32 * 1024];
-        loop {
-            let read = response.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            // `Read` never reports more bytes than the buffer holds.
-            let chunk = buffer.get(..read).ok_or(ServiceError::PartialTooLarge)?;
-            let read = u64::try_from(read).map_err(|_| ServiceError::PartialTooLarge)?;
-            count = count
-                .checked_add(read)
-                .ok_or(ServiceError::PartialTooLarge)?;
-            if count > maximum_bytes {
-                return Err(ServiceError::PartialTooLarge);
-            }
-            destination.write_all(chunk)?;
-            // State is published by the service after every confirmed write,
-            // not optimistically from Content-Length.
-            progress(count);
-        }
-        Ok(count)
+        hub_client::copy_range(response, start, maximum_bytes, progress, destination)
     }
 }
 
 enum ManagerTransport {
     Https(ReqwestTransport),
     Offline(local_model_service::developer::OfflineTransport),
+    /// Hugging Face, for a person's own models.
+    Hub(hub_client::HubClient),
 }
 impl ManagerTransport {
     fn new(dir: Option<&Path>, catalog: &CatalogPayload) -> Result<Self, ServiceError> {
@@ -305,6 +319,7 @@ impl HttpsTransport for ManagerTransport {
         match self {
             Self::Https(t) => t.validate_pin(pin),
             Self::Offline(t) => t.validate_pin(pin),
+            Self::Hub(t) => t.validate_pin(pin),
         }
     }
     fn resume(
@@ -318,6 +333,7 @@ impl HttpsTransport for ManagerTransport {
         match self {
             Self::Https(t) => t.resume(url, start, maximum, progress, destination),
             Self::Offline(t) => t.resume(url, start, maximum, progress, destination),
+            Self::Hub(t) => t.resume(url, start, maximum, progress, destination),
         }
     }
 }
@@ -456,6 +472,7 @@ fn package(model: &LocalModelRelease) -> LocalModelPackage {
         face_recognition: model.face_recognition,
         in_process: model.runs_in_process(),
         segmentation: model.segmentation,
+        no_runtime: false,
     }
 }
 fn runtime_kind_for(
@@ -634,7 +651,9 @@ fn main() {
     }
     let result = match &cli.command {
         Action::Serve { socket } => serve(socket),
-        Action::Worker { .. } | Action::WorkerStart { .. } => run_local(cli),
+        Action::Worker { .. } | Action::WorkerStart { .. } | Action::WorkerUser { .. } => {
+            run_local(cli)
+        }
         _ if service_fd().is_some() => forward_to_service(&cli),
         _ => run_local(cli),
     };
@@ -696,9 +715,29 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
             model: model.clone(),
         }),
         Action::StageAccelerator => Ok(RpcAction::StageAccelerator),
+        Action::HubSearch { query, format } => Ok(RpcAction::HubSearch {
+            query: query.clone(),
+            format: format.clone(),
+        }),
+        Action::HubModel { reference } => Ok(RpcAction::HubModel {
+            reference: reference.clone(),
+        }),
+        Action::HubInstall {
+            repo,
+            revision,
+            variant,
+            accept_license,
+        } => Ok(RpcAction::HubInstall {
+            repo: repo.clone(),
+            revision: revision.clone(),
+            variant: variant.clone(),
+            accept_license: *accept_license,
+        }),
+        Action::ImportFile { path } => Ok(RpcAction::ImportFile { path: path.clone() }),
         Action::RecoverOrphan { .. }
         | Action::Worker { .. }
         | Action::WorkerStart { .. }
+        | Action::WorkerUser { .. }
         | Action::Serve { .. } => Err("internal model manager action cannot be proxied".into()),
     }
 }
@@ -807,6 +846,20 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
         RpcAction::Stop { model } => Action::Stop { model },
         RpcAction::Remove { model } => Action::Remove { model },
         RpcAction::StageAccelerator => Action::StageAccelerator,
+        RpcAction::HubSearch { query, format } => Action::HubSearch { query, format },
+        RpcAction::HubModel { reference } => Action::HubModel { reference },
+        RpcAction::HubInstall {
+            repo,
+            revision,
+            variant,
+            accept_license,
+        } => Action::HubInstall {
+            repo,
+            revision,
+            variant,
+            accept_license,
+        },
+        RpcAction::ImportFile { path } => Action::ImportFile { path },
     };
     Cli {
         root: None,
@@ -1083,13 +1136,13 @@ fn open_cli_service(
     root: &Path,
     catalog: &CatalogPayload,
 ) -> Result<LocalModelService<ManagerTransport, SystemdSupervisor>, String> {
-    LocalModelService::open(
-        root,
+    let transport = if matches!(cli.command, Action::WorkerUser { .. }) {
+        hub_client::HubClient::new().map(ManagerTransport::Hub)
+    } else {
         ManagerTransport::new(cli.artifact_dir.as_deref(), catalog)
-            .map_err(|error| error.to_string())?,
-        SystemdSupervisor,
-    )
-    .map_err(|error| error.to_string())
+    }
+    .map_err(|error| error.to_string())?;
+    LocalModelService::open(root, transport, SystemdSupervisor).map_err(|error| error.to_string())
 }
 
 fn run_local(cli: Cli) -> Result<Option<String>, String> {
@@ -1109,76 +1162,71 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
         )
         .map(Some);
     }
+    if let Action::HubSearch { query, format } = &cli.command {
+        return hub_search(query, format).map(Some);
+    }
     let catalog = selected_catalog(&cli, &catalog_path, &key_path)?;
+    if let Action::HubModel { reference } = &cli.command {
+        let offer = hub_offer(&catalog, &local_hardware(&root)?, reference, None)?;
+        return Ok(Some(
+            serde_json::to_string(&offer).map_err(|e| e.to_string())?,
+        ));
+    }
     let mut service = open_cli_service(&cli, &root, &catalog)?;
+    let workers = Workers {
+        root: &root,
+        catalog: &catalog_path,
+        keys: &key_path,
+        artifact_dir: cli.artifact_dir.as_deref(),
+    };
     match cli.command {
         Action::Install {
             model,
             revision,
             accept_license,
+        } => install(
+            &mut service,
+            &workers,
+            &catalog,
+            (&model, revision.as_deref()),
+            accept_license,
+        )?,
+        Action::HubInstall {
+            repo,
+            revision,
+            variant,
+            accept_license,
         } => {
-            let release = catalog
-                .models
-                .iter()
-                .find(|release| {
-                    release.id == model
-                        && revision
-                            .as_ref()
-                            .is_none_or(|revision| revision == &release.version)
-                })
-                .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
-            if release.requires_acceptance && !accept_license {
-                return Err(
-                    "this signed model release requires --accept-license before download".into(),
-                );
+            if !accept_license {
+                return Err("a Hugging Face model requires --accept-license".into());
             }
-            if release.requires_acceptance {
-                service
-                    .record_license_acceptance(release)
-                    .map_err(|error| error.to_string())?;
-            }
-            service
-                .queue_install(release)
-                .map_err(|error| error.to_string())?;
-            enqueue_worker(
-                &root,
-                &catalog_path,
-                &key_path,
-                &model,
-                revision.as_deref(),
-                cli.artifact_dir.as_deref(),
-            )
-            .inspect_err(|error| {
-                let _ = service.record_failure(&model, error);
-            })?;
+            let hardware = local_hardware(&root)?;
+            let model = pick_from_hub(&catalog, &hardware, (&repo, &revision, &variant))?;
+            queue_user_model(&mut service, &workers, model)?;
+        }
+        Action::ImportFile { path } => {
+            let size = gguf_file_size(&path)?;
+            let model = UserModel::from_file(&path, size, "").map_err(|error| error.to_string())?;
+            queue_user_model(&mut service, &workers, model)?;
         }
         Action::Start { model } => {
-            let release = catalog
-                .models
-                .iter()
-                .find(|release| release.id == model)
-                .ok_or_else(|| "model is not in the signed catalog".to_string())?;
-            refuse_in_process(release)?;
+            let release = release_for(&catalog, &service, &model)?;
+            refuse_in_process(&release)?;
             // Refuse before reporting an admitted background start; its worker
             // observes the same runtime slice again immediately before launch.
-            signed_runtime_for(&catalog, &local_hardware(&root)?, release)?;
+            signed_runtime_for(&catalog, &local_hardware(&root)?, &release)?;
             service
                 .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
-            enqueue_start_worker(
-                &root,
-                &catalog_path,
-                &key_path,
-                &model,
-                cli.artifact_dir.as_deref(),
-            )
-            .inspect_err(|error| {
-                let _ = service.record_failure(&model, error);
-            })?;
+            workers
+                .enqueue("start", "worker-start", &model, None)
+                .inspect_err(|error| {
+                    let _ = service.record_failure(&model, error);
+                })?;
         }
         Action::Stop { model } => {
-            if let Some(release) = catalog.models.iter().find(|release| release.id == model) {
-                refuse_in_process(release)?;
+            if let Ok(release) = release_for(&catalog, &service, &model) {
+                refuse_in_process(&release)?;
             }
             service.stop(&model).map_err(|error| error.to_string())?;
         }
@@ -1190,12 +1238,198 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             run_install_worker(&mut service, &catalog, &model, revision.as_ref(), &root)?;
         }
         Action::WorkerStart { model } => run_start_worker(&mut service, &catalog, &model, &root)?,
+        Action::WorkerUser { model } => run_user_worker(&mut service, &catalog, &model, &root)?,
         // The dispatcher answers these itself and never hands them over.
-        Action::RecoverOrphan { .. } | Action::Snapshot { .. } | Action::Serve { .. } => {
+        Action::RecoverOrphan { .. }
+        | Action::Snapshot { .. }
+        | Action::HubSearch { .. }
+        | Action::HubModel { .. }
+        | Action::Serve { .. } => {
             return Err("not a local model action".into());
         }
     }
     Ok(None)
+}
+
+/// Download a signed catalog release, or retry a person's own model.
+fn install(
+    service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
+    workers: &Workers<'_>,
+    catalog: &CatalogPayload,
+    (model, revision): (&str, Option<&str>),
+    accept_license: bool,
+) -> Result<(), String> {
+    if !catalog.models.iter().any(|release| release.id == model)
+        && let Some(added) = service.state().user_models.get(model).cloned()
+    {
+        // Retrying a person's own model queues the same pick again.
+        if revision.is_some_and(|revision| revision != added.revision()) {
+            return Err("the model was added at another revision".into());
+        }
+        return queue_user_model(service, workers, added);
+    }
+    let release = catalog
+        .models
+        .iter()
+        .find(|release| {
+            release.id == model && revision.is_none_or(|revision| revision == release.version)
+        })
+        .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
+    if release.requires_acceptance && !accept_license {
+        return Err("this signed model release requires --accept-license before download".into());
+    }
+    if release.requires_acceptance {
+        service
+            .record_license_acceptance(release)
+            .map_err(|error| error.to_string())?;
+    }
+    service
+        .queue_install(release)
+        .map_err(|error| error.to_string())?;
+    workers
+        .enqueue("download", "worker", model, revision)
+        .inspect_err(|error| {
+            let _ = service.record_failure(model, error);
+        })
+}
+
+/// A signed catalog release, or a person's own model, by id.
+fn release_for(
+    catalog: &CatalogPayload,
+    service: &LocalModelService<ManagerTransport, SystemdSupervisor>,
+    model: &str,
+) -> Result<LocalModelRelease, String> {
+    catalog
+        .models
+        .iter()
+        .find(|release| release.id == model)
+        .cloned()
+        .or_else(|| service.user_release(model))
+        .ok_or_else(|| "model is neither in the signed catalog nor added on this device".into())
+}
+
+/// Search Hugging Face; the results as JSON.
+fn hub_search(query: &str, format: &str) -> Result<String, String> {
+    let format = match format {
+        "gguf" => HubFormat::Gguf,
+        "safetensors" => HubFormat::Safetensors,
+        _ => return Err("search format is gguf or safetensors".into()),
+    };
+    let mut client = hub_client::HubClient::new().map_err(|error| error.to_string())?;
+    let results = local_model_service::hub::search(&mut client, query, format)
+        .map_err(|error| error.to_string())?;
+    serde_json::to_string(&results).map_err(|error| error.to_string())
+}
+
+/// What a person can pick from the model `reference` names on this
+/// machine, at `revision` or the revision the reference names.
+fn hub_offer(
+    catalog: &CatalogPayload,
+    hardware: &HardwareSnapshot,
+    reference: &str,
+    revision: Option<&str>,
+) -> Result<HubModelOffer, String> {
+    let mut reference = HubRef::parse(reference).map_err(|error| error.to_string())?;
+    if let Some(revision) = revision {
+        reference.revision = Some(revision.to_owned());
+    }
+    let mut client = hub_client::HubClient::new().map_err(|error| error.to_string())?;
+    let info = local_model_service::hub::model_info(&mut client, &reference)
+        .map_err(|error| error.to_string())?;
+    let signed_in = hub_client::stored_token()?.is_some();
+    HubModelOffer::of(
+        &info,
+        hardware,
+        |format| {
+            catalog
+                .runtimes
+                .iter()
+                .any(|runtime| runtime.release.supports_format(format))
+        },
+        signed_in,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// The variant of a Hub model a person picked, checked again here at the
+/// commit it was shown at: it must still be offered and fit this device.
+fn pick_from_hub(
+    catalog: &CatalogPayload,
+    hardware: &HardwareSnapshot,
+    (repo, revision, variant): (&str, &str, &str),
+) -> Result<UserModel, String> {
+    let offer = hub_offer(catalog, hardware, repo, Some(revision))?;
+    if offer.revision != revision {
+        return Err("the model changed on Hugging Face; review it again".into());
+    }
+    let picked = offer
+        .variant(variant)
+        .ok_or_else(|| format!("{repo} has no variant {variant}"))?;
+    if picked.fit.fit == HardwareFit::Unsupported {
+        return Err(format!("{variant} does not fit this device"));
+    }
+    let model = UserModel::from_offer(&offer, variant).map_err(|error| error.to_string())?;
+    if catalog.models.iter().any(|release| release.id == model.id) {
+        return Err("a signed catalog model already has this id".into());
+    }
+    Ok(model)
+}
+
+/// The size of the GGUF file at `path`, after checking it is one.
+fn gguf_file_size(path: &str) -> Result<u64, String> {
+    let mut file = File::open(path).map_err(|error| format!("{path}: {error}"))?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    let mut magic = [0_u8; 4];
+    if !metadata.is_file() || file.read_exact(&mut magic).is_err() || &magic != b"GGUF" {
+        return Err(format!("{path} is not a GGUF model file"));
+    }
+    Ok(metadata.len())
+}
+
+/// Record a person's pick and hand its download to a durable worker.
+fn queue_user_model(
+    service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
+    workers: &Workers<'_>,
+    model: UserModel,
+) -> Result<(), String> {
+    let id = model.id.clone();
+    service
+        .queue_user_model(model)
+        .map_err(|error| error.to_string())?;
+    workers
+        .enqueue("download", "worker-user", &id, None)
+        .inspect_err(|error| {
+            let _ = service.record_failure(&id, error);
+        })
+}
+
+/// Install a person's own model in the detached worker, then start it when
+/// a signed runtime on this machine serves its format. Without one it
+/// stays installed, ready for when one ships.
+fn run_user_worker(
+    service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
+    catalog: &CatalogPayload,
+    model: &str,
+    root: &Path,
+) -> Result<(), String> {
+    if let Err(error) = service.install_user_model(model) {
+        let _ = service.record_failure(model, error.to_string());
+        return Err(error.to_string());
+    }
+    let release = release_for(catalog, service, model)?;
+    let Ok(runtime) =
+        local_hardware(root).and_then(|hardware| signed_runtime_for(catalog, &hardware, &release))
+    else {
+        return Ok(());
+    };
+    let started = allocate_loopback_port()
+        .map_err(ServiceError::Backend)
+        .and_then(|port| service.start(runtime, &release, port));
+    if let Err(error) = started {
+        let _ = service.record_failure(model, error.to_string());
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 fn run_start_worker(
@@ -1204,18 +1438,14 @@ fn run_start_worker(
     model: &str,
     root: &Path,
 ) -> Result<(), String> {
-    let release = catalog
-        .models
-        .iter()
-        .find(|release| release.id == model)
-        .ok_or_else(|| "model is not in the signed catalog".to_string())?;
-    refuse_in_process(release)?;
+    let release = release_for(catalog, service, model)?;
+    refuse_in_process(&release)?;
     let runtime = local_hardware(root)
-        .and_then(|hardware| signed_runtime_for(catalog, &hardware, release))
+        .and_then(|hardware| signed_runtime_for(catalog, &hardware, &release))
         .inspect_err(|error| {
             let _ = service.record_failure(model, error);
         })?;
-    if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
+    if let Err(error) = service.start(runtime, &release, allocate_loopback_port()?) {
         let _ = service.record_failure(model, error.to_string());
         return Err(error.to_string());
     }
@@ -1259,14 +1489,21 @@ fn local_snapshot(
         .models
         .iter()
         .filter_map(|(id, managed)| {
-            catalog
+            let release = catalog
                 .models
                 .iter()
                 .find(|model| &model.id == id && !model.runs_in_process())
-                .map(|model| InstalledLocalModel {
-                    package: package(model),
-                    phase: phase(&managed.status),
-                })
+                .cloned()
+                .or_else(|| service.user_release(id))?;
+            let mut package = package(&release);
+            package.no_runtime = !catalog
+                .runtimes
+                .iter()
+                .any(|runtime| runtime.release.supports_format(release.artifact_format));
+            Some(InstalledLocalModel {
+                package,
+                phase: phase(&managed.status),
+            })
         })
         .collect();
     let payload = ServiceSnapshot {
@@ -1367,89 +1604,61 @@ fn run_install_worker(
     Ok(())
 }
 
-fn enqueue_worker(
-    root: &PathBuf,
-    catalog: &PathBuf,
-    keys: &PathBuf,
-    model: &str,
-    revision: Option<&str>,
-    artifact_dir: Option<&Path>,
-) -> Result<(), String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let digest = hex::encode(Sha256::digest(model.as_bytes()));
-    let unit = format!(
-        "tilo-model-download-{}",
-        digest.get(..16).unwrap_or(&digest)
-    );
-    let mut command = Command::new("systemd-run");
-    command
-        .args(["--user", "--collect", "--service-type=exec", "--unit"])
-        .arg(&unit)
-        .arg("--")
-        .arg(executable);
-    // The transient worker retains the selected developer store only outside
-    // elevated mode. Packaged Settings never supplies these overrides.
-    if rustix::process::geteuid().as_raw() != 0 {
-        command
-            .arg("--root")
-            .arg(root)
-            .arg("--catalog")
-            .arg(catalog)
-            .arg("--keys")
-            .arg(keys);
-    }
-    if let Some(dir) = artifact_dir {
-        command.arg("--artifact-dir").arg(dir);
-    }
-    command.args(["worker", "--model", model]);
-    if let Some(revision) = revision {
-        command.args(["--revision", revision]);
-    }
-    let output = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(30))
-        .map_err(|error| format!("could not enqueue model worker: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err("systemd-run rejected the durable model worker".into())
-    }
+/// What a durable worker needs to find the store and catalog this
+/// manager uses.
+struct Workers<'a> {
+    root: &'a Path,
+    catalog: &'a Path,
+    keys: &'a Path,
+    artifact_dir: Option<&'a Path>,
 }
 
-fn enqueue_start_worker(
-    root: &PathBuf,
-    catalog: &PathBuf,
-    keys: &PathBuf,
-    model: &str,
-    artifact_dir: Option<&Path>,
-) -> Result<(), String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let digest = hex::encode(Sha256::digest(model.as_bytes()));
-    let unit = format!("tilo-model-start-{}", digest.get(..16).unwrap_or(&digest));
-    let mut command = Command::new("systemd-run");
-    command
-        .args(["--user", "--collect", "--service-type=exec", "--unit"])
-        .arg(&unit)
-        .arg("--")
-        .arg(executable);
-    if rustix::process::geteuid().as_raw() != 0 {
+impl Workers<'_> {
+    /// Run `verb` for `model` in a transient user service named after
+    /// `kind` and the model, so it outlives Settings and the RPC.
+    fn enqueue(
+        &self,
+        kind: &str,
+        verb: &str,
+        model: &str,
+        revision: Option<&str>,
+    ) -> Result<(), String> {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let digest = hex::encode(Sha256::digest(model.as_bytes()));
+        let unit = format!("tilo-model-{kind}-{}", digest.get(..16).unwrap_or(&digest));
+        let mut command = Command::new("systemd-run");
         command
-            .arg("--root")
-            .arg(root)
-            .arg("--catalog")
-            .arg(catalog)
-            .arg("--keys")
-            .arg(keys);
+            .args(["--user", "--collect", "--service-type=exec", "--unit"])
+            .arg(&unit)
+            .arg("--")
+            .arg(executable);
+        // The transient worker retains the selected developer store only outside
+        // elevated mode. Packaged Settings never supplies these overrides.
+        if rustix::process::geteuid().as_raw() != 0 {
+            command
+                .arg("--root")
+                .arg(self.root)
+                .arg("--catalog")
+                .arg(self.catalog)
+                .arg("--keys")
+                .arg(self.keys);
+        }
+        if let Some(dir) = self.artifact_dir {
+            command.arg("--artifact-dir").arg(dir);
+        }
+        command.args([verb, "--model", model]);
+        if let Some(revision) = revision {
+            command.args(["--revision", revision]);
+        }
+        let output =
+            bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(30))
+                .map_err(|error| format!("could not enqueue model {kind}: {error}"))?;
+        output
+            .status
+            .success()
+            .then_some(())
+            .ok_or_else(|| format!("systemd-run rejected the durable model {kind}"))
     }
-    if let Some(dir) = artifact_dir {
-        command.arg("--artifact-dir").arg(dir);
-    }
-    command.args(["worker-start", "--model", model]);
-    let output = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(30))
-        .map_err(|error| format!("could not enqueue model start: {error}"))?;
-    output
-        .status
-        .success()
-        .then_some(())
-        .ok_or_else(|| "systemd-run rejected the durable model start".to_string())
 }
 
 #[cfg(test)]
@@ -1909,6 +2118,7 @@ mod tests {
                 status: LocalModelStatus::Installed,
                 process: None,
                 in_process: None,
+                objects: Vec::new(),
             },
         );
         let listed = in_process_models(&models, &state);
@@ -2085,5 +2295,43 @@ mod tests {
                 RuntimeKind::Cpu
             );
         }
+    }
+
+    /// Settings reaches the Hub verbs through the service; the worker that
+    /// downloads a pick is never proxied, and its argument is checked.
+    #[test]
+    fn hub_verbs_cross_the_service_and_their_worker_does_not() {
+        let install = Cli::try_parse_from([
+            "manager",
+            "hub-install",
+            "--repo=acme/Chat-GGUF",
+            &format!("--revision={}", "a".repeat(40)),
+            "--variant=Q4_K_M",
+            "--accept-license",
+        ])
+        .unwrap();
+        let action = rpc_action(&install.command).unwrap();
+        let wire = serde_json::to_string(&action).unwrap();
+        let back: RpcAction = serde_json::from_str(&wire).unwrap();
+        assert!(matches!(
+            cli_for_rpc(back).command,
+            Action::HubInstall { accept_license: true, ref variant, .. } if variant == "Q4_K_M"
+        ));
+        let search =
+            Cli::try_parse_from(["manager", "hub-search", "--query=-flag-looking query"]).unwrap();
+        assert!(matches!(
+            rpc_action(&search.command).unwrap(),
+            RpcAction::HubSearch { ref query, ref format } if query == "-flag-looking query" && format == "gguf"
+        ));
+        let worker =
+            Cli::try_parse_from(["manager", "worker-user", "--model", "hf/acme/x/q4_0"]).unwrap();
+        assert!(rpc_action(&worker.command).is_err());
+        assert!(hub_search("chat", "pickle").is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x.gguf");
+        std::fs::write(&file, b"not a model").unwrap();
+        assert!(gguf_file_size(file.to_str().unwrap()).is_err());
+        std::fs::write(&file, b"GGUF weights").unwrap();
+        assert_eq!(gguf_file_size(file.to_str().unwrap()).unwrap(), 12);
     }
 }
