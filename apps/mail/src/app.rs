@@ -6434,7 +6434,10 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             let geometry = app.nav.geometry();
             assert_eq!(geometry.sidebar, ui::widget::SidebarPlacement::Screen);
             assert_eq!(app.nav_pane(), NavPane::Overview, "opens on the list");
-            assert!(geometry.back.width() > 0.0, "Back on the narrow list");
+            assert!(
+                app.nav.can_go_back() && !app.nav.window_toolbar().leading.is_empty(),
+                "Back in the window's bar on the narrow list"
+            );
             assert!(!app.nav.is_sidebar_open());
             assert!(dispatch(&mut app, &esc_event(), &mut doc), "Esc consumed");
             app.nav.snap();
