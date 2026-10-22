@@ -10736,6 +10736,12 @@ pub fn run() {
     let paint_ticks = std::env::var("TILO_PAINT_STATS").is_ok_and(|value| value.trim() == "ticks");
     // What ended the park before this iteration, for `paint-tick:`.
     let mut last_wake: &'static str = "start";
+    // The last park ended on the frame cadence and no client request came
+    // in after the frame: nothing outside an animation asked for this tick.
+    let mut woke_for_cadence_only = false;
+    // The widget pump changed something the last time it ran: an animation
+    // stepped in `update` (rather than placed by layout) is running.
+    let mut widget_pump_changed = true;
     // Slow iterations are exceptional and always worth preserving in the
     // session flight record: a compositor that stops pumping input for 100 ms
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
@@ -13006,7 +13012,17 @@ pub fn run() {
         }
         let pump_bookkeeping_done = Instant::now();
         let pump_network_started = pump_bookkeeping_done;
-        if let Some(net) = peer_sync.as_ref() {
+        // A tick only an animation's cadence woke, with no input since, has
+        // nothing new from the network, the device fabric or peers' presence
+        // to fold in: their sockets and timers wake the loop themselves. It
+        // leaves them to the next tick anything else wakes, so an animation's
+        // frames spend their time on the animation.
+        let cadence_only_tick = woke_for_cadence_only
+            && !had_backend_events
+            && !force_first_paint
+            && !session_changed
+            && !session.is_locked();
+        if let Some(net) = peer_sync.as_ref().filter(|_| !cadence_only_tick) {
             pump_phase!("network-tick", net.frame_tick());
             deliver_held_key_releases!();
             if !std::mem::replace(&mut device_fabric_tried, true) {
@@ -13429,15 +13445,16 @@ pub fn run() {
         frame_builder
             .host_mut()
             .note_local_activity(session.is_locked(), session.idle_for(Instant::now()));
-        let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
-            // Clone the tree handle and drop the `ChromeState` borrow before
-            // the relay locks the tree — nothing here needs the RefCell guard.
-            let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
-            relay.follow_tree(&tree_handle);
-            frame_builder.pump_peer_presence()
-        } else {
-            false
-        };
+        let peers_moved =
+            if let Some(relay) = frame_builder.peer_presence().filter(|_| !cadence_only_tick) {
+                // Clone the tree handle and drop the `ChromeState` borrow before
+                // the relay locks the tree — nothing here needs the RefCell guard.
+                let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                relay.follow_tree(&tree_handle);
+                frame_builder.pump_peer_presence()
+            } else {
+                false
+            };
         pump_checkpoint!("peer-presence");
         deliver_held_key_releases!();
         let pump_presence_done = Instant::now();
@@ -13450,9 +13467,15 @@ pub fn run() {
         let markers_suppressed = session.is_locked() || frame_builder.host().onboarding_active();
         let markers_retired =
             revalidate_native_agent_markers(&mut state, &mut frame_builder, markers_suppressed);
-        let mut apps_changed = foreign_capture_changed
-            | markers_retired
-            | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        // On a tick only the cadence woke, an animation that layout places
+        // (a strip's pan) moves in `relayout`; the widgets' `update` has
+        // nothing new to read, unless it stepped an animation of its own last
+        // time, which then keeps it running every tick.
+        if !cadence_only_tick || widget_pump_changed {
+            widget_pump_changed =
+                frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        }
+        let mut apps_changed = foreign_capture_changed | markers_retired | widget_pump_changed;
         crate::shell::launcher::record_presented_launches(|surface| {
             crate::compositor::foreign::store().frame_seq(surface)
         });
@@ -15087,6 +15110,7 @@ pub fn run() {
         }
         let wake = park_wake_reason(park, park_deadline, slept);
         metrics.mark_wake(wake);
+        woke_for_cadence_only = wake == "cadence" && !clients_dispatched;
         if paint_stats {
             wakes_seen.note(wake);
             last_wake = wake;
@@ -16452,6 +16476,43 @@ mod tests {
             "only changes the tick counted are owed, so the lock does not filter them again"
         );
         assert_eq!(owed.paint_reason_bits(false, false), r::OWED);
+    }
+
+    /// Only a frame an animation alone asks for, on an unlocked desktop,
+    /// may show windows at rest as they were drawn.
+    #[test]
+    fn only_an_animation_alone_is_a_frame_that_only_moved() {
+        let animation = NativeRedrawReasons {
+            hidden_desktop_animation: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert!(animation.only_motion(false));
+        assert!(!animation.only_motion(true), "not on a locked desktop");
+        assert!(!NativeRedrawReasons::default().only_motion(false));
+        for with in [
+            NativeRedrawReasons {
+                apps: true,
+                ..animation
+            },
+            NativeRedrawReasons {
+                backend_event: true,
+                ..animation
+            },
+            NativeRedrawReasons {
+                revision: true,
+                ..animation
+            },
+            NativeRedrawReasons {
+                owed: true,
+                ..animation
+            },
+            NativeRedrawReasons {
+                peers: true,
+                ..animation
+            },
+        ] {
+            assert!(!with.only_motion(false), "{with:?}");
+        }
     }
 
     #[test]
