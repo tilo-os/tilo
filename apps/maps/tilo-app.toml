@@ -65,8 +65,8 @@ hosts = [
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@3"
+tilo-fs = "optional@3"
 shell-ui = "optional@11"
 
 [entrypoint]

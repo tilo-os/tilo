@@ -18,7 +18,10 @@ enum Pinning {
 enum FlatpakAction {
     install @0;
     update  @1;
+    # Uninstall, keeping the app's data (~/.var/app/<id>).
     remove  @2;
+    # Uninstall and delete the app's data with it.
+    removeWithData @3;
 }
 
 enum RemoteAction {
