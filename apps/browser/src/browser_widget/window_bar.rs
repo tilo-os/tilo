@@ -145,7 +145,7 @@ impl BrowserWidget {
 
     /// Whether the page shown is bookmarked, in whichever bookmarks this
     /// window keeps.
-    fn page_bookmarked(&self) -> bool {
+    pub(super) fn page_bookmarked(&self) -> bool {
         if self.person_bookmarks.is_some() {
             self.personal_bookmarks
                 .bookmarks

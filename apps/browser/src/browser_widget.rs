@@ -60,6 +60,8 @@ use ui::tilo_resource::Resource as _;
 mod continuity;
 mod library;
 pub(crate) mod personal;
+#[cfg(test)]
+mod regression_tests;
 mod toolbar;
 mod window_bar;
 
@@ -162,12 +164,11 @@ fn search_url(template: &str, query: &str) -> String {
 
 /// Host-like text that users conventionally enter without a scheme. Bracketed
 /// IPv6 is deliberately included; unbracketed IPv6 is ambiguous with a URL
-/// scheme/port and is not a browser address syntax.
+/// scheme/port and is not a browser address syntax. The omnibox's own test,
+/// so Enter opens what the address list's first row says: `U.S.` or
+/// `foo/bar.baz` is a search there, and was an address here.
 fn looks_like_bare_web_host(value: &str) -> bool {
-    !value.chars().any(char::is_whitespace)
-        && (value.starts_with("localhost")
-            || value.contains('.')
-            || (value.starts_with('[') && value.contains(']')))
+    omnibox::looks_like_address(value)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5388,7 +5389,13 @@ impl BrowserWidget {
         } else {
             clear
         });
-        for entry in self.history.entries().iter().rev().take(MATERIALIZED_LIMIT) {
+        // Newest first: the pages a person just saw are the ones the
+        // Library lists and opens through these rows. The record keeps them
+        // by address, so its own order is the alphabet's.
+        let mut newest: Vec<&crate::history::HistoryEntry> =
+            self.history.entries().iter().collect();
+        newest.sort_by_key(|entry| std::cmp::Reverse(entry.last_visit));
+        for entry in newest.into_iter().take(MATERIALIZED_LIMIT) {
             let title = if entry.title.trim().is_empty() {
                 entry.url.as_str()
             } else {
@@ -6037,7 +6044,7 @@ mod architecture_tests {
     }
     use ui::webview::WebViewEngine;
 
-    fn compose(widget: &mut BrowserWidget) {
+    pub(super) fn compose(widget: &mut BrowserWidget) {
         let doc = AutoCommit::new();
         let root = automerge::ROOT;
         widget.sync(&doc, &root);
@@ -6317,89 +6324,6 @@ mod architecture_tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn a_navigation_while_a_page_loads_replaces_it() {
-        struct Events(
-            std::sync::Mutex<Vec<WebViewEvent>>,
-            std::sync::Arc<TestEngine>,
-        );
-        impl WebViewEngine for Events {
-            fn send(&self, command: WebViewCommand) {
-                self.1.send(command);
-            }
-            fn navigate_owned(
-                &self,
-                request_id: u32,
-                command: NavigationCommand,
-            ) -> Result<(), String> {
-                self.1.navigate_owned(request_id, command)
-            }
-            fn frames(&self) -> ui::webview::FrameSlot {
-                self.1.frames()
-            }
-            fn drain_events(&self) -> Vec<WebViewEvent> {
-                std::mem::take(&mut *self.0.lock().unwrap())
-            }
-        }
-        let engine =
-            std::sync::Arc::new(Events(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
-        let mut widget = BrowserWidget::with_engine(engine.clone(), false);
-        let slow = ui::tilo_actions::InvocationId::new();
-        widget
-            .admit(
-                slow,
-                BrowserOperation::Navigate {
-                    url: "https://slow.test/".into(),
-                },
-            )
-            .unwrap();
-        let slow_request = widget.resource_navigation_request.unwrap();
-        // Still loading: the person types another address, then goes back.
-        let next = ui::tilo_actions::InvocationId::new();
-        assert!(matches!(
-            widget.admit(
-                next,
-                BrowserOperation::Navigate {
-                    url: "https://next.test/".into(),
-                },
-            ),
-            Ok(ui::framework::Effected::Pending)
-        ));
-        let back = ui::tilo_actions::InvocationId::new();
-        assert!(matches!(
-            widget.admit(back, BrowserOperation::Back),
-            Ok(ui::framework::Effected::Pending)
-        ));
-        let back_request = widget.resource_navigation_request.unwrap();
-        // The engine reports the replaced loads as such, and the last one.
-        engine.0.lock().unwrap().extend([
-            WebViewEvent::NavigationOutcome {
-                request_id: slow_request,
-                uri: "https://slow.test/".into(),
-                error: Some("Navigation was superseded".into()),
-            },
-            WebViewEvent::NavigationOutcome {
-                request_id: back_request,
-                uri: "https://before.test/".into(),
-                error: None,
-            },
-        ]);
-        widget.apply_engine_events();
-        assert!(matches!(
-            widget.poll_invocation(back),
-            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-        for replaced in [slow, next] {
-            let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
-                widget.poll_invocation(replaced)
-            else {
-                panic!("a replaced navigation settles");
-            };
-            assert_eq!(error.code, "browser.navigation_replaced");
-        }
-        assert!(widget.replaced_navigations.is_empty());
     }
 
     #[test]
@@ -8112,56 +8036,6 @@ mod tests {
 
     fn layout_with_theme(widget: &mut BrowserWidget, width: f32, height: f32, theme: &Theme) {
         layout_keeping_tree(widget, width, height, theme);
-    }
-
-    #[test]
-    fn a_selection_dragged_off_the_page_is_released_on_it() {
-        let engine = TestEngine::new();
-        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        let (tree, node) = layout_keeping_tree(&mut widget, 1000.0, 700.0, &Theme::dark());
-        let page = widget.find_rect("browser.surface").unwrap();
-        let device = winit::event::DeviceId::dummy();
-        let send = |widget: &mut BrowserWidget, event: WindowEvent| {
-            ui::testing::Dispatch::new()
-                .layout(&tree, node)
-                .send(widget, &event);
-        };
-        let left = |state| WindowEvent::MouseInput {
-            device_id: device,
-            state,
-            button: MouseButton::Left,
-        };
-        send(
-            &mut widget,
-            WindowEvent::CursorMoved {
-                device_id: device,
-                position: (page.x0 + 40.0, page.y0 + 40.0).into(),
-            },
-        );
-        send(&mut widget, left(ElementState::Pressed));
-        assert!(widget.wants_pointer_capture());
-        // Up over the toolbar, and let go there.
-        send(
-            &mut widget,
-            WindowEvent::CursorMoved {
-                device_id: device,
-                position: (page.x0 + 40.0, page.y0 - 10.0).into(),
-            },
-        );
-        send(&mut widget, left(ElementState::Released));
-        assert!(
-            engine.commands().iter().any(|command| matches!(
-                command,
-                WebViewCommand::MouseButton {
-                    button: ui::webview::MouseButton::Left,
-                    down: false,
-                    ..
-                }
-            )),
-            "the page hears the release: {:?}",
-            engine.commands()
-        );
-        assert!(!widget.wants_pointer_capture());
     }
 
     #[test]
