@@ -16,7 +16,7 @@ use crate::actions::{CalculatorEffect, GraphKind, HISTORY_CAP};
 use crate::app::CalculatorApp;
 use crate::model::{CalcModel, HistoryEntry, PlotFn};
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 /// The calculator's record: its evaluated history, newest first, and its
 /// saved graphs, each row with its stable id. A formula merges per
@@ -204,8 +204,6 @@ pub const REMOTE_POINTER: (f32, f32) = (145.0, 97.0);
 impl ResourceApp for CalculatorShell {
     type Resource = Calculator;
     const ID: &'static str = "so.tilo.calculator";
-    // Each window shows what it opened, never another window's.
-    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Calculator";
     const ICON: Option<&'static str> = Some("calculator");
 
