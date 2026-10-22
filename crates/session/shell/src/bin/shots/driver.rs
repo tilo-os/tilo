@@ -2738,7 +2738,9 @@ impl ShellDriver {
                 recipient_key.verifying_key().to_bytes(),
             );
             let owner = hex::encode(owner_public.as_bytes());
-            st.local_user_id.clone_from(&owner);
+            // The person acting here is the owner: who "you" is in the pane
+            // and whose authority its controls follow.
+            st.act_as(owner.clone());
             if let Some(workspace) = st.tree_mut().desktop.active_workspace_mut() {
                 workspace.set_owner(owner);
                 workspace.collaborators.push(
@@ -2748,6 +2750,12 @@ impl ShellDriver {
                     )
                     .as_invited(),
                 );
+                // The people the workspace admitted, by the names they go by.
+                for (id, name) in [("ada", "Ada Lovelace"), ("bo", "Bo Lindqvist")] {
+                    workspace
+                        .collaborators
+                        .push(shell::shell::state::Collaborator::new(id, name));
+                }
                 workspace.admit(
                     hex::encode(recipient_public.as_bytes()),
                     tilo_action_policy::Role::Editor,
