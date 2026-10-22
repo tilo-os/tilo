@@ -1344,24 +1344,21 @@ mod tests {
             ensure_trash_dir().is_none(),
             "nonprivate Trash must be refused"
         );
-        #[cfg(not(target_os = "macos"))]
-        {
-            let source = trash.parent().expect("data directory").join("notes.txt");
-            fs::write(&source, b"keep private contents").expect("refused deletion source");
-            let error = delete_to_trash(std::slice::from_ref(&source))
-                .expect_err("deletion must refuse nonprivate Trash");
-            assert!(error.contains("not a private directory owned by this user"));
-            assert_eq!(
-                fs::read(&source).expect("source retained"),
-                b"keep private contents"
-            );
-            assert_eq!(
-                fs::read_dir(&files)
-                    .expect("no published private contents")
-                    .count(),
-                0
-            );
-        }
+        let source = trash.parent().expect("data directory").join("notes.txt");
+        fs::write(&source, b"keep private contents").expect("refused deletion source");
+        let error = delete_to_trash(std::slice::from_ref(&source))
+            .expect_err("deletion must refuse nonprivate Trash");
+        assert!(error.contains("not a private directory owned by this user"));
+        assert_eq!(
+            fs::read(&source).expect("source retained"),
+            b"keep private contents"
+        );
+        assert_eq!(
+            fs::read_dir(&files)
+                .expect("no published private contents")
+                .count(),
+            0
+        );
         for directory in [trash, files.as_path()] {
             assert_eq!(
                 fs::symlink_metadata(directory)
@@ -1373,7 +1370,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     #[test]
     fn legacy_delete_creates_owner_only_trash_metadata_and_payload_directories() {
         use std::os::unix::fs::MetadataExt as _;

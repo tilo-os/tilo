@@ -1,49 +1,49 @@
 //! The user's trash, where the host lets apps manage it.
 //!
-//! On Linux and other freedesktop hosts the home Trash (the XDG trash spec's
-//! `$XDG_DATA_HOME/Trash`) is managed here directly ([`freedesktop`]):
-//! moving an item in, restoring it and purging it need nothing but the item,
-//! the Trash directories and a rename. In particular they need no mount
-//! table, which a sandboxed app cannot read (`/proc` is closed to it). Only an
-//! item on another filesystem than every Trash this process can reach goes to
-//! the `trash` crate, which looks up the item's mount for that mount's own
-//! Trash. On macOS and Windows moving items to the trash goes through the
-//! `trash` crate; enumerating, restoring and purging report that they are
-//! unavailable there.
+//! On Unix hosts, macOS included, the home Trash (the XDG trash spec's
+//! `Trash` in the data directory: `$XDG_DATA_HOME/Trash`, or
+//! `~/Library/Application Support/Trash` on macOS) is managed here directly
+//! ([`freedesktop`]): moving an item in, restoring it and purging it need
+//! nothing but the item, the Trash directories and a rename. In particular
+//! they need no mount table, which a sandboxed app cannot read (`/proc` is
+//! closed to it), and every item moved in can be listed, restored and purged
+//! again, which the macOS system Trash does not let an app do. Only an item
+//! on another filesystem than every Trash this process can reach goes to the
+//! `trash` crate, which finds that mount's own Trash (on macOS through
+//! `NSFileManager`, without Finder). On Windows moving items to the trash
+//! goes through the `trash` crate; restoring and purging single items report
+//! that they are unavailable there.
 
 use std::path::{Path, PathBuf};
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(unix)]
 mod freedesktop;
 
-/// Move files to the host Trash, preparing private home Trash directories on
-/// freedesktop platforms first. On macOS the items go to the user's Trash
-/// through `NSFileManager`, without Finder.
+/// Move files to the host Trash ([`trash`] each).
 ///
 /// # Errors
 ///
-/// Returns an error if home Trash is unsafe or unavailable on a freedesktop
-/// host, or if the host backend cannot move the files to Trash.
+/// Returns an error if home Trash is unsafe or unavailable on a Unix host, or
+/// if the host backend cannot move the files to Trash.
 pub fn delete(paths: &[PathBuf]) -> Result<(), String> {
     paths.iter().try_for_each(|path| trash(path).map(drop))
 }
 
 /// Move `path` to the host Trash, returning the Trash entry it became where
-/// the host lets apps see it (`Trash/files/<name>` on a freedesktop host),
-/// for [`restore`] to take it back.
+/// the host lets apps see it (`Trash/files/<name>` on a Unix host), for
+/// [`restore`] to take it back.
 ///
-/// On a freedesktop host the item goes to the home Trash, or, when it is on
-/// another filesystem, to the person's own Trash the launcher granted
+/// On a Unix host the item goes to the home Trash, or, when it is on another
+/// filesystem, to the person's own Trash the launcher granted
 /// ([`user_trash_dir`]) if that one is on its filesystem; only failing both
-/// does the `trash` crate look for its mount's Trash (which needs the mount
-/// table, and reports `None`).
+/// does the `trash` crate look for its mount's Trash (which reports `None`).
 ///
 /// # Errors
 ///
-/// Returns an error if home Trash is unsafe or unavailable on a freedesktop
-/// host, or if the host backend cannot move the item to Trash.
+/// Returns an error if home Trash is unsafe or unavailable on a Unix host, or
+/// if the host backend cannot move the item to Trash.
 pub fn trash(path: &Path) -> Result<Option<PathBuf>, String> {
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     {
         let home = ensure_trash_dir().map_err(|error| error.to_string())?;
         let mut trashes = vec![home];
@@ -55,7 +55,7 @@ pub fn trash(path: &Path) -> Result<Option<PathBuf>, String> {
         }) {
             Ok(entry) => Ok(Some(entry)),
             Err(freedesktop::MoveError::OtherFilesystem) => {
-                ::trash::delete(path).map(|()| None).map_err(|error| {
+                mount_trash(path).map(|()| None).map_err(|error| {
                     format!(
                         "{} is on another filesystem than Trash, and its own Trash could not be \
                          used: {error}",
@@ -66,24 +66,30 @@ pub fn trash(path: &Path) -> Result<Option<PathBuf>, String> {
             Err(freedesktop::MoveError::Io(error)) => Err(error.to_string()),
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        use trash::macos::{DeleteMethod, TrashContextExtMacos as _};
-        // The crate's default asks Finder over Apple Events, which needs an
-        // Automation grant the user is prompted for and fails outright
-        // without a GUI session. NSFileManager moves the items itself.
-        let mut context = trash::TrashContext::new();
-        context.set_delete_method(DeleteMethod::NsFileManager);
-        context
-            .delete(path)
-            .map(|()| None)
-            .map_err(|error| error.to_string())
-    }
     #[cfg(not(unix))]
     {
         ::trash::delete(path)
             .map(|()| None)
             .map_err(|error| error.to_string())
+    }
+}
+
+/// Move `path` to the Trash of its own mount, through the `trash` crate.
+#[cfg(unix)]
+fn mount_trash(path: &Path) -> Result<(), ::trash::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        use ::trash::macos::{DeleteMethod, TrashContextExtMacos as _};
+        // The crate's default asks Finder over Apple Events, which needs an
+        // Automation grant the user is prompted for and fails outright
+        // without a GUI session. NSFileManager moves the item itself.
+        let mut context = ::trash::TrashContext::new();
+        context.set_delete_method(DeleteMethod::NsFileManager);
+        context.delete(path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ::trash::delete(path)
     }
 }
 
@@ -193,7 +199,7 @@ pub fn user_trash_dir() -> Option<PathBuf> {
 /// Returns an error if the platform trash is unavailable, or listing or
 /// purging its items fails.
 pub fn empty() -> Result<usize, String> {
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     {
         let files = trash_dir().ok_or("home Trash is unavailable")?;
         freedesktop::empty(&files).map_err(|error| error.to_string())
@@ -204,10 +210,6 @@ pub fn empty() -> Result<usize, String> {
         let n = items.len();
         trash::os_limited::purge_all(items).map_err(|e| e.to_string())?;
         Ok(n)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Err("Trash management is unavailable on this host".into())
     }
 }
 
@@ -221,11 +223,11 @@ pub fn empty() -> Result<usize, String> {
 /// Returns an error if the platform trash is unavailable, or restoring an
 /// item fails (e.g. something else now has its original name).
 pub fn restore(entries: &[PathBuf]) -> Result<usize, String> {
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     {
         freedesktop::restore(entries).map_err(|error| error.to_string())
     }
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(not(unix))]
     {
         let _ = entries;
         Err("Trash restore is unavailable on this host".into())
@@ -240,11 +242,11 @@ pub fn restore(entries: &[PathBuf]) -> Result<usize, String> {
 /// Returns an error if the platform trash is unavailable, or purging an item
 /// fails.
 pub fn purge(entries: &[PathBuf]) -> Result<usize, String> {
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     {
         freedesktop::purge(entries).map_err(|error| error.to_string())
     }
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(not(unix))]
     {
         let _ = entries;
         Err("Trash purge is unavailable on this host".into())

@@ -341,7 +341,7 @@ fn published_selection_changes_stay_in_the_addressed_files_window() {
 /// Copying and pasting are queued and undoable like every filesystem
 /// change: undo moves a copy to Trash and a cut-and-paste back. A row
 /// offers rename, move and trash on its entry; undoing the trash puts
-/// the file back where the host can restore from Trash.
+/// the file back.
 #[test]
 fn copies_and_row_edits_are_undoable() {
     // Inside the home, so Trash is the home's and its entries are known.
@@ -431,20 +431,11 @@ fn copies_and_row_edits_are_undoable() {
     assert!(!folder.path().join("notes.txt").exists(), "trashed");
     let undone = app.undo();
     app.settle();
-    if cfg!(target_os = "macos") {
-        // macOS lets apps move items to the Trash but not enumerate or
-        // restore them (`host_fs::trash::restore`), so the file stays there.
-        assert!(
-            !folder.path().join("notes.txt").exists(),
-            "no Trash restore on macOS"
-        );
-    } else {
-        assert!(undone);
-        assert!(
-            folder.path().join("notes.txt").exists(),
-            "undo restores it from Trash"
-        );
-    }
+    assert!(undone);
+    assert!(
+        folder.path().join("notes.txt").exists(),
+        "undo restores it from Trash"
+    );
 }
 
 /// Undo, as Ctrl+Z does, then run frames until the Files document
