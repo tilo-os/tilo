@@ -324,6 +324,7 @@ mod each;
 mod effect;
 mod env;
 mod form;
+pub mod page_part;
 pub mod history;
 mod kinds;
 mod launch;

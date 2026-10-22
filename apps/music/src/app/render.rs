@@ -4077,7 +4077,7 @@ impl MusicApp {
         let index = self.page_parts_drawn;
         self.page_parts_drawn += 1;
         if self.page_parts.len() <= index {
-            self.page_parts.push(super::page_part::PagePart::new());
+            self.page_parts.push(super::page_part::PagePart::new("music.page-widget."));
         }
         let clip = self.body_rect;
         let Some(part) = self.page_parts.get_mut(index) else {
