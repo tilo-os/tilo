@@ -1,9 +1,11 @@
-//! Google Vertex AI as an agent model provider, signed in with Google
-//! rather than set up with an API key.
+//! Google Vertex AI, or the Gemini API, as an agent model provider, signed
+//! in with Google rather than set up with an API key.
 //!
 //! The person signs in in the system browser (PKCE with a loopback
 //! redirect, through account custody), then chooses the Google Cloud
-//! project billed for requests, the location they run in and the model.
+//! project billed for requests and, for Vertex AI, the location they run in
+//! and the model. A Gemini API provider's model is chosen from the list the
+//! API gives, like any provider's.
 //! The grant asks for Google Cloud access only and is sealed under its own
 //! vault id ([`agent_provider_config::sign_in_grant_id`]), apart from any
 //! Mail or Files grant of the same Google account: signing in here never
@@ -23,7 +25,7 @@ use account_custody::{
 use accounts::AccountId;
 use agent_provider_config::{
     ModelDescriptor, ProviderConfig, ProviderProfile, SignInCredential, VERTEX_DEFAULT_LOCATION,
-    VERTEX_DEFAULT_MODEL, is_cloud_project_id, is_vertex_location, sign_in_grant_id,
+    VERTEX_DEFAULT_MODEL, is_cloud_project_id, is_vertex_location, presets, sign_in_grant_id,
     vertex_endpoint, vertex_model_id, vertex_target,
 };
 use ui::LocalState;
@@ -88,6 +90,8 @@ pub(crate) struct VertexSetup {
     pub(crate) profile_id: String,
     /// Whether the provider already exists.
     pub(crate) existing: bool,
+    /// The Gemini API rather than Vertex AI: only the project is chosen.
+    pub(crate) gemini: bool,
     stage: Stage,
     project: LocalState<String>,
     location: LocalState<String>,
@@ -107,15 +111,34 @@ impl VertexSetup {
         )
     }
 
+    /// A Gemini API provider to be added.
+    pub(crate) fn adding_gemini() -> Self {
+        Self {
+            gemini: true,
+            ..Self::new(
+                uuid::Uuid::new_v4().to_string(),
+                false,
+                (String::new(), "", ""),
+            )
+        }
+    }
+
     /// `profile` signing in again.
     pub(crate) fn again(profile: &ProviderProfile) -> Self {
-        let (project, location) = vertex_target(&profile.endpoint).unwrap_or_default();
-        let model = profile
-            .default_model
-            .as_deref()
-            .map(display_model)
-            .unwrap_or_default();
-        Self::new(profile.id.clone(), true, (project, &location, model))
+        let fields = VertexFields::of(profile);
+        let text = |state: &LocalState<String>| state.with(Clone::clone);
+        Self {
+            gemini: fields.gemini,
+            ..Self::new(
+                profile.id.clone(),
+                true,
+                (
+                    text(&fields.project),
+                    &text(&fields.location),
+                    &text(&fields.model),
+                ),
+            )
+        }
     }
 
     fn new(
@@ -126,6 +149,7 @@ impl VertexSetup {
         Self {
             profile_id,
             existing,
+            gemini: false,
             stage: Stage::Intro,
             project: LocalState::new(project),
             location: LocalState::new(location.to_string()),
@@ -293,12 +317,16 @@ impl VertexSetup {
         let cancel = || {
             Box::new(cx.bind_invocation(
                 Button::new("agent-models-vertex-cancel", &t("agent-cancel")),
-                AgentModelsEffect::CancelGoogleSignIn,
+                AgentModelsEffect::CancelSignIn,
             ))
         };
         match self.stage {
             Stage::Intro => {
-                body.push(note(&t("agent-vertex-intro")));
+                body.push(note(&t(if self.gemini {
+                    "agent-gemini-intro"
+                } else {
+                    "agent-vertex-intro"
+                })));
                 body.push(row(Box::new(
                     Row::new()
                         .push(Box::new(cx.bind_invocation(
@@ -314,27 +342,40 @@ impl VertexSetup {
                 body.push(row(cancel()));
             }
             Stage::Choose => {
-                body.push(note(&t("agent-vertex-choose")));
+                body.push(note(&t(if self.gemini {
+                    "agent-gemini-choose"
+                } else {
+                    "agent-vertex-choose"
+                })));
                 self.push_projects(cx, &mut body);
                 self.push_fields(&mut body, "new");
-                body.push(note(&t("agent-vertex-requirements")));
+                body.push(note(&t(if self.gemini {
+                    "agent-gemini-requirements"
+                } else {
+                    "agent-vertex-requirements"
+                })));
                 let (project, location, model) = (
                     self.project.clone(),
                     self.location.clone(),
                     self.model.clone(),
                 );
+                let add = Button::new("agent-models-vertex-add", &t("agent-vertex-add-provider"));
+                let add = if self.gemini {
+                    cx.bind(
+                        add,
+                        effect(AgentModelsEffect::SET_GEMINI_PROVIDER)
+                            .map(move |()| (None, project.with(|value| value.trim().to_string()))),
+                    )
+                } else {
+                    cx.bind(
+                        add,
+                        effect(AgentModelsEffect::SET_VERTEX_PROVIDER)
+                            .map(move |()| fields_value(None, &project, &location, &model)),
+                    )
+                };
                 body.push(row(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            cx.bind(
-                                Button::new(
-                                    "agent-models-vertex-add",
-                                    &t("agent-vertex-add-provider"),
-                                ),
-                                effect(AgentModelsEffect::SET_VERTEX_PROVIDER)
-                                    .map(move |()| fields_value(None, &project, &location, &model)),
-                            ),
-                        ))
+                        .push(Box::new(add))
                         .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
                         .push(cancel()),
                 )));
@@ -343,7 +384,14 @@ impl VertexSetup {
         if let Some(message) = &self.message {
             body.push(row(crate::widgets::error_caption(message)));
         }
-        section(&t("agent-vertex-title"), rows(body))
+        section(
+            &t(if self.gemini {
+                "agent-gemini-title"
+            } else {
+                "agent-vertex-title"
+            }),
+            rows(body),
+        )
     }
 
     fn push_projects(&self, cx: &PaneCx, body: &mut Vec<Item>) {
@@ -388,22 +436,39 @@ impl VertexSetup {
     }
 
     fn push_fields(&self, body: &mut Vec<Item>, id: &str) {
-        push_vertex_fields(body, id, (&self.project, &self.location, &self.model));
+        push_vertex_fields(
+            body,
+            id,
+            self.gemini,
+            (&self.project, &self.location, &self.model),
+        );
     }
 }
 
-/// The editable project, location and model of a Vertex AI provider.
+/// The editable project, location and model of a Vertex AI provider, or
+/// the project of a Gemini API one.
 #[derive(Clone)]
 pub(crate) struct VertexFields {
     pub(crate) project: LocalState<String>,
     pub(crate) location: LocalState<String>,
     pub(crate) model: LocalState<String>,
+    pub(crate) gemini: bool,
 }
 
 impl VertexFields {
     pub(crate) fn of(profile: &ProviderProfile) -> Self {
-        let (project, location) = vertex_target(&profile.endpoint).unwrap_or_default();
+        let target = vertex_target(&profile.endpoint);
+        let gemini = target.is_none();
+        let (project, location) = target.unwrap_or_else(|| {
+            let project = profile
+                .sign_in
+                .as_ref()
+                .and_then(|sign_in| sign_in.billing_project.clone())
+                .unwrap_or_default();
+            (project, String::new())
+        });
         Self {
+            gemini,
             project: LocalState::new(project),
             location: LocalState::new(location),
             model: LocalState::new(
@@ -422,37 +487,53 @@ impl VertexFields {
         push_vertex_fields(
             body,
             profile_id,
+            self.gemini,
             (&self.project, &self.location, &self.model),
         );
         let fields = self.clone();
         let provider = profile_id.to_string();
-        body.push(row(Box::new(cx.bind(
-            Button::new(
-                &format!("agent-models-vertex-save-{profile_id}"),
-                &t("agent-save-details"),
-            ),
-            effect(AgentModelsEffect::SET_VERTEX_PROVIDER).map(move |()| {
-                fields_value(
-                    Some(provider.clone()),
-                    &fields.project,
-                    &fields.location,
-                    &fields.model,
-                )
-            }),
-        ))));
+        let save = Button::new(
+            &format!("agent-models-vertex-save-{profile_id}"),
+            &t("agent-save-details"),
+        );
+        let save = if self.gemini {
+            cx.bind(
+                save,
+                effect(AgentModelsEffect::SET_GEMINI_PROVIDER).map(move |()| {
+                    (
+                        Some(provider.clone()),
+                        fields.project.with(|value| value.trim().to_string()),
+                    )
+                }),
+            )
+        } else {
+            cx.bind(
+                save,
+                effect(AgentModelsEffect::SET_VERTEX_PROVIDER).map(move |()| {
+                    fields_value(
+                        Some(provider.clone()),
+                        &fields.project,
+                        &fields.location,
+                        &fields.model,
+                    )
+                }),
+            )
+        };
+        body.push(row(Box::new(save)));
     }
 }
 
 fn push_vertex_fields(
     body: &mut Vec<Item>,
     id: &str,
+    gemini: bool,
     (project, location, model): (
         &LocalState<String>,
         &LocalState<String>,
         &LocalState<String>,
     ),
 ) {
-    for (name, label, placeholder, state) in [
+    let fields = [
         (
             "project",
             "agent-vertex-project",
@@ -471,7 +552,9 @@ fn push_vertex_fields(
             "agent-vertex-model-hint",
             model,
         ),
-    ] {
+    ];
+    // A Gemini API provider bills a project; its model comes from its list.
+    for (name, label, placeholder, state) in fields.into_iter().take(if gemini { 1 } else { 3 }) {
         body.push(field_row(
             &t(label),
             Box::new(
@@ -549,7 +632,7 @@ pub(crate) fn apply(
         .iter_mut()
         .find(|profile| profile.id == profile_id)
         .ok_or_else(|| t("agent-provider-gone"))?;
-    if !profile.signs_in_with_google() {
+    if !profile.signs_in_with_google() || vertex_target(&profile.endpoint).is_none() {
         return Err(t("agent-provider-gone"));
     }
     profile.endpoint = vertex_endpoint(project, location);
@@ -562,6 +645,41 @@ pub(crate) fn apply(
         });
     }
     profile.default_model = Some(id);
+    Ok(())
+}
+
+/// Add the Gemini API provider `profile_id` billed to `project`, or bill
+/// another project with the existing one, after checking the project id.
+///
+/// # Errors
+/// A message for the person: an invalid project, or a provider that is gone
+/// or is not a Gemini API provider signed in with Google.
+pub(crate) fn apply_gemini(
+    config: &mut ProviderConfig,
+    profile_id: &str,
+    existing: bool,
+    project: &str,
+) -> Result<(), String> {
+    let project = project.trim();
+    if !is_cloud_project_id(project) {
+        return Err(t("agent-vertex-project-invalid"));
+    }
+    if !existing {
+        let mut profile = ProviderProfile::google_gemini(project);
+        profile.id = profile_id.to_string();
+        config.upsert(profile);
+        return Ok(());
+    }
+    let profile = config
+        .profiles
+        .iter_mut()
+        .find(|profile| {
+            profile.id == profile_id
+                && profile.signs_in_with_google()
+                && profile.endpoint.trim_end_matches('/') == presets::GEMINI_ENDPOINT
+        })
+        .ok_or_else(|| t("agent-provider-gone"))?;
+    profile.sign_in = Some(SignInCredential::google(project));
     Ok(())
 }
 

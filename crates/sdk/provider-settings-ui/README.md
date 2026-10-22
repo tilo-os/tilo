@@ -17,6 +17,13 @@ the explicitly labelled offline metadata persistence adapter. The standalone app
 has no offline settings mirror and starts with an empty configuration until the
 backend answers.
 
+A provider is added from a known one (`agent_provider_config::presets`), which
+fills its endpoint and protocol. **Test connection** lists the provider's
+models through the backend (`ProviderAdmin::list_models`) and offers them in a
+chooser beside the typed model field. Sign-ins run where a browser and the
+device vault are at hand: the native host adds them (Personal Settings,
+`agent_sign_in` and `agent_vertex`).
+
 Mutations use the backend revision. Conflicts reload authority and retain drafts
 for an explicit retry. Credential input never belongs to a resource or settings
 record; acknowledged submissions clear only the unchanged submitted draft.

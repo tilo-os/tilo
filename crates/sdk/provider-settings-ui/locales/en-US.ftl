@@ -67,8 +67,24 @@ agent-model-storage = Storage
 agent-progress-downloading = Downloading { $name }
 agent-progress-installing = Installing { $name }
 agent-download-progress = { $done } of { $total } downloaded. You can leave this page.
-agent-add-anthropic = Add Anthropic
-agent-add-compatible = Add compatible API
+agent-add-provider = Add provider
+agent-add-provider-placeholder = Choose a provider
+agent-preset-unknown = That provider can't be added here.
+agent-test-connection = Test connection
+agent-test-connected = { $count ->
+        [one] Connected. The provider offers one model.
+       *[other] Connected. The provider offers { $count } models.
+    }
+agent-test-no-models = Connected, but the provider lists no models. Type the model ID above.
+agent-test-no-list = This provider doesn't list its models. Check the URL, or type the model ID above.
+agent-test-key-refused = The provider refused the key or sign-in. Check it, then test again.
+agent-test-unreachable = Can't reach the provider. Check the URL and your connection.
+agent-test-rate-limited = The provider is limiting requests. Wait a moment, then test again.
+agent-test-no-credits = The provider's account has no credits left.
+agent-test-failed = The provider didn't answer as expected. Check the URL and the protocol.
+agent-choose-model = Model
+agent-choose-model-placeholder = Choose a model
+agent-model-invalid = Enter a model ID on one line.
 agent-placeholder-name = Provider name
 agent-placeholder-url = https://provider.example/v1
 agent-placeholder-model = Model ID

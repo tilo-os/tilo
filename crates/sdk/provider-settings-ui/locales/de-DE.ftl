@@ -69,8 +69,24 @@ agent-model-storage = Speicher
 agent-progress-downloading = { $name } wird heruntergeladen
 agent-progress-installing = { $name } wird installiert
 agent-download-progress = { $done } von { $total } heruntergeladen. Du kannst diese Seite verlassen.
-agent-add-anthropic = Anthropic hinzufügen
-agent-add-compatible = Kompatible API hinzufügen
+agent-add-provider = Anbieter hinzufügen
+agent-add-provider-placeholder = Anbieter wählen
+agent-preset-unknown = Dieser Anbieter kann hier nicht hinzugefügt werden.
+agent-test-connection = Verbindung testen
+agent-test-connected = { $count ->
+        [one] Verbunden. Der Anbieter bietet ein Modell an.
+       *[other] Verbunden. Der Anbieter bietet { $count } Modelle an.
+    }
+agent-test-no-models = Verbunden, aber der Anbieter nennt keine Modelle. Gib die Modell-ID oben ein.
+agent-test-no-list = Dieser Anbieter nennt seine Modelle nicht. Prüfe die URL oder gib die Modell-ID oben ein.
+agent-test-key-refused = Der Anbieter hat den Schlüssel oder die Anmeldung abgelehnt. Prüfe sie und teste erneut.
+agent-test-unreachable = Der Anbieter ist nicht erreichbar. Prüfe die URL und deine Verbindung.
+agent-test-rate-limited = Der Anbieter begrenzt gerade Anfragen. Warte kurz und teste erneut.
+agent-test-no-credits = Das Konto beim Anbieter hat kein Guthaben mehr.
+agent-test-failed = Der Anbieter hat nicht wie erwartet geantwortet. Prüfe die URL und das Protokoll.
+agent-choose-model = Modell
+agent-choose-model-placeholder = Modell wählen
+agent-model-invalid = Gib eine Modell-ID in einer Zeile ein.
 agent-placeholder-name = Anbietername
 agent-placeholder-url = https://provider.example/v1
 agent-placeholder-model = Modell-ID

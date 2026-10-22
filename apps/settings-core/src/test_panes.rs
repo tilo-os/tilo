@@ -29,6 +29,7 @@ mod rare {
     pub mod about;
     pub mod accounts;
     pub mod agent_models;
+    pub mod agent_sign_in;
     pub mod agent_vertex;
     pub mod device_mesh;
     pub mod disk_unlock;
@@ -48,8 +49,8 @@ pub use common::{
     mouse_keyboard, network, notifications, permissions, personal_apps, power,
 };
 pub use rare::{
-    about, accounts, agent_models, agent_vertex, device_mesh, disk_unlock, drives, printers,
-    region, speakers, storage, time_date, updates, users,
+    about, accounts, agent_models, agent_sign_in, agent_vertex, device_mesh, disk_unlock, drives,
+    printers, region, speakers, storage, time_date, updates, users,
 };
 
 pub use crate::pane_model as model;
