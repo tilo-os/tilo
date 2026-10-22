@@ -671,7 +671,7 @@ impl Window {
     }
 
     #[inline]
-    pub fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool {
+    pub fn start_drag(&self, offers: Vec<(String, crate::platform_impl::wayland::DragData)>) -> bool {
         self.window_state.lock().unwrap().start_drag(offers)
     }
 

@@ -561,7 +561,7 @@ impl WindowState {
     /// compositor matches against the implicit grab — so this only does
     /// anything while a button is actually held, which is exactly when a
     /// drag gesture is under way. Returns whether the drag was started.
-    pub fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool {
+    pub fn start_drag(&self, offers: Vec<(String, crate::platform_impl::wayland::DragData)>) -> bool {
         let mut serial = None;
         self.apply_on_pointer(|_, data| serial = Some(data.latest_button_serial()));
         let Some(serial) = serial else {
