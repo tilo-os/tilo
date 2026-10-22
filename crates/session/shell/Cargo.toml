@@ -82,7 +82,7 @@ tilo-owner-commit = { path = "../../collab/owner-commit" }
 tilo-automerge-isolate.workspace = true
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 bounded-command = { path = "../../system/bounded-command" }
 # The wire format of the network-answers helper search runs (exchange rates).
 tilo-net-answers = { path = "../../system/net-answers", default-features = false }

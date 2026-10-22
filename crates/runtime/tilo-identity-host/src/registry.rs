@@ -252,33 +252,30 @@ impl DirStamp {
     }
 }
 
-/// What [`IdentityRegistryStore::load_reconciled_prompt`] answers from.
-#[derive(Clone)]
-struct PromptSnapshot {
-    dir: PathBuf,
-    stamp: Option<DirStamp>,
-    registry: std::sync::Arc<IdentityRegistry>,
+/// The registry a directory's last reconcile produced, kept current by a
+/// worker that reconciles again whenever the directory changes
+/// ([`IdentityRegistryStore::load_reconciled_prompt`]). `None` until a
+/// reconcile succeeded; a failed one keeps the last good registry.
+type PromptRegistry = tilo_files::native::Watched<Option<std::sync::Arc<IdentityRegistry>>>;
+
+/// One watched registry per identity directory.
+static PROMPT_REGISTRIES: std::sync::Mutex<Vec<(PathBuf, PromptRegistry)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn prompt_registry(dir: &Path) -> Option<PromptRegistry> {
+    PROMPT_REGISTRIES
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(held, _)| held == dir)
+        .map(|(_, registry)| registry.clone())
 }
 
-/// One snapshot per identity directory.
-static PROMPT_SNAPSHOT: std::sync::Mutex<Vec<PromptSnapshot>> = std::sync::Mutex::new(Vec::new());
-/// The directories a background reconcile is running for.
-static PROMPT_REFRESHING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
-
-/// Counts the registry saves, so a refresh that began before one does not
-/// replace what the writer's next query read.
-static PROMPT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn stop_refreshing(dir: &Path) {
-    if let Ok(mut running) = PROMPT_REFRESHING.lock() {
-        running.retain(|candidate| candidate != dir);
-    }
-}
-
-fn forget_prompt_snapshot(dir: &Path) {
-    PROMPT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    if let Ok(mut slots) = PROMPT_SNAPSHOT.lock() {
-        slots.retain(|held| held.dir != dir);
+/// A registry this process saved is read back on the writer's thread, so
+/// the writer's next query never sees its own change late.
+fn refresh_prompt_registry(dir: &Path) {
+    if let Some(registry) = prompt_registry(dir) {
+        registry.refresh();
     }
 }
 
@@ -367,7 +364,7 @@ impl IdentityRegistryStore {
             tilo_files::native::atomic::write_with_mode(&self.registry_path, &bytes, 0o600);
         // A change made here is read back by the writer's next query, not one
         // refresh later.
-        forget_prompt_snapshot(&self.identity_dir);
+        refresh_prompt_registry(&self.identity_dir);
         // The identity a workspace selected decides whose fleet admits.
         crate::policy_change::announce();
         written
@@ -473,81 +470,64 @@ impl IdentityRegistryStore {
     /// disk: the compositor's input and frame loop, which asks which identity
     /// a room presents on every keystroke and frame.
     ///
-    /// The registry the last reconcile produced is returned at once. When the
-    /// identity directory has changed since, or changed too recently to be
-    /// trusted ([`DirStamp::settled`]), one background thread reconciles it
-    /// again and the next call sees the result. Reconciling lists and parses
-    /// every identity record, which took hundreds of milliseconds on a busy
-    /// disk and held the loop for all of them. Only the first call, with
-    /// nothing to return yet, reads inline. A registry this process saves is
-    /// read back inline, so a writer never sees its own change late.
+    /// The registry the last reconcile produced is returned at once, without
+    /// a path lookup of any kind: a worker watches the identity directory and
+    /// reconciles it again after every change ([`tilo_files::native::Watched`]).
+    /// Reconciling lists and parses every identity record, which took
+    /// hundreds of milliseconds on a busy disk; even the directory stamp this
+    /// used to check per call was a lookup that could wait on the disk. Only
+    /// the first call for a directory, with nothing to return yet, reads
+    /// inline: the session asks once at startup. A registry this process
+    /// saves is read back inline by [`Self::save`], so a writer never sees its
+    /// own change late.
     ///
     /// # Errors
     ///
-    /// Returns an error if the first read fails.
+    /// Returns an error if no reconcile of the directory has succeeded yet.
     pub fn load_reconciled_prompt(&self) -> io::Result<std::sync::Arc<IdentityRegistry>> {
-        let current = DirStamp::of(&self.identity_dir);
-        let held = PROMPT_SNAPSHOT.lock().ok().and_then(|slots| {
-            slots
-                .iter()
-                .find(|held| held.dir == self.identity_dir)
-                .cloned()
-        });
-        if let Some(held) = held {
-            if current != held.stamp || !current.is_some_and(DirStamp::settled) {
-                self.refresh_prompt_snapshot_in_background();
-            }
-            return Ok(held.registry);
-        }
-        let registry = std::sync::Arc::new(self.reconcile()?.0);
-        self.keep_prompt_snapshot(current, &registry);
-        Ok(registry)
-    }
-
-    fn keep_prompt_snapshot(
-        &self,
-        stamp: Option<DirStamp>,
-        registry: &std::sync::Arc<IdentityRegistry>,
-    ) {
-        if let Ok(mut slots) = PROMPT_SNAPSHOT.lock() {
-            slots.retain(|held| held.dir != self.identity_dir);
-            slots.push(PromptSnapshot {
-                dir: self.identity_dir.clone(),
-                stamp,
-                registry: std::sync::Arc::clone(registry),
-            });
-        }
-    }
-
-    /// Reconcile on a worker, one at a time.
-    fn refresh_prompt_snapshot_in_background(&self) {
-        use std::sync::atomic::Ordering;
-        let Ok(mut running) = PROMPT_REFRESHING.lock() else {
-            return;
+        let registry = match prompt_registry(&self.identity_dir) {
+            Some(registry) => registry,
+            None => self.watch_prompt_registry()?,
         };
-        if running.contains(&self.identity_dir) {
-            return;
+        let current = registry.get();
+        (*current).clone().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "the identity directory has not been read yet",
+            )
+        })
+    }
+
+    /// Start the watched registry of this directory: arm the watch, reconcile
+    /// once on this thread, and keep it current from then on.
+    fn watch_prompt_registry(&self) -> io::Result<PromptRegistry> {
+        let mut registries = PROMPT_REGISTRIES
+            .lock()
+            .map_err(|_| io::Error::other("the identity registries are poisoned"))?;
+        if let Some((_, registry)) = registries
+            .iter()
+            .find(|(held, _)| *held == self.identity_dir)
+        {
+            return Ok(registry.clone());
         }
-        running.push(self.identity_dir.clone());
-        drop(running);
         let store = self.clone();
-        let spawned = std::thread::Builder::new()
-            .name("identity-refresh".to_owned())
-            .spawn(move || {
-                // The stamp read first: a write landing during the reconcile
-                // differs from it and is reconciled again.
-                let generation = PROMPT_GENERATION.load(Ordering::Acquire);
-                let stamp = DirStamp::of(&store.identity_dir);
-                if let Ok((registry, _)) = store.reconcile()
-                    && PROMPT_GENERATION.load(Ordering::Acquire) == generation
-                {
-                    store.keep_prompt_snapshot(stamp, &std::sync::Arc::new(registry));
+        let last_good = std::sync::Mutex::new(None::<std::sync::Arc<IdentityRegistry>>);
+        let registry = tilo_files::native::Watched::start(
+            "identity-registry",
+            vec![self.identity_dir.clone()],
+            move || {
+                let mut last = last_good
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Ok((registry, _)) = store.reconcile() {
+                    *last = Some(std::sync::Arc::new(registry));
                 }
-                stop_refreshing(&store.identity_dir);
-            });
-        if spawned.is_err() {
-            stop_refreshing(&self.identity_dir);
-        }
+                last.clone()
+            },
+        )?;
+        registries.push((self.identity_dir.clone(), registry.clone()));
+        drop(registries);
+        Ok(registry)
     }
 
     /// Import a new identity record and return its profile.

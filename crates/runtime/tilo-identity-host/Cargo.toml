@@ -30,7 +30,7 @@ clap.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 collab-types = { path = "../../collab/collab-types" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The answers the identity steps give every door (`device_admin`).

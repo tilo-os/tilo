@@ -1158,11 +1158,22 @@ impl IdentitySource {
 
     /// [`Self::local_user_for_room`] for callers on the input and frame loop,
     /// which ask on every key and frame: it never waits for the identity
-    /// directory after the first answer. Whoever records ownership asks
-    /// the exact one.
-    fn local_user_for_room_prompt(&self, room: &crate::shell::state::RoomId) -> String {
+    /// directory after the first answer, and a room with no identity of its
+    /// own presents `session_user`, the session's identity chrome holds,
+    /// rather than reading it from the disk again. Whoever records
+    /// ownership asks the exact one.
+    fn local_user_for_room_prompt(
+        &self,
+        room: &crate::shell::state::RoomId,
+        session_user: &str,
+    ) -> String {
         match self {
-            Self::SessionRegistry => crate::shell::state::local_user_id_for_room_prompt(room),
+            Self::SessionRegistry => {
+                crate::identity_registry::selected_principal_id_prompt(&room.to_string())
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| session_user.to_owned())
+            }
             Self::Explicit(principal) => principal.clone(),
         }
     }
@@ -1835,7 +1846,8 @@ impl ChromeState {
         &self,
         room: &crate::shell::state::RoomId,
     ) -> crate::shell::state::UserId {
-        self.identity_source.local_user_for_room_prompt(room)
+        self.identity_source
+            .local_user_for_room_prompt(room, &self.local_user_id)
     }
 
     /// Hand the workspaces made before this session had an identity to the

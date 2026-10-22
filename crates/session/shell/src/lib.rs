@@ -63,5 +63,6 @@ pub mod shell;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 pub mod tray;
+pub mod watched_identity;
 pub mod wayland;
 pub mod workspace;

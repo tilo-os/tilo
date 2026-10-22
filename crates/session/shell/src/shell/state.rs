@@ -635,6 +635,14 @@ pub fn local_user_id() -> UserId {
     {
         return v;
     }
+    // The compositor's session keeps it current on a worker: the loop asks
+    // for it on every frame.
+    crate::watched_identity::session_user().unwrap_or_else(read_local_user_id)
+}
+
+/// [`local_user_id`] read from the person's public key on the disk, or the
+/// session's account name without one.
+pub(crate) fn read_local_user_id() -> UserId {
     if let Ok(bytes) = std::fs::read(crate::firstboot::collaboration_identity_paths().user_pubkey)
         && bytes.len() == 32
     {
