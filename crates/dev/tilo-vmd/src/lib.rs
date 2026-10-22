@@ -24,6 +24,8 @@ pub mod locks;
 pub mod packages;
 pub mod server;
 mod session_view;
+#[cfg(test)]
+mod slot_community_tests;
 pub mod slots;
 pub mod systemd;
 pub mod targets;
