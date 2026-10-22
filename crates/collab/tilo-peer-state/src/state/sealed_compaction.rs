@@ -115,7 +115,9 @@ impl StatePeer {
 /// `document`'s cleartext base with every write of its sealed history opened
 /// and merged over it, saved. A replica without the key admits sealed writes
 /// in arrival order, not causal order: they merge until nothing more applies.
-fn merge_sealed(
+/// Strict: a compaction replaces the writes it covers, so one that left any
+/// of them out would lose it.
+pub(super) fn merge_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
@@ -147,21 +149,163 @@ fn merge_sealed(
     }
 }
 
+/// A sealed record as its channel's key holder reads it
+/// ([`StatePeer::opened_document`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenedRecord {
+    /// The record's cleartext base with every sealed write that merges
+    /// merged over it, saved.
+    pub document: Vec<u8>,
+    /// The writes of the history `document` leaves out, in history order.
+    /// They stay in the history: a write they wait for may still arrive,
+    /// and the history is never compacted while any is left out.
+    pub unmerged: Vec<UnmergedWrite>,
+}
+
+/// A sealed write [`OpenedRecord::document`] leaves out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnmergedWrite {
+    pub author: [u8; 32],
+    pub seq: u64,
+    pub reason: UnmergedReason,
+}
+
+/// Why a sealed write is left out of a record as its key holder reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnmergedReason {
+    /// It does not open with the keys held, or does not decode.
+    Unreadable(String),
+    /// A change it builds on is in neither the record nor its history.
+    MissingDependencies {
+        /// The first missing change hash of each path back, hex.
+        missing: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for UnmergedWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let author = hex::encode(self.author.get(..8).unwrap_or_default());
+        match &self.reason {
+            UnmergedReason::Unreadable(why) => {
+                write!(f, "{author}#{} does not open: {why}", self.seq)
+            }
+            UnmergedReason::MissingDependencies { missing } => write!(
+                f,
+                "{author}#{} waits for changes the record lacks: {}",
+                self.seq,
+                missing.join(", ")
+            ),
+        }
+    }
+}
+
+/// [`merge_sealed`] for reading: every write that opens and merges is in the
+/// record, and the rest are named instead of refusing the whole record. One
+/// write that never arrived (or does not open) must not leave a room unable
+/// to read its record, and the writes after it are kept, not dropped.
+pub(super) fn open_sealed(
+    document: &super::Document,
+    open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+) -> Result<OpenedRecord, String> {
+    let mut history = Vec::new();
+    let mut readable = Vec::new();
+    let mut unmerged = Vec::new();
+    for (index, write) in document.sealed.iter().enumerate() {
+        let opened = open(write).and_then(|plain| DocumentMutation::decode(&plain).map_err(err));
+        match opened {
+            Ok(DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) => {
+                history.extend_from_slice(&bytes);
+                readable.push((index, write, bytes));
+            }
+            Err(why) => unmerged.push((
+                index,
+                UnmergedWrite {
+                    author: *write.author.as_bytes(),
+                    seq: write.seq,
+                    reason: UnmergedReason::Unreadable(why),
+                },
+            )),
+        }
+    }
+    let mut merged = document.doc.clone();
+    let complete = history.is_empty()
+        || matches!(
+            crate::document::merge_committed_with_status(
+                &mut merged,
+                &DocumentMutation::Incremental(history.clone()),
+            )
+            .map_err(|error| format!("{error:?}"))?,
+            crate::document::MergeOutcome::Changed(_)
+        );
+    if complete {
+        return Ok(OpenedRecord {
+            document: merged.save(),
+            unmerged: unmerged.into_iter().map(|(_, write)| write).collect(),
+        });
+    }
+    // Some change waits for one the record lacks: merge what applies, the
+    // rest waiting in the document's queue, and name the writes it holds.
+    let mut merged = document.doc.clone();
+    tilo_automerge_isolate::apply(
+        &mut merged,
+        &history,
+        tilo_automerge_isolate::Dependencies::RetainOrphans,
+    )
+    .map_err(err)?;
+    let missing: Vec<String> = merged
+        .get_missing_deps(&[])
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    for (index, write, bytes) in readable {
+        // A snapshot is a whole document: it never waits on anything.
+        let Ok(changes) = automerge::Automerge::parse_changes(&bytes) else {
+            continue;
+        };
+        if changes
+            .iter()
+            .any(|change| merged.get_change_by_hash(&change.hash()).is_none())
+        {
+            unmerged.push((
+                index,
+                UnmergedWrite {
+                    author: *write.author.as_bytes(),
+                    seq: write.seq,
+                    reason: UnmergedReason::MissingDependencies {
+                        missing: missing.clone(),
+                    },
+                },
+            ));
+        }
+    }
+    unmerged.sort_by_key(|(index, _)| *index);
+    // Saved without the changes still waiting: the record as it reads.
+    let document = merged.save_with_options(automerge::SaveOptions {
+        retain_orphans: false,
+        ..automerge::SaveOptions::default()
+    });
+    Ok(OpenedRecord {
+        document,
+        unmerged: unmerged.into_iter().map(|(_, write)| write).collect(),
+    })
+}
+
 impl StatePeer {
     /// `record` of `app` as its channel's key holder reads it: the cleartext
-    /// base with every sealed write `open` opens merged over it. A record
-    /// that is not encrypted reads as [`Self::document`]. `None` for a
-    /// record this state does not hold.
+    /// base with every sealed write `open` opens merged over it, and the
+    /// writes it leaves out (see [`OpenedRecord`]). A record that is not
+    /// encrypted reads as [`Self::document`]. `None` for a record this state
+    /// does not hold.
     ///
     /// # Errors
     ///
-    /// Returns an error when a sealed write does not open, decode or merge.
+    /// Returns an error when the history's changes are malformed.
     pub fn opened_document(
         &self,
         app: &str,
         record: &str,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Option<OpenedRecord>, String> {
         let route = Route {
             app: app.into(),
             record: record.into(),
@@ -170,9 +314,12 @@ impl StatePeer {
             return Ok(None);
         };
         if !document.encryption_required {
-            return Ok(self.document(app, record));
+            return Ok(self.document(app, record).map(|document| OpenedRecord {
+                document,
+                unmerged: Vec::new(),
+            }));
         }
-        merge_sealed(document, open).map(Some)
+        open_sealed(document, open).map(Some)
     }
 
     /// Whether `record` of `app` is encrypted here: its writes are sealed,

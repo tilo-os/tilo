@@ -24,14 +24,15 @@ pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
     GovernedAgent, GovernedDelegateRow, GovernedMember, HELD_FOR_SURFACE, InstalledBot,
     LocalRecoveryReservation, MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority,
-    NativePublicationCut, PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentCapture,
-    PeerDocumentRead, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut, PeerLimits,
-    PeerMediaCall, PeerMediaGovernance, PeerMediaGovernanceMut, PeerMember, PeerOutbox,
-    PeerOutboxMut, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, PeerWorkspace,
-    PeerWorkspaceMut, PlaintextChanges, ReceiveOutcome, RecordReaders, RequestedBot, Reseal,
-    SealCheckpoint, SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin,
-    committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle, seed_room,
-    succeeded_authority, workspace_seed,
+    NativePublicationCut, OpenedRecord, PeerDeliveryPolicy, PeerDeliveryPolicyError,
+    PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError, PeerGovernance,
+    PeerGovernanceMut, PeerLimits, PeerMediaCall, PeerMediaGovernance, PeerMediaGovernanceMut,
+    PeerMember, PeerOutbox, PeerOutboxMut, PeerPolicyBasis, PeerRead, PeerRevocations,
+    PeerRoomAccess, PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ReceiveOutcome,
+    RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument, SeedState,
+    StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, committed_document_revision,
+    decide_with_surfaces, default_surfaces, peer_handle, seed_room, succeeded_authority,
+    workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;

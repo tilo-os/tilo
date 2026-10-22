@@ -506,6 +506,179 @@ fn a_compaction_merges_writes_admitted_out_of_causal_order() {
 }
 
 #[test]
+fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let (first, second) = (author.edit("first", "1"), author.edit("second", "2"));
+    let unreadable = author.edit("third", "3");
+    // `second` builds on `first`, which this replica never got; the write
+    // after it does not open with the keys this key holder has.
+    let late = write(&f.host, &f.other, &keys, &second, now);
+    admit(&mut f.host, &f.other, late, now);
+    let foreign = ChannelGroup::create(channel(), MemberKey::generate("other").unwrap())
+        .unwrap()
+        .content_keys()
+        .unwrap();
+    let sealed_apart = write(&f.host, &f.other, &foreign, &unreadable, now);
+    admit(&mut f.host, &f.other, sealed_apart, now);
+    let mut read_write = |op: &SignedOp| open(&keys, op);
+
+    let opened = f
+        .host
+        .opened_document(APP, RECORD, &mut read_write)
+        .unwrap()
+        .expect("the record is held");
+    let read = AutoCommit::load(&opened.document).expect("what merges opens as a whole record");
+    assert_eq!(
+        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("base"),
+        "the record reads"
+    );
+    assert!(read.get(ROOT, "second").unwrap().is_none());
+    let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
+    assert!(
+        matches!(
+            opened.unmerged.as_slice(),
+            [
+                UnmergedWrite { author: a, seq: 1, reason: UnmergedReason::MissingDependencies { missing } },
+                UnmergedWrite { author: b, seq: 2, reason: UnmergedReason::Unreadable(_) },
+            ] if *a == other && *b == other && missing.len() == 1
+        ),
+        "{:?}",
+        opened.unmerged
+    );
+    assert_eq!(held(&f.host).len(), 2, "every write is kept");
+    assert!(
+        mint(&mut f.host, &keys, &f.owner, now).is_err(),
+        "a history that leaves a write out is never compacted"
+    );
+    // A restart keeps them too.
+    let mut restored = f.restore(&f.host.durable().unwrap()).unwrap();
+    assert_eq!(held(&restored), held(&f.host));
+
+    // Once what it waits for arrives, the write is in the record.
+    let early = write(&restored, &f.owner, &keys, &first, now);
+    admit(&mut restored, &f.owner, early, now);
+    let opened = restored
+        .opened_document(APP, RECORD, &mut read_write)
+        .unwrap()
+        .unwrap();
+    let read = AutoCommit::load(&opened.document).unwrap();
+    assert_eq!(
+        read.get(ROOT, "second").unwrap().unwrap().0.as_str(),
+        Some("2")
+    );
+    assert!(
+        matches!(
+            opened.unmerged.as_slice(),
+            [UnmergedWrite {
+                reason: UnmergedReason::Unreadable(_),
+                ..
+            }]
+        ),
+        "{:?}",
+        opened.unmerged
+    );
+}
+
+/// A public room's chat as its governor kept it after hard stops, opened
+/// with the channel's keys: the record's base, the last member snapshot,
+/// the governor's own write, then two visitors' writes that build on a
+/// change of a third visitor's snapshot the governor had taken in and lost
+/// at a stop. `lost` is that snapshot, as the relay still retained it.
+/// Its postcard `Vec<(label, bytes)>`, hex.
+const LOUNGE_CHAT_GAP: &str = include_str!("fixtures/lounge-chat-gap.hex");
+
+#[test]
+fn a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns() {
+    let fixture: Vec<(String, Vec<u8>)> = postcard::from_bytes(
+        &hex::decode(LOUNGE_CHAT_GAP.split_whitespace().collect::<String>()).unwrap(),
+    )
+    .unwrap();
+    let [(_, base), history @ .., (_, lost)] = fixture.as_slice() else {
+        panic!("a base, a history and the lost write")
+    };
+    let now = SystemTime::UNIX_EPOCH;
+    // Only the plaintext matters here: each write opens to its own.
+    let op = |seq: u64| {
+        SignedOp::new_unsigned(
+            Vec::new(),
+            artifact(),
+            Ed25519PublicKey::from_bytes([u8::try_from(seq).unwrap(); 32]),
+            collab_types::document_attestation_id(APP, ROOM, RECORD),
+            OpKind::Change,
+            now,
+            seq,
+        )
+    };
+    let mut plaintexts: std::collections::BTreeMap<u64, Vec<u8>> = history
+        .iter()
+        .zip(1..)
+        .map(|((_, plaintext), seq)| (seq, plaintext.clone()))
+        .collect();
+    let mut document = Document {
+        doc: tilo_automerge_isolate::load(base)
+            .map(crate::cached_document::CachedDocument::from)
+            .unwrap(),
+        channel: ChannelState::default(),
+        encryption_required: true,
+        covered: std::collections::BTreeMap::new(),
+        covered_snapshot: None,
+        sealed: plaintexts
+            .keys()
+            .copied()
+            .map(op)
+            .collect::<Vec<_>>()
+            .into(),
+    };
+    let missing = "32cc8086d6eb9538799a44d9b6e5229f22d7626ef79e2d3ec867898a01224cf1";
+
+    let opened = {
+        let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
+        assert_eq!(
+            sealed_compaction::merge_sealed(&document, &mut read_write).unwrap_err(),
+            "sealed history does not merge into a complete record",
+            "as the room service refused to start on it"
+        );
+        sealed_compaction::open_sealed(&document, &mut read_write).unwrap()
+    };
+    let waiting: Vec<(u64, &UnmergedReason)> = opened
+        .unmerged
+        .iter()
+        .map(|write| (write.seq, &write.reason))
+        .collect();
+    let gap = UnmergedReason::MissingDependencies {
+        missing: vec![missing.to_owned()],
+    };
+    assert_eq!(
+        waiting,
+        [(3, &gap), (4, &gap)],
+        "both visitors' writes wait for the lost change"
+    );
+    let mut read = AutoCommit::load(&opened.document).expect("the rest opens as a whole record");
+    let governor = "54b2fcc8";
+    assert!(
+        read.get_heads()
+            .iter()
+            .any(|head| head.to_string().starts_with(governor)),
+        "the governor's own write is read"
+    );
+
+    // The lost write returns: the record is whole again.
+    plaintexts.insert(5, lost.clone());
+    document.sealed.push(op(5));
+    let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
+    let opened = sealed_compaction::open_sealed(&document, &mut read_write).unwrap();
+    assert_eq!(opened.unmerged, []);
+    assert_eq!(
+        opened.document,
+        sealed_compaction::merge_sealed(&document, &mut read_write).unwrap()
+    );
+}
+
+#[test]
 fn forged_compactions_are_refused() {
     let mut f = fixture();
     let now = f.now;

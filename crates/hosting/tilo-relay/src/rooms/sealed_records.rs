@@ -129,19 +129,36 @@ impl GovernedRoom {
 
     /// `record` of `app` as the governor reads it, saved: the record itself,
     /// or for a sealed one its history opened with the channel's keys.
+    /// A sealed write that does not open, or waits for a change the record
+    /// lacks, is left out and named in the log: the room reads the rest,
+    /// and the write stays in the history for when what it waits for comes.
     ///
     /// # Errors
     ///
-    /// As [`Self::record_keys`], or a sealed write does not open or merge.
+    /// As [`Self::record_keys`], or the history's changes are malformed.
     pub(super) async fn readable_document(
         &self,
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        match self.record_keys(app, record).await? {
-            None => Ok(self.peer.document(app, record)),
-            Some(keys) => self.peer.opened_document(app, record, &mut keys.open()),
+        let Some(keys) = self.record_keys(app, record).await? else {
+            return Ok(self.peer.document(app, record));
+        };
+        let Some(opened) = self.peer.opened_document(app, record, &mut keys.open())? else {
+            return Ok(None);
+        };
+        if !opened.unmerged.is_empty() {
+            let writes: Vec<String> = opened.unmerged.iter().map(ToString::to_string).collect();
+            tracing::warn!(
+                room = %self.room(),
+                %app,
+                %record,
+                left_out = writes.len(),
+                writes = ?writes,
+                "a sealed record is read without writes of its history that do not merge; they are kept"
+            );
         }
+        Ok(Some(opened.document))
     }
 }
 
