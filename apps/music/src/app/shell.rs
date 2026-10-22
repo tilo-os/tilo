@@ -122,7 +122,14 @@ impl MusicApp {
             .filter_map(|playlist| {
                 let id = place_id(&View::Playlist(playlist.id.clone()))?;
                 let count = u32::try_from(playlist.len()).unwrap_or(u32::MAX);
-                Some(NavItem::new(id, playlist.name.clone()).count(count))
+                // Each playlist by its cover (its songs' covers, or its
+                // initials), so the names line up with the places above.
+                let cover = self.art_image(&playlist.id);
+                Some(
+                    NavItem::new(id, playlist.name.clone())
+                        .art(playlist.name.clone(), cover)
+                        .count(count),
+                )
             })
             .collect();
         sections.push(
@@ -153,7 +160,6 @@ impl MusicApp {
                 RepeatMode::All => TransportRepeat::All,
                 RepeatMode::One => TransportRepeat::One,
             }),
-            lyrics: Some(self.view == View::Lyrics),
             queue: Some(self.view == View::Queue),
             more: true,
             ..TransportState::default()
@@ -164,10 +170,13 @@ impl MusicApp {
                 .playback_error
                 .clone()
                 .unwrap_or_else(|| self.lib.artist_name(&track.artist_id).to_owned());
-            state.art_name = self.lib.album_title(&track.album_id).to_owned();
+            self.lib
+                .album_title(&track.album_id)
+                .clone_into(&mut state.art_name);
             state.art = self
                 .art_image(&self.best_cover_id(&track.id, &track.album_id))
                 .map_or(TransportArt::Placeholder, TransportArt::Image);
+            state.lyrics = Some(self.view == View::Lyrics);
             if !self.is_local_file(&track.id) {
                 state.liked = Some(self.lib.is_liked(&track.id));
             }

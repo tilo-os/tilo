@@ -627,8 +627,11 @@ impl MusicApp {
     /// Take the person to where the control running `action` lives, and
     /// highlight it there.
     pub(in crate::app) fn on_show_control(&mut self, home: &str, action: Action) {
-        if home == Home::Sidebar.id() {
-            self.snap_sidebar(true);
+        if home == Home::Sidebar.id()
+            && let Some(bar) = &self.bar
+            && !bar.is_sidebar_open()
+        {
+            bar.event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
         }
         let now = ui::motion::frame_now();
         let mut ring = Presence::closed();

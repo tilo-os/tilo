@@ -4277,10 +4277,8 @@ impl MusicApp {
     /// Stage the shell's sidebar open or closed for a `--shots` frame, through
     /// the window bar's toggle.
     pub fn snap_sidebar(&mut self, open: bool) {
-        if let Some(bar) = &self.bar
-            && bar.is_sidebar_open() != open
-        {
-            bar.event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        if let Some(bar) = &self.bar {
+            bar.stage_sidebar(open);
         }
         self.dirty = true;
     }

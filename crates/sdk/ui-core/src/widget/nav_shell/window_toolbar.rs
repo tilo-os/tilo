@@ -14,6 +14,9 @@ pub(super) struct Requests {
     pub(super) toggle: Cell<bool>,
     pub(super) back: Cell<bool>,
     pub(super) inspector: Cell<bool>,
+    /// The sidebar open or closed, landed with no motion: a capture's
+    /// staging ([`WindowBarLink::stage_sidebar`]).
+    pub(super) staged_sidebar: Cell<Option<bool>>,
     /// The shell's own slots for the window's bar as of its last layout.
     slots: RefCell<WindowToolbar>,
 }
@@ -39,6 +42,12 @@ impl WindowBarLink {
     #[must_use]
     pub fn is_sidebar_open(&self) -> bool {
         self.0.slots.borrow().sidebar == Some(true)
+    }
+
+    /// Show the sidebar open or closed at once, with no motion: what a
+    /// screenshot scenario stages.
+    pub fn stage_sidebar(&self, open: bool) {
+        self.0.staged_sidebar.set(Some(open));
     }
 
     /// Run what the person did in the window's bar on the shell's own

@@ -2857,6 +2857,15 @@ impl NavShell {
             self.toggle_inspector();
             acted = true;
         }
+        if self.built
+            && let Some(open) = self.requests.staged_sidebar.take()
+        {
+            if self.is_sidebar_open() != open {
+                self.toggle_sidebar();
+            }
+            self.snap();
+            acted = true;
+        }
         acted
     }
 
