@@ -123,6 +123,13 @@ pub enum Direction {
     Poster,
 }
 
+/// Whether assistive technology reads a [`Stack`] and its children.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StackAccess {
+    Read,
+    Hidden,
+}
+
 /// A flex group with an explicit gap and optional padding and width.
 ///
 /// Every grouping in the greeter is one of these. It exists as a real
@@ -148,6 +155,9 @@ struct Stack {
     /// Pinned at this box of its parent instead of taking part in the
     /// parent's flow: the primary output's part of a window spanning several.
     place: Option<Rect>,
+    /// Out of the accessibility tree when hidden: what another display
+    /// repeats of the screen (its clock) is read once, where the card is.
+    access: StackAccess,
     rect: Rect,
 }
 
@@ -168,6 +178,7 @@ impl Stack {
             width_auto: false,
             grow: false,
             place: None,
+            access: StackAccess::Read,
             rect: Rect::ZERO,
         }
     }
@@ -229,6 +240,12 @@ impl Stack {
     /// Occupy exactly `area` of the parent, out of its flow.
     fn place(mut self, area: Rect) -> Self {
         self.place = Some(area);
+        self
+    }
+
+    /// Hide the stack and its children from assistive technology.
+    fn decorative(mut self) -> Self {
+        self.access = StackAccess::Hidden;
         self
     }
 }
@@ -389,6 +406,15 @@ impl Widget for Stack {
 
     fn name(&self) -> &'static str {
         "GreeterStack"
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        (self.access == StackAccess::Hidden).then(|| {
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group).with_state(ui::a11y::AccessState {
+                hidden: true,
+                ..Default::default()
+            })
+        })
     }
 
     fn get_rect(&self) -> Rect {
@@ -1113,6 +1139,46 @@ impl GreeterApp {
             .with_weight(TextWeight::Medium)
             .with_color(theme.tokens.colors.text_dim);
         Box::new(Stack::column(0.0, vec![Box::new(time), Box::new(date)]).align(align))
+    }
+
+    /// The time and date centred on a display without the sign-in card.
+    fn build_display_clock(&self, theme: &Theme, output: Rect) -> Box<dyn Widget> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a display fraction of a few hundred logical px fits f32"
+        )]
+        let fitted = (output.height() * 0.21).min(output.width() * 0.2) as f32;
+        let size = if fitted.is_finite() {
+            fitted.clamp(CLOCK_MIN, CLOCK_MAX)
+        } else {
+            CLOCK_MIN
+        };
+        let time = Text::new(&self.clock.time)
+            .with_id("greeter.display-clock")
+            .with_content_size(size)
+            .with_font_variation(OpenTypeTag::WEIGHT, CLOCK_WEIGHT)
+            .with_numeric_style(NumericStyle::TabularLining)
+            .with_line_height(1.0)
+            .with_color(theme.text_primary);
+        let date = Text::new(&self.clock.date)
+            .with_id("greeter.display-date")
+            .with_role(TextRole::Subheading)
+            .with_weight(TextWeight::Medium)
+            .with_color(theme.tokens.colors.text_dim);
+        Box::new(
+            Stack::column(
+                0.0,
+                vec![Box::new(
+                    Stack::column(0.0, vec![Box::new(time), Box::new(date)])
+                        .align(AlignItems::Center)
+                        .width_auto(),
+                )],
+            )
+            .align(AlignItems::Center)
+            .justify(JustifyContent::Center)
+            .place(output)
+            .decorative(),
+        )
     }
 
     /// The single status line, reserved at a constant height in every state
@@ -2087,17 +2153,26 @@ impl Widget for GreeterApp {
         (self.layout_area, self.layout_outputs) = self.output_layout();
         let mut composition = self.build_composition(theme);
         if let Some(area) = self.layout_area {
-            // The composition fills the primary output's part of the window.
-            // The box is a widget, not a bare taffy node: the App walks the
-            // widget and taffy trees in lock-step for the focus order, and a
-            // node without a widget shifted every focusable onto its
-            // neighbour's node, so autofocus missed the passcode field.
-            composition = Box::new(
+            // The composition fills the primary output's part of the window,
+            // and every other output shows the clock over the backdrop, as
+            // the lock screen's other displays do. The boxes are widgets, not
+            // bare taffy nodes: the App walks the widget and taffy trees in
+            // lock-step for the focus order, and a node without a widget
+            // shifted every focusable onto its neighbour's node, so autofocus
+            // missed the passcode field.
+            let mut outputs: Vec<Box<dyn Widget>> = vec![Box::new(
                 Stack::column(0.0, vec![composition])
                     .align(AlignItems::Center)
                     .justify(JustifyContent::Center)
                     .place(area),
+            )];
+            outputs.extend(
+                self.layout_outputs
+                    .iter()
+                    .filter(|output| **output != area)
+                    .map(|output| self.build_display_clock(theme, *output)),
             );
+            composition = Box::new(Stack::column(0.0, outputs).fill_height());
         }
         let child = self
             .composed
@@ -2129,10 +2204,15 @@ impl Widget for GreeterApp {
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         self.content = self.rect;
         if self.layout_area.is_some()
-            && let Some(area) = child
+            && let Some(outputs) = child
+            && let Some(area) = taffy
+                .children(outputs)
+                .ok()
+                .and_then(|children| children.first().copied())
         {
             // The primary-output box built above holds the composition.
-            self.content = ui::widget::layout_rect(taffy, area, child_origin);
+            let outputs = ui::widget::layout_rect(taffy, outputs, child_origin);
+            self.content = ui::widget::layout_rect(taffy, area, outputs.origin());
         }
         // The composition depends on the viewport. App and FrameHarness
         // settle this rebuild before painting, including the very first frame
@@ -2835,6 +2915,120 @@ mod tests {
         w.children()
             .into_iter()
             .find_map(|child| rect_of(child, id))
+    }
+
+    /// Whether the widget `id` is out of the accessibility tree: it or an
+    /// ancestor reports itself hidden.
+    fn hidden_from_access(w: &dyn Widget, id: &str, hidden: bool) -> Option<bool> {
+        let hidden = hidden || w.accessibility_hidden();
+        if w.test_id() == Some(id) {
+            return Some(hidden);
+        }
+        w.children()
+            .into_iter()
+            .find_map(|child| hidden_from_access(child, id, hidden))
+    }
+
+    /// "The login screen must appear with a 2944x1840 built-in panel plus a
+    /// 1920x1080 monitor attached."
+    ///
+    /// The kiosk stretches the one sign-in window over both displays. With
+    /// each display at its own scale that is 3392x1080; when the kiosk keeps
+    /// both at 1x it is 4864x1840, which at the panel's scale 2 was a
+    /// 9728-wide texture the device refused, and the greeter exited until
+    /// greetd gave up. Either way the card is on the panel, the monitor shows
+    /// the time, and the window's frame fits the device.
+    #[test]
+    fn the_login_screen_appears_with_a_built_in_panel_and_a_1080p_monitor_attached() {
+        use crate::output_scale::{Arrangement, Display, Displays};
+        let arrangements = [
+            (
+                Rect::new(0.0, 0.0, 1472.0, 920.0),
+                Rect::new(1472.0, 0.0, 3392.0, 1080.0),
+            ),
+            (
+                Rect::new(0.0, 0.0, 2944.0, 1840.0),
+                Rect::new(2944.0, 0.0, 4864.0, 1080.0),
+            ),
+        ];
+        for (panel, monitor) in arrangements {
+            let displays = Displays::fixed(Arrangement {
+                displays: vec![
+                    Display {
+                        rect: panel,
+                        internal: true,
+                    },
+                    Display {
+                        rect: monitor,
+                        internal: false,
+                    },
+                ],
+            });
+            let window = panel.union(monitor);
+            for theme in [Theme::dark(), Theme::light()] {
+                let mut app =
+                    GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()))
+                        .with_displays(displays.clone());
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "display sizes in logical px fit f32"
+                )]
+                let viewport = (window.width() as f32, window.height() as f32);
+                layout_at_with_theme(&mut app, viewport, &theme);
+                assert_eq!(app.content, panel, "the card fills the built-in panel");
+                for id in ["greeter.password", "greeter.clock"] {
+                    let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
+                    assert!(
+                        rect.area() > 0.0 && inside(panel, rect),
+                        "{id} at {rect:?} is not on the built-in panel {panel:?}"
+                    );
+                }
+                assert!(
+                    rect_of(&app, "greeter.password").is_some_and(|field| !inside(monitor, field)),
+                    "the monitor carries no password field"
+                );
+                for id in ["greeter.display-clock", "greeter.display-date"] {
+                    let rect = rect_of(&app, id).unwrap_or_else(|| panic!("{id} is laid out"));
+                    assert!(
+                        rect.area() > 0.0 && inside(monitor, rect),
+                        "{id} at {rect:?} is not on the monitor {monitor:?}"
+                    );
+                    assert_eq!(
+                        hidden_from_access(&app, id, false),
+                        Some(true),
+                        "the monitor's {id} is read once, on the panel"
+                    );
+                }
+                assert_eq!(
+                    hidden_from_access(&app, "greeter.password", false),
+                    Some(false)
+                );
+            }
+
+            // The frame the window draws at the panel's scale 2 fits every
+            // device the toolkit opens, and keeps the window's logical size.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "display sizes in physical px fit u32"
+            )]
+            let physical = (
+                (window.width() * 2.0) as u32,
+                (window.height() * 2.0) as u32,
+            );
+            let limit = ui::gpu::requested_texture_limit();
+            let extent = ui::scale::fit_to_texture_limit(physical, 2.0, limit);
+            assert!(
+                extent.width <= limit && extent.height <= limit,
+                "{extent:?} exceeds the device limit {limit}"
+            );
+            let logical = ui::scale::logical_size((extent.width, extent.height), extent.scale);
+            assert!(
+                (logical.0 - window.width()).abs() <= 1.0
+                    && (logical.1 - window.height()).abs() <= 1.0,
+                "the frame keeps the window's layout: {logical:?} vs {window:?}"
+            );
+        }
     }
 
     #[test]
