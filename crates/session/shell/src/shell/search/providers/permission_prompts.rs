@@ -87,6 +87,16 @@ fn member_choice(
     }))
 }
 
+/// The address word of one answer.
+fn decision_id(choice: PromptChoice) -> &'static str {
+    match choice {
+        PromptChoice::Allow => "allow-once",
+        PromptChoice::Session => "allow-session",
+        PromptChoice::Always => "allow-always",
+        PromptChoice::Deny => "deny",
+    }
+}
+
 #[derive(Default)]
 pub struct PermissionPromptsProvider {
     ranker: ui::search::ListIndex,
@@ -114,50 +124,59 @@ impl SearchProvider for PermissionPromptsProvider {
         };
         let prompt_id = pending.id;
         let agent_admission = matches!(pending.request, PromptRequest::AgentAdmission(_));
-        let rows: Vec<_> = [
-            ("allow-once", PromptChoice::Allow),
-            ("allow-session", PromptChoice::Session),
-            ("allow-always", PromptChoice::Always),
-            ("deny", PromptChoice::Deny),
-        ]
-        .into_iter()
-        .map(|(decision, choice)| SearchResult {
-            facts: Vec::new(),
-            shortcut: None,
-            kind: ResourceKind::Action,
-            operation_kind: tilo_actions::OperationKind::Effect,
-            provider_id: PROVIDER_ID.into(),
-            id: format!("{decision}@{prompt_id}"),
-            title: ui::widget::permission_prompt::button_label(choice),
-            subtitle: Some(format!(
-                "{}: {}",
-                pending.app_id,
-                prompt_label(&pending.request)
-            )),
-            badge: Some(self.display_name()),
-            score: 0,
-            params: prompt_params(agent_admission),
-            contract: Some(tilo_actions::ActionContract {
-                kind: tilo_actions::ActionKind::Outside,
-                risk: tilo_actions::RiskLevel::Destructive,
-                confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                retry: tilo_actions::RetryPolicy::AtMostOnce,
-                ..tilo_actions::ActionContract::default()
-            }),
-            on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args| {
-                let mut state = chrome.borrow_mut();
-                if !is_active_workspace_owner(&state) {
-                    return Err(ActionError::Explained(t(
-                        "permission-request-owner-required",
-                    )));
-                }
-                let member = member_choice(args)?;
-                answer_pending_prompt_as(&mut state, prompt_id, choice, member)
-            }),
-            on_invoke: None,
-            on_begin_invoke: None,
-        })
-        .collect();
+        // The answers the prompt offers, as it names them.
+        let offered: Vec<(PromptChoice, String)> = match &pending.request {
+            PromptRequest::DesktopControl(ask) => ask.choices(),
+            _ => [
+                PromptChoice::Allow,
+                PromptChoice::Session,
+                PromptChoice::Always,
+                PromptChoice::Deny,
+            ]
+            .into_iter()
+            .map(|choice| (choice, ui::widget::permission_prompt::button_label(choice)))
+            .collect(),
+        };
+        let rows: Vec<_> = offered
+            .into_iter()
+            .map(|(choice, title)| (decision_id(choice), choice, title))
+            .map(|(decision, choice, title)| SearchResult {
+                facts: Vec::new(),
+                shortcut: None,
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                provider_id: PROVIDER_ID.into(),
+                id: format!("{decision}@{prompt_id}"),
+                title,
+                subtitle: Some(format!(
+                    "{}: {}",
+                    pending.app_id,
+                    prompt_label(&pending.request)
+                )),
+                badge: Some(self.display_name()),
+                score: 0,
+                params: prompt_params(agent_admission),
+                contract: Some(tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Outside,
+                    risk: tilo_actions::RiskLevel::Destructive,
+                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                    retry: tilo_actions::RetryPolicy::AtMostOnce,
+                    ..tilo_actions::ActionContract::default()
+                }),
+                on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args| {
+                    let mut state = chrome.borrow_mut();
+                    if !is_active_workspace_owner(&state) {
+                        return Err(ActionError::Explained(t(
+                            "permission-request-owner-required",
+                        )));
+                    }
+                    let member = member_choice(args)?;
+                    answer_pending_prompt_as(&mut state, prompt_id, choice, member)
+                }),
+                on_invoke: None,
+                on_begin_invoke: None,
+            })
+            .collect();
         let fields: Vec<_> = rows
             .iter()
             .map(|row| {

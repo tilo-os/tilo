@@ -3,6 +3,7 @@ tab-modified = Nicht gespeicherte Änderungen
 tab-search-in = In { $title } suchen
 tab-held-by = Fenster von { $name }
 tab-only-on-this-device = Nur auf diesem Gerät
+tab-controls-desktop = Steuert deinen Desktop
 
 standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…

@@ -38,6 +38,7 @@ use crate::device_read::Reading;
 use crate::host::PaneCx;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
+use settings_store::desktop_control::TabGrantEntry;
 
 crate::effects::effect_family!(PermissionsEffect => answer);
 
@@ -74,6 +75,12 @@ pub enum PermissionsEffect {
         #[param("The application identity the secret store recorded")]
         app: String,
     },
+    /// Stop a terminal tab controlling the desktop beyond its workspace.
+    #[effect(job, device_only, label = "Stop a tab controlling the desktop")]
+    StopDesktopControl {
+        #[param("The grant, as the desktop listed it")]
+        grant: String,
+    },
 }
 
 /// Answer `effect` by opening the tool it names, or by changing what the
@@ -90,6 +97,20 @@ pub(crate) fn answer(
         }
         PermissionsEffect::ForgetSecrets { app: id } => {
             secret_command(app, cx, vec!["apps".into(), "forget".into(), id])
+        }
+        PermissionsEffect::StopDesktopControl { grant } => {
+            let reader = Arc::clone(&area(app).ok_or_else(crate::area::missing)?.reader);
+            Ok(crate::device_read::job(
+                cx,
+                move || reader.stop_desktop_control(&grant),
+                |app: &mut SettingsApp, done: Result<(), String>, _| {
+                    area(app)
+                        .ok_or_else(crate::area::missing)?
+                        .reading
+                        .refresh();
+                    done.map(|()| Effected::done())
+                },
+            ))
         }
         PermissionsEffect::OpenWorkspacePrivacy => {
             if !app.host().reaches_devices() {
@@ -153,6 +174,14 @@ trait PermissionsReader: Send + Sync {
     /// Change what the secret store lets an application use
     /// (`apps allow|revoke|forget <id>`).
     fn secret_command(&self, args: &[String]) -> Result<(), String>;
+    /// The terminal tabs the desktop lets control it beyond their
+    /// workspace right now.
+    fn desktop_control(&self) -> Vec<TabGrantEntry>;
+    /// Ask the desktop to stop one of [`Self::desktop_control`].
+    fn stop_desktop_control(&self, grant: &str) -> Result<(), String>;
+    /// The workspace tree the desktop persisted (`state.json`), whose
+    /// workspaces hold the lasting grants; `None` when there is none.
+    fn workspace_state(&self) -> Option<String>;
 }
 
 /// This device and its secret store.
@@ -179,6 +208,22 @@ impl PermissionsReader for SystemPermissions {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         command_output(SECRET_SERVICE, &args).map(|_| ())
     }
+
+    fn desktop_control(&self) -> Vec<TabGrantEntry> {
+        settings_store::desktop_control::DesktopControlSnapshot::load()
+            .map(|snapshot| snapshot.tabs)
+            .unwrap_or_default()
+    }
+
+    fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
+        settings_store::desktop_control::StopRequest::request(grant)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn workspace_state(&self) -> Option<String> {
+        load_text()
+    }
 }
 
 /// What a capture or a test shows in place of this device: a protected
@@ -186,6 +231,7 @@ impl PermissionsReader for SystemPermissions {
 /// controls change.
 struct SamplePermissions {
     secrets: Mutex<Vec<SecretApp>>,
+    desktop_control: Mutex<Vec<TabGrantEntry>>,
 }
 
 impl Default for SamplePermissions {
@@ -207,6 +253,13 @@ impl Default for SamplePermissions {
                     items: 1,
                 },
             ]),
+            desktop_control: Mutex::new(vec![TabGrantEntry {
+                id: "4242:17".into(),
+                app: "so.tilo.terminal".into(),
+                app_label: "Terminal".into(),
+                tab: "claude".into(),
+                workspace: "Home".into(),
+            }]),
         }
     }
 }
@@ -268,6 +321,52 @@ impl PermissionsReader for SamplePermissions {
         drop(secrets);
         Ok(())
     }
+
+    fn desktop_control(&self) -> Vec<TabGrantEntry> {
+        self.desktop_control
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        let mut tabs = self
+            .desktop_control
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let before = tabs.len();
+        tabs.retain(|tab| tab.id != grant);
+        let stopped = tabs.len() < before;
+        drop(tabs);
+        if stopped {
+            Ok(())
+        } else {
+            Err(format!("no tab grant `{grant}`"))
+        }
+    }
+
+    /// A workspace whose Terminal may always control the desktop, beside
+    /// the camera an app was let use.
+    fn workspace_state(&self) -> Option<String> {
+        let caps = [
+            (
+                "so.tilo.terminal",
+                Scope::Device("desktop-control".into()),
+                Access::Write,
+            ),
+            (
+                "so.tilo.camera",
+                Scope::Device("camera".into()),
+                Access::Read,
+            ),
+        ]
+        .map(|(app, scope, access)| CapOverride::grant(Subject::app(app), scope, access));
+        let caps = serde_json::to_string(&caps).ok()?;
+        Some(format!(
+            r#"{{"workspaces":[{{"name":"Home","sandbox":{caps}}}]}}"#
+        ))
+    }
 }
 
 /// What Privacy & Security last read: everything it shows but the
@@ -277,6 +376,7 @@ struct PermissionsReading {
     privacy: os_actions::PrivacyStatus,
     security: DeviceSecurity,
     secrets: Result<Vec<SecretApp>, String>,
+    desktop_control: Vec<TabGrantEntry>,
 }
 
 impl PermissionsReading {
@@ -285,6 +385,7 @@ impl PermissionsReading {
             privacy: reader.privacy(),
             security: reader.device_security(),
             secrets: reader.secret_apps(),
+            desktop_control: reader.desktop_control(),
         }
     }
 }
@@ -405,6 +506,48 @@ fn secrets_card(cx: &PaneCx, apps: &Result<Vec<SecretApp>, String>) -> SettingsS
         }
     }
     section(&title, rows(body))
+}
+
+/// The terminal tabs the desktop lets control it beyond their workspace,
+/// "for this tab": each until its tab closes, each with Stop. "Always"
+/// grants are workspace grants and are listed with them below.
+fn desktop_control_card(cx: &PaneCx, tabs: &[TabGrantEntry]) -> SettingsSection {
+    let mut body: Vec<Item> = vec![note(&t("perm-desktop-control-intro"))];
+    if tabs.is_empty() {
+        body.push(note(&t("perm-desktop-control-none")));
+    }
+    for tab in tabs {
+        let title = t_args(
+            "perm-desktop-control-tab",
+            &[
+                ("app", tab.app_label.clone().into()),
+                ("tab", tab.tab.clone().into()),
+            ],
+        );
+        let mut details = vec![t("perm-desktop-control-until-closes")];
+        if !tab.workspace.is_empty() {
+            details.push(t_args(
+                "perm-desktop-control-workspace",
+                &[("workspace", tab.workspace.clone().into())],
+            ));
+        }
+        let stop = cx.bind_invocation(
+            Button::new(
+                &format!("desktop-control-stop:{}", tab.id),
+                &t("perm-desktop-control-stop"),
+            ),
+            PermissionsEffect::StopDesktopControl {
+                grant: tab.id.clone(),
+            },
+        );
+        body.push(row(Box::new(thing_row(
+            &format!("desktop-control:{}", tab.id),
+            &title,
+            &details,
+            Some(Box::new(stop)),
+        ))));
+    }
+    section(&t("perm-desktop-control-title"), rows(body))
 }
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
@@ -648,6 +791,7 @@ fn kind_shown(english: &str) -> String {
         "Microphone" => "perm-kind-mic",
         "Screen sharing" => "perm-kind-screen",
         "Remote control" => "perm-kind-remote",
+        "Desktop control" => "perm-kind-desktop-control",
         "Network" => "perm-kind-network",
         _ => "perm-kind-action",
     })
@@ -679,6 +823,9 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         }
         Scope::Device(d) if d == "remote-desktop" => {
             ("Remote control", t("perm-inject-input"), Tint::Remote)
+        }
+        Scope::Device(d) if d == "desktop-control" => {
+            ("Desktop control", t("perm-desktop-control"), Tint::Remote)
         }
         Scope::NetHost(h) => {
             let detail = if h == "*" {
@@ -835,6 +982,9 @@ pub struct PermissionsPane {
     /// The workspace grants `state.json` holds; `None` when it could not
     /// be read or parsed.
     workspace_access: Option<Vec<WsGrants>>,
+    /// The watch on the desktop's live "this tab" grants, so one that
+    /// starts or ends shows at once; `None` for a capture's sample device.
+    desktop_control_watch: Option<crate::watch::Watched>,
     composed: ui::widget::Composed,
 }
 
@@ -843,12 +993,22 @@ impl PermissionsPane {
     /// reads it again off the UI thread.
     pub fn new(cx: PaneCx, area: &PermissionsArea) -> Self {
         area.reading.refresh();
+        let desktop_control_watch = cx.reaches_devices().then(|| {
+            let snapshot: Vec<PathBuf> = settings_store::desktop_control::snapshot_path()
+                .into_iter()
+                .collect();
+            let watch = crate::watch::Watched::files(&snapshot);
+            // It starts flagged; the reading just asked for covers that.
+            let _ = watch.take();
+            watch
+        });
         Self {
             cx,
             reading_seen: area.reading.revision(),
             shown: area.reading.get(),
             reading: area.reading.clone(),
-            workspace_access: workspace_access(load_text().as_deref()),
+            workspace_access: workspace_access(area.reader.workspace_state().as_deref()),
+            desktop_control_watch,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -864,6 +1024,13 @@ impl PermissionsPane {
 
 impl Widget for PermissionsPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self
+            .desktop_control_watch
+            .as_ref()
+            .is_some_and(crate::watch::Watched::take)
+        {
+            self.reading.refresh();
+        }
         let revision = self.reading.revision();
         if revision != self.reading_seen {
             self.reading_seen = revision;
@@ -1055,11 +1222,13 @@ fn panel(
         panel.push(active_privacy_use_card(&reading.privacy));
         panel.push(device_security_card(&reading.security));
         panel.push(secrets_card(cx, &reading.secrets));
+        panel.push(desktop_control_card(cx, &reading.desktop_control));
     } else {
         panel.push(reading_card("perm-privacy-hardware"));
         panel.push(reading_card("perm-active-use"));
         panel.push(reading_card("perm-device-security"));
         panel.push(reading_card("perm-secrets-title"));
+        panel.push(reading_card("perm-desktop-control-title"));
     }
     panel.push(workspace_grants_intro_card(cx));
 
@@ -1142,6 +1311,51 @@ mod tests {
         assert!(said.contains(&t("perm-secrets-unavailable")));
     }
 
+    /// A terminal tab let control the desktop is listed with its app, its
+    /// tab, how long it lasts and where it was asked from, with Stop; once
+    /// stopped it is gone, and none says so.
+    #[test]
+    fn each_tab_that_controls_the_desktop_is_listed_with_stop() {
+        let sample = SamplePermissions::default();
+        let tabs = sample.desktop_control();
+        let mut card = page(vec![desktop_control_card(&cx(), &tabs)]);
+        build_layout_of(&mut card);
+        let mut labels = Vec::new();
+        button_labels(card.as_ref(), &mut labels);
+        assert_eq!(labels, vec![t("perm-desktop-control-stop")]);
+        let mut said = Vec::new();
+        text_labels(card.as_ref(), &mut said);
+        row_speech(card.as_ref(), &mut said);
+        let joined = said.join(" | ");
+        let named = t_args(
+            "perm-desktop-control-tab",
+            &[("app", "Terminal".into()), ("tab", "claude".into())],
+        );
+        let from = t_args(
+            "perm-desktop-control-workspace",
+            &[("workspace", "Home".into())],
+        );
+        assert!(joined.contains(&named), "{joined}");
+        assert!(
+            joined.contains(&t("perm-desktop-control-until-closes")),
+            "{joined}"
+        );
+        assert!(joined.contains(&from), "{joined}");
+
+        let grant = tabs.first().map(|tab| tab.id.clone()).unwrap_or_default();
+        std::thread::spawn(move || {
+            sample.stop_desktop_control(&grant).expect("stopped");
+            assert!(sample.desktop_control().is_empty());
+        })
+        .join()
+        .expect("off the UI thread");
+        let mut none = page(vec![desktop_control_card(&cx(), &[])]);
+        build_layout_of(&mut none);
+        let mut said = Vec::new();
+        text_labels(none.as_ref(), &mut said);
+        assert!(said.contains(&t("perm-desktop-control-none")));
+    }
+
     /// A device whose commands and services do not answer until let go, as
     /// firewalld behind a stalled system bus or a secret store that waits
     /// for its unlock prompt.
@@ -1169,6 +1383,18 @@ mod tests {
         fn secret_command(&self, args: &[String]) -> Result<(), String> {
             self.wait();
             SamplePermissions::default().secret_command(args)
+        }
+        fn desktop_control(&self) -> Vec<TabGrantEntry> {
+            self.wait();
+            SamplePermissions::default().desktop_control()
+        }
+        fn stop_desktop_control(&self, grant: &str) -> Result<(), String> {
+            self.wait();
+            SamplePermissions::default().stop_desktop_control(grant)
+        }
+        // One small file, read as the pane opens, as it always was.
+        fn workspace_state(&self) -> Option<String> {
+            SamplePermissions::default().workspace_state()
         }
     }
 
@@ -1304,6 +1530,22 @@ mod tests {
         }
     }
 
+    /// What a reader says for each list row: its name, then its details.
+    fn row_speech(w: &dyn Widget, said: &mut Vec<String>) {
+        if w.name() == "ListRow"
+            && let Some(node) = w.accessibility()
+        {
+            said.push(format!(
+                "{} {}",
+                node.name.unwrap_or_default(),
+                node.value.unwrap_or_default()
+            ));
+        }
+        for c in w.children() {
+            row_speech(c, said);
+        }
+    }
+
     fn text_labels(w: &dyn Widget, labels: &mut Vec<String>) {
         if w.name() == "Text"
             && let Some(label) = w.accessibility().and_then(|node| node.name)
@@ -1368,6 +1610,10 @@ mod tests {
             assert_eq!(
                 g(Scope::Device("remote-desktop".into()), Access::Write),
                 Some("Remote control")
+            );
+            assert_eq!(
+                g(Scope::Device("desktop-control".into()), Access::Write),
+                Some("Desktop control")
             );
             assert_eq!(
                 g(Scope::NetHost("*".into()), Access::Write),

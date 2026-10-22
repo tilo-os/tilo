@@ -41,6 +41,10 @@ pub enum WindowMenuAction {
     /// Tell an agent to do something with this window: the agent composer
     /// opens at the pointer about the window's app.
     TellAgent,
+    /// Stop the tab controlling the desktop beyond its workspace: the one
+    /// row of the bar's "Controls your desktop" chip menu
+    /// ([`desktop_control_menu_rows`]).
+    StopDesktopControl,
 }
 
 const MOVE_TO_STRIP_KEY: &str = "tabmenu:move-to-strip";
@@ -64,6 +68,7 @@ impl WindowMenuAction {
             Self::CloseTab => "tabmenu:close".into(),
             Self::CloseWindow => "tabmenu:close-window".into(),
             Self::TellAgent => "tabmenu:tell-agent".into(),
+            Self::StopDesktopControl => "tabmenu:stop-desktop-control".into(),
         }
     }
 
@@ -93,6 +98,7 @@ impl WindowMenuAction {
             Self::CloseTab,
             Self::CloseWindow,
             Self::TellAgent,
+            Self::StopDesktopControl,
         ]
         .into_iter()
         .find(|action| action.semantic_key() == key)
@@ -136,6 +142,9 @@ pub enum WindowMenuRow {
         entries: Vec<WindowMenuEntry>,
     },
     Separator,
+    /// A line saying something about the window, never a command: what the
+    /// chip's grant allows and how long it lasts.
+    Caption(String),
 }
 
 impl WindowMenuRow {
@@ -143,7 +152,7 @@ impl WindowMenuRow {
     pub fn action(&self) -> Option<WindowMenuAction> {
         match self {
             Self::Entry(entry) => Some(entry.action),
-            Self::Submenu { .. } | Self::Separator => None,
+            Self::Submenu { .. } | Self::Separator | Self::Caption(_) => None,
         }
     }
 
@@ -152,7 +161,7 @@ impl WindowMenuRow {
         match self {
             Self::Entry(entry) => vec![entry.action],
             Self::Submenu { entries, .. } => entries.iter().map(|entry| entry.action).collect(),
-            Self::Separator => Vec::new(),
+            Self::Separator | Self::Caption(_) => Vec::new(),
         }
     }
 
@@ -161,6 +170,7 @@ impl WindowMenuRow {
         match self {
             Self::Entry(entry) => Some(&entry.label),
             Self::Submenu { label, .. } => Some(label),
+            Self::Caption(text) => Some(text),
             Self::Separator => None,
         }
     }
@@ -369,9 +379,24 @@ pub fn build_window_menu(rows: &[WindowMenuRow]) -> ContextMenu {
                     .with_enabled(!entries.is_empty()),
             ),
             WindowMenuRow::Separator => menu.push(MenuItem::separator()),
+            WindowMenuRow::Caption(text) => menu.push(MenuItem::caption(text.clone())),
         }
     }
     menu
+}
+
+/// The menu the bar's "Controls your desktop" chip opens: `captions` say
+/// what the grant allows and how long it lasts, then the one way to stop it.
+pub fn desktop_control_menu_rows(captions: Vec<String>) -> Vec<WindowMenuRow> {
+    let mut rows: Vec<_> = captions.into_iter().map(WindowMenuRow::Caption).collect();
+    rows.push(WindowMenuRow::Separator);
+    rows.push(WindowMenuRow::Entry(WindowMenuEntry {
+        action: WindowMenuAction::StopDesktopControl,
+        label: t("desktop-control-stop"),
+        icon: Some(Icon::Ban),
+        shortcut: None,
+    }));
+    rows
 }
 
 /// "Strip N" for an unnamed strip at index `index`, as the strip switcher

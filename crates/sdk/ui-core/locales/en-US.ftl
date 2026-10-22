@@ -3,6 +3,7 @@ tab-modified = Unsaved changes
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
 tab-only-on-this-device = Only on this device
+tab-controls-desktop = Controls your desktop
 standalone-search-title = Search
 standalone-history-title = History
 standalone-history-close = Close history

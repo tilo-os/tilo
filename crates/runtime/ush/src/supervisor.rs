@@ -1424,6 +1424,7 @@ fn serve_host(
         session_job(transport, &label),
     )?;
     drop(slave);
+    mark_terminal_session(transport.stream, child.id(), &id);
     hand_off_session(
         transport,
         writer,
@@ -1441,6 +1442,53 @@ fn serve_host(
         || None,
     )?;
     Ok(Served::Done)
+}
+
+/// Record which Terminal launch asked for the Host session led by `leader`
+/// (the process on the other end of `stream`), so the desktop can serve
+/// what is typed in it with that Terminal's workspace scope. Without the
+/// record the session still opens; the desktop then serves it nothing.
+fn mark_terminal_session(stream: &UnixStream, leader: u32, session: &str) {
+    let Some(requester) = peer_pid(stream) else {
+        tracing::warn!("ush: the terminal asking for a host session could not be identified");
+        return;
+    };
+    let Some(dir) = crate::terminal_sessions::dir(std::env::var_os("XDG_RUNTIME_DIR")) else {
+        return;
+    };
+    if let Err(error) = crate::terminal_sessions::mark(&dir, leader, requester, session) {
+        tracing::warn!(%error, "ush: could not record the host session's terminal");
+    }
+}
+
+/// The pid the kernel names for the other end of `stream`.
+#[cfg(not(target_os = "linux"))]
+fn peer_pid(_stream: &UnixStream) -> Option<u32> {
+    None
+}
+
+/// The pid the kernel names for the other end of `stream`.
+#[cfg(target_os = "linux")]
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    // SAFETY: `cred` and `len` are live, correctly sized out-parameters.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &raw mut len,
+        )
+    };
+    (rc == 0).then_some(())?;
+    u32::try_from(cred.pid).ok().filter(|pid| *pid != 0)
 }
 
 /// The relay session a terminal asks for: re-attaching to `relay_session`,

@@ -29,6 +29,7 @@ use ui::Widget;
 
 use taffy::prelude::NodeId;
 
+mod desktop_control;
 mod invite_scenes;
 mod search_seed;
 mod window_menu_scene;
@@ -2061,6 +2062,9 @@ impl ShellDriver {
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "desktop-control-ask" => self.scene_desktop_control_ask(),
+            "desktop-control-chip" => self.scene_desktop_control_chip(),
+            "desktop-control-menu" => self.scene_desktop_control_menu(),
             "workspace-menu" => self.scene_workspace_menu(),
             "window-menu" => self.scene_window_menu(),
             "profile-card" => self.scene_profile_card(),
@@ -3864,6 +3868,9 @@ impl ShellDriver {
         "emoji-picker",
         "display-confirm",
         "portal-permission",
+        "desktop-control-ask",
+        "desktop-control-chip",
+        "desktop-control-menu",
         "workspace-menu",
         "window-menu",
         "profile-card",

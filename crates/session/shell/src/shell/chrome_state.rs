@@ -175,6 +175,9 @@ pub enum PromptRequest {
     /// A client in this login asks to work in a workspace as an agent
     /// (the session's agent door).
     AgentAdmission(crate::shell::agent_admission::AgentAdmission),
+    /// A program running in an app asks to act beyond the app's workspace
+    /// (`tilo do` in a terminal).
+    DesktopControl(crate::shell::desktop_control::DesktopControlAsk),
 }
 
 /// One capability request waiting for the user to answer it. Dropping
@@ -225,11 +228,25 @@ impl PendingPrompt {
         }
     }
 
+    /// A program in an app asking to act beyond its workspace; `reply`
+    /// carries the person's answer.
+    pub fn desktop_control(
+        ask: crate::shell::desktop_control::DesktopControlAsk,
+        reply: tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            app_id: ask.app_label.clone(),
+            request: PromptRequest::DesktopControl(ask),
+            reply: Some(reply),
+        }
+    }
+
     /// The capability asked for, when an app asks for one.
     pub fn capability(&self) -> Option<&Capability> {
         match &self.request {
             PromptRequest::Capability(capability) => Some(capability),
-            PromptRequest::AgentAdmission(_) => None,
+            PromptRequest::AgentAdmission(_) | PromptRequest::DesktopControl(_) => None,
         }
     }
 
@@ -905,6 +922,9 @@ pub struct ChromeState {
     /// on click. Entries carry the portal's reply channel when a D-Bus
     /// caller is blocked — see [`PendingPrompt`].
     pub pending_grants: VecDeque<PendingPrompt>,
+    /// The "this tab" grants that let a program in an app control the
+    /// desktop beyond its workspace, until its tab closes.
+    pub desktop_control: crate::shell::desktop_control::DesktopControlGrants,
     /// Test-only override for `is_active_workspace_owner`. `None` is
     /// production behaviour: ownership is computed from the active
     /// workspace's capabilities. `Some(false)` exercises the disabled-Revoke
@@ -1229,6 +1249,7 @@ impl ChromeState {
             workspace_view_request: None,
             history_action_request: None,
             pending_grants: VecDeque::new(),
+            desktop_control: crate::shell::desktop_control::DesktopControlGrants::default(),
             test_only_owner_override: None,
             local_user_id,
             notification_log: NotificationLog::default(),

@@ -296,13 +296,57 @@ fn finish_refusal(stream: &mut std::os::unix::net::UnixStream) {
     }
 }
 
+/// The first line a client sends the door, read a byte at a time so nothing
+/// after it is consumed, within the bound and time an `initialize` gets.
+/// What it says decides how the connection is served: [`is_control_request`].
+///
+/// # Errors
+/// The client left, sent too much, or said nothing in time.
+#[cfg(unix)]
+pub fn read_first_line(stream: &mut std::os::unix::net::UnixStream) -> io::Result<Vec<u8>> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut budget = MAX_HELLO;
+    read_hello_line(stream, &mut budget)
+}
+
+/// Whether `line` is a request of the desktop's control protocol — one JSON
+/// object naming its `op` — rather than MCP's JSON-RPC. `tilo action` and
+/// `tilo open` speak it from inside a terminal app.
+#[must_use]
+pub fn is_control_request(line: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|request| {
+        request.get("op").is_some_and(serde_json::Value::is_string)
+            && request.get("jsonrpc").is_none()
+    })
+}
+
 /// Serve one accepted session-door connection.
 ///
 /// # Errors
 /// Returns the I/O error that ended the connection.
 #[cfg(unix)]
 pub fn serve<H>(
+    stream: std::os::unix::net::UnixStream,
+    host: H,
+    ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
+) -> io::Result<()>
+where
+    H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
+{
+    serve_after(stream, None, host, ask)
+}
+
+/// [`serve`] a connection whose first line, `first`, was already read
+/// ([`read_first_line`]).
+///
+/// # Errors
+/// Returns the I/O error that ended the connection.
+#[cfg(unix)]
+pub fn serve_after<H>(
     mut stream: std::os::unix::net::UnixStream,
+    mut first: Option<Vec<u8>>,
     host: H,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
@@ -312,9 +356,13 @@ where
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
-    let mut budget = MAX_HELLO;
+    let mut budget = MAX_HELLO.saturating_sub(first.as_ref().map_or(0, Vec::len));
     let hello = loop {
-        match read_hello_line(&mut stream, &mut budget)
+        let line = match first.take() {
+            Some(line) => Ok(line),
+            None => read_hello_line(&mut stream, &mut budget),
+        };
+        match line
             .map_err(HelloError::Io)
             .and_then(|line| parse_hello(&line))
         {
@@ -399,6 +447,19 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("--standalone"), "{text}");
+    }
+
+    #[test]
+    fn control_requests_are_told_from_mcp_by_their_op() {
+        assert!(is_control_request(
+            br#"{"args":{},"id":"x","op":"actions_invoke","provider":"p"}"#
+        ));
+        assert!(!is_control_request(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#
+        ));
+        assert!(!is_control_request(br#"{"jsonrpc":"2.0","op":"x"}"#));
+        assert!(!is_control_request(br#"{"op":7}"#));
+        assert!(!is_control_request(b"op"));
     }
 
     #[test]

@@ -7,6 +7,13 @@
 //! complete; `tilo-runtime-mcp --connect` inside the login relays to it
 //! (`tilo_runtime::session_door`). Framing is newline-delimited MCP JSON-RPC.
 //!
+//! A program running in an app — `tilo action` or `tilo open` typed in a
+//! terminal — speaks the desktop's control protocol here instead, and its
+//! first line says so. It is handed to the compositor and served with that
+//! app's workspace scope (`workspace_door`): never as an agent, never with
+//! the person's whole authority, and only once the kernel's facts and the
+//! desktop's launch records name the app it runs in.
+//!
 //! Three things stand between a connection and the desktop.
 //!
 //! **The peer** (`SO_PEERCRED`): this session's own account, in its own user
@@ -109,10 +116,7 @@ impl PeerRefusal {
             Self::OtherAccount => {
                 "the agent door serves only processes of the account whose session it is"
             }
-            Self::Sandboxed => {
-                "a sandboxed process cannot use the agent door; apps act through their own \
-                 collaboration connection"
-            }
+            Self::Sandboxed => "programs inside a sandboxed app can't connect here",
             Self::Unavailable => "this session's actions are not available yet; try again shortly",
             Self::Busy => "the agent door is serving as many connections as it takes",
         }
@@ -132,27 +136,45 @@ pub(crate) fn peer_decision(peer: &Peer, own_uid: libc::uid_t) -> Result<(), Pee
     Ok(())
 }
 
-/// Authorise an accepted connection from the kernel's account of its peer,
-/// and gather what the person is shown about it.
-pub(crate) fn authorize(stream: &UnixStream) -> Result<ClientFacts, PeerRefusal> {
+/// The kernel's account of an accepted connection's peer: refused outright
+/// when it is another account's. What it may do is decided once its first
+/// line says how it speaks.
+pub(crate) fn identify(stream: &UnixStream) -> Result<(u32, Peer), PeerRefusal> {
     let credentials =
         super::native::wayland_peer_credentials(stream).ok_or(PeerRefusal::Unidentified)?;
     let pid = u32::try_from(credentials.pid)
         .ok()
         .filter(|pid| *pid != 0)
         .ok_or(PeerRefusal::Unidentified)?;
-    let peer = Peer {
-        uid: credentials.uid,
-        shares_namespaces: super::native::peer_shares_host_security_namespaces(pid),
-    };
+    if credentials.uid != rustix::process::geteuid().as_raw() {
+        return Err(PeerRefusal::OtherAccount);
+    }
+    Ok((
+        pid,
+        Peer {
+            uid: credentials.uid,
+            shares_namespaces: super::native::peer_shares_host_security_namespaces(pid),
+        },
+    ))
+}
+
+/// Authorise an accepted connection from the kernel's account of its peer,
+/// as an agent would be, and gather what the person is shown about it.
+#[cfg(test)]
+fn authorize(stream: &UnixStream) -> Result<ClientFacts, PeerRefusal> {
+    let (pid, peer) = identify(stream)?;
     peer_decision(&peer, rustix::process::geteuid().as_raw())?;
-    Ok(ClientFacts {
+    Ok(facts_of(pid))
+}
+
+fn facts_of(pid: u32) -> ClientFacts {
+    ClientFacts {
         client: String::new(),
         version: None,
         pid,
         exe: std::fs::read_link(format!("/proc/{pid}/exe")).ok(),
         host_app: crate::shell::launcher::verified_package_for_descendant(pid),
-    })
+    }
 }
 
 /// Tell a refused client why, as a JSON-RPC error, then let it go.
@@ -165,10 +187,36 @@ pub(crate) fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
     let _ = stream.write_all(format!("{reply}\n").as_bytes());
 }
 
+/// A connection speaking the control protocol from a program running in an
+/// app, handed to the compositor thread to be served with that app's
+/// workspace scope ([`super::workspace_door`]).
+pub(crate) struct ControlHandoff {
+    pub stream: UnixStream,
+    /// The request it opened with, already read.
+    pub first_line: String,
+    /// What the kernel and the launch records say it runs in; the
+    /// compositor finds the tabs it asked from.
+    pub attribution: super::workspace_door::Attribution,
+}
+
+/// Tell a control client it is served nothing here, in the control
+/// protocol's own framing, then let it go.
+pub(crate) fn refuse_control(mut stream: UnixStream) {
+    use std::io::Write;
+    let reply = serde_json::json!({"err": {
+        "code": "not_allowed",
+        "message": "This program doesn't run in an app on this desktop, so it can't use the \
+                    desktop's actions this way.",
+    }});
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+}
+
 /// The door's listener with what serving a connection needs.
 pub(crate) struct Door {
     pub listener: UnixListener,
     requests: std::sync::mpsc::Sender<DoorRequest>,
+    controls: std::sync::mpsc::Sender<ControlHandoff>,
     wake: crate::session_runtime::Wake,
     active: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -177,18 +225,22 @@ impl Door {
     pub(crate) fn new(
         listener: UnixListener,
         requests: std::sync::mpsc::Sender<DoorRequest>,
+        controls: std::sync::mpsc::Sender<ControlHandoff>,
         wake: crate::session_runtime::Wake,
     ) -> Self {
         Self {
             listener,
             requests,
+            controls,
             wake,
             active: std::sync::Arc::default(),
         }
     }
 
-    /// Accept every waiting connection. Each authorised one is served on
-    /// its own thread over `broker`, the session's action broker.
+    /// Accept every waiting connection. Each one of this account is served
+    /// on its own thread: an agent over `broker`, the session's action
+    /// broker; a program in an app speaking the control protocol by the
+    /// compositor thread, which this hands it to.
     pub(crate) fn accept(&self, broker: Option<&crate::shell::collab_broker::AppActionBroker>) {
         loop {
             let stream = match self.listener.accept() {
@@ -199,15 +251,14 @@ impl Door {
                     return;
                 }
             };
-            let admitted = authorize(&stream).and_then(|facts| {
-                let broker = broker.cloned().ok_or(PeerRefusal::Unavailable)?;
+            let admitted = identify(&stream).and_then(|identified| {
                 if self.active.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
                     return Err(PeerRefusal::Busy);
                 }
-                Ok((facts, broker))
+                Ok(identified)
             });
             match admitted {
-                Ok((facts, broker)) => self.serve(stream, facts, broker),
+                Ok((pid, peer)) => self.serve(stream, pid, peer, broker.cloned()),
                 Err(refusal) => {
                     tracing::info!(?refusal, "agent door: connection refused");
                     refuse(stream, &refusal);
@@ -219,24 +270,19 @@ impl Door {
     fn serve(
         &self,
         stream: UnixStream,
-        facts: ClientFacts,
-        broker: crate::shell::collab_broker::AppActionBroker,
+        pid: u32,
+        peer: Peer,
+        broker: Option<crate::shell::collab_broker::AppActionBroker>,
     ) {
         let requests = self.requests.clone();
+        let controls = self.controls.clone();
         let wake = std::sync::Arc::clone(&self.wake);
         let active = std::sync::Arc::clone(&self.active);
         active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let spawned = std::thread::Builder::new()
             .name("tilo-agent-door".into())
             .spawn(move || {
-                let ended = tilo_runtime::session_door::serve(
-                    stream,
-                    crate::shell::remote_actions::BrokerActionHost::new(broker),
-                    |hello, connected| ask_person(&requests, &wake, facts, hello, connected),
-                );
-                if let Err(error) = ended {
-                    tracing::debug!(%error, "agent door: client disconnected");
-                }
+                serve_connection(stream, pid, &peer, broker, &requests, &controls, &wake);
                 active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 // A prompt for a client that is gone is withdrawn next turn.
                 wake();
@@ -246,6 +292,73 @@ impl Door {
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(%error, "agent door: could not serve a connection");
         }
+    }
+}
+
+/// Serve one connection of this account by what its first line speaks: the
+/// control protocol from a program in an app this session launched, handed
+/// to the compositor with that app's scope; MCP from an unconfined process,
+/// once the person admits it as an agent. A sandboxed process gets neither.
+fn serve_connection(
+    mut stream: UnixStream,
+    pid: u32,
+    peer: &Peer,
+    broker: Option<crate::shell::collab_broker::AppActionBroker>,
+    requests: &std::sync::mpsc::Sender<DoorRequest>,
+    controls: &std::sync::mpsc::Sender<ControlHandoff>,
+    wake: &crate::session_runtime::Wake,
+) {
+    let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
+        Ok(first) => first,
+        Err(error) => {
+            tracing::debug!(%error, "agent door: client left before its first request");
+            return;
+        }
+    };
+    if tilo_runtime::session_door::is_control_request(&first) {
+        let Some(attribution) = super::workspace_door::attribute(pid) else {
+            tracing::info!(
+                pid,
+                "agent door: a control client runs in no app it can act for"
+            );
+            refuse_control(stream);
+            return;
+        };
+        let Ok(first_line) = String::from_utf8(first) else {
+            refuse_control(stream);
+            return;
+        };
+        tracing::info!(pid, package = %attribution.package, "agent door: serving a program in an app");
+        if controls
+            .send(ControlHandoff {
+                stream,
+                first_line,
+                attribution,
+            })
+            .is_ok()
+        {
+            wake();
+        }
+        return;
+    }
+    if let Err(refusal) = peer_decision(peer, rustix::process::geteuid().as_raw()) {
+        tracing::info!(?refusal, "agent door: connection refused");
+        refuse(stream, &refusal);
+        return;
+    }
+    let Some(broker) = broker else {
+        refuse(stream, &PeerRefusal::Unavailable);
+        return;
+    };
+    let facts = facts_of(pid);
+    let ended = tilo_runtime::session_door::serve_after(
+        stream,
+        Some(first),
+        crate::shell::remote_actions::BrokerActionHost::new(broker),
+        |hello, connected| ask_person(requests, wake, facts, hello, connected),
+    );
+    if let Err(error) = ended {
+        tracing::debug!(%error, "agent door: client disconnected");
     }
 }
 
@@ -357,6 +470,38 @@ mod tests {
         );
     }
 
+    /// The control protocol is served only to a program running in an app
+    /// this session launched; anything else is told so in its own framing
+    /// and handed to nobody.
+    #[test]
+    fn a_control_client_in_no_app_is_told_so_and_handed_to_nobody() {
+        use std::io::{BufRead, Write};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("agent.sock");
+        let (requests, _consent) = crate::shell::agent_admission::channel(None, None);
+        let (controls, handed_over) = std::sync::mpsc::channel();
+        let door = Door::new(
+            bind(&path).expect("bind"),
+            requests,
+            controls,
+            std::sync::Arc::new(|| {}),
+        );
+        let mut client = UnixStream::connect(&path).expect("connect");
+        client
+            .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"\"}\n")
+            .expect("write");
+        door.accept(None);
+        let mut line = String::new();
+        std::io::BufReader::new(client)
+            .read_line(&mut line)
+            .expect("an answer");
+        let answer: serde_json::Value = serde_json::from_str(line.trim()).expect("JSON");
+        assert_eq!(answer["err"]["code"], "not_allowed", "{answer}");
+        let message = answer["err"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("app"), "{message}");
+        assert!(handed_over.try_recv().is_err(), "nothing was handed over");
+    }
+
     #[test]
     fn the_real_seat_serves_the_session_path_and_a_development_one_only_where_named() {
         let runtime = || Some(std::ffi::OsString::from("/run/user/1000"));
@@ -464,7 +609,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("agent.sock");
         let (requests, mut consent) = crate::shell::agent_admission::channel(None, None);
-        let door = Door::new(bind(&path).unwrap(), requests, Arc::new(|| {}));
+        let (controls, _handed_over) = std::sync::mpsc::channel();
+        let door = Door::new(bind(&path).unwrap(), requests, controls, Arc::new(|| {}));
         let mut client = UnixStream::connect(&path).unwrap();
         let (replies_tx, replies) = std::sync::mpsc::channel::<serde_json::Value>();
         let reader = client.try_clone().unwrap();

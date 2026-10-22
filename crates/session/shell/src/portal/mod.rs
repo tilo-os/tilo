@@ -723,6 +723,9 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
         Capability::IoUring { scope } => (CapabilityKind::IoUring, *scope),
         // The shell runtime keeps this decision; no portal asks for it.
         Capability::HostShell { .. } => return None,
+        // The desktop asks this itself, of a program in an app reaching
+        // beyond its workspace (`compositor::workspace_door`).
+        Capability::DesktopControl { .. } => return None,
     })
 }
 

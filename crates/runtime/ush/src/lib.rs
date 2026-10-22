@@ -77,6 +77,7 @@ pub mod runs;
 pub mod seccomp;
 pub mod store;
 pub mod supervisor;
+pub mod terminal_sessions;
 
 pub use store::Store;
 /// The package id every `ush` grant is written against.

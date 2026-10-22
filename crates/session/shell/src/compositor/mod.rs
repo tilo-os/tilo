@@ -151,6 +151,8 @@ pub mod window_previews;
 #[cfg(target_os = "linux")]
 mod window_provenance;
 #[cfg(target_os = "linux")]
+pub(crate) mod workspace_door;
+#[cfg(target_os = "linux")]
 pub(crate) mod xwayland;
 #[cfg(target_os = "linux")]
 pub(crate) mod xwayland_composer;

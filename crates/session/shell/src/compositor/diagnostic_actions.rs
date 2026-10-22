@@ -9,7 +9,7 @@ use crate::shell::launcher::{
 use crate::shell::test_control::{Command, Response};
 use tilo_lock::MutexRecover as _;
 
-const PROVIDER: &str = "session-diagnostics";
+pub(crate) const PROVIDER: &str = "session-diagnostics";
 
 pub(super) fn owner_required(command: &Command) -> Option<Response> {
     matches!(command, Command::ActionsInvoke { provider, .. } if provider == PROVIDER).then(|| {

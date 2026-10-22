@@ -6761,6 +6761,10 @@ pub struct TerminalBackend {
     /// For an environment on a relay: the session's id there, which
     /// re-attaches to it.
     pub relay_session: Option<String>,
+    /// The session's id at the session supervisor, when it opened there:
+    /// told to the window a desktop shows this terminal in, which then knows
+    /// which tab a program typed here belongs to.
+    pub supervisor_session: Option<String>,
     /// The key the session's shell marks its command runs with, when it does.
     pub runs: Option<String>,
     native_editor: Option<crate::native_editor::Socket>,
@@ -6779,6 +6783,7 @@ impl TerminalBackend {
             master: Box::new(NullMaster),
             shell_name: "test".into(),
             relay_session: None,
+            supervisor_session: None,
             runs: None,
             native_editor: None,
             service_lifetime: None,
@@ -6801,6 +6806,7 @@ impl TerminalBackend {
             master: Box::new(NullMaster),
             shell_name: "ush".into(),
             relay_session: Some(relay_session.to_owned()),
+            supervisor_session: None,
             runs: None,
             native_editor: None,
             service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
@@ -6915,6 +6921,7 @@ impl TerminalBackend {
             master: pair.master,
             shell_name,
             relay_session: None,
+            supervisor_session: None,
             runs: None,
             native_editor: None,
             service_lifetime: None,
@@ -7484,6 +7491,7 @@ pub(crate) fn ush_backend_on(
         master: Box::new(FdMaster { file: master }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
         relay_session: response.relay_session,
+        supervisor_session: Some(response.session),
         runs: response.runs.then_some(key),
         native_editor,
         service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(

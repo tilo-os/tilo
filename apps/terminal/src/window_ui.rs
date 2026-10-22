@@ -228,6 +228,14 @@ impl TerminalWidget {
         };
     }
 
+    /// Tell the window a desktop shows this terminal in which supervisor
+    /// session its tab now runs.
+    pub(crate) fn tell_window_session(&self, session: Option<String>) {
+        if let TerminalWindow::Hosted(window) = &self.life.window {
+            window.set_session(session);
+        }
+    }
+
     /// Whether this terminal is the app of a window, which closes when its
     /// shell exits.
     fn owns_window(&self) -> bool {
