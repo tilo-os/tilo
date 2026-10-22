@@ -60,6 +60,33 @@ export function proxiedMediaUrl(url, scope = globalThis) {
   return endpoint.href;
 }
 
+// Sites whose media refuses other pages (no CORS answer), so an element loads
+// them through the host's fetch proxy from the start instead of making a
+// request that always fails first. Seeded with the CDNs known to answer no
+// page; a site that refused this page and then played through the proxy
+// joins them for the rest of the page's life.
+const SITES_WITHOUT_CORS = new Set(['googlevideo.com']);
+
+// The site `url` belongs to: its host's last two labels (a CDN's hosts
+// differ per file, its site does not), or null for a URL without a host.
+export function siteOf(url, scope = globalThis) {
+  let host;
+  try {
+    host = new URL(url, scope.location?.href).hostname;
+  } catch {
+    return null;
+  }
+  if (!host) return null;
+  if (/^[\d.]+$/.test(host) || host.includes(':')) return host;
+  return host.split('.').slice(-2).join('.');
+}
+
+// Whether `url`'s site is known to refuse the page.
+export function lacksCors(url, scope = globalThis) {
+  const site = siteOf(url, scope);
+  return site !== null && SITES_WITHOUT_CORS.has(site);
+}
+
 /// The code the host's fetch proxy refuses with once it relayed all it allows
 /// this visitor or room for now (`tilo_net::proxy::ProxyFailure::OverBudget`).
 export const OVER_BUDGET = 'over-budget';
@@ -102,16 +129,25 @@ export class TiloMediaElement {
     this.proxyAttempts = 0;
     this.limitReached = false;
     this.wantsPlay = false;
+    this.refusedDirectly = false;
     this.onError = () => {
       const failed = el.error;
       if (this.proxied) {
         this.explainProxied(this.proxied, failed);
         return;
       }
+      this.refusedDirectly = true;
       if (this.loadThroughProxy()) return;
       this.fail(failed);
     };
     this.onFrame = () => { this.dirty = true; };
+    // A source that refused the page and played through the proxy: its site
+    // goes through the proxy from the start from now on.
+    el.addEventListener('loadedmetadata', () => {
+      if (!this.proxied || !this.refusedDirectly) return;
+      const site = siteOf(this.source);
+      if (site) SITES_WITHOUT_CORS.add(site);
+    });
     el.addEventListener('error', this.onError);
     el.addEventListener('seeked', this.onFrame);
     el.addEventListener('loadeddata', this.onFrame);
@@ -156,6 +192,8 @@ export class TiloMediaElement {
     this.source = url;
     this.proxied = null;
     this.proxyAttempts = 0;
+    this.refusedDirectly = false;
+    if (lacksCors(url) && this.loadThroughProxy()) return;
     this.el.src = url;
     this.el.load();
   }
