@@ -5,6 +5,7 @@
 #include "renderer_media_lifetime.h"
 #include "cosmetics.h"
 #include "include/cef_browser.h"
+#include "include/cef_dom.h"
 #include "include/cef_frame.h"
 #include "include/cef_parser.h"
 #include "include/cef_process_message.h"
@@ -20,6 +21,16 @@
 
 namespace {
 constexpr size_t kMaxMediaFrames=64;
+constexpr size_t kMaxSelectionText=1024*1024;
+// Reads the document's selection as text, the way a copy would.
+class SelectionReader final : public CefDOMVisitor {
+ public:
+  explicit SelectionReader(std::string* text):text_(text) {}
+  void Visit(CefRefPtr<CefDOMDocument> document) override { if(document && document->HasSelection()) *text_=document->GetSelectionAsText().ToString(); }
+ private:
+  std::string* text_;
+  IMPLEMENT_REFCOUNTING(SelectionReader);
+};
 void TraceCredential(const char* stage,int browser=0) {
   static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
   static unsigned count=0;
@@ -146,6 +157,18 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
       auto fields=response->GetArgumentList();fields->SetString(0,found->second.generation);
       fields->SetString(1,found->second.token);fields->SetString(2,frame->GetURL());
       frame->SendProcessMessage(PID_BROWSER,response);return true;
+    }
+    if(message->GetName()=="tilo.selection") {
+      auto args=message->GetArgumentList();
+      if(!frame || !frame->IsValid() || args->GetSize()!=1 || args->GetType(0)!=VTYPE_INT) return true;
+      const int request=args->GetInt(0);
+      std::string text;
+      frame->VisitDOM(new SelectionReader(&text));
+      // A selection is bounded like every message to the embedder.
+      if(text.length()>kMaxSelectionText) text.resize(kMaxSelectionText);
+      auto reply=CefProcessMessage::Create("tilo.selection_text");
+      reply->GetArgumentList()->SetInt(0,request);reply->GetArgumentList()->SetString(1,text);
+      frame->SendProcessMessage(PID_BROWSER,reply);return true;
     }
     auto& config=configs_[browser->GetIdentifier()];
     if(message->GetName()=="tilo.filters") {

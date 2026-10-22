@@ -1,0 +1,40 @@
+From: Lumen Cafe <receipts@lumen-cafe.example>
+To: sam@rivera.example
+Subject: Your receipt from Lumen Cafe
+Message-ID: <rcpt-20260629-0042@lumen-cafe.example>
+Date: Mon, 29 Jun 2026 08:14:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head><style>
+td { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; color: #1f2328; }
+.muted { color: #6e7781; font-size: 12px; }
+.amount { text-align: right; white-space: nowrap; }
+.total td { border-top: 2px solid #1f2328; font-weight: 700; font-size: 16px; padding-top: 10px; }
+</style></head>
+<body style="margin:0;background:#f3f4f6">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6"><tr><td align="center" style="padding:32px 12px">
+<table width="420" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;border:1px solid #e5e7eb">
+<tr><td style="padding:28px 28px 8px" align="center">
+  <img src="https://lumen-cafe.example/logo.png" width="48" height="48" alt="Lumen Cafe" style="border-radius:24px;background:#fde68a">
+  <div style="font-size:20px;font-weight:700;margin-top:12px">Lumen Cafe</div>
+  <div class="muted">12 Harbour Road, Bristol</div>
+</td></tr>
+<tr><td style="padding:16px 28px">
+  <table width="100%" cellpadding="6" cellspacing="0">
+    <tr><td>Flat white</td><td class="muted">x2</td><td class="amount">&pound;7.20</td></tr>
+    <tr><td>Almond croissant</td><td class="muted">x1</td><td class="amount">&pound;3.40</td></tr>
+    <tr><td>Oat milk</td><td class="muted">x2</td><td class="amount">&pound;0.80</td></tr>
+    <tr><td colspan="2" class="muted">VAT included (20%)</td><td class="amount muted">&pound;1.90</td></tr>
+    <tr class="total"><td colspan="2">Total</td><td class="amount">&pound;11.40</td></tr>
+  </table>
+</td></tr>
+<tr><td style="padding:8px 28px 28px">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border-radius:6px"><tr><td style="padding:12px" class="muted">
+    Paid with Visa ending 4242 on 29 June 2026 at 09:14<br>Order 0042 &middot; Table 6
+  </td></tr></table>
+  <p class="muted" style="margin:16px 0 0">Questions about this order? <a href="mailto:hello@lumen-cafe.example" style="color:#0969da">hello@lumen-cafe.example</a></p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>

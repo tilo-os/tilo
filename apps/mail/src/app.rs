@@ -109,6 +109,9 @@ struct EventContext<'a> {
 struct MenuTarget {
     message: MessageId,
     items: Vec<CtxAction>,
+    /// The reader's menu instead: what each of its rows chooses (`None`
+    /// for a caption).
+    reader: Vec<Option<crate::state::ReaderChoice>>,
 }
 
 /// The confirmation before trashed messages are deleted for good.
@@ -609,6 +612,7 @@ impl MailApp {
             |_| crate::store::Store::nowhere(),
             |cache| crate::store::Store::at(cache.join("mail")),
         );
+        app.shared.borrow_mut().kept = app.store.clone();
         app.open_kept_mail();
         app
     }
@@ -777,6 +781,13 @@ impl MailApp {
                 self.nav.snap();
             }
             "html_mail" => self.stage_html_mail(doc),
+            gallery if GALLERY_SCENARIOS.iter().any(|(name, _)| *name == gallery) => {
+                if let Some((_, sender)) =
+                    GALLERY_SCENARIOS.iter().find(|(name, _)| *name == gallery)
+                {
+                    self.stage_open_from(doc, sender);
+                }
+            }
             "search" => self
                 .search
                 .open(SearchRequest::this_app().with_query("launch")),
@@ -812,6 +823,23 @@ impl MailApp {
             _ => {}
         }
         self.dirty = true;
+    }
+
+    /// The newest message from `sender` open in the reader.
+    fn stage_open_from(&mut self, doc: &mut ui::widget::Edits<'_>, sender: &str) {
+        let id = self
+            .shared
+            .borrow()
+            .mailbox
+            .messages
+            .values()
+            .filter(|message| message.from.email == sender)
+            .max_by_key(|message| message.timestamp_min)
+            .map(|message| message.id);
+        if let Some(id) = id {
+            self.shared.borrow_mut().open_message(doc, id);
+            self.process_intents();
+        }
     }
 
     /// The bundled HTML newsletter open in the reader (it is starred, so the
@@ -1190,6 +1218,8 @@ impl MailApp {
                 Intent::Forward(id) => self.open_forward(id),
                 Intent::EditDraft(id) => self.open_draft(id),
                 Intent::ContextMenu(id, at, row) => self.open_menu(id, at, Some(row)),
+                Intent::ReaderMenu(id, at, choices) => self.open_reader_menu(id, at, choices),
+                Intent::OpenLink(url) => open_link(&url),
                 Intent::SaveAttachment(message_id, index) => {
                     self.request_attachment_save(message_id, index);
                 }
@@ -1312,7 +1342,11 @@ impl MailApp {
         );
         menu.focus_first_action();
         self.menu = menu;
-        self.menu_target = Some(MenuTarget { message: id, items });
+        self.menu_target = Some(MenuTarget {
+            message: id,
+            items,
+            reader: Vec::new(),
+        });
         self.dirty = true;
     }
 
@@ -1334,10 +1368,79 @@ impl MailApp {
             return;
         };
         self.menu.close();
+        if !target.reader.is_empty() {
+            if let Some(Some(choice)) = target.reader.get(index).cloned() {
+                self.apply_reader_choice(target.message, choice);
+            }
+            return;
+        }
         let Some(action) = target.items.get(index).copied() else {
             return;
         };
         self.apply_menu_action(target.message, action, doc);
+    }
+
+    /// The reader's menu on message `id` at `at`: the link under the
+    /// pointer, captioned with the address it really opens, then copying
+    /// and the message's format.
+    fn open_reader_menu(
+        &mut self,
+        id: MessageId,
+        at: Point,
+        choices: Vec<crate::state::ReaderChoice>,
+    ) {
+        use crate::state::ReaderChoice;
+        let t = crate::i18n::t;
+        let mut menu = ContextMenu::new();
+        let mut rows = Vec::new();
+        if let Some(ReaderChoice::OpenLink(url)) = choices.first() {
+            menu.push(MenuItem::caption(url.clone()));
+            rows.push(None);
+        }
+        for choice in choices {
+            let (label, icon) = match &choice {
+                ReaderChoice::OpenLink(_) => (t("mail-link-open"), Icon::ExternalLink),
+                ReaderChoice::CopyLink(_) => (t("mail-link-copy"), Icon::Link),
+                ReaderChoice::Copy => (t("mail-copy"), Icon::Copy),
+                ReaderChoice::SelectAll => (t("mail-select-all"), Icon::SquareDashed),
+                ReaderChoice::ShowPlainText => (t("mail-show-plain"), Icon::FileText),
+                ReaderChoice::ShowFormatted => (t("mail-show-formatted"), Icon::Mail),
+            };
+            menu.push(MenuItem::selection(label).with_icon(icon));
+            rows.push(Some(choice));
+        }
+        menu.set_viewport(Some(self.rect));
+        menu.open_at_clamped(
+            [ui::num::f32_of_f64(at.x), ui::num::f32_of_f64(at.y)],
+            self.rect,
+        );
+        menu.focus_first_action();
+        self.menu = menu;
+        self.menu_target = Some(MenuTarget {
+            message: id,
+            items: Vec::new(),
+            reader: rows,
+        });
+        self.dirty = true;
+    }
+
+    fn apply_reader_choice(&mut self, message: MessageId, choice: crate::state::ReaderChoice) {
+        use crate::state::ReaderChoice;
+        match choice {
+            ReaderChoice::OpenLink(url) => open_link(&url),
+            ReaderChoice::CopyLink(url) => ui::clipboard_copy(&url),
+            ReaderChoice::Copy | ReaderChoice::SelectAll => {
+                self.shared.borrow_mut().reader_requests.push(choice);
+            }
+            ReaderChoice::ShowPlainText => {
+                self.shared.borrow_mut().plain_text.insert(message);
+            }
+            ReaderChoice::ShowFormatted => {
+                self.shared.borrow_mut().plain_text.remove(&message);
+            }
+        }
+        self.shared.borrow_mut().dirty = true;
+        self.dirty = true;
     }
 
     fn apply_menu_action(
@@ -3033,6 +3136,25 @@ fn attachment_meta(attachment: &crate::model::DraftAttachment) -> Attachment {
 /// Reconstruct an editable [`Draft`] from a Drafts-folder message.
 /// What `message` says, for a caller with no screen: its people, subject,
 /// time, text and attachments' names.
+/// The HTML gallery's screenshot scenarios ([`crate::sample::MailFixture::html_gallery`]),
+/// each with the sender whose mail it opens.
+pub(crate) const GALLERY_SCENARIOS: &[(&str, &str)] = &[
+    ("html_newsletter", "news@harvest-weekly.example"),
+    ("html_github", "notifications@github.example"),
+    ("html_receipt", "receipts@lumen-cafe.example"),
+    ("html_dark", "digest@orbit-cal.example"),
+    ("html_inline", "ana@studio-lima.example"),
+    ("plain_text", "lena@fischer.example"),
+];
+
+/// Open a link of a message in the Browser, through the host's opener. Only
+/// web and mail addresses open.
+fn open_link(url: &str) {
+    if crate::reader::is_openable(url) {
+        ui::widget::open_external_url(url);
+    }
+}
+
 fn message_read(message: &Message) -> serde_json::Value {
     let person = |addr: &crate::model::Addr| match &addr.name {
         Some(name) if !name.trim().is_empty() => format!("{name} <{}>", addr.email),
@@ -3045,6 +3167,7 @@ fn message_read(message: &Message) -> serde_json::Value {
         "subject": message.subject,
         "sent_minutes_since_epoch": message.timestamp_min,
         "text": message.body,
+        "links": crate::html_mail::message_links(message),
         "attachments": message.attachments.iter().map(|attachment| serde_json::json!({
             "name": attachment.filename,
             "type": attachment.mime,
@@ -4179,6 +4302,47 @@ impl MailApp {
                 self.attachment_to_save(&message, index)?;
                 Err("saving an attachment asks the host where to put it".into())
             }
+            MailEffect::LoadRemoteContent { message } => {
+                let id = self.html_message(&message)?;
+                self.shared.borrow_mut().load_remote(id);
+                self.dirty = true;
+                Ok(done)
+            }
+            MailEffect::AlwaysLoadRemoteContent { message } => {
+                let id = self.html_message(&message)?;
+                self.shared.borrow_mut().always_load_remote(id);
+                self.dirty = true;
+                Ok(done)
+            }
+            MailEffect::OpenLink { message, url } => {
+                let id = message
+                    .parse::<MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                let links = self
+                    .shared
+                    .borrow()
+                    .mailbox
+                    .get(id)
+                    .map(crate::html_mail::message_links)
+                    .ok_or("message is no longer loaded")?;
+                if !links.contains(&url) {
+                    return Err("the message has no such link".into());
+                }
+                open_link(&url);
+                Ok(done)
+            }
+        }
+    }
+
+    /// The loaded HTML message `message` names.
+    fn html_message(&self, message: &str) -> Result<MessageId, String> {
+        let id = message
+            .parse::<MessageId>()
+            .map_err(|_| "invalid message id")?;
+        match self.shared.borrow().mailbox.get(id) {
+            Some(found) if found.html_body.is_some() => Ok(id),
+            Some(_) => Err("the message has no remote content".into()),
+            None => Err("message is no longer loaded".into()),
         }
     }
 

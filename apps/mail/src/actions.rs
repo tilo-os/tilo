@@ -125,6 +125,29 @@ pub enum MailEffect {
     /// device.
     #[effect(row, job, cancellable)]
     Save { message: String, index: usize },
+    /// Load remote images
+    ///
+    /// Shows the images, fonts and styles an HTML message loads from the
+    /// web, for this message only. Loading them tells the sender it was
+    /// read; nothing else it asks for (script, frames, forms) ever runs.
+    #[effect(view, row)]
+    LoadRemoteContent { message: String },
+    /// Always load remote images from this sender
+    ///
+    /// Loads them in every message from this message's sender, now and
+    /// later. Part of the person's Mail preferences.
+    #[effect(view, row)]
+    AlwaysLoadRemoteContent { message: String },
+    /// Open link
+    ///
+    /// Opens one of the message's links (as Read message lists them) in the
+    /// Browser.
+    #[effect(view, row)]
+    OpenLink {
+        message: String,
+        #[param("A link of the message, as Read message lists it")]
+        url: String,
+    },
 }
 
 /// What invoking `effect` where it is bound sends its handler.
@@ -611,6 +634,15 @@ fn with_message_views(resource: Resource, id: &str) -> Resource {
         .with_action(MailEffect::Reply { message: message() }.bound())
         .with_action(MailEffect::ReplyAll { message: message() }.bound())
         .with_action(MailEffect::Forward { message: message() }.bound())
+        .with_action(MailEffect::LoadRemoteContent { message: message() }.bound())
+        .with_action(MailEffect::AlwaysLoadRemoteContent { message: message() }.bound())
+        .with_action(
+            MailEffect::OpenLink {
+                message: message(),
+                url: String::new(),
+            }
+            .bound_asking(&["url"]),
+        )
 }
 
 /// This device's accounts `(id, label, active)`, each opening its inbox.

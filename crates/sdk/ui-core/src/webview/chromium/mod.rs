@@ -56,6 +56,8 @@ struct DocumentSizeReports {
 struct Shared {
     audio: audio::PageAudio,
     document_size: DocumentSizeReports,
+    /// The host reads a page's selection as text (`selection_text`).
+    selection_text: AtomicBool,
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
@@ -794,12 +796,38 @@ fn host_audio_switches(governed: bool) -> &'static [&'static str] {
     }
 }
 
+/// What a host is started for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostMode<'a> {
+    /// Browsing: the Browser's profile, shared by its windows.
+    Browsing,
+    /// One consented service session's dedicated profile.
+    ServiceSession(&'a str),
+    /// Sealed documents (a mail): pages never navigate; a followed link is
+    /// a new-tab request for the embedder.
+    SealedDocuments,
+}
+
+impl HostMode<'_> {
+    /// The host runs its profile alone: no other process joins it.
+    fn alone(self) -> bool {
+        !matches!(self, Self::Browsing)
+    }
+
+    fn service_session(self) -> Option<String> {
+        match self {
+            Self::ServiceSession(session) => Some(session.to_owned()),
+            Self::Browsing | Self::SealedDocuments => None,
+        }
+    }
+}
+
 fn launch_host(
     host: &Path,
     profile: &Path,
     extensions: &[String],
     private_root: Option<&Path>,
-    service_session: Option<&str>,
+    mode: HostMode<'_>,
 ) -> Result<std::process::Child, String> {
     let mut command =
         host_command(host).map_err(|error| format!("Could not confine Chromium: {error}"))?;
@@ -807,8 +835,14 @@ fn launch_host(
     if private_root.is_some() {
         command.arg("--private");
     }
-    if let Some(session) = service_session {
-        command.arg(format!("--service-session={session}"));
+    match mode {
+        HostMode::ServiceSession(session) => {
+            command.arg(format!("--service-session={session}"));
+        }
+        HostMode::SealedDocuments => {
+            command.arg("--tilo-sealed-documents");
+        }
+        HostMode::Browsing => {}
     }
     if !extensions.is_empty() {
         command.arg(format!("--load-extension={}", extensions.join(",")));
@@ -943,7 +977,13 @@ impl ChromiumEngine {
             .map(PathBuf::from)
             .or_else(|| tilo_paths::data_dir().map(|path| path.join("tilo-browser/chromium")))
             .ok_or("Cannot locate Chromium profile directory")?;
-        Self::with_host_extensions(&host_path()?, &profile, extensions, None, None)
+        Self::with_host_extensions(
+            &host_path()?,
+            &profile,
+            extensions,
+            None,
+            HostMode::Browsing,
+        )
     }
 
     ///
@@ -969,7 +1009,7 @@ impl ChromiumEngine {
         profile: &Path,
         extensions: &[PathBuf],
     ) -> Result<Arc<Self>, String> {
-        Self::with_host_extensions(&host_path()?, profile, extensions, None, None)
+        Self::with_host_extensions(&host_path()?, profile, extensions, None, HostMode::Browsing)
     }
 
     /// Explicit runtime/profile paths for packaging and isolated live tests.
@@ -978,7 +1018,7 @@ impl ChromiumEngine {
     ///
     /// Returns an error if the profile cannot be prepared or the helper cannot start.
     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
-        Self::with_host_extensions(host, profile, &[], None, None)
+        Self::with_host_extensions(host, profile, &[], None, HostMode::Browsing)
     }
 
     /// Start an incognito helper whose complete installation root is removed
@@ -996,7 +1036,7 @@ impl ChromiumEngine {
             &root.join("chromium"),
             &[],
             Some(root.to_owned()),
-            None,
+            HostMode::Browsing,
         )
     }
 
@@ -1007,7 +1047,26 @@ impl ChromiumEngine {
         if !browser_continuity_core::sessions::valid_id(session_id) {
             return Err("Selected website session is unavailable".into());
         }
-        Self::with_host_extensions(&host_path()?, profile, &[], None, Some(session_id))
+        Self::with_host_extensions(
+            &host_path()?,
+            profile,
+            &[],
+            None,
+            HostMode::ServiceSession(session_id),
+        )
+    }
+
+    /// A host for sealed documents over `profile`, its own: a page never
+    /// navigates, a followed link comes back as a new-tab request
+    /// ([`super::WebViewEngine::take_new_tab_requests`]), and the address
+    /// under the pointer as [`super::WebViewEvent::LinkHovered`]. For a mail.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime is missing, the profile cannot be
+    /// prepared, or the host cannot start.
+    pub fn sealed_documents(profile: &Path) -> Result<Arc<Self>, String> {
+        Self::with_host_extensions(&host_path()?, profile, &[], None, HostMode::SealedDocuments)
     }
 
     /// Admit private credentials only to the exact dedicated session host.
@@ -1060,14 +1119,14 @@ impl ChromiumEngine {
         profile: &Path,
         extensions: &[PathBuf],
         private_root: Option<PathBuf>,
-        service_session: Option<&str>,
+        mode: HostMode<'_>,
     ) -> Result<Arc<Self>, String> {
         let extensions = validated_extension_paths(extensions)?;
         let mut cleanup_on_error = PrivateRootCleanup(private_root.clone());
         // A host needs its profile to itself: join the host already running
         // it, or become the process that runs it.
         let profile = &prepare_profile(profile)?;
-        let claim = if service_session.is_some() {
+        let claim = if mode.alone() {
             None
         } else {
             match shared::claim(profile)? {
@@ -1084,13 +1143,7 @@ impl ChromiumEngine {
                 }
             }
         };
-        let mut child = launch_host(
-            host,
-            profile,
-            &extensions,
-            private_root.as_deref(),
-            service_session,
-        )?;
+        let mut child = launch_host(host, profile, &extensions, private_root.as_deref(), mode)?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -1114,7 +1167,7 @@ impl ChromiumEngine {
             download_events: download_events.clone(),
             server: std::sync::OnceLock::new(),
             link: None,
-            service_session: service_session.map(str::to_owned),
+            service_session: mode.service_session(),
             exited: Arc::new(AtomicBool::new(false)),
         });
         let hub = Arc::new(shared::Hub::default());
@@ -1149,7 +1202,8 @@ impl ChromiumEngine {
         // its supervision follow on a thread of their own. A host that never
         // becomes ready fails the page as one that dies later does.
         let child = Arc::new(Mutex::new(Some(child)));
-        let wait_for_private_cleanup = private_root.is_some() || service_session.is_some();
+        let wait_for_private_cleanup =
+            private_root.is_some() || matches!(mode, HostMode::ServiceSession(_));
         let starter = Starter {
             child: child.clone(),
             ready: ready_rx,
@@ -1353,6 +1407,15 @@ impl WebViewEngine for ChromiumEngine {
             } => {
                 if let Err(error) = self.navigate_owned(request_id, command) {
                     tracing::error!(request_id, %error, "Owned navigation was not admitted; use navigate_owned to observe refusal");
+                }
+                return;
+            }
+            WebViewCommand::CopySelection { request_id } => {
+                // An older host cannot read the selection: nothing is copied.
+                if self.shared.selection_text.load(Ordering::Acquire) {
+                    let _ = self.tx.push(
+                        json!({"op":"selection_text","tab":self.tab,"request_id":request_id}),
+                    );
                 }
                 return;
             }
@@ -1574,6 +1637,10 @@ fn route_native_event(
             );
             shared.document_size.can.store(
                 value["document_size"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.selection_text.store(
+                value["selection_text"].as_bool() == Some(true),
                 Ordering::Release,
             );
         }
@@ -1835,6 +1902,8 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .get("native_edit_history")
                     .is_none_or(Value::is_boolean)
                 && value.get("document_size").is_none_or(Value::is_boolean)
+                && value.get("selection_text").is_none_or(Value::is_boolean)
+                && value.get("sealed_documents").is_none_or(Value::is_boolean)
         }
         "tab_ready" => {
             value
@@ -1848,6 +1917,15 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_none_or(Value::is_boolean)
                 && value.get("document_size").is_none_or(Value::is_boolean)
         }
+        "selection_text" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["text"]
+                    .as_str()
+                    .is_some_and(|text| text.len() <= 1024 * 1024)
+        }
+        "link_status" => value["url"].as_str().is_some_and(|url| url.len() <= 8192),
         "document_size" => ["width", "height", "scroll_y"].iter().all(|key| {
             value[*key]
                 .as_f64()
@@ -2253,6 +2331,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "selection_text" => WebViewEvent::SelectionText {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            text: value["text"].as_str()?.into(),
+        },
+        "link_status" => WebViewEvent::LinkHovered(value["url"].as_str()?.into()),
         "document_size" => WebViewEvent::DocumentSize {
             width: value["width"].as_f64()?,
             height: value["height"].as_f64()?,
@@ -2429,6 +2512,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
         WebViewCommand::ReportDocumentSize(enabled) => {
             json!({"op":"document_size","enabled":enabled})
+        }
+        WebViewCommand::CopySelection { request_id } => {
+            json!({"op":"selection_text","request_id":request_id})
         }
         WebViewCommand::CancelNativeDownload { id } => json!({"op":"download_cancel","id":id}),
         WebViewCommand::RetryDownload { id } => json!({"op":"download_retry","id":id}),

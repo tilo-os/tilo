@@ -26,7 +26,7 @@ target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host
 
 Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources;
 run the browser against it with `TILO_CHROMIUM_HOST` set to that path. On Tilo
-OS the engine is the signed runtime bundle `tilo-runtime/2026.10.17-chromium`
+OS the engine is the signed runtime bundle `tilo-runtime/2026.10.22-chromium`
 (`ui::webview::chromium::runtime`): the image build runs
 `build-host.py --sdk-archive … --runtime …` and signs the resulting tree, the
 browser's manifest lists it under `optional-runtimes`, and the launcher mounts
@@ -83,6 +83,21 @@ meanwhile) and sends a `document_size` event with `width`, `height` (the
 content size in CSS pixels, never less than the view) and `scroll_y` whenever
 any changes. The page can neither observe nor answer it. An embedder sizing the
 view to its content (Mail's reader) enables it; it is off by default.
+
+`ready` also advertises `selection_text: true`: a tab may then receive
+`selection_text` with exactly `op`, `tab` and a positive `request_id`, and the
+host answers with a `selection_text` event carrying the same `request_id` and
+the frame's selection as `text` (empty when nothing is selected, at most 1 MiB).
+An offscreen engine cannot reach the system clipboard; the embedder copies it.
+
+`--tilo-sealed-documents` starts a host for sealed documents (Mail's reader;
+`ready` says `sealed_documents: true`). Its pages never navigate: a main-frame
+navigation to anything but `data:` or `about:blank` is cancelled, and when the
+person followed a link (a user gesture, not a redirect) it is sent as `open_tab`
+for the embedder to open elsewhere; a refresh, a script-less redirect or a frame
+goes nowhere, and a popup opens only from a gesture. Network prediction is off,
+and the address under the pointer is sent as `link_status` with `url` (empty when
+the pointer leaves the link).
 
 Resource navigation uses `scoped_navigation` with a strictly increasing positive
 signed-32-bit `request_id`, a `command` (`navigate`, `back`, `forward`, `reload`,

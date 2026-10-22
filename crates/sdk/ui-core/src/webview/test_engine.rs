@@ -42,6 +42,11 @@ struct Inner {
     paint_resources: std::collections::HashMap<String, Vec<u8>>,
     /// Whether it says it measures its document, as a ready host does.
     measures_document: bool,
+    /// What the page has selected, as [`WebViewCommand::CopySelection`]
+    /// answers it.
+    selection: String,
+    /// Links the page asked to open in a new window, not taken yet.
+    new_tabs: Vec<(String, bool)>,
 }
 
 pub struct TestEngine {
@@ -92,6 +97,18 @@ impl TestEngine {
     /// [`WebViewCommand::ReportDocumentSize`]), as a ready host that can does.
     pub fn set_measures_document(&self, measures: bool) {
         self.lock_inner().measures_document = measures;
+    }
+
+    /// Say the page asked to open `url` in a new window, as a link the
+    /// person followed does.
+    pub fn push_new_tab_request(&self, url: impl Into<String>) {
+        self.lock_inner().new_tabs.push((url.into(), false));
+    }
+
+    /// Say the page has `text` selected: a later
+    /// [`WebViewCommand::CopySelection`] answers with it.
+    pub fn set_selection(&self, text: impl Into<String>) {
+        self.lock_inner().selection = text.into();
     }
 
     /// Deliver `event` on the next drain, as the engine would on its own (a
@@ -304,6 +321,10 @@ impl WebViewEngine for TestEngine {
         self.lock_inner().measures_document
     }
 
+    fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.lock_inner().new_tabs)
+    }
+
     fn navigate_owned(
         &self,
         request_id: u32,
@@ -464,6 +485,12 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::CancelNativeDownload { .. }
             | WebViewCommand::RetryDownload { .. }
             | WebViewCommand::CancelAllDownloads => {}
+            WebViewCommand::CopySelection { request_id } => {
+                let text = inner.selection.clone();
+                inner
+                    .events
+                    .push(WebViewEvent::SelectionText { request_id, text });
+            }
             WebViewCommand::RequestMediaElement { request_id } => {
                 Self::emit_media_locked(&mut inner, request_id, None);
             }

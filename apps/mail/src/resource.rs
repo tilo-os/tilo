@@ -886,6 +886,19 @@ impl Mail {
             .with_effect(&MailEffect::Forward {
                 message: id.to_owned(),
             })
+            .with_effect(&MailEffect::LoadRemoteContent {
+                message: id.to_owned(),
+            })
+            .with_effect(&MailEffect::AlwaysLoadRemoteContent {
+                message: id.to_owned(),
+            })
+            .with_effect_asking(
+                &MailEffect::OpenLink {
+                    message: id.to_owned(),
+                    url: String::new(),
+                },
+                &["url"],
+            )
             .with(
                 Self::MARK_READ
                     .bind(mailbox::MarkRead::paths().messages, ids.clone())
@@ -1111,6 +1124,12 @@ const SCENARIOS: &[&str] = &[
     "compose_narrow",
     "firstrun",
     "html_mail",
+    "html_newsletter",
+    "html_github",
+    "html_receipt",
+    "html_dark",
+    "html_inline",
+    "plain_text",
     "search",
     "preview",
     "bulk",
@@ -1205,6 +1224,13 @@ impl ResourceApp for MailShell {
             Some("compose" | "reply") => (1180, 820),
             Some("firstrun") => (1100, 780),
             Some("html_mail") => (1280, 820),
+            Some(gallery)
+                if crate::app::GALLERY_SCENARIOS
+                    .iter()
+                    .any(|(name, _)| *name == gallery) =>
+            {
+                (1280, 900)
+            }
             _ => (1280, 800),
         }
     }
@@ -1213,6 +1239,13 @@ impl ResourceApp for MailShell {
         let mail = match fixture.scenario() {
             Some("firstrun") => MailFixture::without_accounts(),
             Some("empty") => MailFixture::before_first_fetch(),
+            Some(gallery)
+                if crate::app::GALLERY_SCENARIOS
+                    .iter()
+                    .any(|(name, _)| *name == gallery) =>
+            {
+                MailFixture::html_gallery()
+            }
             _ => MailFixture::bundled(),
         };
         fixture.provide(mail);
