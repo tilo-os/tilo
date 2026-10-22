@@ -13,6 +13,12 @@
 //! The window's History is one more slot of the row, in its menu, as the
 //! desktop's bar carries it beside the app's: the app's History draws no
 //! band of its own above an app whose controls are its slots.
+//!
+//! The row ends with the window's search, the same [`WindowSearch`] the
+//! desktop's bar ends with: the one search entry a window has, in a session
+//! or not. The row hosts the app's slots ([`crate::window_toolbar::is_hosted`])
+//! and presents its search, so the app draws neither a toolbar nor a search
+//! field of its own here either.
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -21,9 +27,12 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::window::Window;
 
 use super::super::App;
-use crate::widget::HistoryControl;
+use crate::search::SearchRequest;
+use crate::tokens::MotionSource;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
+use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX};
 use crate::widget::window_toolbar_row::ToolbarRow;
+use crate::widget::{HistoryControl, InPlace, Widget, WindowSearch, WindowSearchRequest};
 use crate::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 
 /// The row's one "tab": the window itself.
@@ -66,6 +75,8 @@ pub(super) struct SlotBar {
     /// The row changed since it was last painted. It reports no widget
     /// damage, so the frame after repaints the whole window.
     repaint: bool,
+    /// The window's search, ending the row.
+    search: WindowSearch,
 }
 
 impl SlotBar {
@@ -79,6 +90,7 @@ impl SlotBar {
             node,
             pointer: Point::ORIGIN,
             repaint: false,
+            search: WindowSearch::new(),
         }
     }
 
@@ -87,13 +99,29 @@ impl SlotBar {
     /// Call every frame before layout: the row's height is part of the app's
     /// top inset.
     pub(super) fn refresh(&mut self, app: &mut App, window: &Window) {
-        // A window the shell hears is hosted from its first frame: its
-        // slots never show here, not even until the shell says so.
-        let toolbar = (app.floating.client.is_none() && !crate::window_toolbar::is_hosted())
-            .then(crate::window_toolbar::declared)
-            .flatten()
-            .filter(|_| window.fullscreen().is_none())
-            .map(|toolbar| with_history(toolbar, app.window_history_control()));
+        // Outside a session the row is the window's bar: it hosts the app's
+        // slots and presents its search and History, as the desktop's bar
+        // does in one. A window the shell hears is hosted by the shell from
+        // its first frame: the row never shows there, not even until the
+        // shell says so.
+        let standalone = app.floating.client.is_none();
+        let shown = standalone && window.fullscreen().is_none();
+        if standalone {
+            if crate::window_toolbar::set_hosted(shown) {
+                app.needs_sync = true;
+                app.layout.layout_dirty = true;
+            }
+            if app.floating.window_bar.presents() != shown {
+                app.set_window_presents_history(shown);
+            }
+            self.serve_app_requests(app);
+        }
+        let toolbar = shown.then(|| {
+            with_history(
+                crate::window_toolbar::declared().unwrap_or_default(),
+                app.window_history_control(),
+            )
+        });
         let height = if toolbar.is_some() {
             TOOLBAR_ROW_HEIGHT
         } else {
@@ -107,6 +135,9 @@ impl SlotBar {
             if self.shown.take().is_some() {
                 self.row
                     .show(WINDOW, None, app.theme.motion(), crate::motion::frame_now());
+                self.search.close(MotionSource::Pointer);
+                self.drive_search(app);
+                self.search.place(Rect::ZERO, 0.0);
                 self.repaint = true;
             }
             return;
@@ -131,11 +162,117 @@ impl SlotBar {
             );
             self.row
                 .set_popup_area(Rect::new(0.0, 0.0, width, window_height));
-            self.row.lay_out(rect);
+            let row = search_room(rect);
+            self.row.lay_out(row);
+            self.place_search(rect, row);
             self.shown = Some((toolbar, rect));
             self.repaint = true;
         }
+        self.search.set_app_name(&window.title());
         self.repaint |= self.row.measure_views(&app.theme);
+        self.drive_search(app);
+    }
+
+    /// Place the search control at the end of the row: open, it reaches
+    /// back over the slots as far as the location, as the desktop's does.
+    fn place_search(&mut self, rect: Rect, row: Rect) {
+        let x0 = row.x1 + CONTROL_GAP;
+        let y0 = rect.center().y - CONTROL_PX / 2.0;
+        let location = self.row.slots().location;
+        let reach = if location.area() > 0.0 {
+            location.x0
+        } else {
+            row.x0
+        };
+        self.search.place_trailing(
+            Rect::new(x0, y0, x0 + CONTROL_PX, y0 + CONTROL_PX),
+            reach.min(x0),
+        );
+    }
+
+    /// What the app asked of its bar: its Find (open the search), its Ctrl+L
+    /// (edit the location).
+    fn serve_app_requests(&mut self, app: &mut App) {
+        if crate::window_toolbar::take_search_request() {
+            self.open_search(app, MotionSource::Keyboard);
+        }
+        if crate::window_toolbar::take_edit_request() && self.row.begin_edit() {
+            self.repaint = true;
+        }
+    }
+
+    /// Open the search in place on what the app offers, or give the open
+    /// one the keyboard. An app with nothing to search in place gets its
+    /// own search of everything it publishes, as the desktop's bar hands it
+    /// to the platform search.
+    fn open_search(&mut self, app: &mut App, source: MotionSource) {
+        if self.search.is_open() {
+            self.search.take_keyboard();
+        } else {
+            let in_place: InPlace = app.window_search_offer().into();
+            if in_place == InPlace::Nothing {
+                app.open_search(SearchRequest::this_app());
+            } else {
+                self.search.open(in_place, source);
+            }
+        }
+        self.repaint = true;
+    }
+
+    /// Carry out what the person asked of the search.
+    fn serve_search(&mut self, app: &mut App) -> bool {
+        let requests = self.search.take_requests();
+        let acted = !requests.is_empty();
+        for request in requests {
+            match request {
+                WindowSearchRequest::Open => self.open_search(app, MotionSource::Pointer),
+                WindowSearchRequest::Close => self.search.close(crate::motion::input_source()),
+                WindowSearchRequest::Widen(_) => {
+                    // No platform search outside a session: the app's own
+                    // search of everything it publishes takes the query on.
+                    let query = self.search.query().to_owned();
+                    self.search.close(crate::motion::input_source());
+                    app.open_search(SearchRequest::this_app().with_query(query));
+                }
+            }
+        }
+        acted
+    }
+
+    /// Carry the search to the app's widgets, once a frame: what it found
+    /// shows in the frame being built.
+    fn drive_search(&mut self, app: &mut App) {
+        if self.search.wants_drive() && self.search.drive(app.root_widget.as_mut()) {
+            app.mark_semantic_tree_stale();
+            app.layout.layout_dirty = true;
+            self.repaint = true;
+        }
+    }
+
+    /// The input evidence of the window's search, beside the app's own
+    /// ([`App::native_input_snapshot`]): what the field holds and where the
+    /// control stands, while the row shows.
+    pub(super) fn with_search_evidence(
+        &self,
+        snapshot: Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let mut snapshot = snapshot?;
+        if self.shown.is_some()
+            && let Some(fields) = snapshot.as_object_mut()
+        {
+            let anchor = self.search.anchor();
+            fields.insert(
+                "window_search".into(),
+                serde_json::json!({
+                    "open": self.search.is_open(),
+                    "focused": self.search.has_keyboard(),
+                    "text": self.search.query(),
+                    "caret_byte": self.search.caret_byte(),
+                    "rect": [anchor.x0, anchor.y0, anchor.x1, anchor.y1],
+                }),
+            );
+        }
+        Some(snapshot)
     }
 
     /// Whether the row changed since the last frame, which must then
@@ -147,7 +284,9 @@ impl SlotBar {
     /// Whether the row needs another frame: a menu arriving, the field's
     /// caret.
     pub(super) fn needs_frame(&self) -> bool {
-        self.shown.is_some() && self.row.needs_animation_frame(crate::time::now())
+        self.shown.is_some()
+            && (self.row.needs_animation_frame(crate::time::now())
+                || self.search.needs_animation_frame())
     }
 
     pub(super) fn draw(&mut self, app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -169,6 +308,8 @@ impl SlotBar {
             &band,
         );
         self.row.paint(scene, transform, text, theme, presence);
+        self.search.set_ground(theme.tokens.colors.surfaces.content);
+        self.search.draw(scene, transform, text, theme, presence);
         self.row
             .paint_popups(scene, transform, text, theme, presence);
     }
@@ -189,6 +330,36 @@ impl SlotBar {
         let over = rect.contains(self.pointer);
         let mut handled = false;
         let mut focus = None;
+        // Find opens the window's search, or gives the open one the
+        // keyboard, before the app sees the chord, as the desktop's bar does.
+        if is_find(event, app.input.modifiers, app.input.platform)
+            && !self.search.has_keyboard()
+            && app.window_bar_takes_find()
+        {
+            self.open_search(app, MotionSource::Keyboard);
+            window.request_redraw();
+            return true;
+        }
+        let searched = {
+            let mut ctx = crate::widget::EventCtx {
+                scale_factor: window.scale_factor(),
+                modifiers: &app.input.modifiers,
+                state: crate::widget::Edits::lend(&mut app.state.doc),
+                path: &app.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &self.tree,
+            };
+            self.search.route(event, &mut ctx)
+        };
+        if self.serve_search(app) || searched {
+            self.repaint = true;
+            window.request_redraw();
+        }
+        if searched {
+            return true;
+        }
         let mut ctx = crate::widget::EventCtx {
             scale_factor: window.scale_factor(),
             modifiers: &app.input.modifiers,
@@ -253,5 +424,171 @@ impl SlotBar {
             window.request_redraw();
         }
         took
+    }
+}
+
+/// Whether `event` is Find: the platform's command modifier with F.
+fn is_find(
+    event: &WindowEvent,
+    modifiers: winit::event::Modifiers,
+    platform: crate::platform::PlatformConventions,
+) -> bool {
+    let WindowEvent::KeyboardInput {
+        event:
+            winit::event::KeyEvent {
+                logical_key: winit::keyboard::Key::Character(key),
+                state: ElementState::Pressed,
+                ..
+            },
+        ..
+    } = event
+    else {
+        return false;
+    };
+    let state = modifiers.state();
+    key.eq_ignore_ascii_case("f")
+        && !state.shift_key()
+        && !state.alt_key()
+        && platform.command_modifier_down(state)
+}
+
+/// The row's room: the window's band less the search control at its end.
+fn search_room(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x0,
+        rect.y0,
+        (rect.x1 - CONTROL_PX - CONTROL_GAP).max(rect.x0),
+        rect.y1,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::{NavItem, NavList, NavSection};
+    use winit::keyboard::{Key, ModifiersState};
+
+    fn settings_like_list() -> NavList {
+        NavList::new(vec![
+            NavSection::new(
+                "personal",
+                "Personal",
+                vec![
+                    NavItem::new("appearance", "Appearance"),
+                    NavItem::new("sound", "Sound"),
+                    NavItem::new("time", "Time & date"),
+                ],
+            )
+            .filterable(),
+        ])
+    }
+
+    fn filter(app: &App) -> String {
+        app.root_widget
+            .as_any()
+            .and_then(|root| root.downcast_ref::<NavList>())
+            .expect("the app is its list")
+            .filter()
+            .to_owned()
+    }
+
+    /// The row as shown in a window 800 wide, without a platform window.
+    fn shown(bar: &mut SlotBar) {
+        let rect = Rect::new(8.0, 0.0, 792.0, TOOLBAR_ROW_HEIGHT);
+        let row = search_room(rect);
+        bar.row.lay_out(row);
+        bar.place_search(rect, row);
+        bar.shown = Some((WindowToolbar::default(), rect));
+    }
+
+    fn type_into_search(bar: &mut SlotBar, app: &mut App, text: &str) {
+        let Some(node) = bar.node else {
+            panic!("the row's event node");
+        };
+        for character in text.chars() {
+            let key = Key::Character(character.to_string().into());
+            let event = crate::synthetic_input::key_input(&key, ElementState::Pressed);
+            let mut handled = false;
+            let mut focus = None;
+            let mut ctx = crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &app.input.modifiers,
+                state: crate::widget::Edits::lend(&mut app.state.doc),
+                path: &app.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &bar.tree,
+            };
+            assert!(
+                bar.search.route(&event, &mut ctx),
+                "the field takes the key"
+            );
+        }
+    }
+
+    // Outside a session the runner's row is the window's bar, and its search is
+    // the window's one search entry: Find opens it on the app's list, what is
+    // typed narrows the list in the next frame, and the evidence says so.
+    #[test]
+    fn the_standalone_bar_searches_the_apps_list_in_place() {
+        let mut app = App::new(crate::State::new(), Box::new(settings_like_list()));
+        let mut bar = SlotBar::new();
+        shown(&mut bar);
+        bar.open_search(&mut app, MotionSource::Keyboard);
+        assert!(bar.search.is_open() && bar.search.has_keyboard());
+        assert_eq!(
+            bar.search.in_place(),
+            InPlace::List,
+            "a list narrows in place"
+        );
+
+        type_into_search(&mut bar, &mut app, "s");
+        let typed = bar
+            .with_search_evidence(Some(serde_json::json!({})))
+            .expect("evidence");
+        assert_eq!(typed["window_search"]["text"], "s");
+        assert_eq!(typed["window_search"]["focused"], true);
+        assert_eq!(typed["window_search"]["caret_byte"], 1);
+        assert_eq!(
+            filter(&app),
+            "",
+            "the list narrows in the frame, not the keystroke"
+        );
+
+        bar.drive_search(&mut app);
+        assert_eq!(filter(&app), "s", "the frame narrows the list");
+
+        bar.search.close(MotionSource::Keyboard);
+        bar.drive_search(&mut app);
+        assert_eq!(filter(&app), "", "closing the search shows the whole list");
+    }
+
+    #[test]
+    fn find_is_the_platform_command_with_f() {
+        let platform = crate::platform::PlatformConventions::default();
+        let command = if platform.platform() == crate::platform::Platform::MacOs {
+            ModifiersState::SUPER
+        } else {
+            ModifiersState::CONTROL
+        };
+        let f =
+            crate::synthetic_input::key_input(&Key::Character("f".into()), ElementState::Pressed);
+        assert!(is_find(&f, command.into(), platform));
+        assert!(!is_find(&f, ModifiersState::empty().into(), platform));
+        assert!(!is_find(
+            &f,
+            (command | ModifiersState::SHIFT).into(),
+            platform
+        ));
+    }
+
+    #[test]
+    fn evidence_is_only_the_apps_while_the_row_is_hidden() {
+        let bar = SlotBar::new();
+        let snapshot = bar
+            .with_search_evidence(Some(serde_json::json!({ "app": "x" })))
+            .expect("evidence");
+        assert!(snapshot.get("window_search").is_none());
     }
 }

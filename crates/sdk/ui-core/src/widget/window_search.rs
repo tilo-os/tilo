@@ -440,6 +440,15 @@ impl WindowSearch {
         self.in_place
     }
 
+    /// Where the caret stands in the query, in bytes, while the field holds
+    /// the keyboard.
+    #[must_use]
+    pub fn caret_byte(&self) -> Option<usize> {
+        self.has_keyboard()
+            .then(|| self.field.caret_byte())
+            .flatten()
+    }
+
     /// The query typed so far.
     #[must_use]
     pub fn query(&self) -> &str {

@@ -338,6 +338,13 @@ impl SearchField {
         self.input.value()
     }
 
+    /// Where the caret stands in the text, in bytes, as the input reports it
+    /// for review.
+    #[must_use]
+    pub fn caret_byte(&self) -> Option<usize> {
+        self.input.text_review().map(|(caret, _)| caret)
+    }
+
     /// Goes through the shared text core, so caret/selection stay consistent.
     pub fn set_query(&mut self, text: &str) {
         self.input.set_text(text);

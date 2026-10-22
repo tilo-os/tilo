@@ -3155,7 +3155,7 @@ impl AppHandler {
                         "frame_commit_us": self.native_input_origin.map(|origin| origin.elapsed().as_micros()),
                         // Capture after drawing: layout may clamp scroll state.
                         // Input-time effects alone cannot prove the frame used it.
-                        "state": app.native_input_snapshot(),
+                        "state": self.slot_bar.with_search_evidence(app.native_input_snapshot()),
                     }),
                 );
             }
@@ -3350,7 +3350,11 @@ impl AppHandler {
 
             if let Some(trace) = self.physical_input_trace.as_mut()
                 && trace.has_pending()
-                && let Some(row) = trace.drawn(cpu_frame_id, app.native_input_snapshot())
+                && let Some(row) = trace.drawn(
+                    cpu_frame_id,
+                    self.slot_bar
+                        .with_search_evidence(app.native_input_snapshot()),
+                )
             {
                 crate::native_scenario::log::emit_json("tilo-physical-frame", row);
             }
@@ -3714,7 +3718,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
                     }),
                 );
-                let before = self.app.native_input_snapshot();
+                let before = self
+                    .slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot());
                 self.native_input_ids.push(packet.id);
                 // Pen steps carry their samples ahead of each pointer event,
                 // so a paced stroke reaches widgets as a tablet's would.
@@ -3725,7 +3731,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     crate::native_scenario::log::emit_json(
                         "tilo-native-effect",
                         serde_json::json!({
-                            "id": packet.id, "before": before, "after": self.app.native_input_snapshot(),
+                            "id": packet.id, "before": before, "after": self.slot_bar.with_search_evidence(self.app.native_input_snapshot()),
                         }),
                     );
                 }
@@ -4067,10 +4073,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .as_ref()
                 .is_some_and(|window| window.id() == window_id)
         {
-            let state = self
-                .physical_input_trace
-                .as_ref()
-                .and_then(|_| self.app.native_input_snapshot());
+            let state = self.physical_input_trace.as_ref().and_then(|_| {
+                self.slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot())
+            });
             self.physical_input_trace
                 .as_mut()
                 .and_then(|trace| trace.begin(&event, state))
@@ -4084,8 +4090,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             native_input_isolation::EventOrigin::Platform,
         );
         if let Some(input) = physical_input {
-            let mut row =
-                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot());
+            let mut row = crate::physical_input_trace::Trace::effect(
+                input,
+                self.slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot()),
+            );
             let modifiers = self.app.input.modifiers.state();
             row["input_route_admitted"] = serde_json::json!(admitted);
             row["modifiers"] = serde_json::json!({
