@@ -924,13 +924,7 @@ impl Widget for RoomCanvas {
         ui::surface::card(scene, transform, self.rect, radius, ground);
         // A speaker held past the canvas's edge is cut there, never drawn
         // over the rows around it.
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &vello::kurbo::RoundedRect::from_rect(self.rect, radius),
-        );
+        ui::surface::push_card_clip(scene, transform, self.rect, radius);
         self.draw_room(scene, transform, theme);
         let origin = self.to_screen((0.0, 0.0));
         // ratchet-allow(raw_paint): the room canvas draws the room and its speakers, content rather than chrome
