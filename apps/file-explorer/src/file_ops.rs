@@ -972,7 +972,7 @@ mod tests {
     /// Move to Trash records the entry the item became and its undo puts the
     /// item back, on the freedesktop Trash managed without the mount table a
     /// sandboxed Files cannot read.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     #[test]
     fn move_to_trash_records_its_entry_and_undo_restores_it() {
         let home = tilo_test_env::TestHome::new().expect("private Trash for undo");
