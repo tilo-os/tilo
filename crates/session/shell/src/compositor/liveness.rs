@@ -19,6 +19,10 @@
 //!   working is slow, not stuck, and is not interrupted. The same report goes
 //!   to stderr.
 //! * `{"op":"threads"}` answers `{"threads":[...]}` whatever the loop is doing.
+//! * `{"op":"forbid_main_thread_files"}` has the main loop arm the audit of
+//!   every path its thread walks from then on ([`main_thread_files`]), and
+//!   answers `{"armed":null}` once it has; `{"op":"main_thread_files"}`
+//!   answers `{"main_thread_files":[...]}`, what it walked since.
 //!
 //! A heartbeat costs the loop one wake when somebody asks. Nothing runs, and
 //! the idle loop is not woken, while no client is connected.
@@ -67,7 +71,10 @@ use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{self, LoopHandle};
 
+mod main_thread_files;
 mod wake_trace;
+
+pub use main_thread_files::FileWalk;
 
 pub(super) use wake_trace::record as trace_wake;
 
@@ -103,6 +110,8 @@ enum Request {
         budget_ms: Option<u64>,
     },
     Threads,
+    ForbidMainThreadFiles,
+    MainThreadFiles,
 }
 
 /// One thread of the compositor process.
@@ -149,6 +158,10 @@ pub enum Answer {
         threads: Vec<ThreadReport>,
     },
     Threads(Vec<ThreadReport>),
+    /// The main-thread file audit is armed.
+    Armed,
+    /// Every path the main thread walked since the audit was armed.
+    MainThreadFiles(Vec<FileWalk>),
     Err(String),
 }
 
@@ -185,11 +198,19 @@ struct Beat {
     /// thread waits on it.
     acked: Mutex<u64>,
     wake: Condvar,
+    /// A connection asked the loop to arm the main-thread file audit; the
+    /// loop arms it at its next acknowledgement, on its own thread.
+    arm_requested: std::sync::atomic::AtomicBool,
 }
 
 impl Beat {
     /// Runs on the main loop: acknowledges every heartbeat asked for so far.
     fn acknowledge(&self) {
+        if self.arm_requested.swap(false, Ordering::SeqCst)
+            && let Err(error) = main_thread_files::arm()
+        {
+            eprintln!("tilo compositor: main-thread file audit: {error}");
+        }
         let upto = self.requested.load(Ordering::SeqCst);
         {
             let mut acked = self.acked.lock();
@@ -265,6 +286,7 @@ pub fn serve(control: &Path, handle: &LoopHandle<'static, State>) -> Option<Serv
         sent: AtomicU64::new(0),
         acked: Mutex::new(0),
         wake: Condvar::new(),
+        arm_requested: std::sync::atomic::AtomicBool::new(false),
     });
     let on_loop = LoopBeat(Arc::clone(&beat));
     if let Err(error) = handle.insert_source(source, move |(), (), _| on_loop.acknowledge()) {
@@ -315,6 +337,23 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
                 heartbeat_answer(beat, ping, budget)
             }
             Ok(Request::Threads) => Answer::Threads(dump_threads()),
+            Ok(Request::ForbidMainThreadFiles) => {
+                beat.arm_requested.store(true, Ordering::SeqCst);
+                // The loop arms the audit before it acknowledges this beat.
+                match beat.heartbeat(ping, MAX_BUDGET) {
+                    Some(_) => match main_thread_files::report() {
+                        Ok(_) => Answer::Armed,
+                        Err(error) => Answer::Err(error),
+                    },
+                    None => Answer::Err(
+                        "the main loop did not arm the file audit within the budget".into(),
+                    ),
+                }
+            }
+            Ok(Request::MainThreadFiles) => match main_thread_files::report() {
+                Ok(walks) => Answer::MainThreadFiles(walks),
+                Err(error) => Answer::Err(error),
+            },
             Err(error) => Answer::Err(format!("bad liveness request: {error}")),
         };
         let Ok(mut encoded) = serde_json::to_vec(&answer) else {
@@ -401,6 +440,18 @@ pub fn render(answer: &Answer) -> String {
             return format!("main loop alive: {ticks} ticks, last wake took {latency_ms:.1} ms");
         }
         Answer::Err(message) => return message.clone(),
+        Answer::Armed => return "main-thread file audit armed".to_string(),
+        Answer::MainThreadFiles(walks) => {
+            let mut out = format!("the main thread walked {} path(s)", walks.len());
+            for walk in walks {
+                let _ = write!(
+                    out,
+                    "\n\n{} {} ({}x)\n{}",
+                    walk.syscall, walk.path, walk.count, walk.backtrace
+                );
+            }
+            return out;
+        }
     };
     let mut out = head;
     for thread in threads {
@@ -677,6 +728,37 @@ pub(super) fn dump_threads() -> Vec<ThreadReport> {
         .collect()
 }
 
+/// The backtrace of thread `tid` of this process, blocked in a system call
+/// the caller knows is safe to interrupt (one a seccomp listener holds), or
+/// `None` when it does not answer within [`DUMP_WAIT`].
+fn capture_thread(tid: i32) -> Option<Backtrace> {
+    let _one = ONE_DUMP_AT_A_TIME.lock();
+    {
+        let mut captured = CAPTURED.lock();
+        captured.clear();
+        captured.reserve(1);
+    }
+    // SAFETY: `tgkill` on a thread of this process; the capture handler is
+    // installed before the audit arms.
+    let sent = unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), tid, capture_signal()) };
+    if sent != 0 {
+        return None;
+    }
+    let deadline = Instant::now()
+        .checked_add(DUMP_WAIT)
+        .unwrap_or_else(Instant::now);
+    while Instant::now() < deadline {
+        {
+            let mut captured = CAPTURED.lock();
+            if let Some(index) = captured.iter().position(|(thread, _)| *thread == tid) {
+                return Some(captured.swap_remove(index).1);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    None
+}
+
 /// Revisit a main thread initially observed running while other threads were
 /// being signalled. It can already be asleep by the time their stacks arrive.
 /// Keep the same allocator exclusions and the existing overall dump deadline.
@@ -883,6 +965,7 @@ mod tests {
             sent: AtomicU64::new(0),
             acked: Mutex::new(0),
             wake: Condvar::new(),
+            arm_requested: std::sync::atomic::AtomicBool::new(false),
         });
         let (ping, source) = calloop::ping::make_ping().unwrap();
         let (acked_tx, acked_rx) = std::sync::mpsc::channel();

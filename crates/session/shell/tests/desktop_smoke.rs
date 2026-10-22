@@ -21,6 +21,7 @@
 //! host-desktop session and its satellite), real GPU output and real input
 //! devices.
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -499,6 +500,52 @@ fn run(desktop: &Desktop, pressure: Option<Pressure>) {
 fn desktop_smoke_keeps_the_main_loop_turning() {
     let desktop = Desktop::start(SCREEN, &smoke_tree());
     run(&desktop, None);
+}
+
+// A path lookup can wait seconds for a busy disk, and on the main loop that is
+// a frozen desktop: the smoke under pressure once found the main thread asleep
+// in `path_openat`. So once started, the compositor's main thread opens,
+// stats and lists nothing by path through the whole smoke scenario; that work
+// runs on a worker, or at startup.
+//
+// `main_thread_walks.txt` lists the sites that still do, by `FileWalk::site`.
+// It only shrinks: a site moved off the loop leaves it, and a walk from any
+// site not on it fails here.
+#[test]
+fn the_main_loop_walks_no_path_after_startup() {
+    let known: std::collections::BTreeSet<&str> = include_str!("main_thread_walks.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let desktop = Desktop::start(SCREEN, &smoke_tree());
+    desktop.forbid_main_thread_files();
+    run(&desktop, None);
+    let walks = desktop.main_thread_files();
+    let new: Vec<_> = walks
+        .iter()
+        .filter(|walk| !known.contains(walk.site().as_str()))
+        .collect();
+    let mut listed = String::new();
+    for walk in &new {
+        let _ = write!(
+            listed,
+            "\nsite: {}\nunder: {}\n{} {:?} ({}x)\n{}",
+            walk.site(),
+            walk.handler(),
+            walk.syscall,
+            walk.path,
+            walk.count,
+            walk.backtrace
+        );
+    }
+    assert!(
+        new.is_empty(),
+        "the compositor's main thread walked {} path(s) after startup from sites not in \
+         main_thread_walks.txt; each can wait on the disk and freeze the desktop. Move the \
+         work to a worker or to startup:\n{listed}",
+        new.len(),
+    );
 }
 
 #[test]
