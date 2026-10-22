@@ -141,8 +141,8 @@ impl DisplayIdentify {
                             display_name(&output.descriptor, false)
                         }
                     })
-                    .collect();
-                name_apart(names, &numbers)
+                    .collect::<Vec<_>>();
+                name_apart(&names, &numbers)
             })
             .unwrap_or_default();
         let known = numbers.len();
@@ -398,7 +398,7 @@ mod tests {
         let now = Instant::now();
         identify.start(&outputs, Some(&snapshot), Duration::from_secs(3), now);
         let labels = identify.labels(now);
-        assert_eq!(labels[0].name, "DP-1");
+        assert_eq!(labels[0].name, "External display", "never its port");
         assert_eq!(labels[0].number, 2);
         assert_eq!(labels[1].number, 1, "the built-in panel below is display 1");
         assert_eq!(labels[1].output, Rect::new(0.0, 1080.0, 1920.0, 2160.0));
