@@ -130,7 +130,7 @@ as the lock screen; its acknowledgement does not prove authentication succeeded.
 Inspect `chrome.session_locked` and `chrome.lock_auth` in `state-dump` to observe
 completion. An incorrect credential leaves the session locked.
 
-The management transport `tilo-vm vm ssh` executes commands as root. When using
+The management transport `tilo device vm ssh` executes commands as root. When using
 that transport, run the control client as the actual session owner with
 `runuser -u OWNER --`, set that owner's `XDG_RUNTIME_DIR`, and keep the secret on
 stdin. Root itself does not pass the owner socket's peer checks. This unlocks an
@@ -586,8 +586,8 @@ edit) advertises an optional `confirm`: the app classifies each value, and a
 destructive one — deleting a clip — is refused with
 `action_confirmation_required` until it is resent with `confirm: true`.
 Input injection is not served; the surface is semantic only.
-`tilo-vm scenario install` drives the installer this way end to end
-(`tilo-vm guide scenarios`).
+`tilo device scenario install` drives the installer this way end to end
+(`tilo device guide scenarios`).
 
 The greeter publishes `sign-in@greeter`, account and session selection, and
 the available fingerprint action. Sign-in uses the existing greetd/PAM

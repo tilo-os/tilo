@@ -47,14 +47,14 @@ window and enable the greeter's presentation diagnostics, as
 `scripts/perf/README.md` ("Physical device Notes latency") describes. Then:
 
 ```sh
-TILO_VM=yoga tilo-vm vm status            # the booted image digest
+TILO_VM=yoga tilo device vm status            # the booted image digest
 python3 scripts/perf/device_latency_bench.py --device yoga --slot device \
   --commit <deployed shell commit> --image-digest sha256:<digest> \
   --out target/device-latency-$(date +%F)
 ```
 
 It types 500 keys into a fresh scratch Notes page (never an existing note) and
-times 100 workspace switches, both through `tilo-vm input`, the kernel input
+times 100 workspace switches, both through `tilo device input`, the kernel input
 path. A key the editor did not adopt, a frame without hardware presentation
 feedback or a chord the compositor did not report fails the run; a partial run
 never produces records. The records land in `<out>/records.jsonl`, compared

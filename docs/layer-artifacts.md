@@ -1,6 +1,6 @@
 # Downloaded development layers
 
-`tilo-vm swap-artifact` consumes an upstream native CI job's downloaded layer
+`tilo device swap-artifact` consumes an upstream native CI job's downloaded layer
 streams. It never builds, invokes Cargo metadata, selects a builder, pulls a CI
 image, or falls back to an installed layer. Acceptance runs it from the exact
 source checkout that produced the artifacts.

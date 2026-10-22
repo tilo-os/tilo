@@ -3,7 +3,7 @@
 A scripted acceptance run of the desktop essentials in a real KVM session: a headful
 `tilo-vm` slot on two outputs with a test identity, driven only through `tilo-vm` — the
 control socket's semantic ops first (`actions`, `state-dump`, `list-targets`), uinput
-input (`tilo-vm input`) where the input path is what is under test. Every run writes
+input (`tilo device input`) where the input path is what is under test. Every run writes
 `report.json` and `report.md` with the commit, the booted image digest, pass/fail per
 check, numbers and evidence (shots, frame traces).
 
@@ -78,7 +78,7 @@ with `os/dev/build-image.sh` exactly as Release / Dev VM disk installs it. The w
 writes the provenance record itself.
 
 `ref`'s own code reaches the VM the way it does on a laptop: after the slot is up, run.py
-`--swap` runs `tilo-vm swap <component> --builder host` from a worktree of `ref`
+`--swap` runs `tilo device swap <component> --builder host` from a worktree of `ref`
 (`--swap-from`), session components and apps into the run's slot, VM-wide ones into `vm`.
 `swap=default` is `shell` plus every `app:<dir>` the ref changed: a branch's own diff
 from main, or for a main commit what changed since the base (nothing when `ref` is the
@@ -141,7 +141,7 @@ socket appears.
 
 I01-I07 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
 (`os/hardware/profiles/lenovo-83ed/input/*.json`: I2C bus, 048D:8987 keyboard, 0488:1054
-touchpad; `tilo-vm input device plug lenovo-83ed-keyboard`) and check German keysyms,
+touchpad; `tilo device input device plug lenovo-83ed-keyboard`) and check German keysyms,
 layout state over hotplug, no stuck modifiers after a lock, and touchpad tap/click/scroll and
 disable-while-typing. I05-I07 are `calibrating`: their observables come from the compositor's
 code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
@@ -165,7 +165,7 @@ client (`tools/atspi_external_client.py`, copied from the checkout into the slot
 `~/.cache/acceptance/`; the image does not ship test tooling) and requires its folder listing to
 hold entries; it creates an `acc-files-*` folder in home first, so home is never empty.
 
-R05 runs `tilo system health --gpu --json` in the guest and reads every app's `tilo-gpu:
+R05 runs `tilo device health --gpu --json` in the guest and reads every app's `tilo-gpu:
 window adapter` line from the session log. A machine without a hardware render node
 cannot show a CPU fallback, so a plain software VM leaves R05 unobservable; `--gl` boots
 virgl, where a degraded health report, a window on a `type=Cpu` adapter or a reported CPU
@@ -381,7 +381,7 @@ Retain these **canonical `run.json` receipts** under the names below (the CLI's
 | `remove-run.json` | `slot rm SLOT`, only after fresh ownership was acknowledged |
 
 Capture `fixture-before.json` before the fault injection and `fixture-after.json`
-after recovery through `tilo-vm slot exec`. Each object contains `vm`, `slot`,
+after recovery through `tilo device slot exec`. Each object contains `vm`, `slot`,
 `user`, `uid`, `home`, `identity_root` and `sentinel_sha256`. Read only the named
 environment fields and hash one sentinel created in this fresh user's home;
 never dump the environment, keys, personal documents or existing identities.
@@ -446,7 +446,7 @@ while locked the compositor refuses every action invocation and snapshot with
 `session_locked` (on purpose; W21 asserts the snapshot refusal), and each later check would
 report that instead of its subject. The harness enforces it: after every check `run_check`
 reads the state dump, and a check that ended with the session locked fails ("left the
-session locked") and the slot's session is restarted (`tilo-vm slot restart`) before the next
+session locked") and the slot's session is restarted (`tilo device slot restart`) before the next
 one; the report's `session_recovered_after` lists those checks. W21, the one check that locks
 on purpose, unlocks in a `finally` the way a person would (the passcode on the real
 keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
@@ -503,7 +503,7 @@ unobservable, not passed. The trace reading is unit-tested beside the app checks
 
 Touchpad gestures (W15) are driven through the control socket's `swipe` and `pinch`, which
 feed the shell's gesture tracker; libinput's own touchpad decoding needs a uinput touchpad
-`tilo-vm input` does not have yet. Not yet drivable, so failing as unobservable: output
+`tilo device input` does not have yet. Not yet drivable, so failing as unobservable: output
 hotplug (B06; a slot's outputs are fixed at creation).
 
 ## Terminal after a userspace cohort update
@@ -628,14 +628,14 @@ record refusal; they do not claim physical installation or presentation.
 
 After the deployment owner confirms the matched apps/runtime, Shell/control,
 launcher/install and AppHost cohort is active, `store-chooser.py` uses the normal
-owner console actions through `tilo-vm slot exec`. It opens no private app socket,
+owner console actions through `tilo device slot exec`. It opens no private app socket,
 does not stage bytes or grant publisher trust, and submits no raw path to Store.
 The owner console must admit the actual slot user; it never falls back to an
 Agent, a synthetic actor, or a different socket when refused.
 
 First acquire the public ARM package through a canonically verified official
 catalogue using the independently pinned registry owner. Verify the signed full
-archive and derive the thin archive with `tilo-app-package thin`, preserving the
+archive and derive the thin archive with `tilo package thin`, preserving the
 same signed root. Retain the canonical `verified-offer.json` receipt. The exact
 runtime named by that offer must be resolvable through the normal independently
 verified runtime resolver; an unrelated private SDK or a historical runtime tag
@@ -674,7 +674,7 @@ not use the runner concurrently with human or automated portal requests.
 
 The default performs two reviews only. Add `--install-open` only when the owner
 has authorized the one install and Calculator Open. It installs once and replays
-`tilo-install verify`, then requires canonical `inspect` to match the reviewed
+`tilo app verify`, then requires canonical `inspect` to match the reviewed
 root, publisher, version and runtime. It reports update/reuse when already
 installed (including the private cohort); it never closes an existing window.
 A same-room mapped tab must have its public `local_app_records` association.
@@ -685,7 +685,7 @@ unobservable completion fail the run; they are never replaced with CLI install,
 clicks, retries, or trust changes. Review completion alone is not installation.
 
 Mapped SDK verification reads only public runtime metadata through maintained
-`tilo-vm vm ssh` maintenance transport, as root where Linux requires that access.
+`tilo device vm ssh` maintenance transport, as root where Linux requires that access.
 This does not change the identity or authority of any semantic action: Store and
 chooser actions still execute as the actual slot owner on the owner console.
 The probe opens the exact `/proc/PID/map_files/START-END` kernel object and hashes

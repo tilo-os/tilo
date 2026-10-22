@@ -115,11 +115,11 @@ executable stand-alone; the higher-level flow is described below.
 ## Physical device Notes latency
 
 Use the ordinary `tilo-vm` device and slot after applying a qualified release
-component with `tilo-vm swap shell --slot device --builder remote`. Update Notes
+component with `tilo device swap shell --slot device --builder remote`. Update Notes
 through its signed release channel:
 
 ```sh
-TILO_VM=yoga tilo-vm slot exec --slot device --timeout 180 -- app update so.tilo.notes
+TILO_VM=yoga tilo device slot exec --slot device --timeout 180 -- app update so.tilo.notes
 python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
   --samples 100 --out target/yoga-notes-after-update
 ```

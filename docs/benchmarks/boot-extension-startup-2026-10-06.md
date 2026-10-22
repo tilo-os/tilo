@@ -24,7 +24,7 @@ ordering are unchanged.
 ## Matched full boots
 
 Both baseline and script-only candidate disks were assembled through the same
-`tilo-vm image disk` tooling, then cold booted with fresh private NVRAM and COW
+`tilo device image disk` tooling, then cold booted with fresh private NVRAM and COW
 disks. Run order was baseline, candidate, candidate, baseline, baseline, candidate.
 The endpoint was the production greeter console reporting `accepts_input=true`,
 measured on the host from invoking VM start. Console polling and request timeout
@@ -85,14 +85,14 @@ print(json.dumps(samples))
 
 The native measurements ran baseline first, then candidate on the same Fedora
 EPYC host, allowing warm file caches. This ordering and shared host load limit
-precision. For boots, use `tilo-vm image disk` for both images and
-`tilo-vm vm create --emulated` with the settings above. Use the existing
+precision. For boots, use `tilo device image disk` for both images and
+`tilo device vm create --emulated` with the settings above. Use the existing
 `os/dev/installer-console.py` request/unwrap protocol against the private console
 socket, waiting for greeter input readiness. Record
 `ExecMainStartTimestampMonotonic`, `ExecMainExitTimestampMonotonic` and
 `CPUUsageNSec` of `tilo-extension-activate.service`, plus greetd start,
 `systemd-analyze time`, failed units and ordering-cycle journal output. Missing
-metrics must fail the run. Remove each owned VM through `tilo-vm vm rm` after
+metrics must fail the run. Remove each owned VM through `tilo device vm rm` after
 saving its observations. Never add a root access key to obtain measurements.
 
 ## Rejected networking change

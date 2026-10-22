@@ -782,7 +782,7 @@ pub struct BotRequirements {
   The program file is the Shortcut's canonical
   JSON. Its BLAKE3 is signed in the entry, and the registry stores the bytes as
   a content-addressed blob like a thin package's payload. Publishers build
-  the entry with `tilo-app-package bot-entry` and upload the program to
+  the entry with `tilo package bot-entry` and upload the program to
   `PUT /uploads/<blake3>.program` before submitting it.
 - **Validation.** The registry checks `requires` against the program on
   submission: every app and connector the steps invoke or the triggers watch is

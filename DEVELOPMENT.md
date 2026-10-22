@@ -28,13 +28,13 @@ target/debug/tilo-vm shot -o target/shot.png
 Swaps build release binaries with the manifest's features plus `dev-overrides`
 (realistic speed, and the harness variables below still work); `--profile dev`
 compiles faster. Driving is the same `tilo-control` story as on the host, through
-`tilo-vm control`. The built-in guide (`tilo-vm guide`) covers concepts, swapping,
+`tilo device control`. The built-in guide (`tilo device guide`) covers concepts, swapping,
 driving, storage, platforms and troubleshooting; its source is
 `crates/dev/tilo-vm/guide/`.
 
 Image-level changes (`os/`, units, packages) move the VM onto a new image
-instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
-`--from local` for one that is not pushed yet (`tilo-vm guide images`). The
+instead: `tilo device vm upgrade --from sha:<commit>` for any commit CI has built,
+`--from local` for one that is not pushed yet (`tilo device guide images`). The
 `Build / OS dev` workflow builds on explicit dispatch (select the smallest
 needed architecture list), or for an image-changing pull request labelled
 `os-image` (`os-arm64` also requests both architectures), fully cached. Ordinary
@@ -70,7 +70,7 @@ curl -fsSL https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x8
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
-does; `tilo-vm guide fedora-loop` maps its commands.
+does; `tilo device guide fedora-loop` maps its commands.
 
 ### Board dev images on real hardware
 
@@ -121,16 +121,16 @@ sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-<board> && sudo syst
 
 A board dev image carries tilo-vmd, sshd and the toolchain, so the machine is a
 `tilo-vm` target like a dev VM: register it once, then swap, roll back, take
-pictures and move it between images with the same commands (`tilo-vm guide
+pictures and move it between images with the same commands (`tilo device guide
 devices`). Components never go onto it by hand (no `bootc usr-overlay` and
 copies into `/usr`): nothing could roll that back.
 
 ```sh
-tilo-vm vm add yoga --ssh <you>@<address> --key <your key>   # checks SSH, root through sudo, tilo-vmd, toolchain, bootc
-tilo-vm vm use yoga
-tilo-vm slot create --headless && tilo-vm swap shell         # your build in your slot; tilo-vm rollback undoes it
-tilo-vm shot -o target/yoga.png                              # tilo-vm seat claim puts it on the built-in display
-tilo-vm vm upgrade --from sha:<commit>                       # that commit's image for this board, then a reboot
+tilo device vm add yoga --ssh <you>@<address> --key <your key>   # checks SSH, root through sudo, tilo-vmd, toolchain, bootc
+tilo device vm use yoga
+tilo device slot create --headless && tilo device swap shell         # your build in your slot; tilo-vm rollback undoes it
+tilo device shot -o target/yoga.png                              # tilo-vm seat claim puts it on the built-in display
+tilo device vm upgrade --from sha:<commit>                       # that commit's image for this board, then a reboot
 ```
 
 The board job checks the Lenovo image's audio stack (topology, DSP firmware,
@@ -1089,7 +1089,7 @@ the routing and the sccache-namespace problem, and the shim with them.
 
 ### Fedora 44 disposable-VM loop (legacy)
 
-For Tilo OS work, use `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); `tilo-vm guide
+For Tilo OS work, use `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); `tilo device guide
 fedora-loop` maps each command below to it. This loop remains the path for
 testing Tilo as a developer session on a stock Fedora 44 desktop, which dev VM
 slots do not cover yet.
@@ -1711,7 +1711,7 @@ file in your home decide what unlocks your screen. See
 
 Dev images need release-speed binaries that harnesses can still drive; build
 those with `cargo build --release -p shell --features dev-overrides` (what
-`tilo-vm swap` builds by default; `tilo-vm swap --profile dev` trades that
+`tilo device swap` builds by default; `tilo device swap --profile dev` trades that
 speed for faster compiles). Such a
 binary honours the variables above and announces itself as a dev-overrides
 build at startup. It must never ship: `tools/policy/check_dev_overrides_contract.py`

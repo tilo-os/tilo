@@ -669,16 +669,16 @@ scanout tranche need the importer to accept them first.
 **Verifying on hardware.** CI's llvmpipe cannot exercise KMS planes; the
 decision logic is unit-tested (`scanout_candidate`, `client_scanout`, the
 fullscreen phases in `shell::frame`). On a `tilo-vm` slot with a real GPU —
-a `device` target (`tilo-vm vm add`) or a VM with the GPU passed through:
+a `device` target (`tilo device vm add`) or a VM with the GPU passed through:
 
-1. `tilo-vm swap shell` from the branch, then play a 4K60 video fullscreen
+1. `tilo device swap shell` from the branch, then play a 4K60 video fullscreen
    in an opaque client (`mpv --fs`, or `vkcube` made fullscreen). With
    `WAYLAND_DEBUG=1` the client's log shows a second
    `zwp_linux_dmabuf_feedback_v1` batch once it is fullscreen, whose first
    tranche has `tranche_flags 1` (scanout) and the card's `dev_t` as
    `tranche_target_device`; it gets a batch without it when an overlay
    appears.
-2. `tilo-vm logs -n 400` shows `client_scanout_status=active`, and the
+2. `tilo device logs -n 400` shows `client_scanout_status=active`, and the
    phase summaries count `client_scanout_frames` at the refresh rate while
    `direct_frames` stays near zero. `intel_gpu_top` (or `radeontop`) shows
    the render engine idle apart from the video decoder.
@@ -696,7 +696,7 @@ Atomic page flips need the same GPU slot: a headful slot's vkms card has a
 `kms_flip_api=legacy reason="the connector presents without page flips"`
 and proves nothing about flips.
 
-1. `tilo-vm logs -n 400 | grep kms_flip_api` shows
+1. `tilo device logs -n 400 | grep kms_flip_api` shows
    `kms_flip_api=atomic connector=…` once per output, and no
    `an atomic flip failed` line during the session.
 2. Animate the desktop (open the overview, switch workspaces back and
