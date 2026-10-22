@@ -298,20 +298,30 @@ fn assert_cursor_limit(source: &DirectoryConnection) {
     }
 }
 
+/// Whether a live block or inode total `value` lies within 1% of the
+/// readings `a` and `b` taken around it (see [`assert_native_statfs`]).
+fn between(value: u64, a: u64, b: u64) -> bool {
+    let slack = a.max(b) / 100;
+    (a.min(b).saturating_sub(slack)..=a.max(b).saturating_add(slack)).contains(&value)
+}
+
 /// `before` is the source's own reading just before the native one. The
 /// block and inode totals are live on filesystems that size them from free
-/// space (XFS, btrfs) and the disk is shared with other work, so each must
-/// lie between the readings around the native call; the rest is fixed.
+/// space (XFS, btrfs) and the disk is shared with other work, which frees
+/// space as well as taking it: a total can dip between the two readings
+/// and come back (seen: 143414624, then 143413928 natively, then
+/// 143414368). Each must lie within 1% of the readings around the native
+/// call, which a wrong field (another filesystem's, a unit mix-up) misses
+/// by far; the rest is fixed.
 fn assert_native_statfs(
     descriptor: &File,
     before: &rustix::fs::StatVfs,
     native: &runtime_fs::directory_backend::DirectoryFilesystemStats,
 ) {
     let actual = rustix::fs::fstatvfs(descriptor).unwrap();
-    let between = |value: u64, a: u64, b: u64| (a.min(b)..=a.max(b)).contains(&value);
     assert!(
         between(native.blocks, before.f_blocks, actual.f_blocks),
-        "blocks {} outside the source's {}..{}",
+        "blocks {} not within 1% of the source's {}..{}",
         native.blocks,
         before.f_blocks,
         actual.f_blocks,
@@ -324,7 +334,7 @@ fn assert_native_statfs(
     assert_eq!(native.name_max, u32::try_from(actual.f_namemax).unwrap());
     assert!(
         between(native.files, before.f_files, actual.f_files),
-        "files {} outside the source's {}..{}",
+        "files {} not within 1% of the source's {}..{}",
         native.files,
         before.f_files,
         actual.f_files,
@@ -471,11 +481,17 @@ fn connected_statfs_observes_actual_source_filesystem_under_enumerate_only() {
     let source = DirectoryConnection::connected(stream).unwrap();
     let projected = source.statfs(ROOT_DIRECTORY).unwrap();
     projected.validate().unwrap();
-    assert_eq!(projected.blocks, native.blocks);
+    // Read again, later: the live totals move with the shared disk.
+    assert!(between(projected.blocks, native.blocks, native.blocks));
     assert_eq!(projected.block_size, native.block_size);
     assert_eq!(projected.fragment_size, native.fragment_size);
     assert_eq!(projected.name_max, native.name_max);
-    assert_eq!(projected.files, native.files);
+    assert!(
+        between(projected.files, native.files, native.files),
+        "files {} not within 1% of {}",
+        projected.files,
+        native.files
+    );
     let name = EntryName::new("file".into()).unwrap();
     assert!(
         source.open(ROOT_DIRECTORY, &name, OpenMode::Read).is_err(),
