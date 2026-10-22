@@ -371,19 +371,20 @@ pub(crate) fn verb(
         .cloned()
         .unwrap_or_default();
     // Plain arguments by name; a record argument by its fields, one level
-    // deep (`receipt.completed`).
+    // deep (`receipt.completed`). Text is kept whole, as passed
+    // ([`Scalar::argument`]).
     let mut plain: Vec<(String, Scalar)> = Vec::new();
     for (name, value) in &args {
         match value {
             serde_json::Value::Object(fields) => {
                 for (field, value) in fields {
-                    if let Some(scalar) = Scalar::from_json(value) {
+                    if let Some(scalar) = Scalar::argument(value) {
                         plain.push((format!("{name}.{field}"), scalar));
                     }
                 }
             }
             value => {
-                if let Some(scalar) = Scalar::from_json(value) {
+                if let Some(scalar) = Scalar::argument(value) {
                     plain.push((name.clone(), scalar));
                 }
             }
