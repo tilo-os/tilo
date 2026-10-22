@@ -230,19 +230,25 @@ impl HistoryGroup {
             let count = crate::i18n!("history-group-changes", "count" => self.len());
             parts.push(self.over_span(count));
         }
+        // What the app says the band amounts to is what it is read by, so
+        // it is kept before who made it (whose faces the band shows too).
+        let summarised = summary.is_some();
+        if let Some(summary) = summary {
+            parts.push(summary);
+        }
         let who = self.authors_label();
         if !who.is_empty() {
             parts.push(who);
         }
-        if let Some(summary) = summary {
-            parts.push(summary);
-        } else if let Some((ins, del)) = self.text_delta
+        if !summarised
+            && let Some((ins, del)) = self.text_delta
             && (ins > 0 || del > 0)
         {
             // Same spelling as a row's own summary: a group that wrote its
             // counts with a different minus sign reads as a different unit.
             parts.push(crate::i18n!("history-group-chars", "inserted" => ins, "deleted" => del));
-        } else if self.name.is_none()
+        } else if !summarised
+            && self.name.is_none()
             && self.len() > 1
             && let Some(first) = entries.get(self.start)
         {
