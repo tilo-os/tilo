@@ -216,6 +216,10 @@ pub struct MemberPresence {
 /// Presence frames a [`MemberPresence`] keeps for its reader.
 pub const MEMBER_PRESENCE_QUEUE: usize = 64;
 
+/// How soon a [`MemberPresence`] asks a still-announced broadcast again
+/// after it refused the subscription or ended the track.
+const MEMBER_RESUBSCRIBE: std::time::Duration = std::time::Duration::from_millis(200);
+
 impl MemberPresence {
     /// Follow the member publishing under `namespace` on `peer`'s session.
     #[must_use]
@@ -237,9 +241,16 @@ impl MemberPresence {
                         let _ = tx.try_send(datagram.payload);
                     }
                 }
-                // The broadcast ended (the member was withdrawn) or refused
-                // the subscription: its next announcement is a new one.
-                broadcast.closed().await;
+                // The broadcast ended (the member was withdrawn): its next
+                // announcement is a new one. A broadcast that refused the
+                // subscription or ended the track while still announced
+                // (a re-announcement racing it on a slow node) is asked
+                // again shortly rather than waited on until it closes,
+                // which a live broadcast never does.
+                tokio::select! {
+                    _ = broadcast.closed() => {}
+                    () = tokio::time::sleep(MEMBER_RESUBSCRIBE) => {}
+                }
             }
             std::future::pending::<()>().await;
         });
