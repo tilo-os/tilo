@@ -103,3 +103,7 @@ upstream = "Tilo's own, not posted; mainline v7.3 has no driver for it"
 [[patch]]
 file = "0018-drm-msm-a6xx-Fix-secondary-rail-vote-in-ARC-votes.patch"
 upstream = "msm fix, in mainline for v7.4 (commit 128a0edde50780ed9eb93ab5d2e18ca24c1f1c43), no release yet"
+
+[[patch]]
+file = "0019-drm-msm-a6xx-record-a-GPU-frequency-only-once-the-GMU-has-acknowledged-it.patch"
+upstream = "Tilo's own, not posted; mainline still records a GX_BW_PERF_VOTE the GMU never acknowledged"
