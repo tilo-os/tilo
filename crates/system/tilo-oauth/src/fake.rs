@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use test_http::{Reply, Request, Responder};
 
-use crate::{Provider, Revocation};
+use crate::{Provider, Refresh, Revocation};
 use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
@@ -136,6 +136,8 @@ impl FakeAuthorizationServer {
             },
             scopes: vec!["files".into(), "offline".into()],
             authorization_params: vec![("access_type".into(), "offline".into())],
+            refresh: Refresh::RefreshToken,
+            device_authorization_endpoint: None,
         }
     }
 

@@ -2459,6 +2459,21 @@ cache = false
 cost = "minutes"
 default = false
 
+# The unofficial subscription sign-ins (a ChatGPT account, GitHub for
+# Copilot) against OpenAI's and GitHub's live endpoints, which either may
+# change without notice: a failure means the sign-in or its backend moved,
+# and may be theirs. Kept out of every other suite so ordinary results never
+# depend on them.
+[[check]]
+name = "nightly-live-sign-in"
+run = """
+bash tools/test-env.sh cargo nextest run -p account-custody --locked --profile ci --run-ignored all --test live_sign_in_contracts
+"""
+on = ["schedule:0 3 * * *", "dispatch"]
+cache = false
+cost = "minutes"
+default = false
+
 # The nightly's native aarch64 leg: the whole workspace's tests, every target,
 # every example, the app certification, the ignored tests a headless node
 # supports and the visual goldens, in the same builder image.

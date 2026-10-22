@@ -1165,6 +1165,7 @@ fn dropbox_paste() -> DropboxPaste {
         redirect_ports: tilo_oauth::RedirectPorts::Registered(vec![
             busy.local_addr().unwrap().port(),
         ]),
+        redirect: tilo_oauth::Redirect::default(),
         paste_code_fallback: true,
     };
     let custodian = account_custody::Custodian::for_root(None)

@@ -8,7 +8,7 @@
 # device that asked for it.
 #
 # An environment variable overrides each value at runtime, then at build
-# time (TILO_OAUTH_{GOOGLE,MICROSOFT,DROPBOX,SPOTIFY}_CLIENT_ID and
+# time (TILO_OAUTH_{GOOGLE,MICROSOFT,DROPBOX,SPOTIFY,OPENAI,GITHUB,HUGGINGFACE}_CLIENT_ID and
 # TILO_OAUTH_GOOGLE_CLIENT_SECRET), so private deployments can bring their
 # own registration. An empty `client_id` with no override is the "not
 # configured" state Settings and Mail show for that provider.
@@ -18,7 +18,8 @@
 # what the model gateway asks for to call hosted agent models. A use with
 # no scopes is not offered for that provider.
 #
-# Every sign-in redirects to `http://127.0.0.1:<port>/oauth`.
+# Every sign-in redirects to `http://127.0.0.1:<port>/oauth`, unless its
+# entry names the `redirect_host` and `redirect_path` its issuer registered.
 
 [google]
 # Google Cloud console, OAuth client of type "Desktop app". Desktop clients
@@ -89,3 +90,45 @@ redirect_ports = [47654]
 [spotify.scopes]
 music = ["user-follow-read", "user-follow-modify", "user-read-private", "user-library-read", "user-library-modify", "playlist-read-private", "playlist-read-collaborative", "playlist-modify-private", "playlist-modify-public", "user-read-playback-state", "user-modify-playback-state"]
 music_streaming = ["streaming", "user-read-private"]
+
+[openai]
+# Signing in with a ChatGPT account, to use its subscription for agent
+# models. OpenAI offers no client registration for ChatGPT subscriptions to
+# other applications, so this is the public client of OpenAI's own Codex CLI,
+# used the way Codex uses it; the person signs in on OpenAI's page and sees
+# that client named. OpenAI matches its registered redirect exactly, host and
+# path included. An unofficial integration: OpenAI may change or close it at
+# any time. The `nightly-live-chatgpt` check signs nothing in but watches
+# that this client, its redirect and the backend still answer as expected,
+# and Settings says when a sign-in or a request stops working.
+client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+redirect_ports = [1455]
+redirect_host = "localhost"
+redirect_path = "/auth/callback"
+
+[openai.scopes]
+# `offline_access` yields the refresh token.
+models = ["openid", "profile", "email", "offline_access"]
+
+[github]
+# Signing in with GitHub, to use a Copilot subscription for agent models.
+# GitHub issues Copilot tokens only to the editors it supports, so this is
+# the public client id GitHub's Copilot editor extensions sign in with, by
+# device code (no redirect is registered). Unofficial, like the ChatGPT
+# sign-in above.
+client_id = "Iv1.b507a08c87ecfe98"
+
+[github.scopes]
+models = ["read:user"]
+
+[huggingface]
+# A Hugging Face OAuth app with the `inference-api` scope, for inference
+# billed to the person's own account. None is registered for Tilo yet: set
+# TILO_OAUTH_HUGGINGFACE_CLIENT_ID, and register
+# http://127.0.0.1:47655/oauth as its redirect URI. Until then Hugging Face
+# takes an access token typed as an API key.
+client_id = ""
+redirect_ports = [47655]
+
+[huggingface.scopes]
+models = ["openid", "profile", "inference-api"]
