@@ -4,7 +4,8 @@
 The snapshot's last layer (its repo metadata) carries
 /repo/tilo-direct-package-specs.txt. Reading that one digest-checked blob
 avoids pulling and unpacking the multi-GB package layers just to compare a few
-kilobytes.
+kilobytes. Manifests and blobs are read over the registry API itself, so a
+build host needs no Docker or skopeo, only python3 (t's buildah image).
 """
 
 import argparse
@@ -27,6 +28,8 @@ from urllib.request import Request, urlopen
 MANIFEST_PATH = "repo/tilo-direct-package-specs.txt"
 MAX_METADATA_LAYER = 64 * 1024 * 1024
 MAX_METADATA_CONTENT = 256 * 1024 * 1024
+MAX_MANIFEST = 4 * 1024 * 1024
+MAX_CONFIG = 4 * 1024 * 1024
 MANIFEST_TYPES = {"application/vnd.oci.image.manifest.v1+json",
                   "application/vnd.docker.distribution.manifest.v2+json"}
 INDEX_TYPES = {"application/vnd.oci.image.index.v1+json",
@@ -38,9 +41,10 @@ CHALLENGE = re.compile(r'Bearer realm="(?P<realm>[^"]+)"(?:,service="(?P<service
 
 
 def raw_manifest(ref):
-    """The manifest bytes a digest-pinned ref names, checked against the digest."""
-    raw = subprocess.check_output(["docker", "buildx", "imagetools", "inspect", "--raw", ref])
-    digest = ref.rsplit("@", 1)[1]
+    """The manifest a digest-pinned ref names, checked against the digest."""
+    host_repository, digest = ref.rsplit("@", 1)
+    host, repository = host_repository.split("/", 1)
+    raw = fetch_manifest(host, repository, digest)
     if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError(f"registry returned a manifest that is not {digest}")
     return json.loads(raw)
@@ -50,11 +54,15 @@ def platform_manifest(ref, arch):
     document = raw_manifest(ref)
     kind = document.get("mediaType") if isinstance(document, dict) else None
     if kind in MANIFEST_TYPES:
-        config = document.get("config", {}).get("digest", "")
-        metadata = json.loads(subprocess.check_output(
-            ["docker", "buildx", "imagetools", "inspect", ref, "--format", "{{json .Image}}"], text=True))
+        config = document.get("config", {})
+        digest, size = config.get("digest", ""), config.get("size")
+        if (not re.fullmatch(r"sha256:[0-9a-f]{64}", str(digest)) or not isinstance(size, int)
+                or not 0 < size <= MAX_CONFIG):
+            raise ValueError("frozen RPM snapshot has no bounded image configuration")
+        host, repository = ref.rsplit("@", 1)[0].split("/", 1)
+        metadata = json.loads(fetch_blob(host, repository, digest, size))
         if not isinstance(metadata, dict) or metadata.get("architecture") != arch or metadata.get("os") != "linux":
-            raise ValueError(f"frozen RPM snapshot is not a native linux/{arch} image ({config})")
+            raise ValueError(f"frozen RPM snapshot is not a native linux/{arch} image ({digest})")
         return document
     if kind not in INDEX_TYPES:
         raise ValueError("frozen RPM snapshot is neither an image index nor an image manifest")
@@ -80,19 +88,23 @@ def docker_basic(host):
     return auth if isinstance(auth, str) and auth else None
 
 
-def fetch_blob(host, repository, digest, size):
-    url = f"https://{host}/v2/{repository}/blobs/{digest}"
+def registry_get(host, repository, path, limit, accept=None):
+    """GET https://HOST/v2/REPOSITORY/PATH, at most LIMIT bytes of it, pulling with the registry's
+    token: anonymous, or from the Docker credentials for HOST where there are any."""
+    url = f"https://{host}/v2/{repository}/{path}"
 
     def get(authorization=None):
         request = Request(url)
+        if accept:
+            request.add_header("Accept", accept)
         if authorization:
             # Not carried across a redirect to the blob store.
             request.add_unredirected_header("Authorization", authorization)
         with urlopen(request, timeout=120) as response:
-            return response.read(MAX_METADATA_LAYER + 1)
+            return response.read(limit + 1)
 
     try:
-        blob = get()
+        return get()
     except HTTPError as error:
         challenge = CHALLENGE.match(error.headers.get("WWW-Authenticate", "") if error.headers else "")
         error.close()
@@ -110,9 +122,22 @@ def fetch_blob(host, repository, digest, size):
         token = document.get("token") or document.get("access_token")
         if not isinstance(token, str) or not token:
             raise ValueError("registry returned no pull token")
-        blob = get("Bearer " + token)
+        return get("Bearer " + token)
+
+
+def fetch_manifest(host, repository, digest):
+    """The bytes the registry serves for a manifest; the caller checks them against DIGEST."""
+    raw = registry_get(host, repository, f"manifests/{digest}", MAX_MANIFEST,
+                       accept=", ".join(sorted(MANIFEST_TYPES | INDEX_TYPES)))
+    if len(raw) > MAX_MANIFEST:
+        raise ValueError(f"manifest {digest} exceeds its size bound")
+    return raw
+
+
+def fetch_blob(host, repository, digest, size):
+    blob = registry_get(host, repository, f"blobs/{digest}", MAX_METADATA_LAYER)
     if len(blob) != size or "sha256:" + hashlib.sha256(blob).hexdigest() != digest:
-        raise ValueError(f"metadata layer {digest} does not match its manifest entry")
+        raise ValueError(f"blob {digest} does not match its manifest entry")
     return blob
 
 

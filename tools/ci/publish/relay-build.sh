@@ -15,6 +15,9 @@ bash os/containers/tilo-relay/test-contract.sh
   || die 'BASE_REF is not a digest-pinned fedora-bootc'
 rpms_ref=$(cat "$snapshot/rpms-ref")
 [[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $rpms_ref"
+# The package manifest inside the snapshot itself must name what this tree's Containerfiles
+# install, not only its signed provenance: a stale snapshot fails here, before the compile.
+python3 os/dev/verify-rpm-snapshot-buildkit.py "$rpms_ref"
 assets=$scratch/github-assets
 TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh \
   sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
