@@ -401,6 +401,13 @@ struct NameEntry {
 }
 
 pub struct FilesProvider {
+    shared: Arc<FilesIndexes>,
+}
+
+/// The name and content indexes of the person's home, shared by the
+/// provider and whoever searches them off the main thread (the file
+/// chooser's [`FilesProvider::searcher`]).
+pub struct FilesIndexes {
     home: PathBuf,
     /// Queries read under the shared lock. A watched change holds the write
     /// lock only for its upserts and incremental commit (milliseconds); a
@@ -459,19 +466,39 @@ fn is_tilo_desktop_session() -> bool {
     std::env::var_os("XDG_SESSION_DESKTOP").as_deref() == Some(std::ffi::OsStr::new("tilo"))
 }
 
+impl std::ops::Deref for FilesProvider {
+    type Target = FilesIndexes;
+
+    fn deref(&self) -> &FilesIndexes {
+        &self.shared
+    }
+}
+
 impl FilesProvider {
     pub fn new() -> Self {
         Self::with_home(indexable_home())
     }
 
     fn with_home(home: PathBuf) -> Self {
-        Self {
+        Self::over(FilesIndexes {
             home,
             name_index: Arc::new(RwLock::new(NameIndex::default())),
             tantivy: OnceLock::new(),
             ready: OnceLock::new(),
             watch: OnceLock::new(),
+        })
+    }
+
+    fn over(indexes: FilesIndexes) -> Self {
+        Self {
+            shared: Arc::new(indexes),
         }
+    }
+
+    /// The same indexes, for a search that runs on a worker thread: it
+    /// opens and reads them there, never on the caller's.
+    pub fn searcher(&self) -> Arc<FilesIndexes> {
+        Arc::clone(&self.shared)
     }
 
     /// A provider over a home already walked, holding these `~/…` paths,
@@ -493,15 +520,30 @@ impl FilesProvider {
         let _ = ready.set(());
         let tantivy = OnceLock::new();
         let _ = tantivy.set(None);
-        Self {
+        Self::over(FilesIndexes {
             home,
             name_index: Arc::new(RwLock::new(NameIndex::from_entries(entries, 1))),
             tantivy,
             ready,
             watch: OnceLock::new(),
-        }
+        })
     }
 
+    /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
+    pub fn rescan(&self) {
+        self.ensure_ready();
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Files search rescan");
+        let name_index = Arc::clone(&self.name_index);
+        let home = self.home.clone();
+        thread::Builder::new()
+            .name("tilo-search-files-rescan".into())
+            .spawn(move || walk_home(&home, &name_index))
+            .ok();
+    }
+}
+
+impl FilesIndexes {
     /// Open the content index and kick the background name walk once.
     /// Users who query before the walk finishes get only the content index.
     fn ensure_ready(&self) {
@@ -531,23 +573,12 @@ impl FilesProvider {
         start_name_watch(&self.home, &self.name_index, &self.watch);
     }
 
-    /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
-    pub fn rescan(&self) {
-        self.ensure_ready();
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("Files search rescan");
-        let name_index = Arc::clone(&self.name_index);
-        let home = self.home.clone();
-        thread::Builder::new()
-            .name("tilo-search-files-rescan".into())
-            .spawn(move || walk_home(&home, &name_index))
-            .ok();
-    }
-
     /// The paths whose names match `needle`, best first, then those whose
     /// contents do, at most `limit`: what the file chooser lists when a
     /// person searches every place they can reach. The same index the
-    /// palette's Files answers from, so both find the same files.
+    /// palette's Files answers from, so both find the same files. The
+    /// first call opens the index, so the chooser calls it on its worker
+    /// thread.
     pub fn paths_matching(&self, needle: &str, limit: usize) -> Vec<PathBuf> {
         let needle = needle.trim().to_lowercase();
         if needle.is_empty() || limit == 0 {
@@ -585,7 +616,9 @@ impl FilesProvider {
     fn published(&self) -> Option<RwLockReadGuard<'_, NameIndex>> {
         self.name_index.read().ok()
     }
+}
 
+impl FilesProvider {
     /// Content hits, appended to `out` and deduped against
     /// `seen` name hits so a file matching both only shows once.
     fn push_content_hits(
@@ -2811,13 +2844,13 @@ mod tests {
         let _ = ready.set(());
         let tantivy = OnceLock::new();
         let _ = tantivy.set(None);
-        FilesProvider {
+        FilesProvider::over(FilesIndexes {
             home,
             name_index: Arc::new(RwLock::new(NameIndex::from_entries(entries, 1))),
             tantivy,
             ready,
             watch: OnceLock::new(),
-        }
+        })
     }
 
     #[test]

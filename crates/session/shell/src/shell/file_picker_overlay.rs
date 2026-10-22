@@ -143,6 +143,11 @@ impl FilePickerOverlay {
         if self.active.is_none() {
             self.grabbed = false;
         }
+        // Recent and a search are read on a worker thread, which wakes the
+        // loop when they are in.
+        if let Some(active) = self.active.as_mut() {
+            dirty |= active.widget.poll_lookups();
+        }
 
         if let Some(active) = self.active.as_mut()
             && let Some(outcome) = active.widget.take_outcome()
@@ -181,10 +186,13 @@ impl FilePickerOverlay {
                     named,
                 )
             });
-            let search = self.search.clone().map(|files| {
+            // The chooser runs the search on its worker thread, which opens
+            // and reads the index there.
+            let search = self.search.as_ref().map(|files| {
+                let indexes = files.searcher();
                 let search: ui::widget::file_picker::PickerSearch =
-                    std::rc::Rc::new(move |query: &str| {
-                        files.paths_matching(query, ui::widget::file_picker::SEARCH_LIMIT)
+                    std::sync::Arc::new(move |query: &str| {
+                        indexes.paths_matching(query, ui::widget::file_picker::SEARCH_LIMIT)
                     });
                 search
             });
@@ -504,8 +512,9 @@ impl ActiveFilePicker {
             .with_home(scope.home)
             .with_filters(filters)
             .with_requester(requester(&request.caller.app_id))
-            .with_recent(request.recent)
-            .with_search(search);
+            .with_waker(Some(crate::shell::search::invocation_wake::waker()))
+            .with_search(search)
+            .with_recent(request.recent);
         if let Some(name) = request.current_name.as_deref() {
             widget = widget.with_filename(name);
         }
