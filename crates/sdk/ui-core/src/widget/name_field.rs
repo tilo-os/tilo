@@ -650,7 +650,7 @@ mod tests {
     fn unchanged_browser_name_reshapes_after_font_generation_changes() {
         let root = crate::font_catalog::checkout_root();
         let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let field = NameField::new("مَرْحَبًا");

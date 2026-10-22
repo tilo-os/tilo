@@ -275,9 +275,9 @@ pub struct FrameOutput<'a> {
 mod caller_palette;
 mod capture;
 mod invocation_results;
-mod root_wake;
 #[cfg(test)]
 mod palette_window_tests;
+mod root_wake;
 mod search_open;
 pub mod system_search;
 pub mod test_support;
@@ -10937,7 +10937,7 @@ mod tests {
         let root = crate::font_catalog::checkout_root();
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),

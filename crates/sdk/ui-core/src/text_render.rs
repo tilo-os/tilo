@@ -3858,7 +3858,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let style = TextStyle::new(18.0);
@@ -3910,7 +3910,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let name = "NotoSansMath-Regular.ttf";
@@ -3939,7 +3939,7 @@ mod tests {
             )
             .unwrap_err()
             .to_string();
-        assert!(error.contains("bytes, found"), "{error}");
+        assert!(error.contains("SHA-256 mismatch"), "{error}");
         assert_eq!(
             renderer.generation, generation,
             "a refused font changes nothing"
@@ -3956,7 +3956,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let math = TextStyle::new(18.0).with_family(FontChoice::Named(UI_MATH_FAMILY.to_owned()));
@@ -4069,7 +4069,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let style = TextStyle::new(18.0);

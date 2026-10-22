@@ -456,19 +456,24 @@ impl FontCatalog {
     /// Load the canonical core families required before a browser can mount.
     /// Script, symbol, math, and emoji assets remain absent until shaping
     /// reports demand and the host supplies their verified bytes.
+    ///
+    /// `bytes` gives each asset's bytes with the lowercase hex SHA-256 the
+    /// page computed for them, checked as in [`Self::install_browser_asset`]:
+    /// hashing them again here held back the first frame.
     /// # Errors
-    /// Rejects a missing or corrupt startup asset.
+    /// Rejects a missing startup asset, or one whose digest is not the pinned
+    /// one.
     pub fn load_browser_startup_bytes(
         &self,
-        mut bytes: impl FnMut(&str) -> Option<Vec<u8>>,
+        mut bytes: impl FnMut(&str) -> Option<(Vec<u8>, String)>,
     ) -> Result<FontSystem, FontCatalogError> {
         self.build_from_bytes(
             Path::new("canonical-browser-fonts"),
             |asset| asset.scope == Scope::Product && asset.browser_startup,
             |asset| {
-                let data = bytes(&asset.file)
+                let (data, sha256) = bytes(&asset.file)
                     .ok_or_else(|| FontCatalogError::at(&asset.file, "missing font bytes"))?;
-                verify_asset_bytes(asset, &data)?;
+                asset.check_digest(Path::new(&asset.file), &sha256)?;
                 Ok(fontdb::Source::Binary(Arc::new(data)))
             },
         )
@@ -480,9 +485,11 @@ impl FontCatalog {
     /// `sha256` is the lowercase hex SHA-256 of `data` as the page computed it
     /// with the browser's native, asynchronous digest; it is checked against
     /// the digest compiled into this build. Hashing the bytes again here held
-    /// the page's main thread for about 350 ms a font.
+    /// the page's main thread for about 350 ms a font. Bytes of another size
+    /// cannot carry the pinned digest, and the page's loader has refused
+    /// them already, so the size is not compared again here.
     /// # Errors
-    /// Rejects unknown names, a size or digest other than the pinned one, or
+    /// Rejects unknown names, a digest other than the pinned one, or
     /// mismatched face metadata.
     pub fn install_browser_asset(
         &self,
@@ -497,9 +504,7 @@ impl FontCatalog {
             .iter()
             .find(|asset| asset.scope == Scope::Product && asset.file == name)
             .ok_or_else(|| FontCatalogError::at(name, "unknown canonical font asset"))?;
-        let path = Path::new(&asset.file);
-        asset.check_len(path, data.len())?;
-        asset.check_digest(path, sha256)?;
+        asset.check_digest(Path::new(&asset.file), sha256)?;
         if asset.faces.iter().all(|expected| {
             system.db().faces().any(|face| {
                 face.index == expected.index
@@ -697,6 +702,17 @@ fn parse_manifest(path: &Path) -> Result<&'static Manifest, FontCatalogError> {
 pub fn test_sha256(bytes: &[u8]) -> String {
     use sha2::Digest as _;
     hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// Reads browser font files under `root` with the digest a page would
+/// report, for [`FontCatalog::load_browser_startup_bytes`] in tests.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_font_files(root: &Path) -> impl FnMut(&str) -> Option<(Vec<u8>, String)> + '_ {
+    |name| {
+        let bytes = std::fs::read(root.join(name)).ok()?;
+        let digest = test_sha256(&bytes);
+        Some((bytes, digest))
+    }
 }
 
 fn verify_asset_bytes(asset: &Asset, data: &[u8]) -> Result<(), FontCatalogError> {

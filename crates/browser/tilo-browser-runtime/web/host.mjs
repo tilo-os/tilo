@@ -365,7 +365,10 @@ export async function mountDesktop(target,options={}) {
     forgetCrashed=tab=>crashes.forget(config.room,tab);
     globalThis.__tiloForgetCrashedWindow=forgetCrashed;
     crashListeners.add(onCrash);
-    id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>{
+    // Each startup font goes in with the digest the loader computed natively,
+    // which the runtime checks against its build instead of hashing again.
+    for(const [name,bytes] of Object.entries(assets))runtime.provide_startup_font(name,bytes,fontLoader.digestOf(bytes)??'');
+    id=runtime.mount(canvas,JSON.stringify(config),entries,raw=>{
       // Pin pixels and geometry while this presentation is still current,
       // before another presentation or a queued page callback can replace it.
       // This path reads only JS/Canvas state, never re-enters the WASM mount.
