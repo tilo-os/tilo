@@ -10,12 +10,15 @@
 //! [`SidebarDrawer`]: ui::widget::SidebarDrawer
 
 use super::page_part::PagePart;
+
+mod query_view;
 use super::{
     Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Drag, Fill, HashMap,
     HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId, PlaylistPage, Point,
     PresenceCtx, Rect, RepeatMode, Scene, Size, Style, TaffyTree, TextRenderer, TextStyle, Theme,
     View, Widget, elide, is_live_album_id, is_live_id, is_live_playlist_id, live_track_id, lyrics,
 };
+pub(super) use query_view::SearchView;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -741,7 +744,8 @@ impl Widget for MusicApp {
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::widget::WindowHeader,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::Queryable
     );
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -749,7 +753,7 @@ impl Widget for MusicApp {
         // another) must not ask again on every frame.
         let visible = Some((
             matches!(self.view, View::Home),
-            !self.nav_back.is_empty(),
+            self.nav.can_go_back(),
             self.source_widget_mode(),
         ));
         let file_changed =
@@ -762,7 +766,7 @@ impl Widget for MusicApp {
         if self.view == View::Home {
             children.push(&self.open_file_button);
         }
-        if !self.nav_back.is_empty() {
+        if self.nav.can_go_back() {
             children.push(&self.back_button);
         }
         children.extend(self.history.button().map(|button| button as &dyn Widget));
@@ -808,7 +812,7 @@ impl Widget for MusicApp {
         if self.view == View::Home {
             children.push(&mut self.open_file_button);
         }
-        if !self.nav_back.is_empty() {
+        if self.nav.can_go_back() {
             children.push(&mut self.back_button);
         }
         children.extend(
@@ -882,6 +886,7 @@ impl Widget for MusicApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.pump_live_search();
         self.open_anchors();
+        self.poll_query();
         let (state, _) = ui::doc::document_ref(state, path);
         if self.playback_loaded {
             self.reload_library(state);
@@ -933,7 +938,7 @@ impl Widget for MusicApp {
         if self.view == View::Home {
             children.push(self.open_file_button.build_layout(taffy, theme, node_map));
         }
-        if !self.nav_back.is_empty() {
+        if self.nav.can_go_back() {
             children.push(self.back_button.build_layout(taffy, theme, node_map));
         }
         let mode = self.source_widget_mode();
@@ -1044,7 +1049,7 @@ impl Widget for MusicApp {
             }
             let back_index = 1 + usize::from(self.view == View::Home);
             if !*ctx.handled
-                && !self.nav_back.is_empty()
+                && self.nav.can_go_back()
                 && let Some(node) = children.get(back_index)
             {
                 self.back_button
@@ -1312,6 +1317,11 @@ impl Widget for MusicApp {
             View::Browse => "Browse".to_string(),
             View::Queue => "Queue".to_string(),
             View::Lyrics => "Lyrics".to_string(),
+            View::Search => "Search".to_string(),
+            View::Kept(id) => self
+                .kept_views()
+                .get(id)
+                .map_or_else(|| "Search".to_string(), |kept| kept.name.clone()),
             View::Album(id) => self.album_pages.get(id).map_or_else(
                 || self.lib.album_title(id).to_string(),
                 |page| page.title.clone(),
@@ -1559,7 +1569,8 @@ impl Widget for MusicApp {
                         }),
                 );
             }
-            View::Recommendations => {}
+            // A query view's rows are its track lists' and cards' own.
+            View::Recommendations | View::Search | View::Kept(_) => {}
         }
         if !list_items.is_empty() {
             page_content.push(
@@ -1787,6 +1798,8 @@ impl Widget for MusicApp {
             || !self.effect_replies.is_empty()
             || self.local_file_pick.is_some()
             || self.live_search_pending.is_some()
+            || self.search.needs_frame()
+            || self.search.highlight.is_some()
             || self.source_invocation.is_some()
             || !self.spotify_jobs.is_empty()
             || self.pending_catalogue_query.is_some()
@@ -2258,6 +2271,9 @@ impl MusicApp {
     /// Pointer and key input the header, the sidebar and the scroll region
     /// left for the page.
     fn on_input(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.search.drag.is_some() && self.drag_input(event, ctx) {
+            return;
+        }
         if self.drag.is_none() && self.bar_press.is_none() && self.route_page_widgets(event, ctx) {
             if let WindowEvent::CursorMoved { .. } = event {
                 self.on_cursor_moved(event, ctx.scale_factor, &mut ctx.state, ctx.handled);
@@ -2283,6 +2299,23 @@ impl MusicApp {
             } => {
                 self.on_left_release(&mut ctx.state, ctx.handled);
             }
+            // A mouse's own Back and Forward buttons walk the view stack.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Back,
+                ..
+            } => {
+                self.go_back();
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Forward,
+                ..
+            } => {
+                self.go_forward();
+                *ctx.handled = true;
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -2303,6 +2336,39 @@ impl MusicApp {
             }
             _ => {}
         }
+    }
+
+    /// Pointer and key input while songs are dragged onto a playlist: the
+    /// pointer carries them, a release drops them, Escape lets them go.
+    /// Returns whether the drag took the event.
+    fn drag_input(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let at = ctx.logical(position);
+                self.mouse = at;
+                if let Some(drag) = self.search.drag.as_mut() {
+                    drag.at = at;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.drop_tracks(&mut ctx.state),
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => self.search.drag = None,
+            _ => return false,
+        }
+        self.dirty = true;
+        *ctx.handled = true;
+        true
     }
 
     /// Hover labels for icon-only controls. Text-labelled rows and navigation
@@ -2561,6 +2627,28 @@ impl MusicApp {
         // `handle_event` (the shared ModalDialog owns typing / Esc / buttons),
         // so `on_key` never runs with it open.
 
+        if self.result_key(key, state) {
+            *handled = true;
+            return;
+        }
+        // Alt with Left or Right walks the view stack, as in a browser.
+        if modifiers.state().alt_key() {
+            match key {
+                Key::Named(NamedKey::ArrowLeft) => {
+                    self.go_back();
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    self.go_forward();
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
         match key {
             Key::Named(NamedKey::Escape) => {
                 // Dismiss an open overlay sidebar.
@@ -2781,7 +2869,7 @@ impl MusicApp {
                 .header(Rect::new(side.x0, r.y0, side.x1, r.y1), ctx.theme);
             HeaderRowFace::new(header_area, ctx.theme).with_history_if(history)
         };
-        if !self.nav_back.is_empty() {
+        if self.nav.can_go_back() {
             header = header.with_back();
         }
         let header_h = header.row.height();
@@ -2832,6 +2920,7 @@ impl MusicApp {
             self.frame_theme = Some(ctx.theme.clone());
         }
         self.open_staged_track_menu();
+        self.open_staged_facet();
 
         self.draw_header(ctx, &look, &header);
         self.draw_nowplaying(ctx, &look, bar);
@@ -2853,6 +2942,8 @@ impl MusicApp {
         // Queue hover preview floats above the now-playing bar's queue button.
         self.draw_queue_preview(ctx, &look);
         self.draw_toast(ctx);
+        self.paint_highlight(ctx);
+        self.paint_track_drag(ctx);
 
         if self.name_prompt.is_none() {
             self.name_dialog = None;
@@ -2928,6 +3019,28 @@ impl MusicApp {
                 .state(SelectionState::new(selected, hovered, false));
             chrome::paint_nav_row(ctx.scene, ctx.transform, ctx.text, &local, &face);
             y += row_h;
+        }
+
+        // The person's own views, kept from their searches, beside the
+        // designed ones.
+        let kept = self.kept_views().kept_views;
+        if !kept.is_empty() {
+            let section_h = chrome::nav_section_height(&local, false);
+            let section = Rect::new(side.x0, y, side.x1, y + section_h);
+            let face = NavSectionFace::new(section, "Your views");
+            chrome::paint_nav_section(ctx.scene, ctx.transform, ctx.text, &local, &face);
+            y += section_h;
+            for view in kept {
+                let rect = Rect::new(side.x0, y, side.x1, y + row_h);
+                let target = View::Kept(view.id.clone());
+                let selected = self.view == target;
+                let hovered = self.push_hit(rect, Action::Nav(target));
+                let face = NavRowFace::new(rect, &view.name)
+                    .icon(Icon::Bookmark)
+                    .state(SelectionState::new(selected, hovered, false));
+                chrome::paint_nav_row(ctx.scene, ctx.transform, ctx.text, &local, &face);
+                y += row_h;
+            }
         }
 
         // The playlists section, with its one "new playlist" action.
@@ -3058,6 +3171,11 @@ impl MusicApp {
             View::Browse => "Browse".into(),
             View::Queue => "Queue".into(),
             View::Lyrics => "Lyrics".into(),
+            View::Search => "Search".into(),
+            View::Kept(id) => self
+                .kept_views()
+                .get(id)
+                .map_or_else(|| "Search".to_string(), |kept| kept.name.clone()),
             View::Album(id) => self
                 .album_pages
                 .get(id)
@@ -3127,6 +3245,7 @@ impl MusicApp {
             View::Album(id) => self.draw_album_detail(ctx, look, body, y, &id),
             View::Artist(id) => self.draw_artist_detail(ctx, look, body, y, &id),
             View::Playlist(id) => self.draw_playlist_detail(ctx, look, body, y, &id),
+            View::Search | View::Kept(_) => self.draw_query_view(ctx, look, body, y),
         }
     }
 
@@ -3768,13 +3887,20 @@ impl MusicApp {
             .enumerate()
             .map(|(i, tk)| self.track_cell(tk, i, table, downloads))
             .collect();
-        // A membership opened from search stays lifted on its row.
-        let selected = table.playlist.and_then(|playlist| {
-            let (owner, track) = self.revealed_membership.as_ref()?;
-            (owner == playlist)
-                .then(|| table.rows.iter().position(|tk| &tk.id == track))
-                .flatten()
-        });
+        // A membership opened from search stays lifted on its row, as does
+        // the song the keyboard is on in a query view's results.
+        let selected = table
+            .playlist
+            .and_then(|playlist| {
+                let (owner, track) = self.revealed_membership.as_ref()?;
+                (owner == playlist)
+                    .then(|| table.rows.iter().position(|tk| &tk.id == track))
+                    .flatten()
+            })
+            .or_else(|| {
+                let song = self.result_cursor_song()?;
+                table.rows.iter().position(|tk| tk.id == song)
+            });
 
         let slot_index = self.track_tables_drawn;
         self.track_tables_drawn += 1;
@@ -3796,6 +3922,12 @@ impl MusicApp {
         slot.playlist = table.playlist.map(str::to_owned);
         slot.queue_offset = table.queue_offset.map(|_| offset);
         slot.table.update(shape, rows, selected, theme);
+        if slot_index == 0
+            && let Some(ids) = self.restore_selection.take()
+        {
+            // Back on a view: its songs are selected as they were left.
+            slot.table.select_ids(&ids);
+        }
         if slot_index == 0
             && let Some(row) = self.staged_row_pointer.take()
         {
@@ -4066,6 +4198,15 @@ impl MusicApp {
     /// The action a row of track table `index` asked for.
     fn row_action(&mut self, index: usize, ask: super::track_table::RowEvent) -> Option<Action> {
         use super::track_table::{Offline, RowEvent};
+        match ask {
+            // The table selected the row itself; nothing plays.
+            RowEvent::Select(_) => return None,
+            RowEvent::Drag(row) => {
+                self.begin_track_drag(index, row);
+                return None;
+            }
+            _ => {}
+        }
         let slot = self.track_tables.get(index)?;
         let offset = slot.queue_offset.unwrap_or(0);
         let row = |i: usize| slot.table.rows().get(i);
@@ -4087,6 +4228,7 @@ impl MusicApp {
                 track: track.id.clone(),
                 keep: matches!(track.offline, Offline::Streamed | Offline::Failed),
             }),
+            RowEvent::Select(_) | RowEvent::Drag(_) => None,
             RowEvent::More(i) => row(i).map(|track| {
                 let rect = slot.table.row_rect(i).unwrap_or(Rect::ZERO);
                 self.menu_anchor_row = Some(rect);

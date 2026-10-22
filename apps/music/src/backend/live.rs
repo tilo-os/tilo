@@ -392,6 +392,48 @@ async fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
     })
 }
 
+/// The catalogue's items as a bundle: the first item is the hero card, the
+/// rest bucketed by type in ranking order.
+fn bundle_of(items: Vec<MusicItem>) -> SearchBundle {
+    let mut bundle = SearchBundle::default();
+    // YouTube Music returns the top-result card first, so the first item is
+    // the hero. Bucket the rest by type, preserving ranking order.
+    for (i, item) in items.into_iter().take(SEARCH_RESULT_LIMIT).enumerate() {
+        match item {
+            MusicItem::Track(t) => {
+                let hit = map_track_item(t);
+                if i == 0 && bundle.top.is_none() {
+                    bundle.top = Some(SearchTop::Track(hit.clone()));
+                }
+                bundle.tracks.push(hit);
+            }
+            MusicItem::Album(a) => {
+                let hit = map_album_hit(a);
+                if i == 0 && bundle.top.is_none() {
+                    bundle.top = Some(SearchTop::Album(hit.clone()));
+                }
+                bundle.albums.push(hit);
+            }
+            MusicItem::Artist(a) => {
+                let hit = map_artist_hit(a);
+                if i == 0 && bundle.top.is_none() {
+                    bundle.top = Some(SearchTop::Artist(hit.clone()));
+                }
+                bundle.artists.push(hit);
+            }
+            MusicItem::Playlist(p) => {
+                let hit = map_playlist_hit(p);
+                if i == 0 && bundle.top.is_none() {
+                    bundle.top = Some(SearchTop::Playlist(hit.clone()));
+                }
+                bundle.playlists.push(hit);
+            }
+            MusicItem::User(_) => {}
+        }
+    }
+    bundle
+}
+
 impl MusicBackend for RustyPipeBackend {
     fn name(&self) -> &'static str {
         "youtube-music (live)"
@@ -413,53 +455,28 @@ impl MusicBackend for RustyPipeBackend {
             .collect())
     }
 
+    fn warm(&self) {
+        // The suggestion endpoint is the smallest request InnerTube answers:
+        // it opens the TLS connection and fetches the client's version
+        // before the first character is typed.
+        let q = self.rp.query();
+        if let Err(error) = self.block("warm", async { q.music_search_suggestion("a").await }) {
+            tracing::debug!(%error, "music: warming the catalogue connection failed");
+        }
+    }
+
+    fn search_quick(&self, query: &str) -> Result<SearchBundle, BackendError> {
+        let q = self.rp.query();
+        let res = self.block("music suggestions", async {
+            q.music_search_suggestion(query).await
+        })?;
+        Ok(bundle_of(res.items))
+    }
+
     fn search_all(&self, query: &str) -> Result<SearchBundle, BackendError> {
         let q = self.rp.query();
         let res = self.block("music search", async { q.music_search_main(query).await })?;
-
-        let mut bundle = SearchBundle::default();
-        // YouTube Music returns the top-result card first, so the first item is
-        // the hero. Bucket the rest by type, preserving ranking order.
-        for (i, item) in res
-            .items
-            .items
-            .into_iter()
-            .take(SEARCH_RESULT_LIMIT)
-            .enumerate()
-        {
-            match item {
-                MusicItem::Track(t) => {
-                    let hit = map_track_item(t);
-                    if i == 0 && bundle.top.is_none() {
-                        bundle.top = Some(SearchTop::Track(hit.clone()));
-                    }
-                    bundle.tracks.push(hit);
-                }
-                MusicItem::Album(a) => {
-                    let hit = map_album_hit(a);
-                    if i == 0 && bundle.top.is_none() {
-                        bundle.top = Some(SearchTop::Album(hit.clone()));
-                    }
-                    bundle.albums.push(hit);
-                }
-                MusicItem::Artist(a) => {
-                    let hit = map_artist_hit(a);
-                    if i == 0 && bundle.top.is_none() {
-                        bundle.top = Some(SearchTop::Artist(hit.clone()));
-                    }
-                    bundle.artists.push(hit);
-                }
-                MusicItem::Playlist(p) => {
-                    let hit = map_playlist_hit(p);
-                    if i == 0 && bundle.top.is_none() {
-                        bundle.top = Some(SearchTop::Playlist(hit.clone()));
-                    }
-                    bundle.playlists.push(hit);
-                }
-                MusicItem::User(_) => {}
-            }
-        }
-        Ok(bundle)
+        Ok(bundle_of(res.items.items))
     }
 
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {

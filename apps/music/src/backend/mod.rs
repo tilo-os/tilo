@@ -460,6 +460,27 @@ pub trait MusicBackend: Send + Sync {
         Ok(SearchBundle::default())
     }
 
+    /// The catalogue's quick answer for a query being typed: the few songs,
+    /// albums, artists and playlists its suggestions name, in a fraction of
+    /// the time [`Self::search_all`] takes. The search shows them first and
+    /// the full answer after. Offline and by default there is none.
+    ///
+    /// # Errors
+    ///
+    /// Live: a network failure or an unparseable response.
+    fn search_quick(&self, _query: &str) -> Result<SearchBundle, BackendError> {
+        Ok(SearchBundle::default())
+    }
+
+    /// Open the connection to the catalogue before the first query: the
+    /// person focused the search field. Blocks; runs off the UI thread.
+    fn warm(&self) {}
+
+    /// The catalogue's name, as its section of search results is headed.
+    fn catalogue_label(&self) -> &'static str {
+        "YouTube Music"
+    }
+
     /// Resolve a video id to a directly-playable audio stream. Offline errors;
     /// live returns a real googlevideo media URL.
     ///

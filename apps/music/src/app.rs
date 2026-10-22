@@ -96,6 +96,11 @@ pub enum View {
     Album(String),
     Artist(String),
     Playlist(String),
+    /// What the window bar's search field asks of the library and the
+    /// catalogue.
+    Search,
+    /// A query view the person kept, by its id.
+    Kept(String),
 }
 
 /// Whether this build can reach an online catalogue. The browser build has
@@ -131,8 +136,9 @@ fn home_failure_note(online: bool, error: String) -> Option<String> {
 }
 
 impl View {
-    /// A sidebar destination: reaching one starts a fresh trail, so it never
-    /// shows a back button that would walk through unrelated sections.
+    /// A sidebar destination, a view the person kept included: reaching one
+    /// starts a fresh trail, so it never shows a back button that would walk
+    /// through unrelated sections.
     fn is_section(&self) -> bool {
         matches!(
             self,
@@ -145,6 +151,7 @@ impl View {
                 | Self::Liked
                 | Self::Browse
                 | Self::Queue
+                | Self::Kept(_)
         )
     }
 }
@@ -266,6 +273,20 @@ enum Action {
     ToggleSidebar,
     /// Dismiss the overlay sidebar (scrim tap / Esc).
     CloseSidebar,
+    /// Ask the query view this: a chip picked or taken away.
+    SetQuery(ui::framework::views::QuerySpec),
+    /// Open the values of the query view's filter with this key.
+    OpenFacet(String),
+    /// Keep the query view shown beside the designed views.
+    KeepQuery,
+    /// Stop keeping the kept view with this id.
+    ForgetKept(String),
+    /// Take the person to where the control running `action` lives, and
+    /// highlight it there.
+    ShowControl {
+        home: String,
+        action: Box<Action>,
+    },
     /// A no-op hit used to swallow clicks inside a modal surface so they don't
     /// fall through to the scrim behind it.
     None,
@@ -330,7 +351,19 @@ pub struct MusicApp {
     persist_device_profile: bool,
     pb: Playback,
     view: View,
-    nav_back: Vec<View>,
+    /// The window's views: Back returns to the one before as it was left.
+    nav: ui::framework::views::ViewStack<View>,
+    /// The window bar's search and what it found.
+    search: render::SearchView,
+    /// The query views the person kept, a personal setting that follows them
+    /// to their other devices. `None` before the surface is attached (a
+    /// test drives the app alone), when they are kept in `kept_here`.
+    kept: Option<ui::framework::Setting<ui::framework::views::KeptViews>>,
+    kept_here: ui::framework::views::KeptViews,
+    /// Bumped whenever the library the document holds changes.
+    library_revision: u64,
+    /// The songs to select in the view just returned to.
+    restore_selection: Option<Vec<String>>,
     /// The query the live catalogue is answering. Search belongs to the
     /// platform: the app draws no field, it only runs the remote query the
     /// platform's search provider asks for.
@@ -538,7 +571,6 @@ pub struct MusicApp {
     /// The view (+ scroll offset) to return to when the queue view is toggled
     /// back off, so "Queue" restores exactly where the user was rather than
     /// resetting. `None` when the queue view wasn't opened via the toggle.
-    queue_return: Option<(View, f64)>,
     dirty: bool,
     toast: Notice,
 
@@ -603,6 +635,9 @@ pub struct MusicApp {
     staged_row_pointer: Option<usize>,
     /// Open the narrow transport's More menu once the bar is laid out.
     staged_player_menu: bool,
+    /// A capture opens this filter's values over its chip once the chips
+    /// are laid out.
+    staged_facet: Option<String>,
 
     // ---- real artwork + live content -------------------------------------
     /// Async remote-image cache: real album/artist/playlist covers fetched off
@@ -767,6 +802,7 @@ impl MusicApp {
     pub(crate) fn offline() -> Self {
         let mut app = Self::new_with_device_profile(false);
         app.allow_network = false;
+        app.search = render::SearchView::hermetic();
         app
     }
 
@@ -838,7 +874,15 @@ impl MusicApp {
             persist_device_profile,
             pb: device_profile.playback,
             view: View::Home,
-            nav_back: Vec::new(),
+            nav: ui::framework::views::ViewStack::new(View::Home),
+            #[cfg(test)]
+            search: render::SearchView::local_only(),
+            #[cfg(not(test))]
+            search: render::SearchView::live(),
+            kept: None,
+            kept_here: ui::framework::views::KeptViews::default(),
+            library_revision: 0,
+            restore_selection: None,
             search_query: query,
             pending_catalogue_query: None,
             catalogue_invocation: None,
@@ -936,7 +980,6 @@ impl MusicApp {
             volume_popover_rect: Rect::ZERO,
             volume_popover_slider: Rect::ZERO,
             queue_btn_rect: Rect::ZERO,
-            queue_return: None,
             dirty: true,
             toast: Notice::default(),
             context: ContextMenu::new(),
@@ -958,6 +1001,7 @@ impl MusicApp {
             staged_menu_track: None,
             staged_row_pointer: None,
             staged_player_menu: false,
+            staged_facet: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
             playlist_mosaics: std::cell::RefCell::default(),
@@ -1033,6 +1077,8 @@ impl MusicApp {
         }
         let next_library =
             <crate::model::Library as ui::tilo_resource::Resource>::read(state).unwrap_or_default();
+        self.stored_library.clone_from(&next_library);
+        self.library_revision = self.library_revision.wrapping_add(1);
         self.lib = next_library;
         self.inject_live_hits();
         self.library_heads = Some(heads);
@@ -1215,6 +1261,7 @@ impl MusicApp {
     /// An empty projection does not wipe a library that has not been published yet.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Library) {
         self.stored_library.clone_from(state);
+        self.library_revision = self.library_revision.wrapping_add(1);
         if state.tracks.is_empty()
             && state.albums.is_empty()
             && state.artists.is_empty()
@@ -2433,28 +2480,7 @@ impl MusicApp {
             Action::MoveQueueItem { from, to } => self.on_move_queue_item(from, to, state),
             Action::ToggleLike(id) => self.on_toggle_like(&id, state),
             Action::ToggleSaveAlbum(id) => self.on_toggle_save_album(&id, state),
-            Action::SetOffline { track, keep } => {
-                if keep {
-                    if let Err(error) = self.request_offline_download(&track) {
-                        self.offline_errors.insert(track, error);
-                        self.notify(ToastKind::Error, OFFLINE_FAILED);
-                    }
-                } else {
-                    if let Some(download) = self.downloads.remove(&track) {
-                        download.cancel();
-                    }
-                    self.offline_resolves.retain(|_, pending| pending != &track);
-                    self.offline_errors.remove(&track);
-                    if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
-                        self.notify(
-                            ToastKind::Error,
-                            format!("Couldn’t remove the download: {error}"),
-                        );
-                    }
-                    self.update_device_cache(&track, CacheState::Streamed);
-                    self.settle_offline_track(&track, Some("offline download cancelled".into()));
-                }
-            }
+            Action::SetOffline { track, keep } => self.on_set_offline(track, keep),
             Action::ToggleFollow(id) => self.on_toggle_follow(&id, state),
             Action::AddToPlaylist { playlist, track } => {
                 self.on_add_to_playlist(&playlist, &track, state);
@@ -2499,8 +2525,37 @@ impl MusicApp {
             Action::ToggleSidebar => self.toggle_sidebar(),
             Action::CloseSidebar => self.drawer.close(),
             Action::CloseNamePrompt => self.on_close_name_prompt(),
+            Action::SetQuery(query) => self.on_set_query(query),
+            Action::OpenFacet(key) => self.open_facet(&key),
+            Action::KeepQuery => self.on_keep_query(),
+            Action::ForgetKept(id) => self.on_forget_kept(&id),
+            Action::ShowControl { home, action } => self.on_show_control(&home, *action),
             Action::None => {}
         }
+    }
+
+    /// Keep `track` on this device, or let it go back to streaming.
+    fn on_set_offline(&mut self, track: String, keep: bool) {
+        if keep {
+            if let Err(error) = self.request_offline_download(&track) {
+                self.offline_errors.insert(track, error);
+                self.notify(ToastKind::Error, OFFLINE_FAILED);
+            }
+            return;
+        }
+        if let Some(download) = self.downloads.remove(&track) {
+            download.cancel();
+        }
+        self.offline_resolves.retain(|_, pending| pending != &track);
+        self.offline_errors.remove(&track);
+        if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
+            self.notify(
+                ToastKind::Error,
+                format!("Couldn’t remove the download: {error}"),
+            );
+        }
+        self.update_device_cache(&track, CacheState::Streamed);
+        self.settle_offline_track(&track, Some("offline download cancelled".into()));
     }
 
     fn track_title(&self, track_id: &str) -> String {
@@ -2597,14 +2652,12 @@ impl MusicApp {
     }
 
     fn on_nav(&mut self, v: View) {
-        if v != self.view {
-            if v.is_section() {
-                self.nav_back.clear();
-            } else {
-                self.nav_back.push(self.view.clone());
+        if v.is_section() {
+            if v != self.view {
+                self.open_section(v);
             }
-            self.view = v;
-            self.set_scroll_y(0.0);
+        } else {
+            self.open_view(v);
         }
         // Picking a destination dismisses the overlay sidebar so the
         // chosen screen takes the full width (Adwaita flap behaviour).
@@ -2614,10 +2667,7 @@ impl MusicApp {
     }
 
     fn on_back(&mut self) {
-        if let Some(v) = self.nav_back.pop() {
-            self.view = v;
-            self.set_scroll_y(0.0);
-        }
+        self.go_back();
     }
 
     fn on_browse_genre(&mut self, genre: &str) {
@@ -2755,6 +2805,9 @@ impl MusicApp {
     }
 
     fn on_toggle_like(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
+        // A catalogue song (a search result) joins the library with its
+        // album and artist first: it is liked as the same song everywhere.
+        self.import_live_track(id, state);
         let liked = !self.lib.is_liked(id);
         self.perform_action(state, crate::model::Library::like(id, liked));
         self.reload_library(state);
@@ -2874,9 +2927,7 @@ impl MusicApp {
         self.name_prompt = None;
         self.name_input.clear();
         self.name_dialog = None;
-        self.nav_back.push(self.view.clone());
-        self.view = View::Playlist(id);
-        self.set_scroll_y(0.0);
+        self.open_view(View::Playlist(id));
         self.notify(
             ToastKind::Success,
             if added_track.is_some() {
@@ -2928,31 +2979,23 @@ impl MusicApp {
                 .with(ui::tilo_resource::Id::from_raw(id.as_str())),
         );
         self.reload_library(state);
-        // Leave the now-deleted detail page.
-        if self.view == View::Playlist(id) {
+        // Leave the now-deleted detail page, and forget it in the stack.
+        let gone = View::Playlist(id);
+        self.nav.forget(|view| *view == gone);
+        if self.view == gone {
             self.view = View::Playlists;
+            self.nav.replace(View::Playlists);
             self.set_scroll_y(0.0);
         }
     }
 
     fn on_toggle_queue(&mut self) {
         if self.view == View::Queue {
-            // Toggle off: restore exactly where the user was (view +
-            // scroll), not a reset. Fall back to nav-back if the queue
-            // was reached some other way.
-            if let Some((v, s)) = self.queue_return.take() {
-                self.view = v;
-                self.set_scroll_y(s);
-            } else if let Some(v) = self.nav_back.pop() {
-                self.view = v;
-                self.set_scroll_y(0.0);
-            }
+            // Toggle off: back to exactly where the user was (view, scroll
+            // and selection), not a reset.
+            self.go_back();
         } else {
-            // Toggle on: remember the current view + scroll so the next
-            // toggle returns here.
-            self.queue_return = Some((self.view.clone(), self.scroll_y()));
-            self.view = View::Queue;
-            self.set_scroll_y(0.0);
+            self.open_view(View::Queue);
         }
         if self.drawer.is_overlay() {
             self.drawer.close();
@@ -3539,6 +3582,8 @@ impl MusicApp {
                     self.finish_spotify_operation(request_id, result);
                 }
                 StreamUpdate::SourceSelected { result } => {
+                    // The search asks the catalogue the person chose.
+                    self.search.source_changed();
                     if let Some(invocation) = self.source_invocation.take() {
                         let update = match result {
                             Ok((name, live)) => {
@@ -4337,6 +4382,34 @@ impl MusicApp {
             "membership-open" => self.snap_membership_open(),
             "spotify-home" | "spotify-devices" | "spotify-error" | "spotify-queue"
             | "spotify-create" => self.snap_spotify(scenario),
+            "library" => {
+                // The library as a person left it: two songs selected.
+                self.view = View::Songs;
+                self.restore_selection = Some(vec!["tk_g2".into(), "tk_g3".into()]);
+            }
+            "search" => self.stage_query("light", &[], None),
+            "search-chips" => self.stage_query(
+                "light",
+                &[ui::framework::views::Chip::value(
+                    crate::views::ARTIST,
+                    "Aurora Skies",
+                )],
+                None,
+            ),
+            "search-remote-loading" => self.stage_query_waiting("light"),
+            "search-actions" => self.stage_query("shuffle", &[], None),
+            "search-facet" => {
+                self.stage_query(
+                    "light",
+                    &[ui::framework::views::Chip::value(
+                        crate::views::ARTIST,
+                        "Aurora Skies",
+                    )],
+                    None,
+                );
+                self.staged_facet = Some(crate::views::ARTIST.to_owned());
+            }
+            "kept-view" => self.stage_kept_view("light"),
             _ => {}
         }
     }

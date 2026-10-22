@@ -225,7 +225,6 @@ impl PagePart {
     }
 
     /// Where the widget whose test id is `id` stands.
-    #[cfg(test)]
     pub(super) fn find(&self, id: &str) -> Option<Rect> {
         ui::widget::find_test_id(self.host.widget(), id).map(ui::widget::Widget::get_rect)
     }

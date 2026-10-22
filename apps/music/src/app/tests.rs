@@ -5302,13 +5302,13 @@ fn a_sidebar_section_starts_a_fresh_trail() {
         Action::Nav(View::Album("al_glasslight".into())),
         &mut ui::widget::Edits::lend(&mut doc),
     );
-    assert!(!app.nav_back.is_empty(), "a detail page can go back");
+    assert!(app.nav.can_go_back(), "a detail page can go back");
     app.dispatch(
         Action::Nav(View::Browse),
         &mut ui::widget::Edits::lend(&mut doc),
     );
     assert!(
-        app.nav_back.is_empty(),
+        !app.nav.can_go_back(),
         "Browse is a top-level section, so it shows no back button"
     );
 }
@@ -5333,3 +5333,6 @@ fn without_an_online_catalogue_home_says_why_and_offers_no_search() {
         Some("timed out")
     );
 }
+
+#[path = "query_view_tests.rs"]
+mod query_view_tests;
