@@ -258,9 +258,6 @@ fn settings_strip_labels_are_not_cut() {
     assert!(lang.width() > us.width());
 }
 
-// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
-// system window bar's app slots through the one tilo-app API; no app draws a
-// second toolbar row."
 /// In the running app the sheet declares its slots, so its History is the
 /// window bar's too: no History band stands above the sheet.
 #[test]

@@ -30,8 +30,6 @@ fn found(app: &mut TestApp<EbookShell>, kind: &str) -> Vec<String> {
         .collect()
 }
 
-// USER REQUIREMENT (2026-10-21): searching finds the words of the books
-// themselves, and a match in a book's text opens the book at that passage.
 #[test]
 fn a_passage_found_opens_its_book_at_the_passage() {
     let mut app = TestApp::<EbookShell>::capture(Some("search")).unwrap();
@@ -91,8 +89,6 @@ fn a_passage_found_opens_its_book_at_the_passage() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): searching from inside a book searches that
-// book; clearing its chip searches the whole library.
 #[test]
 fn a_search_from_inside_a_book_is_the_books_until_its_chip_is_cleared() {
     let mut app = TestApp::<EbookShell>::capture(Some("search-in-book")).unwrap();
@@ -140,8 +136,6 @@ fn a_search_from_inside_a_book_is_the_books_until_its_chip_is_cleared() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): Escape (closing the search) returns to the
-// view before it exactly: the page that was open, or the shelf as it was.
 #[test]
 fn closing_the_search_returns_to_the_page_it_began_on() {
     let mut app = TestApp::<EbookShell>::capture(Some("search-in-book")).unwrap();
@@ -164,9 +158,6 @@ fn closing_the_search_returns_to_the_page_it_began_on() {
     assert_eq!(books.view, View::Library);
 }
 
-// USER REQUIREMENT (2026-10-21): the book store is searched beside the
-// library, in its own section below it, and a book found there can be got
-// from its row.
 #[test]
 fn the_store_answers_below_the_library_and_its_books_can_be_got() {
     let mut app = TestApp::<EbookShell>::capture(Some("search")).unwrap();
@@ -208,9 +199,6 @@ fn place_of(book: &crate::model::Book, words: &str) -> (usize, usize) {
         .unwrap_or_else(|| panic!("the book holds {words:?}"))
 }
 
-// USER REQUIREMENT (2026-10-22): searching your own library finds the words
-// of a book whose text is not on this device yet, from the library's index,
-// and opening the hit lands on that passage.
 #[test]
 fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_there() {
     use crate::resource::{StoredContent, index_book, shelve};
@@ -305,9 +293,6 @@ fn a_book_with_no_local_content_is_found_by_a_phrase_from_its_middle_and_opens_t
     }
 }
 
-// USER REQUIREMENT (2026-10-22): a book whose text is not on this device is
-// searched from the library's index; its rows name the chapter and the book,
-// beside the passages of the books here.
 #[test]
 fn the_capture_of_a_book_elsewhere_finds_it_from_its_index_beside_the_shelf() {
     let mut app = TestApp::<EbookShell>::capture(Some("search-elsewhere")).unwrap();
@@ -337,9 +322,6 @@ fn the_capture_of_a_book_elsewhere_finds_it_from_its_index_beside_the_shelf() {
     assert_eq!(elsewhere[0].value("excerpt"), None);
 }
 
-// USER REQUIREMENT (2026-10-22): a book with no index is indexed by the next
-// device that has its text, including when its text arrives on a device
-// later, as when it is opened there; the index joins the book's row.
 #[test]
 fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
     use crate::resource::shelve;
@@ -388,10 +370,6 @@ fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): on a fresh device the library's index and
-// a book's text arrive from the devices that have them: a passage is found
-// once the index is here, and opening it waits for the text rather than
-// failing, then lands on the passage.
 #[test]
 fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
     use ui::collaboration::record_content::{ContentLane, RecordContent};

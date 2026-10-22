@@ -494,7 +494,6 @@ fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
     assert!(messages(&mut app).is_empty());
 }
 
-// USER REQUIREMENT (2026-10-19): "Chat runs *in a workspace*, not the other way around."
 #[test]
 fn a_new_room_record_opens_with_chat_and_voice_and_nothing_else() {
     let app = TestApp::<ChatShell>::new().unwrap();

@@ -2167,11 +2167,6 @@ mod tests {
         pane
     }
 
-    // USER REQUIREMENT (2026-10-21): "Same structure as Displays: a room
-    // canvas where speakers are dragged directly at native refresh (touch
-    // included), plus a speaker picker synced with the canvas selection.
-    // Only the selected speaker's settings appear below. No per-speaker X/Y
-    // slider rows."
     #[test]
     fn the_layout_shows_one_canvas_one_picker_and_only_the_selected_speaker() {
         fn named(widget: &dyn Widget, name: &str) -> usize {

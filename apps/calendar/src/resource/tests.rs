@@ -386,9 +386,6 @@ fn choose_view_in_bar(app: &mut TestApp<CalendarShell>, view: crate::model::View
     app.settle();
 }
 
-// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
-// system window bar's app slots, through the one tilo-app API Files, Notes
-// and Browser already use, and no app draws a second toolbar row."
 /// The views are the window bar's switcher: choosing one there navigates
 /// the live window at once and is no edit of the shared calendar.
 #[test]

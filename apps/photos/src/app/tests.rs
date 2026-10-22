@@ -466,9 +466,6 @@ fn people_review_commits_only_explicit_canonical_actions() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
-// system window bar's app slots, through the one tilo-app API Files, Notes
-// and Browser already use, and no app draws a second toolbar row."
 #[test]
 fn the_commands_are_the_window_bars_and_no_header_row_is_drawn() {
     for (width, library) in [(1_280.0, true), (1_280.0, false), (560.0, false)] {
@@ -2945,12 +2942,6 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
         row("photos:library-favorites").count,
         Some(NavCount::Neutral(1))
     );
-    // USER REQUIREMENT (2026-10-22): "the 'Albums' place is the parent row
-    // (selectable, it opens the albums grid), and the albums nest under it
-    // as children, collapsible like any NavList group. No separate
-    // heading." / "Give each album its cover as a small rounded thumbnail
-    // in the icon slot (the generated initials cover when empty), so the
-    // text aligns."
     assert_eq!(sections.len(), 1, "one list of places, no albums heading");
     let albums = row("photos:library:albums");
     assert_eq!(albums.label, tr("photos-albums"));

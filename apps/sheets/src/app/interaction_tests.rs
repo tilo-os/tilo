@@ -58,9 +58,6 @@ fn bar_item(app: &SheetsApp, menu: &str, name: &str) -> String {
         .map_or_else(|| panic!("{menu} offers {name}"), |item| item.id)
 }
 
-// USER REQUIREMENT (2026-10-22): "Every app that has a document or item open
-// declares it as the bar's location, so the bar always names what you're
-// looking at." A workbook has no name of its own: the sheet in view.
 #[test]
 fn the_window_bar_names_the_sheet_in_view() {
     let (app, _doc, _tr, _theme) = painted();
@@ -248,9 +245,6 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
-// system window bar's app slots, through the one tilo-app API Files, Notes
-// and Browser already use, and no app draws a second toolbar row."
 /// The commands are the window bar's slots: File and Format as menus, Bold
 /// in the row, the rest in its menu; the formula bar leads the window.
 #[test]
@@ -270,8 +264,6 @@ fn the_commands_are_the_window_bars_and_the_formula_bar_leads() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "comments get a marker on their cell, open from
-// it, and show the author's name (never a raw id)".
 #[test]
 fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
     let (mut app, mut doc, mut tr, theme) = painted();

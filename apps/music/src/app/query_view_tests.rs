@@ -42,9 +42,6 @@ fn selected_songs(app: &MusicApp) -> Vec<String> {
         .unwrap_or_default()
 }
 
-// USER REQUIREMENT (2026-10-21): a search result is the same song as in the
-// library: liking it in the results shows it liked in the library at once,
-// without a reload.
 #[test]
 fn liking_a_song_in_search_shows_it_liked_in_the_library() {
     let (mut app, mut doc) = searching_app();
@@ -84,9 +81,6 @@ fn liking_a_song_in_search_shows_it_liked_in_the_library() {
     assert!(row.liked, "the library shows the same song liked");
 }
 
-// USER REQUIREMENT (2026-10-21): a remote result is fully interactive before
-// its content is local, and liking it changes it where it stands: it joins
-// the library and does not jump out from under the pointer.
 #[test]
 fn liking_a_catalogue_song_in_search_brings_it_into_the_library_in_place() {
     let (mut app, mut doc) = searching_app();
@@ -117,9 +111,6 @@ fn liking_a_catalogue_song_in_search_brings_it_into_the_library_in_place() {
     assert!(app.lib.liked_ids().contains(&id), "Liked lists it");
 }
 
-// USER REQUIREMENT (2026-10-21): Escape returns from a search to the view
-// before exactly: the library at the same scroll position with the same
-// songs selected.
 #[test]
 fn escape_returns_to_the_library_scrolled_and_selected_as_it_was() {
     let (mut app, mut doc) = searching_app();
@@ -148,8 +139,6 @@ fn escape_returns_to_the_library_scrolled_and_selected_as_it_was() {
     assert_eq!(selected_songs(&app), selected, "the same songs selected");
 }
 
-// USER REQUIREMENT (2026-10-21): several selected results dragged onto a
-// playlist all join it.
 #[test]
 fn dragging_selected_results_onto_a_playlist_adds_them_all() {
     let (mut app, mut doc) = searching_app();
@@ -208,10 +197,6 @@ fn dragging_selected_results_onto_a_playlist_adds_them_all() {
     assert!(app.search.drag.is_none());
 }
 
-// USER REQUIREMENT (2026-10-21): the chips under the field are one per
-// filterable field: Artist, Year, Liked and In library; Artist and Year list
-// their values with counts to choose from, and typed tokens are the same
-// chips.
 #[test]
 fn the_chips_are_artist_year_liked_and_in_library() {
     let (mut app, mut doc) = searching_app();
@@ -248,9 +233,6 @@ fn the_chips_are_artist_year_liked_and_in_library() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): the app's actions appear in a small trailing
-// "In this app" group as the real controls: the shuffle switch there is the
-// player's shuffle.
 #[test]
 fn in_this_app_shows_the_players_own_controls() {
     let (mut app, mut doc) = searching_app();
@@ -279,8 +261,6 @@ fn in_this_app_shows_the_players_own_controls() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): any query view can be kept; it then sits
-// beside the designed views as the person's own and survives a restart.
 #[test]
 fn a_kept_search_sits_beside_the_designed_views_and_survives_a_restart() {
     use ui::framework::testing::TestApp;

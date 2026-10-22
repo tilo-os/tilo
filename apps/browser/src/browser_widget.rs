@@ -8082,14 +8082,6 @@ mod tests {
         scene
     }
 
-    // USER REQUIREMENT (2026-10-21): "When the pointer hovers over the Browser
-    // window (only then), the web content flickers violently between its
-    // normal look and a state that looks like a very high zoom factor." and
-    // "The Browser's text and content look less crisp than Alacritty or the
-    // native Tilo apps next to it, as if rendered at another resolution and
-    // scaled." The page renders at the window's device scale, one frame pixel
-    // per physical pixel, at integer and fractional scales, and hovering the
-    // page and the window drawing new frames never render it at another.
     #[test]
     fn the_page_renders_at_the_window_scale_and_hovering_never_rescales_it() {
         for scale in [2.0_f64, 1.5, 1.75, 1.25] {

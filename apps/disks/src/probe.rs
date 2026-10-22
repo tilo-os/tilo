@@ -351,7 +351,6 @@ mod tests {
         topology
     }
 
-    // USER REQUIREMENT (2026-10-22): "the Disks app on their laptop can't even read disks"
     /// Disks lists the laptop's disks and partitions: the Yoga's `NVMe` drive
     /// with its eight partitions, the two LUKS2 partitions showing the ext4
     /// filesystems they hold (root at /sysroot, home at /var/home), and its

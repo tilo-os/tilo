@@ -207,9 +207,6 @@ fn image_inspector_controls_never_overlap_at_large_text() {
     assert_panel_controls_fit(wp, &theme);
 }
 
-// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
-// system window bar's app slots through the one tilo-app API; no app draws a
-// second toolbar row."
 #[test]
 fn the_commands_are_the_window_bars_and_the_editor_draws_no_toolbar_row() {
     for scale in [1.0, 2.0] {

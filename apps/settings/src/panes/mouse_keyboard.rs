@@ -2768,9 +2768,6 @@ mod tests {
         assert_eq!(tablet_output_choices()[0].0, WHOLE_DESKTOP);
     }
 
-    // USER REQUIREMENT (2026-10-21): "Tablets: one card per tablet; its pad
-    // buttons are part of that tablet's settings, never a second card for
-    // the same device."
     #[test]
     fn each_tablet_is_one_card_holding_its_own_pad_buttons() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new();

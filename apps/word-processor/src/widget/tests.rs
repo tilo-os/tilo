@@ -2341,9 +2341,6 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "the font control is a real font picker, not a
-// button that silently cycles; font, bold and italic are set in one place with
-// one scope, the selection; list buttons exist".
 #[test]
 fn the_window_bar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphasis() {
     use ui::richtext::FontFamily;
@@ -2445,9 +2442,6 @@ fn the_window_bar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphas
     assert_eq!(kind(wp).0, "paragraph", "pressed again, the list ends");
 }
 
-// USER REQUIREMENT (2026-10-22): "Every app that has a document or item open
-// declares it as the bar's location, so the bar always names what you're
-// looking at." Writer: the document's title.
 #[test]
 fn the_window_bar_names_the_document() {
     let mut state = crate::initialized_state();

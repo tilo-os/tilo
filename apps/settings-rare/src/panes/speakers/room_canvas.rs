@@ -1190,9 +1190,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "a room canvas where speakers are
-    // dragged directly at native refresh (touch included), plus a speaker
-    // picker synced with the canvas selection."
     #[test]
     fn pressing_a_speaker_selects_it_in_the_selection_the_picker_shares() {
         let (mut canvas, selection) = canvas();
@@ -1211,9 +1208,6 @@ mod tests {
         assert!(canvas.accessibility().unwrap().children[3].state.selected);
     }
 
-    // USER REQUIREMENT (2026-10-21): "speakers are dragged directly at
-    // native refresh": every move repaints and lays nothing out, and the
-    // place is stored once, on release.
     #[test]
     fn a_drag_repaints_every_move_and_stores_only_on_release() {
         let (mut canvas, _) = canvas();
@@ -1256,8 +1250,6 @@ mod tests {
         assert_ne!(canvas.stored()[1], points()[1]);
     }
 
-    // USER REQUIREMENT (2026-10-21): "touch included": a finger drags a
-    // speaker exactly like the pointer.
     #[test]
     fn a_finger_drags_a_speaker_like_the_pointer() {
         fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
@@ -1301,9 +1293,6 @@ mod tests {
         assert_ne!(by_finger.0, points()[1], "and moved it");
     }
 
-    // USER REQUIREMENT (2026-10-21): a let-go speaker settles into its
-    // snapped place with the standard motion, and the canvas costs nothing
-    // once it rests.
     #[test]
     fn a_dropped_speaker_springs_into_place_then_asks_for_nothing() {
         let (mut canvas, _) = canvas();

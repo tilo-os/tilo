@@ -1179,8 +1179,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "nearby printers that are already added
-    // don't appear under "Add"; adding the same printer twice is impossible."
     #[test]
     fn a_printer_already_added_is_neither_offered_nor_added_again() {
         let service = RecordingService::new();
@@ -1203,8 +1201,6 @@ mod tests {
         assert!(service.calls.lock().unwrap().is_empty());
     }
 
-    // USER REQUIREMENT (2026-10-21): "nearby printers that are already added
-    // don't appear under "Add"."
     #[test]
     fn the_nearby_list_leaves_out_the_printers_already_added() {
         use crate::resource::SettingsShell;

@@ -4132,8 +4132,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "\"Add account\" opens its form where
-    // the person is (a sheet or inline at the button), never off-screen."
     #[test]
     fn adding_an_account_opens_its_form_where_add_account_was() {
         let (_scratch, root) = scratch_root();

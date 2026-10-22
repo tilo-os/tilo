@@ -315,7 +315,6 @@ fn measure_sustained_scroll() {
 /// One frame's budget at 60 Hz, in milliseconds.
 const FRAME_BUDGET_MS: f64 = 16.667;
 
-// USER REQUIREMENT (2026-10-22): "i need this to be extremely smooth even on old, low performance hardware"
 #[serial_test::serial(pdfium)]
 #[test]
 fn sustained_scroll_never_waits_on_rendering() {
@@ -424,7 +423,6 @@ fn measure_scroll_repaint() {
 /// the host copies the rest — and the copied frames are pixel-identical to
 /// a full repaint, so nothing floating over the pages (the page bubble and
 /// its shadow, the scroll bar) is smeared along with them.
-// USER REQUIREMENT (2026-10-22): "i need this to be extremely smooth even on old, low performance hardware"
 #[test]
 #[serial_test::serial(pdfium)]
 fn scrolling_repaints_only_the_exposed_strip_and_matches_a_full_repaint() {
@@ -931,7 +929,6 @@ fn paper_showing(
 /// and the switch to tiles and back, by pinch, Ctrl+wheel and the keyboard,
 /// no frame shows a page (or part of one) as bare paper, and no frame's UI
 /// work exceeds the frame budget.
-// USER REQUIREMENT (2026-10-22): "zooming is not smooth, it sometimes shows a white flickering … unacceptable"
 #[test]
 #[serial_test::serial(pdfium)]
 fn zooming_across_every_breakpoint_never_shows_a_blank_page() {

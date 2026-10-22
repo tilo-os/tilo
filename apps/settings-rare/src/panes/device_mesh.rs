@@ -2672,10 +2672,6 @@ mod tests {
         pane
     }
 
-    // USER REQUIREMENT (2026-10-21): "each device appears once, in one list.
-    // Selecting a device shows its settings in one place. \"Decommission\" is
-    // a clear destructive action with confirmation, not a disabled dropdown.
-    // Renaming is inline edit-and-commit, with no separate Apply row."
     #[test]
     fn each_device_is_one_row_whose_settings_open_under_it() {
         let dir = tempfile::tempdir().unwrap();

@@ -1235,8 +1235,6 @@ fn sidebar_width(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) -
         .unwrap()
 }
 
-// USER REQUIREMENT (2026-10-21): the sidebar collapse button collapses and
-// expands the sidebar.
 #[test]
 fn the_collapse_button_collapses_and_expands_the_sidebar() {
     // Every motion reads as arrived: a frame that comes after the slide's
@@ -1262,8 +1260,6 @@ fn the_collapse_button_collapses_and_expands_the_sidebar() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): the sidebar's keyboard shortcut collapses
-// and expands the sidebar too.
 #[test]
 fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
     let _arrived = ui::motion::testing::settled();

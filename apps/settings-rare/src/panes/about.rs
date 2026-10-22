@@ -349,9 +349,6 @@ mod tests {
         assert_eq!(intent.package_id(), None);
     }
 
-    // USER REQUIREMENT (2026-10-21): "About: identity and connection status
-    // agree with Users (one source of truth). Show the processor from the
-    // real hardware info, or omit the row."
     #[test]
     fn about_names_the_real_processor_or_no_processor_and_no_identity() {
         let dir = tempfile::tempdir().unwrap();
