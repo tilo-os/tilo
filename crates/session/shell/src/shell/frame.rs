@@ -10553,10 +10553,17 @@ mod tests {
     /// The desktop rasterised on the CPU at `size`, as the next frame shows it.
     fn rendered_frame(frame: &mut FrameBuilder, (width, height): (u32, u32)) -> Vec<u8> {
         let scene = frame.paint();
-        let mut pixels = vec![0u8; (width * height * 4) as usize];
-        let mut target =
-            tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
-                .expect("a raster target");
+        let stride = usize::try_from(width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .expect("a row's bytes fit");
+        let len = usize::try_from(height)
+            .ok()
+            .and_then(|height| height.checked_mul(stride))
+            .expect("a frame's bytes fit");
+        let mut pixels = vec![0u8; len];
+        let mut target = tilo_cpu_raster::Target::new(&mut pixels, width, height, stride)
+            .expect("a raster target");
         tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
             scene.encoding(),
             &mut target,
@@ -10573,7 +10580,9 @@ mod tests {
             .zip(after.chunks_exact(4))
             .filter(|(a, b)| a != b)
             .count();
-        changed as f64 / (before.len() / 4) as f64
+        let pixels = before.chunks_exact(4).len();
+        let count = |n: usize| f64::from(u32::try_from(n).expect("a test frame's pixels fit u32"));
+        count(changed) / count(pixels)
     }
 
     /// A desktop following an isolated settings file, and a way to change

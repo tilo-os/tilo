@@ -427,7 +427,7 @@ impl SectionDoor {
                     .edit(change == ChangeKind::Content, |doc| {
                         let writer =
                             ui_core::history_source::authors::device_actor(me, doc.get_actor());
-                        let applied = tilo_actions::apply_local_with_context(
+                        tilo_actions::apply_local_with_context(
                             doc,
                             action.as_ref(),
                             encoded.clone(),
@@ -436,8 +436,7 @@ impl SectionDoor {
                         )
                         .map(|_| ())
                         .map_err(|error| error.to_string())
-                        .and_then(|()| self.kind.store(doc, &id, &invoker.actor));
-                        applied
+                        .and_then(|()| self.kind.store(doc, &id, &invoker.actor))
                     })
                     .map_err(ActionError::Refused)?;
                 seen.set(Some(self.kind.revision()));
