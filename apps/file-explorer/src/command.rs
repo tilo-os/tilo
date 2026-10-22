@@ -113,7 +113,11 @@ pub enum FileCommand {
     /// Extract the archive currently being browsed. Unlike `ExtractHere`, this
     /// does not depend on a synthetic in-archive row being selected.
     ExtractCurrentArchive,
-    CompressSelection,
+    /// Extract the selected archives, or the one being browsed, into a
+    /// folder the person picks.
+    ExtractTo,
+    /// Pack the selection into a new archive of this kind beside it.
+    CompressSelection(crate::archive::Packing),
     /// Ask the host for the current certified-device picker. The eventual
     /// target remains an exact, short-lived shell-issued capability.
     OpenNearbySend,

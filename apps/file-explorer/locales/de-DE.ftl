@@ -506,21 +506,20 @@ files-new-from-template = Neu: { $name }
 files-drag-items = { $count } Elemente
 
 ## Archive
-files-archive-extract = Archiv entpacken…
+files-archive-extract = Entpacken
 files-archive-extract-here = Hier entpacken
-files-archive-compress = Als ZIP komprimieren
 files-archive-select-compress = Wähle Dateien oder Ordner zum Komprimieren aus
 files-archive-read-only = Archive können erst nach dem Entpacken geändert werden
-files-archive-select = Wähle zum Entpacken ein ZIP-, TAR- oder TAR.GZ-Archiv aus
-files-archive-extracted =
-    { $count ->
-        [one] 1 Datei entpackt
-       *[other] { $count } Dateien entpackt
-}
-files-archive-extracted-partial = { $count } Dateien entpackt; { $failures }
-files-archive-extract-failed = Archiv konnte nicht entpackt werden: { $error }
-files-archive-created = { $name } erstellt
-files-archive-create-failed = Archiv konnte nicht erstellt werden: { $error }
+files-archive-select = Wähle ein Archiv zum Entpacken aus
+files-archive-extract-to = Entpacken nach…
+files-archive-extract-to-title = Entpacken nach
+files-archive-extract-to-accept = Hierhin entpacken
+files-archive-extract-to-closed = Die Ordnerauswahl wurde ohne Antwort geschlossen
+files-archive-extract-failed-title = Entpacken fehlgeschlagen
+files-archive-extract-failed-named = „{ $name }“ konnte nicht entpackt werden
+files-archive-compress-zip = Als ZIP komprimieren
+files-archive-compress-tar-zst = Als TAR.ZST komprimieren
+files-archive-create-failed-title = Komprimieren fehlgeschlagen
 
 ## Validierung von Dateivorgängen
 files-folder-name-empty = Ordnername darf nicht leer sein
@@ -688,6 +687,11 @@ files-moving = { $count } { $count ->
     [one] Element wird
    *[other] Elemente werden
 } nach „{ $folder }“ verschoben
+files-extracting = „{ $folder }“ wird entpackt
+files-compressing = { $count } { $count ->
+    [one] Element wird
+   *[other] Elemente werden
+} in „{ $folder }“ komprimiert
 files-transfer-progress = { $done } von { $total }
 files-transfer-stopped = Angehalten
 files-clash-title-one = „{ $name }“ gibt es in „{ $folder }“ schon

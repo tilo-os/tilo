@@ -22,6 +22,8 @@ use crate::resource::FileExplorer;
 const ALL_SCENARIOS: &[&str] = &[
     "archive",
     "archive-menu",
+    "archive-file-menu",
+    "extract-progress",
     "context-menu",
     "dropmove",
     "drives",
@@ -59,6 +61,8 @@ const ALL_SCENARIOS: &[&str] = &[
 const PORTABLE_SCENARIOS: &[&str] = &[
     "archive",
     "archive-menu",
+    "archive-file-menu",
+    "extract-progress",
     "context-menu",
     "dropmove",
     "drives",
@@ -141,6 +145,11 @@ fn write_scene(root: &Path, scenario: Option<&str>) -> std::io::Result<Scene> {
         Some("thumbnails-fs") => (write_host_previews(&workspace)?, vec![workspace]),
         Some("thumbnails") => (write_previews(&root.join("Previews"))?, Vec::new()),
         Some("archive" | "archive-menu") => (write_archive(&home)?, Vec::new()),
+        // The archive among the Downloads it came with.
+        Some("archive-file-menu" | "extract-progress") => {
+            write_archive(&home)?;
+            (home.join("Downloads"), Vec::new())
+        }
         _ => (home.clone(), Vec::new()),
     };
     Ok(Scene {

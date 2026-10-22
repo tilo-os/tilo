@@ -52,6 +52,10 @@ mod selected_open;
 mod window_bar;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
+mod archives;
+#[cfg(test)]
+use archives::archive_member_copy;
+use archives::{ArchiveMembers, archive_member_cached, archive_rows};
 mod clash;
 mod notice;
 mod preview;
@@ -73,35 +77,6 @@ const NOTICE_ACTION_TARGET: &str = "files-notice-action";
 const NOTICE_DISMISS_TARGET: &str = "files-notice-dismiss";
 /// The most lines a detail sheet lists.
 const COLLAB_PANEL_MAX_LINES: usize = 20;
-/// Space kept clear at the bottom of the file viewport for the transient
-/// item/status pill. The pill includes its hover shadow, so this is larger
-/// than its measured text capsule: no file label or target may sit beneath it.
-/// A read-only copy of the file `member` of `archive`, made once per
-/// archive version in Files' cache, so opening it again reuses it.
-fn archive_member_copy(archive: &Path, member: &Path) -> std::io::Result<PathBuf> {
-    let modified = std::fs::metadata(archive)?
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |since| since.as_secs());
-    let digest = Sha256::digest(format!("{}\0{modified}", archive.display()).as_bytes());
-    let folder = config::config_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("archive-members")
-        .join(hex_prefix(&digest, 12))
-        .join(member.parent().unwrap_or_else(|| Path::new("")));
-    let name = member
-        .file_name()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"))?;
-    let copy = folder.join(name);
-    if copy.is_file() {
-        return Ok(copy);
-    }
-    std::fs::create_dir_all(&folder)?;
-    crate::archive::extract_member(archive, member, &copy)?;
-    Ok(copy)
-}
-
 /// A paste's policy for names the folder already has, as callers name it.
 fn paste_conflict(
     name: Option<&str>,
@@ -242,6 +217,10 @@ enum OpFollowUp {
     /// Say how many of `count` were pasted; after Cut, take the moved ones
     /// off the clipboard (the ones that failed stay, to retry).
     Paste { count: usize, cut: bool },
+    /// Select what extracting the archive `name` made, or say why not.
+    Extract { name: String },
+    /// Select the new archive, or say why it was not made.
+    Compress,
 }
 
 /// What doing an effect came to: its answer now, or a job that answers later.
@@ -648,6 +627,12 @@ pub struct FileExplorerWidget {
     selected_open: selected_open::Client,
     error: Option<String>,
     is_loading: bool,
+    /// Reads the archive being browsed off the window's thread.
+    archive_listing: crate::archive::Listing,
+    /// Files being read out of archives to be opened.
+    archive_members: ArchiveMembers,
+    /// Archives waiting for the folder Extract to… asks for.
+    extract_chooser: Option<(Vec<PathBuf>, ui::portal::PortalChannel)>,
     last_click: Option<(usize, Instant)>,
     sort_by: SortBy,
     sort_order: SortOrder,
@@ -1222,11 +1207,39 @@ impl FileExplorerWidget {
                 }
             }
             OpFollowUp::Paste { count, cut } => self.settle_paste(count, cut, outcome),
+            OpFollowUp::Extract { name } => match error {
+                None => self.select_written(outcome),
+                Some(error) => self.notify_failure(
+                    t_args("files-archive-extract-failed-named", &[arg("name", name)]),
+                    &error,
+                    None,
+                ),
+            },
+            OpFollowUp::Compress => match error {
+                None => self.select_written(outcome),
+                Some(error) => {
+                    self.notify_failure(t("files-archive-create-failed-title"), &error, None);
+                }
+            },
             OpFollowUp::Replaced => {
                 if let Some(error) = error {
                     self.notify_failure(t("files-trash-failed"), &error, None);
                 }
             }
+        }
+    }
+
+    /// Select what an operation wrote, when it is in the folder shown.
+    fn select_written(&mut self, outcome: &crate::file_ops::Outcome) {
+        let written = outcome.result().iter().find_map(|change| match change {
+            crate::file_ops::Change::Wrote { path } => Some(PathBuf::from(path)),
+            _ => None,
+        });
+        if let Some(index) =
+            written.and_then(|path| self.displayed_entries().iter().position(|e| e.path == path))
+        {
+            self.selection.select_only(index);
+            self.retain_shown_selection();
         }
     }
 
@@ -1463,9 +1476,16 @@ impl FileExplorerWidget {
             .and(file_explorer::WriteFile::paths().folder, folder.clone())
             .declaration("write-file-here", "Write a file here");
         let compressing = FileExplorer::COMPRESS
-            .bind(file_explorer::Compress::paths().device, device)
-            .and(file_explorer::Compress::paths().from, folder)
-            .declaration("compress-here", "Compress entries here to a zip archive");
+            .bind(file_explorer::Compress::paths().device, device.clone())
+            .and(file_explorer::Compress::paths().from, folder.clone())
+            .declaration(
+                "compress-here",
+                "Compress entries here to a zip or tar.zst archive",
+            );
+        let extracting = FileExplorer::EXTRACT
+            .bind(file_explorer::Extract::paths().device, device)
+            .and(file_explorer::Extract::paths().to, Some(folder))
+            .declaration("extract-here", "Extract an archive into this folder");
         [
             new_folder,
             rename,
@@ -1474,6 +1494,7 @@ impl FileExplorerWidget {
             copying,
             writing,
             compressing,
+            extracting,
         ]
         .into_iter()
         .flatten()
@@ -1819,6 +1840,15 @@ impl FileExplorerWidget {
             shown_folder,
             error: None,
             is_loading: false,
+            archive_listing: {
+                let wake = ui::WakeHandle::new();
+                crate::archive::Listing::new(move || wake.wake())
+            },
+            extract_chooser: None,
+            archive_members: {
+                let wake = ui::WakeHandle::new();
+                ArchiveMembers::new(move || wake.wake())
+            },
             last_click: None,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
@@ -3653,44 +3683,21 @@ impl FileExplorerWidget {
         self.next_metadata_refresh = None;
         self.last_directory_read = ui::time::now();
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
-            crate::archive::list_directory(&archive_path, &prefix)
-                .map(|archive_entries| {
-                    archive_entries
-                        .into_iter()
-                        .map(|entry| {
-                            let name = entry
-                                .path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned();
-                            let synthetic_path = archive_path.join(&entry.path);
-                            Entry {
-                                name,
-                                path: synthetic_path.clone(),
-                                is_dir: entry.is_dir,
-                                size: entry.size,
-                                modified: None,
-                                mime: if entry.is_dir {
-                                    "inode/directory".into()
-                                } else {
-                                    tilo_mime::from_path_or_octet_stream(&synthetic_path)
-                                        .to_string()
-                                },
-                                sync_state: None,
-                                content_hash: None,
-                                record_id: None,
-                                availability: None,
-                                share: None,
-                                history: None,
-                                rich_metadata: None,
-                                observed: None,
-                            }
-                        })
-                        .collect()
-                })
-                .map_err(|error| error.to_string())
+            match crate::archive::cached(&archive_path) {
+                Some(entries) => crate::archive::children_of(&entries, &prefix)
+                    .map(|rows| archive_rows(&archive_path, rows))
+                    .map_err(|error| error.to_string()),
+                None => {
+                    // A compressed tar is decoded front to back to list it,
+                    // which can take minutes: the window keeps running and
+                    // shows the folder once it is read.
+                    self.archive_listing.start(&archive_path);
+                    self.current_path = path;
+                    return;
+                }
+            }
         } else {
+            self.archive_listing.stop();
             self.read_directory(&path)
         };
         match loaded {
@@ -4064,7 +4071,7 @@ impl FileExplorerWidget {
                     | FileCommand::Cut
                     | FileCommand::Paste
                     | FileCommand::ExtractHere
-                    | FileCommand::CompressSelection
+                    | FileCommand::CompressSelection(_)
                     | FileCommand::OpenTerminal
                     | FileCommand::ArmDrag { .. }
                     | FileCommand::BeginDrag { .. }
@@ -4083,7 +4090,8 @@ impl FileExplorerWidget {
                     | FileCommand::Paste
                     | FileCommand::OpenTerminal
                     | FileCommand::ExtractHere
-                    | FileCommand::CompressSelection
+                    | FileCommand::ExtractTo
+                    | FileCommand::CompressSelection(_)
             )
         {
             self.status = Some(t("files-recent-not-a-folder"));
@@ -5012,7 +5020,8 @@ impl FileExplorerWidget {
             }
             FileCommand::ExtractHere => self.apply_extract_here(),
             FileCommand::ExtractCurrentArchive => self.apply_extract_current_archive(),
-            FileCommand::CompressSelection => self.apply_compress_selection(),
+            FileCommand::ExtractTo => self.apply_extract_to(),
+            FileCommand::CompressSelection(packing) => self.apply_compress_selection(packing),
             FileCommand::OpenNearbySend => {
                 let selected = self.selected_paths();
                 if selected.len() != 1 {
@@ -5573,134 +5582,6 @@ impl FileExplorerWidget {
         true
     }
 
-    fn apply_extract_here(&mut self) -> bool {
-        let paths: Vec<_> = self
-            .selected_paths()
-            .into_iter()
-            .filter(|path| crate::archive::is_supported(path))
-            .collect();
-        if paths.is_empty() {
-            self.status = Some(t("files-archive-select"));
-            return true;
-        }
-        let mut count = 0usize;
-        let mut failures = Vec::new();
-        for path in paths {
-            let stem = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Archive")
-                .trim_end_matches(".gz")
-                .trim_end_matches(".tar")
-                .trim_end_matches(".zip");
-            let parent = path.parent().unwrap_or(&self.current_path);
-            let mut destination = parent.join(stem);
-            let mut suffix = 2u32;
-            while destination.exists() {
-                destination = parent.join(format!("{stem} {suffix}"));
-                suffix = suffix.saturating_add(1);
-            }
-            match crate::archive::extract(&path, &destination) {
-                Ok(entries) => count = count.saturating_add(entries.len()),
-                Err(error) => failures.push(format!("{}: {error}", path.display())),
-            }
-        }
-        self.refresh();
-        self.status = Some(if failures.is_empty() {
-            t_args(
-                "files-archive-extracted",
-                &[arg("count", i64_of_usize(count))],
-            )
-        } else {
-            t_args(
-                "files-archive-extracted-partial",
-                &[
-                    arg("count", i64_of_usize(count)),
-                    arg("failures", failures.join("; ")),
-                ],
-            )
-        });
-        true
-    }
-
-    fn apply_extract_current_archive(&mut self) -> bool {
-        let Some((archive, _)) = crate::archive::location(&self.current_path) else {
-            return false;
-        };
-        self.selection.clear();
-        self.retain_shown_selection();
-        if let Some(index) = self.entries.iter().position(|entry| entry.path == archive) {
-            self.selection.select_only(index);
-            self.retain_shown_selection();
-            return self.apply_extract_here();
-        }
-        let parent = archive.parent().unwrap_or(&self.current_path).to_path_buf();
-        let stem = archive
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Archive")
-            .trim_end_matches(".gz")
-            .trim_end_matches(".tar")
-            .trim_end_matches(".zip");
-        let mut destination = parent.join(stem);
-        let mut suffix = 2u32;
-        while destination.exists() {
-            destination = parent.join(format!("{stem} {suffix}"));
-            suffix = suffix.saturating_add(1);
-        }
-        self.status = Some(match crate::archive::extract(&archive, &destination) {
-            Ok(entries) => t_args(
-                "files-archive-extracted",
-                &[arg("count", i64_of_usize(entries.len()))],
-            ),
-            Err(error) => t_args(
-                "files-archive-extract-failed",
-                &[arg("error", error.to_string())],
-            ),
-        });
-        true
-    }
-
-    fn apply_compress_selection(&mut self) -> bool {
-        let paths = self.selected_paths();
-        if paths.is_empty() {
-            self.status = Some(t("files-archive-select-compress"));
-            return true;
-        }
-        let base = if paths.len() == 1 {
-            paths
-                .first()
-                .and_then(|path| path.file_stem())
-                .and_then(|value| value.to_str())
-                .unwrap_or("Archive")
-        } else {
-            "Archive"
-        };
-        let mut output = self.current_path.join(format!("{base}.zip"));
-        let mut suffix = 2u32;
-        while output.exists() {
-            output = self.current_path.join(format!("{base} {suffix}.zip"));
-            suffix = suffix.saturating_add(1);
-        }
-        self.status = Some(match crate::archive::create_zip(&paths, &output) {
-            Ok(()) => {
-                self.refresh();
-                t_args(
-                    "files-archive-created",
-                    &[arg(
-                        "name",
-                        output.file_name().unwrap_or_default().to_string_lossy(),
-                    )],
-                )
-            }
-            Err(error) => t_args(
-                "files-archive-create-failed",
-                &[arg("error", error.to_string())],
-            ),
-        });
-        true
-    }
-
     /// `FileCommand::OpenTemplatesMenu` — opened from the menu-routing path
     /// with real geometry; if it arrives via the command queue just open it
     /// at the cursor.
@@ -5976,7 +5857,25 @@ impl FileExplorerWidget {
     )]
     pub fn stage_scenario(&mut self, scenario: Option<&str>) {
         let rect = self.rect;
+        self.wait_for_archive();
         match scenario {
+            Some("archive-file-menu") => {
+                if let Some(index) = self
+                    .displayed_entries()
+                    .iter()
+                    .position(|entry| crate::archive::is_supported(&entry.path))
+                {
+                    self.debug_select(&[index]);
+                }
+                let at = Point::new(
+                    rect.x0 + rect.width() * 0.45,
+                    rect.y0 + rect.height() * 0.30,
+                );
+                self.last_cursor = at;
+                self.open_context_menu(at);
+                self.context_menu.focus_first_action();
+            }
+            Some("extract-progress") => self.debug_show_extract_progress(),
             Some("selection-actions") => self.stage_published_selection(),
             Some(name @ ("selection-sort" | "selection-sorted" | "selection-reversed")) => {
                 self.stage_sort_selection(name);
@@ -6271,7 +6170,6 @@ impl FileExplorerWidget {
     /// Show the copy or move under way once it has run long enough to be
     /// worth watching, with Cancel; whether the card changed.
     fn follow_transfers(&mut self, now: Instant) -> bool {
-        use std::sync::atomic::Ordering;
         let running = crate::file_ops::active_transfers();
         let Some(transfer) = running.iter().find(|transfer| {
             transfer.started.is_some_and(|started| {
@@ -6285,15 +6183,24 @@ impl FileExplorerWidget {
             }
             return false;
         };
+        self.show_transfer(transfer);
+        true
+    }
+
+    /// The card for a transfer under way: what it does, and how far it is.
+    fn show_transfer(&mut self, transfer: &crate::file_ops::LocalTransfer) {
+        use std::sync::atomic::Ordering;
         let folder = Path::new(&transfer.folder).file_name().map_or_else(
             || transfer.folder.clone(),
             |name| name.to_string_lossy().into_owned(),
         );
         let title = t_args(
-            if transfer.copy {
-                "files-copying"
-            } else {
-                "files-moving"
+            match transfer.kind {
+                crate::file_ops::TransferKind::Copy => "files-copying",
+                crate::file_ops::TransferKind::Move => "files-moving",
+                // `folder` is the archive being extracted.
+                crate::file_ops::TransferKind::Extract => "files-extracting",
+                crate::file_ops::TransferKind::Compress => "files-compressing",
             },
             &[
                 arg("count", i64_of_usize(transfer.count)),
@@ -6315,7 +6222,6 @@ impl FileExplorerWidget {
         );
         self.notice.show_progress(title, body);
         self.structure_dirty = true;
-        true
     }
 
     /// Open the folder a drag has rested on long enough; whether it did.
@@ -6759,6 +6665,17 @@ impl FileExplorerWidget {
             }
             return;
         }
+        if pending.extracting.is_some() {
+            use crate::file_ops::IfExists;
+            let if_exists = match choice {
+                None => return,
+                Some(ClashChoice::Skip) => IfExists::Skip,
+                Some(ClashChoice::KeepBoth) => IfExists::KeepBoth,
+                Some(ClashChoice::Replace) => IfExists::Replace,
+            };
+            self.queue_extractions(&pending.sources, &pending.folder, if_exists);
+            return;
+        }
         match choice {
             None => {}
             Some(ClashChoice::KeepBoth) => {
@@ -6974,25 +6891,26 @@ impl FileExplorerWidget {
                 self.navigate(path);
                 return Ok(false);
             }
-            let member = crate::archive::list(&archive)?
-                .into_iter()
-                .find(|entry| entry.path == prefix);
-            let is_implicit_directory = member.is_none()
-                && crate::archive::list(&archive)?
-                    .iter()
-                    .any(|entry| entry.path.starts_with(&prefix));
-            if member.as_ref().is_some_and(|entry| entry.is_dir) || is_implicit_directory {
+            // The rows shown came from the archive's entries, read already;
+            // a path typed into an archive not yet read opens as a folder,
+            // which reads it.
+            let is_folder = crate::archive::cached(&archive).is_none_or(|entries| {
+                !entries.iter().any(|entry| {
+                    entry.path == prefix && entry.kind != crate::archive::Kind::Directory
+                })
+            });
+            if is_folder {
                 self.navigate(path);
                 return Ok(false);
             }
-            // A file inside an archive opens as a read-only copy of it.
-            return match archive_member_copy(&archive, &prefix) {
-                Ok(copy) => self.open_target(copy, runner),
-                Err(error) => {
-                    self.notify_open_failed(&path, &error.to_string());
-                    Ok(false)
-                }
-            };
+            // A file inside an archive opens as a read-only copy of it, read
+            // off the window's thread: reaching it can mean decoding most of
+            // a compressed tar.
+            if let Some(copy) = archive_member_cached(&archive, &prefix) {
+                return self.open_target(copy, runner);
+            }
+            self.archive_members.start(archive, prefix);
+            return Ok(true);
         }
         if path.is_dir() {
             self.navigate(path);
@@ -7675,9 +7593,10 @@ impl FileExplorerWidget {
                 spec.push((String::new(), None));
             }
             spec.push((
-                t("files-archive-extract"),
+                t("files-archive-extract-here"),
                 Some(FileCommand::ExtractCurrentArchive),
             ));
+            spec.push((t("files-archive-extract-to"), Some(FileCommand::ExtractTo)));
             return tidy_menu(spec);
         }
 
@@ -7766,10 +7685,17 @@ impl FileExplorerWidget {
                     t("files-archive-extract-here"),
                     Some(FileCommand::ExtractHere),
                 ));
+                spec.push((t("files-archive-extract-to"), Some(FileCommand::ExtractTo)));
             }
             spec.push((
-                t("files-archive-compress"),
-                Some(FileCommand::CompressSelection),
+                t("files-archive-compress-zip"),
+                Some(FileCommand::CompressSelection(crate::archive::Packing::Zip)),
+            ));
+            spec.push((
+                t("files-archive-compress-tar-zst"),
+                Some(FileCommand::CompressSelection(
+                    crate::archive::Packing::TarZst,
+                )),
             ));
             // Favourites: add the single selected folder.
             if let Some(dir) = self.single_selected_dir() {
@@ -8502,8 +8428,13 @@ impl FileExplorerWidget {
         }
         if crate::archive::location(&self.current_path).is_some() {
             spec.push((
-                t("files-archive-extract"),
+                t("files-archive-extract-here"),
                 Some(FileCommand::ExtractCurrentArchive),
+                None,
+            ));
+            spec.push((
+                t("files-archive-extract-to"),
+                Some(FileCommand::ExtractTo),
                 None,
             ));
             self.open_menu_right_aligned(spec, anchor, flip_y);
@@ -10049,6 +9980,8 @@ impl Widget for FileExplorerWidget {
         let sprang = self.spring_open_if_due(ui::time::now());
         // A folder's item count came in: the list shows it.
         let counted = self.folder_counts.take_arrived();
+        let listed =
+            self.take_archive_listing() | self.poll_extract_chooser() | self.open_read_members();
         self.structure_dirty |= notice_expired | counted;
         self.poll_share_result()
             | received
@@ -10057,6 +9990,7 @@ impl Widget for FileExplorerWidget {
             | previewed
             | sprang
             | counted
+            | listed
             | self.poll_cloud()
             | self.poll_mounted_cloud()
             | self.poll_drives(ui::time::now())

@@ -507,21 +507,20 @@ files-new-from-template = New { $name }
 files-drag-items = { $count } items
 
 ## Archives
-files-archive-extract = Extract archive…
+files-archive-extract = Extract
 files-archive-extract-here = Extract here
-files-archive-compress = Compress to ZIP
 files-archive-select-compress = Select files or folders to compress
 files-archive-read-only = Archives are read-only until extracted
-files-archive-select = Select a ZIP, TAR, or TAR.GZ archive to extract
-files-archive-extracted =
-    { $count ->
-        [one] Extracted 1 file
-       *[other] Extracted { $count } files
-    }
-files-archive-extracted-partial = Extracted { $count } files; { $failures }
-files-archive-extract-failed = Could not extract archive: { $error }
-files-archive-created = Created { $name }
-files-archive-create-failed = Could not create archive: { $error }
+files-archive-select = Select an archive to extract
+files-archive-extract-to = Extract to…
+files-archive-extract-to-title = Extract to
+files-archive-extract-to-accept = Extract here
+files-archive-extract-to-closed = The folder chooser closed without answering
+files-archive-extract-failed-title = Couldn’t extract
+files-archive-extract-failed-named = Couldn’t extract “{ $name }”
+files-archive-compress-zip = Compress to ZIP
+files-archive-compress-tar-zst = Compress to TAR.ZST
+files-archive-create-failed-title = Couldn’t compress
 
 ## File-operation validation
 files-folder-name-empty = Folder name cannot be empty
@@ -691,6 +690,11 @@ files-moving = Moving { $count } { $count ->
     [one] item
    *[other] items
 } to “{ $folder }”
+files-extracting = Extracting “{ $folder }”
+files-compressing = Compressing { $count } { $count ->
+    [one] item
+   *[other] items
+} in “{ $folder }”
 files-transfer-progress = { $done } of { $total }
 files-transfer-stopped = Stopped
 files-clash-title-one = “{ $name }” already exists in “{ $folder }”
