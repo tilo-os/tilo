@@ -847,6 +847,12 @@ readers = [
 ]
 
 [[cargo]]
+package = "mail"
+# The engine test mirrors the end mark the mail writes.
+inputs = ["apps/browser/chromium/tests/resize_frames.py"]
+readers = ["apps/mail/src/html_mail/tests.rs"]
+
+[[cargo]]
 package = "discord-worker"
 # The bridge test and the live example install the bridge bot from its
 # program file, beside the worker in the connector app.
