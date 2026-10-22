@@ -978,6 +978,37 @@ pub trait IdentityAdminServices: Send + Sync {
     ) -> Result<tilo_actions::remote::Pending<IdentityAdminOutcome>, String>;
 }
 
+/// The person's settings, kept by the host whether or not the app that
+/// shows them is open: each section a record whose field edits and verbs
+/// change it as that app's window does. The broker answers them under
+/// [`tilo_actions::remote::settings_records::PROVIDER`], only to a caller on
+/// this machine confined to a room, and admits each invocation against the
+/// caller's policy under [`Self::app_id`], as the value it carries makes it:
+/// a change that weakens the person's security asks first and needs their
+/// own grant.
+pub trait SettingsRecordServices: Send + Sync {
+    /// The application whose controls change the settings.
+    fn app_id(&self) -> &str;
+    /// Every section's actions, described as they stand now.
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// The action at `address` as one invocation with `argument` (its slot
+    /// form) is: its risk and confirmation as the value makes them.
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<tilo_actions::ActionDescriptor>;
+    /// Run one admitted change for `request.actor`.
+    ///
+    /// # Errors
+    ///
+    /// The arguments do not bind, or the section's model refused the change.
+    fn apply(&self, request: &SettingsRecordRequest<'_>) -> Result<(), String>;
+}
+
+/// One change of the person's settings the broker admitted.
+pub type SettingsRecordRequest<'a> = DevicePairingRequest<'a>;
+
 pub trait ContinuationServices: Send + Sync {
     /// Reports one application instance's continuation metadata.
     ///
@@ -1584,6 +1615,9 @@ pub struct HostServices {
     /// The person's identities and their devices, administered by the
     /// host. Without it no door offers them.
     pub identity_admin: Option<Arc<dyn IdentityAdminServices>>,
+    /// The person's settings, kept by the host. Without it they are changed
+    /// only where the app that shows them is open.
+    pub settings_records: Option<Arc<dyn SettingsRecordServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     /// The session's persistent search index of applications' content.
     /// Without it apps' content is findable only while they run.
