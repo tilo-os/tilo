@@ -5,6 +5,8 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use tilo_resource::{SearchBody, SearchEntry, SearchWeight};
+
 /// The part a field plays where an item of its type is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldRole {
@@ -18,6 +20,9 @@ pub enum FieldRole {
     Date,
     /// Anything else a presentation shows: an album on a song's row.
     Detail,
+    /// The passage of prose a match is in, which the query view fills in
+    /// for a hit inside an item's body.
+    Excerpt,
 }
 
 /// How a type's items are presented in a list of results.
@@ -164,6 +169,13 @@ pub struct Item {
     pub kind: &'static str,
     pub id: String,
     pub fields: Vec<(&'static str, String)>,
+    /// More text the item is found by but that no presentation shows, each
+    /// ranked by its own weight: a book's subject, a note on a highlight.
+    pub found_by: Vec<(String, SearchWeight)>,
+    /// Long prose the item is found by (a book's chapter), read in place.
+    /// A match in a segment the body locates is a hit of its own: its
+    /// location, listed under the location's own type.
+    pub body: Option<SearchBody>,
     pub payload: Option<Arc<dyn Any + Send + Sync>>,
 }
 
@@ -173,6 +185,8 @@ impl std::fmt::Debug for Item {
             .field("kind", &self.kind)
             .field("id", &self.id)
             .field("fields", &self.fields)
+            .field("found_by", &self.found_by)
+            .field("body", &self.body.is_some())
             .field("payload", &self.payload.is_some())
             .finish()
     }
@@ -180,7 +194,11 @@ impl std::fmt::Debug for Item {
 
 impl PartialEq for Item {
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind && self.id == other.id && self.fields == other.fields
+        self.kind == other.kind
+            && self.id == other.id
+            && self.fields == other.fields
+            && self.found_by == other.found_by
+            && self.body == other.body
     }
 }
 
@@ -191,8 +209,60 @@ impl Item {
             kind,
             id: id.into(),
             fields: Vec::new(),
+            found_by: Vec::new(),
+            body: None,
             payload: None,
         }
+    }
+
+    /// The item an app's search entry describes, typed by the declaration
+    /// whose plural names the entry's group (an entry without a group is
+    /// the first type's): its title and subtitle fill the type's title and
+    /// subtitle fields, its facets the filter fields of the same keys, and
+    /// its fields and body are what it is found by. The entry rides along
+    /// as the payload, so opening the item invokes what the entry does.
+    /// `None` when no type is the entry's or it addresses nothing.
+    #[must_use]
+    pub fn from_entry(kinds: &[KindDecl], entry: &SearchEntry) -> Option<Self> {
+        let decl = match entry.group.as_deref() {
+            Some(group) => kinds.iter().find(|kind| kind.plural == group)?,
+            None => kinds.first()?,
+        };
+        let id = entry.anchor.clone().or_else(|| {
+            entry
+                .action
+                .as_ref()
+                .map(|action| format!("{}\u{1f}{}", action.resource, action.action))
+        })?;
+        let role = |role: FieldRole| {
+            decl.fields
+                .iter()
+                .find(|field| field.role == Some(role))
+                .map(|field| field.key)
+        };
+        let mut item = Self::new(decl.kind, id);
+        if let Some(key) = role(FieldRole::Title) {
+            item = item.with(key, entry.title.clone());
+        }
+        if let (Some(key), Some(subtitle)) = (role(FieldRole::Subtitle), &entry.subtitle) {
+            item = item.with(key, subtitle.clone());
+        }
+        for (key, _, value) in &entry.facets {
+            let Some(field) = decl.fields.iter().find(|field| field.key == key) else {
+                continue;
+            };
+            // A subtitle that is also a filter (a book's author) is one value.
+            if !item.values(field.key).any(|held| held == value) {
+                item = item.with(field.key, value.clone());
+            }
+        }
+        if !entry.text.trim().is_empty() {
+            item.found_by.push((entry.text.clone(), SearchWeight::Body));
+        }
+        item.found_by.extend(entry.fields.iter().cloned());
+        item.body = entry.body.clone();
+        item.payload = Some(Arc::new(entry.clone()));
+        Some(item)
     }
 
     /// Add `value` to the field `key`; an empty value adds nothing.
@@ -242,6 +312,12 @@ impl Item {
     #[must_use]
     pub fn key(&self) -> (&'static str, &str) {
         (self.kind, self.id.as_str())
+    }
+
+    /// The search entry the item was made from ([`Item::from_entry`]).
+    #[must_use]
+    pub fn entry(&self) -> Option<&SearchEntry> {
+        self.payload_as()
     }
 
     /// The payload a remote source attached, as `T`.

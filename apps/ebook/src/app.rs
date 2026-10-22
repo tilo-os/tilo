@@ -103,6 +103,9 @@ struct ImportRequest {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
+    /// Where to fetch the book from into `path` first: a book got from the
+    /// store.
+    fetch: Option<String>,
     /// A test's hold on the worker: it reports on the first channel that it
     /// took this request, then parses only once the second one fires or is
     /// dropped.
@@ -224,7 +227,13 @@ impl ImportWorker {
                 // written on the UI thread.  A peer therefore receives
                 // bytes and metadata as one logical import, never a
                 // dangling shared title/annotation record.
-                let (path, result) = match content::parse_shared_path_detailed(&request.path) {
+                let fetched = match &request.fetch {
+                    Some(url) => crate::store::download(url, &request.path),
+                    None => Ok(()),
+                };
+                let parsed =
+                    fetched.and_then(|()| content::parse_shared_path_detailed(&request.path));
+                let (path, result) = match parsed {
                     Ok((book, shared_path))
                         if request
                             .expected_book_id
@@ -338,6 +347,8 @@ enum View {
     Reader,
     /// The app settings screen — the font + colour-scheme managers.
     Settings,
+    /// The window's search: a query view of the library and the store.
+    Search,
 }
 
 /// Which manager the settings screen is showing.
@@ -700,6 +711,18 @@ enum Action {
     BeginRenameFont(String),
     /// Dismiss the last import failure.
     DismissLoadError,
+
+    // --- search ------------------------------------------------------------
+    /// Open the book, chapter, annotation or passage a result is anchored at.
+    OpenHit(String),
+    /// Get the store's book by its catalogue number, and open it.
+    GetBook(u64),
+    /// The chips asked for this query.
+    SetQuery(ui::framework::views::QuerySpec),
+    /// Open the values of a filter over its chip.
+    OpenFacet(String),
+    /// Close the search, back to where it began.
+    CloseSearch,
 }
 
 impl BooksApp {
@@ -1064,6 +1087,8 @@ pub struct BooksApp {
     /// and cloned cheaply into each palette session rather than rebuilt per
     /// keystroke or provider request.
     book_search: crate::search_provider::BookSearch,
+    /// The window's search over the library and the store.
+    query: query_view::BookQuery,
     /// A single off-UI builder. A newer snapshot supersedes its result before
     /// publication instead of mutating a live provider in place.
     search_worker: Option<SearchWorker>,
@@ -1314,6 +1339,7 @@ impl BooksApp {
             annotations: Vec::new(),
             all_annotations: Arc::new(Vec::new()),
             book_search: crate::search_provider::BookSearch::new(&[], &[]),
+            query: query_view::BookQuery::hermetic(),
             search_worker: None,
             search_fingerprint: 0,
             search_revision: 0,
@@ -1884,6 +1910,27 @@ impl BooksApp {
         kind: ImportKind,
         expected_book_id: Option<String>,
     ) -> Result<(), String> {
+        self.begin_import_from(path, kind, expected_book_id, None)
+    }
+
+    /// Fetch the store's book `id` and open it like a book picked from
+    /// disk: the loading line, the shelf row, the reader.
+    pub(crate) fn begin_get_from_store(&mut self, id: u64) -> Result<(), String> {
+        self.begin_import_from(
+            crate::store::fetched_path(id),
+            ImportKind::Open,
+            None,
+            Some(crate::store::book_url(id)),
+        )
+    }
+
+    fn begin_import_from(
+        &mut self,
+        path: PathBuf,
+        kind: ImportKind,
+        expected_book_id: Option<String>,
+        fetch: Option<String>,
+    ) -> Result<(), String> {
         // A background shelf refresh must never replace an explicit user open.
         // Watch requests coalesce with one another; after a successful receipt
         // we schedule the next unseen file.
@@ -1904,6 +1951,7 @@ impl BooksApp {
             path: path.clone(),
             kind,
             expected_book_id: expected_book_id.clone(),
+            fetch,
             #[cfg(test)]
             hold: None,
         })?;
@@ -2139,6 +2187,7 @@ impl BooksApp {
             path: path.to_path_buf(),
             kind,
             expected_book_id: None,
+            fetch: None,
             hold: Some((entered_tx, release_rx)),
         })?;
         self.import_generation = generation;
@@ -2200,6 +2249,11 @@ impl BooksApp {
             Action::OpenBook(i) => {
                 self.open_book_at(doc, i);
             }
+            Action::OpenHit(anchor) => self.open_hit(anchor),
+            Action::GetBook(id) => self.get_from_store(id),
+            Action::SetQuery(query) => self.on_set_query(&query),
+            Action::OpenFacet(key) => self.open_facet(&key),
+            Action::CloseSearch => self.close_query(),
             Action::Back => self.on_back(),
             Action::NextPage => self.on_next_page(),
             Action::PrevPage => self.on_prev_page(),
@@ -3506,6 +3560,7 @@ impl BooksApp {
         self.content = cx.content();
         self.sample = cx.fixture::<crate::scenarios::SampleShelf>();
         if self.live {
+            self.query = query_view::BookQuery::live(cx.waker());
             self.local_library = LocalLibrary::load(cx.storage().settings());
             self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
             self.watched_folders
@@ -4069,7 +4124,13 @@ impl BooksApp {
                 format!("settings.font.add:{}", ui::a11y::hash_key(family))
             }
             Action::BeginRenameFont(id) => format!("settings.font.rename:{id}"),
-            Action::DismissOverlay | Action::Swallow => return None,
+            Action::OpenHit(anchor) => format!("search.open:{anchor}"),
+            Action::GetBook(id) => format!("search.get:{id}"),
+            Action::CloseSearch => "search.back".into(),
+            Action::DismissOverlay
+            | Action::Swallow
+            | Action::SetQuery(_)
+            | Action::OpenFacet(_) => return None,
         };
         Some(format!("books.{target}"))
     }
@@ -4186,7 +4247,19 @@ impl BooksApp {
             Action::CloseFontPicker => "Close font picker".into(),
             Action::AddSystemFont(family) => format!("Add {family}"),
             Action::BeginRenameFont(id) => format!("Rename {}", self.font_name(id)),
-            Action::DismissOverlay | Action::Swallow => String::new(),
+            Action::OpenHit(anchor) => self
+                .query
+                .label_of(anchor)
+                .map_or_else(|| "Open result".into(), str::to_owned),
+            Action::GetBook(id) => self
+                .query
+                .label_of(&format!("gutenberg:{id}"))
+                .map_or_else(|| "Get book".into(), str::to_owned),
+            Action::CloseSearch => "Back".into(),
+            Action::DismissOverlay
+            | Action::Swallow
+            | Action::SetQuery(_)
+            | Action::OpenFacet(_) => String::new(),
         }
     }
 
@@ -4502,7 +4575,7 @@ impl Continuable for BooksApp {
 }
 
 impl Widget for BooksApp {
-    ui::provides!(dyn ui::widget::Continuable);
+    ui::provides!(dyn ui::widget::Continuable, dyn ui::widget::Queryable);
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         self.ensure_library_loaded(edits.doc());
@@ -4518,6 +4591,7 @@ impl Widget for BooksApp {
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
         self.drain_opens();
+        self.poll_query();
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);
@@ -4625,7 +4699,7 @@ impl Widget for BooksApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &ui::presence::PresenceCtx,
+        presence: &ui::presence::PresenceCtx,
     ) {
         self.hits.clear();
         self.comment_overlay.begin_frame();
@@ -4659,6 +4733,7 @@ impl Widget for BooksApp {
             View::Library => self.draw_library(&mut ctx),
             View::Reader => self.draw_reader(&mut ctx),
             View::Settings => self.draw_settings(&mut ctx),
+            View::Search => self.draw_query_view(&mut ctx),
         }
         // The empty shelf says what failed in its own empty state. Every
         // other view needs an honest loading/result surface: parsing happens
@@ -4669,6 +4744,15 @@ impl Widget for BooksApp {
         // The open list of a dropdown lies over everything.
         let window = self.rect;
         self.shelf_controls.draw_overlay(&mut ctx, window);
+        if self.query.facets.is_open() {
+            self.query.facets.menu_mut().draw_overlay(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                presence,
+            );
+        }
         self.font_dropdown
             .draw_overlay(ctx.scene, ctx.transform, ctx.text, ctx.theme, window);
         self.refresh_hover_tooltip();
@@ -4690,6 +4774,9 @@ impl Widget for BooksApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.route_query_event(event, ctx) {
+            return;
+        }
         let mut input_ctx = InputEventCtx {
             event,
             scale_factor: ctx.scale_factor,
@@ -4872,6 +4959,9 @@ impl Widget for BooksApp {
             {
                 controls.push(node);
             }
+            if self.view == View::Search {
+                controls.extend(self.query.chips.access_nodes());
+            }
             controls.extend(self.number_controls.accessibility_nodes());
             if let Some(rename) = &self.renaming
                 && let Some(node) = rename.field.accessibility()
@@ -4895,6 +4985,7 @@ impl Widget for BooksApp {
                 "Book settings",
                 "Manage reading fonts, colours, and library folders",
             ),
+            View::Search => ("Search books", "Results in your books and the store"),
         };
         let mut children = Vec::new();
         if !has_modal && let Some(document) = self.reading_document_node() {
@@ -4946,6 +5037,14 @@ impl Widget for BooksApp {
         let Some(path) = path.downcast_ref::<ObjId>() else {
             return false;
         };
+        if let Some(id) = target.strip_prefix("books.search.") {
+            let performed = self.query.chips.perform(id, action, doc);
+            for asked in self.query.chips.take_asked() {
+                self.dispatch(asked, doc);
+            }
+            self.dirty |= performed;
+            return performed;
+        }
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {
@@ -5177,7 +5276,7 @@ impl Widget for BooksApp {
     /// A book being imported shows once it parses. A screenshot imports
     /// nothing, so a loading state it stages is the still it shows.
     fn has_pending_visual_work(&self) -> bool {
-        self.live && self.import_loading.is_some()
+        (self.live && self.import_loading.is_some()) || self.query_busy()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -5572,7 +5671,7 @@ impl BooksApp {
                     self.refresh_from_doc(ctx.state.doc());
                 }
             }
-            View::Reader => {}
+            View::Reader | View::Search => {}
         }
         if consumed {
             self.dirty = true;
@@ -6161,6 +6260,10 @@ impl BooksApp {
             return self.handle_library_key(key, doc);
         }
 
+        if self.view == View::Search {
+            return self.handle_query_key(key, doc);
+        }
+
         if self.handle_focused_rail_key(key).is_some() {
             return true;
         }
@@ -6439,6 +6542,7 @@ impl BooksApp {
                 self.shelf_scroll = (self.shelf_scroll + dy).clamp(0.0, self.shelf_max_scroll);
                 self.shelf_scroll != before
             }
+            View::Search => self.query.scroll_by(dy),
             View::Reader => {
                 // A page fills the viewport, so the wheel turns pages rather than
                 // scrolling within one. Suppressed while a modal surface (the
@@ -10417,8 +10521,13 @@ fn draw_progress_label(ctx: &mut PaintCtx<'_>, rect: Rect, fraction: f32, color:
     );
 }
 
+mod query_view;
 mod stage;
 
 #[cfg(test)]
 #[path = "app/interaction_tests.rs"]
 mod interaction_tests;
+
+#[cfg(test)]
+#[path = "app/query_view_tests.rs"]
+mod query_view_tests;

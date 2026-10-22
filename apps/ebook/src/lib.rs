@@ -50,6 +50,7 @@ pub mod resource;
 mod scenarios;
 pub mod search_provider;
 mod shelf_controls;
+mod store;
 #[cfg(test)]
 mod test_epub;
 pub mod xhtml;

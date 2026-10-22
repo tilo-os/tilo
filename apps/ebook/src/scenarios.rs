@@ -64,6 +64,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "spread",
     "two-up-select",
     "spread-select",
+    "search",
+    "search-in-book",
 ];
 
 /// The books a capture shows, and where each would live on a reader's

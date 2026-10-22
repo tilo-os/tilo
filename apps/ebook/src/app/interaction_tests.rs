@@ -3639,6 +3639,7 @@ fn import_worker_is_non_blocking_and_wakes_its_host() {
                 path,
                 kind: ImportKind::Open,
                 expected_book_id: None,
+                fetch: None,
                 hold: None,
             })
             .unwrap();

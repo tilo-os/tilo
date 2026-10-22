@@ -25,7 +25,10 @@
 //!   the frame of the keystroke; remote sources ([`RemoteSource`]) streamed
 //!   into their own sections below, with cancellation, a cache by query,
 //!   reuse of an earlier answer while a refined query is on the way, and rows
-//!   that never move under the person's pointer or keyboard.
+//!   that never move under the person's pointer or keyboard. An app whose
+//!   search already has entries hands those over ([`Item::from_entry`]): one
+//!   search model feeds the platform search and the app's query view, and a
+//!   match inside an entry's prose is a hit at its passage.
 //! - **Keeping** ([`KeptViews`]): any query view can be kept, and then sits
 //!   beside the designed views as the person's own.
 
@@ -40,10 +43,10 @@ mod stack;
 pub use actions::{
     ActionHit, ControlDecl, ControlKind, action_control, action_hits, actions_group,
 };
-pub use chips::{FacetOffer, FacetValue, OpenFacet, facet_bar, facet_offers};
+pub use chips::{FacetMenu, FacetOffer, FacetValue, OpenFacet, facet_bar, facet_offers};
 pub use engine::{
     Cancel, FRESH, GROUP_LIMIT, QueryEngine, QueryResults, QueryTimings, RemoteError,
-    RemoteSection, RemoteSource, RemoteState, ResultGroup, THROTTLE,
+    RemoteSection, RemoteSource, RemoteState, ResultGroup, THROTTLE, excerpt,
 };
 pub use kept::{KeptView, KeptViews};
 pub use kind::{FieldDecl, FieldRole, FilterKind, Form, Item, KindDecl, filters};

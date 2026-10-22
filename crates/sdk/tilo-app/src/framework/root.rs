@@ -1404,7 +1404,7 @@ impl SearchCache {
 }
 
 /// A [`SearchText`](tilo_resource::SearchText), as the index reads it.
-struct BodyText(Arc<dyn tilo_resource::SearchText>);
+pub(crate) struct BodyText(pub(crate) Arc<dyn tilo_resource::SearchText>);
 
 impl tilo_search::BodySource for BodyText {
     fn segment_count(&self) -> usize {
@@ -1549,7 +1549,7 @@ fn index_entry(entry: &SearchEntry) -> Option<ui_core::search::index_publication
 }
 
 /// The index's weight for a field an entry ranks as `weight`.
-fn field_weight(weight: tilo_resource::SearchWeight) -> FieldWeight {
+pub(crate) fn field_weight(weight: tilo_resource::SearchWeight) -> FieldWeight {
     use tilo_resource::SearchWeight;
     match weight {
         SearchWeight::Title => FieldWeight::TITLE,

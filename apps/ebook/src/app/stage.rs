@@ -73,6 +73,14 @@ impl BooksApp {
                 self.comment_overlay.open(COMMENTED_HIGHLIGHT);
             }
             "continuous" => self.scroll_y = 520.0,
+            "search" => {
+                self.view = View::Library;
+                self.query.staged = Some((View::Library, "glass".into()));
+            }
+            "search-in-book" => {
+                self.book_idx = self.book_index(TIDEGLASS);
+                self.query.staged = Some((View::Reader, "amber".into()));
+            }
             _ => {
                 if !self.stage_settings(scenario) {
                     self.stage_selection(scenario);
