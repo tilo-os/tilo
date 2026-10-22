@@ -364,9 +364,9 @@ impl Desk {
     }
 }
 
-/// A file chooser is a sheet on the window that asked, on whichever
-/// display that window is: hung from the top of the window's app area,
-/// centred on it, and wholly on that display.
+/// A file chooser is a system sheet for the window that asked, on whichever
+/// display that window is: centred on that display at the sheet's own size,
+/// and wholly on it.
 #[test]
 fn the_file_chooser_is_a_sheet_on_the_window_that_asked() {
     use crate::shell::file_picker_overlay::PickerPlace;
@@ -379,8 +379,8 @@ fn the_file_chooser_is_a_sheet_on_the_window_that_asked() {
         assert!(desk.fb.host_mut().pump_file_picker());
         desk.settle();
         let PickerPlace::Window {
-            window,
             content,
+            display: output,
             focused,
             ..
         } = desk.fb.host().file_picker_place()
@@ -390,17 +390,18 @@ fn the_file_chooser_is_a_sheet_on_the_window_that_asked() {
         assert!(focused, "the asking window is the one in use");
         assert!(
             display.contains(content.center()),
-            "the sheet is on {name}'s window"
+            "the sheet is for {name}'s window"
         );
         let sheet = desk.sheet();
         assert_on(display, sheet, "the file chooser", name);
         assert!(
-            (sheet.center().x - content.center().x).abs() < 1.0,
-            "the sheet {sheet:?} centres on its window {content:?} on {name}"
+            (sheet.center() - output.center()).hypot() < 1.0,
+            "the sheet {sheet:?} centres on {name} ({output:?}), not on its window"
         );
-        assert!(
-            (sheet.y0 - content.y0).abs() < 1.0 && window.contains(sheet.origin()),
-            "the sheet {sheet:?} hangs from the top of its window {content:?} on {name}"
+        assert_eq!(
+            sheet,
+            crate::shell::file_picker_overlay::file_picker_rect(output),
+            "the sheet is the system sheet's size on {name}"
         );
         desk.fb
             .host_mut()
@@ -529,11 +530,16 @@ fn the_file_chooser_sheet_blocks_only_its_own_window() {
         panic!("the sheet stays on its window");
     };
     let sheet = desk.sheet();
-    let beside_the_sheet = Point::new(window.center().x, f64::midpoint(sheet.y1, window.y1));
-    assert!(
-        window.contains(beside_the_sheet) && !sheet.contains(beside_the_sheet),
-        "the waiting window shows below its sheet"
-    );
+    let centre = window.center();
+    let beside_the_sheet = [
+        Point::new(centre.x, f64::midpoint(sheet.y1, window.y1)),
+        Point::new(centre.x, f64::midpoint(window.y0, sheet.y0)),
+        Point::new(f64::midpoint(window.x0, sheet.x0), centre.y),
+        Point::new(f64::midpoint(sheet.x1, window.x1), centre.y),
+    ]
+    .into_iter()
+    .find(|at| window.contains(*at) && !sheet.contains(*at))
+    .expect("the waiting window shows beside its sheet");
     desk.click(beside_the_sheet);
     assert!(matches!(
         desk.fb.host().file_picker_place(),

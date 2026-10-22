@@ -1847,14 +1847,15 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             let caller = PortalCaller::new(WorkspaceId(1), "so.tilo.word-processor");
             let opts = FilePickerOptions::new(
                 caller,
-                if save {
-                    "Save Document"
-                } else {
-                    "Open Document"
+                match mode {
+                    "save" => "Save Document",
+                    "folder" => "Choose Folder",
+                    _ => "Open Document",
                 },
                 save,
             )
             .multiple(mode == "open_multiple")
+            .directory(mode == "folder")
             .filters(vec![
                 PickerFilter::from_pairs(
                     "Documents",
@@ -5494,6 +5495,26 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SeedFilePicker("save"),
                 Action::Wait(4),
                 Action::Snapshot("03-save"),
+            ],
+        },
+        Scenario {
+            name: "file_chooser_window_sizes",
+            description: "The file dialog is a system sheet: the same size and centred on the display whether a narrow or a wide window asks.",
+            actions: vec![
+                Action::SetWindowWidths(250),
+                Action::SeedFilePicker("open"),
+                Action::Wait(6),
+                Action::Snapshot("01-small-window-open"),
+                Action::SeedFilePicker("save"),
+                Action::Wait(6),
+                Action::Snapshot("02-small-window-save"),
+                Action::SeedFilePicker("folder"),
+                Action::Wait(6),
+                Action::Snapshot("03-small-window-folder"),
+                Action::SetWindowWidths(1_000),
+                Action::SeedFilePicker("open"),
+                Action::Wait(6),
+                Action::Snapshot("04-large-window-open"),
             ],
         },
     ]

@@ -2,12 +2,16 @@
 //!
 //! This component owns the dialog's lifecycle: queued portal requests, the
 //! active picker and its reply channel, security-scoped mounting, painting,
-//! and event routing. The chooser is a sheet on the window that asked: it
-//! hangs from the top of that window's app area, dims that window and closes
-//! it to input, and leaves every other window and the shell usable. Only a
-//! request no window of the app can answer for is modal for the desktop.
-//! The shell overlay host says where the asking window is this frame
-//! ([`PickerPlace`]) and where this sheet sits in the global z-order.
+//! and event routing. The chooser is a system surface, not part of the app:
+//! the shell paints it as a system sheet centred on the display the asking
+//! window is on, at the sheet's own size whatever that window's size
+//! ([`file_picker_rect`]), with the asking window dimmed behind it. It is
+//! modal for that window only: the window is closed to input while the
+//! sheet waits, every other window and workspace stays usable, and the
+//! sheet goes out of sight and comes back with its window. Only a request
+//! no window of the app can answer for is modal for the desktop. The shell
+//! overlay host says where the asking window is this frame ([`PickerPlace`])
+//! and where this sheet sits in the global z-order.
 
 pub(crate) mod actions;
 
@@ -39,10 +43,10 @@ pub(crate) struct FilePickerOverlay {
 /// that asked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PickerPlace {
-    /// A sheet on the asking window. `window` is the whole window group,
-    /// dimmed and closed to input; `content` the app area the sheet hangs
-    /// from; `display` the display it must stay on; `focused` while that
-    /// window holds the keyboard.
+    /// A sheet for the asking window. `window` is the whole window group,
+    /// dimmed and closed to input; `content` its app area; `display` the
+    /// display that window is on, which the sheet centres on; `focused`
+    /// while that window holds the keyboard.
     Window {
         window: Rect,
         content: Rect,
@@ -62,9 +66,7 @@ impl PickerPlace {
     /// The dialog's own rect, if it is on screen.
     pub(crate) fn dialog_rect(self) -> Option<Rect> {
         match self {
-            Self::Window {
-                content, display, ..
-            } => Some(file_picker_sheet_rect(content, display)),
+            Self::Window { display, .. } => Some(file_picker_rect(display)),
             Self::Hidden => None,
             Self::Display(viewport) => Some(file_picker_rect(viewport)),
         }
@@ -345,27 +347,12 @@ const fn sheet_input(event: &WindowEvent) -> SheetInput {
     }
 }
 
-/// The chooser as a sheet on the window that asked: centred on the
-/// window's app area and hanging from its top edge, as wide and tall as the
-/// window allows within the toolkit's sheet sizes, and kept wholly on the
-/// display even when the window runs past it.
-pub fn file_picker_sheet_rect(content: Rect, display: Rect) -> Rect {
-    let metrics = ui::tokens::Metrics::BASE;
-    let inset = f64::from(ui::tokens::Spacing::BASE.s6);
-    let sheet = f64::from(metrics.panel_width_sheet);
-    let w = (content.width() - 2.0 * inset)
-        .clamp(sheet, sheet * 1.6)
-        .min(display.width());
-    let h = (content.height() - inset)
-        .clamp(f64::from(metrics.panel_width_list), sheet * 1.15)
-        .min(display.height());
-    let x0 = (content.center().x - w / 2.0).clamp(display.x0, display.x1 - w);
-    let y0 = content.y0.clamp(display.y0, display.y1 - h);
-    Rect::new(x0, y0, x0 + w, y0 + h)
-}
-
-/// Centre the file chooser in `viewport`, clamping its fraction so it stays
-/// usable on a small output without walling a large one.
+/// The chooser's sheet, centred on the display `viewport`: a fraction of the
+/// display clamped to the toolkit's sheet sizes, so it is usable on a small
+/// output without walling a large one. It does not depend on the asking
+/// window: a chooser asked for by a small window is as roomy as one asked
+/// for by a large one. On a display too small for a sheet it fills the
+/// display, as every system sheet does there.
 pub fn file_picker_rect(viewport: Rect) -> Rect {
     // The dialog's size comes from the toolkit's panel metrics: a sheet wide
     // enough for the sidebar plus a readable list, tall enough for a dozen
@@ -1006,42 +993,46 @@ mod tests {
         assert_eq!(received.try_recv().unwrap(), Some(vec![child]));
     }
 
+    // USER REQUIREMENT (2026-10-22): "The picker is a system surface. It
+    // opens at shell level as the standard system sheet [...], centred on the
+    // output the requesting window is on, at a comfortable size whatever the
+    // app's window size, with the requesting window dimmed behind it."
+    // "a picker requested by a 400×300 window opens at the sheet size,
+    // centred on its output"
     #[test]
-    fn a_sheet_hangs_from_its_window_and_stays_on_the_display() {
-        let display = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+    fn a_picker_requested_by_a_small_window_opens_at_the_sheet_size_centred_on_its_output() {
+        let output = Rect::new(1920.0, 0.0, 1920.0 + 2560.0, 1440.0);
         let sheet = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
-
-        let content = Rect::new(200.0, 80.0, 1400.0, 1000.0);
-        let rect = file_picker_sheet_rect(content, display);
-        assert_eq!(rect.y0, content.y0, "hangs from the window's top");
-        assert_eq!(rect.center().x, content.center().x, "centred on the window");
-        assert_eq!(rect.width(), sheet * 1.6, "no wider than a sheet");
-
-        let narrow = Rect::new(800.0, 80.0, 1100.0, 1000.0);
-        let rect = file_picker_sheet_rect(narrow, display);
-        assert_eq!(
-            rect.width(),
-            sheet,
-            "a narrow window still gets a usable sheet"
-        );
-        assert_eq!(rect.center().x, narrow.center().x);
-
-        let off_the_edge = Rect::new(1700.0, 80.0, 2600.0, 1000.0);
-        let rect = file_picker_sheet_rect(off_the_edge, display);
-        assert_eq!(
-            rect.x1, display.x1,
-            "kept on the display the window runs off"
-        );
-
-        let place = PickerPlace::Window {
-            window: content,
-            content,
-            display,
-            focused: false,
+        let place = |window: Rect| PickerPlace::Window {
+            window,
+            content: window,
+            display: output,
+            focused: true,
         };
+
+        let small = Rect::new(2000.0, 100.0, 2400.0, 400.0);
+        let rect = place(small).dialog_rect().expect("the sheet is on screen");
+        assert!(
+            rect.width() >= sheet
+                && rect.height() >= f64::from(ui::tokens::Metrics::BASE.panel_width_list),
+            "a 400x300 window still gets the sheet size, not its own: {rect:?}"
+        );
+        assert!(
+            rect.width() > small.width() && rect.height() > small.height(),
+            "the sheet is not squeezed into the window: {rect:?}"
+        );
+        assert_eq!(rect.center(), output.center(), "centred on its output");
         assert_eq!(
-            place.dialog_rect(),
-            Some(file_picker_sheet_rect(content, display))
+            rect,
+            file_picker_rect(output),
+            "the system sheet's own size"
+        );
+
+        let large = Rect::new(1940.0, 20.0, 4400.0, 1400.0);
+        assert_eq!(
+            place(large).dialog_rect(),
+            Some(rect),
+            "the same sheet whatever the window's size"
         );
         assert_eq!(PickerPlace::Hidden.dialog_rect(), None);
     }
