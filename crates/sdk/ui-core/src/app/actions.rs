@@ -2539,6 +2539,14 @@ impl App {
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(arguments.clone())
         );
+        // The window's own Retry for unsaved changes is the host's, not the
+        // app's: the same door its header button, the palette and assistive
+        // technology reach.
+        if address.resource == local_input_capture::UNSAVED_RESOURCE {
+            return self
+                .invoke_history_address_local(address, Some(&argument))
+                .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(address.clone())));
+        }
         self.invoke_resource_action(
             ResourceInvocation::new(address, &actor).argument(Some(&argument)),
         )
@@ -4373,10 +4381,13 @@ impl App {
         intent: &tilo_actions::ControlInvocation,
         owner: Option<crate::history_mode::HistoryOwner>,
     ) -> bool {
-        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE {
+        // The window's Retry for unsaved changes (its header button) is the
+        // host's own action, like History.
+        let unsaved = intent.address.resource == local_input_capture::UNSAVED_RESOURCE;
+        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE && !unsaved {
             return false;
         }
-        let embedded = owner.and_then(|owner| {
+        let embedded = owner.filter(|_| !unsaved).and_then(|owner| {
             crate::history_mode::embedded::invoke_door(self.root_widget.as_mut(), &owner, intent)
         });
         let result = if let Some(result) = embedded {

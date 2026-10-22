@@ -118,7 +118,11 @@ fn local_component_action_drains_exact_pre_execution_snapshot_and_alias() {
                 "reply lost after admission".into(),
             )),
         });
-    assert!(fixture.app.document_sync_status().is_some());
+    assert_eq!(
+        fixture.app.document_sync_status(),
+        None,
+        "a lost reply is reconciled quietly: still on its way"
+    );
     assert!(
         fixture
             .app
@@ -372,7 +376,11 @@ fn disconnected_input_keeps_local_framework_edits_available() {
         .unwrap();
     drop(scope);
     fixture.app.drain_local_input_capture();
-    assert!(fixture.app.document_sync_status().is_some());
+    assert_eq!(
+        fixture.app.document_sync_status(),
+        None,
+        "a disconnected edit is the person's, saved here: nothing to say"
+    );
     assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
     assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
 }
@@ -410,9 +418,10 @@ fn disconnected_input_retains_the_last_published_revision_and_exact_route() {
     }
     assert_eq!(capture_reports(&sent).len(), before);
     assert_eq!(fixture.app.local_input_capture.pending_count(), 2);
-    assert!(
-        fixture.app.document_sync_status().is_some(),
-        "disconnected edits awaiting admission must be visible"
+    assert_eq!(
+        fixture.app.document_sync_status(),
+        None,
+        "disconnected edits awaiting admission are on their way: nothing to say"
     );
     connected.set(true);
     fixture.app.drain_local_input_capture();
@@ -657,7 +666,11 @@ fn uncertain_and_enqueue_failed_captures_recover_exact_uuid_without_redispatch()
                 });
         }
         assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
-        assert!(fixture.app.document_sync_status().is_some());
+        assert_eq!(
+            fixture.app.document_sync_status(),
+            None,
+            "a change still on its way to the history says nothing"
+        );
         for _ in 0..20 {
             fixture.app.poll_and_apply_collab_events();
         }
@@ -887,6 +900,11 @@ fn an_edit_during_a_stale_surface_is_recorded_after_the_refresh_quietly() {
     let reports = capture_reports(&sent);
     assert_eq!(reports.len(), 1, "recorded after the refresh");
     assert!(!reports[0].1.revision.is_empty());
+    assert_eq!(
+        reports[0].1.bound_invocation().unwrap(),
+        reports[0].1.invocation,
+        "its identity is bound to the surface it is reported against"
+    );
     assert_eq!(fixture.app.document_sync_status(), None);
 }
 
@@ -932,6 +950,54 @@ fn a_change_that_cannot_be_saved_says_so_and_can_be_retried() {
     assert_eq!(fixture.app.document_sync_status(), None);
     assert_eq!(fixture.app.window_status(), None);
     fixture.app.drain_local_input_capture();
-    assert_eq!(capture_reports(&sent).len(), 2, "reported again");
+    let reports = capture_reports(&sent);
+    assert_eq!(reports.len(), 2, "reported again");
+    let (_, again) = &reports[1];
+    assert!(
+        !again.revision.is_empty(),
+        "against the surface published now"
+    );
+    assert_eq!(
+        again.bound_invocation().unwrap(),
+        again.invocation,
+        "its identity is bound to the surface it is reported against"
+    );
     assert!(!fixture.app.has_unsaved_changes_to_retry());
+}
+
+/// The Retry button in the window's header delivers its control to the
+/// window, which runs its own Retry rather than looking for an app action.
+#[test]
+fn the_header_retry_button_runs_the_windows_retry() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let address = capture_address(&mut fixture);
+    fixture
+        .app
+        .invoke_local_resource_action(&address, &serde_json::Map::new())
+        .unwrap();
+    let (request_id, _) = capture_reports(&sent).pop().unwrap();
+    fixture
+        .app
+        .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
+            request_id,
+            result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                "policy refused".into(),
+            )),
+        });
+    let retry = fixture
+        .app
+        .window_status()
+        .and_then(|status| status.action)
+        .expect("Retry beside the message");
+    let click = tilo_actions::ControlInvocation {
+        address: retry.binding.address().clone(),
+        arguments: serde_json::Map::new(),
+    };
+    assert!(fixture.app.take_history_invocation(&click, None));
+    assert_eq!(fixture.app.document_sync_status(), None);
+    fixture.app.drain_local_input_capture();
+    assert_eq!(capture_reports(&sent).len(), 2, "reported again");
 }

@@ -193,13 +193,20 @@ impl App {
             .action_directory_stamp
             .as_ref()
             .map(|(_, revision)| revision.clone());
-        let pin = revision
+        let pinned = revision
             .as_deref()
-            .and_then(|revision| self.pin_local_document_action_directory(revision));
+            .map(|revision| self.try_pin_local_document_action_directory(revision));
         // A surface that moved under this input (it was published while a
         // route was still opening) leaves the input's actions without a
         // revision: they are recorded once the next published surface can
-        // be pinned (`fill_pending_revisions`), quietly.
+        // be pinned (`fill_pending_revisions`), quietly. While as many
+        // surfaces as may be retained are held by changes on their way, the
+        // input's actions are refused before they edit anything.
+        let revision_pending = !matches!(
+            pinned,
+            Some(Ok(_) | Err(action_directory_snapshot::PinRefused::Full))
+        );
+        let pin = pinned.and_then(Result::ok);
         if let (Some((_, revision)), Some(snapshot)) = (
             self.actions.action_directory_stamp.as_ref(),
             self.actions.action_directory_snapshot.as_ref(),
@@ -259,6 +266,7 @@ impl App {
                     } else {
                         String::new()
                     },
+                    revision_pending: pin.is_none() && revision_pending,
                     aliases: Rc::new(aliases),
                     pin: pin.clone().map(|pin| pin as Rc<dyn std::any::Any>),
                 });
@@ -345,7 +353,11 @@ impl App {
                 while self.local_input_capture.pending.contains_key(&request_id) {
                     request_id = request_id.wrapping_add(1);
                 }
-                if let Err(error) = self.stage_local_action_evidence(&route, &capture, None) {
+                // A change still waiting for a surface to be reported
+                // against is kept once it has one (`fill_pending_revisions`).
+                if !capture.revision.is_empty()
+                    && let Err(error) = self.stage_local_action_evidence(&route, &capture, None)
+                {
                     failures.push(error);
                 }
                 // Transfer custody before enqueueing: send failure must not
@@ -373,7 +385,7 @@ impl App {
         let mut rejected = Vec::new();
         let mut still_going: Vec<String> = Vec::new();
         if connected {
-            self.fill_pending_revisions();
+            self.fill_pending_revisions(now);
             // A bounded amount of nonblocking enqueue work per pump. Retrying
             // reports is not dispatch: the original UUID, snapshot and mutations
             // are reused, and the document action is never executed again.
@@ -465,8 +477,10 @@ impl App {
     /// revision of the surface published since, pinned until its outcome is
     /// known, so it is reported against that one. A change whose action that
     /// surface no longer offers is refused by the broker, and the person is
-    /// told then; until a surface can be pinned, nothing is said.
-    fn fill_pending_revisions(&mut self) {
+    /// told then; until a surface can be pinned, nothing is said. The
+    /// revision binds the change's identity, so its private evidence is
+    /// kept from here, under the identity it is reported with.
+    fn fill_pending_revisions(&mut self, now: crate::time::Instant) {
         if !self
             .local_input_capture
             .pending
@@ -486,14 +500,32 @@ impl App {
         else {
             return;
         };
-        let Some(pin) = self.pin_local_document_action_directory(&revision) else {
+        let Ok(pin) = self.try_pin_local_document_action_directory(&revision) else {
             return;
         };
-        for pending in self.local_input_capture.pending.values_mut() {
-            if pending.capture.revision.is_empty() {
-                pending.capture.revision.clone_from(&revision);
-                pending._pin = Some(Rc::clone(&pin));
-                pending.retry_at = crate::time::now();
+        let waiting: Vec<u64> = self
+            .local_input_capture
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.capture.revision.is_empty())
+            .map(|(request_id, _)| *request_id)
+            .collect();
+        for request_id in waiting {
+            let Some(pending) = self.local_input_capture.pending.get_mut(&request_id) else {
+                continue;
+            };
+            if let Err(error) = pending.capture.report_against(&revision) {
+                // It can never be reported: drop its custody.
+                self.local_input_capture.pending.remove(&request_id);
+                self.local_input_capture_failed(&error);
+                continue;
+            }
+            pending._pin = Some(Rc::clone(&pin));
+            // Reported in this same pump.
+            pending.retry_at = now;
+            let (route, capture) = (pending.route.clone(), pending.capture.clone());
+            if let Err(error) = self.stage_local_action_evidence(&route, &capture, None) {
+                self.local_input_capture_failed(&error);
             }
         }
     }
@@ -734,10 +766,9 @@ impl App {
         let refused = std::mem::take(&mut self.local_input_capture.refused);
         self.local_input_capture.failure = None;
         self.needs_sync = true;
+        // Each is kept as evidence again once it has the surface it is
+        // reported against (`fill_pending_revisions`).
         for (route, capture) in refused {
-            if let Err(error) = self.stage_local_action_evidence(&route, &capture, None) {
-                self.local_input_capture_failed(&error);
-            }
             let history = &mut self.local_input_capture;
             let mut request_id = capture.invocation.as_u64_pair().0;
             while history.pending.contains_key(&request_id) {
@@ -892,6 +923,7 @@ mod tests {
             owner: None,
             queue: queue.clone(),
             revision: "snapshot".into(),
+            revision_pending: false,
             aliases: Rc::new([("body".into(), "body".into())].into()),
             pin: None,
         }])

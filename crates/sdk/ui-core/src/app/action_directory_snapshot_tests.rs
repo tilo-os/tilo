@@ -253,7 +253,10 @@ fn retained_local_directory_survives_mutation_but_never_resolves_ordinary_stale_
     let (mut app, calls) = declared_directory(1);
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
-    let pin = app.pin_local_document_action_directory(&revision).unwrap();
+    let pin = app
+        .try_pin_local_document_action_directory(&revision)
+        .ok()
+        .unwrap();
     app.state_mut_for_test()
         .doc
         .put(ROOT, "removed", true)
@@ -297,11 +300,19 @@ fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() 
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
     let pins = (0..1024)
-        .map(|_| app.pin_local_document_action_directory(&revision).unwrap())
+        .map(|_| {
+            app.try_pin_local_document_action_directory(&revision)
+                .ok()
+                .unwrap()
+        })
         .collect::<Vec<_>>();
     assert!(pins.iter().all(|pin| std::rc::Rc::ptr_eq(&pins[0], pin)));
     assert_eq!(app.actions.local_document_directory_pins.len(), 1);
-    assert!(app.pin_local_document_action_directory("wrong").is_none());
+    assert!(
+        app.try_pin_local_document_action_directory("wrong")
+            .ok()
+            .is_none()
+    );
     assert!(matches!(
         app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
         runtime_collab::ActionDirectoryResolution::Found { .. }
@@ -311,7 +322,11 @@ fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() 
         app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
         runtime_collab::ActionDirectoryResolution::StaleRevision
     ));
-    assert!(app.pin_local_document_action_directory(&revision).is_some());
+    assert!(
+        app.try_pin_local_document_action_directory(&revision)
+            .ok()
+            .is_some()
+    );
 }
 
 #[test]
@@ -325,7 +340,11 @@ fn retained_local_directory_rejects_oversized_snapshot() {
         .unwrap();
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
-    assert!(app.pin_local_document_action_directory(&revision).is_none());
+    assert!(
+        app.try_pin_local_document_action_directory(&revision)
+            .ok()
+            .is_none()
+    );
     assert!(app.actions.local_document_directory_pins.is_empty());
 }
 
@@ -414,7 +433,11 @@ fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() 
         clippy::collection_is_never_read,
         reason = "the pins are guards: holding them fills the limit, popping one frees a slot"
     )]
-    let mut pins = vec![app.pin_local_document_action_directory(&old).unwrap()];
+    let mut pins = vec![
+        app.try_pin_local_document_action_directory(&old)
+            .ok()
+            .unwrap(),
+    ];
     // Tiny subsequent snapshots isolate the count limit from the byte limit.
     app.state_mut_for_test()
         .doc
@@ -428,7 +451,11 @@ fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() 
         publish_declared_directory(&mut app);
         let revision = app.action_directory_revision();
         assert_ne!(revision, old);
-        pins.push(app.pin_local_document_action_directory(&revision).unwrap());
+        pins.push(
+            app.try_pin_local_document_action_directory(&revision)
+                .ok()
+                .unwrap(),
+        );
     }
     assert_eq!(app.actions.local_document_directory_pins.len(), 64);
     app.state_mut_for_test()
@@ -437,13 +464,21 @@ fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() 
         .unwrap();
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
-    assert!(app.pin_local_document_action_directory(&revision).is_none());
+    assert!(
+        app.try_pin_local_document_action_directory(&revision)
+            .ok()
+            .is_none()
+    );
     assert!(matches!(
         app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
         runtime_collab::ActionDirectoryResolution::Found { .. }
     ));
     pins.pop();
-    assert!(app.pin_local_document_action_directory(&revision).is_some());
+    assert!(
+        app.try_pin_local_document_action_directory(&revision)
+            .ok()
+            .is_some()
+    );
 }
 
 #[test]
@@ -455,7 +490,11 @@ fn retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dr
         .unwrap();
     publish_declared_directory(&mut app);
     let old = app.action_directory_revision();
-    let mut pins = vec![app.pin_local_document_action_directory(&old).unwrap()];
+    let mut pins = vec![
+        app.try_pin_local_document_action_directory(&old)
+            .ok()
+            .unwrap(),
+    ];
     let mut rejected = None;
     for generation in 1..64 {
         app.state_mut_for_test()
@@ -464,7 +503,7 @@ fn retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dr
             .unwrap();
         publish_declared_directory(&mut app);
         let revision = app.action_directory_revision();
-        if let Some(pin) = app.pin_local_document_action_directory(&revision) {
+        if let Ok(pin) = app.try_pin_local_document_action_directory(&revision) {
             pins.push(pin);
         } else {
             rejected = Some(revision);
@@ -482,7 +521,11 @@ fn retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dr
         runtime_collab::ActionDirectoryResolution::StaleRevision
     ));
     pins.clear();
-    assert!(app.pin_local_document_action_directory(&rejected).is_some());
+    assert!(
+        app.try_pin_local_document_action_directory(&rejected)
+            .ok()
+            .is_some()
+    );
     assert!(matches!(
         app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
         runtime_collab::ActionDirectoryResolution::StaleRevision
