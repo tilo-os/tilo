@@ -34,6 +34,31 @@ pub(super) fn admitted_ops(
 }
 
 impl super::CapnpBrokerState {
+    /// The records local app windows hold, by the window instance the
+    /// shell launched each for: what each window shows, known as soon as its
+    /// app opens a record, before anyone points in it.
+    pub fn window_records(&self) -> Vec<(u64, CrdtRoute)> {
+        let Ok(instances) = self.window_instances.lock().map(|windows| windows.clone()) else {
+            return Vec::new();
+        };
+        let Ok(channels) = self.channels.lock() else {
+            return Vec::new();
+        };
+        let mut held: Vec<(u64, CrdtRoute)> = channels
+            .iter()
+            .flat_map(|(key, subscribers)| {
+                subscribers.op.iter().filter_map(|sub| {
+                    let instance = *instances.get(&sub.peer_id)?;
+                    let route = CrdtRoute::from_channel_key(key);
+                    (!route.app_id.is_empty()).then_some((instance, route))
+                })
+            })
+            .collect();
+        held.sort_by_key(|(instance, route)| (*instance, route.channel_key()));
+        held.dedup();
+        held
+    }
+
     /// Whether a local app subscribes to exactly `route`'s documents.
     pub fn holds_route(&self, route: &CrdtRoute) -> bool {
         self.channels.lock().is_ok_and(|channels| {
@@ -67,6 +92,34 @@ mod tests {
     use collab_types::{
         DocumentMutation, Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id,
     };
+
+    /// A window's records are known by the window instance its app was
+    /// launched for, from when it opens them until it disconnects; an app
+    /// launched for no window instance names no window.
+    #[test]
+    fn the_records_an_app_window_holds_are_known_by_its_window_instance() {
+        use crate::collab_broker::FanoutState;
+        use crate::collab_outbound::PeerPublisher;
+        use std::sync::Arc;
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = super::super::CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let note = CrdtRoute::record("so.tilo.notes", "room-1", "note-1");
+        let other = CrdtRoute::record("so.tilo.sheets", "room-1", "budget");
+        state.ensure_channel(&note.channel_key());
+        state.ensure_channel(&other.channel_key());
+        state.window_instances.lock().unwrap().insert(2, 77);
+        let _note = state.subscribe_ops(&note.channel_key(), 2);
+        let _other = state.subscribe_ops(&other.channel_key(), 3);
+        assert_eq!(state.window_records(), [(77, note)]);
+        state.remove_connection(2);
+        assert!(state.window_records().is_empty(), "gone with its app");
+    }
 
     /// A message another person posted reached this device before its app
     /// opened the record it went into: the app still receives it when it

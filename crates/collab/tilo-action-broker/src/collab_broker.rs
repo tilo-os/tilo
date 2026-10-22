@@ -292,6 +292,14 @@ impl FanoutState {
             .is_some_and(|state| state.holds_route(route))
     }
 
+    /// The records local app windows hold, by the window instance the shell
+    /// launched each for; see [`CapnpBrokerState::window_records`].
+    pub fn window_records(&self) -> Vec<(u64, CrdtRoute)> {
+        self.capnp_state()
+            .map(|state| state.window_records())
+            .unwrap_or_default()
+    }
+
     /// Ask the local apps holding records in `cluster_id` to publish their
     /// snapshots; see [`CapnpBrokerState::request_room_snapshots`].
     pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
