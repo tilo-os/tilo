@@ -3498,6 +3498,19 @@ impl ChromeState {
         self.push_notification_full(Notification::new(title, body))
     }
 
+    /// Post notices queued off the compositor loop (storage running out, the GPU given up for
+    /// software); whether there were any.
+    pub fn post_queued(&mut self, notices: Vec<Notification>) -> bool {
+        if notices.is_empty() {
+            return false;
+        }
+        for notice in notices {
+            self.push_notification_full(notice);
+        }
+        self.bump();
+        true
+    }
+
     /// Enforces the [`MAX_NOTIFICATIONS`] cap. While
     /// [`Self::notifications_quiet`], goes straight to history instead of a
     /// banner, unless it carries [`Notification::bypass_dnd`] (shell-only;

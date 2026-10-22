@@ -4968,36 +4968,6 @@ fn post_collaborator_version_notices(frame_builder: &mut FrameBuilder) -> bool {
     posted
 }
 
-/// The renderer gave the GPU up and draws in software
-/// ([`crate::shell::graphics_notice`]).
-fn post_graphics_notices(frame_builder: &mut FrameBuilder) -> bool {
-    let notices = crate::shell::graphics_notice::drain();
-    if notices.is_empty() {
-        return false;
-    }
-    frame_builder.with_chrome(|chrome| {
-        for notice in notices {
-            chrome.push_notification_full(notice);
-        }
-        chrome.bump();
-    });
-    true
-}
-
-fn post_storage_notices(frame_builder: &mut FrameBuilder) -> bool {
-    let notices = crate::shell::storage_notice::drain();
-    if notices.is_empty() {
-        return false;
-    }
-    frame_builder.with_chrome(|chrome| {
-        for notice in notices {
-            chrome.push_notification_full(notice);
-        }
-        chrome.bump();
-    });
-    true
-}
-
 /// Start XDG autostart entries once per login, as soon as there is a
 /// workspace to attribute them to (and whose X11 display they may use).
 fn run_autostart_once(frame_builder: &FrameBuilder) {
@@ -6643,12 +6613,7 @@ fn dispatch_control_command(
             (test_control::deadlock_main_loop_refused(), Vec::new())
         }
         test_control::Command::GpuFault { fault } => {
-            if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
-                crate::shell::render::paint::inject_gpu_fault(fault);
-                (test_control::Response::Ok { frame: 0 }, Vec::new())
-            } else {
-                (test_control::gpu_fault_refused(), Vec::new())
-            }
+            (test_control::inject_gpu_fault(fault), Vec::new())
         }
         cmd => {
             let state = FrameBuilderControlState {
@@ -12166,8 +12131,10 @@ pub fn run() {
             crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder, &session_wake);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
-        session_changed |= post_storage_notices(&mut frame_builder);
-        session_changed |= post_graphics_notices(&mut frame_builder);
+        frame_builder.with_chrome(|chrome| {
+            session_changed |= chrome.post_queued(crate::shell::storage_notice::drain());
+            session_changed |= chrome.post_queued(crate::shell::graphics_notice::drain());
+        });
         session_changed |= post_system_update_asks(&mut frame_builder, &session);
         session_changed |= post_collaborator_version_notices(&mut frame_builder);
         session_changed |= post_drive_events(&mut frame_builder);

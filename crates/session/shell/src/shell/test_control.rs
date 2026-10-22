@@ -997,13 +997,18 @@ pub fn deadlock_main_loop_refused() -> Response {
     }
 }
 
-/// What a build without development overrides answers to `gpu_fault`.
+/// `gpu_fault`: a development build has the presenting renderer suffer `fault`; any other
+/// build refuses.
 #[must_use]
-pub fn gpu_fault_refused() -> Response {
-    Response::Err {
-        code: crate::compositor::dev_test_identity::DEV_IMAGE_ONLY.into(),
-        message: "a GPU fault is injected only by development builds".into(),
+pub fn inject_gpu_fault(fault: crate::shell::render::paint::InjectedGpuFault) -> Response {
+    if !crate::compositor::dev_env::DEV_ENV_OVERRIDES {
+        return Response::Err {
+            code: crate::compositor::dev_test_identity::DEV_IMAGE_ONLY.into(),
+            message: "a GPU fault is injected only by development builds".into(),
+        };
     }
+    crate::shell::render::paint::inject_gpu_fault(fault);
+    Response::Ok { frame: 0 }
 }
 
 /// Dispatch a single command against the live compositor state.

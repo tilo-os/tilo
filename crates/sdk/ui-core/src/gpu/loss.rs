@@ -85,7 +85,7 @@ impl LossWatch {
     /// finished (a frame ran out of its completion allowance, or the renderer
     /// does not wait at all). Work already watched keeps its earlier start.
     pub fn unfinished(&mut self, queue: &Queue) {
-        self.unfinished_at(queue, Instant::now());
+        self.unfinished_at(queue, crate::time::now());
     }
 
     fn unfinished_at(&mut self, queue: &Queue, now: Instant) {
@@ -104,7 +104,7 @@ impl LossWatch {
     /// this declares. Polls `device` once, without blocking, when work is
     /// pending; costs nothing otherwise.
     pub fn lost(&mut self, device: &Device) -> Option<String> {
-        self.lost_at(device, Instant::now())
+        self.lost_at(device, crate::time::now())
     }
 
     fn lost_at(&mut self, device: &Device, now: Instant) -> Option<String> {
@@ -281,7 +281,7 @@ mod tests {
         let (context, id) = device();
         let handle = &context.devices[id];
         let mut watch = LossWatch::new(handle.loss_monitor());
-        let start = Instant::now();
+        let start = crate::time::now();
         submit_empty(&handle.device, &handle.queue);
         watch.unfinished_at(&handle.queue, start);
         let _ = handle.device.poll(wgpu::PollType::wait_indefinitely());
@@ -309,7 +309,7 @@ mod tests {
         submit_empty(&handle.device, &handle.queue);
 
         let mut watch = LossWatch::new(handle.loss_monitor());
-        let start = Instant::now();
+        let start = crate::time::now();
         watch.unfinished_at(&handle.queue, start);
         assert!(
             watch
