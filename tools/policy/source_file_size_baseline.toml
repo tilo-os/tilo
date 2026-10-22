@@ -75,7 +75,6 @@
 "crates/dev/tilo-app-cli/src/main.rs" = 4500
 "crates/dev/tilo-app-cli/src/tests.rs" = 6500
 "crates/dev/tilo-vm/src/app.rs" = 9500
-"crates/dev/tilo-vmd/src/daemon.rs" = 3500
 "crates/dev/ui-examples/examples/dashboard_perf_bench.rs" = 3500
 "crates/doc/tilo-doc-codecs/src/docx/export.rs" = 4000
 "crates/doc/tilo-doc-codecs/src/odt/export.rs" = 3500
