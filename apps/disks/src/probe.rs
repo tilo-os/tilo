@@ -46,17 +46,19 @@ fn unreadable() -> String {
 
 /// The service's storage as the drives Disks shows: every disk with a size,
 /// its partitions (an encrypted one with what it holds once unlocked), and
-/// its health. Physical drives first, virtual ones (zram, loop) after.
+/// its health. Physical drives first, virtual ones (loop) after. A zram
+/// device is compressed memory, not storage, and is left out.
 pub fn topology_from(storage: &Storage) -> Topology {
     let mut drives: Vec<Drive> = storage
         .devices
         .iter()
         .filter(|device| device.kind == "disk" && device.size > 0)
         .map(drive_from)
+        .filter(|drive| drive.kind != DriveKind::Zram)
         .collect();
     // Physical media first, virtual devices after, so the default selection
-    // lands on a real disk, not the swap zram. Stable, so kernel enumeration
-    // order is kept within each group.
+    // lands on a real disk. Stable, so kernel enumeration order is kept
+    // within each group.
     drives.sort_by_key(|drive| drive.kind.is_virtual());
     Topology { drives }
 }
@@ -147,6 +149,8 @@ fn partition_from(device: &StorageDevice) -> Partition {
             .filter(|&used| size > 0 && used <= size),
         uuid: device.uuid.clone(),
         encryption,
+        part_type: device.part_type.clone(),
+        part_type_name: device.part_type_name.clone(),
     }
 }
 
@@ -350,17 +354,13 @@ mod tests {
     // USER REQUIREMENT (2026-10-22): "the Disks app on their laptop can't even read disks"
     /// Disks lists the laptop's disks and partitions: the Yoga's `NVMe` drive
     /// with its eight partitions, the two LUKS2 partitions showing the ext4
-    /// filesystems they hold (root at /sysroot, home at /var/home), its
-    /// health, and the zram swap after it.
+    /// filesystems they hold (root at /sysroot, home at /var/home), and its
+    /// health.
     #[test]
     fn disks_lists_the_laptops_disks_and_partitions() {
         let topology = yoga();
         let names: Vec<&str> = topology.drives.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["nvme0n1", "zram0"],
-            "the real drive first, zram after"
-        );
+        assert_eq!(names, ["nvme0n1"], "the drive; zram is memory, not a drive");
 
         let nvme = &topology.drives[0];
         assert_eq!(nvme.kind, DriveKind::Nvme);
@@ -423,11 +423,30 @@ mod tests {
         assert_eq!(smart.written_gb, Some(44_492));
         assert!(smart.detail.is_none());
 
-        let zram = &topology.drives[1];
-        assert_eq!(zram.kind, DriveKind::Zram);
-        assert_eq!(zram.partitions.len(), 1, "swap spans the whole zram device");
-        assert_eq!(zram.partitions[0].mount_display().as_deref(), Some("Swap"));
-        assert!(!zram.removable);
+        let reserved = &nvme.partitions[1];
+        assert_eq!(
+            reserved.display_label(),
+            "Microsoft reserved",
+            "a partition with no label is named by its type"
+        );
+    }
+
+    /// zram is compressed memory: it is not listed among the drives, while a
+    /// loop device (a disk image) still is, after the real drives.
+    #[test]
+    fn zram_is_not_a_drive() {
+        let lsblk = r#"{"blockdevices":[
+            {"name":"zram0","kname":"zram0","size":8589934592,"type":"disk","fstype":"swap",
+             "mountpoint":"[SWAP]"},
+            {"name":"loop0","kname":"loop0","size":1073741824,"type":"disk","fstype":"ext4"},
+            {"name":"sda","kname":"sda","size":500107862016,"type":"disk","tran":"sata"}
+        ]}"#;
+        let names: Vec<String> = topology_from(&served(lsblk, &BTreeMap::new()))
+            .drives
+            .into_iter()
+            .map(|drive| drive.name)
+            .collect();
+        assert_eq!(names, ["sda", "loop0"]);
     }
 
     /// A locked LUKS partition says it is encrypted and nothing it cannot
@@ -509,9 +528,11 @@ mod tests {
         for drive in &mut drives {
             drive.smart = None;
         }
-        let expected: serde_json::Value =
+        // zram is no longer listed: it is memory, not a drive.
+        let mut expected: Vec<serde_json::Value> =
             serde_json::from_str(include_str!("../tests/fixtures/lsblk-drives.json")).unwrap();
-        assert_eq!(serde_json::to_value(drives).unwrap(), expected);
+        expected.retain(|drive| drive["kind"] != "Zram");
+        assert_eq!(serde_json::to_value(drives).unwrap(), serde_json::Value::from(expected));
     }
 
     /// Health the drive reports becomes the verdict: a critical warning

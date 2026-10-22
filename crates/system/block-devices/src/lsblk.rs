@@ -49,6 +49,9 @@ pub struct BlockDevice {
     /// `MOUNTPOINTS`: every mount of the device.
     pub mountpoints: Vec<String>,
     pub parttype: Option<String>,
+    /// `PARTTYPENAME`: what the partition type is called (`EFI System`,
+    /// `Microsoft reserved`).
+    pub parttypename: Option<String>,
     pub partuuid: Option<String>,
     pub pttype: Option<String>,
     pub ptuuid: Option<String>,
@@ -95,6 +98,7 @@ impl BlockDevice {
                 })
                 .unwrap_or_default(),
             parttype: string(value, "parttype"),
+            parttypename: string(value, "parttypename"),
             partuuid: string(value, "partuuid"),
             pttype: string(value, "pttype"),
             ptuuid: string(value, "ptuuid"),

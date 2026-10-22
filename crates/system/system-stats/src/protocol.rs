@@ -683,6 +683,12 @@ pub struct StorageDevice {
     /// The version of what it holds: `2` for LUKS2.
     #[serde(default)]
     pub fs_version: Option<String>,
+    /// A partition's type GUID (`c12a7328-…` for an EFI system partition).
+    #[serde(default)]
+    pub part_type: Option<String>,
+    /// What that type is called (`EFI System`, `Microsoft reserved`).
+    #[serde(default)]
+    pub part_type_name: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
