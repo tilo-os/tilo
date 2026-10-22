@@ -40,7 +40,7 @@ const CODEC_SCENARIOS: &[&str] = &[
 const DEVICE_DISPLAYS: &str = "device-displays";
 /// Displays with two displays, in each state its design names.
 const DISPLAYS_TWO: &str = "displays-two";
-const DISPLAYS_PICKED: &str = "displays-picked";
+const DISPLAYS_KEYBOARD: &str = "displays-keyboard";
 const DISPLAYS_CANVAS: &str = "displays-canvas";
 const DISPLAYS_DRAGGING: &str = "displays-dragging";
 const DISPLAYS_IDENTIFY: &str = "displays-identify";
@@ -85,7 +85,7 @@ pub fn names() -> &'static [&'static str] {
                 ACCOUNTS_LINKED,
                 DEVICE_DISPLAYS,
                 DISPLAYS_TWO,
-                DISPLAYS_PICKED,
+                DISPLAYS_KEYBOARD,
                 DISPLAYS_CANVAS,
                 DISPLAYS_DRAGGING,
                 DISPLAYS_IDENTIFY,
@@ -114,7 +114,7 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
         Some(DEVICE_DISPLAYS) => (1200, 1100),
         Some(
-            DISPLAYS_TWO | DISPLAYS_PICKED | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
+            DISPLAYS_TWO | DISPLAYS_KEYBOARD | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
             | DISPLAYS_IDENTIFY,
         ) => (1200, 1300),
         Some(STORAGE_DRIVES) => (1200, 1450),
@@ -179,8 +179,8 @@ pub enum SpeakersSample {
 pub enum DisplaysSample {
     /// The pane as it opens: the main display selected.
     Default,
-    /// The monitor chosen in the display picker, its menu open.
-    PickedInList,
+    /// The monitor chosen from the keyboard, the canvas focused.
+    ChosenByKeyboard,
     /// The monitor chosen on the canvas.
     PickedOnCanvas,
     /// The monitor held mid-drag, lined up with the panel.
@@ -243,7 +243,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         input_hardware: keyboard_fixture(fixture.scenario()),
         displays: match fixture.scenario() {
             Some(DISPLAYS_TWO) => Some(DisplaysSample::Default),
-            Some(DISPLAYS_PICKED) => Some(DisplaysSample::PickedInList),
+            Some(DISPLAYS_KEYBOARD) => Some(DisplaysSample::ChosenByKeyboard),
             Some(DISPLAYS_CANVAS) => Some(DisplaysSample::PickedOnCanvas),
             Some(DISPLAYS_DRAGGING) => Some(DisplaysSample::Dragging),
             Some(DISPLAYS_IDENTIFY) => Some(DisplaysSample::Identifying),
@@ -554,6 +554,9 @@ pub enum Staged {
     List(Category),
     /// `category` with the sidebar filtered by [`SEARCH_QUERY`].
     Search(Category),
+    /// The setting with this index id, scrolled to with the keyboard on its
+    /// control, as opening it from search does.
+    Setting(&'static str),
 }
 
 /// What `scenario` shows.
@@ -561,9 +564,10 @@ pub fn staged(scenario: Option<&str>) -> Staged {
     match scenario {
         None => Staged::Pane(Category::Appearance),
         Some(
-            DEVICE_DISPLAYS | DISPLAYS_TWO | DISPLAYS_PICKED | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
+            DEVICE_DISPLAYS | DISPLAYS_TWO | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
             | DISPLAYS_IDENTIFY,
         ) => Staged::Pane(Category::Displays),
+        Some(DISPLAYS_KEYBOARD) => Staged::Setting("display.arrangement"),
         Some(STORAGE_DRIVES) => Staged::Pane(Category::Storage),
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
             Staged::Pane(Category::Keyboard)
@@ -724,9 +728,12 @@ mod tests {
             names().len(),
             Category::ALL.len() + 25 + CODEC_SCENARIOS.len()
         );
+        assert_eq!(
+            staged(Some(DISPLAYS_KEYBOARD)),
+            Staged::Setting("display.arrangement")
+        );
         for scenario in [
             DISPLAYS_TWO,
-            DISPLAYS_PICKED,
             DISPLAYS_CANVAS,
             DISPLAYS_DRAGGING,
             DISPLAYS_IDENTIFY,

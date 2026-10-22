@@ -1469,13 +1469,12 @@ fn tile(host: &ui::headless::FrameHarness, name: &str) -> ui::vello::kurbo::Rect
     ui::vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1)
 }
 
-// USER REQUIREMENT (2026-10-21): there is one display selection, shared
-// by the arrangement canvas and the display picker under it. Choosing a
-// display in the picker selects and highlights it on the canvas;
-// clicking, tapping or starting to drag a display on the canvas selects
-// it and updates the picker.
+// USER REQUIREMENT (2026-10-22): there is one display selection, and it
+// is the arrangement canvas: no second picker beside it. Clicking, tapping
+// or starting to drag a display on the canvas selects it, as do the arrow
+// keys and a screen reader; the page then shows that display's settings.
 #[test]
-fn the_picker_and_the_canvas_share_one_selection() {
+fn the_canvas_is_the_one_display_selection() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let mut pane = laptop_with_monitor();
     pane.normalize_selection();
@@ -1485,12 +1484,8 @@ fn the_picker_and_the_canvas_share_one_selection() {
         Some("eDP-1"),
         "the main display is selected when the page opens"
     );
-    let connected = pane.connected_outputs();
-    let picker = pane.display_picker(&connected);
-    assert_eq!(picker.selected(), "eDP-1");
-    drop(connected);
-
-    // Chosen in the picker: its binding is the shared selection.
+    // Chosen from the keyboard or by a screen reader: the canvas sets the
+    // page's selection.
     pane.selected.set("HDMI-A-1".into());
     assert!(pane.poll(), "the page shows the newly chosen display");
     assert_eq!(
@@ -1510,7 +1505,7 @@ fn the_picker_and_the_canvas_share_one_selection() {
     assert!(chosen[0].contains("Desk monitor"), "{chosen:?}");
     drop(connected);
 
-    // Chosen on the canvas: the picker follows.
+    // Chosen on the canvas by pointer.
     let connected = pane.connected_outputs();
     let canvas = pane.arrangement_canvas(&connected);
     drop(connected);
@@ -1537,12 +1532,15 @@ fn the_picker_and_the_canvas_share_one_selection() {
             .map(|output| output.connector.as_str()),
         Some("eDP-1")
     );
-    let connected = pane.connected_outputs();
-    assert_eq!(pane.display_picker(&connected).selected(), "eDP-1");
+    let ids = page_ids(&pane);
+    assert!(
+        !ids.iter().any(|id| id == "display.picker"),
+        "no second place to choose: {ids:?}"
+    );
 }
 
 // USER REQUIREMENT (2026-10-21): only the selected display's settings
-// show, below the canvas and picker: no list of every display, and no
+// show, below the canvas: no list of every display, and no
 // brightness slider anywhere but in the selected display's settings,
 // and only when that display's brightness can be controlled.
 #[test]
@@ -1563,7 +1561,6 @@ fn only_the_selected_displays_settings_show() {
         1,
         "the panel's brightness, once, in its settings"
     );
-    assert!(ids.iter().any(|id| id == "display.picker"));
     assert!(ids.iter().any(|id| id == "display.arrangement"));
 
     // The monitor has no brightness control: no slider at all.
@@ -1590,8 +1587,7 @@ fn only_the_selected_displays_settings_show() {
 }
 
 // USER REQUIREMENT (2026-10-21): virtual and disconnected connectors
-// never appear anywhere: no canvas tile, no picker entry, no settings,
-// no brightness.
+// never appear anywhere: no canvas tile, no settings, no brightness.
 #[test]
 fn a_virtual_or_disconnected_connector_appears_nowhere() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
@@ -1621,15 +1617,6 @@ fn a_virtual_or_disconnected_connector_appears_nowhere() {
             .iter()
             .all(|tile| tile == "eDP-1" || tile == "HDMI-A-1")
     );
-    let entries: Vec<String> = DisplayModel::picker_choices(&connected)
-        .into_iter()
-        .map(|(display, _)| display)
-        .collect();
-    assert_eq!(
-        entries,
-        ["HDMI-A-1", "eDP-1"],
-        "the picker lists the two displays alone"
-    );
     drop(connected);
     pane.selected.set("HDMI-A-2".into());
     pane.poll();
@@ -1648,8 +1635,8 @@ fn a_virtual_or_disconnected_connector_appears_nowhere() {
 }
 
 // USER REQUIREMENT (2026-10-21): hovering or selecting a display on the
-// canvas, or choosing it in the picker, briefly flashes its number on
-// that physical display, so the person always knows which screen is
+// canvas (by pointer, keys or screen reader) briefly flashes its number
+// on that physical display, so the person always knows which screen is
 // which.
 #[test]
 fn pointing_at_or_choosing_a_display_flashes_its_number_on_it() {
