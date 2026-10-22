@@ -1681,6 +1681,8 @@ search-catalogue-actions-unavailable = Aktionen sind noch nicht verfügbar. Vers
 
 # Suche: Kontinuitätsaktionen zwischen deinen zertifizierten Geräten
 search-continuity-certified-device = Zertifiziertes Gerät
+search-continuity-window-to = Dieses Fenster auf { $device } zeigen
+search-continuity-window-to-subtitle = Holt es dort nach vorn; hier bleibt es offen
 search-continuity-play-on = { $source } auf { $target } abspielen
 search-continuity-wake-device = Gerät aufwecken
 search-continuity-wake-device-subtitle = Sendet ein Wecksignal von einem Gerät in seinem Netzwerk

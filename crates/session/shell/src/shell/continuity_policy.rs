@@ -181,7 +181,9 @@ impl ContinuityPolicySnapshot {
             PersonalFabricAction::Tethering { .. } => ContinuityCapability::WifiSettings,
             // A legacy app keeps running on the device that hosts it; the
             // person's other devices show it through a stream of its window.
-            PersonalFabricAction::WindowViews { .. } => ContinuityCapability::AppContinuations,
+            PersonalFabricAction::WindowViews { .. } | PersonalFabricAction::ShowTab { .. } => {
+                ContinuityCapability::AppContinuations
+            }
             // Waking a sleeping device is administration of the person's own
             // machines, available like presence itself.
             PersonalFabricAction::WakeDevice { .. }

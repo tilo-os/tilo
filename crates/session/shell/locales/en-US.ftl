@@ -1700,6 +1700,8 @@ search-catalogue-actions-unavailable = Actions aren't available yet. Try again i
 
 # Search: continuity actions across your certified devices
 search-continuity-certified-device = certified device
+search-continuity-window-to = Show this window on { $device }
+search-continuity-window-to-subtitle = Brings it to the front there; it stays open here
 search-continuity-play-on = Play { $source } on { $target }
 search-continuity-wake-device = Wake a device
 search-continuity-wake-device-subtitle = Sends a wake-up signal from a device on its network

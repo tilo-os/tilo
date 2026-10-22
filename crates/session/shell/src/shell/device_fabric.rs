@@ -746,6 +746,11 @@ pub enum PersonalFabricAction {
         sequence: u64,
         event: FabricInputEvent,
     },
+    /// Show this tab of the person's workspaces on the receiving device:
+    /// the person moved its window there from the sending one.
+    ShowTab {
+        tab: u64,
+    },
 }
 
 /// What became of one request to wake a device.
@@ -1079,6 +1084,11 @@ impl PersonalFabricActionEnvelope {
                     && !chunk.valid_for(RemoteCaptureKind::Microphone)
                     && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
                 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::ShowTab { tab } => {
+                if *tab == 0 {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -3318,6 +3328,25 @@ mod tests {
         video_cannot_be_sent_to_an_audio_only_device();
         media_action_locators_reject_host_paths_and_url_credentials();
         media_terminal_actions_require_exact_nonzero_request_and_session();
+    }
+
+    #[test]
+    fn a_window_shown_on_another_device_names_a_tab() {
+        let source = id("laptop");
+        let target = id("board");
+        let ok = |tab| {
+            PersonalFabricActionEnvelope {
+                request_id: [5; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::ShowTab { tab },
+            }
+            .validate_at(&source, &target, 10_000)
+            .is_ok()
+        };
+        assert!(ok(7));
+        assert!(!ok(0), "a tab id is never zero");
     }
 
     #[test]

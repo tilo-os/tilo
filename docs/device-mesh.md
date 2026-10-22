@@ -372,6 +372,11 @@ authorization.
   measures every member with one microphone on any device and produces a
   before/after proposal; trims change only when it is applied, and one
   revert restores the previous ones.
+- **Show this window on another device** brings the window in front here to
+  the front of another online device of the person. The workspace is theirs
+  on both, so nothing is copied: the target selects the same tab by its id
+  and opens its own instance of the app, as it does for every tab of the
+  person's workspaces. It is part of app continuations.
 - **The lock follows the person.** Each device's presence carries whether it
   is locked, when the person last locked or unlocked it themselves and when
   they last used it (`shell::owner_session`). Locking a device locks the
