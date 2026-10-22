@@ -65,7 +65,9 @@ pub use succession::succeeded_authority;
 mod resources;
 mod sealed_compaction;
 mod sealed_history;
-pub use sealed_compaction::{SealCheckpoint, SealDelta};
+pub use sealed_compaction::{
+    OpenedRecord, SealCheckpoint, SealDelta, UnmergedReason, UnmergedWrite,
+};
 
 #[expect(
     clippy::needless_pass_by_value,
