@@ -583,8 +583,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-22): "Fix the text menu's edge clamping and
-    // accessibility along the way."
     #[test]
     fn a_menu_opened_on_small_words_near_an_edge_stays_inside_the_owner() {
         let theme = Theme::dark();

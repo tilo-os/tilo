@@ -2598,8 +2598,6 @@ mod tests {
                 vec!["image/png".to_string()]
             );
         }
-        // USER REQUIREMENT (2026-10-22): "rich copy and paste: a rich mode in
-        // every clipboard implementation including the compositor's"
         // Phase `a_chrome_rich_copy_offers_html_and_text_as_one_copy`.
         {
             let s = store();

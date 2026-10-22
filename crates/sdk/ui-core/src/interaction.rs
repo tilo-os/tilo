@@ -1218,7 +1218,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-22): "Reordering slides by dragging with a finger."
     #[test]
     fn a_held_item_is_picked_up_moved_and_put_back() {
         use TouchPointerEvent::{Move, Press, Release, Scroll};

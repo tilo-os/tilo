@@ -169,10 +169,8 @@ fn body_pixels(panel: Rect, radius: f64, inset: f64) -> impl Iterator<Item = (u3
     })
 }
 
-// USER REQUIREMENT (2026-10-22): "A menu must keep its text contrast
-// whatever is behind it. ... If \"Bulleted list\" and \"Numbered list\" are
-// meant to look disabled in a title, they must still read as disabled
-// text, not fade into the backdrop."
+// Menu text keeps its contrast over any backdrop; a disabled row still
+// reads as dimmer text rather than fading into what is behind it.
 #[test]
 fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
     // Motion reads at its end: this test checks the resting frame.
@@ -272,8 +270,7 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
     }
 }
 
-// USER REQUIREMENT (2026-10-22): "A menu must keep its text contrast
-// whatever is behind it." The words' menu of a text box drawn in dark ink
+// The words' menu of a text box drawn in dark ink
 // on a light slide, under the dark theme: its labels are the menu's inks,
 // not the words'.
 #[test]

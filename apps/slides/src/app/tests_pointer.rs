@@ -844,8 +844,7 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
     }
 }
 
-// USER REQUIREMENT (2026-10-22): "Reordering slides by dragging with a
-// finger": a finger held on a slide in the list picks it up and a drag then
+// A finger held on a slide in the list picks it up and a drag then
 // moves it; a swipe still scrolls the list, and a hold put down in place
 // opens the slide's menu.
 #[test]
