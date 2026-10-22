@@ -1072,39 +1072,51 @@ impl SlidesApp {
             Self::push_section_label(m, labels, x0, &mut y, &tr("slides-font"));
             let field_w = m.width("", Measure::FontInput).min(x1 - x0);
             *font_input = Some(Rect::new(x0, y, x0 + field_w, y + m.control_h));
-            // Bold and italic are square glyph toggles.
-            let bold_w = m.control_h;
-            let italic_w = m.control_h;
-            let toggles_w = bold_w + m.s1 + italic_w;
+            // Bold, italic and the two lists are square glyph toggles,
+            // beside the size field when they fit, under it otherwise.
+            let toggles = [
+                (
+                    Icon::Bold,
+                    tr("slides-bold"),
+                    self.mark_on(&ui::widget::marks::Mark::Bold),
+                    Hit::ToggleBold,
+                ),
+                (
+                    Icon::Italic,
+                    tr("slides-italic"),
+                    self.mark_on(&ui::widget::marks::Mark::Italic),
+                    Hit::ToggleItalic,
+                ),
+                (
+                    Icon::List,
+                    tr("slides-bulleted-list"),
+                    self.list_on(false),
+                    Hit::ToggleList(false),
+                ),
+                (
+                    Icon::ListOrdered,
+                    tr("slides-numbered-list"),
+                    self.list_on(true),
+                    Hit::ToggleList(true),
+                ),
+            ];
+            let square = m.control_h;
+            let count = toggles.len() as f64;
+            let toggles_w = square * count + m.s1 * (count - 1.0);
             let toggles_y = if field_w + m.s2 + toggles_w <= x1 - x0 + 0.5 {
                 y
             } else {
                 y + m.control_h + m.s2
             };
-            let bold = Rect::new(
-                x1 - toggles_w,
-                toggles_y,
-                x1 - italic_w - m.s1,
-                toggles_y + m.control_h,
-            );
-            buttons.push(UiButton {
-                rect: bold,
-                kind: ButtonKind::Icon {
-                    icon: Icon::Bold,
-                    name: tr("slides-bold"),
-                    active: el.bold,
-                },
-                hit: Hit::ToggleBold,
-            });
-            buttons.push(UiButton {
-                rect: Rect::new(x1 - italic_w, toggles_y, x1, toggles_y + m.control_h),
-                kind: ButtonKind::Icon {
-                    icon: Icon::Italic,
-                    name: tr("slides-italic"),
-                    active: el.italic,
-                },
-                hit: Hit::ToggleItalic,
-            });
+            let mut left = x1 - toggles_w;
+            for (icon, name, active, hit) in toggles {
+                buttons.push(UiButton {
+                    rect: Rect::new(left, toggles_y, left + square, toggles_y + m.control_h),
+                    kind: ButtonKind::Icon { icon, name, active },
+                    hit,
+                });
+                left += square + m.s1;
+            }
             y = toggles_y + m.control_h + m.s6;
 
             Self::push_section_label(m, labels, x0, &mut y, &tr("slides-alignment"));
@@ -1351,8 +1363,9 @@ impl SlidesApp {
         // scale.
         let reader_scale = tr.text_scale();
         tr.set_text_scale(1.0);
+        self.layout_text_editor(tr, theme, chrome, &pal);
         self.draw_editor_canvas(scene, t, tr, theme, chrome, &pal);
-        self.draw_text_editor(scene, t, tr, theme, chrome, &pal);
+        self.draw_text_editor(scene, t, tr, theme);
         tr.set_text_scale(reader_scale);
 
         // The content column's header: a hairline under it, its controls.

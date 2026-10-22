@@ -567,6 +567,9 @@ fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, Stri
             "the retained editor belongs to the physically clicked box"
         );
     });
+    // The double-click selects the word under it, as in any text field;
+    // the cases below write after the box's words.
+    bench.key("End");
     (bench, id)
 }
 
