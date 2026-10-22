@@ -609,6 +609,9 @@ fn app_row(entry: &CatalogueEntry, score: i32) -> SearchResult {
                 score,
                 move |_doc, _root, chrome: &Chrome| show_in_store(chrome, &id, &name),
             );
+            // Showing a page changes nothing on this device; installing is
+            // the separate "Install and open" effect.
+            row.operation_kind = tilo_actions::OperationKind::View;
             // Where it comes from is said once: beside the tag line, or as
             // the second line when there is no tag line.
             if entry.not_built_for_this_device || !entry.tagline.trim().is_empty() {
