@@ -379,6 +379,9 @@ pub struct TileHost {
     /// The tab this tile shows, named to [`panic_scope`](super::panic_scope)
     /// while its application runs. Stamped by the owning `WindowGroup`.
     panic_scope: std::cell::Cell<Option<u64>>,
+    /// The window this tile's app is shown in, when its host draws the
+    /// app's slots in the window's bar ([`Self::set_hosted_window`]).
+    hosted_window: Option<crate::hosted_window::HostedWindow>,
     rect: Rect,
     /// How far [`Self::offset_layout`] moved the tile from where layout put
     /// it. The content keeps its own layout rect, so it is drawn this much
@@ -426,6 +429,13 @@ const OPENING_SPINNER_PX: f64 = 36.0;
 const OPENING_SPINNER_PX_F32: f32 = 36.0;
 
 const OPENING_SPINNER_GAP: f64 = 24.0;
+
+/// While a tile's application runs: its tab named to a panic hook, and its
+/// window current for its bar's slots.
+struct Running {
+    _panic: super::panic_scope::Scope,
+    _window: crate::window_toolbar::WindowScope,
+}
 
 impl TileHost {
     /// Move the tile by `dx`; see
@@ -764,6 +774,7 @@ impl TileHost {
             was_presented: std::cell::Cell::new(false),
             content_was_presented: std::cell::Cell::new(false),
             panic_scope: std::cell::Cell::new(None),
+            hosted_window: None,
             rect: Rect::ZERO,
             content_shift: 0.0,
             focused: false,
@@ -817,8 +828,26 @@ impl TileHost {
         self.panic_scope.set(Some(tab));
     }
 
-    fn running(&self) -> super::panic_scope::Scope {
-        super::panic_scope::enter(self.panic_scope.get())
+    fn running(&self) -> Running {
+        Running {
+            _panic: super::panic_scope::enter(self.panic_scope.get()),
+            _window: crate::window_toolbar::enter(self.hosted_window.as_ref()),
+        }
+    }
+
+    /// Show this tile's app in `window`: while the app runs, its
+    /// [`crate::window_toolbar`] calls act on `window`, where the host reads
+    /// its slots for the window's bar and hands back what the person did with
+    /// them ([`crate::window_slots::WindowSlots`]). For a host that runs
+    /// several apps in its own process and draws their bars.
+    pub fn set_hosted_window(&mut self, window: crate::hosted_window::HostedWindow) {
+        self.hosted_window = Some(window);
+    }
+
+    /// The window this tile's app is shown in, if the host gave it one.
+    #[must_use]
+    pub fn hosted_window(&self) -> Option<&crate::hosted_window::HostedWindow> {
+        self.hosted_window.as_ref()
     }
 
     pub fn set_opening_name(&mut self, name: &str) {
@@ -1513,6 +1542,10 @@ impl TileHost {
         }
         self.settle_outgoing_record();
         self.renew_history_lifetime();
+        // The slots were the outgoing app's; the new one declares its own.
+        if let Some(window) = &self.hosted_window {
+            window.declare(None);
+        }
         self.retained_invocations.clear();
         self.component_invocations.clear();
         self.retained_updates.clear();

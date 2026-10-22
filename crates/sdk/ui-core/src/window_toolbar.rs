@@ -63,6 +63,12 @@
 //! slots ([`is_hosted`]) the app draws no toolbar of its own; outside a
 //! Tilo session (a window of its own, a test) nothing hosts them and the app
 //! keeps its own row.
+//!
+//! An app its host runs in the host's own process (every app of the browser
+//! desktop) makes the same calls: while the host runs it ([`enter`]), they
+//! act on the window the host shows it in
+//! ([`crate::hosted_window::HostedWindow`]) instead of the thread's, so apps
+//! sharing a thread never see each other's slots.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -714,10 +720,56 @@ thread_local! {
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static EDIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static SEARCH_REQUESTED: Cell<bool> = const { Cell::new(false) };
+    /// The window of the app its host is running, while it runs one.
+    static WINDOW: RefCell<Option<crate::hosted_window::HostedWindow>> =
+        const { RefCell::new(None) };
+}
+
+/// While the returned guard lives, this module's calls act on `window`: the
+/// window a host shows the app it is about to run in. `None` keeps the
+/// enclosing window. Guards nest.
+#[must_use = "the window is current until the guard is dropped"]
+pub fn enter(window: Option<&crate::hosted_window::HostedWindow>) -> WindowScope {
+    match window {
+        Some(window) => WindowScope {
+            changed: true,
+            earlier: WINDOW.with(|current| current.replace(Some(window.clone()))),
+        },
+        None => WindowScope {
+            changed: false,
+            earlier: None,
+        },
+    }
+}
+
+/// Puts back the enclosing window when dropped: see [`enter`].
+pub struct WindowScope {
+    /// Whether this guard changed the window.
+    changed: bool,
+    /// The window current before it did.
+    earlier: Option<crate::hosted_window::HostedWindow>,
+}
+
+impl Drop for WindowScope {
+    fn drop(&mut self) {
+        if self.changed {
+            let earlier = self.earlier.take();
+            WINDOW.with(|current| *current.borrow_mut() = earlier);
+        }
+    }
+}
+
+/// The window of the app being run, if its host shows it in one.
+fn window() -> Option<crate::hosted_window::HostedWindow> {
+    WINDOW.with(|current| current.borrow().clone())
 }
 
 /// Declare the window's slots (`None`: none). Cheap when nothing changed.
 pub fn declare(toolbar: Option<WindowToolbar>) {
+    if let Some(window) = window() {
+        window.declare(toolbar);
+        return;
+    }
     let toolbar = toolbar
         .map(WindowToolbar::bounded)
         .filter(|toolbar| !toolbar.is_empty());
@@ -733,6 +785,9 @@ pub fn declare(toolbar: Option<WindowToolbar>) {
 /// The slots last declared on this thread.
 #[must_use]
 pub fn declared() -> Option<WindowToolbar> {
+    if let Some(window) = window() {
+        return window.declared();
+    }
     DECLARED.with(|declared| declared.borrow().clone())
 }
 
@@ -740,12 +795,18 @@ pub fn declared() -> Option<WindowToolbar> {
 /// a declaration once.
 #[must_use]
 pub fn revision() -> u64 {
+    if let Some(window) = window() {
+        return window.revision();
+    }
     REVISION.with(Cell::get)
 }
 
 /// What the person did in the bar since the last call, oldest first.
 #[must_use]
 pub fn take_events() -> Vec<ToolbarEvent> {
+    if let Some(window) = window() {
+        return window.take_events();
+    }
     EVENTS.with(|events| events.borrow_mut().drain(..).collect())
 }
 
@@ -753,12 +814,19 @@ pub fn take_events() -> Vec<ToolbarEvent> {
 /// no toolbar of its own.
 #[must_use]
 pub fn is_hosted() -> bool {
+    if window().is_some() {
+        return true;
+    }
     HOSTED.with(Cell::get)
 }
 
 /// Ask the bar to turn the window's editable location into a field, as a
 /// click on it does: the app's Ctrl+L (or F6) while the bar hosts its slots.
 pub fn edit_location() {
+    if let Some(window) = window() {
+        window.edit_location();
+        return;
+    }
     EDIT_REQUESTED.with(|cell| cell.set(true));
 }
 
@@ -766,6 +834,9 @@ pub fn edit_location() {
 /// runner, to tell the shell).
 #[must_use]
 pub fn take_edit_request() -> bool {
+    if let Some(window) = window() {
+        return window.take_edit_request();
+    }
     EDIT_REQUESTED.with(|cell| cell.replace(false))
 }
 
@@ -773,6 +844,10 @@ pub fn take_edit_request() -> bool {
 /// the app's Ctrl+F while the bar hosts its window and it has something to
 /// search in place.
 pub fn open_search() {
+    if let Some(window) = window() {
+        window.open_search();
+        return;
+    }
     SEARCH_REQUESTED.with(|cell| cell.set(true));
 }
 
@@ -780,12 +855,19 @@ pub fn open_search() {
 /// (the runner, to tell the shell).
 #[must_use]
 pub fn take_search_request() -> bool {
+    if let Some(window) = window() {
+        return window.take_search_request();
+    }
     SEARCH_REQUESTED.with(|cell| cell.replace(false))
 }
 
 /// Hand the app what the person did in the bar (the runner, from the
 /// shell's message).
 pub fn deliver(event: ToolbarEvent) {
+    if let Some(window) = window() {
+        window.deliver(event);
+        return;
+    }
     EVENTS.with(|events| {
         let mut events = events.borrow_mut();
         if events.len() < MAX_PENDING {
