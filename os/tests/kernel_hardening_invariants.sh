@@ -12,6 +12,8 @@ arm64_kernel_config="$repo/os/kernel/config-fragments/aarch64.config"
 x86_kernel_config="$repo/os/kernel/config-fragments/x86_64.config"
 performance_sysctl="$repo/os/usr/lib/sysctl.d/70-tilo-performance.conf"
 image_recipe="$repo/os/Containerfile"
+# The image's binaries are compiled outside the image build, by this script.
+image_compile="$repo/os/image/compile.sh"
 initramfs_recipe="$repo/os/scripts/build-initramfs.sh"
 kargs="$repo/os/usr/lib/bootc/kargs.d/01-hardening.toml"
 fail=0
@@ -1133,7 +1135,7 @@ grep -Fqx 'image_policy_check=/usr/libexec/tilo-image-policy-check' "$audit" \
 if grep -Fq '"type": "sigstoreSigned"' "$audit"; then
   bad 'boot audit still greps policy.json fragments instead of parsing the policy'
 fi
-grep -Fq -- '--bin tilo-image-policy-check' "$image_recipe" \
+grep -Fq -- '--bin tilo-image-policy-check' "$image_compile" \
   && grep -Fq 'to = "/usr/libexec/tilo-image-policy-check", mode = "0755"' "$repo/os/components.toml" \
   || bad 'image signature policy checker is not built into the OS image'
 
