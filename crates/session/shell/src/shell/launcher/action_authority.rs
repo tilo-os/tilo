@@ -1006,6 +1006,7 @@ mod tests {
             service_identity: None,
             portal_workspace_id: None,
             managed_agent_id: None,
+            x11_workspace: None,
         };
         let authority = Arc::new(Authority::default());
         // Renewal runs on this authority's own writer, which other tests'

@@ -8,7 +8,6 @@
 <inotify::watches::Watches>::add
 <package_store::registry::Registry>::load
 <settings_store::hardware::DisplayHardwareSnapshot>::load
-<shell::compositor::xwayland::WorkspaceDisplay>::bind
 <shell::shell::network::personal_device_peers::FileStamp>::of
 <tilo_identity_host::device_fleet::DeviceFleetStore>::load
 advisory_lock::open_lock_file
@@ -20,9 +19,6 @@ file_explorer::templates::list_templates
 package_store::interfaces::read_interfaces
 rustix::backend::arch::asm::syscall4_readonly
 settings_store::watch::watch_settings_at
-shell::compositor::xwayland::claim_lock
-shell::compositor::xwayland::ensure_socket_dir
-shell::compositor::xwayland::write_xauthority
 shell::shell::remote_capture::adapter::remote_camera_loopback
 shell::shell::remote_capture::adapter::trusted_command::{closure}
 shell::shell::remote_capture::source::trusted_command::{closure}
