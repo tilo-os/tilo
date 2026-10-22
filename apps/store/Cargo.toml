@@ -66,8 +66,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
-base64.workspace = true
-flate2.workspace = true
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
 app-host = { path = "../../crates/packaging/app-host", default-features = false, features = ["test-support", "service"] }
 runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }

@@ -75,6 +75,48 @@ class UnusedDependencyTests(unittest.TestCase):
             self.assertEqual(lock.read_text(), "original lock\n")
             self.assertFalse(Path(snapshot.read_text()).exists(), "snapshot must be cleaned on failure")
 
+    def test_sources_a_crate_includes_by_path_are_read_as_its_own(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            manifest = "[package]\nname = 'fixture'\nversion = '0.1.0'\n"
+            files = {
+                "Cargo.toml": "[workspace]\nmembers = ['apps/a', 'apps/b']\n",
+                "apps/a/Cargo.toml": manifest,
+                "apps/a/src/lib.rs": '#[path = "../../b/src/shared.rs"]\nmod shared;\n',
+                "apps/b/Cargo.toml": manifest,
+                "apps/b/src/shared.rs": "mod child;\n",
+                "apps/b/src/shared/child.rs": "use base64::Engine;\n",
+            }
+            for name, text in files.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            binary = root / "bin"
+            binary.mkdir()
+            cargo = binary / "cargo"
+            # machete reads a crate's own sources: the included file and the
+            # module beside it must be there, and nothing is copied into the
+            # crate that includes nothing.
+            cargo.write_text(
+                '#!/bin/sh\nset -eu\n'
+                'test -f apps/a/src/machete-path-includes/apps/b/src/shared.rs\n'
+                'test -f apps/a/src/machete-path-includes/apps/b/src/shared/child.rs\n'
+                'test ! -e apps/b/src/machete-path-includes\n'
+                'touch "$CHECKED"\n'
+            )
+            cargo.chmod(0o755)
+            checked = root / "checked"
+            env = dict(os.environ, TILO_REPO_ROOT=str(root), CHECKED=str(checked),
+                       PATH=str(binary) + os.pathsep + os.environ["PATH"])
+            result = subprocess.run(["bash", str(SCRIPT)], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(checked.exists(), "machete must run on the snapshot")
+            self.assertFalse((root / "apps/a/src/machete-path-includes").exists(),
+                             "the checkout itself is never written")
+
     def test_the_hakari_generated_crate_is_never_scanned(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
