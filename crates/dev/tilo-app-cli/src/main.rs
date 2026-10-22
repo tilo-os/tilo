@@ -2663,6 +2663,10 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
         .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|dir| dir.join("Cargo.toml").is_file())
+        // An application has a manifest; a crate beside the apps without one
+        // (the Browser's parts, Settings' pane libraries) is a library an
+        // application links, certified through that application.
+        .filter(|dir| dir.join("tilo-app.toml").is_file())
         // The agent is the headless consumer being used to drive apps; its
         // broker protocol is certified by the structural contract and tests.
         .filter(|dir| dir.file_name().is_none_or(|name| name != "agent"))
