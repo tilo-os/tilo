@@ -505,8 +505,6 @@ fn without_edits(
     (statuses, whole)
 }
 
-// USER REQUIREMENT (2026-10-19, ledger "Saving"): "Autosave is silent; show
-// something only when a save stalls or fails"
 #[test]
 fn scrolling_selecting_and_hovering_change_no_history_chrome_or_repaint() {
     let at = |x: f64, y: f64| PhysicalPosition::new(x, y);

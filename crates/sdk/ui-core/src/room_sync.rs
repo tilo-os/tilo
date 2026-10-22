@@ -252,7 +252,6 @@ mod tests {
         })
     }
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn a_room_that_never_synced_says_so_instead_of_looking_empty() {
         set(None);
@@ -295,7 +294,6 @@ mod tests {
         set(None);
     }
 
-    // USER REQUIREMENT (2026-10-19): "An app's write permission must follow grants live. When the room's grants change (authorship granted or withdrawn, role changed), open apps switch between read-only and writable without a restart"
     #[test]
     fn a_launch_opened_read_only_becomes_writable_when_its_authorship_arrives_and_back() {
         use crate::permissions::{ActionKind, PermissionContext, PermissionScope, Role};

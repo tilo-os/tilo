@@ -1253,8 +1253,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "it darkens out the actual content on
-    // the right and i cant have content+sidebar at the same time"
     #[test]
     fn content_minimum_docks_by_the_narrowest_panel_and_shrinks_it_first() {
         let m = Metrics::BASE;

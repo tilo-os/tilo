@@ -231,7 +231,6 @@ impl Viewing {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "it should be streamed, MOQ, live, efficient, directly to them! just the window, low latency"
 /// Two members of a room that shares its layout, each reaching the other
 /// only through the room's relay: the viewer shows the host's terminal
 /// window, the host's share encodes it (only once the window is asked for)

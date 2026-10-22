@@ -182,7 +182,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "Time zone: one control, a searchable time-zone picker with automatic detection as its first option."
     #[test]
     fn an_automatic_zone_is_the_zone_where_the_device_is_and_nothing_is_guessed() {
         // Landed in Osaka with the clock on Amsterdam's zone.

@@ -1095,10 +1095,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "spell check uses a proper dictionary plus the
-    // personal dictionary, and stops flagging correct words like "website",
-    // "Hoffmann" and "ten-minute". Fix hyphenated words, proper nouns and
-    // capitalisation."
     #[test]
     fn correct_words_names_compounds_and_possessives_are_not_flagged() {
         let letter = "Dear Ms Okafor,\n\

@@ -204,7 +204,6 @@ mod tests {
         SuspendTimers::from_section(section.as_object().unwrap())
     }
 
-    // USER REQUIREMENT (2026-10-21): "Power: one suspend timer per power source (battery / plugged in), shown inside the selected power profile only if profiles truly differ."
     #[test]
     fn one_suspend_timer_per_power_source_unless_the_profiles_truly_differ() {
         // Nothing chosen: one timer, on battery and plugged in alike.

@@ -10661,11 +10661,6 @@ mod tests {
         frame.with_chrome(ChromeState::note_appearance_change);
     }
 
-    // USER REQUIREMENT (2026-10-21): "every appearance setting applies
-    // instantly and everywhere ... high contrast ... in the shell chrome ...
-    // with no restart and no reopen". Toggling high contrast changes the
-    // desktop's rendered pixels on the very next frame, and toggling it off
-    // brings the first look back.
     #[test]
     #[serial_test::serial(process_env)]
     fn toggling_high_contrast_recolours_the_desktop_on_the_next_frame() {
@@ -10696,10 +10691,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "every appearance setting applies
-    // instantly and everywhere ... text size and scale ... in the shell
-    // chrome ... with no restart". A text size change re-lays the chrome
-    // out in the new size on the next frame; so does the interface scale.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_text_size_change_relays_the_desktop_out_on_the_next_frame() {
@@ -10737,9 +10728,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "every appearance setting applies
-    // instantly and everywhere ... theme and preset". Choosing another
-    // preset retints the desktop on the next frame.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_theme_preset_change_recolours_the_desktop_on_the_next_frame() {

@@ -1596,11 +1596,6 @@ mod tests {
         }]
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — a critical alert about the machine is
-    // on every display of the lock screen, and spoken.
     #[test]
     fn a_machine_alert_is_on_every_lock_display_and_spoken() {
         let outputs = [

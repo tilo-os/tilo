@@ -5322,9 +5322,6 @@ mod tests {
             f64::from(tokens.metrics.bar_control_height - spacing.s1)
         );
         assert_eq!(CENTER_INSET_PX, f64::from(spacing.s3));
-        // USER REQUIREMENT (2026-10-19): "why is the top bar so tiny, why not
-        // a few pixel bigger? it looks super unbalanced" — 24 px controls
-        // with an `s1` of air each side: a 32 px bar.
         assert_eq!(TOPBAR_HEIGHT_PX, 32.0);
         assert_eq!(TOPBAR_HEIGHT_PX, BAR_CONTROL_LOGICAL + 2.0 * spacing.s1);
         assert!(TOPBAR_HEIGHT_PX < tokens.metrics.bar_height);

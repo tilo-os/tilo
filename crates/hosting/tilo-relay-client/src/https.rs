@@ -700,7 +700,6 @@ mod handshake_tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[tokio::test]
     async fn a_host_that_cannot_read_this_devices_hello_is_behind_not_unreachable() {
         // What a relay from before versioned handshakes answered a v6 hello

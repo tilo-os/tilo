@@ -237,9 +237,6 @@ fn next(rx: &mpsc::Receiver<crate::protocol::Snapshot>) -> crate::protocol::Snap
     tilo_test_env::recv("the hub's snapshot of the interval", rx)
 }
 
-/// USER REQUIREMENT, the service's half: the resource monitor reads the
-/// machine's processes and stats through the service.
-// USER REQUIREMENT (2026-10-18): "the resource monitor isn't allowed to read the system process list/or any system stats"
 #[test]
 fn the_monitor_is_served_the_machines_processes_and_stats() {
     let root = tempfile::tempdir().unwrap();

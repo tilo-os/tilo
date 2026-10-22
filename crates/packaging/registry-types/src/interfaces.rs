@@ -329,7 +329,6 @@ mod tests {
         assert!(long.parse::<InterfaceRequirement>().is_err());
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_os_meets_exactly_the_one_version_it_serves() {
         let os = ProvidedInterfaces::new([("system", 2), ("runtime", 3)], ["collab"]);

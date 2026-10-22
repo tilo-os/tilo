@@ -929,8 +929,6 @@ mod tests {
         crate::app_view(mounted.path(), key).join(rest)
     }
 
-    // USER REQUIREMENT (2026-10-22): "choosing a file in the picker gives the
-    // app that file"
     #[test]
     fn choosing_a_file_in_the_picker_gives_the_app_that_file_through_the_mount() {
         let documents = Documents::new();

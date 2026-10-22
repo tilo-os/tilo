@@ -134,10 +134,6 @@ mod tests {
     use crate::Theme;
     use std::rc::Rc;
 
-    // USER REQUIREMENT (2026-10-19): "It shows the app's window with an
-    // EmptyState: a user icon from the Lucide set, the title "Choose who you
-    // are here", the body "This workspace needs to know who's working in it
-    // before {app} can open.", and a primary button "Choose identity"."
     #[test]
     fn the_window_says_who_is_needed_and_its_button_opens_the_chooser() {
         let asked = Rc::new(Cell::new(0));

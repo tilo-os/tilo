@@ -61,7 +61,6 @@ fn the_intent(s: &mut CaptureStudio) -> CaptureIntent {
         .expect("the shutter queues a capture")
 }
 
-// USER REQUIREMENT (2026-10-21): "screenshot controls should always be half-transparent"
 #[test]
 fn screenshot_controls_are_always_half_transparent() {
     for theme in [Theme::dark(), Theme::light()] {
@@ -79,7 +78,6 @@ fn screenshot_controls_are_always_half_transparent() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "several selections is a feature of the selection tool (that you can enable by pressing shift and then starting a new selection), not a mode"
 #[test]
 fn several_selections_are_shift_on_the_selection_tool_not_a_mode() {
     let mut s = studio();
@@ -157,7 +155,6 @@ fn several_selections_are_shift_on_the_selection_tool_not_a_mode() {
     assert_eq!(s.regions().len(), 1);
 }
 
-// USER REQUIREMENT (2026-10-21): "the window selection should obviously only be shown if you actually select \"window\""
 #[test]
 fn the_window_picker_is_only_there_while_window_is_chosen() {
     let mut s = studio();
@@ -184,7 +181,6 @@ fn the_window_picker_is_only_there_while_window_is_chosen() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "what's screenshotted is obviously the entire app"
 #[test]
 fn a_window_capture_is_the_whole_window_with_what_is_off_screen() {
     let mut s = studio();
@@ -272,7 +268,6 @@ fn a_selection_inside_a_window_is_anchored_to_it_and_one_across_windows_is_a_scr
     assert_eq!(intent.regions, vec![Rect::new(800.0, 140.0, 1100.0, 440.0)]);
 }
 
-// USER REQUIREMENT (2026-10-21): "if I select a window to PiP, I expect to always just have that window PiP … regardless of where I scroll/am"
 #[test]
 fn a_pip_of_a_window_names_the_window_not_a_screen_rect() {
     let mut s = studio();
@@ -335,9 +330,6 @@ fn the_bar_is_two_choices_the_shutter_and_options_and_nothing_else() {
     assert_eq!(s.take_intents().len(), 1);
 }
 
-// USER REQUIREMENT (2026-10-22): the big shutter is centred in the capture
-// bar, with what comes out on one side and what it is of on the other, and it
-// stays where it is whichever output and target are chosen.
 #[test]
 fn the_shutter_is_the_centre_of_the_bar_whatever_is_chosen() {
     let mut s = studio();
@@ -466,8 +458,6 @@ fn while_recording_the_bar_is_the_stop_shutter_and_the_time() {
     assert_eq!(stop_intent.recording_command, Some(RecordingCommand::Stop));
 }
 
-// USER REQUIREMENT (2026-10-22): "a screenshot freezes the state of all
-// windows when it opens"
 #[test]
 fn every_screenshot_target_holds_the_windows_and_recording_stays_live() {
     let mut s = studio();

@@ -282,11 +282,6 @@ mod tests {
         )
     }
 
-    // USER REQUIREMENT (2026-10-21): a window an agent opens never takes
-    // the person's view. They stay on the window, strip and workspace they
-    // are in and nothing is brought forward, so nothing they are in leaves
-    // full screen. An agent's first window, with no view of its own yet to
-    // open beside, opens beside the person's.
     #[test]
     #[serial_test::serial]
     fn an_agent_opened_window_does_not_steal_the_view() {

@@ -1295,11 +1295,6 @@ fn the_you_are_here_chip_is_neutral_not_your_colour() {
     }
 }
 
-// USER REQUIREMENT (2026-10-19): "This is collaborative... if I go to my
-// workspace overview, why isn't there a button 'Join public workspaces'?" —
-// the workspace overview offers "Join a workspace…" right beside "New
-// workspace", and it opens the directory of public workspaces in place, not a
-// field to paste a code into.
 #[test]
 fn the_workspace_overview_offers_join_a_workspace_beside_new_workspace_and_opens_the_directory() {
     let mut h = host_with(WorkspaceTree::bootstrap_default());

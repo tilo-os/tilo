@@ -290,7 +290,6 @@ fn install(room: BusyRoom) -> (tempfile::TempDir, NativeWorkspaceOwner, BusyRoom
     (directory, owner, room)
 }
 
-// USER REQUIREMENT (2026-10-22): "having a second workspace on this device: the tilo.coffee lounge full collaboration + presence working"
 #[test]
 fn joining_a_busy_public_room_never_fails_because_of_how_many_messages_it_has() {
     let room = busy_room(50);

@@ -161,10 +161,6 @@ fn document_shell() -> NavShell {
     notes_shell().content_kind(ContentKind::Document)
 }
 
-// USER REQUIREMENT (2026-10-18): "it darkens out the actual content on the
-// right and i cant have content+sidebar at the same time … on very small
-// screens the sidebar OR app content should obviously be displayed full
-// screen"
 /// At any width the shell picks the layout in which everything shown is
 /// usable: docked while the sidebar fits beside the content's real minimum,
 /// one column at a time below that, and a drawer only for a content-primary
@@ -238,8 +234,6 @@ fn the_sidebar_docks_while_the_contents_real_minimum_fits() {
     assert!(m.sidebar_min + m.list_min <= 600.0);
 }
 
-// USER REQUIREMENT (2026-10-18): "the files app cant actually be resised to
-// just phone width"
 /// The narrowest window is the compact layout's: one column at a time at
 /// phone width, the content's minimum where that is wider.
 #[test]
@@ -319,8 +313,6 @@ fn layout_changes_have_hysteresis() {
     );
 }
 
-// USER REQUIREMENT (2026-10-18): "on very small screens the sidebar OR app
-// content should obviously be displayed full screen"
 /// A window opened narrow has no place to keep yet, so it opens on a list,
 /// whole screen: the content's own list where it has one, else the sidebar.
 /// Never the content, which nothing has chosen.
@@ -350,8 +342,6 @@ fn a_fresh_narrow_window_opens_on_its_list() {
     assert_eq!(g.sidebar_column.width(), 360.0, "the pages fill the screen");
 }
 
-// USER REQUIREMENT (2026-10-18): "on very small screens the sidebar OR app
-// content should obviously be displayed full screen"
 /// Narrowing a docked window keeps the person's place: they land on the
 /// page they were on, Back goes to the list, and widening docks again with
 /// the same page open.
@@ -661,8 +651,6 @@ fn a_toolbar_in_a_header_behind_the_drawer_settles() {
     assert!(h.root::<NavShell>().is_sidebar_open());
 }
 
-// USER REQUIREMENT (2026-10-18): "it darkens out the actual content on the
-// right"
 /// A content-primary app's drawer floats over the document without a scrim:
 /// the document stays visible and exposed, and a press on it puts the
 /// drawer away without reaching it.
@@ -849,8 +837,6 @@ fn pump(h: &mut FrameHarness, w: u32, height: u32) {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): the sidebar collapse button collapses and
-// expands the sidebar, and the keyboard shortcut works too.
 /// A toggle that lands in one tick (a key, or the first frame after a
 /// busy device let the whole slide's time pass) is laid out on screen: the
 /// shell asks its host for the frame that lays the landed pose out, and
@@ -2027,10 +2013,6 @@ fn notes_shell_with_search() -> NavShell {
         .content_header("", actions)
 }
 
-// USER REQUIREMENT (2026-10-19): "one top bar with all the options for that
-// app in context ... search next to the app title" and "apps shouldnt be
-// responsible for rendering a top bar" -- one search control per window: the
-// bar's, never a second one in the app's header.
 #[test]
 fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() {
     // Case `told_before_the_first_build`.
@@ -2160,9 +2142,6 @@ fn a_focused_sidebar_resize_edge_follows_the_arrow_keys_until_a_press() {
     assert_eq!(geometry(&h).sidebar_column.width(), wider);
 }
 
-// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
-// system window bar's app slots, through the one tilo-app API Files, Notes
-// and Browser already use, and no app draws a second toolbar row."
 /// A shell whose toolbar is its window bar's slots draws no header row, at
 /// any width, whatever titles and actions it was given; its own buttons
 /// become slots and run from the bar.

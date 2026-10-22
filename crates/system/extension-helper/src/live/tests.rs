@@ -144,7 +144,6 @@ fn only_the_kernel_bootloader_and_initramfs_need_a_restart_of_the_machine() {
     assert_eq!(class("/usr/lib64/libc.so.6"), Class::Base);
 }
 
-// USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
 #[test]
 fn a_daily_update_applies_by_component_scope_without_a_reboot() {
     let components = components();
@@ -419,7 +418,6 @@ fn machine() -> (tempfile::TempDir, Layout, Fake) {
     (dir, layout, fake)
 }
 
-// USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
 #[test]
 fn the_staged_image_applies_live_first_the_system_then_the_desktop() {
     let (_dir, layout, fake) = machine();

@@ -8627,10 +8627,6 @@ mod tests {
         Dispatch::new().layout(&taffy, node).send(b, &event).handled
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps shouldnt be responsible for
-    // rendering a top bar" -- the browser's address is its editable location
-    // in the window's bar: a click edits the whole address with a go button,
-    // Enter commits what was typed to the app, Esc puts it back.
     #[test]
     fn the_bar_edits_an_apps_location_and_commits_it_to_that_tab() {
         let _settled = crate::motion::testing::settled();
@@ -8930,8 +8926,6 @@ mod tests {
     /// The suggestions hang under the edited field, as wide as it, and stay
     /// there when a presenter moves the window into its canvas to draw it
     /// and back.
-    // USER REQUIREMENT (2026-10-21): "There must be exactly one suggestion
-    // surface. It's anchored under the address field, width-aligned to it"
     #[test]
     fn the_suggestions_hang_under_the_field_through_a_canvas_move() {
         use crate::window_toolbar::LocationSuggestion;

@@ -6567,8 +6567,6 @@ mod window_bar_tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "the entire top area looks like shit
-    // ... why is everything crammed together?"
     /// A maximized window keeps its bar in a band above its content: the
     /// content starts where the bar ends, and nothing of the app is under it.
     #[test]
@@ -6612,8 +6610,6 @@ mod window_bar_tests {
         g.apply_layout(&taffy, node, Point::new(0.0, TOP));
     }
 
-    // USER REQUIREMENT (2026-10-19): "the top bar disappears and i cant
-    // interact with the window decorations because it then collides."
     /// The desktop's bar shown over a window moves the window down rather
     /// than covering the window's own bar, and moves it whole: no resize.
     #[test]
@@ -6673,9 +6669,6 @@ mod window_bar_tests {
         WindowGroup::new(10, tiles, 1, WindowWidth::Normal)
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps shouldnt be responsible for
-    // rendering a top bar" -- an app's toolbar is slots in the window's bar,
-    // which stands above the app's content and never over it.
     #[test]
     fn an_apps_slots_live_in_the_bar_and_the_content_starts_under_it() {
         let _settled = crate::motion::testing::settled();

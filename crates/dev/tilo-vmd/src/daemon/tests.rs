@@ -415,8 +415,6 @@ fn requests_renew_an_expired_lease_and_keep_a_hold() {
     assert_eq!(fs::read(daemon.lease_path()).unwrap(), held);
 }
 
-// USER REQUIREMENT (2026-10-22): "the Tilo app repository stays available
-// after a component swap"
 /// The laptop on 2026-10-22: a shell layer from main ships its
 /// one-version-per-interface declaration over an image whose app host
 /// reads lists of versions. The swap is refused before anything is

@@ -759,8 +759,6 @@ fn titles(rows: &[SearchResult]) -> Vec<&str> {
     rows.iter().map(|row| row.title.as_str()).collect()
 }
 
-// USER REQUIREMENT (2026-10-19): "i cant search spotify, youtube, my unlocked
-// passwords, the app store for flatpaks – i cannot search ANYTHING."
 #[test]
 fn youtube_cats_offers_search_youtube_for_cats_among_the_first_three_rows() {
     let palette = Palette::new().with_web();
@@ -776,8 +774,6 @@ fn youtube_cats_offers_search_youtube_for_cats_among_the_first_three_rows() {
     }
 }
 
-// USER REQUIREMENT (2026-10-19): "i cant search spotify, youtube, my unlocked
-// passwords, the app store for flatpaks – i cannot search ANYTHING."
 #[test]
 fn spotify_ends_with_search_the_web_for_spotify() {
     let palette = Palette::new().with_web();
@@ -814,9 +810,6 @@ fn a_service_named_alone_offers_its_site_below_the_app_that_serves_it() {
     );
 }
 
-// USER REQUIREMENT (2026-10-19): ""finder" doesnt even show the files app" and
-// ""explorer" only shows the files app if its an exact match … before that,
-// random files are before".
 #[test]
 fn finder_and_explorer_lead_with_files_ahead_of_files_named_like_them() {
     let palette = Palette::new().with_files(&[
@@ -896,9 +889,6 @@ fn music_palette() -> Palette {
         )
 }
 
-// USER REQUIREMENT (2026-10-22): "flatpak App pages should not always show up
-// first. your installed + tilo apps sure, but not every single flatpak app,
-// they should be further down I think"
 #[test]
 fn installed_and_tilo_apps_lead_then_own_content_then_flatpak_store_pages() {
     let palette = music_palette();

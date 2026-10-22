@@ -3309,14 +3309,8 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "the selected-segment indicator slides
-    // smoothly from the old segment to the new one with the standard motion
-    // (not a jump, and the hover state must not look like a second
-    // selection)". A click from Default to Large, through the production
-    // pointer path and frame clock, in dark and light: every frame in
-    // between draws the pill between the two segments, it rests exactly on
-    // Large, and no frame draws a second pill. `TILO_SEGMENT_FRAMES=<dir>`
-    // writes each frame as a PNG strip to look at.
+    // `TILO_SEGMENT_FRAMES=<dir>` writes each frame of the slide as a PNG strip to
+    // look at.
     #[test]
     fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
         use crate::time::testing::with_monotonic_time;
@@ -3431,10 +3425,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "the hover state must not look like a
-    // second selection". In a single choice the pointer over another segment
-    // paints nothing: the strip draws the same with and without it, so the
-    // chosen pill is the only pill. A multi-select strip still lifts it.
     #[test]
     fn hovering_a_segment_of_a_single_choice_draws_no_second_pill() {
         let segments = [

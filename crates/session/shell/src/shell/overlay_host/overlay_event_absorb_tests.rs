@@ -2537,8 +2537,6 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
 }
 
-// USER REQUIREMENT (2026-10-21): "Shortcut guide: the Done button must
-// never truncate. Fix the layout so buttons size to their label."
 #[test]
 fn the_shortcut_guide_done_button_is_as_wide_as_its_label_at_large_text() {
     let (vw, vh) = (1600.0, 900.0);

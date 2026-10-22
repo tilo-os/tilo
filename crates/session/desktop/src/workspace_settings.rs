@@ -4683,10 +4683,6 @@ mod members_pane_tests {
     const OWNER: &str = "owner-user";
     const PEER: &str = "peer-user";
 
-    // USER REQUIREMENT (2026-10-21): "the owner shown by their name (never a
-    // hex key) with working controls; "Only the workspace owner can change
-    // permissions" only shown to non-owners; names cased consistently with
-    // the roster, from the same source."
     #[test]
     fn people_are_named_as_the_roster_names_them_and_the_owner_sees_no_owner_only_note() {
         use crate::collaborators::{PeopleNames, collaborator_roster_rows_named};

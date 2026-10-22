@@ -1054,12 +1054,6 @@ mod tests {
         assert_eq!(received.try_recv().unwrap(), Some(vec![child]));
     }
 
-    // USER REQUIREMENT (2026-10-22): "The picker is a system surface. It
-    // opens at shell level as the standard system sheet [...], centred on the
-    // output the requesting window is on, at a comfortable size whatever the
-    // app's window size, with the requesting window dimmed behind it."
-    // "a picker requested by a 400×300 window opens at the sheet size,
-    // centred on its output"
     #[test]
     fn a_picker_requested_by_a_small_window_opens_at_the_sheet_size_centred_on_its_output() {
         let output = Rect::new(1920.0, 0.0, 1920.0 + 2560.0, 1440.0);

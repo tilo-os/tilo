@@ -2459,7 +2459,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn an_empty_state_in_a_room_that_never_synced_says_so_and_offers_nothing_of_the_apps() {
         use crate::room_sync::{RoomSync, RoomSyncState};

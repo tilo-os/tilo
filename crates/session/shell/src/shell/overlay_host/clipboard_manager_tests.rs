@@ -295,8 +295,6 @@ fn super_v_into_a_wayland_window_is_pasted_by_the_compositor() {
     assert_eq!(host.take_in_process_pastes(), 0);
 }
 
-// USER REQUIREMENT (2026-10-21): "Clipboard's row and section read one
-// source, so the count is right."
 #[test]
 fn the_clipboard_row_counts_the_copies_its_section_lists() {
     let store = Arc::new(Mutex::new(SelectionStore::default()));

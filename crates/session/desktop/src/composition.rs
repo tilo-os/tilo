@@ -297,9 +297,6 @@ impl DesktopSurface {
                 deck_rows.push(row);
             }
         }
-        // USER REQUIREMENT (2026-10-21): "Strip two is a full other screen,
-        // not just halving the vertical space": every strip is a full-height
-        // screen and one fills the work area at a time.
         let deck_index = row_offset;
         column = column.push(Box::new(StripDeck::new(deck_rows, active_strip)));
         let mut foreground = Column::new().with_no_padding();

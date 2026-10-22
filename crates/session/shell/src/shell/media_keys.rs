@@ -799,12 +799,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — the brightness keys adjust the display
-    // the person works on, and the readout names it when more than one
-    // display can be dimmed.
     #[test]
     fn brightness_keys_adjust_the_focused_display_and_name_it() {
         let displays = [
@@ -851,11 +845,6 @@ mod tests {
         assert_eq!(alone.caption(), "Brightness 60%");
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — Shift with a brightness key moves
-    // every display together, keeping their relative levels.
     #[test]
     fn shift_brightness_moves_every_display_keeping_their_relative_levels() {
         let displays = [

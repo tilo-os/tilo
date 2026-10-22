@@ -1393,8 +1393,6 @@ mod tests {
         search.field.set_query(query);
     }
 
-    // USER REQUIREMENT (2026-10-19): "In place: it acts on this window or
-    // app. Lists filter, documents highlight with "n of m"."
     #[test]
     fn a_document_highlights_its_matches_with_n_of_m_and_steps_through_them() {
         let mut doc = Doc {
@@ -1490,10 +1488,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): typing into the window bar's search field
-    // turns the window's view into a query view of the app's resources, and
-    // Escape returns to the view before; focusing the field is told to the
-    // app before the first character so it can warm its remote sources.
     #[test]
     fn a_query_view_app_hears_the_open_each_keystroke_enter_and_the_close() {
         let mut views = Views::default();
@@ -1548,8 +1542,6 @@ mod tests {
         assert_eq!(node.name.as_deref(), Some("Search in this window"));
     }
 
-    // USER REQUIREMENT (2026-10-19): "The scope widens step by step (this
-    // view → this app → everywhere)."
     #[test]
     fn the_search_widens_from_the_view_to_the_app_to_everywhere() {
         let mut search = WindowSearch::new();

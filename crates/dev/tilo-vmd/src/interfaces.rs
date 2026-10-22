@@ -308,8 +308,6 @@ mod tests {
         Declaration::parse("[interfaces]\nsystem = [1]\napp-host = [1]\nshell-ui = [1]\n")
     }
 
-    // USER REQUIREMENT (2026-10-22): "the Tilo app repository stays available
-    // after a component swap"
     #[test]
     fn a_shell_swap_over_an_image_whose_app_host_reads_another_declaration_is_refused() {
         let image = list_format_image();
@@ -331,8 +329,6 @@ mod tests {
         assert!(refused.contains("tilo-vm swap userspace"), "{refused}");
     }
 
-    // USER REQUIREMENT (2026-10-22): "the Tilo app repository stays available
-    // after a component swap"
     #[test]
     fn the_whole_session_set_swapped_together_reads_its_own_declaration() {
         let image = list_format_image();

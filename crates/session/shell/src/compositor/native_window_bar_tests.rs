@@ -119,9 +119,6 @@ fn app_reads(app: &mut FloatingSurfaceServiceClient) -> Vec<FloatingSurfaceHostM
     read
 }
 
-// USER REQUIREMENT (2026-10-19): "search right next to the title (clicking it
-// expands into an in-place search field)" and History as "a right-side panel
-// per window or active tab" -- for an app that runs as its own window.
 #[test]
 #[serial_test::serial(process_env)]
 #[expect(

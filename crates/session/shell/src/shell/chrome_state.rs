@@ -5083,10 +5083,6 @@ mod active_tab_tests {
         (tree, strip_id, group_id, tab_id)
     }
 
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
-    // crashing or blocking login is a bug to fix, never normal". An app that
-    // runs out of memory is closed cleanly, the person is told ("Mail ran out
-    // of memory and was closed"), and Reopen puts it back where it was.
     #[test]
     fn an_app_ended_for_memory_is_named_and_reopens_where_it_was() {
         let (tree, _strip_id, group_id, tab_id) = tree_with_single_tab(TileContent::Foreign {
@@ -5357,7 +5353,6 @@ mod task_confirmation_toast_tests {
 mod new_workspace_tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-19): "if i create a workspace I want it to be empty, remove this crap"
     /// A workspace the person makes holds nothing but its first empty strip,
     /// so it shows the empty-workspace launchpad.
     #[test]

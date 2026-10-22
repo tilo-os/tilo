@@ -2143,7 +2143,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
     /// A device's local copy of a workspace whose room became personal loses
     /// the windows it mirrored of others, and keeps every window of its own,
     /// wherever it stands.

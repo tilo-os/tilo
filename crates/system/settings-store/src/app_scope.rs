@@ -254,10 +254,6 @@ mod tests {
         SessionSettings::open(SessionPaths::beside(dir.join("settings.json"))).unwrap()
     }
 
-    // USER REQUIREMENT (2026-10-21): the Settings app writes through the
-    // shell's settings service like every other app, one document and one
-    // write path; the image grants the device's settings app every section
-    // when its manifest asks, and no other app.
     #[test]
     fn the_system_settings_app_reaches_every_section_and_no_other_app_does() {
         let dir = tempfile::tempdir().unwrap();

@@ -1173,12 +1173,6 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
     app.close_components();
 }
 
-// USER REQUIREMENT (2026-10-21): "every appearance setting applies instantly
-// and everywhere ... high contrast, text size and scale, theme and preset ...
-// in every running app ... with no restart and no reopen". An app whose
-// settings its host keeps (the shell's records, over the app's channel)
-// takes each change on the tick the change wakes it: high contrast and the
-// text size it was not launched with, then another preset, re-laid out.
 #[test]
 #[serial_test::serial(process_env)]
 fn a_running_app_takes_contrast_text_size_and_preset_on_the_tick_they_change() {

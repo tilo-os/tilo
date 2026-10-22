@@ -111,9 +111,6 @@ fn searchable_window() -> WindowGroup {
     group
 }
 
-// USER REQUIREMENT (2026-10-19): "search right next to the title (clicking it
-// expands into an in-place search field)" and "In place: it acts on this
-// window or app. Lists filter, documents highlight with "n of m"."
 #[test]
 fn find_opens_the_search_in_the_window_bar_and_highlights_the_document_with_n_of_m() {
     let mut group = searchable_window();
@@ -157,8 +154,6 @@ fn find_opens_the_search_in_the_window_bar_and_highlights_the_document_with_n_of
     assert!(draft(&mut group).cleared, "closing stops the highlights");
 }
 
-// USER REQUIREMENT (2026-10-19): "The scope widens step by step (this view →
-// this app → everywhere)."
 #[test]
 fn find_again_widens_the_search_to_the_whole_app_with_the_query() {
     let mut group = searchable_window();
@@ -226,10 +221,6 @@ fn app_window_in_its_own_process() -> WindowGroup {
     group
 }
 
-// USER REQUIREMENT (2026-10-19): "In place: it acts on this window or app.
-// Lists filter" -- for an app that runs as its own window, whose list the
-// window cannot look into: it goes by what the app offers over its
-// connection.
 #[test]
 fn an_app_in_its_own_process_gets_the_query_and_the_bar_shows_its_count() {
     use crate::window_toolbar::{SearchCount, SearchOffer, ToolbarEvent, WindowOffer};

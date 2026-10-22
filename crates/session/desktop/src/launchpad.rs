@@ -1044,8 +1044,6 @@ mod tests {
 
     use ui::synthetic_input::mouse_release;
 
-    // USER REQUIREMENT (2026-10-21): "Launchpad: the sharing copy reflects
-    // the actual workspace scope (private / shared / public)."
     #[test]
     fn the_sharing_copy_follows_the_workspace_scope() {
         let mut pad = CollaborationLaunchpad::new();

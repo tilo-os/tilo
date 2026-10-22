@@ -543,10 +543,6 @@ mod tests {
         (snapshot, outputs)
     }
 
-    // USER REQUIREMENT (2026-10-21): Identify shows, on every physical
-    // display, a large card with that display's number and name, the same
-    // number and name its Settings canvas tile shows, for about 3 seconds
-    // with the standard fade.
     #[test]
     fn identify_shows_on_every_output_with_the_numbers_and_names_settings_shows() {
         let (snapshot, outputs) = two_displays();
@@ -589,8 +585,6 @@ mod tests {
         assert!(identify.labels(now + duration).is_empty());
     }
 
-    // USER REQUIREMENT (2026-10-21): hovering or selecting a display in
-    // Settings briefly flashes the card on that physical display alone.
     #[test]
     fn a_flash_names_one_display_and_shows_on_it_alone() {
         let (snapshot, outputs) = two_displays();

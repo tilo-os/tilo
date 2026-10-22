@@ -2,7 +2,6 @@
 //! resource, layout is per person.
 use super::*;
 
-// USER REQUIREMENT (2026-10-20): "windows should stay private by default"
 /// Every kind of presence the desktop and its apps publish, at each
 /// visibility. Under "That I'm here" only the desktop's word that the
 /// person is in the workspace leaves, and what they do inside a shared
@@ -180,7 +179,6 @@ fn each_visibility_lets_out_exactly_its_presence() {
     let _ = std::fs::remove_dir_all(&pair.dir);
 }
 
-// USER REQUIREMENT (2026-10-20): "windows should stay private by default"
 /// Two members at "That I'm here" (a public room's default; whether the
 /// room shares its layout plays no part in presence) with the same note
 /// open: the guest's caret in the note reaches the host's Notes, and

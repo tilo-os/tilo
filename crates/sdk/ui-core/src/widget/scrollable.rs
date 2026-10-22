@@ -3700,10 +3700,6 @@ mod tests {
 
     use crate::synthetic_input::named_key;
 
-    // USER REQUIREMENT (2026-10-21): a scroll bar stops short of the
-    // window's rounded corners by their radius, at the top and the bottom,
-    // and so does a horizontal bar at its ends; in a window with square
-    // corners (fullscreen, maximized edge to edge) it runs to the edge.
     #[test]
     fn bars_keep_out_of_the_windows_rounded_corners_only() {
         let draw = |s: &mut Scrollable, theme: &Theme| {

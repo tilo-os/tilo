@@ -177,9 +177,6 @@ pub fn paint_icon_button(
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-19): "an X at the top right and either a
-    // maximize or minimize button there" — one toggle, beside close, with
-    // History before them; there is no minimize.
     #[test]
     fn close_is_outermost_then_one_maximize_toggle_then_history() {
         let row = Rect::new(0.0, 0.0, 800.0, 44.0);

@@ -291,8 +291,6 @@ mod tests {
         Rect::new(0.0, 0.0, 640.0, 480.0)
     }
 
-    // USER REQUIREMENT (2026-10-22): "the summary card's "Ownership" button
-    // is named by outcome (e.g. "Cancel transfer" while pending)."
     #[test]
     fn the_ownership_button_says_what_it_will_do() {
         let (owner_key, owner_public) = collab_types::generate_keypair();
@@ -329,9 +327,6 @@ mod tests {
         assert!(actions.contains(&leads_to), "{leads_to:?} in {actions:?}");
     }
 
-    // USER REQUIREMENT (2026-10-22): "drop the disabled Remove (it's not an
-    // action you can take)"; "no "·" joins anywhere"; "no extra
-    // permissions" shows nothing.
     #[test]
     fn a_row_offers_only_what_can_be_done_and_states_facts_apart() {
         let mut ws = Workspace::new(WorkspaceId(93), "Studio");

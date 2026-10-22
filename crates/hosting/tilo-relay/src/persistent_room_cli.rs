@@ -2204,7 +2204,6 @@ mod tests {
         assert!(newly_removed(&mut seen, &[gone]).is_empty());
     }
 
-    // USER REQUIREMENT (2026-10-19): "Membership in a public room persists. A person who joined stays a member until they leave, are removed by the host, or have been inactive for 30 days (configurable on the host). Going offline for an hour must never remove anyone."
     #[test]
     fn a_member_away_for_an_hour_or_a_week_stays_one_and_thirty_days_away_does_not() {
         use clap::Parser as _;
@@ -2241,7 +2240,6 @@ mod tests {
         assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
     }
 
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
     /// A site's room lets everyone in through its door: unless its host says
     /// otherwise, each member's windows stay on their device.
     #[test]

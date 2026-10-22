@@ -7741,8 +7741,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): activating a toggle action twice returns
-    // the setting to its original value, and the row shows the live state.
     #[test]
     #[serial_test::serial(process_env)]
     fn every_setting_switch_flips_both_ways_and_its_row_shows_the_live_value() {
@@ -8542,12 +8540,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — search lists one brightness row per
-    // display, ←/→ adjusts it in place, and "brighter" acts on the display
-    // the person works on.
     #[test]
     fn search_has_a_brightness_row_per_display_and_brighter_moves_the_focused_one() {
         use crate::shell::chrome_state::DisplayBrightness;

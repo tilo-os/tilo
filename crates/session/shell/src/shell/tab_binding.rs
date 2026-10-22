@@ -3413,9 +3413,6 @@ mod tests {
 mod location_tests {
     use super::location_from_title;
 
-    // USER REQUIREMENT (2026-10-19): asked how "a legacy application that
-    // actually sets an app title" shows; the bar shows the app's icon, so its
-    // name in the title is said twice.
     #[test]
     fn the_apps_own_name_is_removed_from_its_title() {
         let name = "LibreOffice Writer";

@@ -286,10 +286,6 @@ pub enum UriOpened {
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-21): when the person clicks a link that opens
-    // in the Browser, the Browser comes forward. When it already runs on
-    // another strip, the window that shows the link is brought forward at
-    // once, strip and all.
     #[test]
     fn a_link_the_person_opens_brings_the_running_browser_forward() {
         use crate::shell::state::{

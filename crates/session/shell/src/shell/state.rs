@@ -7272,7 +7272,6 @@ mod automerge_foundation_tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
     /// Two members of a room whose layout is personal: B never gets A's
     /// windows or their titles, and A writes none into the room. What each
     /// mirrored of the other while the room still shared its layout goes

@@ -1773,10 +1773,6 @@ fn grip(
 const LEADING: ui::widget::WindowEdge = ui::widget::WindowEdge::Leading;
 const TRAILING: ui::widget::WindowEdge = ui::widget::WindowEdge::Trailing;
 
-// USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-// currently have open, it just pushes the apps next to it further away, it
-// does not need to resize them. i can resize as i want, it doesnt change the
-// actual size of any other app."
 #[test]
 fn the_focused_windows_left_edge_is_the_seam_and_resizes_only_that_window() {
     // Files (the middle window, in use) grabbed on its left edge where it
@@ -1802,10 +1798,6 @@ fn the_focused_windows_left_edge_is_the_seam_and_resizes_only_that_window() {
     }
 }
 
-// USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-// currently have open, it just pushes the apps next to it further away, it
-// does not need to resize them. i can resize as i want, it doesnt change the
-// actual size of any other app."
 #[test]
 fn middle_window_edges_resize_only_it_and_zero_sum_with_shift() {
     // The middle window is the one in use, so both its seams are its edges.
@@ -1823,8 +1815,6 @@ fn middle_window_edges_resize_only_it_and_zero_sum_with_shift() {
     assert_resized(&o, [0.0, 40.0, -40.0], "middle window right edge, shift");
 }
 
-// USER REQUIREMENT (2026-10-18): the window in use wins the seam; elsewhere
-// "i can resize as i want, it doesnt change the actual size of any other app."
 #[test]
 fn focus_wins_the_seam_and_an_unfocused_seam_is_split_down_the_middle() {
     // The first window in use owns its whole seam with the second, so the

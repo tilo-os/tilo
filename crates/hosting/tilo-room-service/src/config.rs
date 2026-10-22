@@ -873,8 +873,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "In a public community lounge, a person who joined must be able to write in #chat."
-    // USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
     #[test]
     fn members_of_a_public_room_write_through_its_chat_unless_the_host_says_otherwise() {
         let base = [
@@ -966,7 +964,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
     #[test]
     fn a_site_rooms_members_keep_their_windows_unless_the_host_shares_them() {
         let base = [
@@ -982,7 +979,6 @@ mod tests {
         assert!(config(&[base[0], base[1], ("TILO_ROOMS_LAYOUT", "public")]).is_err());
     }
 
-    // USER REQUIREMENT (2026-10-19): "Membership in a public room persists. A person who joined stays a member until they leave, are removed by the host, or have been inactive for 30 days (configurable on the host). Going offline for an hour must never remove anyone."
     #[test]
     fn membership_ends_after_thirty_days_away_unless_the_host_says_otherwise() {
         let base = [

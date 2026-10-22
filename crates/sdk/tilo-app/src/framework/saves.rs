@@ -367,7 +367,6 @@ mod tests {
         ui_core::i18n::I18nManager::init("en-US");
     }
 
-    // USER REQUIREMENT (ledger, 2026-10-18): "Autosave is silent; show something only when a save stalls or fails"
     #[test]
     fn a_record_save_that_lands_says_nothing_however_slow() {
         init();
@@ -391,7 +390,6 @@ mod tests {
         assert!(!indicator.take_record_retry());
     }
 
-    // USER REQUIREMENT (ledger, 2026-10-18): "Autosave is silent; show something only when a save stalls or fails"
     #[test]
     fn a_stalled_record_save_speaks_at_the_stall_and_retries_once() {
         init();
@@ -444,7 +442,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (ledger, 2026-10-18): "Autosave is silent; show something only when a save stalls or fails"
     #[test]
     fn a_failed_save_offers_try_again_which_reaches_the_record() {
         init();
@@ -613,7 +610,6 @@ mod window_tests {
         app.settle();
     }
 
-    // USER REQUIREMENT (ledger, 2026-10-18): "Autosave is silent; show something only when a save stalls or fails"
     #[test]
     fn a_window_is_silent_until_a_save_stalls_then_offers_try_again_when_it_fails() {
         ui_core::i18n::I18nManager::init("en-US");

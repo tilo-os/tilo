@@ -201,10 +201,6 @@ fn a_locked_vault_offers_one_unlock_row_and_an_unlocked_one_lists_its_logins() {
     assert!(!unlocked.iter().any(|row| row.id.starts_with(UNLOCK)));
 }
 
-// USER REQUIREMENT (2026-10-19): "i cant search spotify, youtube, my unlocked
-// passwords, the app store for flatpaks – i cannot search ANYTHING."
-// Spec test: "An unlocked vault with a login for github.com, with Passwords
-// closed: "github" lists that login. Locked: the unlock row."
 #[test]
 #[expect(
     clippy::significant_drop_tightening,

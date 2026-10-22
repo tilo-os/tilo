@@ -131,11 +131,6 @@ impl Desk {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "When the shell exits (exit, Ctrl+D, or the
-// process ends), the Terminal keeps a dead window. Like every terminal
-// emulator, the window (or the tab, when there are several) closes when its
-// shell exits." Exiting the shell closes its window, and its tab when there
-// are several.
 #[test]
 fn exiting_the_shell_closes_its_tab_and_the_window_with_its_last_tab() {
     let mut desk = Desk::with_two_tabs();
@@ -159,12 +154,6 @@ fn exiting_the_shell_closes_its_tab_and_the_window_with_its_last_tab() {
     drop(desk);
 }
 
-// USER REQUIREMENT (2026-10-21): "\"Your shell on this device\", the
-// shell/target disclosure drawn inside the terminal content, belongs in the
-// window bar, through the system window bar API, as the window's title. The
-// current target (this device, a VM, a remote host, a container) is shown
-// there; clicking it opens the standard picker to switch or open a new
-// target." The target picker is in the window bar.
 #[test]
 fn the_target_an_app_declares_on_its_window_is_the_title_in_its_bar() {
     let mut desk = Desk::with_two_tabs();

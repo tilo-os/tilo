@@ -1570,8 +1570,6 @@ mod command_tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-22): "the Tilo app repository stays available
-    // after a component swap"
     /// When a swap does leave the app host with a declaration it cannot read
     /// (the laptop on 2026-10-22: a one-version-per-interface file over an
     /// app host reading lists), reading a repository fails with the reason

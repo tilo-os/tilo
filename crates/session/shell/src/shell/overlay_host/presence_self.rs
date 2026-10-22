@@ -691,7 +691,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
     /// Under "That I'm here" the people of a workspace learn how available
     /// this person chose to be, and nothing the machine infers: a locked or
     /// quiet screen says nothing, the call they are in says nothing, and

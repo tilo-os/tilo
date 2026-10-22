@@ -869,8 +869,6 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "The camera permission prompt moves to
-    // the standard consent sheet, not inline in QS."
     fn device_pane_routes_remote_capture_and_requires_explicit_source_consent() {
         let (mut view, remote) = fixture();
         view.local_media.clear();
@@ -942,8 +940,6 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
 }
 
 #[test]
-// USER REQUIREMENT (2026-10-21): "Devices drops the 2x2 arrow cluster and the
-// mic arrow buttons: placing a device moves to its settings pane."
 fn device_pane_lists_microphones_and_switches_and_levels_them() {
     let (mut view, _) = fixture();
     view.local_media.clear();
@@ -1079,8 +1075,6 @@ fn display_move_requires_settings_owner_and_an_unlocked_session() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "Speaker choice lives in one place: under
-// volume. Devices doesn't repeat it."
 #[test]
 fn speakers_are_chosen_under_volume_and_devices_does_not_list_them() {
     let (view, _) = fixture();
@@ -1102,8 +1096,6 @@ fn speakers_are_chosen_under_volume_and_devices_does_not_list_them() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "Devices drops the 2x2 arrow cluster and the
-// mic arrow buttons: placing a device moves to its settings pane."
 #[test]
 fn a_device_row_has_no_placement_arrows_and_opens_its_settings_pane() {
     let (mut view, _) = fixture();

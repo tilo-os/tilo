@@ -466,8 +466,6 @@ fn the_volume_chevron_chooses_where_sound_plays_under_the_sliders() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "Power mode lives in one place: the
-// tile, with the Battery section linking to it."
 #[test]
 fn the_power_mode_lives_in_its_tile_and_the_battery_section_links_to_it() {
     let mut state = laptop();
@@ -687,10 +685,6 @@ fn the_layout_never_overlaps_and_grows_with_large_text() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): The Quick Settings panel has a fixed
-// width. Opening a section (the Wi-Fi network list) changes only its
-// height: nothing on the page narrows or reflows sideways, even when the
-// opened section makes the page scroll.
 #[test]
 fn opening_a_section_changes_only_the_panels_height() {
     let theme = Theme::dark();
@@ -871,8 +865,6 @@ fn each_monitor_gets_a_named_brightness_slider() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "get rid of the double card layout for
-// the brightness/volume in the quick settings, it looks bad"
 /// The sliders sit straight on the panel: rendered through the production
 /// `draw` onto the panel ground, the air around and between the slider
 /// bands is that ground, never a Control surface of its own, while each

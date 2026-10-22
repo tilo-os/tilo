@@ -691,7 +691,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
     /// A room this device governs takes every window this device opens into
     /// its layout, admitted here, an unconfined program's too (its members
     /// view it as a stream): no other device places them. Once the room's

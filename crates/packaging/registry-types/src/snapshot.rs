@@ -726,7 +726,6 @@ mod tests {
         }
         // phase: another_package_format_version_is_refused
         {
-            // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
             let (mut snapshot, owner) = fixture();
             let owner_hex = hex::encode(owner.verifying_key().to_bytes());
             for other in [0, 1, 2, 3, 4, 5] {

@@ -2556,8 +2556,6 @@ fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<String> {
 // can see how it ended.
 // -----------------------------------------------------------------
 
-// USER REQUIREMENT (2026-10-19): "The button invokes the shell's identity
-// chooser action".
 #[test]
 fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity() {
     use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
@@ -2599,9 +2597,6 @@ fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "never ask the person to type an app id.
-// They choose an app with the standard app picker, which lists installed
-// apps with icons."
 #[test]
 fn an_apps_app_chooser_lists_the_apps_and_answers_none_when_closed() {
     use crate::shell::search::{ResourceKind, SearchResult};
@@ -2646,9 +2641,6 @@ fn an_apps_app_chooser_lists_the_apps_and_answers_none_when_closed() {
     assert!(host.choosing_app());
 }
 
-// USER REQUIREMENT (2026-10-21): "errors in plain words: never "peer-sync is
-// not running in this session". If the service isn't running, start it or
-// say what the person can do."
 #[test]
 fn the_invite_sheet_says_in_plain_words_why_it_cannot_invite_yet() {
     let (mut h, chrome) = host_with_chrome();

@@ -687,7 +687,6 @@ mod dial_error_tests {
     use super::DialError;
     use tilo_relay_session::ClientError;
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn a_host_at_another_version_stays_a_version_mismatch_through_the_dial() {
         let behind = neighbour_wire::PEER_PROTOCOL_VERSION - 1;

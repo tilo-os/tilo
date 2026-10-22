@@ -248,7 +248,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_app_behind_is_updated_and_one_ahead_waits_for_the_system() {
         assert_eq!(fit_on(Vec::new()), Fit::Fits);

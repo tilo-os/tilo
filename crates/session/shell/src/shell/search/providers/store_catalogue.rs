@@ -1268,9 +1268,6 @@ mod tests {
         provider.query(ctx)
     }
 
-    // USER REQUIREMENT (2026-10-19): "i cant search spotify, youtube, my
-    // unlocked passwords, the app store for flatpaks – i cannot search
-    // ANYTHING."
     #[test]
     #[expect(
         clippy::significant_drop_tightening,
@@ -1359,8 +1356,6 @@ mod tests {
         assert_eq!(provider.secondary_actions(spotify).len(), 1);
     }
 
-    // USER REQUIREMENT (2026-10-22): "searching for a Flatpak opens its Store
-    // page, it never installs on its own"
     #[test]
     #[expect(
         clippy::significant_drop_tightening,
@@ -1447,8 +1442,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "directly opening tapps without explicit
-    // installation" — and an app this device has is never offered again.
     #[test]
     #[expect(
         clippy::significant_drop_tightening,
@@ -1487,8 +1480,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the
-    // app store"
     #[test]
     fn blocked_apps_appear_nowhere_in_search() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
@@ -1508,8 +1499,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "all resource types and actions must
-    // also be searchable, even if app not installed"
     #[test]
     #[expect(
         clippy::significant_drop_tightening,
@@ -1593,9 +1582,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "all resource types and actions must
-    // also be searchable, even if app not installed" — and choosing one gets
-    // the app and runs it.
     #[test]
     #[serial_test::serial(process_env)]
     #[expect(
@@ -1677,9 +1663,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "all resource types and actions must
-    // also be searchable, even if app not installed" — and those of the
-    // apps this device has, whether or not they ever ran.
     #[test]
     #[expect(
         clippy::significant_drop_tightening,

@@ -99,7 +99,6 @@ fn an_old_document_migrates_once_and_reads_as_the_new_model() {
     assert_eq!(replica.state().unwrap().given, "Grace");
 }
 
-// USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
 /// A migration is one change on top of the document's history, so the
 /// document as it was before it is the snapshot a rollback reads: the
 /// previous build finds its own version there, whole.

@@ -1259,7 +1259,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "The globe and nearby cities either become part of that single picker's presentation (the globe as a visual that selects, synced with the picker, like the Displays canvas and its dropdown) or go."
     #[test]
     fn the_globe_selects_the_nearest_zone_and_turns_to_the_one_the_picker_chose() {
         let points: Rc<[TimeZonePoint]> = vec![

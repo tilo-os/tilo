@@ -745,12 +745,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — a display dimmed in software keeps
-    // scanning a fullscreen client out directly wherever its CRTC has a
-    // gamma LUT to dim it.
     #[test]
     fn software_dimming_in_the_crtc_keeps_direct_scanout() {
         use crate::shell::software_dim::final_pass_dim;

@@ -1385,9 +1385,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): an active chip uses the design
-    // system's selected treatment, clearly distinct from idle chips; a filter
-    // chip with a value chosen is active though its press opens its menu.
     #[test]
     fn a_menu_chip_with_a_choice_is_drawn_chosen() {
         let chosen = Chip::new("Book: Tideglass")

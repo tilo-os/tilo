@@ -1816,11 +1816,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-22): the arrangement canvas is the one place
-    // a display's position is set, and it works from the keyboard as well as
-    // by hand: with the canvas focused, Ctrl with an arrow key moves the
-    // selected display to the next place that way, sent once as its move,
-    // with the focus ring on that display.
     #[test]
     fn arrow_keys_move_the_selected_display_from_the_keyboard() {
         let (mut canvas, selection) = selected_canvas();
@@ -1854,11 +1849,6 @@ mod tests {
         assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
     }
 
-    // USER REQUIREMENT (2026-10-22): the canvas is the page's one display
-    // selection, with no second picker: every display can be chosen from
-    // the keyboard (Tab reaches the canvas, an arrow chooses the next
-    // display that way, Ctrl with an arrow moves the chosen one) and by a
-    // screen reader through the canvas's display tiles.
     #[test]
     fn every_display_is_chosen_and_moved_from_the_keyboard() {
         let (canvas, selection) = selected_canvas();
@@ -1936,10 +1926,6 @@ mod tests {
         (canvas, selection)
     }
 
-    // USER REQUIREMENT (2026-10-21): there is one display selection, the
-    // arrangement canvas's; clicking, tapping or starting to drag a display
-    // on the canvas selects it, and the selected display is drawn with the
-    // design system's selection.
     #[test]
     fn pressing_a_display_selects_it_in_the_shared_selection() {
         let (mut canvas, selection) = selected_canvas();
@@ -1956,10 +1942,6 @@ mod tests {
         assert!(canvas.accessibility().unwrap().children[0].state.selected);
     }
 
-    // USER REQUIREMENT (2026-10-21): a dragged display follows the pointer
-    // 1:1 at the display's refresh rate by transform alone, with no layout
-    // and no settings write per frame; the arrangement is written once, on
-    // release.
     #[test]
     fn a_drag_repaints_every_move_and_writes_only_on_release() {
         let mut canvas = canvas();
@@ -2014,8 +1996,6 @@ mod tests {
         assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
     }
 
-    // USER REQUIREMENT (2026-10-21): a drag never lays the canvas out again
-    // while it moves.
     #[test]
     fn a_dragged_display_moves_without_a_relayout() {
         let bare = DisplayArrangement::new(
@@ -2060,7 +2040,6 @@ mod tests {
         host.verify_retained_geometry().unwrap();
     }
 
-    // USER REQUIREMENT (2026-10-21): touch works exactly like the pointer.
     #[test]
     fn a_finger_drags_a_display_like_the_pointer() {
         fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
@@ -2123,9 +2102,6 @@ mod tests {
         assert_eq!(drop(true), (0, 1080));
     }
 
-    // USER REQUIREMENT (2026-10-21): on release a dropped display settles
-    // into its snapped place with the standard spring, and the canvas costs
-    // nothing once it rests.
     #[test]
     fn a_dropped_display_springs_into_place_then_asks_for_nothing() {
         let mut canvas = canvas();
@@ -2161,10 +2137,6 @@ mod tests {
         assert!(!canvas.settling(later), "then it asks for no frames");
     }
 
-    // USER REQUIREMENT (2026-10-22): the canvas frames the arrangement
-    // centred and fitted with a margin; while a display is dragged the view
-    // grows smoothly so the dragged display never leaves it, and after the
-    // drop it settles back to fit with the standard spring.
     #[test]
     fn the_view_grows_to_keep_a_held_display_in_sight_then_settles_back() {
         let mut canvas = canvas();

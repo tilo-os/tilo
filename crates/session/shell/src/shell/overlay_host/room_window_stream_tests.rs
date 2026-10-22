@@ -61,7 +61,6 @@ fn settle(fb: &mut FrameBuilder) {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "it should be streamed, MOQ, live, efficient, directly to them! just the window, low latency"
 /// A member's terminal, hosted on their device, in a room that shares its
 /// layout: on this device its tab is a stream tile. The host's stream
 /// mounts in exactly that tab, nothing is shown before the host encodes,
