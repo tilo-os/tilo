@@ -15,6 +15,14 @@
 //! The app's side may be used from any thread: a shell that exits is seen
 //! by the thread reading its terminal, and the tab closes even while it is
 //! not the one the window shows.
+//!
+//! An app need not know it shares a process: while a host's
+//! [`TileHost`](crate::widget::TileHost) runs the app it shows in a window
+//! ([`TileHost::set_hosted_window`](crate::widget::TileHost::set_hosted_window)),
+//! [`crate::window_toolbar`]'s calls act on that window, so an app written
+//! for a process of its own declares its slots and hears its events the
+//! same way in either. What the host does with the windows is one
+//! [`crate::window_slots::WindowSlots`] in every desktop.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -43,6 +51,10 @@ struct State {
     /// it to the app: how the host knows which tab a program typed in a
     /// terminal belongs to.
     session: Option<String>,
+    /// The app asked to edit its location (its Ctrl+L).
+    edit: bool,
+    /// The app asked to open the window's search (its Ctrl+F).
+    search: bool,
     /// What the host runs when the app declared or asked to close, so it
     /// looks again even while nothing else is happening.
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -126,12 +138,64 @@ impl HostedWindow {
         self.state().session = session;
     }
 
+    /// The slots as last declared.
+    #[must_use]
+    pub fn declared(&self) -> Option<WindowToolbar> {
+        self.state().toolbar.clone()
+    }
+
+    /// Bumped by every declaration that changed the slots.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.state().revision
+    }
+
+    /// Ask the bar to turn the location into a field, as a click on it does.
+    pub fn edit_location(&self) {
+        let wake = {
+            let mut state = self.state();
+            state.edit = true;
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
+    /// Ask the bar to open the window's search, as a click on its control
+    /// does.
+    pub fn open_search(&self) {
+        let wake = {
+            let mut state = self.state();
+            state.search = true;
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
     // --- the host's side
 
     /// The session-supervisor session the tab runs, as the app named it.
     #[must_use]
     pub fn session(&self) -> Option<String> {
         self.state().session.clone()
+    }
+
+    /// Whether `other` is this same window (a clone of it).
+    #[must_use]
+    pub fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    /// Whether the app asked to edit its location since the last call.
+    #[must_use]
+    pub fn take_edit_request(&self) -> bool {
+        std::mem::take(&mut self.state().edit)
+    }
+
+    /// Whether the app asked to open the window's search since the last
+    /// call.
+    #[must_use]
+    pub fn take_search_request(&self) -> bool {
+        std::mem::take(&mut self.state().search)
     }
 
     /// What the host runs when the app declares new slots or asks to close.

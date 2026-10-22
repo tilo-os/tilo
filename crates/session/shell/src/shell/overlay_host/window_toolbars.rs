@@ -13,166 +13,14 @@
 //! window the shell lent it ([`ui::hosted_window::HostedWindow`]), which the
 //! shell looks at every frame ([`ShellOverlayHost::sync_hosted_windows`]).
 
-use std::collections::HashMap;
-
-use ui::widget::GroupRow;
+use ui::widget::{GroupRow, WindowGroup};
 use ui::window_toolbar::{ToolbarEvent, WindowOffer, WindowToolbar};
 
 use super::ShellOverlayHost;
 use crate::shell::state::TabId;
 
-/// The connection id the slots of an app the shell mounts in its own
-/// process are kept under: what the person does with them goes back on its
-/// window, never on a connection.
-const IN_PROCESS: u64 = u64::MAX;
-
-/// Every tab's declared slots and the connection of the app that declared
-/// them, and what goes back to the apps on the next pump.
-#[derive(Default)]
-pub(crate) struct WindowToolbars {
-    by_tab: HashMap<TabId, (u64, WindowToolbar)>,
-    /// Tabs whose slots went away since the groups last saw them.
-    cleared: Vec<TabId>,
-    /// What each tab's app offers the bar's search and History control, and
-    /// the connection it said so on.
-    offers: HashMap<TabId, (u64, WindowOffer)>,
-    /// Tabs whose offer went away since the groups last saw them.
-    offers_cleared: Vec<TabId>,
-    outbox: Vec<(u64, ToolbarEvent)>,
-    /// For an app the shell mounts in its own process: the revision of its
-    /// window's slots last taken, by tab.
-    hosted_seen: HashMap<TabId, u64>,
-    /// What goes back to apps the shell mounts in its own process, by tab.
-    hosted_outbox: Vec<(TabId, ToolbarEvent)>,
-}
-
-impl WindowToolbars {
-    /// `connection`'s app declared `toolbar` for `tab`. Returns whether it
-    /// changed anything.
-    pub(crate) fn declare(
-        &mut self,
-        tab: TabId,
-        connection: u64,
-        toolbar: Option<WindowToolbar>,
-    ) -> bool {
-        let Some(toolbar) = toolbar
-            .map(WindowToolbar::bounded)
-            .filter(|toolbar| !toolbar.is_empty())
-        else {
-            let had = self.by_tab.remove(&tab).is_some();
-            if had {
-                self.cleared.push(tab);
-            }
-            return had;
-        };
-        let next = (connection, toolbar);
-        if self.by_tab.get(&tab) == Some(&next) {
-            return false;
-        }
-        self.by_tab.insert(tab, next);
-        true
-    }
-
-    /// `connection`'s app said what `tab`'s window offers the bar's search
-    /// and History control. Returns whether it changed anything.
-    pub(crate) fn offer(&mut self, tab: TabId, connection: u64, offer: WindowOffer) -> bool {
-        let next = (connection, offer);
-        if self.offers.get(&tab) == Some(&next) {
-            return false;
-        }
-        self.offers.insert(tab, next);
-        self.offers_cleared.retain(|cleared| *cleared != tab);
-        true
-    }
-
-    /// What `tab`'s app offers the bar, if it runs in a process of its own.
-    pub(crate) fn window_offer(&self, tab: TabId) -> Option<&WindowOffer> {
-        self.offers.get(&tab).map(|(_, offer)| offer)
-    }
-
-    /// `connection` closed: its app's slots and offers go with it.
-    pub(crate) fn disconnected(&mut self, connection: u64) -> bool {
-        let gone: Vec<TabId> = self
-            .by_tab
-            .iter()
-            .filter(|(_, (owner, _))| *owner == connection)
-            .map(|(tab, _)| *tab)
-            .collect();
-        for tab in &gone {
-            self.by_tab.remove(tab);
-        }
-        let offered: Vec<TabId> = self
-            .offers
-            .iter()
-            .filter(|(_, (owner, _))| *owner == connection)
-            .map(|(tab, _)| *tab)
-            .collect();
-        for tab in &offered {
-            self.offers.remove(tab);
-        }
-        let any = !gone.is_empty() || !offered.is_empty();
-        self.cleared.extend(gone);
-        self.offers_cleared.extend(offered);
-        any
-    }
-
-    pub(crate) fn toolbar(&self, tab: TabId) -> Option<&WindowToolbar> {
-        self.by_tab.get(&tab).map(|(_, toolbar)| toolbar)
-    }
-
-    /// Queue `event` for the app that declared `tab`'s slots or offered
-    /// its window to the bar.
-    pub(crate) fn route(&mut self, tab: TabId, event: ToolbarEvent) -> bool {
-        let connection = match &event {
-            ToolbarEvent::Search { .. }
-            | ToolbarEvent::SearchStep { .. }
-            | ToolbarEvent::SearchClose
-            | ToolbarEvent::History => self.offers.get(&tab).map(|(connection, _)| *connection),
-            ToolbarEvent::ToggleSidebar
-            | ToolbarEvent::Back
-            | ToolbarEvent::Forward
-            | ToolbarEvent::Commit { .. }
-            | ToolbarEvent::Edit { .. }
-            | ToolbarEvent::Action { .. } => {
-                self.by_tab.get(&tab).map(|(connection, _)| *connection)
-            }
-        };
-        let Some(connection) = connection else {
-            return false;
-        };
-        if connection == IN_PROCESS {
-            self.hosted_outbox.push((tab, event));
-        } else {
-            self.outbox.push((connection, event));
-        }
-        true
-    }
-
-    /// Tab `tab`'s app, mounted in the shell's process, declared `toolbar`
-    /// on its window as revision `revision`. Returns whether it changed
-    /// anything.
-    fn declare_hosted(
-        &mut self,
-        tab: TabId,
-        revision: u64,
-        toolbar: Option<WindowToolbar>,
-    ) -> bool {
-        self.hosted_seen.insert(tab, revision);
-        self.declare(tab, IN_PROCESS, toolbar)
-    }
-
-    /// Tab `tab`, mounted in the shell's process, is gone: its slots go.
-    fn forget_hosted(&mut self, tab: TabId) {
-        self.hosted_seen.remove(&tab);
-        if self.by_tab.remove(&tab).is_some() {
-            self.cleared.push(tab);
-        }
-    }
-
-    pub(crate) fn take_outbox(&mut self) -> Vec<(u64, ToolbarEvent)> {
-        std::mem::take(&mut self.outbox)
-    }
-}
+/// Every tab's declared slots, kept as every desktop keeps them.
+pub(crate) type WindowToolbars = ui::window_slots::WindowSlots;
 
 impl ShellOverlayHost {
     /// `app_id` on shell-ui `connection`, launched as record `instance`,
@@ -344,38 +192,24 @@ impl ShellOverlayHost {
     /// with them is queued for the apps. Runs every frame; a group whose
     /// slots did not change does nothing.
     pub(super) fn sync_window_toolbars(&mut self) {
-        let cleared = std::mem::take(&mut self.window_toolbars.cleared);
-        let offers_cleared = std::mem::take(&mut self.window_toolbars.offers_cleared);
-        let mut events = Vec::new();
-        for &ptr in self.group_row_ptrs.values() {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &mut GroupRow = unsafe { &mut *ptr };
-            for group in &mut row.groups {
-                let ids: Vec<u64> = group.tabs().iter().map(|tab| tab.id).collect();
-                for id in ids {
-                    if let Some(toolbar) = self.window_toolbars.toolbar(id) {
-                        // Declarations are stored bounded, as the bar keeps
-                        // them: an unchanged one is compared, not copied.
-                        if group.tab_toolbar(id) != Some(toolbar) {
-                            group.set_tab_toolbar(id, Some(toolbar.clone()));
-                        }
-                    } else if cleared.contains(&id) {
-                        group.set_tab_toolbar(id, None);
-                    }
-                    if let Some(offer) = self.window_toolbars.window_offer(id) {
-                        // Unchanged offers change nothing in the group.
-                        group.set_tab_window_offer(id, Some(*offer));
-                    } else if offers_cleared.contains(&id) {
-                        group.set_tab_window_offer(id, None);
-                    }
-                }
-                events.extend(group.take_toolbar_events());
-                events.extend(group.take_location_drafts());
-            }
-        }
-        for (tab, event) in events {
-            self.window_toolbars.route(tab, event);
-        }
+        let groups = self.window_groups_mut();
+        self.window_toolbars.sync_groups(groups);
+    }
+
+    /// Every window group on every output.
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the window bars are written through `group_row_ptrs`, which is sound only under `&mut self`"
+    )]
+    fn window_groups_mut<'a>(&mut self) -> Vec<&'a mut WindowGroup> {
+        self.group_row_ptrs
+            .values()
+            .flat_map(|&ptr| {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &'a mut GroupRow = unsafe { &mut *ptr };
+                row.groups.iter_mut()
+            })
+            .collect()
     }
 
     /// Look at the windows the shell lent the apps it mounts in its own
@@ -397,25 +231,15 @@ impl ShellOverlayHost {
                 .map(|apps| apps.borrow().hosted_windows())
                 .unwrap_or_default()
         };
-        let mut changed = false;
-        let mut closing = Vec::new();
-        for (tab, window) in &windows {
-            let seen = self.window_toolbars.hosted_seen.get(tab).copied();
-            if let Some((revision, toolbar)) = window.toolbar_since(seen) {
-                changed |= self.window_toolbars.declare_hosted(*tab, revision, toolbar);
-            }
-            if window.take_close() {
-                closing.push(*tab);
-            }
+        let groups = self.window_groups_mut();
+        let sync = self.window_toolbars.sync_hosted(&windows, groups);
+        if sync.searched {
+            // An app with nothing to search in place hands on to the palette.
+            self.harvest_pending_search_open();
+            self.sync_window_toolbars();
         }
-        self.sync_window_toolbars();
-        for (tab, event) in std::mem::take(&mut self.window_toolbars.hosted_outbox) {
-            if let Some((_, window)) = windows.iter().find(|(shown, _)| *shown == tab) {
-                window.deliver(event);
-                // The app hears it on its next frame.
-                changed = true;
-            }
-        }
+        let mut changed = sync.changed;
+        let closing = sync.closing;
         if !closing.is_empty() {
             let mut state = chrome.borrow_mut();
             for tab in closing {
@@ -562,91 +386,5 @@ impl ShellOverlayHost {
                 .iter()
                 .any(ui::widget::WindowGroup::editing_location)
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ui::window_toolbar::ToolbarLocation;
-
-    fn location(label: &str) -> WindowToolbar {
-        WindowToolbar {
-            sidebar: None,
-            location: Some(ToolbarLocation {
-                label: label.into(),
-                editable: true,
-                ..ToolbarLocation::default()
-            }),
-            ..WindowToolbar::default()
-        }
-    }
-
-    #[test]
-    fn events_go_back_to_the_app_that_declared_the_tab_and_die_with_it() {
-        let mut toolbars = WindowToolbars::default();
-        assert!(toolbars.declare(7, 41, Some(location("example.org"))));
-        assert!(!toolbars.declare(7, 41, Some(location("example.org"))));
-        assert!(toolbars.route(
-            7,
-            ToolbarEvent::Commit {
-                text: "rust".into()
-            }
-        ));
-        assert!(
-            !toolbars.route(8, ToolbarEvent::Back),
-            "no app declared tab 8"
-        );
-        assert_eq!(
-            toolbars.take_outbox(),
-            vec![(
-                41,
-                ToolbarEvent::Commit {
-                    text: "rust".into()
-                }
-            )]
-        );
-        assert!(toolbars.disconnected(41));
-        assert!(toolbars.toolbar(7).is_none());
-        assert_eq!(toolbars.cleared, vec![7]);
-    }
-
-    #[test]
-    fn the_bars_search_and_history_go_to_the_app_that_offered_its_window() {
-        use ui::window_toolbar::{HistoryOffer, SearchOffer};
-        let mut toolbars = WindowToolbars::default();
-        let offer = WindowOffer {
-            search: SearchOffer::Document,
-            count: None,
-            history: Some(HistoryOffer::Closed),
-        };
-        // Notes declares no slots, only what its window offers the bar.
-        assert!(toolbars.offer(3, 52, offer));
-        assert!(
-            !toolbars.offer(3, 52, offer),
-            "an equal offer is nothing new"
-        );
-        assert!(toolbars.toolbar(3).is_none());
-        for event in [
-            ToolbarEvent::Search {
-                query: "cat".into(),
-            },
-            ToolbarEvent::SearchStep { forward: true },
-            ToolbarEvent::SearchClose,
-            ToolbarEvent::History,
-        ] {
-            assert!(toolbars.route(3, event));
-        }
-        assert!(
-            !toolbars.route(3, ToolbarEvent::Back),
-            "slots nobody declared go nowhere"
-        );
-        let outbox = toolbars.take_outbox();
-        assert_eq!(outbox.len(), 4);
-        assert!(outbox.iter().all(|(connection, _)| *connection == 52));
-        assert!(toolbars.disconnected(52));
-        assert!(toolbars.window_offer(3).is_none());
-        assert_eq!(toolbars.offers_cleared, vec![3]);
-        assert!(!toolbars.route(3, ToolbarEvent::History));
     }
 }

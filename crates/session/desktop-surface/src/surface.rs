@@ -54,6 +54,7 @@ mod open_motion_tests;
 mod personal_ask;
 mod search;
 mod splice;
+mod window_bars;
 
 pub use history::{ActivityPane, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
@@ -503,6 +504,8 @@ pub struct DesktopSurface {
     shared: Rc<RefCell<Shared>>,
     tiles: Box<dyn TileSource>,
     rows: HashMap<StripId, GroupRow>,
+    /// The slots the apps put in their windows' bars ([`window_bars`]).
+    window_slots: ui::window_slots::WindowSlots,
     shown: Option<StripId>,
     rect: Rect,
     structure_dirty: bool,
@@ -710,6 +713,7 @@ impl DesktopSurface {
             shared: Rc::clone(&shared),
             tiles,
             rows: HashMap::new(),
+            window_slots: ui::window_slots::WindowSlots::default(),
             shown: None,
             rect: Rect::ZERO,
             structure_dirty: true,
@@ -2137,6 +2141,8 @@ fn build_tile(
     let _running = ui::widget::panic_scope::enter(Some(tab.id));
     let mut host = tiles.tile(workspace, tab);
     host.set_panic_scope(tab.id);
+    // Its app's bar is drawn here: what it declares goes on its window.
+    host.set_hosted_window(ui::hosted_window::HostedWindow::new());
     if let Some(domain) = controls {
         ui::widget::controls::install_control_custody(
             &mut host,
@@ -2247,6 +2253,7 @@ impl Widget for DesktopSurface {
             || search_was_open != self.search.is_open()
             || held;
         let row_changed = self.shown_row().is_some_and(|row| row.update(state, path));
+        let bars_changed = self.sync_window_bars();
         self.refresh_presentation();
         let activity_was_open = self.activity.is_some();
         self.sync_activity();
@@ -2261,6 +2268,7 @@ impl Widget for DesktopSurface {
         }
         changed
             || row_changed
+            || bars_changed
             || self.structure_dirty
             || activity_was_open != self.activity.is_some()
     }
