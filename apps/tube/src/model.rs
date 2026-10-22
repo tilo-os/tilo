@@ -382,7 +382,7 @@ impl Video {
     /// HLS alone, which the browser build has no player for (its media
     /// element plays one progressive file through the fetch proxy).
     pub fn plays_only_in_app(&self) -> bool {
-        self.live && cfg!(target_arch = "wasm32")
+        self.live && !media::available(media::Feature::LiveStreams)
     }
 
     /// The title to display given the `DeArrow` toggle.
