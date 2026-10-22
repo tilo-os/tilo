@@ -195,3 +195,24 @@ fn enter_searches_what_the_address_list_offers_as_a_search() {
         "https://example.com/a.b"
     );
 }
+
+#[test]
+fn option_arrow_moves_by_word_on_macos_and_goes_back_elsewhere() {
+    let mut widget = BrowserWidget::new_headless();
+    let alt = winit::event::Modifiers::from(winit::keyboard::ModifiersState::ALT);
+    let goes_back =
+        widget.handle_browser_shortcut(&architecture_tests::key(WNamedKey::ArrowLeft), alt);
+    let mac =
+        ui::platform::PlatformConventions::default().platform() == ui::platform::Platform::MacOs;
+    assert_eq!(
+        goes_back, !mac,
+        "Option+Left is the caret's on macOS, Alt+Left is Back elsewhere"
+    );
+    assert_eq!(
+        widget
+            .pending_controls
+            .iter()
+            .any(|invocation| invocation.address.action == "back"),
+        !mac
+    );
+}
