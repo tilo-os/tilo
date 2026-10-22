@@ -5497,6 +5497,16 @@ impl FrameHarness {
                 return Err("semantic target is disabled or read-only".into());
             }
         }
+        // A widget may name its own node with a target (a field by its id,
+        // as the accessibility tree keys it). An action on that target is
+        // an action on the widget: one its synthetic children do not take
+        // goes to the widget itself, as an untargeted one does. Without
+        // this a value or selection set on a field through the page's
+        // accessibility tree never reached it.
+        let own_target = semantic_target.is_some_and(|target| {
+            self.access_node_named(name, None)
+                .is_ok_and(|access| access.action_target.as_deref() == Some(target))
+        });
         let targets = self.named_target_nodes();
         let node = targets
             .get(name)
@@ -5518,12 +5528,9 @@ impl FrameHarness {
             let handled = self
                 .dispatch_node(node, |widget, doc, root| {
                     if let Some(target) = semantic_target {
-                        widget.perform_semantic_action(
-                            target,
-                            action,
-                            &mut crate::widget::Edits::lend(doc),
-                            root,
-                        )
+                        let mut edits = crate::widget::Edits::lend(doc);
+                        widget.perform_semantic_action(target, action, &mut edits, root)
+                            || (own_target && widget.perform_action(action, &[], &mut edits, root))
                     } else {
                         widget.perform_action(
                             action,
@@ -5559,12 +5566,9 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(node, action, |widget, doc, root| {
                 if let Some(target) = semantic_target {
-                    widget.perform_semantic_action(
-                        target,
-                        action,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
+                    let mut edits = crate::widget::Edits::lend(doc);
+                    widget.perform_semantic_action(target, action, &mut edits, root)
+                        || (own_target && widget.perform_action(action, &[], &mut edits, root))
                 } else {
                     widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
                 }
