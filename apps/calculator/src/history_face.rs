@@ -13,6 +13,7 @@
 //! calculator's record (it keeps only the newest [`crate::actions::HISTORY_CAP`]).
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::charts::ChartPalette;
@@ -37,9 +38,30 @@ const THUMBNAIL_SPAN: f64 = 5.0;
 /// Samples across a thumbnail.
 const THUMBNAIL_SAMPLES: usize = 48;
 
+/// Each curve's place in the list, by row id: the colour it is drawn in
+/// on the graph and in its panel.
+type Series = Rc<RefCell<HashMap<String, usize>>>;
+
 /// The calculator's [`HistoryEntryPresenter`].
 #[derive(Default)]
-pub struct CalculatorEntries;
+pub struct CalculatorEntries {
+    /// The curves as the calculator lists them now, so a plotted curve's
+    /// thumbnail is drawn in the colour it has on the graph.
+    series: Series,
+}
+
+impl CalculatorEntries {
+    /// The curves now listed, in order (their row ids).
+    pub fn set_curves<'a>(&self, rows: impl IntoIterator<Item = &'a str>) {
+        let mut series = self.series.borrow_mut();
+        series.clear();
+        series.extend(
+            rows.into_iter()
+                .enumerate()
+                .map(|(at, id)| (id.to_owned(), at)),
+        );
+    }
+}
 
 impl HistoryEntryPresenter for CalculatorEntries {
     fn face(&self, entry: &HistoryEntry) -> Option<EntryFace> {
@@ -54,7 +76,41 @@ impl HistoryEntryPresenter for CalculatorEntries {
         }
         let (kind, formula) = plotted(entry)?;
         let spoken = format!("{} = {formula}", kind.variable());
-        Some(EntryFace::new(spoken).with_body(Rc::new(GraphBody::new(kind, &formula))))
+        let curve = (kind == GraphKind::Curve2d)
+            .then(|| row_of(entry))
+            .flatten()
+            .map(|row| (row, Rc::clone(&self.series)));
+        Some(EntryFace::new(spoken).with_body(Rc::new(GraphBody::new(kind, &formula, curve))))
+    }
+    /// A band reads as what was done in it: its functions and its
+    /// calculations, and how many other changes beside them.
+    fn group_summary(&self, entries: &[HistoryEntry]) -> Option<String> {
+        let calculations = entries
+            .iter()
+            .filter(|entry| calculation(entry).is_some())
+            .count();
+        let functions = entries
+            .iter()
+            .filter(|entry| plotted(entry).is_some())
+            .count();
+        if calculations + functions == 0 {
+            return None;
+        }
+        let others = entries.len().saturating_sub(calculations + functions);
+        let count = |key: &str, count: usize| {
+            crate::resource::CATALOG
+                .t_args(key, &[("count", ui::i18n::ArgValue::Number(count as f64))])
+        };
+        let parts: Vec<String> = [
+            ("calculator-history-functions", functions),
+            ("calculator-history-calculations", calculations),
+            ("calculator-history-other-changes", others),
+        ]
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(key, n)| count(key, n))
+        .collect();
+        Some(parts.join(", "))
     }
 }
 
@@ -113,6 +169,20 @@ fn plotted(entry: &HistoryEntry) -> Option<(GraphKind, String)> {
         return None;
     }
     Some((graph_kind(edit_of(context)?)?, formula))
+}
+
+/// The graph row a change is about: the item its edit names, or the item
+/// it addressed.
+fn row_of(entry: &HistoryEntry) -> Option<String> {
+    let context = entry.context.as_ref()?;
+    edit_of(context)
+        .and_then(|edit| {
+            edit.path.iter().find_map(|step| match step {
+                PathStep::Item(id) => Some(id.clone()),
+                _ => None,
+            })
+        })
+        .or_else(|| context.item.as_ref().map(|item| item.id.clone()))
 }
 
 fn edit_of(context: &ui::tilo_actions::ActionContext) -> Option<&FieldEdit> {
@@ -227,10 +297,13 @@ struct GraphBody {
     /// The curve's samples over the thumbnail span, `None` where it is
     /// undefined; empty for a surface or a formula that does not compile.
     samples: Vec<Option<f64>>,
+    /// The curve's row and the list it is looked up in at paint time: it is
+    /// drawn in its colour on the graph, or quietly once it was removed.
+    curve: Option<(String, Series)>,
 }
 
 impl GraphBody {
-    fn new(kind: GraphKind, formula: &str) -> Self {
+    fn new(kind: GraphKind, formula: &str, curve: Option<(String, Series)>) -> Self {
         let samples = match kind {
             GraphKind::Curve2d => engine::compile(formula, false, false)
                 .map(|curve| {
@@ -249,6 +322,20 @@ impl GraphBody {
             kind,
             field: RefCell::new(MathField::new(formula)),
             samples,
+            curve,
+        }
+    }
+
+    /// The colour the curve is drawn in now: its series colour while it is
+    /// listed, the dim text colour once it is gone.
+    fn ink(&self, theme: &ui::theme::Theme) -> vello::peniko::Color {
+        let listed = self
+            .curve
+            .as_ref()
+            .and_then(|(row, series)| series.borrow().get(row).copied());
+        match listed {
+            Some(at) => ChartPalette::from_theme(theme).categorical(at),
+            None => theme.tokens.colors.text_dim,
         }
     }
 
@@ -338,8 +425,8 @@ impl EntryBody for GraphBody {
             );
             if let Some(path) = self.thumbnail(frame) {
                 let stroke = Stroke::new(1.5 * f64::from(theme.ui_scale));
-                let ink = ChartPalette::from_theme(theme).categorical(0);
-                ctx.scene.stroke(&stroke, ctx.transform, ink, None, &path);
+                ctx.scene
+                    .stroke(&stroke, ctx.transform, self.ink(theme), None, &path);
             }
         }
     }
@@ -401,7 +488,7 @@ mod tests {
     /// calculator and copies its result.
     #[test]
     fn a_calculation_reads_as_itself_opens_and_copies_its_result() {
-        let face = CalculatorEntries
+        let face = CalculatorEntries::default()
             .face(&entry(
                 verb(
                     "commit-history",
@@ -420,7 +507,7 @@ mod tests {
     /// plot; a surface shows its formula; neither opens or copies.
     #[test]
     fn a_graph_change_shows_the_function_it_plotted() {
-        let curve = CalculatorEntries
+        let curve = CalculatorEntries::default()
             .face(&entry(
                 formula_edit("funcs", EditOp::Replace, Some("x^2-1")),
                 Some("x^2"),
@@ -429,18 +516,18 @@ mod tests {
         assert_eq!(curve.spoken, "y = x^2-1", "the formula after the change");
         assert!(!curve.opens && curve.copy.is_none());
 
-        let surface = CalculatorEntries
+        let surface = CalculatorEntries::default()
             .face(&entry(verb("add-surface", &[("formula", "x*y")]), None))
             .expect("an added surface has a face");
         assert_eq!(surface.spoken, "z = x*y");
 
-        let body = GraphBody::new(GraphKind::Curve2d, "x^2-1");
+        let body = GraphBody::new(GraphKind::Curve2d, "x^2-1", None);
         assert!(
             body.thumbnail(Rect::new(0.0, 0.0, 60.0, 30.0)).is_some(),
             "a curve plots"
         );
         assert!(
-            GraphBody::new(GraphKind::Surface3d, "x*y")
+            GraphBody::new(GraphKind::Surface3d, "x*y", None)
                 .samples
                 .is_empty()
         );
@@ -462,7 +549,11 @@ mod tests {
                 args: std::collections::BTreeMap::new(),
             }),
         ] {
-            assert!(CalculatorEntries.face(&entry(what, Some("x"))).is_none());
+            assert!(
+                CalculatorEntries::default()
+                    .face(&entry(what, Some("x")))
+                    .is_none()
+            );
         }
     }
 }

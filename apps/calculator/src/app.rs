@@ -88,7 +88,7 @@ pub struct CalculatorApp {
     dispatch: Option<Dispatcher<Calculator>>,
     /// How this calculator's changes read in the window's History: one
     /// presenter for the instance's life, so the timeline keeps its faces.
-    entries: Rc<dyn ui::widget::HistoryEntryPresenter>,
+    entries: Rc<crate::history_face::CalculatorEntries>,
     /// The durable rows last presented, with their stable ids.
     rows: Rc<Calculator>,
     /// A graph row this window just added, to select once it is presented.
@@ -131,7 +131,7 @@ impl CalculatorApp {
             pending_effect: None,
             node: None,
             dispatch: None,
-            entries: Rc::new(crate::history_face::CalculatorEntries),
+            entries: Rc::default(),
             rows: Rc::default(),
             select: None,
         }
@@ -142,6 +142,8 @@ impl CalculatorApp {
         self.model.history = state.history.values().cloned().collect();
         self.model.funcs = state.funcs.values().cloned().collect();
         self.model.surfaces = state.surfaces.values().cloned().collect();
+        self.entries
+            .set_curves(state.funcs.iter().map(|(id, _)| id.as_str()));
         self.rows = Rc::clone(state);
         if let Some((kind, id)) = self.select.take() {
             match state.graphs(kind).position(&id) {
@@ -1012,7 +1014,7 @@ impl CalculatorApp {
 /// Use calculation effect, the same door the palette and agents use.
 impl ui::history_mode::capability::PresentsHistoryEntries for CalculatorApp {
     fn history_entry_presenter(&self) -> Option<Rc<dyn ui::widget::HistoryEntryPresenter>> {
-        Some(Rc::clone(&self.entries))
+        Some(Rc::clone(&self.entries) as Rc<dyn ui::widget::HistoryEntryPresenter>)
     }
 
     fn open_history_entry(&mut self, entry: &ui::widget::history::HistoryEntry) -> bool {

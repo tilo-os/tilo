@@ -1,6 +1,19 @@
 ## History of the calculations and graphs
 
 calculator-commit-history = Calculated { $expr } = { $result }
+# What a band of the History holds, said in place of a character count.
+calculator-history-calculations = { $count ->
+    [one] 1 calculation
+   *[other] { $count } calculations
+}
+calculator-history-functions = { $count ->
+    [one] 1 function
+   *[other] { $count } functions
+}
+calculator-history-other-changes = { $count ->
+    [one] 1 other change
+   *[other] { $count } other changes
+}
 calculator-delete-history-entry = Removed { $item } from the history
 calculator-clear-history = Cleared the history
 calculator-add-function = Added the function y = { $formula }
