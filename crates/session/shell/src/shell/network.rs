@@ -24,6 +24,7 @@ mod hostless_live_tests;
 #[cfg(test)]
 mod idle_quiet_tests;
 mod input_declines;
+mod lan_discovery;
 #[cfg(test)]
 mod live_identity_tests;
 mod live_waves;
@@ -1948,67 +1949,6 @@ pub struct InboundPresence {
     pub cleared: bool,
 }
 
-fn lan_discovery_requested() -> bool {
-    network_env("TILO_COLLAB_LAN_DISCOVERY").is_some_and(|(_, value)| value != "0")
-}
-
-/// Start mDNS LAN peer discovery when `TILO_COLLAB_LAN_DISCOVERY` requests
-/// it, registering it with `endpoint`'s address lookup. Returns `None`
-/// when discovery is disabled, disallowed by the env var, or the mDNS
-/// service or address-lookup registry is unavailable — the caller then
-/// simply skips [`spawn_lan_discovery_forwarding`].
-fn init_lan_discovery(
-    endpoint: &iroh::Endpoint,
-) -> Option<iroh_mdns_address_lookup::MdnsAddressLookup> {
-    if !lan_discovery_requested() {
-        return None;
-    }
-    let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
-        .service_name("tilo-collab-v1")
-        .build(endpoint.id())
-    {
-        Ok(mdns) => mdns,
-        Err(error) => {
-            tracing::warn!(%error, "LAN discovery requested but could not start");
-            return None;
-        }
-    };
-    let Ok(address_lookup) = endpoint.address_lookup() else {
-        tracing::warn!("LAN discovery requested but endpoint has no address lookup registry");
-        return None;
-    };
-    address_lookup.add(mdns.clone());
-    Some(mdns)
-}
-
-/// Forward every mDNS-discovered peer into `cmd_tx` as a
-/// `NetCmd::Connect`, on a task spawned onto `runtime`.
-fn spawn_lan_discovery_forwarding(
-    runtime: &tokio::runtime::Runtime,
-    mdns: iroh_mdns_address_lookup::MdnsAddressLookup,
-    cmd_tx: &mpsc::Sender<NetCmd>,
-) {
-    let discovery_tx = cmd_tx.clone();
-    runtime.spawn(async move {
-        use futures_util::StreamExt;
-        let mut events = mdns.subscribe().await;
-        while let Some(event) = events.next().await {
-            if let iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. } =
-                event
-            {
-                let _ = discovery_tx
-                    .send(NetCmd::Connect {
-                        addr: endpoint_info.into_endpoint_addr(),
-                    })
-                    .await;
-            }
-        }
-    });
-    tracing::info!(
-        "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _tilo-collab-v1._udp.local"
-    );
-}
-
 impl ShellNetwork {
     /// Retained cryptographic custody for the same native broker's private
     /// account setup. No key or certificate is created by this projection.
@@ -2137,11 +2077,6 @@ impl ShellNetwork {
             runtime.handle().clone(),
             Some(rest_after),
         );
-        let mdns = if internet {
-            init_lan_discovery(&endpoint)
-        } else {
-            None
-        };
         let personal_device_peers = Arc::new(Mutex::new(
             personal_device_peers::PersonalDevicePeers::default(),
         ));
@@ -2178,6 +2113,7 @@ impl ShellNetwork {
             )
         });
         let private_chat_endpoint = Some(endpoint.clone());
+        let discovery_endpoint = endpoint.clone();
         let (cmd_tx, _join) = Actor::spawn_deferring_relays(
             endpoint,
             lookup,
@@ -2185,8 +2121,16 @@ impl ShellNetwork {
             Arc::clone(&listen_addrs),
             reachability.clone(),
         );
-        if let Some(mdns) = mdns {
-            spawn_lan_discovery_forwarding(&runtime, mdns, &cmd_tx);
+        if internet && let Some(identity) = &host_identity {
+            lan_discovery::start(
+                &runtime,
+                &discovery_endpoint,
+                identity,
+                own_device_fleet.clone(),
+                &personal_device_peers,
+                state_dir,
+                &cmd_tx,
+            );
         }
 
         let relay_workspace_ids =
@@ -10242,12 +10186,11 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn network_config_reads_tilo_names() {
-        const NAMES: [&str; 5] = [
+        const NAMES: [&str; 4] = [
             "TILO_PEER_KEY_PATH",
             "TILO_COLLAB_HOSTS",
             "TILO_COLLAB_HOST",
             "TILO_HOME_PEERS_PATH",
-            "TILO_COLLAB_LAN_DISCOVERY",
         ];
         let mut env = tilo_test_env::ScopedEnv::new();
         for name in NAMES {
@@ -10262,17 +10205,12 @@ mod tests {
         let tilo_hosts = serde_json::to_string(&vec![iroh::EndpointAddr::new(tilo_list_host)])
             .expect("Tilo host list");
 
-        env.set("TILO_COLLAB_LAN_DISCOVERY", "1");
-        assert!(lan_discovery_requested());
-
         env.set("TILO_PEER_KEY_PATH", &tilo_key_path)
             .set("TILO_COLLAB_HOSTS", tilo_hosts)
             .set("TILO_COLLAB_HOST", tilo_single_host.to_string())
-            .set("TILO_HOME_PEERS_PATH", &tilo_home_path)
-            .set("TILO_COLLAB_LAN_DISCOVERY", "0");
+            .set("TILO_HOME_PEERS_PATH", &tilo_home_path);
         assert_eq!(peer_key_path(), tilo_key_path);
         assert_eq!(home_peer_registry_path(), tilo_home_path);
-        assert!(!lan_discovery_requested());
         assert_eq!(
             configured_host_addrs()
                 .into_iter()

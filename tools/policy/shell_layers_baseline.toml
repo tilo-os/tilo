@@ -100,7 +100,6 @@ grandfathered = [
     "iroh",
     "iroh-base",
     "iroh-gossip",
-    "iroh-mdns-address-lookup",
     "launcher",
     "legacy-agent-protocol",
     "libc",
@@ -234,6 +233,7 @@ grandfathered = [
 
 [shell_dependencies.added]
 "tilo-documents" = "The files a person chooses for an app in the shell's chooser, served into that app's sandbox: the shell mounts the store and gives into it; the table, the beneath-only host access and the FUSE adapter live in this crate, which the launcher shares for the paths"
+"tilo-lan-discovery" = "Replaces iroh-mdns-address-lookup, which the shell dropped: finding the person's own devices on the local network is an address lookup the shell's endpoint registers; the probe protocol, its freshness and the socket live in this crate"
 "tilo-location" = "The automatic time zone (time_zone_follower) asks where the device is through the XDG Location portal; tilo-location is the one location client, which the app host already uses for apps, and brings only ashpd's location feature, tilo-rt and tilo-clock with it"
 "tilo-owner-commit" = "The owner commit vocabulary carved out of tilo-peer-state, which the shell already depends on; the shell's native workspace owner implements its service and reaches the same code it did before, now in a smaller crate"
 "tilo-network-secret-agent" = "The NetworkManager secret agent carved out of the shell; the shell supplies only the sheet it asks in, the catalogue its keys resolve in and the roaming Wi-Fi store"
