@@ -130,6 +130,11 @@ enum Action {
         #[arg(long)]
         path: String,
     },
+    /// The Hugging Face token or sign-in stored here, as JSON, renewing a
+    /// sign-in that is due.
+    HubAccount,
+    /// Sign in with Hugging Face by entering a code on another device.
+    HubSignIn,
     #[command(hide = true)]
     Worker {
         #[arg(long)]
@@ -199,6 +204,7 @@ enum RpcAction {
     ImportFile {
         path: String,
     },
+    HubAccount,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -685,6 +691,8 @@ fn main() {
     }
     let result = match &cli.command {
         Action::Serve { socket } => serve(socket),
+        // Interactive: it waits for the person in this terminal.
+        Action::HubSignIn => hub_client::sign_in_with_code(),
         Action::Worker { .. } | Action::WorkerStart { .. } | Action::WorkerUser { .. } => {
             run_local(cli)
         }
@@ -768,7 +776,9 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
             accept_license: *accept_license,
         }),
         Action::ImportFile { path } => Ok(RpcAction::ImportFile { path: path.clone() }),
+        Action::HubAccount => Ok(RpcAction::HubAccount),
         Action::RecoverOrphan { .. }
+        | Action::HubSignIn
         | Action::Worker { .. }
         | Action::WorkerStart { .. }
         | Action::WorkerUser { .. }
@@ -894,6 +904,7 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
             accept_license,
         },
         RpcAction::ImportFile { path } => Action::ImportFile { path },
+        RpcAction::HubAccount => Action::HubAccount,
     };
     Cli {
         root: None,
@@ -1179,12 +1190,24 @@ fn open_cli_service(
     LocalModelService::open(root, transport, SystemdSupervisor).map_err(|error| error.to_string())
 }
 
+/// The actions that need neither the catalog nor the model store.
+fn run_without_store(command: &Action, root: &Path) -> Option<Result<Option<String>, String>> {
+    Some(match command {
+        Action::RecoverOrphan { run_id } => {
+            local_model_service::ownership::recover_orphan(root, &mut SystemdSupervisor, run_id)
+                .map(|()| None)
+                .map_err(|error| error.to_string())
+        }
+        Action::HubSearch { query, format } => hub_search(query, format).map(Some),
+        Action::HubAccount => hub_client::account_state().map(Some),
+        _ => return None,
+    })
+}
+
 fn run_local(cli: Cli) -> Result<Option<String>, String> {
     let (root, catalog_path, key_path) = paths(&cli)?;
-    if let Action::RecoverOrphan { run_id } = &cli.command {
-        local_model_service::ownership::recover_orphan(&root, &mut SystemdSupervisor, run_id)
-            .map_err(|error| error.to_string())?;
-        return Ok(None);
+    if let Some(answer) = run_without_store(&cli.command, &root) {
+        return answer;
     }
     if let Action::Snapshot { format } = &cli.command {
         return local_snapshot(
@@ -1195,9 +1218,6 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             cli.artifact_dir.as_deref(),
         )
         .map(Some);
-    }
-    if let Action::HubSearch { query, format } = &cli.command {
-        return hub_search(query, format).map(Some);
     }
     let catalog = selected_catalog(&cli, &catalog_path, &key_path)?;
     if let Action::HubModel { reference } = &cli.command {
@@ -1278,6 +1298,8 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
         | Action::Snapshot { .. }
         | Action::HubSearch { .. }
         | Action::HubModel { .. }
+        | Action::HubAccount
+        | Action::HubSignIn
         | Action::Serve { .. } => {
             return Err("not a local model action".into());
         }
@@ -1370,7 +1392,7 @@ fn hub_offer(
     let mut client = hub_client::HubClient::new().map_err(|error| error.to_string())?;
     let info = local_model_service::hub::model_info(&mut client, &reference)
         .map_err(|error| error.to_string())?;
-    let signed_in = hub_client::stored_token()?.is_some();
+    let signed_in = client.signed_in();
     HubModelOffer::of(
         &info,
         hardware,

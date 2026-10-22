@@ -15,8 +15,9 @@
 #
 # Scopes are per use of the client, not per provider: `files` is what cloud
 # storage asks for, `mail` what IMAP and SMTP (XOAUTH2) ask for, `models`
-# what the model gateway asks for to call hosted agent models. A use with
-# no scopes is not offered for that provider.
+# what the model gateway asks for to call hosted agent models,
+# `model_downloads` what the model manager downloads weights with. A use
+# with no scopes is not offered for that provider.
 #
 # Every sign-in redirects to `http://127.0.0.1:<port>/oauth`, unless its
 # entry names the `redirect_host` and `redirect_path` its issuer registered.
@@ -122,13 +123,14 @@ client_id = "Iv1.b507a08c87ecfe98"
 models = ["read:user"]
 
 [huggingface]
-# A Hugging Face OAuth app with the `inference-api` scope, for inference
-# billed to the person's own account. None is registered for Tilo yet: set
-# TILO_OAUTH_HUGGINGFACE_CLIENT_ID, and register
-# http://127.0.0.1:47655/oauth as its redirect URI. Until then Hugging Face
-# takes an access token typed as an API key.
-client_id = ""
-redirect_ports = [47655]
+# Hugging Face OAuth app, public client (no secret). Registered redirect URIs:
+# http://localhost/callback and http://127.0.0.1/callback; Hugging Face
+# accepts any port on a loopback redirect. Its scopes allow reading the
+# person's profile and the gated models they were granted, for the model
+# manager's downloads. It has no `inference-api` scope, so hosted Hugging
+# Face inference still takes an access token typed as an API key.
+client_id = "3c6f0f73-efd1-47c9-ab21-55f84fcd7dab"
+redirect_path = "/callback"
 
 [huggingface.scopes]
-models = ["openid", "profile", "inference-api"]
+model_downloads = ["openid", "profile", "gated-repos"]

@@ -1,7 +1,9 @@
 //! Agent model providers set up by signing in rather than typing a key: a
 //! `ChatGPT` subscription (the person's `OpenAI` account, in the browser), a
-//! GitHub Copilot subscription (a code entered on GitHub's page), Hugging
-//! Face, and `OpenRouter`, whose sign-in hands back an API key.
+//! GitHub Copilot subscription (a code entered on GitHub's page), and
+//! `OpenRouter`, whose sign-in hands back an API key. Signing in with
+//! Hugging Face, for the model manager's downloads, waits the same way
+//! ([`SignInWait`]).
 //!
 //! A sign-in runs on a worker. A grant is sealed in this device's vault
 //! under the provider's own id ([`agent_vertex::grant_id`]) before the
@@ -19,7 +21,8 @@ use std::sync::Arc;
 
 use account_custody::openrouter::{self, KeyAuthorization};
 use account_custody::{
-    Capability, Custodian, CustodyError, DeviceCancel, LoopbackCancel, OAuthIssuer, OAuthUse,
+    Capability, Custodian, CustodyError, DeviceAuthorization, DeviceCancel, LoopbackCancel,
+    OAuthIssuer, OAuthUse,
 };
 use agent_provider_config::presets::Preset;
 use agent_provider_config::{ProviderProfile, SecretReference, SignInCredential, SignInIssuer};
@@ -40,16 +43,10 @@ pub(crate) enum Service {
     ChatGpt,
     Copilot,
     OpenRouter,
-    HuggingFace,
 }
 
 impl Service {
-    pub(crate) const ALL: [Self; 4] = [
-        Self::ChatGpt,
-        Self::Copilot,
-        Self::OpenRouter,
-        Self::HuggingFace,
-    ];
+    pub(crate) const ALL: [Self; 3] = [Self::ChatGpt, Self::Copilot, Self::OpenRouter];
 
     /// The name an action takes: the provider's preset.
     pub(crate) fn slug(self) -> &'static str {
@@ -65,7 +62,6 @@ impl Service {
             Self::ChatGpt => Preset::ChatGpt,
             Self::Copilot => Preset::Copilot,
             Self::OpenRouter => Preset::OpenRouter,
-            Self::HuggingFace => Preset::HuggingFace,
         }
     }
 
@@ -74,7 +70,6 @@ impl Service {
         match self {
             Self::ChatGpt => Some(SignInIssuer::ChatGpt),
             Self::Copilot => Some(SignInIssuer::GitHubCopilot),
-            Self::HuggingFace => Some(SignInIssuer::HuggingFace),
             Self::OpenRouter => None,
         }
     }
@@ -84,8 +79,7 @@ impl Service {
         match profile.sign_in_issuer()? {
             SignInIssuer::ChatGpt => Some(Self::ChatGpt),
             SignInIssuer::GitHubCopilot => Some(Self::Copilot),
-            SignInIssuer::HuggingFace => Some(Self::HuggingFace),
-            SignInIssuer::Google => None,
+            SignInIssuer::HuggingFace | SignInIssuer::Google => None,
         }
     }
 
@@ -95,7 +89,6 @@ impl Service {
         let issuer = match self {
             Self::ChatGpt => OAuthIssuer::OpenAi,
             Self::Copilot => OAuthIssuer::GitHub,
-            Self::HuggingFace => OAuthIssuer::HuggingFace,
             Self::OpenRouter => return None,
         };
         Some(OAuthUse::new(issuer, Capability::Models))
@@ -107,7 +100,6 @@ impl Service {
             Self::ChatGpt => "agent-sign-in-chatgpt",
             Self::Copilot => "agent-sign-in-copilot",
             Self::OpenRouter => "agent-sign-in-openrouter",
-            Self::HuggingFace => "agent-sign-in-huggingface",
         })
     }
 
@@ -126,15 +118,15 @@ pub(crate) enum SignedIn {
     Key(Zeroizing<String>),
 }
 
-/// What the worker reports.
-enum Progress {
-    /// GitHub's code, to be entered on its page.
+/// What a sign-in's worker reports.
+enum Progress<T> {
+    /// The issuer's device code, to be entered on its page.
     Device {
         code: String,
         page: String,
         cancel: DeviceCancel,
     },
-    Finished(Result<SignedIn, String>),
+    Finished(Result<T, String>),
 }
 
 enum Cancel {
@@ -153,138 +145,105 @@ impl Cancel {
     }
 }
 
-/// What [`SignInSetup::poll`] reports.
-pub(crate) enum Polled {
+/// What [`SignInWait::poll`] reports.
+pub(crate) enum Waited<T> {
     Nothing,
     Changed,
-    Done(SignedIn),
+    Done(T),
 }
 
-/// One sign-in: of a provider being added, or of an existing one signing
-/// in again. It holds the reply of the action that started it.
-pub(crate) struct SignInSetup {
-    pub(crate) service: Service,
-    /// The provider the grant is for: the existing one, or the id a new one
-    /// is saved under.
-    pub(crate) profile_id: String,
-    pub(crate) existing: bool,
-    pub(crate) reply: Option<ui::framework::EffectReply>,
+/// A sign-in waiting on a worker for the person: in the browser, with a
+/// loopback redirect, or with a device code entered on the issuer's page,
+/// which is opened once the issuer gave it. Every sign-in of Agent Models
+/// waits through one of these.
+pub(crate) struct SignInWait<T> {
     cancel: Cancel,
     launch: Option<ui::portal::LaunchChannel>,
-    progress: Receiver<Progress>,
-    /// GitHub's code and page, once it gave them.
+    progress: Receiver<Progress<T>>,
+    /// The issuer's code and page, once it gave them.
     device: Option<(String, String)>,
     opener: Arc<dyn BrowserOpener>,
 }
 
-impl SignInSetup {
-    /// Start signing in to `service` for `profile` (an existing provider)
-    /// or a new one: open the browser, or ask GitHub for a code, and wait
-    /// on a worker.
-    ///
-    /// # Errors
-    /// Why it could not start, for the person.
-    pub(crate) fn begin(
-        service: Service,
-        profile: Option<&ProviderProfile>,
-        custodian: &Custodian,
+impl<T: Send + 'static> SignInWait<T> {
+    /// Open `url` in the browser and run `finish` on a worker; `cancel`
+    /// ends the loopback wait it blocks in.
+    pub(crate) fn browser(
+        url: &str,
+        cancel: LoopbackCancel,
         opener: &Arc<dyn BrowserOpener>,
-    ) -> Result<Self, String> {
-        let profile_id = profile.map_or_else(
-            || uuid::Uuid::new_v4().to_string(),
-            |profile| profile.id.clone(),
-        );
+        finish: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Self {
         let (sender, progress) = channel::sync_channel(2);
-        let grant = agent_vertex::grant_id(&profile_id);
-        let failed = |error: CustodyError| sign_in_error(service, &error);
-        let (cancel, launch) = match service {
-            Service::OpenRouter => {
-                let authorization =
-                    KeyAuthorization::begin(openrouter::AUTH_ENDPOINT, openrouter::KEYS_ENDPOINT)
-                        .map_err(failed)?;
-                let cancel = Cancel::Loopback(authorization.canceller());
-                let launch = opener.open(authorization.url());
-                std::thread::spawn(move || {
-                    let outcome = authorization
-                        .finish()
-                        .map(SignedIn::Key)
-                        .map_err(|error| sign_in_error(service, &error));
-                    let _ = sender.send(Progress::Finished(outcome));
-                });
-                (cancel, Some(launch))
-            }
-            Service::Copilot => {
-                let oauth_use = service
-                    .oauth_use()
-                    .ok_or_else(|| t("agent-sign-in-stopped"))?;
-                let custodian = custodian.clone();
-                // Asking GitHub for a code is a request: it runs on the
-                // worker too, which reports the code before it waits.
-                std::thread::spawn(move || {
-                    let outcome = custodian
-                        .begin_device_sign_in(oauth_use)
-                        .and_then(|device| {
-                            let _ = sender.send(Progress::Device {
-                                code: device.user_code().to_string(),
-                                page: device.verification_uri().to_string(),
-                                cancel: device.canceller(),
-                            });
-                            Custodian::finish_device_sign_in(device)
-                        })
-                        .and_then(|tokens| custodian.seal_oauth(&grant, &tokens))
-                        .map(|()| SignedIn::Grant)
-                        .map_err(|error| sign_in_error(service, &error));
-                    let _ = sender.send(Progress::Finished(outcome));
-                });
-                (Cancel::None, None)
-            }
-            Service::ChatGpt | Service::HuggingFace => {
-                let oauth_use = service
-                    .oauth_use()
-                    .ok_or_else(|| t("agent-sign-in-stopped"))?;
-                let authorization = custodian
-                    .begin_sign_in_for(oauth_use, None)
-                    .map_err(failed)?;
-                let cancel = authorization
-                    .canceller()
-                    .map(Cancel::Loopback)
-                    .ok_or_else(|| t("agent-sign-in-ports-busy"))?;
-                let launch = opener.open(authorization.url());
-                let custodian = custodian.clone();
-                std::thread::spawn(move || {
-                    let outcome = Custodian::finish_sign_in(authorization)
-                        .and_then(|tokens| custodian.seal_oauth(&grant, &tokens))
-                        .map(|()| SignedIn::Grant)
-                        .map_err(|error| sign_in_error(service, &error));
-                    let _ = sender.send(Progress::Finished(outcome));
-                });
-                (cancel, Some(launch))
-            }
-        };
-        Ok(Self {
-            service,
-            profile_id,
-            existing: profile.is_some(),
-            reply: None,
-            cancel,
-            launch,
+        std::thread::spawn(move || {
+            let _ = sender.send(Progress::Finished(finish()));
+        });
+        Self {
+            cancel: Cancel::Loopback(cancel),
+            launch: Some(opener.open(url)),
             progress,
             device: None,
             opener: Arc::clone(opener),
-        })
-    }
-
-    /// Stop waiting. A provider being added leaves no grant behind (the
-    /// caller forgets it).
-    pub(crate) fn cancel(&mut self) {
-        self.cancel.cancel();
-        if let Some(reply) = self.reply.take() {
-            reply.finish(Err(t("agent-sign-in-cancelled")));
         }
     }
 
+    /// Ask the issuer for a device code on a worker (a request), report it,
+    /// then wait there in `finish` until the person entered it.
+    pub(crate) fn device(
+        opener: &Arc<dyn BrowserOpener>,
+        begin: impl FnOnce() -> Result<DeviceAuthorization, String> + Send + 'static,
+        finish: impl FnOnce(DeviceAuthorization) -> Result<T, String> + Send + 'static,
+    ) -> Self {
+        let (sender, progress) = channel::sync_channel(2);
+        std::thread::spawn(move || {
+            let outcome = begin().and_then(|device| {
+                let _ = sender.send(Progress::Device {
+                    code: device.user_code().to_string(),
+                    page: device.verification_uri().to_string(),
+                    cancel: device.canceller(),
+                });
+                finish(device)
+            });
+            let _ = sender.send(Progress::Finished(outcome));
+        });
+        Self {
+            cancel: Cancel::None,
+            launch: None,
+            progress,
+            device: None,
+            opener: Arc::clone(opener),
+        }
+    }
+
+    /// Block until the worker finished, taking any device code on the way.
+    #[cfg(test)]
+    pub(crate) fn finish_for_test(&mut self, timeout: std::time::Duration) -> Result<T, String> {
+        loop {
+            match self.progress.recv_timeout(timeout) {
+                Ok(Progress::Device { code, page, cancel }) => {
+                    self.device = Some((code, page));
+                    self.cancel = Cancel::Device(cancel);
+                }
+                Ok(Progress::Finished(outcome)) => return outcome,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
+
+    /// The device code and its page, once the issuer gave them.
+    pub(crate) fn device_code(&self) -> Option<(&str, &str)> {
+        self.device
+            .as_ref()
+            .map(|(code, page)| (code.as_str(), page.as_str()))
+    }
+
+    /// Stop waiting.
+    pub(crate) fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
     /// Take the browser's and the worker's news.
-    pub(crate) fn poll(&mut self) -> Result<Polled, String> {
+    pub(crate) fn poll(&mut self) -> Result<Waited<T>, String> {
         let mut changed = false;
         if let Some(launch) = &self.launch {
             match launch.try_recv() {
@@ -293,7 +252,7 @@ impl SignInSetup {
                 }
                 Ok(ui::portal::LaunchOutcome::Failed(error)) => {
                     self.launch = None;
-                    // GitHub's code can still be typed on its page by hand.
+                    // A device code can still be typed on its page by hand.
                     if self.device.is_none() {
                         self.cancel.cancel();
                         return Err(t_args(
@@ -313,31 +272,132 @@ impl SignInSetup {
                     self.cancel = Cancel::Device(cancel);
                     changed = true;
                 }
-                Ok(Progress::Finished(outcome)) => return outcome.map(Polled::Done),
+                Ok(Progress::Finished(outcome)) => return outcome.map(Waited::Done),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return Err(t("agent-sign-in-stopped")),
             }
         }
         Ok(if changed {
-            Polled::Changed
+            Waited::Changed
         } else {
-            Polled::Nothing
+            Waited::Nothing
         })
+    }
+}
+
+/// One sign-in: of a provider being added, or of an existing one signing
+/// in again. It holds the reply of the action that started it.
+pub(crate) struct SignInSetup {
+    pub(crate) service: Service,
+    /// The provider the grant is for: the existing one, or the id a new one
+    /// is saved under.
+    pub(crate) profile_id: String,
+    pub(crate) existing: bool,
+    pub(crate) reply: Option<ui::framework::EffectReply>,
+    wait: SignInWait<SignedIn>,
+}
+
+impl SignInSetup {
+    /// Start signing in to `service` for `profile` (an existing provider)
+    /// or a new one: open the browser, or ask GitHub for a code, and wait
+    /// on a worker.
+    ///
+    /// # Errors
+    /// Why it could not start, for the person.
+    pub(crate) fn begin(
+        service: Service,
+        profile: Option<&ProviderProfile>,
+        custodian: &Custodian,
+        opener: &Arc<dyn BrowserOpener>,
+    ) -> Result<Self, String> {
+        let profile_id = profile.map_or_else(
+            || uuid::Uuid::new_v4().to_string(),
+            |profile| profile.id.clone(),
+        );
+        let grant = agent_vertex::grant_id(&profile_id);
+        let failed = |error: CustodyError| sign_in_error(service, &error);
+        let wait = match service {
+            Service::OpenRouter => {
+                let authorization =
+                    KeyAuthorization::begin(openrouter::AUTH_ENDPOINT, openrouter::KEYS_ENDPOINT)
+                        .map_err(failed)?;
+                let url = authorization.url().to_owned();
+                SignInWait::browser(&url, authorization.canceller(), opener, move || {
+                    authorization
+                        .finish()
+                        .map(SignedIn::Key)
+                        .map_err(|error| sign_in_error(service, &error))
+                })
+            }
+            Service::Copilot => {
+                let oauth_use = service
+                    .oauth_use()
+                    .ok_or_else(|| t("agent-sign-in-stopped"))?;
+                let custodian = custodian.clone();
+                let sealing = custodian.clone();
+                SignInWait::device(
+                    opener,
+                    move || {
+                        custodian
+                            .begin_device_sign_in(oauth_use)
+                            .map_err(|error| sign_in_error(service, &error))
+                    },
+                    move |device| {
+                        Custodian::finish_device_sign_in(device)
+                            .and_then(|tokens| sealing.seal_oauth(&grant, &tokens))
+                            .map(|()| SignedIn::Grant)
+                            .map_err(|error| sign_in_error(service, &error))
+                    },
+                )
+            }
+            Service::ChatGpt => {
+                let oauth_use = service
+                    .oauth_use()
+                    .ok_or_else(|| t("agent-sign-in-stopped"))?;
+                let authorization = custodian
+                    .begin_sign_in_for(oauth_use, None)
+                    .map_err(failed)?;
+                let cancel = authorization
+                    .canceller()
+                    .ok_or_else(|| t("agent-sign-in-ports-busy"))?;
+                let url = authorization.url().to_owned();
+                let custodian = custodian.clone();
+                SignInWait::browser(&url, cancel, opener, move || {
+                    Custodian::finish_sign_in(authorization)
+                        .and_then(|tokens| custodian.seal_oauth(&grant, &tokens))
+                        .map(|()| SignedIn::Grant)
+                        .map_err(|error| sign_in_error(service, &error))
+                })
+            }
+        };
+        Ok(Self {
+            service,
+            profile_id,
+            existing: profile.is_some(),
+            reply: None,
+            wait,
+        })
+    }
+
+    /// Stop waiting. A provider being added leaves no grant behind (the
+    /// caller forgets it).
+    pub(crate) fn cancel(&mut self) {
+        self.wait.cancel();
+        if let Some(reply) = self.reply.take() {
+            reply.finish(Err(t("agent-sign-in-cancelled")));
+        }
+    }
+
+    /// Take the browser's and the worker's news.
+    pub(crate) fn poll(&mut self) -> Result<Waited<SignedIn>, String> {
+        self.wait.poll()
     }
 
     /// The card of the sign-in under way.
     pub(crate) fn section(&self, cx: &PaneCx) -> SettingsSection {
         let mut body: Vec<Item> = Vec::new();
-        match &self.device {
-            Some((code, page)) => {
-                body.push(note(&t_args(
-                    "agent-sign-in-device-code",
-                    &[
-                        ("code", code.as_str().into()),
-                        ("page", page.as_str().into()),
-                    ],
-                )));
-            }
+        match self.wait.device_code() {
+            Some((code, page)) => body.push(device_code_note(code, page)),
             None if self.service == Service::Copilot => {
                 body.push(note(&t("agent-sign-in-device-asking")));
             }
@@ -354,6 +414,14 @@ impl SignInSetup {
         )))));
         section(&self.service.sign_in_label(), rows(body))
     }
+}
+
+/// Where to enter a device code, and the code.
+pub(crate) fn device_code_note(code: &str, page: &str) -> Item {
+    note(&t_args(
+        "agent-sign-in-device-code",
+        &[("code", code.into()), ("page", page.into())],
+    ))
 }
 
 /// The profile a finished sign-in to `service` adds, under `profile_id`:

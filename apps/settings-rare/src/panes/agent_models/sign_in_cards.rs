@@ -127,9 +127,9 @@ impl AgentModelsModel {
             return;
         };
         match setup.poll() {
-            Ok(agent_sign_in::Polled::Nothing) => {}
-            Ok(agent_sign_in::Polled::Changed) => self.changed = true,
-            Ok(agent_sign_in::Polled::Done(signed)) => {
+            Ok(agent_sign_in::Waited::Nothing) => {}
+            Ok(agent_sign_in::Waited::Changed) => self.changed = true,
+            Ok(agent_sign_in::Waited::Done(signed)) => {
                 if let Some(setup) = self.sign_in.take() {
                     let id = setup.profile_id.clone();
                     let existing = setup.existing;

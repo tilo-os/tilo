@@ -32,6 +32,7 @@ pub struct Scopes {
     pub music: Vec<String>,
     pub music_streaming: Vec<String>,
     pub models: Vec<String>,
+    pub model_downloads: Vec<String>,
 }
 
 impl Scopes {
@@ -44,6 +45,7 @@ impl Scopes {
             Capability::Music => &self.music,
             Capability::MusicStreaming => &self.music_streaming,
             Capability::Models => &self.models,
+            Capability::ModelDownloads => &self.model_downloads,
         }
     }
 }
@@ -339,12 +341,17 @@ mod tests {
             Refresh::RefreshToken
         );
 
-        // Hugging Face needs a distributor's own registration.
-        let hugging_face = OAuthUse::new(OAuthIssuer::HuggingFace, Capability::Models);
-        if option_env!("TILO_OAUTH_HUGGINGFACE_CLIENT_ID").is_none() {
-            assert!(!table.is_configured(hugging_face));
-        }
-        assert!(!table.scopes(hugging_face).is_empty());
+        // Hugging Face signs in for downloads on any loopback port of its
+        // registered `/callback`, with a device code where there is no
+        // browser; its registration has no inference scope.
+        let downloads = OAuthUse::new(OAuthIssuer::HuggingFace, Capability::ModelDownloads);
+        let (provider, client) = table.config(downloads).expect("Hugging Face is configured");
+        assert_eq!(provider.scopes, ["openid", "profile", "gated-repos"]);
+        assert!(provider.device_authorization_endpoint.is_some());
+        assert_eq!(client.redirect_ports, RedirectPorts::Any);
+        assert_eq!(client.redirect.path, "/callback");
+        assert_eq!(client.secret(), None);
+        assert!(!table.is_configured(OAuthUse::new(OAuthIssuer::HuggingFace, Capability::Models)));
     }
 
     #[test]

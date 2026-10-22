@@ -191,7 +191,7 @@ each file resumably and verifies it against the hash the Hub publishes (the
 LFS SHA-256 of weights, the git blob id of small config files) before it enters
 the device's content-addressed store. Settings shows every variant's files,
 size, fit for the probed hardware and licence first; gated models use the
-person's Hugging Face token from the device vault. Either way the model is
+person's Hugging Face sign-in or pasted token from the device vault. Either way the model is
 served by a digest-pinned runtime from the signed catalog —
 [llama.cpp](https://github.com/ggml-org/llama.cpp) for GGUF,
 [vLLM's OpenAI-compatible server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)

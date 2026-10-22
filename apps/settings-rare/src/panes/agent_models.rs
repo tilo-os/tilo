@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use agent_provider_config::local::hub::{HubModelOffer, HubSearchResult};
+use agent_provider_config::local::hub::{HubModelOffer, HubSearchResult, HubTokenState};
 pub use agent_provider_config::local::snapshot::{
     AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
     InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
@@ -184,9 +184,20 @@ pub enum AgentModelsEffect {
         #[param(secret, "The token; what the token field holds when omitted")]
         token: Option<String>,
     },
-    /// Remove the Hugging Face token from this device's vault.
+    /// Remove the Hugging Face token or sign-in from this device's vault.
     #[effect(job, device_only, destructive, label = "Remove Hugging Face token")]
     RemoveHubToken,
+    /// Sign in with Hugging Face in the browser, for gated models; the
+    /// sign-in is kept in this device's vault in place of a token.
+    #[effect(device_only, label = "Sign in with Hugging Face")]
+    SignInWithHuggingFace,
+    /// Sign in with Hugging Face by entering a code on its page, from any
+    /// device: for a device without a browser.
+    #[effect(device_only, label = "Sign in with Hugging Face by code")]
+    SignInWithHuggingFaceCode,
+    /// Stop a Hugging Face sign-in.
+    #[effect(view)]
+    CancelHuggingFaceSignIn,
     /// Reload the authoritative profiles and credential status.
     #[effect(job, device_only, label = "Refresh providers")]
     RefreshProviders,
@@ -332,12 +343,12 @@ pub enum AgentModelsEffect {
     /// Stop a sign-in, or the setup of a provider being added.
     #[effect(view)]
     CancelSignIn,
-    /// Sign in to `ChatGPT`, GitHub Copilot, `OpenRouter` or Hugging Face: for
-    /// a provider to add, or again for an existing one. Finishes once the
+    /// Sign in to `ChatGPT`, GitHub Copilot or `OpenRouter`: for a provider
+    /// to add, or again for an existing one. Finishes once the
     /// person has signed in and the provider is saved.
     #[effect(job, device_only, row, label = "Sign in")]
     SignInToProvider {
-        #[param("`chatgpt`, `github-copilot`, `openrouter` or `huggingface`")]
+        #[param("`chatgpt`, `github-copilot` or `openrouter`")]
         service: String,
         #[param("The provider's id; omit to add one")]
         provider: Option<String>,
@@ -455,7 +466,10 @@ pub(crate) fn answer(
         | AgentModelsEffect::SearchHubModels { .. }
         | AgentModelsEffect::ShowHubModel { .. }
         | AgentModelsEffect::SaveHubToken { .. }
-        | AgentModelsEffect::RemoveHubToken) => hub::answer(model, effect, cx),
+        | AgentModelsEffect::RemoveHubToken
+        | AgentModelsEffect::SignInWithHuggingFace
+        | AgentModelsEffect::SignInWithHuggingFaceCode
+        | AgentModelsEffect::CancelHuggingFaceSignIn) => hub::answer(model, effect, cx),
         AgentModelsEffect::SetUpAccelerator
         | AgentModelsEffect::InstallModel { .. }
         | AgentModelsEffect::StartModel { .. }
@@ -732,8 +746,8 @@ pub struct AgentModelsArea {
 pub(crate) struct AgentModelsRead {
     snapshot: Result<LocalModelSnapshot, String>,
     keys: HashMap<String, Result<CredentialStatus, String>>,
-    /// Whether a Hugging Face token is stored on this device.
-    hub_token: Result<bool, String>,
+    /// What Hugging Face token or sign-in is stored on this device.
+    hub_token: Result<HubTokenState, String>,
 }
 
 impl AgentModelsRead {
@@ -926,11 +940,13 @@ pub struct AgentModelsModel {
     vertex_reads: Rereads<HashMap<String, Result<bool, String>>>,
     custodian: account_custody::Custodian,
     opener: Arc<dyn BrowserOpener>,
+    /// Who a Hugging Face sign-in belongs to is asked here.
+    hub_userinfo: String,
     /// A native sign-in edit waiting for the authoritative provider acknowledgement.
     vertex_commit: Option<(String, Option<ProviderProfile>)>,
     /// Hugging Face: what was found, the model shown, the token.
     hub: hub::HubBrowser,
-    /// A sign-in to `ChatGPT`, Copilot, `OpenRouter` or Hugging Face under way.
+    /// A sign-in to `ChatGPT`, Copilot or `OpenRouter` under way.
     sign_in: Option<SignInSetup>,
 }
 
@@ -991,6 +1007,7 @@ impl AgentModelsModel {
             vertex_reads: Rereads::default(),
             custodian: account_custody::Custodian::live(),
             opener: Arc::new(PortalOpener),
+            hub_userinfo: account_custody::hugging_face::USERINFO_ENDPOINT.into(),
             vertex_commit: None,
             hub: hub::HubBrowser::new(read.hub_token),
             sign_in: None,
@@ -2082,9 +2099,9 @@ pub trait LocalModelControl: Send + Sync {
     fn import_file(&self, _path: &str) -> Result<(), String> {
         Err(t("agent-hub-unavailable"))
     }
-    /// Whether a Hugging Face token is stored on this device.
-    fn hub_token(&self) -> Result<bool, String> {
-        Ok(false)
+    /// What Hugging Face token or sign-in is stored on this device.
+    fn hub_token(&self) -> Result<HubTokenState, String> {
+        Ok(HubTokenState::None)
     }
     fn save_hub_token(&self, _token: &str) -> Result<(), String> {
         Err(t("agent-hub-unavailable"))
@@ -2180,8 +2197,8 @@ impl LocalModelControl for ModelManagerCli {
         hub::manager_request(&["import-file", &format!("--path={path}")])
     }
 
-    fn hub_token(&self) -> Result<bool, String> {
-        hub::token_status()
+    fn hub_token(&self) -> Result<HubTokenState, String> {
+        hub::token_state()
     }
 
     fn save_hub_token(&self, token: &str) -> Result<(), String> {
@@ -2426,6 +2443,11 @@ impl PaneModel for AgentModelsModel {
             self.read_vertex_keys();
         }
         self.poll_sign_in();
+        let (hub_changed, hub_notice) = self.hub.poll();
+        self.changed |= hub_changed;
+        if hub_notice.is_some() {
+            self.notice = hub_notice;
+        }
         let polled = self.vertex.as_mut().map(VertexSetup::poll);
         match polled {
             None | Some(Polled::Nothing) => {}
@@ -2458,6 +2480,7 @@ impl PaneModel for AgentModelsModel {
             || self.snapshot_reads.running()
             || self.vertex_reads.running()
             || self.vertex.as_ref().is_some_and(VertexSetup::waiting)
+            || self.hub.signing_in()
     }
 }
 
@@ -2730,6 +2753,13 @@ mod tests {
         }
         fn import_file(&self, path: &str) -> Result<(), String> {
             self.calls.lock().unwrap().push(format!("import:{path}"));
+            Ok(())
+        }
+        fn save_hub_token(&self, token: &str) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("hub-token:{token}"));
             Ok(())
         }
     }
@@ -3454,7 +3484,7 @@ mod tests {
         let down = AgentModelsRead {
             snapshot: Err("the manager is not running".into()),
             keys: HashMap::new(),
-            hub_token: Ok(false),
+            hub_token: Ok(HubTokenState::None),
         };
         let model = AgentModelsModel::from_read(cx, control, down);
         assert!(!model.manager_available);

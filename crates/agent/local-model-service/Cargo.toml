@@ -82,6 +82,10 @@ agent-provider-config = { path = "../provider-config" }
 # The person's Hugging Face token, read from the device vault Settings
 # stores it in.
 accounts = { path = "../../system/accounts" }
+# Renewing a Hugging Face sign-in stored there, and signing in by device
+# code from the command line.
+account-custody = { path = "../../system/account-custody", default-features = false, features = ["hugging-face"] }
+tilo-oauth = { path = "../../system/tilo-oauth" }
 system-extension = { path = "../../system/system-extension" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
