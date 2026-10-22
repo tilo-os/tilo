@@ -72,6 +72,14 @@ pub fn mount(documents: Documents, at: &Path) -> io::Result<Mounted> {
         fuser::MountOption::NoExec,
     ];
     config.acl = fuser::SessionACL::Owner;
+    // Every app's documents are served side by side: a read that waits on
+    // a slow disk or a sleeping drive holds up only itself, never another
+    // app's open or the shell's own look at the table. The handlers take
+    // the table's lock only to look an entry up, never across a read. Most
+    // of the time a thread waits on the disk rather than a CPU, so even one
+    // CPU gets a second thread.
+    config.n_threads =
+        Some(std::thread::available_parallelism().map_or(2, |cpus| cpus.get().max(2)));
     let session = fuser::spawn_mount(DocumentsFs::new(documents), at, &config)?;
     Ok(Mounted {
         _session: session,
@@ -996,6 +1004,36 @@ mod tests {
         assert!(
             std::fs::remove_file(&path).is_err(),
             "a Save does not remove"
+        );
+    }
+
+    #[test]
+    fn the_mount_serves_on_more_than_one_thread() {
+        let documents = Documents::new();
+        let Some((_dir, _mounted)) = mounted(&documents) else {
+            return;
+        };
+        // The serving threads are named `fuser-0`, `fuser-1`, …; a second
+        // one is there only when the mount serves on more than one. They
+        // start beside the mount, not before it returns.
+        let second = || {
+            std::fs::read_dir("/proc/self/task")
+                .unwrap()
+                .flatten()
+                .filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok())
+                .any(|name| name.trim_end() == "fuser-1")
+        };
+        let mut serving = second();
+        for _ in 0..100 {
+            if serving {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            serving = second();
+        }
+        assert!(
+            serving,
+            "one slow read must not hold up every app's documents"
         );
     }
 
