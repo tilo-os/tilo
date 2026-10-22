@@ -3636,6 +3636,20 @@ impl State {
         }
     }
 
+    /// A member started reading `surface`'s stream through `peer`, a room's
+    /// window carrier: the share encodes a keyframe of the window's last
+    /// committed buffer at once, changed or not.
+    pub fn start_share_reader(&self, peer: MsgPeerId, surface: SurfaceId) {
+        let Some(session) = self.active_sessions.get(&surface) else {
+            return;
+        };
+        if session.viewer_share(peer).is_none() {
+            return;
+        }
+        session.start_reader();
+        self.seed_share_frame(session, surface);
+    }
+
     fn seed_share_frame(&self, session: &SharedFlatpakSession, surface: SurfaceId) {
         if let Some(rgba) = self.share_frame(session, surface, || {
             crate::compositor::foreign::store()

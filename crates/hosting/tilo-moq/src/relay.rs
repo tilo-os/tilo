@@ -798,29 +798,37 @@ async fn copy_voice_group(
     }
 }
 
-/// Serve the picture tracks subscribers ask of one publication: each copied
-/// from the publisher, validated, only while someone asks for it. Any other
-/// track name is refused.
+/// Serve the picture and window tracks subscribers ask of one publication:
+/// each copied from the publisher, validated, only while someone asks for
+/// it. Any other track name is refused.
 async fn forward_pictures(
     mut requests: moq_net::broadcast::Dynamic,
     source: moq_net::broadcast::Consumer,
     counters: Arc<Counters>,
 ) {
     let mut serving: Vec<crate::Task> = Vec::new();
+    let mut windows: Vec<crate::Task> = Vec::new();
     while let Ok(request) = requests.requested_track().await {
         serving.retain(|task| !task.is_finished());
-        let Some((_, layer)) = crate::video::parse_track(request.name()) else {
+        windows.retain(|task| !task.is_finished());
+        let Some(track) = crate::video::Track::parse(request.name()) else {
             request.reject(moq_net::Error::NotFound);
             continue;
         };
-        if serving.len() >= MAX_PICTURE_TRACKS {
+        // A call's layers and a publisher's viewed windows are bounded
+        // apart: a window viewer never takes a call's picture slots.
+        let (tasks, bound) = match track {
+            crate::video::Track::Picture(..) => (&mut serving, MAX_PICTURE_TRACKS),
+            crate::video::Track::Window(_) => (&mut windows, crate::video::MAX_WINDOW_TRACKS),
+        };
+        if tasks.len() >= bound {
             request.reject(moq_net::Error::BoundsExceeded(moq_net::BoundsExceeded));
             continue;
         }
-        serving.push(crate::Task::spawn(forward_picture(
+        tasks.push(crate::Task::spawn(forward_picture(
             request,
             source.clone(),
-            layer,
+            track.layer(),
             counters.clone(),
         )));
     }

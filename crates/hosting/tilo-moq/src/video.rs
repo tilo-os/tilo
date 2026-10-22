@@ -11,6 +11,13 @@
 //! relay forwards only the tracks someone asked for. A publisher encodes a
 //! layer only while someone asks for it.
 //!
+//! A room's window carrier carries one more kind of track: a single window
+//! of a host program the publisher runs (a terminal, any Wayland or X
+//! client), one track per window, named by the window's tab
+//! ([`window_track`], `window/<tab as 16 hex digits>`). Its pictures are the
+//! window's own size in the [`Layer::High`] layer, and their payload is
+//! sealed for the room's members, so the relay forwards what it cannot read.
+//!
 //! # Groups and objects
 //!
 //! A group is one picture sequence that starts with a keyframe: a subscriber
@@ -194,6 +201,68 @@ pub fn parse_track(name: &str) -> Option<(Source, Layer)> {
     Layer::of(source)
         .contains(&layer)
         .then_some((source, layer))
+}
+
+/// Window tracks one publisher may have forwarded at once: every window of
+/// it that someone views.
+pub const MAX_WINDOW_TRACKS: usize = 32;
+
+/// The track window `tab` is published on: `window/` and the tab as 16
+/// lowercase hex digits.
+#[must_use]
+pub fn window_track(tab: u64) -> String {
+    format!("window/{tab:016x}")
+}
+
+/// The tab of a window track name, or `None` for any other name.
+#[must_use]
+pub fn parse_window_track(name: &str) -> Option<u64> {
+    let digits = name.strip_prefix("window/")?;
+    if digits.len() != 16
+        || !digits
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return None;
+    }
+    u64::from_str_radix(digits, 16).ok()
+}
+
+/// A track a relay forwards as video: a call's picture layer or one
+/// window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Track {
+    Picture(Source, Layer),
+    /// The window shown in tab `0`, in [`Layer::High`] only.
+    Window(u64),
+}
+
+impl Track {
+    /// The track's name.
+    #[must_use]
+    pub fn name(self) -> String {
+        match self {
+            Self::Picture(source, layer) => track(source, layer),
+            Self::Window(tab) => window_track(tab),
+        }
+    }
+
+    /// The video track `name` names, or `None` for any other name.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        parse_track(name)
+            .map(|(source, layer)| Self::Picture(source, layer))
+            .or_else(|| parse_window_track(name).map(Self::Window))
+    }
+
+    /// The layer every picture of the track is in.
+    #[must_use]
+    pub const fn layer(self) -> Layer {
+        match self {
+            Self::Picture(_, layer) => layer,
+            Self::Window(_) => Layer::High,
+        }
+    }
 }
 
 /// One encoded picture.
@@ -410,6 +479,29 @@ mod tests {
             "",
         ] {
             assert_eq!(parse_track(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_window_track_names_its_tab_and_nothing_else_parses_as_one() {
+        let tab = 0x5EED_0000_0000_0007;
+        assert_eq!(window_track(tab), "window/5eed000000000007");
+        assert_eq!(Track::parse(&window_track(tab)), Some(Track::Window(tab)));
+        assert_eq!(Track::Window(tab).layer(), Layer::High);
+        assert_eq!(
+            Track::parse("camera/mid"),
+            Some(Track::Picture(Source::Camera, Layer::Mid))
+        );
+        for name in [
+            "window/",
+            "window/5EED000000000007",
+            "window/5eed00000000007",
+            "window/5eed0000000000070",
+            "window/+eed000000000007",
+            "windows/5eed000000000007",
+            "audio",
+        ] {
+            assert_eq!(Track::parse(name), None, "{name}");
         }
     }
 }

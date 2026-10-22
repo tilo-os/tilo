@@ -43,6 +43,9 @@ const FRAME_MS: u64 = 16;
 /// How long a capture waits for pending visual work before it shows it.
 const CAPTURE_SETTLE: Duration = Duration::from_secs(5);
 
+#[path = "room_member_window.rs"]
+mod room_member_window;
+
 pub struct ShellDriver {
     /// Layout + paint core, shared with the native compositor mode.
     /// The driver wraps it and adds input dispatch, focus tracking,
@@ -1974,6 +1977,7 @@ impl ShellDriver {
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
             "desktop" | "offline" => Self::scene_desktop(),
+            "room-member-window" => self.scene_room_member_window(),
             "overview" => self.scene_overview(),
             "overview-shared" => self.scene_overview_shared(),
             "palette" => self.scene_palette(),
@@ -3816,6 +3820,7 @@ impl ShellDriver {
     /// legacy `--scenes` flag for default expansion + validation.
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
+        "room-member-window",
         "offline",
         "multi-group",
         "multi-strip",

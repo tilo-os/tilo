@@ -712,19 +712,27 @@ impl Widget for PeerView {
         _presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        // Fall through to the raised surface so a pre-first-frame view
-        // still looks intentional rather than a hole in the chrome.
+        let image = self.ensure_image().cloned();
+        // A window streamed from another device is shown at its own shape,
+        // centred on the letterbox every theme gives media that does not
+        // fill its frame; it is never resized to fit this tile. Before its
+        // first picture the view stands on the raised surface, so it still
+        // reads as intentional rather than a hole in the chrome.
+        let ground = if image.is_some() {
+            tokens.colors.media.letterbox
+        } else {
+            tokens.colors.surfaces.raised
+        };
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            ground,
             None,
             &self.rect,
         );
 
         let rect = self.content_rect();
 
-        let image = self.ensure_image().cloned();
         let hdr_plane = self.cached_hdr.clone();
         if let Some(image) = &image {
             // Scale + translate so the natural-size image fills `rect`.

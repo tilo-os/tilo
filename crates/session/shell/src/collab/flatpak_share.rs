@@ -914,6 +914,18 @@ impl SharedFlatpakSession {
         true
     }
 
+    /// A new reader started on the stream past its viewers' backs (a room's
+    /// carrier, whose relay fans one stream out to members as they start
+    /// showing it): it can start at nothing but a keyframe, so the next unit
+    /// is one. Pending until encoded, and one answers every reader started
+    /// meanwhile; the caller encodes the window as it stands at once.
+    pub fn start_reader(&self) {
+        if self.paint {
+            return;
+        }
+        self.encoder.lock_recover().force_keyframe();
+    }
+
     /// Register a peer as a viewer with the given read-only state (flip
     /// later via [`Self::set_read_only`]) and subscribe them to the
     /// [`SurfaceStreamSender`].

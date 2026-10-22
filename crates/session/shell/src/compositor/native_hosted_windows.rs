@@ -110,6 +110,28 @@ pub(super) fn desired_legacy_shares(
     desired
 }
 
+/// The rooms whose layouts are shared in which this session hosts a legacy
+/// window: their carriers are kept, so members that reach this device only
+/// through a room's relay view the windows there.
+pub(super) fn rooms_hosting_windows(
+    tree: &crate::shell::state::WorkspaceTree,
+) -> std::collections::BTreeSet<tilo_desktop_model::RoomId> {
+    tree.desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| !tree.room_layout(workspace.room()).is_personal())
+        .filter(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. }))
+        })
+        .map(crate::shell::state::Workspace::room)
+        .collect()
+}
+
 /// Whether one of the person's other devices shows a legacy window this
 /// session hosts.
 pub(super) fn hosts_viewed_window(
@@ -154,9 +176,13 @@ pub(super) fn remote_extents(
                         .filter(|viewer| share.viewers.contains(&viewer.peer))
                         .map(|viewer| (viewer.width, viewer.height)),
                 );
-            let (width, height) = sizes.max_by_key(|(width, height)| {
-                u64::from(*width).saturating_mul(u64::from(*height))
-            })?;
+            // A viewer that names no size (a room's carrier, whose members
+            // show the window at its own) asks for none.
+            let (width, height) = sizes
+                .filter(|(width, height)| *width > 0 && *height > 0)
+                .max_by_key(|(width, height)| {
+                    u64::from(*width).saturating_mul(u64::from(*height))
+                })?;
             Some((
                 *surface,
                 (
@@ -169,13 +195,15 @@ pub(super) fn remote_extents(
 }
 
 /// The windows other devices host that `tiles` show, with the room each
-/// tab is in, its host's device key and the tile's size in logical pixels:
-/// what this device asks those hosts to stream it as a member of the room.
+/// tab is in, its host's device key, its app id and the tile's size in
+/// logical pixels: what this device asks those hosts to stream it as a
+/// member of the room.
 pub(super) fn shown_room_hosted_windows(
     tree: &crate::shell::state::WorkspaceTree,
     tiles: &[(u64, vello::kurbo::Rect)],
 ) -> Vec<(
     tilo_desktop_model::RoomId,
+    String,
     String,
     neighbour_wire::SurfaceView,
 )> {
@@ -193,8 +221,8 @@ pub(super) fn shown_room_hosted_windows(
                 .map(move |tab| (workspace.room(), tab))
         })
         .filter_map(|(room, tab)| match &tab.tile {
-            crate::shell::state::TileContent::HostedWindow { host, .. } => {
-                Some((tab.id, (room, host.as_str())))
+            crate::shell::state::TileContent::HostedWindow { app_id, .. } => {
+                Some((tab.id, (room, app_id.as_str())))
             }
             _ => None,
         })
@@ -202,10 +230,11 @@ pub(super) fn shown_room_hosted_windows(
     shown_hosted_windows(tree, tiles)
         .into_iter()
         .filter_map(|(host, view)| {
-            let (room, _) = hosted.get(&view.tab)?;
+            let (room, app_id) = hosted.get(&view.tab)?;
             Some((
                 *room,
                 host,
+                (*app_id).to_owned(),
                 neighbour_wire::SurfaceView {
                     tab: view.tab,
                     width: view.width,

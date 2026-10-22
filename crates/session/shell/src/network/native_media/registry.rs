@@ -43,6 +43,9 @@ impl Registry {
             None => Err("native device identity unavailable".into()),
             Some(identity) => match command.operation {
                 Operation::Open { owner, target } => self.open(owner, &target, identity, sessions),
+                Operation::OpenWindows { owner, room } => {
+                    self.open_windows(owner, room, identity, sessions)
+                }
                 Operation::Heartbeat { ticket } => self
                     .known(&ticket)
                     .and_then(|()| {
@@ -204,6 +207,30 @@ impl Registry {
             &session,
             |view| check_identity(view, identity),
         )?;
+        self.tickets.push(Arc::downgrade(&ticket));
+        Ok(Reply::Opened(ticket))
+    }
+}
+
+impl Registry {
+    /// Join `room`'s window carrier as this device.
+    fn open_windows(
+        &mut self,
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+        identity: &HostIdentity,
+        sessions: Sessions<'_>,
+    ) -> Result<Reply, String> {
+        if self.tickets.len() >= 16 {
+            return Err("native media capacity".into());
+        }
+        let workspace = owner.with_current(room, |view| {
+            check_identity(view, identity)?;
+            Ok(view.workspace())
+        })?;
+        let session = sessions(workspace).ok_or(NOT_CONNECTED)?;
+        let ticket =
+            Ticket::open_windows(owner, room, &session, |view| check_identity(view, identity))?;
         self.tickets.push(Arc::downgrade(&ticket));
         Ok(Reply::Opened(ticket))
     }

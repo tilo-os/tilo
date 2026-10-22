@@ -176,14 +176,14 @@ impl<T> Drop for AbortTask<T> {
         self.0.abort();
     }
 }
-struct Running {
-    ticket: Arc<Ticket>,
-    client: Mutex<Option<Arc<Client>>>,
-    state: Mutex<Result<CallState, Issue>>,
-    cancelled: AtomicBool,
-    task: Mutex<Option<tokio::task::AbortHandle>>,
-    commands: mpsc::Sender<NetCmd>,
-    executor: tokio::runtime::Handle,
+pub(super) struct Running {
+    pub(super) ticket: Arc<Ticket>,
+    pub(super) client: Mutex<Option<Arc<Client>>>,
+    pub(super) state: Mutex<Result<CallState, Issue>>,
+    pub(super) cancelled: AtomicBool,
+    pub(super) task: Mutex<Option<tokio::task::AbortHandle>>,
+    pub(super) commands: mpsc::Sender<NetCmd>,
+    pub(super) executor: tokio::runtime::Handle,
 }
 impl Running {
     fn retire(&self) {
@@ -198,7 +198,10 @@ impl Running {
         tracing::debug!("native carrier retirement completed");
     }
 }
-async fn command(commands: &mpsc::Sender<NetCmd>, operation: Operation) -> Result<Reply, String> {
+pub(super) async fn command(
+    commands: &mpsc::Sender<NetCmd>,
+    operation: Operation,
+) -> Result<Reply, String> {
     let (reply, receive) = tokio::sync::oneshot::channel();
     tokio::time::timeout(Duration::from_secs(3), async {
         commands
@@ -232,7 +235,10 @@ fn later(delay: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(delay).unwrap_or(now)
 }
-async fn maintain(commands: &mpsc::Sender<NetCmd>, running: &Arc<Running>) -> Result<(), String> {
+pub(super) async fn maintain(
+    commands: &mpsc::Sender<NetCmd>,
+    running: &Arc<Running>,
+) -> Result<(), String> {
     let ticket = &running.ticket;
     let mut heartbeat = later(HEARTBEAT);
     let mut failures = 0_u32;
