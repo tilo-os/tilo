@@ -434,6 +434,8 @@ fn package_part(path: &std::path::Path, part: &str) -> String {
     text
 }
 
+// USER REQUIREMENT (2026-10-22): "Export: use the grown height": a saved
+// text box is as tall as the words it shows.
 /// A text box whose words outgrew it is written as tall as the canvas shows
 /// it, marked to fit its text; the box's own height stays its least.
 #[test]
@@ -501,4 +503,48 @@ fn a_saved_box_is_as_tall_as_its_words_show_it() {
         (read.slides[0].elements[0].h - 60.0).abs() < 1e-9,
         "Slides reads its own height back"
     );
+}
+
+// USER REQUIREMENT (2026-10-22): "bold/italic/lists through the shared
+// formatting actions": a list made in a box stays a list when the deck is
+// saved and opened again.
+/// Bulleted and numbered lists are written as lists, so they open as lists
+/// again here and elsewhere.
+#[test]
+fn lists_survive_saving_and_opening() {
+    use ui::widget::{BlockContent, BlockKind};
+    let item = |text: &str, kind: BlockKind| {
+        let mut block = BlockContent::paragraph("", text);
+        block.kind = kind;
+        block
+    };
+    let blocks = vec![
+        item("Plan", BlockKind::Paragraph),
+        item("Survey", BlockKind::Bullet { indent: 0 }),
+        item("Build", BlockKind::Bullet { indent: 0 }),
+        item("First", BlockKind::Numbered { indent: 0 }),
+        item("Second", BlockKind::Numbered { indent: 0 }),
+    ];
+    let mut slide = Slide::new(Layout::Blank);
+    slide.add(
+        Element::text("", 100.0, 100.0, 800.0, 400.0, 32.0).with(|e| {
+            e.set_blocks(blocks.clone());
+        }),
+    );
+    let deck = deck_of(vec![slide]);
+    let kinds = |deck: &Deck| -> Vec<BlockKind> {
+        deck.slides[0].elements[0]
+            .rich_blocks()
+            .into_iter()
+            .map(|block| block.kind)
+            .collect()
+    };
+    let expected: Vec<BlockKind> = blocks.into_iter().map(|block| block.kind).collect();
+    let content = ContentStore::memory();
+    let pptx = crate::pptx::read_pptx(&crate::pptx::write_pptx(&deck, &content).unwrap(), &content)
+        .unwrap();
+    assert_eq!(kinds(&pptx), expected, "PowerPoint keeps the lists");
+    let odp =
+        crate::odp::read_odp(&crate::odp::write_odp(&deck, &content).unwrap(), &content).unwrap();
+    assert_eq!(kinds(&odp), expected, "ODF keeps the lists");
 }

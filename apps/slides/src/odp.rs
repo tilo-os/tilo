@@ -123,6 +123,8 @@ fn content_xml(
         r#"<style:style style:name="qsB" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#,
         r#"<style:style style:name="qsI" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>"#,
         r#"<style:style style:name="qsBI" style:family="text"><style:text-properties fo:font-weight="bold" fo:font-style="italic"/></style:style>"#,
+        r#"<text:list-style style:name="qsL"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/></text:list-style>"#,
+        r#"<text:list-style style:name="qsN"><text:list-level-style-number text:level="1" style:num-format="1" style:num-suffix="."/></text:list-style>"#,
         "</office:automatic-styles>",
     ));
     s.push_str("<office:body><office:presentation");
@@ -204,7 +206,26 @@ fn push_element(
                 // One `text:p` per explicit line so multi-line bodies survive
                 // (attribute-value normalisation would fold newlines to spaces,
                 // so text can't ride in a `qslides:` attribute).
+                // A run of list items is one `text:list`, an item each.
+                let mut list: Option<&str> = None;
                 for block in el.rich_blocks() {
+                    let style = match block.kind {
+                        ui::widget::BlockKind::Bullet { .. } => Some("qsL"),
+                        ui::widget::BlockKind::Numbered { .. } => Some("qsN"),
+                        _ => None,
+                    };
+                    if list.is_some() && list != style {
+                        s.push_str("</text:list>");
+                    }
+                    if let Some(style) = style.filter(|_| list != style) {
+                        s.push_str("<text:list text:style-name=\"");
+                        s.push_str(style);
+                        s.push_str("\">");
+                    }
+                    list = style;
+                    if list.is_some() {
+                        s.push_str("<text:list-item>");
+                    }
                     s.push_str("<text:p>");
                     for (text, bold, italic) in crate::model::runs_of(&block) {
                         let text = quick_xml::escape::partial_escape(text);
@@ -226,6 +247,12 @@ fn push_element(
                         }
                     }
                     s.push_str("</text:p>");
+                    if list.is_some() {
+                        s.push_str("</text:list-item>");
+                    }
+                }
+                if list.is_some() {
+                    s.push_str("</text:list>");
                 }
                 s.push_str("</draw:text-box>");
             }
@@ -498,6 +525,11 @@ fn parse_content(xml: &str) -> Option<Deck> {
     let mut text_styles: HashMap<String, (bool, bool)> = HashMap::new();
     let mut style_name: Option<String> = None;
     let mut spans: Vec<(bool, bool)> = Vec::new();
+    // The lists open around the paragraph being read, numbered or not, and
+    // the list styles that number.
+    let mut lists: Vec<bool> = Vec::new();
+    let mut list_style: Option<String> = None;
+    let mut numbered_styles: std::collections::HashSet<String> = ["qsN".to_owned()].into();
 
     loop {
         // A `Start` opens a container (text frames); an `Empty` is a self-closed
@@ -543,6 +575,14 @@ fn parse_content(xml: &str) -> Option<Deck> {
                     b"text:p" if in_text_p => {
                         in_text_p = false;
                         spans.clear();
+                        if let Some(&numbered) = lists.last() {
+                            let indent = u8::try_from(lists.len() - 1).unwrap_or(u8::MAX);
+                            p_block.kind = if numbered {
+                                ui::widget::BlockKind::Numbered { indent }
+                            } else {
+                                ui::widget::BlockKind::Bullet { indent }
+                            };
+                        }
                         cur_lines.push(std::mem::take(&mut p_buf));
                         cur_blocks.push(std::mem::replace(
                             &mut p_block,
@@ -552,13 +592,20 @@ fn parse_content(xml: &str) -> Option<Deck> {
                     b"text:span" => {
                         spans.pop();
                     }
+                    b"text:list" => {
+                        lists.pop();
+                    }
+                    b"text:list-style" => list_style = None,
                     b"style:style" => style_name = None,
                     b"draw:frame" => {
                         if let Some(mut el) = cur_text_el.take() {
                             el.text = cur_lines.join("\n");
                             // Runs of their own weight or slant keep them;
                             // a box written before runs keeps its own flags.
-                            if cur_blocks.iter().any(|block| !block.marks.is_empty()) {
+                            if cur_blocks.iter().any(|block| {
+                                !block.marks.is_empty()
+                                    || block.kind != ui::widget::BlockKind::Paragraph
+                            }) {
                                 el.set_blocks(std::mem::take(&mut cur_blocks));
                             }
                             if let Some(slide) = slides.last_mut() {
@@ -602,6 +649,17 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 in_text_p = true;
                 p_buf.clear();
                 p_block = BlockContent::paragraph("", "");
+            }
+            b"text:list" if is_container => {
+                let numbered = attr(&e, b"text:style-name")
+                    .is_some_and(|name| numbered_styles.contains(&name));
+                lists.push(numbered);
+            }
+            b"text:list-style" => list_style = attr(&e, b"style:name"),
+            b"text:list-level-style-number" => {
+                if let Some(name) = &list_style {
+                    numbered_styles.insert(name.clone());
+                }
             }
             b"text:span" if in_text_p && is_container => {
                 let inherited = spans.last().copied().unwrap_or_default();
