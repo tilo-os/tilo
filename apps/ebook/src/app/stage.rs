@@ -31,7 +31,7 @@ impl BooksApp {
         self.page = 0;
         self.last_persisted = None;
         match scenario {
-            "onboarding" | "shelf" | "library" => self.view = View::Library,
+            "onboarding" | "shelf" | "library" | "fresh-device" => self.view = View::Library,
             "library-scrolled" => {
                 // The large value clamps to the real maximum in draw.
                 self.view = View::Library;

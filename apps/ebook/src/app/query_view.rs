@@ -137,6 +137,8 @@ pub(super) struct BookQuery {
     /// A passage opened in a book whose text is on its way: the book, its
     /// chapter and its paragraph.
     pub(super) reveal_on_arrival: Option<(String, usize, usize)>,
+    /// When it was opened.
+    reveal_since: ui::time::Instant,
 }
 
 /// One result as laid out: where it is, what opening it does, and what it
@@ -200,6 +202,7 @@ impl BookQuery {
             index: LibraryIndex::default(),
             indexed: None,
             reveal_on_arrival: None,
+            reveal_since: ui::time::now(),
         }
     }
 
@@ -259,9 +262,17 @@ impl BooksApp {
     /// was opened in once it arrives.
     pub(super) fn sync_library_index(&mut self, entries: &[crate::model::LibraryEntry]) {
         use std::hash::{Hash as _, Hasher as _};
+        // A book that arrived joins the shelf's books here before the shelf
+        // is brought up to date, so it is never on it twice.
+        if let Some((id, read)) = self.query.index.take_fetched() {
+            self.take_fetched_book(&id, read);
+        }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for entry in entries {
             entry.id.hash(&mut hasher);
+            entry.title.hash(&mut hasher);
+            entry.author.hash(&mut hasher);
+            entry.subject.hash(&mut hasher);
             entry.index.hash().hash(&mut hasher);
         }
         for book in self.library.iter() {
@@ -273,6 +284,7 @@ impl BooksApp {
         let changed = self.query.indexed != Some(key);
         if changed {
             self.query.indexed = Some(key);
+            self.elsewhere = Arc::new(books_elsewhere(entries, &self.library));
             // A segment built here is kept in the content store with the
             // book's row; without one it would not reach other devices.
             if self.content.is_some() {
@@ -293,14 +305,11 @@ impl BooksApp {
             self.query.engine.set_local_source(Some(source));
             self.dirty = true;
         }
-        if let Some((id, read)) = self.query.index.take_fetched() {
-            self.take_fetched_book(&id, read);
-        }
         self.reveal_arrived();
     }
 
-    /// Take in what fetching the book `id` came to: the book here, or why
-    /// it is not coming, said plainly with what will bring it.
+    /// Take in what fetching the book `id` came to: the book on the shelf,
+    /// or why it is not coming, said plainly with what will bring it.
     fn take_fetched_book(&mut self, id: &str, read: Read<crate::content::LoadedBook>) {
         let message = match read {
             Read::Here(loaded) => {
@@ -330,6 +339,53 @@ impl BooksApp {
             self.load_error = Some(message.to_owned());
         }
         self.dirty = true;
+    }
+
+    /// The shelf: the books here, then those whose text is elsewhere.
+    pub(super) fn shelf_books(&self) -> Arc<Vec<Arc<Book>>> {
+        if self.elsewhere.is_empty() {
+            return Arc::clone(&self.library);
+        }
+        Arc::new(
+            self.library
+                .iter()
+                .chain(self.elsewhere.iter())
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// The book at shelf index `index`: one here, or past them one whose
+    /// text is elsewhere.
+    pub(super) fn shelf_book(&self, index: usize) -> Option<&Arc<Book>> {
+        self.library
+            .get(index)
+            .or_else(|| self.elsewhere.get(index.checked_sub(self.library.len())?))
+    }
+
+    /// Whether the library's row says a copy of `book` is in the shared
+    /// workspace.
+    pub(super) fn shared_in_workspace(&self, book: &str) -> bool {
+        self.record
+            .entries
+            .values()
+            .any(|entry| entry.id == book && entry.shared)
+    }
+
+    /// Since when the text of `book` has been on its way here, while it is.
+    pub(super) fn arriving(&self, book: &str) -> Option<ui::time::Instant> {
+        self.query.index.arriving(book).or_else(|| {
+            self.query
+                .reveal_on_arrival
+                .as_ref()
+                .filter(|(waiting, ..)| waiting == book)
+                .map(|_| self.query.reveal_since)
+        })
+    }
+
+    /// Whether a book's text is on its way, its card's bar moving.
+    pub(super) fn awaiting_arrival(&self) -> bool {
+        self.query.reveal_on_arrival.is_some()
     }
 
     /// Open the passage a hit named once its book is here.
@@ -402,6 +458,7 @@ impl BooksApp {
             return false;
         };
         self.query.reveal_on_arrival = Some((book.clone(), chapter, block));
+        self.query.reveal_since = ui::time::now();
         if entry.shared && entry.content.is_empty() {
             self.dispatch
                 .effect(&crate::resource::BooksEffect::Download { book });
@@ -430,13 +487,16 @@ impl BooksApp {
         {
             self.stage_query(from, &text);
         }
+        // What runs off the UI thread runs whether or not the search is
+        // open: the library's index and the books on their way are not the
+        // search's alone.
+        if let Some(pumped) = &self.query.pumped {
+            pumped.run_pending();
+        }
         if !self.query.open {
             return;
         }
         self.sync_query_local();
-        if let Some(pumped) = &self.query.pumped {
-            pumped.run_pending();
-        }
         if self.query.engine.poll() {
             self.query.offers = None;
             self.dirty = true;
@@ -777,42 +837,20 @@ impl BooksApp {
     ) -> f64 {
         let theme = ctx.theme;
         let library = Arc::clone(&self.library);
-        // The books whose text is elsewhere, as their rows name them.
-        let elsewhere: Vec<(String, Book)> = items
-            .iter()
-            .filter(|item| !self.query.shelved.contains_key(&item.id))
-            .filter_map(|item| {
-                let entry = self
-                    .record
-                    .entries
-                    .values()
-                    .find(|entry| crate::resource::book_place_resource(&entry.id) == item.id)?;
-                Some((
-                    item.id.clone(),
-                    Book {
-                        id: entry.id.clone(),
-                        title: entry.title.clone(),
-                        author: entry.author.clone(),
-                        subject: entry.subject.clone(),
-                        ..Book::default()
-                    },
-                ))
-            })
-            .collect();
+        let elsewhere = Arc::clone(&self.elsewhere);
         let cards: Vec<ShelfCard<'_>> = items
             .iter()
             .filter_map(|item| {
                 let Some(&index) = self.query.shelved.get(&item.id) else {
-                    let (_, book) = elsewhere.iter().find(|(id, _)| *id == item.id)?;
+                    let book = elsewhere
+                        .iter()
+                        .find(|book| crate::resource::book_place_resource(&book.id) == item.id)?;
                     return Some(ShelfCard {
                         book,
                         open: Action::OpenHit(item.id.clone()),
                         here: false,
-                        shared: self
-                            .record
-                            .entries
-                            .values()
-                            .any(|entry| entry.id == book.id && entry.shared),
+                        shared: self.shared_in_workspace(&book.id),
+                        arriving: self.arriving(&book.id),
                         progress: self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0),
                         notes: None,
                         focused: false,
@@ -824,6 +862,7 @@ impl BooksApp {
                     book,
                     open: Action::OpenBook(index),
                     here: true,
+                    arriving: None,
                     shared: self
                         .library_paths
                         .get(&book.id)
@@ -1160,4 +1199,24 @@ fn parse_location(anchor: &str) -> Option<(String, usize, usize)> {
     let (rest, block) = rest.rsplit_once(':')?;
     let (book, chapter) = rest.rsplit_once(':')?;
     Some((book.to_owned(), chapter.parse().ok()?, block.parse().ok()?))
+}
+
+/// The books of `entries` whose text is not among `here`, as their rows
+/// name them, with the cover generated from their id.
+fn books_elsewhere(entries: &[crate::model::LibraryEntry], here: &[Arc<Book>]) -> Vec<Arc<Book>> {
+    let here: std::collections::HashSet<&str> = here.iter().map(|book| book.id.as_str()).collect();
+    entries
+        .iter()
+        .filter(|entry| !here.contains(entry.id.as_str()))
+        .map(|entry| {
+            Arc::new(Book {
+                id: entry.id.clone(),
+                title: entry.title.clone(),
+                author: entry.author.clone(),
+                subject: entry.subject.clone(),
+                cover_tint: crate::content::tint_for(&entry.id),
+                ..Book::default()
+            })
+        })
+        .collect()
 }

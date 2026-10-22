@@ -1002,6 +1002,8 @@ fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
         let shelf = app.state().entries.len();
         if scenario == Some("onboarding") {
             assert_eq!(shelf, 0, "the first start is an empty shelf");
+        } else if scenario == Some("fresh-device") {
+            assert_eq!(shelf, 8, "a library synced from other devices");
         } else if scenario == Some("search-elsewhere") {
             assert_eq!(shelf, 4, "the sample shelf and a book elsewhere");
         } else {

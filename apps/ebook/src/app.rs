@@ -857,6 +857,10 @@ pub struct BooksApp {
     // Membership snapshots share each immutable parsed book independently.
     // Adding/removing one shelf entry must never clone another EPUB's chapters.
     library: Arc<Vec<Arc<Book>>>,
+    /// The library's books whose text is on another device, as their rows
+    /// name them: on the shelf after [`Self::library`]'s, their shelf
+    /// indices following on from it.
+    elsewhere: Arc<Vec<Arc<Book>>>,
     /// Where each book's `.epub` lives, keyed by content id. The durable
     /// record is the library ([`Ebook`]); this is its cache.
     library_paths: HashMap<String, PathBuf>,
@@ -1242,6 +1246,7 @@ impl BooksApp {
         };
         Self {
             library: Arc::new(Vec::new()),
+            elsewhere: Arc::new(Vec::new()),
             library_paths: HashMap::new(),
             // A caller-supplied library (tests / shots) is authoritative; the live
             // `new()` clears this so the document load runs.
@@ -1552,19 +1557,34 @@ impl BooksApp {
         self.schemes = record.schemes.values().cloned().collect();
         self.library_prefs = record.prefs;
 
-        let ids: Vec<String> = self.library.iter().map(|b| b.id.clone()).collect();
+        let mut ids: Vec<String> = self.library.iter().map(|b| b.id.clone()).collect();
         let cur_id = ids.get(self.book_idx).cloned().unwrap_or_default();
         self.annotations = record.annotations_for(&cur_id);
+        // Every book of the library is on the shelf, whichever device has
+        // its text: its progress and notes are its synced row's.
+        let here: std::collections::HashSet<String> = ids.iter().cloned().collect();
+        ids.extend(
+            record
+                .entries
+                .values()
+                .filter(|entry| !here.contains(&entry.id))
+                .map(|entry| entry.id.clone()),
+        );
 
         self.shelf_fraction.clear();
         self.shelf_annos.clear();
         self.shelf_opened.clear();
+        // One pass over the marks, however many books the library holds.
+        let mut marks: HashMap<&str, usize> = HashMap::new();
+        for mark in record.live_marks() {
+            *marks.entry(mark.doc_id.as_str()).or_default() += 1;
+        }
         for id in &ids {
             let p = record.progress_of(id);
             self.shelf_fraction.insert(id.clone(), p.fraction);
             self.shelf_opened.insert(id.clone(), p.opened);
-            let c = record.live_marks().filter(|a| &a.doc_id == id).count();
-            self.shelf_annos.insert(id.clone(), c);
+            self.shelf_annos
+                .insert(id.clone(), marks.get(id.as_str()).copied().unwrap_or(0));
         }
         // Keep the immutable search snapshot stable across ordinary frames.
         // Replacing this Arc only for a real change avoids allocating a
@@ -2266,6 +2286,14 @@ impl BooksApp {
 
     fn dispatch(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
+            Action::OpenBook(i) if i >= self.library.len() => {
+                // A book whose text is elsewhere: fetched, then opened where
+                // its reader left off.
+                if let Some(book) = self.shelf_book(i) {
+                    let place = crate::resource::book_place_resource(&book.id);
+                    self.open_hit(&place);
+                }
+            }
             Action::OpenBook(i) => {
                 self.open_book_at(doc, i);
             }
@@ -4083,7 +4111,7 @@ impl BooksApp {
     /// when the shelf is sorted or annotations are reordered.
     fn semantic_target(&self, action: &Action) -> Option<String> {
         let target = match action {
-            Action::OpenBook(index) => format!("book.open:{}", self.library.get(*index)?.id),
+            Action::OpenBook(index) => format!("book.open:{}", self.shelf_book(*index)?.id),
             Action::ShareToWorkspace(id) => format!("book.share:{id}"),
             Action::RemoveFromLibrary(id) => format!("book.remove:{id}"),
             Action::Back => "reader.back".into(),
@@ -4162,8 +4190,7 @@ impl BooksApp {
     fn semantic_label(&self, action: &Action) -> String {
         match action {
             Action::OpenBook(index) => self
-                .library
-                .get(*index)
+                .shelf_book(*index)
                 .map_or_else(|| "Open book".into(), |book| format!("Open {}", book.title)),
             Action::ShareToWorkspace(id) => {
                 self.library.iter().find(|book| book.id == *id).map_or_else(
@@ -5291,7 +5318,8 @@ impl Widget for BooksApp {
         !self.reduce_motion
             && (self.flaps_animating()
                 || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
-                || self.reader_bubble.needs_frame(ui::time::now()))
+                || self.reader_bubble.needs_frame(ui::time::now())
+                || (self.view != View::Reader && self.awaiting_arrival()))
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -6793,7 +6821,7 @@ impl BooksApp {
     }
 
     fn draw_library(&mut self, ctx: &mut PaintCtx<'_>) {
-        let lib = Arc::clone(&self.library);
+        let lib = self.shelf_books();
         let r = self.rect;
         let band = self.draw_page_header(ctx);
         // An empty shelf offers "Open a book" as its one action, so the
@@ -6904,14 +6932,19 @@ impl BooksApp {
             .filter_map(|(slot, &index)| {
                 let book = lib.get(index)?;
                 let notes = self.shelf_annos.get(&book.id).copied().unwrap_or(0);
+                let here = index < self.library.len();
                 Some(ShelfCard {
                     book,
                     open: Action::OpenBook(index),
-                    here: true,
-                    shared: self
-                        .library_paths
-                        .get(&book.id)
-                        .is_some_and(|path| is_shared(path)),
+                    here,
+                    shared: if here {
+                        self.library_paths
+                            .get(&book.id)
+                            .is_some_and(|path| is_shared(path))
+                    } else {
+                        self.shared_in_workspace(&book.id)
+                    },
+                    arriving: self.arriving(&book.id),
                     progress: self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0),
                     notes: match notes {
                         0 => None,
@@ -10381,3 +10414,7 @@ mod interaction_tests;
 #[cfg(test)]
 #[path = "app/query_view_tests.rs"]
 mod query_view_tests;
+
+#[cfg(test)]
+#[path = "app/shelf_tests.rs"]
+mod shelf_tests;

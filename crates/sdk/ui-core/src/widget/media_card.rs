@@ -108,6 +108,10 @@ pub enum MediaBadge<'a> {
     Duration(&'a str),
     /// Watched / read share, `0.0..=1.0`, along the bottom edge.
     Progress(f64),
+    /// Its content is on its way to this device, since the instant given:
+    /// the shared indeterminate bar along the bottom edge, in place of the
+    /// progress.
+    Loading(crate::time::Instant),
     /// Broadcasting now, at the top-leading corner.
     Live,
     /// Available offline, at the top-trailing corner.
@@ -482,6 +486,7 @@ impl<'a> MediaCardFace<'a> {
                     value.push(format!("{}% {done}", (p.clamp(0.0, 1.0) * 100.0).round()));
                 }
                 MediaBadge::Live => value.push("Live".to_owned()),
+                MediaBadge::Loading(_) => value.push("Loading".to_owned()),
                 MediaBadge::Downloaded => value.push("Downloaded".to_owned()),
                 MediaBadge::Tag(tag, _) => value.push((*tag).to_owned()),
             }
@@ -752,19 +757,19 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 .style(style)
                 .paint(ctx.scene, ctx.transform, ctx.text, theme);
         }
+        MediaBadge::Loading(started) => {
+            let bar = progress_rect(art, m, theme);
+            if bar.width() > 0.0 {
+                crate::widget::ProgressBarFace::indeterminate(started).paint(ctx, bar);
+            }
+        }
         MediaBadge::Progress(share) => {
             // No progress draws nothing; some draws the design system's
             // bar, inset from the art's foot and corners so it reads as a
             // bar however little is filled.
             let share = share.clamp(0.0, 1.0);
             if share > 0.0 {
-                let height = crate::widget::ProgressBarFace::height(theme).min(art.height());
-                let bar = Rect::new(
-                    art.x0 + m.inset,
-                    art.y1 - m.inset - height,
-                    art.x1 - m.inset,
-                    art.y1 - m.inset,
-                );
+                let bar = progress_rect(art, m, theme);
                 if bar.width() > 0.0 {
                     #[allow(clippy::cast_possible_truncation, reason = "a share in 0..=1")]
                     crate::widget::ProgressBarFace::new(share as f32).paint(ctx, bar);
@@ -790,6 +795,17 @@ pub enum MediaSource {
     /// Painted by the app from theme values.
     Paint(Box<dyn Fn(&mut PaintCtx<'_>, Rect)>),
     Placeholder,
+}
+
+/// Where a card's progress bar sits: inset from the art's foot and corners.
+fn progress_rect(art: Rect, m: &MediaMetrics, theme: &Theme) -> Rect {
+    let height = crate::widget::ProgressBarFace::height(theme).min(art.height());
+    Rect::new(
+        art.x0 + m.inset,
+        art.y1 - m.inset - height,
+        art.x1 - m.inset,
+        art.y1 - m.inset,
+    )
 }
 
 /// Owned badge for the retained card.

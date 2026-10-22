@@ -516,6 +516,8 @@ impl<T> Read<T> {
 /// A book being fetched for a hit opened in it while its text was elsewhere.
 struct Fetch {
     entry: LibraryEntry,
+    /// When it was asked for: where its card's loading bar starts.
+    since: ui::time::Instant,
     /// Whether a read of it is under way.
     reading: bool,
 }
@@ -736,6 +738,7 @@ impl LibraryIndex {
         }
         self.fetching = Some(Fetch {
             entry: entry.clone(),
+            since: ui::time::now(),
             reading: false,
         });
         self.read_book();
@@ -770,6 +773,14 @@ impl LibraryIndex {
             wake.wake();
         });
         fetch.reading = spawned.is_ok();
+    }
+
+    /// Since when the text of `book` has been on its way here, while it is.
+    pub(crate) fn arriving(&self, book: &str) -> Option<ui::time::Instant> {
+        self.fetching
+            .as_ref()
+            .filter(|fetch| fetch.entry.id == book)
+            .map(|fetch| fetch.since)
     }
 
     /// What the fetch of a book came to since asked: its id and the book,

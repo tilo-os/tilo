@@ -21,6 +21,8 @@ pub(super) struct ShelfCard<'a> {
     /// Whether the book's text is on this device.
     pub(super) here: bool,
     pub(super) shared: bool,
+    /// Since when its text has been on its way here, while it is.
+    pub(super) arriving: Option<ui::time::Instant>,
     pub(super) progress: f32,
     pub(super) notes: Option<String>,
     pub(super) focused: bool,
@@ -65,7 +67,9 @@ impl BooksApp {
         // subject is not on the cover: it is a filter of the shelf and of
         // search.
         let mut badges = Vec::with_capacity(2);
-        if card.progress > 0.0 {
+        if let Some(started) = card.arriving {
+            badges.push(MediaBadge::Loading(started));
+        } else if card.progress > 0.0 {
             badges.push(MediaBadge::Progress(f64::from(card.progress)));
         }
         if card.shared {
