@@ -297,11 +297,11 @@ fn the_bar_is_two_choices_the_shutter_and_options_and_nothing_else() {
             BarItem::Output(0),
             BarItem::Output(1),
             BarItem::Output(2),
+            BarItem::Shutter,
             BarItem::Target(0),
             BarItem::Target(1),
             BarItem::Target(2),
             BarItem::Target(3),
-            BarItem::Shutter,
             BarItem::Options,
         ]
     );
@@ -321,6 +321,40 @@ fn the_bar_is_two_choices_the_shutter_and_options_and_nothing_else() {
     s.set_source_mode(SourceMode::Display);
     assert!(s.key(&Key::Named(NamedKey::Space), false));
     assert_eq!(s.take_intents().len(), 1);
+}
+
+// USER REQUIREMENT (2026-10-22): the big shutter is centred in the capture
+// bar, with what comes out on one side and what it is of on the other, and it
+// stays where it is whichever output and target are chosen.
+#[test]
+fn the_shutter_is_the_centre_of_the_bar_whatever_is_chosen() {
+    let mut s = studio();
+    let first = s.bar_item(BarItem::Shutter);
+    for mode in OUTPUTS {
+        for source in TARGETS {
+            s.set_mode(mode);
+            s.set_source_mode(source);
+            let bar = s.setup_bar();
+            let shutter = s.bar_item(BarItem::Shutter);
+            assert!(
+                (shutter.center().x - bar.center().x).abs() < 0.5,
+                "{mode:?}/{source:?}: shutter at {shutter:?}, bar {bar:?}"
+            );
+            assert_eq!(
+                shutter, first,
+                "{mode:?}/{source:?}: the shutter never moves"
+            );
+            for (item, rect) in s.bar_items() {
+                match item {
+                    BarItem::Output(_) => assert!(rect.x1 < shutter.x0, "{item:?} left of it"),
+                    BarItem::Target(_) | BarItem::Options => {
+                        assert!(rect.x0 > shutter.x1, "{item:?} right of it");
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 #[test]
