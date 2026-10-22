@@ -107,7 +107,7 @@ pub struct SettingsShell;
 
 impl ResourceApp for SettingsShell {
     type Resource = Settings;
-    const ID: &'static str = "so.tilo.settings";
+    const ID: &'static str = settings_sections::APP_ID;
     const TITLE: &'static str = "Settings";
     const ICON: Option<&'static str> = Some("settings");
     // Sidebar filtering rebuilds the widget tree, and the Appearance pane's
@@ -162,21 +162,10 @@ impl ResourceApp for SettingsShell {
 
     /// Every section of the person's settings Settings edits: each is a
     /// record of the person's own, published with its field edits, so the
-    /// palette, agents and assistive technology change it by path.
+    /// palette, agents and assistive technology change it by path. The
+    /// session keeps the system's own ([`settings_sections::declare`]) too.
     fn records(records: &mut ui::framework::Records<'_>) {
-        records
-            .settings::<crate::prefs::AppearancePrefs>()
-            .settings::<crate::accessibility_settings::AccessibilitySettings>()
-            .settings::<crate::prefs::InputPrefs>()
-            .settings::<ui::text_assistance::TextAssistancePrefs>()
-            .settings::<crate::prefs::PowerPrefs>()
-            .settings::<crate::prefs::DeskWidgetsPrefs>()
-            .settings::<crate::prefs::UpdatePrefs>()
-            .settings::<crate::prefs::NotificationPrefs>()
-            .settings::<crate::prefs::AudioPrefs>()
-            .settings::<crate::prefs::DisplayPrefs>()
-            .settings::<tilo_locale::Locale>()
-            .settings::<crate::continuity::ContinuityPrivacy>();
+        settings_sections::declare(records);
         for section in &crate::area::registry().sections {
             (section.record)(records);
         }

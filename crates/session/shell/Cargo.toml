@@ -93,7 +93,7 @@ tempfile.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # Settings' sections, which the session keeps as the person's records
 # whether or not Settings is open.
-settings-core = { path = "../../../apps/settings-core" }
+settings-sections = { path = "../../system/settings-sections" }
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 notify.workspace = true
 tilo-paths.workspace = true

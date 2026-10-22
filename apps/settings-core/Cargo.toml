@@ -27,6 +27,8 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
+# The sections Settings edits, which the session keeps as records too.
+settings-sections = { path = "../../crates/system/settings-sections" }
 tilo-accessibility-settings = { path = "../../crates/platform/tilo-accessibility-settings", features = ["model"] }
 desktop-policy = { path = "../../crates/system/desktop-policy" }
 package-store = { path = "../../crates/packaging/package-store" }

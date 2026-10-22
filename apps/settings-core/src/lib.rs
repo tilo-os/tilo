@@ -72,7 +72,7 @@ pub fn take_launcher_provider_admin() -> ui::models::ProviderAdministration {
     LAUNCHER_PROVIDER_ADMIN.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
 }
 
-pub mod accessibility_settings;
+pub use settings_sections::accessibility as accessibility_settings;
 pub mod accounts;
 pub mod area;
 pub mod categories;
