@@ -91,6 +91,7 @@ store-runtime-install = Install runtime
 store-runtime-reference = Required runtime
 store-runtime-installed = Installed { $name } { $version }. Open the app again to use it.
 store-runtime-reviewed = Reviewed { $name }. Installation remains a separate step.
+store-identity-needed-to-sign = Choose who you are in this workspace, then send it again.
 store-runtime-changed = The reviewed runtime package changed; review it again.
 store-runtime-service-unavailable = The app service is unavailable. No runtime operation was attempted.
 store-runtime-offer-mismatch = The signed runtime offer does not match the requested identity.
