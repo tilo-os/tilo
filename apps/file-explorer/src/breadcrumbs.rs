@@ -24,6 +24,13 @@ pub fn breadcrumb_components(
         out.push((crate::i18n::t("files-place-recent"), cwd.to_path_buf()));
         return out;
     }
+    if crate::applications::is_location(cwd) {
+        out.push((
+            crate::i18n::t("files-place-applications"),
+            cwd.to_path_buf(),
+        ));
+        return out;
+    }
     if let Some(root) = crate::model::workspace_root_for(cwd, workspace_roots) {
         out.push((crate::model::workspace_label(root), root.to_path_buf()));
         let mut current = root.to_path_buf();
@@ -74,6 +81,8 @@ pub fn breadcrumb_root_icon(
     use ui::icons::Icon;
     if crate::recent::is_location(cwd) {
         Icon::History
+    } else if crate::applications::is_location(cwd) {
+        Icon::LayoutGrid
     } else if crate::model::workspace_root_for(cwd, workspace_roots).is_some() {
         Icon::Users
     } else if home.is_some_and(|home| cwd.starts_with(home)) {

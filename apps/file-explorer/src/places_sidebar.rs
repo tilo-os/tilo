@@ -146,6 +146,14 @@ impl Places {
                 account: None,
                 status: None,
             },
+            // Every app in the person's app list, and ~/Applications.
+            Location {
+                icon: Icon::LayoutGrid,
+                label: t("files-place-applications"),
+                path: crate::applications::location(),
+                account: None,
+                status: None,
+            },
             Location {
                 icon: Icon::HardDrive,
                 label: t("files-place-root"),

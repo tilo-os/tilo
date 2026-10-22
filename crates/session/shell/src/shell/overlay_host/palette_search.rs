@@ -41,6 +41,17 @@ impl ShellOverlayHost {
         chrome
             .borrow_mut()
             .focus_tab(workspace, strip, group, source_tab);
+        // An app asking to uninstall one of the person's apps (the Store's
+        // Uninstall) gets the one question every door asks, in the shell's
+        // sheet; nothing runs until the person answers it there.
+        if let Some(offer) = &request.offer
+            && offer.action == crate::shell::search::providers::actions::APP_UNINSTALL_ID
+        {
+            if let Some(app) = offer.arguments.get("app") {
+                crate::shell::app_list::ask(app);
+            }
+            return;
+        }
         if let Some(offer) = &request.offer
             && let Some(label) =
                 crate::shell::search::providers::actions::app_offerable_label(&offer.action)

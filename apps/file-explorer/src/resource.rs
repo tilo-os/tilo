@@ -1284,24 +1284,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     ) -> EffectAnswer {
         // Cloud accounts and transfer state belong to the local person, not
         // to every collaborator allowed to edit the workspace's files.
-        if matches!(
-            effect,
-            FilesEffect::BrowseCloud { .. }
-                | FilesEffect::MoreCloud
-                | FilesEffect::SelectCloud { .. }
-                | FilesEffect::ImportCloud { .. }
-                | FilesEffect::CloudProgress
-                | FilesEffect::CancelCloud
-                | FilesEffect::RetryCloud
-                | FilesEffect::RevealCloud
-                | FilesEffect::ImportConverted { .. }
-                | FilesEffect::ImportOnce { .. }
-                | FilesEffect::OpenAccount { .. }
-                | FilesEffect::AccountDetails { .. }
-                | FilesEffect::Reauthenticate { .. }
-                | FilesEffect::OpenDrive { .. }
-        ) && !ui::bound_dispatch::host_person_invocation_permitted()
-        {
+        if host_person_only(&effect) && !ui::bound_dispatch::host_person_invocation_permitted() {
             return Err("Only the host's person may access their private cloud accounts".into());
         }
         // A handed-over file answers with its content, which the next step
@@ -1439,6 +1422,30 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.search_entries_shown()
     }
+}
+
+/// Whether `effect` is the local person's alone: their cloud accounts,
+/// transfers, drives and apps, not every collaborator's who may edit the
+/// workspace's files.
+fn host_person_only(effect: &FilesEffect) -> bool {
+    matches!(
+        effect,
+        FilesEffect::BrowseCloud { .. }
+            | FilesEffect::MoreCloud
+            | FilesEffect::SelectCloud { .. }
+            | FilesEffect::ImportCloud { .. }
+            | FilesEffect::CloudProgress
+            | FilesEffect::CancelCloud
+            | FilesEffect::RetryCloud
+            | FilesEffect::RevealCloud
+            | FilesEffect::ImportConverted { .. }
+            | FilesEffect::ImportOnce { .. }
+            | FilesEffect::OpenAccount { .. }
+            | FilesEffect::AccountDetails { .. }
+            | FilesEffect::Reauthenticate { .. }
+            | FilesEffect::OpenDrive { .. }
+            | FilesEffect::UninstallApp { .. }
+    )
 }
 
 #[cfg(test)]

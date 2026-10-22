@@ -136,6 +136,7 @@ pub(super) fn archive_rows(archive: &Path, rows: Vec<crate::archive::Entry>) -> 
                 availability: None,
                 share: None,
                 history: None,
+                app: None,
                 rich_metadata: None,
                 observed: None,
             }

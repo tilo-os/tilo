@@ -42,6 +42,7 @@ use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
+mod applications;
 mod clipboard_client;
 mod cloud_browse;
 mod drives;
@@ -102,7 +103,7 @@ fn command_shortcut(command: &FileCommand) -> Option<ui::platform::Shortcut> {
     Some(match command {
         FileCommand::Activate(_) => Shortcut::key("Enter"),
         FileCommand::Rename => Shortcut::key("F2"),
-        FileCommand::Delete => Shortcut::key("Delete"),
+        FileCommand::Delete | FileCommand::Uninstall => Shortcut::key("Delete"),
         FileCommand::Copy => Shortcut::command("C"),
         FileCommand::Cut => Shortcut::command("X"),
         FileCommand::Paste => Shortcut::command("V"),
@@ -905,6 +906,8 @@ pub struct FileExplorerWidget {
     mounted_cloud: mounted_cloud::MountedCloud,
     /// NTFS drives the shell can open, for the places list.
     drives: drives::Drives,
+    /// The person's apps, for the Applications place.
+    applications: applications::Applications,
     host_intent: Option<ui::widget::AppHostIntent>,
     /// A one-shot shell-owned document admission. The reply is strong only
     /// while this Files widget still owns the request; the shell gets a weak
@@ -1978,6 +1981,7 @@ impl FileExplorerWidget {
             cloud_fixture_consent: false,
             mounted_cloud: mounted_cloud::MountedCloud::default(),
             drives: drives::Drives::default(),
+            applications: applications::Applications::default(),
             host_intent: None,
             pending_document_open: None,
             open_queue: std::collections::VecDeque::new(),
@@ -2611,6 +2615,14 @@ impl FileExplorerWidget {
                 self.open_drive(&drive)?;
                 None
             }
+            FilesEffect::UninstallApp { app } => {
+                let path = self
+                    .visible_entry_path(&app)
+                    .filter(|path| crate::applications::is_app(path))
+                    .ok_or_else(|| t("files-applications-gone"))?;
+                self.uninstall_apps(&[path]);
+                None
+            }
             FilesEffect::Reauthenticate { account } => {
                 let account = self.account_named(&account)?;
                 self.show_remote_account_panel(&account, true);
@@ -2960,7 +2972,9 @@ impl FileExplorerWidget {
         let nav = crate::toolbar::NavAvailability {
             back: !self.history.is_empty(),
             forward: !self.forward.is_empty(),
-            up: self.current_path.parent().is_some() && !self.is_recent_view(),
+            up: self.current_path.parent().is_some()
+                && !self.is_recent_view()
+                && !self.is_applications_view(),
         };
         self.toolbar.set_context(
             nav,
@@ -3151,6 +3165,8 @@ impl FileExplorerWidget {
     fn empty_state_message(&self) -> String {
         if self.is_recent_view() {
             t("files-empty-recent")
+        } else if self.is_applications_view() {
+            t("files-empty-applications")
         } else if self.is_trash_view() {
             t("files-empty-trash")
         } else {
@@ -3631,6 +3647,9 @@ impl FileExplorerWidget {
         if crate::recent::is_location(path) {
             return Ok(self.recent_entries());
         }
+        if crate::applications::is_location(path) {
+            return Ok(self.applications_entries());
+        }
         if self.hosted_clipboard() && fileops::is_trash_dir(path) {
             let mut entries = read_dir_sync(path)?;
             if let Some(user_trash) = host_fs::trash::user_trash_dir()
@@ -3654,6 +3673,8 @@ impl FileExplorerWidget {
     /// Re-read `path` into the view without touching history (shared by
     /// navigate/back/forward/refresh).
     fn load(&mut self, path: PathBuf) {
+        // `~/Applications` is part of the Applications place.
+        let path = self.place_of(path);
         self.leave_cloud_browse();
         self.typing.reset();
         self.is_loading = true;
@@ -3734,7 +3755,7 @@ impl FileExplorerWidget {
 
     /// Go to the parent directory (history-aware).
     pub fn back(&mut self) {
-        if self.is_recent_view() {
+        if self.is_recent_view() || self.is_applications_view() {
             return;
         }
         if let Some(parent) = self.current_path.parent() {
@@ -3838,6 +3859,7 @@ impl FileExplorerWidget {
     /// that merges two directories), which are polled instead.
     fn watched_directory(&self, path: &Path) -> Option<PathBuf> {
         let virtual_listing = crate::recent::is_location(path)
+            || crate::applications::is_location(path)
             || crate::archive::location(path).is_some()
             || (self.hosted_clipboard() && fileops::is_trash_dir(path));
         (!virtual_listing).then(|| path.to_path_buf())
@@ -4095,6 +4117,9 @@ impl FileExplorerWidget {
             )
         {
             self.status = Some(t("files-recent-not-a-folder"));
+            return true;
+        }
+        if self.is_applications_view() && self.refuses_in_applications(&cmd) {
             return true;
         }
         match cmd {
@@ -5105,6 +5130,7 @@ impl FileExplorerWidget {
             FileCommand::ShowRemoteAccount(id) | FileCommand::RecheckRemoteAccount(id) => {
                 self.show_remote_account(&id)
             }
+            FileCommand::Uninstall => self.uninstall_selected_apps(),
             FileCommand::OpenDrive(id) => {
                 if let Err(error) = self.open_drive(&id) {
                     self.status = Some(t_args("files-drive-open-failed", &[arg("error", error)]));
@@ -5223,6 +5249,11 @@ impl FileExplorerWidget {
         if paths.iter().any(|path| self.is_native_trash_entry(path)) {
             self.status = Some(t("files-native-trash-delete-unavailable"));
             return true;
+        }
+        if self.is_applications_view() && paths.iter().any(|path| crate::applications::is_app(path))
+        {
+            // An app leaves through Uninstall, which asks first.
+            return self.uninstall_selected_apps();
         }
         if self.is_recent_view() {
             // Recent lists uses of files from many folders: Delete forgets
@@ -5447,6 +5478,15 @@ impl FileExplorerWidget {
         // true in a given process, and each reports whether it
         // applied, so both are offered the gesture and at most
         // one takes it.
+        if self
+            .drag_paths
+            .iter()
+            .any(|path| crate::applications::is_app(path))
+        {
+            // An app is not a file another app could take: it is carried
+            // only inside this window, where the Trash uninstalls it.
+            return true;
+        }
         crate::external_drag::begin(self.drag_paths.clone());
         if ui::dnd::start_file_drag(&self.drag_paths) {
             tracing::debug!(
@@ -5947,6 +5987,25 @@ impl FileExplorerWidget {
             }
             Some("cloud-folder") => self.debug_show_cloud_folder(),
             Some("drives") => self.debug_show_sample_drives(),
+            Some(name @ ("applications" | "applications-menu")) => {
+                self.debug_show_sample_applications();
+                if name == "applications-menu" {
+                    if let Some(index) = self
+                        .displayed_entries()
+                        .iter()
+                        .position(|entry| entry.name == "Chess")
+                    {
+                        self.debug_select(&[index]);
+                    }
+                    let at = Point::new(
+                        rect.x0 + rect.width() * 0.45,
+                        rect.y0 + rect.height() * 0.30,
+                    );
+                    self.last_cursor = at;
+                    self.open_context_menu(at);
+                    self.context_menu.focus_first_action();
+                }
+            }
             Some("loading") => self.debug_show_loading_state(),
             Some("error") => self.debug_show_error_state(),
             Some("menu" | "archive-menu") => self.open_view_menu(),
@@ -6338,6 +6397,7 @@ impl FileExplorerWidget {
         let paths = std::mem::take(&mut self.incoming);
         let target = self.drag_hover.take().or_else(|| {
             (!self.is_recent_view()
+                && !self.is_applications_view()
                 && !self.is_trash_view()
                 && crate::archive::location(&self.current_path).is_none())
             .then(|| self.current_path.clone())
@@ -6537,11 +6597,18 @@ impl FileExplorerWidget {
             let band = row.height() / 4.0;
             let inner = vello::kurbo::Rect::new(row.x0, row.y0 + band, row.x1, row.y1 - band);
             let path = places_sidebar::path_of_id(&id)?;
-            (inner.contains(pt)
-                && path.is_dir()
-                && !self.drag_paths.contains(&path)
-                && !crate::fileops::is_trash_dir(&path))
-            .then_some((path, row))
+            let carrying_apps = self
+                .drag_paths
+                .iter()
+                .any(|path| crate::applications::is_app(path));
+            let takes = if carrying_apps {
+                crate::fileops::is_trash_dir(&path)
+            } else {
+                path.is_dir()
+                    && !self.drag_paths.contains(&path)
+                    && !crate::fileops::is_trash_dir(&path)
+            };
+            (inner.contains(pt) && takes).then_some((path, row))
         })
     }
 
@@ -6561,7 +6628,12 @@ impl FileExplorerWidget {
         let origin = self.pin_drag.take();
         self.drag_hover = None;
         self.spring = None;
-        if let Some(dir) = target {
+        if paths.iter().any(|path| crate::applications::is_app(path)) {
+            // Apps go nowhere but the Trash, where they are uninstalled.
+            if target.as_deref().is_some_and(crate::fileops::is_trash_dir) {
+                self.uninstall_apps(&paths);
+            }
+        } else if let Some(dir) = target {
             self.drop_paths_into(&paths, &dir, copy);
         } else if over_sidebar {
             // Only a single folder can be a favourite — files and multi-drags
@@ -6894,6 +6966,10 @@ impl FileExplorerWidget {
         path: PathBuf,
         runner: &mut R,
     ) -> std::io::Result<bool> {
+        if let Some(app) = crate::applications::app_id(&path) {
+            self.open_app(app.to_owned());
+            return Ok(true);
+        }
         if let Some((archive, prefix)) = crate::archive::location(&path) {
             if prefix.as_os_str().is_empty() {
                 self.navigate(path);
@@ -7097,6 +7173,8 @@ impl FileExplorerWidget {
         }
         let icon = if self.is_recent_view() {
             ui::icons::Icon::History
+        } else if self.is_applications_view() {
+            ui::icons::Icon::LayoutGrid
         } else if self.is_trash_view() {
             ui::icons::Icon::Trash2
         } else {
@@ -7587,6 +7665,9 @@ impl FileExplorerWidget {
         // reopening, not for editing in place.
         if self.is_recent_view() {
             return self.recent_menu_spec();
+        }
+        if let Some(spec) = self.applications_menu_spec() {
+            return spec;
         }
 
         // An archive is a read-only folder view. Synthetic member paths must
@@ -9760,6 +9841,7 @@ impl FileExplorerWidget {
             )
             .chain(self.local_clipboard.next_wake())
             .chain(self.drives.next_wake())
+            .chain(self.applications.next_wake())
             .chain(self.notice.deadline())
             .chain((!self.incoming.is_empty()).then(Instant::now))
             .chain(
@@ -10002,6 +10084,7 @@ impl Widget for FileExplorerWidget {
             | self.poll_cloud()
             | self.poll_mounted_cloud()
             | self.poll_drives(ui::time::now())
+            | self.poll_applications(ui::time::now())
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

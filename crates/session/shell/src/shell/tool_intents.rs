@@ -293,7 +293,9 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
         } else {
             match serde_json::from_str::<ToolRequest>(&line) {
                 Ok(request) if request.protocol == TOOL_PROTOCOL_VERSION => {
-                    if let Some(reply) = drive_reply(&request, caller.as_deref()) {
+                    if let Some(reply) = drive_reply(&request, caller.as_deref())
+                        .or_else(|| app_reply(&request, caller.as_deref()))
+                    {
                         reply
                     } else {
                         match handler(request) {
@@ -349,6 +351,58 @@ fn drive_reply(request: &ToolRequest, caller: Option<&str>) -> Option<ToolReply>
             accepted: true,
             message: "opened".into(),
             drives,
+            ..ToolReply::default()
+        },
+        Err(message) => ToolReply {
+            accepted: false,
+            message,
+            ..ToolReply::default()
+        },
+    })
+}
+
+/// The person's apps, for Files' Applications place, and the requests made
+/// from it and from the Store ([`crate::shell::app_list`]); `None` for every
+/// other intent. The list is the person's own view of their apps, so only
+/// Files is answered it; an uninstall is asked of the person in the shell's
+/// sheet whoever requests it, and only Files and the Store may request one.
+fn app_reply(request: &ToolRequest, caller: Option<&str>) -> Option<ToolReply> {
+    use crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    const STORE: &str = "so.tilo.store";
+    let from_files = caller == Some(SYSTEM_FILE_MANAGER);
+    let answer = match &request.intent {
+        ToolIntent::Applications if from_files => Ok(crate::shell::app_list::listed()
+            .iter()
+            .map(crate::shell::app_list::AppListItem::entry)
+            .filter(os_actions::AppEntry::fits)
+            .take(os_actions::MAX_LISTED_APPS)
+            .collect()),
+        ToolIntent::OpenApplication { app } if from_files => request
+            .intent
+            .validate()
+            .and_then(|()| {
+                crate::shell::state::RoomId::parse(&request.workspace_id)
+                    .ok_or_else(|| "invalid workspace identity".to_string())
+            })
+            .and_then(|room| crate::shell::app_list::open(app, room))
+            .map(|()| Vec::new()),
+        ToolIntent::UninstallApplication { app } if from_files || caller == Some(STORE) => {
+            request.intent.validate().map(|()| {
+                crate::shell::app_list::ask(app);
+                Vec::new()
+            })
+        }
+        ToolIntent::Applications
+        | ToolIntent::OpenApplication { .. }
+        | ToolIntent::UninstallApplication { .. } => Err("not available to this app".to_string()),
+        _ => return None,
+    };
+    Some(match answer {
+        Ok(applications) => ToolReply {
+            accepted: true,
+            message: "opened".into(),
+            applications,
+            ..ToolReply::default()
         },
         Err(message) => ToolReply {
             accepted: false,

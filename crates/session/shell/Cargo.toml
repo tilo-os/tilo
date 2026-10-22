@@ -321,6 +321,8 @@ tilo-dialogs.workspace = true
 tilo-system-stats = { path = "../../system/system-stats", features = ["udisks"] }
 package-store = { path = "../../packaging/package-store" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
+# What leaves the person's apps goes to their Trash (`app_list`).
+host-fs = { path = "../../system/host-fs" }
 
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.

@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 2
+version = 3
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -26,6 +26,26 @@ capnp = [
 [opaque]
 
 [schema]
+"AppEntry" = "struct"
+"AppEntry.icon" = "#3 Option<String>"
+"AppEntry.id" = "#0 String"
+"AppEntry.kind" = "#6 AppKind"
+"AppEntry.name" = "#1 String"
+"AppEntry.package" = "#2 Option<String>"
+"AppEntry.program" = "#4 Option<String>"
+"AppEntry.removal" = "#5 AppRemoval"
+"AppEntry.size" = "#7 Option<u64>"
+"AppKind" = "enum external"
+"AppKind::app_image" = "#2 unit"
+"AppKind::flatpak" = "#1 unit"
+"AppKind::program" = "#3 unit"
+"AppKind::system" = "#4 unit"
+"AppKind::tilo" = "#0 unit"
+"AppRemoval" = "enum external"
+"AppRemoval::none" = "#3 unit"
+"AppRemoval::remove_from_apps" = "#2 unit"
+"AppRemoval::uninstall" = "#1 unit"
+"AppRemoval::uninstall_with_data" = "#0 unit"
 "BackupsRoute" = "enum external"
 "BackupsRoute::overview" = "#0 unit"
 "BackupsRoute::restore" = "#1 unit"
@@ -102,6 +122,7 @@ capnp = [
 "Response::MetadataWithPresentation.total_shares" = "#6 u16"
 "Response::Signature" = "#1 tuple(Vec<u8>)"
 "ToolIntent" = "enum internal tag=tool"
+"ToolIntent::applications" = "#10 unit"
 "ToolIntent::backups" = "#3 struct"
 "ToolIntent::backups.route" = "#0 BackupsRoute"
 "ToolIntent::container_shell" = "#7 struct"
@@ -113,10 +134,14 @@ capnp = [
 "ToolIntent::firewall" = "#1 struct"
 "ToolIntent::firewall.route" = "#0 FirewallRoute"
 "ToolIntent::identity_backup" = "#5 unit"
+"ToolIntent::open_application" = "#11 struct"
+"ToolIntent::open_application.app" = "#0 String"
 "ToolIntent::open_drive" = "#9 struct"
 "ToolIntent::open_drive.drive" = "#0 String"
 "ToolIntent::terminal" = "#6 struct"
 "ToolIntent::terminal.directory" = "#0 Option<String>"
+"ToolIntent::uninstall_application" = "#12 struct"
+"ToolIntent::uninstall_application.app" = "#0 String"
 "ToolIntent::vpn" = "#0 struct"
 "ToolIntent::vpn.profile" = "#1 Option<String>"
 "ToolIntent::vpn.route" = "#0 VpnRoute"
@@ -124,6 +149,7 @@ capnp = [
 "ToolIntent::workspace_settings.route" = "#0 WorkspaceSettingsRoute"
 "ToolReply" = "struct"
 "ToolReply.accepted" = "#0 bool"
+"ToolReply.applications" = "#3 Vec<AppEntry>"
 "ToolReply.drives" = "#2 Vec<DriveEntry>"
 "ToolReply.message" = "#1 String"
 "ToolRequest" = "struct"

@@ -351,6 +351,7 @@ widget-filepicker-name-not-allowed = This app can’t save in “{ $folder }”.
 widget-filetable-column-name = Name
 widget-filetable-column-size = Size
 widget-filetable-column-modified = Modified
+widget-filetable-column-kind = Kind
 widget-filepicker-empty = This folder is empty
 widget-filepicker-place-home = Home
 widget-filepicker-place-documents = Documents

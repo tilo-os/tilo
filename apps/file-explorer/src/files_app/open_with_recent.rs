@@ -698,6 +698,7 @@ impl FileExplorerWidget {
                     availability: None,
                     share: None,
                     history: None,
+                    app: None,
                     rich_metadata: None,
                     observed: host_fs::ObservedObject::from_metadata(&meta),
                 })

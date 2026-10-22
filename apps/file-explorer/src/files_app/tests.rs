@@ -81,6 +81,7 @@ mod open_with_tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }
@@ -1357,6 +1358,7 @@ mod command_path_tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }

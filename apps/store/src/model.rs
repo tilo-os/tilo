@@ -182,7 +182,7 @@ impl ActionKind {
     pub fn label(self) -> &'static str {
         match self {
             ActionKind::Open | ActionKind::FlatpakOpen => "Open",
-            ActionKind::Remove | ActionKind::FlatpakRemove => "Remove",
+            ActionKind::Remove | ActionKind::FlatpakRemove => "Uninstall",
             ActionKind::Update | ActionKind::FlatpakUpdate => "Update",
             ActionKind::MarkInstalled => "Keep on device",
             ActionKind::Unmark => "Allow cleanup",
