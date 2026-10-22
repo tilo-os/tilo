@@ -273,6 +273,24 @@ fn take(flag: &LocalState<bool>) -> bool {
     pressed
 }
 
+/// Whether a picker shows the choices offered to it yet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickerListing {
+    Listed,
+    Unlisted,
+}
+
+impl PickerListing {
+    /// A picker is listed once shown, and only when there is a choice.
+    fn for_choices(count: usize) -> Self {
+        if count > 1 {
+            Self::Unlisted
+        } else {
+            Self::Listed
+        }
+    }
+}
+
 pub(crate) struct AgentQuickComposer {
     popover: Popover<Container>,
     owner: Option<ComposerOwner>,
@@ -312,14 +330,14 @@ pub(crate) struct AgentQuickComposer {
     agents: Vec<String>,
     /// The agent the person picked instead, until the host takes it.
     agent_switch: Option<String>,
-    /// Whether the picker has yet to list [`Self::agents`]: it does once it
-    /// is shown.
-    agents_unlisted: bool,
+    /// Whether the picker lists [`Self::agents`] yet: it does once it is
+    /// shown.
+    agent_picker: PickerListing,
     /// The models a run may plan with, by how the picker names them; the
     /// first is the agent's own.
     models: Vec<(String, Option<runtime_collab::TaskRunModel>)>,
-    /// Whether the model picker has yet to list [`Self::models`].
-    models_unlisted: bool,
+    /// Whether the model picker lists [`Self::models`] yet.
+    model_picker: PickerListing,
 }
 
 impl Default for AgentQuickComposer {
@@ -351,9 +369,9 @@ impl Default for AgentQuickComposer {
             draft_answer: None,
             agents: Vec::new(),
             agent_switch: None,
-            agents_unlisted: false,
+            agent_picker: PickerListing::Listed,
             models: Vec::new(),
-            models_unlisted: false,
+            model_picker: PickerListing::Listed,
         };
         composer.popover = composer.controls();
         composer
@@ -658,19 +676,22 @@ impl AgentQuickComposer {
     /// Let the person pick which of `agents` to tell, in its header.
     pub(crate) fn offer_agents(&mut self, agents: Vec<String>) {
         self.view.picks_agent.set(agents.len() > 1);
-        self.agents_unlisted = agents.len() > 1;
+        self.agent_picker = PickerListing::for_choices(agents.len());
         self.agents = agents;
         self.list_agents();
     }
 
     fn list_agents(&mut self) {
-        if self.agents_unlisted && set_picker_options(&mut self.popover, AGENT_PICKER, &self.agents)
+        if self.agent_picker == PickerListing::Unlisted
+            && set_picker_options(&mut self.popover, AGENT_PICKER, &self.agents)
         {
-            self.agents_unlisted = false;
+            self.agent_picker = PickerListing::Listed;
         }
         let models: Vec<String> = self.models.iter().map(|(label, _)| label.clone()).collect();
-        if self.models_unlisted && set_picker_options(&mut self.popover, MODEL_PICKER, &models) {
-            self.models_unlisted = false;
+        if self.model_picker == PickerListing::Unlisted
+            && set_picker_options(&mut self.popover, MODEL_PICKER, &models)
+        {
+            self.model_picker = PickerListing::Listed;
         }
     }
 
@@ -678,7 +699,7 @@ impl AgentQuickComposer {
     /// the agent's own until they do.
     fn offer_models(&mut self, models: Vec<(String, Option<runtime_collab::TaskRunModel>)>) {
         self.view.picks_model.set(models.len() > 1);
-        self.models_unlisted = models.len() > 1;
+        self.model_picker = PickerListing::for_choices(models.len());
         if let Some((own, _)) = models.first() {
             self.view.model.set(own.clone());
         }

@@ -20,11 +20,14 @@ const TRACKER_RECORD: &str = "";
 /// The largest tracker the broker reads.
 const MAX_TRACKER_BYTES: usize = 16 * 1024 * 1024;
 
+/// The revision a room's tracker was read at, and the runs read from it.
+type ReadRuns = ([u8; 32], Vec<TrackerRun>);
+
 /// The room's tracker, read through its owner, and the runs last read from
 /// each room's revision.
 pub(crate) struct NativeTrackerRuns {
     pub(crate) owner: NativeOwnerCommitService,
-    read: Mutex<HashMap<String, ([u8; 32], Vec<TrackerRun>)>>,
+    read: Mutex<HashMap<String, ReadRuns>>,
 }
 
 impl NativeTrackerRuns {
