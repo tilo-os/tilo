@@ -64,7 +64,6 @@
 //! All backends are offline: no network, no telemetry.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 mod error;
 #[cfg(not(target_arch = "wasm32"))]
 mod espeak;

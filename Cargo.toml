@@ -488,6 +488,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
+# Boilerplate `# Errors` / `# Panics` sections; see AGENTS.md "Comments".
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 # `nursery` is unstable and includes documented false positives, so its lints
 # are enabled individually below where they catch correctness defects.
 

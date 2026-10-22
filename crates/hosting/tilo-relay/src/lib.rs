@@ -54,7 +54,6 @@
 //!   handles only the CRDT-directory tier.
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 #![cfg_attr(
     test,
     allow(

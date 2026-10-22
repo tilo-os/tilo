@@ -34,7 +34,6 @@
 //! See `docs/architecture/browser-runtime.md`, "Agents".
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 
 pub mod apps;
 pub mod bot;

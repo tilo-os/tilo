@@ -7,7 +7,6 @@
 //! Browsers, the action broker and both hosts link this crate without linking the
 //! relay daemon. The live presence and ops frames are `tilo_relay_protocol::live`.
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 #![cfg_attr(
     test,
     allow(
