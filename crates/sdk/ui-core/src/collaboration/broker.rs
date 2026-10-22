@@ -5883,12 +5883,12 @@ impl SettingsLink {
         reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
     )]
     async fn flush(&self, inbound_tx: &InboundBridge) {
-        for (section, values) in self.settings.take_outbox() {
+        for (section, values, action) in self.settings.take_outbox() {
             let unanswered = super::channel_settings::Unanswered::new(&self.settings);
             let answer = match serde_json::to_vec(&values) {
                 Ok(values) => self
                     .handle
-                    .update(&section, &values)
+                    .update(&section, &values, action.as_deref())
                     .await
                     .map_err(|error| error.to_string())
                     .and_then(|view| settings_view(&view)),

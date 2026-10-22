@@ -108,7 +108,8 @@ impl AppSettingsHandle {
     }
 
     /// Merge `values_json`, `{"<app id>": {...}}`, into the app's entry in
-    /// `section`, answering the view after the write.
+    /// `section`, answering the view after the write. `action` names the
+    /// action that made the change, for the session's history.
     ///
     /// # Errors
     ///
@@ -119,6 +120,7 @@ impl AppSettingsHandle {
         &self,
         section: &str,
         values_json: &[u8],
+        action: Option<&str>,
     ) -> Result<SettingsView, NotAvailable> {
         if values_json.len() > MAX_SETTINGS_WIRE_BYTES {
             return Err(NotAvailable::Capnp(capnp::Error::failed(
@@ -128,6 +130,7 @@ impl AppSettingsHandle {
         let mut request = self.inner.update_request();
         request.get().set_section(section);
         request.get().set_values_json(values_json);
+        request.get().set_action(action.unwrap_or_default());
         let reply = request.send().promise.await?;
         let reply = reply.get()?;
         SettingsView::from_reply(reply.get_revision(), reply.get_document_json()?)
@@ -362,6 +365,14 @@ pub mod host {
                         "a settings write is a JSON object".into(),
                     ));
                 };
+                // The action the app says made the change, for the history;
+                // who invoked it is not the app's to say.
+                let origin = settings_store::ChangeOrigin {
+                    action: Some(params.get_action()?.to_str()?)
+                        .filter(|action| !action.is_empty())
+                        .map(str::to_owned),
+                    principal: None,
+                };
                 if !settings_store::personal_dictionary::host::command(
                     self.source.as_ref(),
                     &self.app_id,
@@ -377,6 +388,7 @@ pub mod host {
                         self.reach,
                         section,
                         values,
+                        &origin,
                     )
                     .map_err(|e| capnp::Error::failed(e.to_string()))?;
                 }

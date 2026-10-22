@@ -1043,8 +1043,10 @@ interface AppSettings {
   read @0 (after :UInt64) -> (revision :UInt64, documentJson :Data);
   # Merge `valuesJson`, `{"<app id>": {...}}`, into the app's entry in
   # `section` (`app_personal` or `app_device_local`), answering the view
-  # after the write. Any other section or entry is refused.
-  update @1 (section :Text, valuesJson :Data) -> (revision :UInt64, documentJson :Data);
+  # after the write. Any other section or entry is refused. `action` names
+  # the action that made the change, kept with it in the session's history;
+  # empty when none did.
+  update @1 (section :Text, valuesJson :Data, action :Text) -> (revision :UInt64, documentJson :Data);
   # Narrow display intent over an independently admitted private Settings
   # worker. The host owns validation, prior state and transaction persistence.
   displayControl @2 (commandJson :Data, publishedInvocation :Data, origin :DisplayRequestOrigin) -> (replyJson :Data);
