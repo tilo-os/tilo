@@ -345,6 +345,7 @@ impl FileView {
 
     // --- scaled metrics ---------------------------------------------------
 
+    #[cfg(test)]
     fn row_h(&self) -> f64 {
         self.geo.row * self.scale
     }
@@ -996,7 +997,7 @@ impl Widget for FileView {
             && let Some(&table) = children.first()
         {
             let base = Point::new(self.rect.x0, self.rect.y0);
-            if self.list.apply_layout(taffy, table, base, self.row_h()) {
+            if self.list.apply_layout(taffy, table, base) {
                 self.rebuild = true;
             }
         }

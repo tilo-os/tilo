@@ -395,9 +395,6 @@ files-place-music = Music
 files-place-videos = Videos
 
 ## List, empty/error state and accessibility
-files-column-name = Name
-files-column-size = Size
-files-column-modified = Modified
 files-try-again = Try again
 files-loading = Loading…
 files-loading-folder = Loading { $path }

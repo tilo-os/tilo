@@ -3091,6 +3091,7 @@ pub mod permission_prompt;
 pub mod toast;
 pub use permission_prompt::{PROMPT_HEIGHT, PermissionPrompt, PromptChoice};
 pub mod file_picker;
+pub mod file_table;
 pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
 
 pub mod progress_bar;
