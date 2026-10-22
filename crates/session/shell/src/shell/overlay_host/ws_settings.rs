@@ -472,6 +472,14 @@ impl ShellOverlayHost {
                     .active_workspace()
                     .and_then(|workspace| state.publication(workspace.room())),
             );
+            // Named as the roster names them, from the one source, and the
+            // person here by their own name: never a key.
+            let own_name = crate::shell::topbar_chrome::own_person_name(&state);
+            let people = tilo_desktop::collaborators::PeopleNames::of(
+                &tree.desktop,
+                &acting_user,
+                Some(own_name.as_str()),
+            );
             self.workspace_settings_overlay.draw_contents(
                 scene,
                 plan.transform,
@@ -481,8 +489,8 @@ impl ShellOverlayHost {
                     desktop: &tree.desktop,
                     tab: state.ws_settings_tab,
                     grant_draft: state.ws_grant_draft,
-                    local_user: &state.local_user_id,
                     acting_user: &acting_user,
+                    people: &people,
                     editing_name: state.editing_workspace_name.as_deref(),
                     name_selection: state.editing_workspace_name_selection,
                     governs_active_room,

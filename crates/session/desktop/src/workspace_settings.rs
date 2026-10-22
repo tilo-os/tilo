@@ -2881,13 +2881,14 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
     rows
 }
 
-/// `is_owner` is the *local* user's authority — a non-owner sees every
-/// row and control, disabled.
+/// `local_user` is the person acting in this workspace and `is_owner` their
+/// authority — a non-owner sees every row and control, disabled, and the
+/// note saying why. People are named as the roster names them (`names`).
 pub fn draw_members_pane(
     scene: &mut Scene,
     transform: Affine,
     pane_rect: Rect,
-    ws: &Workspace,
+    (ws, names): (&Workspace, &crate::collaborators::PeopleNames),
     local_user: &UserId,
     is_owner: bool,
     text_renderer: &mut TextRenderer,
@@ -2899,7 +2900,7 @@ pub fn draw_members_pane(
     let rows = members_pane_rows(ws, pane_rect);
 
     let roster_count = ordered_roster(ws).len();
-    let transfer_status = ownership_transfer_status(ws, local_user);
+    let transfer_status = ownership_transfer_status(ws, names, local_user);
     let member_help = transfer_status.unwrap_or_else(|| t("workspace-settings-members-help"));
     let can_manage_transfer = !ownership_transfer_resource(ws, local_user)
         .actions
@@ -2972,6 +2973,7 @@ pub fn draw_members_pane(
         scene,
         transform,
         workspace: ws,
+        names,
         local_user,
         is_owner,
         text_renderer,
@@ -2981,9 +2983,16 @@ pub fn draw_members_pane(
         draw_member_row(&mut member_row_context, row);
     }
 
-    if !is_owner {
-        draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+    if let Some(note) = members_authority_note(is_owner) {
+        draw_authority_note(scene, transform, pane_rect, &note, text_renderer, theme);
     }
+}
+
+/// The note under the People pane: why its controls are disabled, for
+/// someone who may not change them. The owner gets none.
+#[must_use]
+pub fn members_authority_note(is_owner: bool) -> Option<String> {
+    (!is_owner).then(|| t("workspace-settings-owner-only"))
 }
 
 /// Pointer and accessibility target for the ownership action entry point in
@@ -3000,24 +3009,33 @@ pub fn ownership_action_rect(pane_rect: Rect) -> Rect {
 
 /// Plain-language ownership state shared by visual rendering, accessibility
 /// snapshots, and deterministic UI tests.
-pub fn ownership_transfer_status(ws: &Workspace, local_user: &UserId) -> Option<String> {
+pub fn ownership_transfer_status(
+    ws: &Workspace,
+    names: &crate::collaborators::PeopleNames,
+    local_user: &UserId,
+) -> Option<String> {
     let proposal = ws.pending_ownership_transfer.as_ref()?;
     let recipient = public_key_member_id(proposal.recipient);
     let owner = public_key_member_id(proposal.current_owner);
+    let name_of = |id: &str| {
+        names
+            .get(id)
+            .map_or_else(|| member_name_or_short_id(ws, id), str::to_owned)
+    };
     if &recipient == local_user {
         Some(t_args(
             "workspace-settings-ownership-offered",
-            &[("owner", member_name_or_short_id(ws, &owner).into())],
+            &[("owner", name_of(&owner).into())],
         ))
     } else if &owner == local_user {
         Some(t_args(
             "workspace-settings-ownership-waiting",
-            &[("recipient", member_name_or_short_id(ws, &recipient).into())],
+            &[("recipient", name_of(&recipient).into())],
         ))
     } else {
         Some(t_args(
             "workspace-settings-ownership-pending",
-            &[("recipient", member_name_or_short_id(ws, &recipient).into())],
+            &[("recipient", name_of(&recipient).into())],
         ))
     }
 }
@@ -3048,6 +3066,7 @@ struct MemberRowDrawContext<'a> {
     scene: &'a mut Scene,
     transform: Affine,
     workspace: &'a Workspace,
+    names: &'a crate::collaborators::PeopleNames,
     local_user: &'a UserId,
     is_owner: bool,
     text_renderer: &'a mut TextRenderer,
@@ -3059,6 +3078,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
         scene,
         transform,
         workspace,
+        names,
         local_user,
         is_owner,
         text_renderer,
@@ -3079,7 +3099,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
     // lead with the person's known display name. Falling back to a shortened
     // key keeps an unrecognised invite identifiable without presenting raw
     // cryptographic material as normal desktop copy.
-    let name = ws_member_display_name(workspace, row, local_user);
+    let name = member_row_name(names, workspace, local_user, &row.user);
     draw_avatar(
         scene,
         *transform,
@@ -3162,8 +3182,19 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
     );
 }
 
-fn ws_member_display_name(ws: &Workspace, row: &MemberRow, local_user: &UserId) -> String {
-    person_name(ws, local_user, &row.user)
+/// A member as the People pane names them: as the roster does, the viewer
+/// by their own name; only someone the roster has never seen falls back to
+/// the workspace's record of them.
+#[must_use]
+pub fn member_row_name(
+    names: &crate::collaborators::PeopleNames,
+    ws: &Workspace,
+    local_user: &str,
+    id: &str,
+) -> String {
+    names
+        .get(id)
+        .map_or_else(|| person_name(ws, local_user, id), str::to_owned)
 }
 
 /// A person or agent as every workspace-settings pane names them: their
@@ -3893,12 +3924,29 @@ fn draw_authority_footnote(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
+    draw_authority_note(
+        scene,
+        transform,
+        pane_rect,
+        &t("workspace-settings-owner-only"),
+        text_renderer,
+        theme,
+    );
+}
+
+fn draw_authority_note(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    note: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
     let tokens = &theme.tokens;
-    let note = t("workspace-settings-owner-only");
     let style = tokens.typography.style(TextRole::Caption);
     text_renderer.draw_style(
         scene,
-        &note,
+        note,
         tokens.colors.text_dim,
         at(
             transform,
@@ -4932,6 +4980,54 @@ mod members_pane_tests {
     const OWNER: &str = "owner-user";
     const PEER: &str = "peer-user";
 
+    // USER REQUIREMENT (2026-10-21): "the owner shown by their name (never a
+    // hex key) with working controls; "Only the workspace owner can change
+    // permissions" only shown to non-owners; names cased consistently with
+    // the roster, from the same source."
+    #[test]
+    fn people_are_named_as_the_roster_names_them_and_the_owner_sees_no_owner_only_note() {
+        use crate::collaborators::{PeopleNames, collaborator_roster_rows_named};
+        let owner_key = "fa4834147f".repeat(6) + "0123";
+        let mut ws = Workspace::new(WorkspaceId::from(9), "Studio");
+        ws.set_owner(owner_key.as_str());
+        assert!(
+            !set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor).is_empty()
+        );
+        // The roster knows Ada from presence; the workspace's own record of
+        // her has no name.
+        let desktop = tilo_desktop_model::DesktopTree {
+            active: ws.id,
+            workspaces: vec![ws.clone()],
+            collaborators: vec![tilo_desktop_model::Collaborator::new("ada", "Ada")],
+            ..tilo_desktop_model::DesktopTree::default()
+        };
+        let names = PeopleNames::of(&desktop, &owner_key, Some("Robin"));
+        let (roster, own) = collaborator_roster_rows_named(&desktop, &owner_key, Some("Robin"));
+        let roster_ada = roster
+            .iter()
+            .find(|row| row.id == "ada")
+            .map(|row| row.label.clone());
+        assert_eq!(
+            Some(member_row_name(&names, &ws, &owner_key, "ada")),
+            roster_ada,
+            "the same name, cased the same, as the roster"
+        );
+        let owner_name = member_row_name(&names, &ws, &owner_key, &owner_key);
+        assert_eq!(Some(owner_name.clone()), own);
+        assert_eq!(owner_name, "Robin", "the owner by their name");
+        assert!(!owner_name.contains("fa48"), "never their key");
+
+        assert_eq!(
+            members_authority_note(true),
+            None,
+            "the owner is not told only the owner may"
+        );
+        assert_eq!(
+            members_authority_note(false).as_deref(),
+            Some("Only the workspace owner can change permissions.")
+        );
+    }
+
     fn ws_with_two_members() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from(7), "members-test");
         ws.set_owner(OWNER);
@@ -5210,9 +5306,13 @@ mod members_pane_tests {
                     tilo_actions::ConfirmationPolicy::Phrase { .. }
                 ));
                 assert!(
-                    ownership_transfer_status(&ws, &recipient)
-                        .unwrap()
-                        .contains("offered you ownership")
+                    ownership_transfer_status(
+                        &ws,
+                        &crate::collaborators::PeopleNames::default(),
+                        &recipient
+                    )
+                    .unwrap()
+                    .contains("offered you ownership")
                 );
             }
 
@@ -5242,7 +5342,12 @@ mod members_pane_tests {
                 )
                 .ok();
 
-                let status = ownership_transfer_status(&ws, &owner).unwrap();
+                let status = ownership_transfer_status(
+                    &ws,
+                    &crate::collaborators::PeopleNames::default(),
+                    &owner,
+                )
+                .unwrap();
                 assert!(status.contains("Morgan"));
                 assert!(!status.contains(&short_id(&recipient)));
             }
@@ -5350,7 +5455,10 @@ mod members_pane_tests {
                 &mut empty,
                 Affine::IDENTITY,
                 pane,
-                &Workspace::new(WorkspaceId::default(), "empty"),
+                (
+                    &Workspace::new(WorkspaceId::default(), "empty"),
+                    &crate::collaborators::PeopleNames::default(),
+                ),
                 &OWNER.to_string(),
                 true,
                 &mut tr,
@@ -5361,7 +5469,10 @@ mod members_pane_tests {
                 &mut full,
                 Affine::IDENTITY,
                 pane,
-                &ws_with_two_members(),
+                (
+                    &ws_with_two_members(),
+                    &crate::collaborators::PeopleNames::default(),
+                ),
                 &OWNER.to_string(),
                 true,
                 &mut tr,
@@ -5383,7 +5494,7 @@ mod members_pane_tests {
                 &mut scene,
                 Affine::IDENTITY,
                 Rect::new(100.0, 100.0, 100.0, 100.0),
-                &ws,
+                (&ws, &crate::collaborators::PeopleNames::default()),
                 &OWNER.to_string(),
                 true,
                 &mut tr,

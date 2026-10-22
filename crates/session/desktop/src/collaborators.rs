@@ -1709,6 +1709,37 @@ pub fn collaborator_roster_rows_named(
     (rows, own_name.map(|name| labels.label(local_user, name)))
 }
 
+/// What each person in the active workspace is called, exactly as the roster
+/// calls them (numbered where two share a name), with this person by their
+/// own name: the one source every surface that names people reads, so a
+/// name is spelt and cased the same in People, the roster and settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PeopleNames(HashMap<String, String>);
+
+impl PeopleNames {
+    /// The roster's names for the active workspace of `desktop`, as
+    /// `local_user` (named `own_name`) sees it.
+    #[must_use]
+    pub fn of(desktop: &DesktopTree, local_user: &str, own_name: Option<&str>) -> Self {
+        let (rows, own) = collaborator_roster_rows_named(desktop, local_user, own_name);
+        let mut names: HashMap<String, String> = rows
+            .into_iter()
+            .filter(|row| !row.label.trim().is_empty())
+            .map(|row| (row.id, row.label))
+            .collect();
+        if let Some(own) = own.filter(|own| !own.trim().is_empty()) {
+            names.insert(local_user.to_owned(), own);
+        }
+        Self(names)
+    }
+
+    /// What the person `id` is called, when the roster names them.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&str> {
+        self.0.get(id).map(String::as_str)
+    }
+}
+
 fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
     // Presence publication updates the active workspace and the legacy
     // tree-wide mirror together, but readers can observe one side of that

@@ -52,10 +52,11 @@ pub struct WorkspaceSettingsModel<'a> {
     pub desktop: &'a DesktopTree,
     pub tab: WsTab,
     pub grant_draft: GrantDraft,
-    /// This device's person principal.
-    pub local_user: &'a UserId,
-    /// The person principal acting in the active workspace.
+    /// The person acting in the active workspace: who "you" is in every
+    /// pane, and whose authority the controls follow.
     pub acting_user: &'a UserId,
+    /// What each person here is called, as the roster calls them.
+    pub people: &'a crate::collaborators::PeopleNames,
     /// The in-progress name, while the person is renaming the workspace.
     pub editing_name: Option<&'a str>,
     pub name_selection: ui::text_selection::Selection,
@@ -1245,7 +1246,7 @@ impl WorkspaceSettingsOverlay {
             active_name.as_str(),
         );
         let can_invite = model.desktop.active_workspace().is_some_and(|workspace| {
-            model.governs_active_room && workspace.may_administer(model.local_user)
+            model.governs_active_room && workspace.may_administer(model.acting_user)
         });
         let invite_y = self.draw_ws_settings_invite_link(
             scene,
@@ -1561,7 +1562,7 @@ impl WorkspaceSettingsOverlay {
             let role = model
                 .desktop
                 .active_workspace()
-                .and_then(|workspace| workspace.role_of(model.local_user))
+                .and_then(|workspace| workspace.role_of(model.acting_user))
                 .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
             let width = f32_of_f64(close.x0 - identity.x0 - 88.0);
             let caption = text_renderer.elide_to_width_style(
@@ -1627,7 +1628,7 @@ impl WorkspaceSettingsOverlay {
         let active_role = model
             .desktop
             .active_workspace()
-            .and_then(|workspace| workspace.role_of(model.local_user))
+            .and_then(|workspace| workspace.role_of(model.acting_user))
             .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
         let label = text_renderer.elide_to_width_style(
             &t_args(
@@ -1985,8 +1986,8 @@ impl WorkspaceSettingsOverlay {
                 scene,
                 transform,
                 body_rect,
-                ws,
-                model.local_user,
+                (ws, model.people),
+                model.acting_user,
                 is_owner,
                 text_renderer,
                 theme,
@@ -2095,7 +2096,7 @@ impl WorkspaceSettingsOverlay {
             if is_owner {
                 self.permission_profiles_rect = permission_profiles_rect(body_rect);
             }
-            let layout = permissions_pane_layout(ws, body_rect, model.apps, model.local_user);
+            let layout = permissions_pane_layout(ws, body_rect, model.apps, model.acting_user);
             for row in &layout.rows {
                 self.revoke_rects
                     .push((row.cap_id.clone(), row.revoke_rect));
@@ -2110,7 +2111,7 @@ impl WorkspaceSettingsOverlay {
                 scene,
                 transform,
                 body_rect,
-                (ws, model.apps, model.local_user),
+                (ws, model.apps, model.acting_user),
                 &draft,
                 is_owner,
                 text_renderer,
@@ -2150,7 +2151,7 @@ impl WorkspaceSettingsOverlay {
                 body_rect,
                 &DefaultAppsCtx {
                     ws,
-                    local_user: model.local_user,
+                    local_user: model.acting_user,
                     candidates: &candidates,
                 },
                 text_renderer,
@@ -3177,8 +3178,8 @@ mod tests {
             desktop: &desktop,
             tab: WsTab::General,
             grant_draft: GrantDraft::default(),
-            local_user: &local_user,
             acting_user: &local_user,
+            people: &crate::collaborators::PeopleNames::default(),
             editing_name: Some("Home"),
             name_selection: ui::text_selection::Selection {
                 anchor: 4,
@@ -3220,8 +3221,8 @@ mod tests {
             desktop: &desktop,
             tab: WsTab::General,
             grant_draft: GrantDraft::default(),
-            local_user: &local_user,
             acting_user: &local_user,
+            people: &crate::collaborators::PeopleNames::default(),
             editing_name: Some(&name),
             name_selection: ui::text_selection::Selection::collapsed(name.len()),
             governs_active_room: false,
@@ -3334,8 +3335,8 @@ mod tests {
                 desktop: &desktop,
                 tab: WsTab::General,
                 grant_draft: GrantDraft::default(),
-                local_user: &user,
                 acting_user: &user,
+                people: &crate::collaborators::PeopleNames::default(),
                 editing_name: editing.then_some(name.as_str()),
                 name_selection: ui::text_selection::Selection::collapsed(name.len()),
                 governs_active_room: false,
