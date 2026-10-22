@@ -7241,6 +7241,33 @@ mod tests {
         )
     }
 
+    // A press on a window's search control opens the platform search, which
+    // takes the pointer from there, so the release never reaches the row.
+    // Had the press lifted the window, the next motion would carry it as a
+    // ghost under the pointer with no button held.
+    #[test]
+    fn a_press_on_the_window_search_never_lifts_the_window() {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        let anchor = row.groups[0].window_search().anchor();
+        assert!(anchor.area() > 0.0, "the bar shows its search control");
+        let at = anchor.center();
+        assert!(
+            !row.groups[0].bar_grab_hit(at),
+            "the search control is no drag handle"
+        );
+        press_at(&mut row, &taffy, root, at);
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &move_to(Point::new(at.x + 150.0, at.y + 300.0)),
+        );
+        assert!(
+            !row.group_drag_active(),
+            "moving on after the press carries no window"
+        );
+    }
+
     fn press_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
         dispatch_at(
             row,

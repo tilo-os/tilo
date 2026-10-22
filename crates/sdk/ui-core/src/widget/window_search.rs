@@ -526,6 +526,16 @@ impl WindowSearch {
         self.anchor
     }
 
+    /// Whether `point` is on the control: its resting square, or the open
+    /// field and its buttons. A press there is the search's, never the
+    /// start of carrying the window by its bar.
+    #[must_use]
+    pub fn hit(&self, point: Point) -> bool {
+        self.anchor.contains(point)
+            || (self.is_open()
+                && (self.field_rect.contains(point) || self.part_at(point).is_some()))
+    }
+
     /// Open in place on what the app offers, the field holding the keyboard
     /// with its query selected (so typing replaces it, as Find does).
     pub fn open(&mut self, in_place: InPlace, source: MotionSource) {

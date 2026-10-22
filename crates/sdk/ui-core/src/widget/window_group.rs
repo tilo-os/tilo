@@ -1932,7 +1932,7 @@ impl WindowGroup {
         if plus.area() > 0.0 && plus.contains(p) {
             return false;
         }
-        if self.bar.toolbar_hit(p) {
+        if self.bar.toolbar_hit(p) || self.search.hit(p) {
             return false;
         }
         !self.tab_rects().iter().any(|r| r.contains(p))
@@ -1948,7 +1948,7 @@ impl WindowGroup {
             return false;
         }
         let plus = self.bar.new_tab_rect();
-        (plus.area() <= 0.0 || !plus.contains(p)) && !self.bar.toolbar_hit(p)
+        (plus.area() <= 0.0 || !plus.contains(p)) && !self.bar.toolbar_hit(p) && !self.search.hit(p)
     }
 
     /// True when `p` is in the group's trailing-edge resize target.
