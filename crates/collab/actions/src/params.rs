@@ -1484,6 +1484,8 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     RESOURCE_KIND_ANNOTATION,
     PLACE_ANNOTATION,
     CONTENT_ANNOTATION,
+    CHOICE_LABELS_ANNOTATION,
+    PEOPLE_ANNOTATION,
 ];
 
 /// Validate the assertion vocabulary itself before a surface is published.
@@ -1813,6 +1815,20 @@ mod rich_schema_tests {
                 .unwrap()
                 .get(RESOURCE_KIND_ANNOTATION),
             None
+        );
+    }
+
+    #[test]
+    fn a_parameter_with_labelled_choices_of_people_binds_its_values() {
+        let param = ActionParam::required("id", ParamType::Text, "The identity")
+            .with_labelled_choices([("ada", "Ada"), ("bob", "Bob")])
+            .choosing_people(["ada", "bob"]);
+        assert!(param.validate_declaration().is_empty());
+        let params = [param];
+        assert!(ActionArgs::bind(&params, [("id".into(), ArgValue::Text("ada".into()))]).is_ok());
+        assert!(
+            ActionArgs::bind(&params, [("id".into(), ArgValue::Text("eve".into()))]).is_err(),
+            "only the values offered"
         );
     }
 
