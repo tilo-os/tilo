@@ -360,6 +360,25 @@ impl App {
     /// The complete machine-driveable surface: domain resources declared by
     /// the app plus ordinary controls projected from its retained semantic
     /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
+    /// The resource this window shows: the first it publishes. What
+    /// "Tell an agent…" attaches when nothing more particular is meant.
+    #[cfg(feature = "native")]
+    pub(super) fn window_resource(&self) -> Option<tilo_actions::ActionResource> {
+        let key = self.ensure_resource_cache();
+        let cache = self.actions.resource_cache.borrow();
+        let first = cache
+            .as_ref()
+            .filter(|cache| cache.key == key)?
+            .complete
+            .as_ref()?
+            .first()?;
+        Some(tilo_actions::ActionResource {
+            id: first.id.0.clone(),
+            kind: first.kind.clone(),
+            label: first.label.clone(),
+        })
+    }
+
     pub fn collect_resources(&self) -> Vec<tilo_actions::Resource> {
         let _entry = self.enter_wake_scope();
         let key = self.ensure_resource_cache();

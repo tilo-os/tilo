@@ -203,6 +203,9 @@ pub(crate) struct SelectionRequests {
     /// Connections whose app announced it answers selection requests, by
     /// the app id the launcher vouched for.
     capable: HashMap<u64, String>,
+    /// The resource each connection's window shows, with its app id as the
+    /// launcher vouched for it.
+    windows: HashMap<u64, (String, tilo_actions::ActionResource)>,
     pressed: bool,
     waiting: Option<Waiting>,
     /// The agent last asked in each room, asked again while it is live.
@@ -218,6 +221,36 @@ impl SelectionRequests {
 
     pub(crate) fn disconnected(&mut self, connection: u64) {
         self.capable.remove(&connection);
+        self.windows.remove(&connection);
+    }
+
+    /// The window of `app_id` on `connection` shows `resource` now.
+    pub(crate) fn window_resource(
+        &mut self,
+        connection: u64,
+        app_id: &str,
+        resource: Option<tilo_actions::ActionResource>,
+    ) {
+        match resource {
+            Some(resource) => {
+                self.windows
+                    .insert(connection, (app_id.to_owned(), resource));
+            }
+            None => {
+                self.windows.remove(&connection);
+            }
+        }
+    }
+
+    /// The resource a window of `app_id` shows, when one said.
+    pub(crate) fn window_of(&self, app_id: &str) -> Option<&tilo_actions::ActionResource> {
+        let mut windows: Vec<_> = self
+            .windows
+            .iter()
+            .filter(|(_, (app, _))| app == app_id)
+            .collect();
+        windows.sort_unstable_by_key(|(connection, _)| **connection);
+        windows.last().map(|(_, (_, resource))| resource)
     }
 
     /// The shell-ui connections of `app` that answer what the shell asks
@@ -659,5 +692,24 @@ mod tests {
             missing.is_empty(),
             "share a selection without shell-ui: {missing:?}"
         );
+    }
+
+    #[test]
+    fn a_window_s_resource_is_its_apps_latest_and_leaves_with_its_connection() {
+        let resource = |id: &str| tilo_actions::ActionResource {
+            id: id.into(),
+            kind: "notes.notebook".into(),
+            label: "Notebook".into(),
+        };
+        let mut requests = SelectionRequests::default();
+        requests.window_resource(3, "so.tilo.notes", Some(resource("a")));
+        requests.window_resource(7, "so.tilo.notes", Some(resource("b")));
+        requests.window_resource(5, "so.tilo.mail", Some(resource("m")));
+        assert_eq!(requests.window_of("so.tilo.notes"), Some(&resource("b")));
+        requests.disconnected(7);
+        assert_eq!(requests.window_of("so.tilo.notes"), Some(&resource("a")));
+        requests.window_resource(3, "so.tilo.notes", None);
+        assert_eq!(requests.window_of("so.tilo.notes"), None);
+        assert_eq!(requests.window_of("so.tilo.mail"), Some(&resource("m")));
     }
 }

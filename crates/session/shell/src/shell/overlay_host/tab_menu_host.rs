@@ -57,9 +57,13 @@ impl ShellOverlayHost {
             return;
         };
         let rows = self.window_menu_rows(target, tab_count, maximized);
-        self.layers
-            .tab_menu
-            .open(target, rows, point, title, self.surface_area(Some(point)));
+        self.layers.tab_menu.open(
+            MenuSubject::Window(target),
+            rows,
+            point,
+            title,
+            self.surface_area(Some(point)),
+        );
     }
 
     /// The window menu's rows for `target`'s window, from what is true of
@@ -171,8 +175,34 @@ impl ShellOverlayHost {
         let at = Point::new(rect.x0, rect.y1);
         let display = self.surface_area(Some(at));
         let rows = self.window_menu_rows(target, tab_count, maximized);
-        self.layers.tab_menu.open(target, rows, at, title, display);
+        self.layers
+            .tab_menu
+            .open(MenuSubject::Window(target), rows, at, title, display);
         self.layers.tab_menu.focus_first_action();
+        true
+    }
+
+    /// A right-click on something the desktop draws (a strip, a
+    /// notification, a search result): its menu offers to tell an agent
+    /// about `seed`, at `at`. Whether it opened.
+    pub(crate) fn open_thing_menu(
+        &mut self,
+        seed: crate::shell::selection_agent::SelectionSeed,
+        at: Point,
+    ) -> bool {
+        if self.onboarding.is_some() {
+            return false;
+        }
+        let title = seed.app_label.clone();
+        let display = self.surface_area(Some(at));
+        self.layers.tab_menu.open(
+            MenuSubject::Thing(Box::new(seed)),
+            vec![crate::shell::window_menu::tell_agent_row()],
+            at,
+            title,
+            display,
+        );
+        self.bump_chrome();
         true
     }
 
@@ -472,6 +502,16 @@ impl ShellOverlayHost {
             }
             LayerIntent::Repaint => {
                 self.bump_chrome();
+                true
+            }
+            LayerIntent::TellAgent => {
+                let at = self.layers.tab_menu.anchor_point();
+                let Some(seed) = self.layers.tab_menu.take_thing() else {
+                    return false;
+                };
+                // Done either way: without an agent to tell, the desktop
+                // says so.
+                self.open_ask_agent(seed.drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0)))));
                 true
             }
         }

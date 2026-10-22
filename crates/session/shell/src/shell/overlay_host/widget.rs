@@ -1472,6 +1472,21 @@ impl ShellOverlayHost {
             return;
         }
 
+        // The menu on something the desktop draws sits over everything it
+        // can be opened on, the file chooser's sheet included.
+        if self.layers.tab_menu.is_open_on_thing()
+            && self.route_layer_band(
+                Band::Popover,
+                event,
+                &mut ctx.reborrow(ctx.path, ctx.node_id),
+            )
+        {
+            return;
+        }
+        if self.open_thing_menu_on_press(event) {
+            *ctx.handled = true;
+            return;
+        }
         if self.route_modal_absorbing_overlays(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }

@@ -72,6 +72,13 @@ impl PickerPlace {
 }
 
 impl FilePickerOverlay {
+    /// The file or folder the open chooser draws at `at`: its name, its
+    /// path, and whether it is a folder.
+    pub(crate) fn entry_at(&self, at: Point) -> Option<(String, std::path::PathBuf, bool)> {
+        let entry = self.active.as_ref()?.widget.entry_at(at)?;
+        Some((entry.name.clone(), entry.path.clone(), entry.is_dir))
+    }
+
     pub(crate) fn actions(&self) -> actions::PickerActions {
         self.actions.clone()
     }

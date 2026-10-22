@@ -2495,6 +2495,11 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .note_selection_capable(connection, &app_id);
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::WindowResource { resource } => {
+                    frame_builder
+                        .host_mut()
+                        .note_window_resource(connection, &app_id, resource);
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::AskAgent {
                     selection,
                     bounds,

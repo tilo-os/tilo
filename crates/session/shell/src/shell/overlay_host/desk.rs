@@ -683,7 +683,7 @@ impl ShellOverlayHost {
     }
 
     /// The widget form under `p`, if one is showing there.
-    fn desk_hit(&self, p: Point) -> Option<(WidgetId, Form, Rect)> {
+    pub(super) fn desk_hit(&self, p: Point) -> Option<(WidgetId, Form, Rect)> {
         self.desk
             .slots
             .iter()

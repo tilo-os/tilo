@@ -765,6 +765,14 @@ impl FilePicker {
         self.filename_rect
     }
 
+    /// The entry drawn at `p`, among those scrolled into view.
+    pub fn entry_at(&self, p: Point) -> Option<&FilePickerEntry> {
+        self.entry_rows
+            .iter()
+            .find(|(_, rect)| rect.contains(p))
+            .and_then(|(i, _)| self.entries.get(*i))
+    }
+
     /// `None` unless `i` is currently scrolled into view.
     pub fn entry_rect(&self, i: usize) -> Option<Rect> {
         self.entry_rows

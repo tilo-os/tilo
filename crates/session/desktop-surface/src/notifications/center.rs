@@ -1207,6 +1207,26 @@ impl NotificationCenter {
         (rows, shapes, start, shown)
     }
 
+    /// The notification whose row is drawn at `p` (a group header names
+    /// none).
+    pub fn notification_at(
+        &self,
+        host: &dyn NotificationHost,
+        layout: &CenterLayout,
+        p: Point,
+    ) -> Option<u64> {
+        if self.is_reading() {
+            return None;
+        }
+        let (index, _) = self.row_hit(host, layout, p)?;
+        let (rows, ..) = self.window(host, layout);
+        let log = host.log();
+        match rows.get(index)?.identity(log.history())? {
+            super::history::RowIdentity::Item(id) => Some(id),
+            super::history::RowIdentity::Group(_) => None,
+        }
+    }
+
     /// The row (and control) under `p` among the visible rows. A row's icon
     /// buttons only answer while they are shown: when the row is hovered,
     /// which a press inside it always is.

@@ -324,13 +324,18 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
         ));
     }
     rows.push(WindowMenuRow::Separator);
-    rows.push(entry(
-        WindowMenuAction::TellAgent,
-        t("shell-window-menu-tell-agent"),
-        Icon::Sparkles,
-        None,
-    ));
+    rows.push(tell_agent_row());
     rows
+}
+
+/// "Tell an agent…": the row every menu the desktop opens ends with.
+pub fn tell_agent_row() -> WindowMenuRow {
+    WindowMenuRow::Entry(WindowMenuEntry {
+        action: WindowMenuAction::TellAgent,
+        label: t("shell-window-menu-tell-agent"),
+        icon: Some(Icon::Sparkles),
+        shortcut: None,
+    })
 }
 
 fn menu_item(entry: &WindowMenuEntry) -> MenuItem {

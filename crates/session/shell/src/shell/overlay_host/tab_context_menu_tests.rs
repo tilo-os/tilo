@@ -650,6 +650,49 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         assert_eq!(h.tab_ids(0), h.tabs, "the window is untouched");
     }
 
+    /// Anything else the desktop draws gets the same menu, offering only to
+    /// tell an agent about it, and choosing that closes it.
+    fn a_thing_the_desktop_draws_gets_a_menu_that_tells_an_agent() {
+        let mut h = harness(1);
+        let seed = crate::shell::selection_agent::SelectionSeed::new(
+            tilo_desktop_model::commands::APP_ID,
+            "Desktop",
+            Some(
+                ui::shared_selection::SharedSelection::of_text("Research")
+                    .at(tilo_actions::SelectionPlace::item("strip:4"))
+                    .in_resource(tilo_actions::ActionResource {
+                        id: "strip:4".into(),
+                        kind: "desktop.strip".into(),
+                        label: "Research".into(),
+                    }),
+            ),
+        );
+        assert!(h.host.open_thing_menu(seed, Point::new(200.0, 200.0)));
+        assert!(h.host.tab_context_menu_is_open());
+        let labels: Vec<_> = h
+            .menu_node()
+            .expect("open")
+            .children
+            .iter()
+            .filter_map(|c| c.name.clone())
+            .collect();
+        assert_eq!(labels, ["Tell an agent…"]);
+        assert!(!h.host.perform_semantic_action(
+            "tabmenu:close",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut h.doc),
+            &automerge::ROOT,
+        ));
+        assert!(h.host.perform_semantic_action(
+            "tabmenu:tell-agent",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut h.doc),
+            &automerge::ROOT,
+        ));
+        assert!(!h.host.tab_context_menu_is_open());
+        assert_eq!(h.tab_ids(0), h.tabs, "no window was touched");
+    }
+
     /// The menu paints through the shared widget with the live theme and
     /// an `e4` shadow following its outline, and never paints when closed.
     fn the_open_menu_paints_and_the_closed_one_does_not() {
@@ -702,6 +745,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
     a_click_outside_the_menu_dismisses_it_and_goes_no_further();
     a_single_tab_group_is_offered_close_only();
     telling_an_agent_closes_the_menu();
+    a_thing_the_desktop_draws_gets_a_menu_that_tells_an_agent();
     the_open_menu_paints_and_the_closed_one_does_not();
 }
 
@@ -1381,11 +1425,11 @@ fn rows_for(tab_count: usize) -> Vec<crate::shell::window_menu::WindowMenuRow> {
 fn menu_opened_near_the_output_edge() -> super::tab_menu::TabMenuLayer {
     let mut menu = super::tab_menu::TabMenuLayer::default();
     menu.open(
-        super::tab_menu::TabMenuTarget {
+        super::tab_menu::MenuSubject::Window(super::tab_menu::TabMenuTarget {
             strip: StripId::new(),
             group: GROUP,
             tab: TAB_A,
-        },
+        }),
         rows_for(2),
         Point::new(620.0, 300.0),
         "Files".into(),
@@ -1439,11 +1483,11 @@ fn tab_menu_current_output_removal_reanchors_without_reopening() {
     let old_output = Rect::new(640.0, 0.0, 1280.0, 800.0);
     let mut menu = menu_opened_near_the_output_edge();
     menu.open(
-        super::tab_menu::TabMenuTarget {
+        super::tab_menu::MenuSubject::Window(super::tab_menu::TabMenuTarget {
             strip: StripId::new(),
             group: GROUP,
             tab: TAB_A,
-        },
+        }),
         rows_for(2),
         Point::new(1100.0, 300.0),
         "Files".into(),
@@ -1506,11 +1550,11 @@ fn tab_menu_current_output_capture_matrix_is_written() {
     {
         let mut menu = menu_opened_near_the_output_edge();
         menu.open(
-            super::tab_menu::TabMenuTarget {
+            super::tab_menu::MenuSubject::Window(super::tab_menu::TabMenuTarget {
                 strip: StripId::new(),
                 group: GROUP,
                 tab: TAB_A,
-            },
+            }),
             rows_for(2),
             Point::new(f64::from(width) - 20.0, 300.0),
             "Files".into(),
