@@ -94,7 +94,8 @@ mod tests {
     };
 
     /// A window's records are known by the window instance its app was
-    /// launched for, from when it opens them until it disconnects; an app
+    /// launched for, from when it opens them until it disconnects; each
+    /// window of one app has its own connection and instance; an app
     /// launched for no window instance names no window.
     #[test]
     fn the_records_an_app_window_holds_are_known_by_its_window_instance() {
@@ -114,9 +115,20 @@ mod tests {
         state.ensure_channel(&note.channel_key());
         state.ensure_channel(&other.channel_key());
         state.window_instances.lock().unwrap().insert(2, 77);
+        // The app's second window, opened in its process on a connection
+        // of its own.
+        let second = CrdtRoute::record("so.tilo.notes", "room-1", "note-2");
+        state.ensure_channel(&second.channel_key());
+        state.window_instances.lock().unwrap().insert(4, 78);
         let _note = state.subscribe_ops(&note.channel_key(), 2);
         let _other = state.subscribe_ops(&other.channel_key(), 3);
-        assert_eq!(state.window_records(), [(77, note)]);
+        let _second = state.subscribe_ops(&second.channel_key(), 4);
+        assert_eq!(
+            state.window_records(),
+            [(77, note.clone()), (78, second.clone())]
+        );
+        state.remove_connection(4);
+        assert_eq!(state.window_records(), [(77, note)], "a window closed");
         state.remove_connection(2);
         assert!(state.window_records().is_empty(), "gone with its app");
     }

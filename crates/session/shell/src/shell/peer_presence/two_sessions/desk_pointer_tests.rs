@@ -28,7 +28,7 @@ fn a_pointer_over_the_empty_desktop_lands_beside_the_same_window_on_another_layo
     let tab = 0x51;
     let tiles = vec![(tab, vello::kurbo::Rect::new(100.0, 50.0, 700.0, 650.0))];
     let tree = pair.host.roster_tree.clone();
-    a_window_of(&tree, pair.room, tab, &note.app);
+    a_window_of(&tree, pair.room, (tab, 77), &note.app);
     let held = tilo_action_broker::route::CrdtRoute::record(&note.app, &room, &note.record);
     pair.host.window_instances = Box::new(move || vec![(77, held.clone())]);
     assert_eq!(pair.host.window_record(tab), None, "never pointed in");
@@ -116,9 +116,15 @@ fn a_pointer_over_the_empty_desktop_lands_beside_the_same_window_on_another_layo
     let _ = std::fs::remove_dir_all(&pair.dir);
 }
 
-/// Show `app` in tab `tab` of `room`'s workspace in `tree`, launched for
-/// window instance 77.
-fn a_window_of(tree: &crate::shell::state::WorkspaceTreeHandle, room: RoomId, tab: u64, app: &str) {
+/// Show `app` in a tab of `room`'s workspace in `tree` (`window`: the tab
+/// and the window instance the launcher started it for).
+fn a_window_of(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+    window: (u64, u64),
+    app: &str,
+) {
+    let (tab, instance) = window;
     {
         use crate::shell::state::FreshId as _;
         let mut tree = tree.write();
@@ -132,7 +138,7 @@ fn a_window_of(tree: &crate::shell::state::WorkspaceTreeHandle, room: RoomId, ta
             id: crate::shell::state::StripId::new(),
             name: "Notes".into(),
             window_groups: vec![crate::shell::state::WindowGroup {
-                id: 4242,
+                id: tab,
                 tabs: vec![crate::shell::state::Tab {
                     id: tab,
                     title: "Note".into(),
@@ -148,6 +154,71 @@ fn a_window_of(tree: &crate::shell::state::WorkspaceTreeHandle, room: RoomId, ta
                 focus_history: Vec::new(),
             }],
         });
-        tree.remember_local_app_record(tab, 77);
+        tree.remember_local_app_record(tab, instance);
     }
+}
+
+/// One app process with two windows in the room, each opened for its own
+/// window instance and holding its own note. Nobody here has pointed in
+/// either: a pointer beside the second note on the sender's desk lands
+/// beside the second window here, from the first frame.
+#[test]
+fn each_window_of_one_app_places_pointers_beside_its_own_record() {
+    use tilo_action_broker::route::CrdtRoute;
+    let mut pair = pair("desk-pointer-two-windows");
+    let room = pair.room.to_string();
+    let app = "so.tilo.notes";
+    let (first, second) = ((0x51, 77), (0x52, 78));
+    let tree = pair.host.roster_tree.clone();
+    a_window_of(&tree, pair.room, first, app);
+    a_window_of(&tree, pair.room, second, app);
+    let held = vec![
+        (first.1, CrdtRoute::record(app, &room, "note-1")),
+        (second.1, CrdtRoute::record(app, &room, "note-2")),
+    ];
+    pair.host.window_instances = Box::new(move || held.clone());
+    let desk = Desk {
+        tiles: vec![
+            (first.0, vello::kurbo::Rect::new(100.0, 50.0, 700.0, 650.0)),
+            (
+                second.0,
+                vello::kurbo::Rect::new(800.0, 50.0, 1400.0, 650.0),
+            ),
+        ],
+        pointer: None,
+        strip: None,
+    };
+    let note = |record: &str| LiveRecord {
+        app: app.into(),
+        record: record.into(),
+    };
+    let theirs = PointerLayout {
+        windows: vec![
+            (note("note-1"), [0.0, 0.0, 400.0, 600.0]),
+            (note("note-2"), [500.0, 0.0, 900.0, 600.0]),
+        ],
+        strip: None,
+    };
+    let beside = theirs
+        .anchor([950.0, 300.0])
+        .expect("beside the second note");
+    assert!(matches!(&beside, LivePointer::Beside { record, .. } if record.record == "note-2"));
+    let frame = LiveFrame::Presence(PresenceFrame {
+        seq: 1,
+        pointer: Some(beside),
+        ..PresenceFrame::default()
+    });
+    pair.host_net.take_live_frame(
+        pair.room,
+        pair.guest_key(),
+        &frame.encode().expect("a frame"),
+    );
+    let mut on_host = PresenceCtx::default();
+    assert!(pair.host.frame(&mut on_host, &desk, &tree));
+    assert_eq!(
+        on_host.pointer_for(&PresenceKey::Workspace { id: room }, &pair.guest_user()),
+        Some((1450.0, 350.0)),
+        "50 px right of the second window, halfway down it"
+    );
+    let _ = std::fs::remove_dir_all(&pair.dir);
 }
