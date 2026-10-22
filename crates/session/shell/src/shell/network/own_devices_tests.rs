@@ -94,7 +94,8 @@ fn after_restart(
         .devices_at(
             || personal_device_peers::Sources {
                 peers: dir.join("personal-device-peers.json"),
-                fleet: Some((person, store.clone())),
+                person: Some(person),
+                fleet: personal_device_peers::load_fleet(&person, store),
             },
             std::time::Instant::now(),
         )

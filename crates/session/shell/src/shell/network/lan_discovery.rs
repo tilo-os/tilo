@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use super::own_devices::own_device_sources;
+use super::own_devices::read_own_device_sources;
 use super::{HostIdentity, NetCmd, now_unix_nanos, personal_device_peers};
 
 /// The person's devices as LAN discovery sees them: this session's own
@@ -23,14 +23,14 @@ struct DiscoveryTrust {
 impl DiscoveryTrust {
     fn devices(&self) -> Vec<[u8; 32]> {
         let local = self.cert.device_public_key;
+        // Read before locking: the compositor's loop takes the same lock, and
+        // must never wait behind this thread's disk.
+        let sources = read_own_device_sources(Some(self.person), self.fleet.as_ref());
         self.peers.lock().map_or_else(
             |_| Vec::new(),
             |mut peers| {
                 peers
-                    .devices_at(
-                        || own_device_sources(Some(self.person), self.fleet.as_ref()),
-                        std::time::Instant::now(),
-                    )
+                    .devices_at(|| sources, std::time::Instant::now())
                     .iter()
                     .copied()
                     .filter(|device| *device != local)
