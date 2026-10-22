@@ -474,6 +474,9 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The files a person chooses for an app in the shell's chooser, served into
+# that app's sandbox (compositor::chooser_service).
+tilo-documents = { workspace = true, features = ["mount"] }
 # The room render service the compositor's broker starts (compositor::render_broker).
 tilo-render-service = { path = "../render-service" }
 account-custody = { path = "../../system/account-custody" }
