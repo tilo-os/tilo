@@ -539,6 +539,10 @@ fn try_enrol(request: &EnrolRequest) -> Result<EnrolResponse, String> {
 }
 
 /// Serve the enrolment socket for this session, one request per connection.
+///
+/// The compositor's loop starts it, so the socket is bound on the serving
+/// thread: binding walks the runtime directory, and a busy disk would hold
+/// the desktop still.
 pub fn spawn_enrol_socket() {
     static STARTED: OnceLock<()> = OnceLock::new();
     if cfg!(test) || STARTED.set(()).is_err() {
@@ -548,16 +552,16 @@ pub fn spawn_enrol_socket() {
         return;
     };
     let path = runtime.join(tilo_unlock_protocol::ENROL_SOCKET);
-    let listener = match crate::shell::test_control_socket::bind_private(&path) {
-        Ok(listener) => listener,
-        Err(error) => {
-            tracing::warn!(%error, "disk-unlock enrolment socket unavailable");
-            return;
-        }
-    };
     let spawned = std::thread::Builder::new()
         .name("device-unlock-enrol".into())
         .spawn(move || {
+            let listener = match crate::shell::test_control_socket::bind_private(&path) {
+                Ok(listener) => listener,
+                Err(error) => {
+                    tracing::warn!(%error, "disk-unlock enrolment socket unavailable");
+                    return;
+                }
+            };
             for stream in listener.incoming().flatten() {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                 answer_enrolment(stream);
