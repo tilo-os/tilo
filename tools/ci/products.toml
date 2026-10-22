@@ -218,7 +218,7 @@ children = true
 dev = ["dev-{commit}"]
 release = ["{commit}", "{rust}"]
 dev_signed = true
-gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64"]
+gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64"]
 publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory = "24GiB" } }
 
 [product.build]
@@ -259,9 +259,8 @@ needs = ["canary-ci-builder-cache-cold-{arch}"]
 cost = "minutes"
 
 # The native Chromium and the browser regressions that once broke on a builder. Their tests run
-# `npm ci` in scripts/moq-browser, inside the source tree. Only x86_64's gates publication for
-# now: on aarch64 its build directory under $TMPDIR loses files mid-build (cargo can't run
-# sccache or read dep info it just wrote), which the job sandbox there has yet to fix.
+# `npm ci` in scripts/moq-browser, inside the source tree. Both architectures gate publication,
+# as build-ci-builder.yml did: a builder whose Chromium breaks on either is not published.
 [[matrix.check]]
 name = "canary-ci-builder-browser-{arch}"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
@@ -275,7 +274,7 @@ requirement = { cores = 8, memory = "12GiB" }
 # The shell's X11 clipboard tests against the candidate's own xwayland-satellite, which is built
 # from patched source (os/external-assets/xwayland-satellite/): a builder whose bridge drops a
 # paste in flight during the clipboard manager's takeover must not be published. Gates
-# publication on x86_64, like the browser canary.
+# publication on x86_64 only: on aarch64 its compile of the shell outgrows the 12 GiB below.
 [[matrix.check]]
 name = "canary-ci-builder-x11-bridge-{arch}"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
