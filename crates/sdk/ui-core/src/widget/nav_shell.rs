@@ -1908,39 +1908,6 @@ impl NavShell {
         self
     }
 
-    /// The app shows the sidebar toggle in the window's bar
-    /// ([`crate::window_toolbar::WindowToolbar::sidebar`]) and runs it with
-    /// [`Self::toggle_sidebar`]: the header row keeps no toggle of its own,
-    /// and stands only for what else it holds.
-    pub fn set_sidebar_toggle_in_window_bar(&mut self, on: bool) {
-        let changed = {
-            let mut inputs = self.inputs.borrow_mut();
-            std::mem::replace(&mut inputs.toggle_in_bar, on) != on
-        };
-        if changed {
-            self.structure_dirty = true;
-            self.invalidate();
-        }
-    }
-
-    /// The app's toolbar is its window bar's slots ([`crate::window_toolbar`]):
-    /// the shell draws no header row of its own, in a Tilo session or out of
-    /// it. Its own buttons (the sidebar toggle, Back, the inspector toggle)
-    /// are slots too: the app starts its declaration from
-    /// [`Self::window_toolbar`] and hands what the person did in the bar to
-    /// [`Self::window_toolbar_event`] first. Column titles and header
-    /// actions given to the shell are not shown: the app declares its
-    /// location and actions as slots.
-    #[must_use]
-    pub fn with_window_toolbar(self) -> Self {
-        {
-            let mut inputs = self.inputs.borrow_mut();
-            inputs.toolbar_in_bar = true;
-            inputs.toggle_in_bar = true;
-        }
-        self
-    }
-
     /// Start with the sidebar hidden (where it docks).
     #[must_use]
     pub fn with_sidebar_hidden(self) -> Self {
