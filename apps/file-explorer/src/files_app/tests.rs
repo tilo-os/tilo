@@ -1249,6 +1249,70 @@ mod command_path_tests {
         assert!(!widget.directory_changed, "the reported change was read");
     }
 
+    /// "a file put in a folder appears in Files without reopening the
+    /// folder": another process makes a multi-gigabyte (sparse) archive in
+    /// a sibling folder and moves it into a folder of about a hundred
+    /// entries that Files shows; it is listed, at its size, without the
+    /// folder being opened again.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_put_in_a_folder_appears_in_files_without_reopening_the_folder() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("work");
+        let downloads = root.path().join("Downloads");
+        std::fs::create_dir(&work).unwrap();
+        std::fs::create_dir(&downloads).unwrap();
+        for i in 0..110 {
+            if i % 5 == 0 {
+                std::fs::create_dir(work.join(format!("project-{i:03}"))).unwrap();
+            } else {
+                std::fs::write(work.join(format!("notes-{i:03}.txt")), b"n").unwrap();
+            }
+        }
+        let mut widget = FileExplorerWidget::new();
+        widget.navigate(work.clone());
+        assert_eq!(widget.entries.len(), 110);
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+
+        let name = "factorio-space-age_linux-arm64_2.1.23.tar.xz";
+        const SIZE: u64 = 5 << 30;
+        let status = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"truncate -s "$3" "$1/$4" && mv "$1/$4" "$2/$4""#)
+            .arg("sh")
+            .arg(&downloads)
+            .arg(&work)
+            .arg(SIZE.to_string())
+            .arg(name)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let shown = |widget: &FileExplorerWidget| {
+            widget
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .map(|entry| (entry.size, entry.is_dir))
+        };
+        let deadline = tilo_test_env::hang_deadline();
+        while shown(&widget).is_none() && ui::time::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let readable = widget.last_directory_read
+                + metadata_refresh::change_read_gap(widget.entries.len());
+            let _ = widget.refresh_metadata_if_due(readable);
+        }
+        assert_eq!(
+            shown(&widget),
+            Some((SIZE, false)),
+            "the moved-in archive is listed as a file, at its size"
+        );
+        assert_eq!(widget.entries.len(), 111);
+        assert_eq!(widget.current_path, work, "the folder was never reopened");
+    }
+
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
         let mut scroll = ui::widget::Scrollable::new_vertical();
         scroll.set_viewport_size(200.0, 300.0);
@@ -4680,6 +4744,8 @@ mod command_path_tests {
     }
 
     fn archives_browse_as_read_only_folders_and_extract_from_inside() {
+        // Opened members are copied under the private home's cache.
+        let _home = tilo_test_env::TestHome::new().expect("private test home");
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         std::fs::create_dir(&source).unwrap();
@@ -4695,6 +4761,7 @@ mod command_path_tests {
 
         let mut files = FileExplorerWidget::with_persistence(None, Some(temp.path().into()));
         files.navigate(archive);
+        files.wait_for_archive();
         assert_eq!(files.entries_snapshot().len(), 2);
         assert!(
             files
@@ -4717,6 +4784,15 @@ mod command_path_tests {
         files.open_entry(photos, &mut SystemRunner).unwrap();
         assert_eq!(files.entries_snapshot().len(), 1);
         assert_eq!(files.entries_snapshot()[0].name, "one.jpg");
+        // A file inside opens as a copy read off the window's thread.
+        files.open_queue.clear();
+        assert!(files.open_entry(0, &mut SystemRunner).unwrap());
+        files.wait_for_archive_members();
+        let copy = files
+            .open_queue
+            .pop_front()
+            .expect("the member's copy is opened");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"one");
 
         files.open_view_menu();
         let menu_labels: Vec<_> = files
@@ -4725,7 +4801,8 @@ mod command_path_tests {
             .iter()
             .filter_map(|item| item.label())
             .collect();
-        assert!(menu_labels.contains(&"Extract archive…"));
+        assert!(menu_labels.contains(&"Extract here"));
+        assert!(menu_labels.contains(&"Extract to…"));
         assert!(menu_labels.iter().all(|label| !label.starts_with('✓')));
         assert!(!menu_labels.contains(&"New folder"));
         assert!(!menu_labels.contains(&"Open terminal here"));
@@ -4784,6 +4861,7 @@ mod responsive_body_tests {
             let mut w = FileExplorerWidget::with_persistence(None, None);
             if let Some(d) = dir {
                 w.navigate(d.to_path_buf());
+                w.wait_for_archive();
             }
             Self::from_widget(w, width, height)
         }
@@ -7491,7 +7569,7 @@ fn a_file_inside_an_archive_opens_as_a_read_only_copy() {
     let member = crate::archive::list(&zip)
         .unwrap()
         .into_iter()
-        .find(|entry| !entry.is_dir)
+        .find(|entry| entry.kind == crate::archive::Kind::File)
         .expect("a file in the archive")
         .path;
     let copy = archive_member_copy(&zip, &member).unwrap();

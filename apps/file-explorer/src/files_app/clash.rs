@@ -54,6 +54,9 @@ pub(crate) struct PendingClash {
     /// host reported (the first few) and how many there are. The host
     /// carries out the answer.
     pub(crate) clipboard: Option<(Vec<String>, usize)>,
+    /// For extracting the archives in `sources`: the names they would take
+    /// that `folder` already has. Replace sends those items to Trash first.
+    pub(crate) extracting: Option<Vec<String>>,
     hovered: Option<usize>,
     layout: Option<ModalLayout>,
 }
@@ -86,6 +89,7 @@ impl PendingClash {
             folder,
             copy,
             clipboard: None,
+            extracting: None,
             hovered: None,
             layout: None,
         }
@@ -96,6 +100,20 @@ impl PendingClash {
         Self {
             clipboard: Some((names, count)),
             ..Self::new(Vec::new(), Vec::new(), folder, true)
+        }
+    }
+
+    /// Extracting `archives` into `folder`, where `clashing` (an archive and
+    /// the name it would take) are in use.
+    pub(crate) fn extraction(
+        archives: Vec<PathBuf>,
+        clashing: Vec<(PathBuf, String)>,
+        folder: PathBuf,
+    ) -> Self {
+        let (clashing, names) = clashing.into_iter().unzip();
+        Self {
+            extracting: Some(names),
+            ..Self::new(archives, clashing, folder, true)
         }
     }
 
@@ -118,9 +136,10 @@ impl PendingClash {
 
     pub(crate) fn title(&self) -> String {
         let folder = name_of(&self.folder);
-        let (first, count) = match &self.clipboard {
-            Some((names, count)) => (names.first().cloned(), *count),
-            None => (
+        let (first, count) = match (&self.clipboard, &self.extracting) {
+            (Some((names, count)), _) => (names.first().cloned(), *count),
+            (None, Some(names)) => (names.first().cloned(), names.len()),
+            (None, None) => (
                 self.clashing.first().map(|path| name_of(path)),
                 self.clashing.len(),
             ),
