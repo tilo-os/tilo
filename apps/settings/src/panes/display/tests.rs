@@ -271,7 +271,6 @@ fn connected_display_controls_publish_their_parameter_actions() {
         ("rotate-display", "transform"),
         ("use-display", "enabled"),
         ("set-primary-display", "primary"),
-        ("place-display", "position"),
         ("mirror-display", "mirror"),
     ] {
         assert!(
@@ -291,6 +290,26 @@ fn connected_display_controls_publish_their_parameter_actions() {
             && binding.control_id == format!("display.output.eDP-1.{field}")),
             "{field} shares the published display operation: {bindings:#?}");
     }
+    // USER REQUIREMENT (2026-10-22): where a display sits is set in one
+    // place, the arrangement canvas; no second control beside it says or
+    // sets it. Placing beside another stays an action for agents and search.
+    assert!(
+        rows.iter()
+            .any(|row| row["resource"] == "settings.display-output:eDP-1"
+                && row["action"] == "place-display"),
+        "place-display stays an action: {surface}"
+    );
+    let bindings = app
+        .surface::<SettingsApp, _>(|settings| {
+            ui::widget::controls::control_action_bindings(&*settings)
+        })
+        .expect("mounted Settings");
+    assert!(
+        !bindings
+            .iter()
+            .any(|binding| binding.control_id.ends_with(".position")),
+        "no Position control: {bindings:#?}"
+    );
     assert!(app.harness().component_contract_violations().is_empty());
 }
 
@@ -731,7 +750,10 @@ fn relative_positions_use_the_neighbour_s_logical_extent() {
 /// connector filtering.
 #[test]
 fn display_connectors_are_labelled_and_filtered() {
-    // Case `qualified_duplicate_snapshot_labels_are_distinct_in_settings`.
+    // USER REQUIREMENT (2026-10-22): a display is named by its model, never
+    // by its port or card; two connected displays of one model are told
+    // apart by the number Identify shows on each.
+    // Case `identical_monitors_are_named_apart_by_number_in_settings`.
     {
         let first = OutputDescriptor {
             connector: "pci:0000:01:00.0/HDMI-A-1".into(),
@@ -740,41 +762,50 @@ fn display_connectors_are_labelled_and_filtered() {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
-            monitor: None,
-        };
-        let second = OutputDescriptor {
-            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
-            connector_label: "HDMI-A-1".into(),
-            modes: vec![],
-            hdr: false,
-            vrr: false,
-            color_profiles: vec![],
-            monitor: None,
-        };
-        assert_eq!(
-            snapshot_label(&first, false),
-            "HDMI-A-1 on pci:0000:01:00.0"
-        );
-        let named = OutputDescriptor {
             monitor: Some(MonitorIdentity {
                 make: "Dell".into(),
                 model: "DELL U2720Q".into(),
                 ..MonitorIdentity::default()
             }),
+        };
+        let second = OutputDescriptor {
+            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
             ..first.clone()
         };
-        assert_eq!(
-            snapshot_label(&named, false),
-            "Dell U2720Q on HDMI-A-1 on pci:0000:01:00.0",
-            "a monitor is named by its EDID and still told apart by port"
-        );
-        assert_eq!(
-            snapshot_label(&second, false),
-            "HDMI-A-1 on pci:0000:03:00.0"
-        );
+        let observed =
+            |descriptor: &OutputDescriptor| settings_store::hardware::DisplayOutputSnapshot {
+                descriptor: descriptor.clone(),
+                current_mode: OutputMode {
+                    width: 3840,
+                    height: 2160,
+                    refresh_mhz: 60_000,
+                },
+                scale: 1.0,
+                builtin: false,
+                sink_hdr: false,
+                hdr_unavailable_reason: None,
+                sink_vrr: false,
+                vrr_unavailable_reason: None,
+                unavailable_reason: None,
+                color_profile_labels: BTreeMap::new(),
+            };
+        let snapshot = DisplayHardwareSnapshot {
+            outputs: vec![observed(&first), observed(&second)],
+            ..DisplayHardwareSnapshot::default()
+        };
+        let labels: Vec<_> = outputs_from_snapshot(&snapshot)
+            .into_iter()
+            .map(|output| output.label)
+            .collect();
+        assert_eq!(labels, ["Dell U2720Q (1)", "Dell U2720Q (2)"]);
+        let alone = DisplayHardwareSnapshot {
+            outputs: vec![observed(&first)],
+            ..DisplayHardwareSnapshot::default()
+        };
+        assert_eq!(outputs_from_snapshot(&alone)[0].label, "Dell U2720Q");
 
         let display = DisplayOutput {
-            label: snapshot_label(&first, false),
+            label: "Dell U2720Q (1)".into(),
             connector: first.connector.clone(),
             connector_label: first.label().to_string(),
             ..classify_connector("card0-HDMI-A-1", "connected")
@@ -854,8 +885,8 @@ fn brightness_reaches_the_panel_and_each_monitor() {
     };
     let (mut pane, rec) = recording(vec![
         display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
-        display_with_modes("DP-2", "Dell U2720Q on DP-2", false, Vec::new()),
-        display_with_modes("DP-3", "LG 27GL850 on DP-3", false, Vec::new()),
+        display_with_modes("DP-2", "Dell U2720Q", false, Vec::new()),
+        display_with_modes("DP-3", "LG 27GL850", false, Vec::new()),
     ]);
     pane.output_brightness =
         output_brightness_from(&pane.outputs, &[level("eDP-1", 0.5), level("DP-2", 0.3)]);

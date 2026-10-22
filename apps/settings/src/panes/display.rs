@@ -555,7 +555,7 @@ fn sample_monitor() -> DisplayOutput {
         }),
     };
     DisplayOutput {
-        label: snapshot_label(&descriptor, false),
+        label: settings_store::display_identify::display_name(&descriptor, false),
         connected: true,
         builtin: false,
         connector: SAMPLE_MONITOR.into(),
@@ -711,15 +711,6 @@ fn is_virtual_connector(conn: &str) -> bool {
     lower.contains("writeback") || lower.contains("virtual")
 }
 
-/// Present one compositor descriptor without leaking a persistence collision
-/// into the UI. A unique connector remains the familiar `HDMI-A-1`; two
-/// cards with that label become e.g. `HDMI-A-1 on pci:0000:01:00.0` so every
-/// control, mirror target and saved key refers to exactly one display. The
-/// compositor's Identify card names the display the same way.
-fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
-    settings_store::display_identify::display_label(descriptor, builtin)
-}
-
 /// Read capabilities only from the active compositor's leased snapshot;
 /// `None` when there is no snapshot to read (the compositor has not
 /// published one, or it is gone), which is not the same as no displays.
@@ -735,12 +726,15 @@ fn read_outputs() -> Option<Vec<DisplayOutput>> {
 }
 
 fn outputs_from_snapshot(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutput> {
+    // The names Identify shows on the displays: the model, and the number
+    // too where two connected displays share one.
+    let labels = settings_store::display_identify::display_names(&snapshot.outputs);
     let mut out: Vec<_> = snapshot
         .outputs
         .iter()
         .cloned()
-        .map(|snapshot| {
-            let label = snapshot_label(&snapshot.descriptor, snapshot.builtin);
+        .zip(labels)
+        .map(|(snapshot, label)| {
             let connector_label = snapshot.descriptor.label().to_string();
             let connector = snapshot.descriptor.connector;
             DisplayOutput {
@@ -2907,8 +2901,8 @@ impl DisplayModel {
         section(&output_title(output), rows(output_rows))
     }
 
-    /// Scale, rotation, the main display, mirroring and the display's place
-    /// beside another (the canvas's keyboard alternative).
+    /// Scale, rotation, the main display and mirroring. Where the display
+    /// sits is the arrangement canvas's alone (by hand or arrow keys).
     fn build_output_primary_rows(
         &self,
         output: &DisplayOutput,
@@ -2919,7 +2913,6 @@ impl DisplayModel {
             .iter()
             .map(|(label, _)| (*label).into())
             .collect();
-        let position_choices = self.relative_choices(output, false);
         let mirror_choices = self.relative_choices(output, true);
         let mirror_placeholder = config
             .mirror_of
@@ -2933,7 +2926,6 @@ impl DisplayModel {
                 || "Extend workspace".into(),
                 |target| format!("Mirror {}", target.label),
             );
-        let position_current = "Automatic".to_owned();
         vec![
             setting_row(
                 &t("display-scale"),
@@ -2976,16 +2968,6 @@ impl DisplayModel {
                     mirror_choices,
                     &mirror_placeholder,
                     effect(DisplayEffect::MIRROR_DISPLAY),
-                )),
-            ),
-            setting_row(
-                &t("display-position"),
-                Box::new(self.choice(
-                    &output.connector,
-                    "position",
-                    position_choices,
-                    &position_current,
-                    effect(DisplayEffect::PLACE_DISPLAY),
                 )),
             ),
         ]

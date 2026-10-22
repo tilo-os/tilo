@@ -26,3 +26,8 @@ de = { use = "Abmelden", avoid = ["verlassen"], keys = "^(?:power-|qs-tile-power
 reason = "The F1 sheet that lists the desktop's keys has one name, so searching for it finds it."
 en = { use = "Keyboard shortcuts", avoid = ["Keyboard guide", "Desktop help", "keyboard and mouse guide", "shortcut guide", "Keyboard map"] }
 de = { use = "Tastenkürzel", avoid = ["Tastaturhilfe", "Desktop-Hilfe", "Tastatur- und Mausübersicht", "Tastaturübersicht"] }
+
+[[term]]
+reason = "The display the desktop's panel and new windows start on is the main display in Settings, the arrangement and screen capture alike; \"primary\" is kept for mouse buttons."
+en = { use = "Main display", avoid = ["Primary display", "primary"], keys = "^(?:display-|portal-capture-.*display)" }
+de = { use = "Hauptbildschirm", avoid = ["Primärbildschirm", "primär"], keys = "^(?:display-|portal-capture-.*display)" }

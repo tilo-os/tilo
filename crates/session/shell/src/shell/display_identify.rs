@@ -7,7 +7,7 @@
 //! Settings asks through [`IdentifyRequest`]; the numbers come from
 //! [`display_numbers`] for a local setup, or from the current shared display
 //! order when a native monitor matches its observed stable identity, and the
-//! name from [`display_label`], so the card says what Settings' canvas tile
+//! name from [`display_names`](settings_store::display_identify::display_names), so the card says what Settings' canvas tile
 //! and display picker say. The number is in the accent, as the tile's is
 //! while the cards show. Cards arrive and fade as a transient readout
 //! (`motion::Transient`); between the fades they ask for no frames.
@@ -15,7 +15,9 @@
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use settings_store::display_identify::{IdentifyRequest, display_label, display_numbers};
+use settings_store::display_identify::{
+    IdentifyRequest, display_name, display_numbers, name_apart,
+};
 use settings_store::hardware::DisplayHardwareSnapshot;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -126,6 +128,23 @@ impl DisplayIdentify {
         let numbers = snapshot
             .map(|s| display_numbers(&s.outputs))
             .unwrap_or_default();
+        // The names Settings shows, the built-in panel's in this language.
+        let names = snapshot
+            .map(|s| {
+                let names = s
+                    .outputs
+                    .iter()
+                    .map(|output| {
+                        if output.builtin {
+                            t("display-identify-builtin")
+                        } else {
+                            display_name(&output.descriptor, false)
+                        }
+                    })
+                    .collect();
+                name_apart(names, &numbers)
+            })
+            .unwrap_or_default();
         let known = numbers.len();
         let mut next_unknown = known;
         self.labels = outputs
@@ -144,22 +163,24 @@ impl DisplayIdentify {
                         .iter()
                         .position(|o| o.descriptor.connector == placement.connector)?;
                     let described = snapshot.outputs.get(index)?;
-                    Some((described, numbers.get(index).copied()?))
+                    Some((
+                        described,
+                        numbers.get(index).copied()?,
+                        names.get(index).cloned()?,
+                    ))
                 });
                 if let Some(only) = only
-                    && placed.is_none_or(|(described, _)| described.descriptor.connector != only)
+                    && placed
+                        .as_ref()
+                        .is_none_or(|(described, _, _)| described.descriptor.connector != only)
                 {
                     return None;
                 }
-                Some(if let Some((described, number)) = placed {
+                Some(if let Some((_, number, name)) = placed {
                     IdentifyLabel {
                         output: output.rect(),
                         number,
-                        name: if described.builtin {
-                            t("display-identify-builtin")
-                        } else {
-                            display_label(&described.descriptor, false)
-                        },
+                        name,
                     }
                 } else {
                     next_unknown = next_unknown.saturating_add(1);
@@ -544,10 +565,10 @@ mod tests {
         );
         assert_eq!(
             labels[1].name,
-            display_label(&snapshot.outputs[1].descriptor, false),
+            settings_store::display_identify::display_names(&snapshot.outputs)[1],
             "the name Settings shows"
         );
-        assert_eq!(labels[1].name, "Dell U2720Q on DP-1");
+        assert_eq!(labels[1].name, "Dell U2720Q", "by model, never by port");
         // It fades in, holds without asking for frames, and fades out by
         // the time it goes.
         assert!(identify.opacity(now) < 1.0, "it arrives, not pops");

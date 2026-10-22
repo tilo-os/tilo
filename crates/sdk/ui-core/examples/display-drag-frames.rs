@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
             display(
                 "DP-1",
-                "Dell U2724DE on DP-1",
+                "Dell U2724DE",
                 2,
                 Placement::new(1280, -320, 2560, 1440),
                 false,

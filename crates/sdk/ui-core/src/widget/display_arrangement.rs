@@ -282,6 +282,8 @@ pub struct DisplayArrangement {
     motion: EffectiveMotion,
     /// What the canvas shows changed since its last paint.
     dirty: bool,
+    /// Keyboard focus: arrow keys move the selected display.
+    focused: bool,
     rect: Rect,
 }
 
@@ -307,6 +309,7 @@ impl DisplayArrangement {
             snap_radius: f64::from(ui::tokens::Metrics::BASE.icon_sm),
             motion: EffectiveMotion::default(),
             dirty: true,
+            focused: false,
             rect: Rect::ZERO,
         }
     }
@@ -716,15 +719,66 @@ impl DisplayArrangement {
             mapping.snap_threshold(),
         );
         let settled = self.align_group(&drag.connector, preview, bounds);
+        let velocity = Vec2::new(
+            drag.path_x.release_velocity(now),
+            drag.path_y.release_velocity(now),
+        );
+        self.place(&drag.connector, preview, settled, velocity, now);
+        true
+    }
+
+    /// An arrow key moves the selected display to the next place that way
+    /// ([`placement::step`]), settling there as a drop does. Whether it
+    /// moved.
+    fn step(&mut self, way: placement::Step) -> bool {
+        let Some(connector) = self.selected() else {
+            return false;
+        };
+        if self.gesture.with(ArrangementGesture::dragging) {
+            return false;
+        }
+        let Some(from) = self
+            .displays
+            .iter()
+            .find(|display| display.connector == connector)
+            .map(|display| display.placement)
+        else {
+            return false;
+        };
+        let Some(bounds) = placement::step(
+            self.group_bounds(&connector, from),
+            &self.others(&connector),
+            way,
+        ) else {
+            return false;
+        };
+        let settled = self.align_group(&connector, from, bounds);
+        let now = crate::motion::frame_now();
+        self.place(&connector, from, settled, Vec2::ZERO, now);
+        self.dirty = true;
+        true
+    }
+
+    /// Send `connector`'s new place once and spring it there from `from`,
+    /// carrying `velocity` (desktop units per second), then frame the view
+    /// to the new arrangement.
+    fn place(
+        &mut self,
+        connector: &str,
+        from: Placement,
+        settled: Placement,
+        velocity: Vec2,
+        now: Instant,
+    ) {
         let unchanged = self
             .displays
             .iter()
-            .any(|display| display.connector == drag.connector && display.placement == settled);
+            .any(|display| display.connector == connector && display.placement == settled);
         if !unchanged
             && let Some((_, emitter)) = self
                 .moves
                 .iter_mut()
-                .find(|(connector, _)| *connector == drag.connector)
+                .find(|(candidate, _)| *candidate == connector)
         {
             let _ = emitter.emit((settled.x, settled.y));
         }
@@ -732,8 +786,8 @@ impl DisplayArrangement {
             .displays
             .iter()
             .map(|display| {
-                if self.moves_together(&drag.connector, display) {
-                    self.moved_placement(&drag.connector, settled, display)
+                if self.moves_together(connector, display) {
+                    self.moved_placement(connector, settled, display)
                 } else {
                     display.placement
                 }
@@ -742,12 +796,8 @@ impl DisplayArrangement {
         for (display, position) in self.displays.iter_mut().zip(positions) {
             display.placement = position;
         }
-        let from = Point::new(f64::from(preview.x), f64::from(preview.y));
+        let from = Point::new(f64::from(from.x), f64::from(from.y));
         let travel = Point::new(f64::from(settled.x), f64::from(settled.y)) - from;
-        let velocity = Vec2::new(
-            drag.path_x.release_velocity(now),
-            drag.path_y.release_velocity(now),
-        );
         let distance = travel.hypot2();
         let mut progress = MotionValue::new(0.0);
         let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
@@ -767,14 +817,13 @@ impl DisplayArrangement {
         }
         self.gesture.update(|gesture| {
             gesture.settle = Some(Settle {
-                connector: drag.connector.clone(),
+                connector: connector.to_owned(),
                 from,
                 placement: settled,
                 progress,
             });
         });
         self.settle_view(now);
-        true
     }
 
     /// Drop a drag without moving anything (Escape, a cancelled touch).
@@ -1027,6 +1076,16 @@ impl Widget for DisplayArrangement {
         drawn.compact_sort_by_key(|(_, _, held)| *held);
         for (display, shift, held) in &drawn {
             let rect = mapping.at(display.placement, *shift);
+            let chosen = selected.as_deref() == Some(display.connector.as_str());
+            if chosen && self.focused {
+                crate::widget::paint_focus_ring(
+                    scene,
+                    transform,
+                    rect,
+                    f64::from(theme.tokens.radii.control),
+                    theme,
+                );
+            }
             Self::draw_display(
                 scene,
                 transform,
@@ -1035,7 +1094,7 @@ impl Widget for DisplayArrangement {
                 rect,
                 display,
                 TileState {
-                    selected: selected.as_deref() == Some(display.connector.as_str()),
+                    selected: chosen,
                     hovered: self.hovered.as_deref() == Some(display.connector.as_str()),
                     held: *held,
                     identify,
@@ -1105,6 +1164,23 @@ impl Widget for DisplayArrangement {
                 &style,
             );
         }
+    }
+
+    /// Focusable when there is a display to move: arrow keys move the
+    /// selected one.
+    fn is_focusable(&self) -> bool {
+        self.displays.len() > 1 && !self.moves.is_empty()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.focused = focused;
+            self.dirty = true;
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1211,6 +1287,23 @@ impl Widget for DisplayArrangement {
                     && self.cancel() =>
             {
                 *ctx.handled = true;
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.focused && event.state == ElementState::Pressed =>
+            {
+                let way = match &event.logical_key {
+                    Key::Named(NamedKey::ArrowLeft) => Some(placement::Step::Left),
+                    Key::Named(NamedKey::ArrowRight) => Some(placement::Step::Right),
+                    Key::Named(NamedKey::ArrowUp) => Some(placement::Step::Up),
+                    Key::Named(NamedKey::ArrowDown) => Some(placement::Step::Down),
+                    _ => None,
+                };
+                // An arrow that way with nowhere to go is still the canvas's:
+                // focus does not wander off on it.
+                if let Some(way) = way {
+                    self.step(way);
+                    *ctx.handled = true;
+                }
             }
             _ => {}
         }
@@ -1598,10 +1691,48 @@ mod tests {
         assert_eq!(
             names,
             [
-                "Display 1: Built-in display, primary",
+                "Display 1: Built-in display, main display",
                 "Display 2: Desk monitor"
             ]
         );
+    }
+
+    // USER REQUIREMENT (2026-10-22): the arrangement canvas is the one place
+    // a display's position is set, and it works from the keyboard as well as
+    // by hand: with the canvas focused, an arrow key moves the selected
+    // display to the next place that way, sent once as its move, with the
+    // focus ring on that display.
+    #[test]
+    fn arrow_keys_move_the_selected_display_from_the_keyboard() {
+        let (mut canvas, selection) = selected_canvas();
+        selection.set("HDMI-A-1".into());
+        assert!(canvas.is_focusable(), "Tab reaches the canvas");
+        canvas.mark_drawn();
+        canvas.set_focus(true);
+        assert!(canvas.needs_redraw(), "the focus ring shows");
+        canvas.mark_drawn();
+        assert!(canvas.step(placement::Step::Left));
+        let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
+            .expect("the step is sent as the display's move");
+        assert_eq!(invocation.address.action, "move-display");
+        assert_eq!(
+            (
+                invocation.arguments["x"].as_i64().unwrap(),
+                invocation.arguments["y"].as_i64().unwrap()
+            ),
+            (-1920, 0),
+            "to the panel's other side, in line"
+        );
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
+        assert!(canvas.needs_redraw(), "it springs there");
+        assert!(canvas.step(placement::Step::Right), "and back");
+        let back = ui::widget::controls::take_control_invocation(&mut canvas).unwrap();
+        assert_eq!(back.arguments["x"].as_i64(), Some(1920));
+        assert!(
+            !canvas.step(placement::Step::Right),
+            "nothing further that way moves nothing"
+        );
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
     }
 
     fn selected_canvas() -> (DisplayArrangement, ui::LocalState<String>) {
