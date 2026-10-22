@@ -3949,8 +3949,13 @@ impl BrowserWidget {
             self.queue_unit_operation("browser.page", "reader-view");
             return true;
         }
-        let alt_navigation =
-            modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key();
+        // Alt+Left and Alt+Right go back and forward, except on macOS,
+        // where Option+Arrow moves the caret by word (Cmd+[ and Cmd+] go).
+        let alt_navigation = modifiers.alt_key()
+            && !modifiers.control_key()
+            && !modifiers.super_key()
+            && ui::platform::PlatformConventions::default().platform()
+                != ui::platform::Platform::MacOs;
         let reload = (modifiers.control_key() || modifiers.super_key())
             && !modifiers.alt_key()
             && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("r"));
@@ -6123,7 +6128,7 @@ mod architecture_tests {
         ui::synthetic_input::mouse_input(state, button)
     }
 
-    fn key(named: WNamedKey) -> WindowEvent {
+    pub(super) fn key(named: WNamedKey) -> WindowEvent {
         ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
             WKey::Named(named),
             None,
