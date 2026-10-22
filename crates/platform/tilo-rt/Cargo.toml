@@ -32,8 +32,9 @@ tracing.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
-# Background threads lower their own scheduling priority.
-[target.'cfg(target_os = "linux")'.dependencies]
+# Background threads lower their own scheduling priority; a thread reads its
+# own CPU clock.
+[target.'cfg(any(target_os = "linux", target_vendor = "apple"))'.dependencies]
 libc.workspace = true
 
 # In a browser the app runtime is the page's microtask queue.
