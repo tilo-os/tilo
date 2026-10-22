@@ -34,7 +34,7 @@ use action_api::{ActionArgs, ActionError, ActionParam};
 use ui::search::system::{self, query_input_is_bounded};
 
 /// Portable search vocabulary and provider page contract, retained at the native API path.
-pub use ui::search::system::{ResourceKind, SearchBudget, SearchCursor};
+pub use ui::search::system::{Availability, ResourceKind, SearchBudget, SearchCursor};
 pub type SearchPage = system::SearchPage<SearchResult>;
 
 /// One page of a retained [`tilo_search::SearchIndex`] query. The cursor
@@ -666,6 +666,14 @@ pub trait SearchProvider {
         _chrome: &ChromeState,
     ) -> bool {
         false
+    }
+
+    /// How far `result` is from the person: theirs, a Tilo app that opens
+    /// at once, or an app they would install first. The merge ranks the
+    /// last after everything they have, whatever its match
+    /// ([`system::order_hits`]).
+    fn availability(&self, _result: &SearchResult) -> Availability {
+        Availability::OnDevice
     }
 
     /// Whether `result` is the row that answers any query, after every
@@ -1556,7 +1564,18 @@ impl SearchRegistry {
             self.one_row_per_open_app(&mut merged, chrome);
             files_follow_what_was_named(&mut merged, needle);
         }
-        system::order_by_kind(&mut merged, |r| &r.kind);
+        let providers: HashMap<&str, &dyn SearchProvider> = self
+            .enabled_providers()
+            .map(|provider| (provider.id(), provider.as_ref()))
+            .collect();
+        system::order_hits(&mut merged, |row| {
+            let availability = providers
+                .get(row.provider_id.as_str())
+                .map_or(Availability::OnDevice, |provider| {
+                    provider.availability(row)
+                });
+            (&row.kind, availability)
+        });
         // The rows that answer any query (searching the web for it) come
         // last, after every match, in their own group.
         if interactive && !needle.trim().is_empty() {
@@ -1660,6 +1679,16 @@ impl SearchRegistry {
         self.enabled_providers()
             .find(|provider| provider.id() == result.provider_id)
             .is_some_and(|provider| provider.toggles_in_place(result))
+    }
+
+    /// How far `result` is from the person; see
+    /// [`SearchProvider::availability`].
+    pub fn availability(&self, result: &SearchResult) -> Availability {
+        self.enabled_providers()
+            .find(|provider| provider.id() == result.provider_id)
+            .map_or(Availability::OnDevice, |provider| {
+                provider.availability(result)
+            })
     }
 
     /// Whether ←/→ step `result`'s value; see [`SearchProvider::adjustable`].

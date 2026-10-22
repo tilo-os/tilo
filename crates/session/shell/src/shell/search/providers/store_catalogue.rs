@@ -18,9 +18,11 @@
 //!   through the session's action host, which starts the app as it does for
 //!   any closed app's offered action.
 //!
-//! Rows rank just below installed apps of equal match, never stand for an
-//! app the device already has (a Tilo package, a host or Flatpak app), and
-//! never show an app that is blocked.
+//! A Tilo app's rows rank just below installed apps of equal match; a
+//! Flathub app's Store page ranks after everything the person has, however
+//! well its name matches ([`Availability::ThirdPartyCatalogue`]). Rows never
+//! stand for an app the device already has (a Tilo package, a host or
+//! Flatpak app), and never show an app that is blocked.
 
 use std::cell::Ref;
 use std::collections::HashMap;
@@ -41,8 +43,8 @@ use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher;
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
-    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
-    SearchResult, provider_score,
+    Availability, ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage,
+    SearchProvider, SearchResult, provider_score,
 };
 
 /// The provider's id, which also keys what was chosen from it.
@@ -992,6 +994,20 @@ impl SearchProvider for StoreCatalogueProvider {
 
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
+    }
+
+    /// An app this device has is never offered here, so every row is one
+    /// to get: a Tilo app's opens at once; a Flathub app's is its Store
+    /// page, which ranks after everything the person has. The documents and
+    /// closed actions of the Tilo apps the device has are the person's.
+    fn availability(&self, result: &SearchResult) -> Availability {
+        match self.scope {
+            Scope::Installed => Availability::OnDevice,
+            Scope::Offered if result.id.starts_with(FLATHUB_PREFIX) => {
+                Availability::ThirdPartyCatalogue
+            }
+            Scope::Offered => Availability::TiloCatalogue,
+        }
     }
 
     /// While an app is open its own published actions answer for it, so

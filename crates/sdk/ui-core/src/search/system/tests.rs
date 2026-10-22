@@ -49,6 +49,58 @@ fn strongest_group_precedes_kind_order_and_ties_preserve_provider_order() {
     );
 }
 #[test]
+fn an_app_to_install_follows_every_hit_the_person_has_however_strong() {
+    // ((kind, availability, name), merged strength)
+    let mut merged = vec![
+        (
+            (
+                ResourceKind::Application,
+                Availability::ThirdPartyCatalogue,
+                "exact store page",
+            ),
+            9.5,
+        ),
+        ((ResourceKind::File, Availability::OnDevice, "file"), 2.5),
+        (
+            (
+                ResourceKind::Application,
+                Availability::ThirdPartyCatalogue,
+                "prefix store page",
+            ),
+            6.0,
+        ),
+        (
+            (
+                ResourceKind::Application,
+                Availability::OnDevice,
+                "installed app",
+            ),
+            8.0,
+        ),
+        (
+            (
+                ResourceKind::Application,
+                Availability::TiloCatalogue,
+                "tilo app",
+            ),
+            7.0,
+        ),
+    ];
+    order_hits(&mut merged, |(kind, availability, _)| (kind, *availability));
+    let names: Vec<&str> = merged.iter().map(|((_, _, name), _)| *name).collect();
+    assert_eq!(
+        names,
+        [
+            "installed app",
+            "tilo app",
+            "file",
+            "exact store page",
+            "prefix store page"
+        ]
+    );
+}
+
+#[test]
 fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
     let mut rows = vec![Row(ResourceKind::Application, 100, "app")];
     rows.extend((0..20).map(|_| Row(ResourceKind::File, 50, "file")));
