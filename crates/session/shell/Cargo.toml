@@ -402,7 +402,6 @@ tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 
 # Exercise owner-selected bytes against the actual Store signed-package review.
 app-cli = { path = "../../packaging/app-cli" }
-flate2.workspace = true
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }

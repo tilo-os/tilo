@@ -17,8 +17,6 @@ doctest = false
 tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
 browser-continuity = { workspace = true, features = ["native"] }
 fnv.workspace = true
-chrono.workspace = true
-tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the
 # `webview-adblock` feature provides filter-list compilation. The default
@@ -56,7 +54,6 @@ tracing.workspace = true
 # file-explorer pull in for their `Widget` impls).
 automerge.workspace = true
 vello.workspace = true
-winit.workspace = true
 taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
