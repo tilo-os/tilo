@@ -26,6 +26,13 @@ pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 /// say they are present: a page posts every 20 seconds while open.
 const HOST_ONLY_FRESH_MS: u64 = 90_000;
 
+/// How long a device that dropped out of the live layer still counts as
+/// here: back within it, it never left. A page renews its live grant every
+/// few minutes by reconnecting, which drops every member and adds them
+/// again, and a carrier re-announces a member as withdrawn and back; none
+/// of that is someone arriving.
+const REJOIN_QUIET_MS: u64 = 90_000;
+
 /// A record a member focuses, as their live presence names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Focus {
@@ -135,6 +142,9 @@ pub struct HereState {
     /// The other people's devices already announced as here; `None` until
     /// the first roster arrived ([`HereState::take_arrivals`]).
     announced: Option<std::collections::BTreeSet<String>>,
+    /// When each announced device last dropped out of the live layer, Unix
+    /// milliseconds, so one back within [`REJOIN_QUIET_MS`] is not news.
+    dropped: HashMap<String, u64>,
     /// The waves this page sent and heard.
     waves: waves::Waves,
     /// The last wave at this person, as the bar says it.
@@ -179,19 +189,20 @@ impl HereState {
     }
 
     /// Who joined since the last call, by the name everyone here sees: a
-    /// person's device that was not in the room before. The first roster
-    /// this page sees is who was already here, not arrivals; this page and
-    /// agents are never announced, and leaving is not news. One whose name
-    /// is not known yet (neither their presence nor the host's lines carry
-    /// it) is announced once it is, by that name, as the bar shows them.
-    pub fn take_arrivals(&mut self) -> Vec<String> {
+    /// person who was not in the room before. The first roster this page
+    /// sees is who was already here, not arrivals; this page's person and
+    /// agents are never announced, and leaving is not news. A device back
+    /// within [`REJOIN_QUIET_MS`] of dropping out never left, and another
+    /// device of someone here is not them arriving. One whose name is not
+    /// known yet (neither their presence nor the host's lines carry it) is
+    /// announced once it is, by that name, as the bar shows them.
+    pub fn take_arrivals(&mut self, now_ms: u64) -> Vec<String> {
         let Some(members) = &self.members else {
             return Vec::new();
         };
-        let own = self.own.as_ref().map(|own| own.publisher.as_str());
         let here: Vec<&LiveMember> = members
             .iter()
-            .filter(|member| member.kind != "agent" && Some(member.publisher.as_str()) != own)
+            .filter(|member| member.kind != "agent" && !self.is_own_person(&member.publisher))
             .collect();
         let Some(before) = &self.announced else {
             self.announced = Some(here.iter().map(|member| member.publisher.clone()).collect());
@@ -200,15 +211,34 @@ impl HereState {
         let labels = self.labels();
         let mut arrived = Vec::new();
         let mut announced = std::collections::BTreeSet::new();
-        for member in here {
-            if !before.contains(&member.publisher) {
+        // Who counts as here already: the people of devices announced before.
+        let mut persons: Vec<&str> = here
+            .iter()
+            .filter(|member| before.contains(&member.publisher))
+            .map(|member| self.person_of(&member.publisher))
+            .collect();
+        for member in &here {
+            let id = member.publisher.as_str();
+            let back = self
+                .dropped
+                .get(id)
+                .is_some_and(|at| now_ms.saturating_sub(*at) < REJOIN_QUIET_MS);
+            let person = self.person_of(id);
+            if !before.contains(id) && !back && !persons.contains(&person) {
                 let Some(name) = self.member_name(member) else {
                     continue;
                 };
-                arrived.push(labels.label(&member.publisher, name));
+                arrived.push(labels.label(id, name));
+                persons.push(person);
             }
-            announced.insert(member.publisher.clone());
+            announced.insert(id.to_owned());
         }
+        for gone in before.difference(&announced) {
+            self.dropped.insert(gone.clone(), now_ms);
+        }
+        self.dropped.retain(|id, at| {
+            !announced.contains(id) && now_ms.saturating_sub(*at) < REJOIN_QUIET_MS
+        });
         self.announced = Some(announced);
         arrived
     }
@@ -826,13 +856,13 @@ mod tests {
     #[test]
     fn only_people_who_join_later_are_announced() {
         let mut here = HereState::default();
-        assert!(here.take_arrivals().is_empty(), "no roster yet");
+        assert!(here.take_arrivals(1_000).is_empty(), "no roster yet");
         let me = member("me", "person", "Quinn");
         here.set_members(
             Some(me.clone()),
             Some(vec![me.clone(), member("ada", "person", "Ada")]),
         );
-        assert!(here.take_arrivals().is_empty(), "Ada was already here");
+        assert!(here.take_arrivals(1_000).is_empty(), "Ada was already here");
         here.set_members(
             Some(me.clone()),
             Some(vec![
@@ -842,17 +872,67 @@ mod tests {
                 member("bot", "agent", "Scribe"),
             ]),
         );
-        assert_eq!(here.take_arrivals(), ["Ben"]);
-        assert!(here.take_arrivals().is_empty(), "announced once");
+        assert_eq!(here.take_arrivals(1_000), ["Ben"]);
+        assert!(here.take_arrivals(1_000).is_empty(), "announced once");
         here.set_members(Some(me.clone()), Some(vec![me.clone()]));
-        assert!(here.take_arrivals().is_empty(), "leaving is not news");
+        assert!(here.take_arrivals(1_000).is_empty(), "leaving is not news");
         here.set_members(Some(me.clone()), None);
-        assert!(here.take_arrivals().is_empty(), "the layer dropped");
+        assert!(here.take_arrivals(2_000).is_empty(), "the layer dropped");
         here.set_members(
             Some(me.clone()),
             Some(vec![me, member("ada", "person", "Ada")]),
         );
-        assert_eq!(here.take_arrivals(), ["Ada"], "she came back");
+        assert_eq!(
+            here.take_arrivals(1_000 + REJOIN_QUIET_MS),
+            ["Ada"],
+            "she came back"
+        );
+    }
+
+    /// Someone already here who drops out of the live layer for a moment
+    /// and is back, or whose presence arrives again, has not joined again:
+    /// a page renews its live grant by reconnecting, which drops and re-adds
+    /// every member, and a carrier re-announces a member as withdrawn and
+    /// back. Neither is news; one arrival is one notice, when it happens.
+    #[test]
+    fn a_reconnect_or_repeat_from_someone_here_is_not_a_second_arrival() {
+        let me = member("me", "person", "Quinn");
+        let ben = member("ben", "person", "Ben");
+        let mut here = HereState::default();
+        here.set_members(Some(me.clone()), Some(vec![me.clone()]));
+        assert!(here.take_arrivals(0).is_empty());
+        here.set_members(Some(me.clone()), Some(vec![me.clone(), ben.clone()]));
+        assert_eq!(here.take_arrivals(1_000), ["Ben"], "announced on arrival");
+        // The same frame again, and a presence update, are not arrivals.
+        here.set_members(Some(me.clone()), Some(vec![me.clone(), ben.clone()]));
+        assert!(here.take_arrivals(2_000).is_empty());
+        let mut moved = ben.clone();
+        moved.place = Some("2".into());
+        here.set_members(Some(me.clone()), Some(vec![me.clone(), moved]));
+        assert!(here.take_arrivals(3_000).is_empty());
+        // This page renews its grant ten minutes on: everyone drops out and
+        // is back; then Ben's page does the same.
+        for at in [600_000, 660_000] {
+            here.set_members(Some(me.clone()), Some(vec![me.clone()]));
+            assert!(here.take_arrivals(at).is_empty());
+            here.set_members(Some(me.clone()), None);
+            assert!(here.take_arrivals(at + 50).is_empty());
+            here.set_members(Some(me.clone()), Some(vec![me.clone(), ben.clone()]));
+            assert!(here.take_arrivals(at + 300).is_empty(), "Ben never left");
+        }
+        // Ben's second tab is Ben, already here.
+        let line = |device: &str| HostLine {
+            device: device.into(),
+            user: "ben-root".into(),
+            label: "Ben".into(),
+            ..HostLine::default()
+        };
+        here.set_lines(vec![line("ben"), line("ben-tab")], 700_000);
+        here.set_members(
+            Some(me.clone()),
+            Some(vec![me, ben, member("ben-tab", "person", "Ben")]),
+        );
+        assert!(here.take_arrivals(700_000).is_empty(), "his other tab");
     }
 
     /// A visitor's other page (another tab, or one they left, whose host
@@ -874,14 +954,14 @@ mod tests {
         let me = member("me", "person", "Quinn");
         let mut here = HereState::default();
         here.set_members(Some(me.clone()), Some(vec![me.clone()]));
-        assert!(here.take_arrivals().is_empty());
+        assert!(here.take_arrivals(1).is_empty());
         // Their presence comes without a label, their line with the name.
         here.set_members(
             Some(me.clone()),
             Some(vec![me.clone(), member("dolphin", "person", "")]),
         );
         here.set_lines(vec![line("dolphin", "Quiet Dolphin")], 1);
-        assert_eq!(here.take_arrivals(), ["Quiet Dolphin"]);
+        assert_eq!(here.take_arrivals(1), ["Quiet Dolphin"]);
         // Nobody names the next one yet: they wait, then arrive by name.
         here.set_members(
             Some(me.clone()),
@@ -891,7 +971,7 @@ mod tests {
                 member("otter", "person", ""),
             ]),
         );
-        assert!(here.take_arrivals().is_empty(), "no name yet");
+        assert!(here.take_arrivals(1).is_empty(), "no name yet");
         here.set_lines(
             vec![
                 line("dolphin", "Quiet Dolphin"),
@@ -899,8 +979,8 @@ mod tests {
             ],
             2,
         );
-        assert_eq!(here.take_arrivals(), ["Brave Otter"]);
-        assert!(here.take_arrivals().is_empty(), "announced once");
+        assert_eq!(here.take_arrivals(1), ["Brave Otter"]);
+        assert!(here.take_arrivals(1).is_empty(), "announced once");
     }
 
     #[test]

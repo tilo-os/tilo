@@ -459,7 +459,7 @@ impl Desktop {
     /// person did not cause it, and it changes who sees their work. Who was
     /// here already, and who leaves, stay quiet.
     fn announce_arrivals(&self) {
-        let arrivals = self.here.borrow_mut().take_arrivals();
+        let arrivals = self.here.borrow_mut().take_arrivals(crate::shell::now_ms());
         for name in arrivals {
             self.notify(&tilo_desktop_surface::i18n::t_args(
                 "room-notice-joined",
