@@ -2036,9 +2036,9 @@ fn paint_scanouts_with(
         readback_expected,
         scanouts.iter().filter(|entry| !entry.dark()).count(),
     );
-    if let Some(reason) = paint.as_ref().and_then(paint::VelloDrmBridge::device_lost) {
+    if paint::retire_lost_bridge(paint).is_some() {
         // Every call on a lost device fails, and the bridge cannot replace its own device.
-        tracing::error!(%reason, "DRM backend: the renderer's GPU device was lost; opening a new one");
+        // The direct targets were the lost device's: scan out the last good front instead.
         for entry in scanouts
             .iter_mut()
             .filter(|entry| entry.direct_targets.is_some())
@@ -2046,7 +2046,6 @@ fn paint_scanouts_with(
             entry.scanout.restore_legacy_front();
             entry.direct_targets = None;
         }
-        *paint = None;
     }
     if !ensure_bridge(paint, target_size) {
         return PaintScanoutSample::default();

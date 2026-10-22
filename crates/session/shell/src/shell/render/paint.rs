@@ -595,6 +595,74 @@ pub struct GpuFrameStats {
     pub framebuffer_staging_bytes: u64,
 }
 
+/// A GPU fault a development session's test control injects into the presenting renderer
+/// (`gpu_fault`), so a test can prove the desktop outlives a GPU that dies under it. The
+/// renderer's next frame applies it to its own device through the vendored HAL's switches
+/// (`vendor/wgpu-hal/TILO-PATCH.md`), so everything after is the production path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectedGpuFault {
+    /// The GPU is reset under the frame and works again.
+    Reset,
+    /// The GPU is reset and cannot be brought back: every device opened on it is lost too,
+    /// until the renderer gives it up for software.
+    Dead,
+    /// The GPU stops finishing work, and nothing says so.
+    Hang,
+}
+
+static INJECTED_GPU_FAULT: std::sync::Mutex<Option<InjectedGpuFault>> = std::sync::Mutex::new(None);
+
+/// Have the presenting renderer's next frame suffer `fault` ([`InjectedGpuFault`]).
+pub fn inject_gpu_fault(fault: InjectedGpuFault) {
+    *INJECTED_GPU_FAULT.lock_recover() = Some(fault);
+}
+
+/// The fault a renderer on a device opened on the GPU (not in software) applies now: a reset
+/// or a hang once, a dead GPU to every such device.
+fn injected_gpu_fault(opened_in_software: bool) -> Option<InjectedGpuFault> {
+    let mut slot = INJECTED_GPU_FAULT.lock_recover();
+    match *slot {
+        Some(InjectedGpuFault::Dead) => (!opened_in_software).then_some(InjectedGpuFault::Dead),
+        _ => slot.take(),
+    }
+}
+
+/// A renderer's device on `adapter` was lost, after it finished at least one frame or before
+/// (`finished_frames`). Decides what opens next (`ui::gpu::recover`): when that gives the GPU
+/// up, the person is told the desktop keeps working, slower, and the session's GPU record says
+/// why.
+pub fn gpu_lost(
+    adapter: &wgpu::AdapterInfo,
+    finished_frames: bool,
+    reason: &str,
+) -> ui::gpu::Recovery {
+    let given_up_before = ui::gpu::software_fallback().is_some();
+    let recovery = ui::gpu::recover(adapter, finished_frames, reason);
+    if recovery == ui::gpu::Recovery::Software && !given_up_before {
+        crate::shell::graphics_notice::gpu_given_up();
+        #[cfg(target_os = "linux")]
+        crate::compositor::gpu_health::record_gpu_lost(reason);
+    }
+    recovery
+}
+
+/// Drop `paint`'s bridge if its device was lost, so the next frame opens another: on the same
+/// adapter, or in software once the GPU cannot be brought back ([`gpu_lost`]). Never waits for
+/// the GPU. Returns why the device was lost.
+pub fn retire_lost_bridge(paint: &mut Option<VelloDrmBridge>) -> Option<String> {
+    let bridge = paint.as_mut()?;
+    let reason = bridge.device_lost()?;
+    let recovery = gpu_lost(bridge.adapter(), bridge.finished_frames(), &reason);
+    tracing::error!(
+        %reason,
+        ?recovery,
+        "the renderer's GPU device was lost; opening a new one"
+    );
+    *paint = None;
+    Some(reason)
+}
+
 /// Same-device retained Vello output. Sampling is permitted only after successful completion.
 pub struct RetainedGpuTarget {
     device: wgpu::Device,
@@ -632,6 +700,9 @@ pub struct RetainedGpuTarget {
     base_color: Color,
     /// The target contains a complete settled frame, independent of CPU staging validity.
     retained_target_valid: bool,
+    /// The device finished at least one frame on this target: a later loss of it is a GPU
+    /// reset, not a GPU that cannot draw at all (`ui::gpu::recover`).
+    finished_frames: bool,
     /// Revision associated with the complete retained frame. Legacy full-render APIs do not
     /// carry a revision, so they intentionally clear this even though their target is complete.
     last_successful_revision: Option<u64>,
@@ -708,6 +779,11 @@ pub struct VelloDrmBridge {
     context: RenderContext,
     target: RetainedGpuTarget,
     device_errors: DeviceErrorLatch,
+    /// The device's loss, wgpu's report or work that stopped finishing ([`Self::device_lost`]).
+    loss_watch: ui::gpu::LossWatch,
+    adapter: wgpu::AdapterInfo,
+    /// Opened after the GPU was given up ([`ui::gpu::software_fallback`]).
+    opened_in_software: bool,
     bgra_blitter: TextureBlitter,
     dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.

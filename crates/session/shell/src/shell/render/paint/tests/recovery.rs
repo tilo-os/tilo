@@ -517,6 +517,102 @@ fn gpu_target_a_gpu_reset_mid_session_is_survived_by_a_new_bridge() {
     );
 }
 
+/// What the presenter does with a lost device, on the production path ([`retire_lost_bridge`]):
+/// a GPU that was reset is opened again; a GPU whose next device is lost before its first frame
+/// (the Yoga whose GPU firmware died: every new device was born lost, for ever, and nothing was
+/// shown again) is given up for software, and the person is told once. One test, because the
+/// software fallback is the process's.
+#[cfg(target_os = "linux")]
+#[test]
+fn gpu_target_a_reset_gpu_is_reopened_and_a_dead_one_gives_way_to_software() {
+    const SIZE: u32 = 64;
+    let pitch = SIZE as usize * 4;
+    let scene = rect_scene(SIZE, SIZE, Color::WHITE);
+    let mut scanout = vec![0x11; pitch * SIZE as usize];
+    ui::gpu::reset_software_fallback_for_test();
+    let _ = crate::shell::graphics_notice::drain();
+    let lose = |bridge: &VelloDrmBridge| {
+        // SAFETY: the hal device is only flagged; no raw handle leaves this block.
+        unsafe { bridge.target.device.as_hal::<wgpu::hal::api::Vulkan>() }
+            .expect("the compositor renders through Vulkan")
+            .simulate_device_loss();
+    };
+
+    // A reset after frames were shown: the same GPU, nobody bothered.
+    let mut paint = Some(required_bridge(SIZE, SIZE));
+    let bridge = paint.as_mut().expect("bridge");
+    bridge
+        .paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut scanout, pitch)
+        .expect("the frame before the reset");
+    assert!(
+        retire_lost_bridge(&mut paint).is_none(),
+        "a working device is kept"
+    );
+    assert!(paint.is_some());
+    lose(paint.as_ref().expect("bridge"));
+    let result = paint.as_mut().expect("bridge").paint_damage_into_xrgb8888(
+        &scene,
+        version(2, None, None),
+        &mut scanout,
+        pitch,
+    );
+    assert!(
+        matches!(result, Err(BridgeError::DeviceLost(_))),
+        "{result:?}"
+    );
+    assert!(retire_lost_bridge(&mut paint).is_some());
+    assert!(
+        paint.is_none(),
+        "the lost bridge is dropped without waiting for its GPU"
+    );
+    assert!(
+        ui::gpu::software_fallback().is_none(),
+        "a device that showed frames was reset: its GPU is opened again"
+    );
+    assert!(crate::shell::graphics_notice::drain().is_empty());
+
+    // The replacement is lost before its first frame: the GPU cannot be brought back.
+    let mut paint = Some(required_bridge(SIZE, SIZE));
+    lose(paint.as_ref().expect("bridge"));
+    let result = paint.as_mut().expect("bridge").paint_damage_into_xrgb8888(
+        &scene,
+        version(1, None, None),
+        &mut scanout,
+        pitch,
+    );
+    assert!(
+        matches!(result, Err(BridgeError::DeviceLost(_))),
+        "{result:?}"
+    );
+    assert!(retire_lost_bridge(&mut paint).is_some());
+    assert!(
+        ui::gpu::software_fallback().is_some(),
+        "a device lost before its first frame gives the GPU up"
+    );
+    let notices = crate::shell::graphics_notice::drain();
+    assert_eq!(notices.len(), 1, "the person is told once: {notices:?}");
+
+    // The next renderer draws in software and shows the scene.
+    scanout.fill(0x11);
+    let mut software = required_bridge(SIZE, SIZE);
+    assert_eq!(software.adapter().device_type, wgpu::DeviceType::Cpu);
+    software
+        .paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut scanout, pitch)
+        .expect("the software renderer paints");
+    assert!(
+        scanout
+            .chunks_exact(4)
+            .all(|pixel| pixel.get(..3) == Some(&[0xFF, 0xFF, 0xFF][..])),
+        "the software renderer repaints the whole scene"
+    );
+    assert!(software.device_lost().is_none());
+    assert!(
+        crate::shell::graphics_notice::drain().is_empty(),
+        "giving the GPU up is told once, not per renderer"
+    );
+    ui::gpu::reset_software_fallback_for_test();
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,

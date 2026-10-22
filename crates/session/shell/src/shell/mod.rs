@@ -85,6 +85,7 @@ mod foreign_damage;
 pub mod frame;
 pub mod fs_authority;
 pub mod gpu_frames;
+pub mod graphics_notice;
 pub mod hdr_display;
 pub mod hdr_surface;
 pub mod hdr_tonemap;

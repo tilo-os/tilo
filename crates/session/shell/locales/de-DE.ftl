@@ -3059,6 +3059,10 @@ storage-low-body = Noch { $free } frei für { $volume }. Lösche große Download
 storage-full-title = Der Speicher ist voll
 storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und Änderungen werden eventuell erst gespeichert, wenn wieder Platz ist. Alles andere funktioniert weiter.
 
+graphics-app-name = Grafik
+graphics-stopped-title = Die Grafik reagiert nicht mehr
+graphics-stopped-body = Alles funktioniert weiter, kann aber langsamer sein, bis du den Computer neu startest.
+
 ## Desk widgets
 
 desk-team-title = In diesem Arbeitsbereich

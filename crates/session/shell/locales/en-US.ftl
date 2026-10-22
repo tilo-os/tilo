@@ -3106,6 +3106,10 @@ storage-low-body = { $free } left for { $volume }. Delete large downloads or ope
 storage-full-title = Storage is full
 storage-full-body = Only { $free } left for { $volume }. New files and changes may not be saved until you free space. Everything else keeps working.
 
+graphics-app-name = Graphics
+graphics-stopped-title = Graphics stopped responding
+graphics-stopped-body = Everything keeps working, but may be slower until you restart the computer.
+
 ## Desk widgets
 
 desk-team-title = In this workspace
