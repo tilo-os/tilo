@@ -27,6 +27,12 @@ the corrected antialiasing changes sparse edge pixels by at most 12 channel
 steps. Only these two Linux references changed; comparison tolerances and
 retained-pan coverage remain unchanged.
 
+The current Linux references follow two intended reader changes: text is
+set ragged by default (`9d637b1ff10259070b7ba6c0596aceb55045617c`) and the
+progress slider ends in a percentage (`34b668de79b2681ba2ad3ce853129b80c20c1177`). Glyphs, formula
+structure and the page frame are unchanged; they were rendered on the
+builder image in `.config/visual-goldens-image`.
+
 Prewarm the ignored cache before testing offline:
 
 ```sh
