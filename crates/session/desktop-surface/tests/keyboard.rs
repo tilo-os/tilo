@@ -223,12 +223,14 @@ impl Widget for Root {
 
 impl ui::search::capability::SearchSource for Root {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(Service)]
+        vec![Box::new(Service { tab: self.tab })]
     }
 }
 
-/// The resource the app publishes its `open` on.
-const VIDEOS: &str = "keyboard/videos";
+/// The resource the app in tab `tab` publishes its `open` on.
+fn videos(tab: u64) -> String {
+    format!("keyboard/videos/{tab}")
+}
 /// The operation type of the app's `open`.
 const OPEN_TYPE: &str = "keyboard.open";
 
@@ -256,7 +258,13 @@ impl ui::resources::PublishesResources for Root {
                 .unwrap()
             },
         );
-        vec![tilo_actions::Resource::new(VIDEOS, "keyboard.videos", "Videos").with_action(open)]
+        let label = SEARCH
+            .with_borrow(|search| search.labels.get(&self.tab).cloned())
+            .unwrap_or_else(|| "Videos".to_owned());
+        vec![
+            tilo_actions::Resource::new(videos(self.tab), "keyboard.videos", label)
+                .with_action(open),
+        ]
     }
 }
 
@@ -277,7 +285,10 @@ impl tilo_actions::Action for Open {
 /// The app's search: like a framework app's, it takes a query in on a later
 /// frame and only then answers with a row for it ("Search `YouTube` for …"),
 /// a hit naming no action that opens through the app's `open`.
-struct Service;
+struct Service {
+    /// The tab of the window whose app this is.
+    tab: u64,
+}
 
 impl ui::search::SearchProvider for Service {
     fn name(&self) -> &'static str {
@@ -287,7 +298,7 @@ impl ui::search::SearchProvider for Service {
         Vec::new()
     }
     fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
-        Some(tilo_actions::ActionAddress::new(VIDEOS, "open"))
+        Some(tilo_actions::ActionAddress::new(videos(self.tab), "open"))
     }
     fn search_page(
         &self,
@@ -326,6 +337,9 @@ struct SearchLog {
     answered: bool,
     /// The anchors the app's `open` ran at.
     opened: Vec<String>,
+    /// What the app in a tab names the resource it publishes, where not
+    /// "Videos".
+    labels: HashMap<u64, String>,
 }
 
 impl AppWidget for Root {
@@ -702,6 +716,45 @@ fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
         desk.driver.control_failures().is_empty(),
         "{:?}",
         desk.driver.control_failures()
+    );
+}
+
+/// An app's action chosen in search over everything runs inside that app,
+/// under its custody, not at the desktop's door, and its window comes
+/// forward to show it.
+#[test]
+fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
+    let mut desk = Desk::new(2, 450);
+    let second = desk.tabs[1];
+    SEARCH.with_borrow_mut(|search| search.labels.insert(second, "Archive".into()));
+    desk.handle.open_search(None);
+    desk.settle();
+    assert!(desk.handle.search_open());
+    desk.driver.type_text("open archive");
+    desk.settle();
+    desk.driver.key("Enter");
+    desk.settle();
+    // `open` asks for the item; it runs once that is given.
+    desk.driver.type_text("clip");
+    desk.driver.key("Enter");
+    desk.settle();
+    assert_eq!(
+        SEARCH.with_borrow(|search| search.opened.clone()),
+        ["clip"],
+        "the action runs in the app that offered it"
+    );
+    assert_eq!(desk.driver.refusal_shown(), None);
+    assert!(
+        desk.driver.control_failures().is_empty(),
+        "{:?}",
+        desk.driver.control_failures()
+    );
+    assert!(!desk.handle.search_open());
+    desk.driver.type_text("z");
+    assert_eq!(
+        desk.typed(&format!("field-{second}-1")),
+        "z",
+        "the app's window came forward and has the keyboard"
     );
 }
 

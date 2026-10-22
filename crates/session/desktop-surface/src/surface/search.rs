@@ -390,11 +390,24 @@ impl DesktopSurface {
             commands,
             ..SearchData::default()
         };
-        for row in self.rows.values() {
+        let mut owners = std::collections::HashMap::new();
+        for (strip, row) in &self.rows {
             data.resources
                 .extend(ui::widget::published_resources(row, doc));
             data.providers
                 .extend(ui::widget::published_search_providers(row));
+            for window in &row.groups {
+                let Some(host) = window.active_host() else {
+                    continue;
+                };
+                let mut open = ui::widget::published_resources(host, doc);
+                while let Some(resource) = open.pop() {
+                    owners
+                        .entry(resource.id.as_str().to_owned())
+                        .or_insert((*strip, window.id));
+                    open.extend(resource.children);
+                }
+            }
         }
         self.search.open(data);
         self.search
@@ -402,6 +415,7 @@ impl DesktopSurface {
             .set_platform_conventions(self.platform);
         self.new_tab_into = None;
         self.search_window = None;
+        self.search_owners = owners;
         if let Some(query) = query {
             self.search.set_query(&query);
         }
@@ -430,6 +444,7 @@ impl DesktopSurface {
         self.search.set_query("");
         self.new_tab_into = into;
         self.search_window = None;
+        self.search_owners.clear();
         self.structure_dirty = true;
     }
 
@@ -479,6 +494,7 @@ impl DesktopSurface {
             .set_query(request.query.as_deref().unwrap_or_default());
         self.new_tab_into = None;
         self.search_window = Some((strip, group));
+        self.search_owners.clear();
         self.structure_dirty = true;
     }
 
@@ -510,11 +526,27 @@ impl DesktopSurface {
             let refreshed = self.search.refresh();
             self.structure_dirty |= closed || refreshed;
         }
-        if let Some((strip, group)) = self.search_window
+        if (self.search_window.is_some() || !self.search_owners.is_empty())
             && let Some(invocation) =
                 ui::widget::controls::take_control_invocation(self.search.palette_mut())
         {
-            self.run_in_window(strip, group, invocation);
+            match self.search_window {
+                Some((strip, group)) => self.run_in_window(strip, group, invocation),
+                None => match self
+                    .search_owners
+                    .get(invocation.address.resource.as_str())
+                    .copied()
+                {
+                    // Chosen in search over everything: the app's window
+                    // comes forward and runs it.
+                    Some((strip, group)) => {
+                        self.bring_forward(strip, group);
+                        self.run_in_window(strip, group, invocation);
+                    }
+                    // Not an app's: the desktop's own door runs it.
+                    None => self.unrouted_control = Some(invocation),
+                },
+            }
         }
         match (self.search.take_choice(), self.new_tab_into.take()) {
             (Some(Target::Launch { app }), Some((strip, group))) => {
@@ -529,8 +561,21 @@ impl DesktopSurface {
             // applications as their own windows again.
             self.new_tab_into = None;
             self.search_window = None;
+            self.search_owners.clear();
         }
         self.shared.borrow_mut().search_open = open;
+    }
+
+    /// Focus window `group`, as choosing it in search does.
+    fn bring_forward(&self, strip: StripId, group: GroupId) {
+        let tab = self
+            .rows
+            .get(&strip)
+            .and_then(|row| row.groups.iter().find(|candidate| candidate.id == group))
+            .map(ui::widget::WindowGroup::active_tab_id);
+        if let Some(tab) = tab {
+            self.perform(Target::Window { tab, app: None });
+        }
     }
 
     /// Run `invocation`, chosen in the search over window `group`, inside
