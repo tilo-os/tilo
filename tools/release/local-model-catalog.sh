@@ -7,9 +7,13 @@
 #   sign COMPILER OUT   fetch the reviewed artifacts, sign the catalog with
 #                       TILO_MODEL_CATALOG_SIGNING_KEY into OUT/ and require it to reproduce the
 #                       checked-in catalog and keys byte for byte
-#   publish SIGNED      upload the speech artifacts and SIGNED's catalog and keys to their
-#                       immutable package URLs with REGISTRY_TOKEN, then read them back anonymously
-#   review COMPILER OUT sign the speech candidate (catalog-source-speech-candidate.json) for review
+#   publish SIGNED      upload the speech artifacts, the runtime archives and SIGNED's catalog and
+#                       keys to their immutable package URLs with REGISTRY_TOKEN, then read them
+#                       back anonymously
+#   review COMPILER OUT sign dist/local-models/catalog-source.json for review, to become the
+#                       checked-in catalog
+#
+# The runtimes' archives come from the local-model-runtime checks, under $runtimes_out/<id>/.
 #
 # `sign`, `publish` and `review` run only in trusted runs of stable or a release tag (T_REF).
 set -euo pipefail
@@ -20,10 +24,31 @@ cd "$repo_root"
 
 extensions=os/usr/share/tilo/system-extensions
 package_base=https://code.tilo.so/api/packages/tilo/generic/tilo-local-model-catalog
+runtimes_out=/target/local-model-runtimes
 
 release_only() {
   [[ $(channel) == release ]] || die "the model catalog is signed and published from stable or a release tag, not ${T_REF}"
   require_commit
+}
+
+# The models of the catalog's source alone, as the speech preparer reads it, into $1.
+models_source() {
+  jq '.runtimes = [] | .recommendation = ""' dist/local-models/catalog-source.json > "$1"
+}
+
+# Point $1/source.json's runtimes at their archives as their builds left them, after checking
+# each against its receipt. They are too large to copy, and the compiler refuses links.
+stage_runtimes() {
+  local dir=$1 id sha size archive
+  while IFS=$'\t' read -r id sha size; do
+    archive=$runtimes_out/$id/$id.oci.tar
+    [[ -f $archive ]] || die "no build of runtime $id: the check needs local-model-runtime-$id"
+    [[ $(stat --format=%s "$archive") == "$size" ]] || die "runtime $id was rebuilt with another size"
+    echo "$sha  $archive" | sha256sum --check --quiet || die "runtime $id was rebuilt with other bytes"
+  done < <(jq -r '.runtimes[] | [.id, .artifact.sha256, .artifact.size_bytes] | @tsv' "$dir/source.json")
+  jq --arg out "$runtimes_out" '.runtimes |= map(.artifact.file = "\($out)/\(.id)/\(.id).oci.tar")' \
+    "$dir/source.json" > "$dir/source.staged.json"
+  mv "$dir/source.staged.json" "$dir/source.json"
 }
 
 # The reviewed catalog's source and its artifacts, fetched and checked against their receipts,
@@ -33,8 +58,8 @@ stage() {
   mkdir -p "$dir/artifacts"
   cp dist/local-models/catalog-source.json "$dir/source.json"
   if [[ $(jq '.models | length' "$dir/source.json") == 4 ]]; then
-    python3 -I tools/release/prepare_speech_catalog.py "$dir/staged" \
-      --source dist/local-models/catalog-source.json
+    models_source "$dir/models-source.json"
+    python3 -I tools/release/prepare_speech_catalog.py "$dir/staged" --source "$dir/models-source.json"
     cp "$dir/staged/artifacts/"* "$dir/artifacts/"
   else
     jq -e '.production == true and .runtimes == [] and .recommendation == ""
@@ -48,6 +73,24 @@ stage() {
     [[ $(stat --format=%s "$dir/artifacts/u2net.onnx") == 175997641 ]]
     [[ $(stat --format=%s "$dir/artifacts/LICENSE") == 11357 ]]
   fi
+  stage_runtimes "$dir"
+}
+
+# Upload FILE to the immutable package URL unless it holds those bytes already, then read it
+# back anonymously. A different object at the URL is a conflict, never overwritten.
+publish_file() {
+  local file=$1 url=$2 sha
+  sha=$(sha256sum "$file" | cut -d' ' -f1)
+  if curl --fail --silent --head --proto '=https' --output /dev/null "$url"; then
+    [[ $(curl --fail --silent --show-error --proto '=https' "$url" | sha256sum | cut -d' ' -f1) == "$sha" ]] \
+      || die "$url holds other bytes"
+  else
+    # The token goes through curl's configuration on stdin, never its arguments.
+    printf 'header = "Authorization: token %s"\n' "$REGISTRY_TOKEN" \
+      | curl --fail --silent --show-error --proto '=https' --config - --upload-file "$file" "$url"
+  fi
+  [[ $(curl --fail --silent --show-error --proto '=https' "$url" | sha256sum | cut -d' ' -f1) == "$sha" ]] \
+    || die "$url does not read back as published"
 }
 
 # Sign $2 (a source.json beside its artifacts) with the seed into $3/catalog.json and keys.json.
@@ -92,37 +135,33 @@ case $command in
     work=$(mktemp -d "$scratch/model-catalog.XXXXXX")
     trap 'rm -rf "$work"' EXIT
     if [[ $(jq '.models | length' dist/local-models/catalog-source.json) == 4 ]]; then
-      python3 -I tools/release/prepare_speech_catalog.py "$work/staged" \
-        --source dist/local-models/catalog-source.json
+      models_source "$work/models-source.json"
+      python3 -I tools/release/prepare_speech_catalog.py "$work/staged" --source "$work/models-source.json"
       PACKAGE_TOKEN=$REGISTRY_TOKEN python3 -I tools/release/publish_speech_artifacts.py "$work/staged"
     fi
+    cp dist/local-models/catalog-source.json "$work/source.json"
+    stage_runtimes "$work"
+    while IFS=$'\t' read -r file url; do
+      publish_file "$file" "$url"
+    done < <(jq -r '.runtimes[] | [.artifact.file, .artifact.url] | @tsv' "$work/source.json")
     version=$(sha256sum "$signed/catalog.json" | cut -d' ' -f1)
     base=$package_base/$version
     for file in catalog.json keys.json; do
-      if curl --fail --silent --show-error --proto '=https' --output "$work/existing-$file" "$base/$file"; then
-        cmp "$signed/$file" "$work/existing-$file"
-      else
-        # The token goes through curl's configuration on stdin, never its arguments.
-        printf 'header = "Authorization: token %s"\n' "$REGISTRY_TOKEN" \
-          | curl --fail --silent --show-error --proto '=https' --config - \
-            --upload-file "$signed/$file" "$base/$file"
-      fi
-      curl --fail --silent --show-error --proto '=https' --output "$work/published-$file" "$base/$file"
-      cmp "$signed/$file" "$work/published-$file"
+      publish_file "$signed/$file" "$base/$file"
     done
     printf 'Published the reviewed catalog %s/catalog.json from %s\n' "$base" "$T_COMMIT"
     ;;
   review)
     compiler=${1:?usage: local-model-catalog.sh review COMPILER OUT} out=${2:?}
     release_only
-    work=$(mktemp -d "$scratch/speech-review.XXXXXX")
-    python3 -I tools/release/prepare_speech_catalog.py "$work/speech-review"
-    sign_source "$compiler" "$work/speech-review/source.json" "$out"
-    cp "$work/speech-review/source.json" "$out/source.json"
+    work=$(mktemp -d "$scratch/model-catalog-review.XXXXXX")
+    stage "$work"
+    sign_source "$compiler" "$work/source.json" "$out"
+    cp dist/local-models/catalog-source.json "$out/source.json"
     rm -rf "$work"
     cmp "$out/keys.json" "$extensions/local-model-keys.json"
     (cd "$out" && sha256sum catalog.json keys.json source.json > review.sha256)
-    printf 'Signed the speech candidate for review: t outputs review-speech-catalog\n'
+    printf 'Signed the catalog source for review: t outputs review-model-catalog\n'
     ;;
   *)
     die "usage: local-model-catalog.sh compiler|sign|publish|review ..."

@@ -114,7 +114,7 @@ class PublicationCredentialContract(unittest.TestCase):
         self.assertEqual(publish["secrets"], ["REGISTRY_TOKEN"])
         self.assertEqual(publish["run"], "bash tools/release/local-model-catalog.sh publish /target/model-catalog/signed")
         # Only the signing checks hold the catalog seed; the publisher holds only the package token.
-        for name in ("sign-model-catalog", "review-speech-catalog"):
+        for name in ("sign-model-catalog", "review-model-catalog"):
             self.assertNotIn("REGISTRY_TOKEN", checks[name]["secrets"])
         script = (root / "tools/release/local-model-catalog.sh").read_text()
         step = script.split("\n  publish)\n", 1)[1].split("\n    ;;", 1)[0]
