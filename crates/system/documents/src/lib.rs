@@ -191,7 +191,43 @@ impl std::fmt::Display for GrantError {
 
 impl std::error::Error for GrantError {}
 
-type Views = HashMap<AppKey, BTreeMap<String, Document>>;
+/// What one app in one room was given, and the order it was chosen in.
+#[derive(Default)]
+struct View {
+    documents: BTreeMap<String, Document>,
+    /// The tokens of `documents`, most recently chosen first.
+    recent: Vec<String>,
+}
+
+impl View {
+    /// Add `document` as the latest choice. Answers whether the view
+    /// changed.
+    fn choose(&mut self, token: String, document: Document) -> bool {
+        if self.recent.first() == Some(&token) {
+            return false;
+        }
+        self.recent.retain(|kept| *kept != token);
+        self.recent.insert(0, token.clone());
+        self.documents.insert(token, document);
+        true
+    }
+
+    /// Add `document` behind those already in the view, as reading a kept
+    /// table (newest first) does.
+    fn keep_older(&mut self, token: String, document: Document) {
+        if self.documents.insert(token.clone(), document).is_none() {
+            self.recent.push(token);
+        }
+    }
+
+    fn by_recency(&self) -> impl Iterator<Item = &Document> {
+        self.recent
+            .iter()
+            .filter_map(|token| self.documents.get(token))
+    }
+}
+
+type Views = HashMap<AppKey, View>;
 
 /// Every app's documents. Cheap to clone: clones share the table.
 #[derive(Clone, Default)]
@@ -201,7 +237,8 @@ pub struct Documents {
     record: Option<Arc<PathBuf>>,
 }
 
-/// The kept table: what each app in each room was given.
+/// The kept table: what each app in each room was given, each app's
+/// documents newest first.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Record {
     documents: Vec<Kept>,
@@ -244,7 +281,7 @@ impl Documents {
             };
             let document = Document { host, kind };
             let token = token(&key, &document);
-            views.entry(key).or_default().insert(token, document);
+            views.entry(key).or_default().keep_older(token, document);
         }
         Self {
             views: Arc::new(RwLock::new(views)),
@@ -261,7 +298,7 @@ impl Documents {
             documents: views
                 .iter()
                 .flat_map(|(key, view)| {
-                    view.values().map(|document| Kept {
+                    view.by_recency().map(|document| Kept {
                         room: key.room.clone(),
                         app: key.app.clone(),
                         kind: document.kind.tag().to_owned(),
@@ -280,7 +317,7 @@ impl Documents {
     /// Give `key` the item the person chose at `chosen`, as `kind`, and
     /// answer the path the app reaches it by inside its sandbox. Choosing
     /// the same item again answers the same path, so a recent file reopens
-    /// where it was.
+    /// where it was, and makes it the most recent.
     ///
     /// # Errors
     ///
@@ -291,14 +328,13 @@ impl Documents {
         let document = Document { host, kind };
         let token = token(key, &document);
         let path = Path::new(SANDBOX_DIR).join(&token).join(document.name());
-        let added = self.views.write().is_ok_and(|mut views| {
+        let changed = self.views.write().is_ok_and(|mut views| {
             views
                 .entry(key.clone())
                 .or_default()
-                .insert(token, document)
-                .is_none()
+                .choose(token, document)
         });
-        if added {
+        if changed {
             self.keep();
         }
         Ok(path)
@@ -310,8 +346,21 @@ impl Documents {
             .read()
             .ok()?
             .get(key)
-            .and_then(|view| view.get(token))
+            .and_then(|view| view.documents.get(token))
             .cloned()
+    }
+
+    /// What was chosen for `key`, most recent first: the chooser's Recent.
+    pub fn chosen(&self, key: &AppKey) -> Vec<PathBuf> {
+        self.views
+            .read()
+            .ok()
+            .and_then(|views| {
+                views
+                    .get(key)
+                    .map(|view| view.by_recency().map(|d| d.host.clone()).collect())
+            })
+            .unwrap_or_default()
     }
 
     /// The tokens of `key`'s view.
@@ -319,7 +368,11 @@ impl Documents {
         self.views
             .read()
             .ok()
-            .and_then(|views| views.get(key).map(|view| view.keys().cloned().collect()))
+            .and_then(|views| {
+                views
+                    .get(key)
+                    .map(|view| view.documents.keys().cloned().collect())
+            })
             .unwrap_or_default()
     }
 
@@ -510,6 +563,33 @@ mod tests {
         );
         assert_eq!(next.tokens(&key()).len(), 1, "what is gone is forgotten");
         assert_eq!(next.grant(&key(), &kept, Kind::Read).unwrap(), path);
+    }
+
+    #[test]
+    fn recent_lists_choices_newest_first_and_keeps_the_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("documents.json");
+        let [a, b, c] = ["a.txt", "b.txt", "c.txt"].map(|name| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, name).unwrap();
+            path.canonicalize().unwrap()
+        });
+        let documents = Documents::kept_in(record.clone());
+        for path in [&a, &b, &c, &a] {
+            documents.grant(&key(), path, Kind::Read).unwrap();
+        }
+        assert_eq!(
+            documents.chosen(&key()),
+            [a.clone(), c.clone(), b.clone()],
+            "choosing again makes it the newest"
+        );
+        let other = AppKey::new("other-room", "so.tilo.totp").unwrap();
+        assert!(documents.chosen(&other).is_empty(), "each app has its own");
+        assert_eq!(
+            Documents::kept_in(record).chosen(&key()),
+            [a, c, b],
+            "the next session sees the same order"
+        );
     }
 
     #[test]
