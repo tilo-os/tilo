@@ -265,8 +265,10 @@ impl<W: Widget + 'static> Embedded<W> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let recoloured = self.recoloured(theme);
-        let theme = recoloured.as_ref().unwrap_or(theme);
+        // What floats over everything (a menu, a popover) stands on its own
+        // panel in the owner's inks: the words' own colour
+        // ([`Self::set_text_color`]) is for the words, and dark words on a
+        // light slide must never become a dark menu's labels.
         let owner = self.child_viewport(presence);
         let placed = self.overlay_transform().unwrap_or(self.transform);
         self.widget
