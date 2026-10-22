@@ -353,9 +353,6 @@ impl SecondaryAction {
 mod tests {
     use super::*;
 
-    // REQUIREMENT (2026-10-22): ""Use identity in this workspace" must never
-    // ask for a raw 64-character fingerprint. It offers a picker of the
-    // identities this device has (name and avatar, from the identity store)"
     fn rows_of(params: &[ActionParam]) -> Vec<String> {
         let id = params.iter().find(|param| param.name == "id").unwrap();
         match step_for(id, "Use identity in this workspace") {
@@ -394,7 +391,7 @@ mod tests {
             "nobody is asked for a fingerprint"
         );
 
-        // REQUIREMENT (2026-10-22): the empty picker's next step is an action
+        // The empty picker's next step is an action
         // "Set up your identity" that starts the first-identity setup, offered
         // only when the device has no identity.
         let none = identity_select_params(&[]);

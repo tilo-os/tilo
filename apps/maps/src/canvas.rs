@@ -1376,7 +1376,7 @@ mod tests {
         // Phase `loading_substrate_matches_land_tone`.
         // The pre-tiles loading substrate shares the land tone in *each* theme, so a
         // first-run or mid-load view is never a light centre with dark edges (or the
-        // reverse) — the exact seam the user reported. It differs from the land only
+        // reverse). It differs from the land only
         // faintly (for the reference grid), never by a light/dark jump.
         {
             let lum = |c: Color| {

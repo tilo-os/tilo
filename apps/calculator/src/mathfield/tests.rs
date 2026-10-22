@@ -940,9 +940,8 @@ fn bounded_field_scrolls_instead_of_resizing() {
     // phase tall_formula_is_bounded_not_resized
     {
         // A formula taller than the field (a fraction) stays bounded to the field
-        // rect and scrolls vertically instead of resizing the row — the exact bug the
-        // user reported ("formulas resizing vertically with the height of the
-        // formula").
+        // rect and scrolls vertically instead of resizing the row with the height of
+        // the formula.
         let mut f = MathField::new("(x^2+1)/(x-3)").with_size(20.0);
         let rect = Rect::new(0.0, 0.0, 240.0, 30.0); // deliberately shorter than a fraction
         f.set_rect(rect, &mut tr);
