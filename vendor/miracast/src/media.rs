@@ -327,12 +327,42 @@ fn build(
     set(&payloader, "mtu", "1328");
     let udp = udp_sink(plan)?;
     add_link(pipeline, &[&tsmux, &payloader, &udp])?;
-    link_to_pad(&video_tail, &tsmux, VIDEO_PAD)?;
+    let video_pad = link_to_pad(&video_tail, &tsmux, VIDEO_PAD)?;
     if plan.audio == Some(AudioCodec::Aac) {
         let audio_tail = aac_chain(config, pipeline)?;
-        link_to_pad(&audio_tail, &tsmux, AUDIO_PAD)?;
+        let audio_pad = link_to_pad(&audio_tail, &tsmux, AUDIO_PAD)?;
+        hold_until_flowing(&video_pad, &audio_pad);
     }
     Ok((parser, None))
+}
+
+/// Holds buffers at `held` until the first buffer reaches `flowing`.
+///
+/// mpegtsmux lists in its program map only the streams it has caps for, and
+/// a live mux starts writing as soon as video arrives. Audio capture and
+/// encoding start later than video, so without the hold the stream opens with
+/// program maps that carry no audio, audio packets arrive on a PID no map
+/// names, and a receiver that reads the map once never plays sound. The
+/// audio caps are queued ahead of its first buffer, so once that buffer
+/// arrives the mux knows both streams before it writes its first packet.
+fn hold_until_flowing(held: &gst::Pad, flowing: &gst::Pad) {
+    let Some(hold) = held.add_probe(
+        gst::PadProbeType::BLOCK | gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+        |_, _| gst::PadProbeReturn::Ok,
+    ) else {
+        return;
+    };
+    let held = held.clone();
+    let hold = Mutex::new(Some(hold));
+    flowing.add_probe(
+        gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+        move |_, _| {
+            if let Some(hold) = hold.lock().ok().and_then(|mut hold| hold.take()) {
+                held.remove_probe(hold);
+            }
+            gst::PadProbeReturn::Remove
+        },
+    );
 }
 
 fn video_chain(
@@ -708,13 +738,17 @@ fn add_link(pipeline: &gst::Pipeline, elements: &[&gst::Element]) -> Result<(), 
         .map_err(|e| error(format!("cannot link the pipeline: {e}")))
 }
 
-fn link_to_pad(from: &gst::Element, to: &gst::Element, pad: &str) -> Result<(), GstMediaError> {
+fn link_to_pad(
+    from: &gst::Element,
+    to: &gst::Element,
+    pad: &str,
+) -> Result<gst::Pad, GstMediaError> {
     let target = to
         .request_pad_simple(pad)
         .ok_or_else(|| error(format!("{} has no pad {pad}", to.name())))?;
     from.static_pad("src")
         .ok_or_else(|| error(format!("{} has no output", from.name())))?
         .link(&target)
-        .map(|_| ())
-        .map_err(|e| error(format!("cannot link {} to {pad}: {e:?}", from.name())))
+        .map_err(|e| error(format!("cannot link {} to {pad}: {e:?}", from.name())))?;
+    Ok(target)
 }
