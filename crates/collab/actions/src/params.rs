@@ -91,6 +91,17 @@ impl ParamType {
 /// not an assertion: binding does not check it.
 pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
 
+/// Schema annotation saying how each of a parameter's choices reads to a
+/// person: an object from choice to label; see
+/// [`ActionParam::with_labelled_choices`]. An identity is chosen by its name,
+/// never by its fingerprint.
+pub const CHOICE_LABELS_ANNOTATION: &str = "choice_labels";
+
+/// Schema annotation naming which of a parameter's choices are people
+/// (identities, collaborators): a surface shows each with its avatar; see
+/// [`ActionParam::choosing_people`].
+pub const PEOPLE_ANNOTATION: &str = "people";
+
 /// Schema annotation marking a parameter as a place inside the resource the
 /// action is on (an item, a caret in it, a range of it); see
 /// [`ActionParam::as_place`].
@@ -249,6 +260,81 @@ impl ActionParam {
             RESOURCE_KIND_ANNOTATION.into(),
             serde_json::Value::String(kind.into()),
         );
+        self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
+        self
+    }
+
+    /// Restrict this parameter to the first of each pair, each read as the
+    /// second ([`CHOICE_LABELS_ANNOTATION`]): binding still takes only the
+    /// values, and a surface offers the labels.
+    #[must_use]
+    pub fn with_labelled_choices<V: Into<Str>, L: Into<String>>(
+        mut self,
+        choices: impl IntoIterator<Item = (V, L)>,
+    ) -> Self {
+        let mut labels = serde_json::Map::new();
+        self.choices = choices
+            .into_iter()
+            .map(|(value, label)| {
+                let value: Str = value.into();
+                labels.insert(value.to_string(), serde_json::Value::String(label.into()));
+                value
+            })
+            .collect();
+        self.annotate(CHOICE_LABELS_ANNOTATION, serde_json::Value::Object(labels))
+    }
+
+    /// Mark which choices are people ([`PEOPLE_ANNOTATION`]): each is shown
+    /// with the avatar of its label, keyed by its value. Choices not named
+    /// (a "Create new" beside the identities) read as text alone.
+    #[must_use]
+    pub fn choosing_people<S: Into<String>>(self, people: impl IntoIterator<Item = S>) -> Self {
+        let people = people
+            .into_iter()
+            .map(|person| serde_json::Value::String(person.into()))
+            .collect();
+        self.annotate(PEOPLE_ANNOTATION, serde_json::Value::Array(people))
+    }
+
+    /// How `choice` reads to a person ([`Self::with_labelled_choices`]).
+    #[must_use]
+    pub fn choice_label(&self, choice: &str) -> Option<&str> {
+        self.schema
+            .as_ref()?
+            .get(CHOICE_LABELS_ANNOTATION)?
+            .get(choice)?
+            .as_str()
+    }
+
+    /// Whether this parameter is chosen from labelled values
+    /// ([`Self::with_labelled_choices`]), even when there are none to offer
+    /// now: a surface offers the empty list, never a free-text field.
+    #[must_use]
+    pub fn has_labelled_choices(&self) -> bool {
+        self.schema
+            .as_ref()
+            .is_some_and(|schema| schema.get(CHOICE_LABELS_ANNOTATION).is_some())
+    }
+
+    /// Whether `choice` is a person ([`Self::choosing_people`]).
+    #[must_use]
+    pub fn choice_is_person(&self, choice: &str) -> bool {
+        self.schema
+            .as_ref()
+            .and_then(|schema| schema.get(PEOPLE_ANNOTATION))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|people| people.iter().any(|person| person.as_str() == Some(choice)))
+    }
+
+    fn annotate(mut self, key: &str, value: serde_json::Value) -> Self {
+        let mut schema = match self.schema.take() {
+            Some(schema) => match std::sync::Arc::unwrap_or_clone(schema) {
+                serde_json::Value::Object(schema) => schema,
+                _ => serde_json::Map::new(),
+            },
+            _ => serde_json::Map::new(),
+        };
+        schema.insert(key.into(), value);
         self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
         self
     }
