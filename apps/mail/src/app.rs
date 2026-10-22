@@ -6368,9 +6368,11 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert!(app.shared.borrow().detail_pushed);
             assert!(app.shared.borrow().selected.is_some());
 
-            // The shell shows its Back button; Escape goes back too.
-            let back = app.nav.geometry().back;
-            assert!(back.width() > 0.0, "Back shown while the message is pushed");
+            // Back is the window bar's slot; Escape goes back too.
+            assert!(
+                app.nav.can_go_back() && !app.nav.window_toolbar().leading.is_empty(),
+                "Back shown in the window's bar while the message is pushed"
+            );
             assert!(
                 dispatch(&mut app, &esc_event(), &mut doc),
                 "Escape consumed"

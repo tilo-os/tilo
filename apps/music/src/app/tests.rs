@@ -4572,8 +4572,12 @@ fn scaled_player_and_detail_keep_content_above_the_fold() {
         assert!(app.sidebar_rect().y1 <= bar.y0);
         assert!(app.body_rect.y1 <= bar.y0);
         assert_eq!(
-            app.body_rect.y0,
-            f64::from(theme.tokens.metrics.header_height)
+            app.body_rect.y0, app.rect.y0,
+            "the toolbar is the window bar's: the page starts at the top"
+        );
+        assert!(
+            ui::window_toolbar::declared().is_some_and(|toolbar| toolbar.location.is_some()),
+            "the album's title is the window bar's location"
         );
         let rows = app.track_tables.first().expect("album tracks");
         let first = rows.table.row_rect(0).expect("first track");

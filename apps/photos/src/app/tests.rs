@@ -1638,7 +1638,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
     }
 
-    eprintln!("phase narrow_header_keeps_every_command_reachable_through_more");
+    eprintln!("phase narrow_window_keeps_every_command_in_the_window_bar");
     {
         let mut hosted =
             ui::framework::testing::TestApp::<crate::resource::PhotosShell>::capture_at(
@@ -1646,33 +1646,22 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                 (520, 800),
             )
             .unwrap();
+        hosted.settle();
         assert!(
-            hosted
+            !hosted
                 .harness()
                 .controls()
                 .iter()
-                .any(|control| { control.name.as_deref() == Some("More commands") }),
-            "a narrow header moves commands into More"
+                .any(|control| control.name.as_deref() == Some("More commands")),
+            "a narrow window draws no header row of its own with a More button"
         );
-        hosted
-            .harness()
-            .perform_named("toolbar.overflow", &AccessAction::Activate)
-            .expect("the actual host admits the overflow view action");
-        hosted.settle();
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
         assert!(
-            hosted
-                .harness()
-                .a11y_nodes()
+            toolbar
+                .actions
                 .iter()
-                .any(|(_, node)| { node.role() == ui::accesskit::Role::Menu }),
-            "the admitted overflow opens a real menu"
-        );
-        assert!(
-            hosted.harness().controls().iter().any(|control| {
-                control.role == ui::accesskit::Role::MenuItem
-                    && control.name.as_deref() == Some(tr("photos-save").as_str())
-            }),
-            "Save stays reachable from the menu"
+                .any(|action| action.name == tr("photos-save")),
+            "Save stays reachable from the window's bar, which folds what does not fit into its menu: {toolbar:?}"
         );
     }
 

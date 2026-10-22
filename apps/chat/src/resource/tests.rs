@@ -147,17 +147,24 @@ fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {
 fn shared_space_visible_stop_button_uses_the_same_consent_handler() {
     let mut app = TestApp::<ChatShell>::capture(Some("live-context")).unwrap();
     assert!(app.surface_mut::<crate::ChatApp>().sharing_context);
-    assert!(app.harness().a11y_node_named("Stop sharing").is_some());
-    let target = app
-        .surface_mut::<crate::ChatApp>()
-        .hits
-        .iter()
-        .find(|(_, hit)| matches!(hit, crate::app::Hit::StopSharingLiveContext))
-        .expect("the painted stop control has a pointer target")
-        .0;
-    app.harness().click_at(target.center().x, target.center().y);
+    app.settle();
+    // The visible Stop sharing control is the window bar's slot; the desktop
+    // hands its press to the app, which answers the same consent effect.
+    let offers_stop = || {
+        ui::window_toolbar::declared().is_some_and(|toolbar| {
+            toolbar
+                .actions
+                .iter()
+                .any(|action| action.id == "stop-sharing" && action.enabled)
+        })
+    };
+    assert!(offers_stop(), "the window's bar shows Stop sharing");
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: "stop-sharing".into(),
+    });
+    app.settle();
     assert!(!app.surface_mut::<crate::ChatApp>().sharing_context);
-    assert!(app.harness().a11y_node_named("Stop sharing").is_none());
+    assert!(!offers_stop(), "Stop sharing leaves the bar once stopped");
     assert!(ui::view::capability::view_state(app.harness().root_widget()).is_none());
 }
 
@@ -1041,20 +1048,20 @@ fn agent_row_task_navigation_keeps_source_custody_through_the_production_door() 
             .is_err()
     );
     app.harness().resize((420, 680)).unwrap();
-    let chat = app
-        .harness()
-        .targets()
-        .keys()
-        .find(|name| name.ends_with("/ResourceApp[0]"))
-        .cloned()
-        .expect("the live Chat surface is addressable");
-    app.harness()
-        .perform_semantic_named(
-            &chat,
-            Some("chat.agent-window"),
-            &ui::a11y::Action::Activate,
-        )
-        .unwrap();
+    app.settle();
+    // Floating the conversation is the window bar's slot; the desktop hands
+    // its press to the app, which runs the same agent-window hit.
+    assert!(
+        ui::window_toolbar::declared().is_some_and(|toolbar| toolbar
+            .actions
+            .iter()
+            .any(|action| action.id == "agent-window")),
+        "the window's bar offers floating the task conversation"
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: "agent-window".into(),
+    });
+    app.settle();
     let id = app
         .surface_mut::<ChatApp>()
         .agent_surfaces

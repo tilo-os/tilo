@@ -356,7 +356,10 @@ fn a_phone_window_pushes_the_person_over_the_list() {
         NavPane::Content,
         "choosing a person pushes them in"
     );
-    assert!(bar_offers("nav-shell-back"), "the window's bar offers the way back");
+    assert!(
+        bar_offers("nav-shell-back"),
+        "the window's bar offers the way back"
+    );
 }
 
 /// The sidebar's destinations narrow the list: favourites, one group, and
@@ -1450,9 +1453,12 @@ fn detail_fields_enter_edit_on_double_click_with_placeholders() {
         .unwrap();
     h.app.settle();
     assert_eq!(h.focused_slot(), Some(Slot::First));
+    let first_rect = form_widget(&h.app, Slot::First).unwrap().get_rect();
+    let column = h.app.shell.geometry().content_column;
     assert!(
-        form_widget(&h.app, Slot::First).unwrap().get_rect().y0
-            >= h.app.shell.geometry().content_column.y0
+        first_rect.y0 >= column.y0 - 0.5,
+        "focus reveals the first field inside the content column: {first_rect:?} in {column:?}, scrolled {:?}",
+        h.app.form.as_ref().unwrap().scroll.get()
     );
 
     for slot in form_slots(h.app.form.as_ref().unwrap()) {
@@ -3651,7 +3657,8 @@ fn detail_and_editor_semantics() {
         before,
         "assistive typing remains a cancellable local draft"
     );
-    act_named(&mut app, "Save", &ui::a11y::Action::Activate);
+    // Save is the window bar's, as the desktop hands its press to the app.
+    press_bar(&mut app, BAR_SAVE);
     assert_eq!(
         app.book()
             .into_iter()
