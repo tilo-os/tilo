@@ -18,8 +18,14 @@
 //! * **Wide**: the song on the left, the transport centred over the
 //!   scrubber, the queue and the volume on the right.
 //! * **Compact** (narrower than two large media cards): the song beside
-//!   previous, play and next, the mute toggle and a More button that the
-//!   app answers with a menu holding what the wide form shows inline.
+//!   previous, play and next, the volume and a More button that the app
+//!   answers with a menu holding what the wide form shows inline.
+//!
+//! The volume is reachable at every width: a slider beside the mute toggle
+//! where it fits, else a speaker button whose popover holds the slider.
+//! The art opens what plays when the app says what that is
+//! ([`TransportState::opens`]), and a horizontal swipe across the band,
+//! by finger or pointer, skips to the next or previous song.
 //!
 //! A control the app leaves out (`None`: a local file can't be liked) is not
 //! there at all, and everything rests disabled while nothing can play.
@@ -49,9 +55,12 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::media_card::{MediaArt, MediaSize, paint_art_tile};
 use crate::widget::{
-    Button, ButtonFace, ControlSize, Element, Manual, ManualContext, Slider, TaffyTreeExt, Text,
-    TextStack, TransportControl, TransportFace, When, Widget, WidgetLayoutError,
+    Button, ButtonFace, ControlSize, Element, Manual, ManualContext, PanelAlign, PopoverSide,
+    Slider, TaffyTreeExt, Text, TextStack, Tone, TransportControl, TransportFace, When, Widget,
+    WidgetLayoutError,
 };
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 /// The song's art in the transport.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -82,10 +91,16 @@ pub struct TransportState {
     pub title: String,
     /// Who it is by, or why it can't play.
     pub subtitle: String,
+    /// The subtitle says why it can't play: it reads as an error.
+    pub error: bool,
     pub art: TransportArt,
     /// The name the placeholder cover takes its initials and colour from
     /// (the album).
     pub art_name: String,
+    /// What a press on the art opens ("Open album", "Show lyrics"), as it
+    /// is announced; `None` leaves the art a picture
+    /// ([`TransportEvent::OpenPlaying`]).
+    pub opens: Option<String>,
     pub playing: bool,
     /// Nothing can play: every control rests disabled.
     pub idle: bool,
@@ -123,6 +138,8 @@ pub enum TransportEvent {
     /// Open the More menu under the button, at this rect in window
     /// coordinates.
     More(Rect),
+    /// Open what plays: the art was pressed ([`TransportState::opens`]).
+    OpenPlaying,
 }
 
 /// Which form the transport takes at its width.
@@ -153,6 +170,9 @@ struct Metrics {
     sibling: f64,
     related: f64,
     tight: f64,
+    /// How far a drag across the band travels before it skips a song: two
+    /// pointer targets.
+    swipe: f64,
 }
 
 impl Metrics {
@@ -173,6 +193,7 @@ impl Metrics {
             sibling: f64::from(rhythm.sibling),
             related: f64::from(rhythm.related),
             tight: f64::from(rhythm.tight),
+            swipe: 2.0 * f64::from(theme.tokens.metrics.min_pointer_target),
         }
     }
 
@@ -218,6 +239,9 @@ struct Shared {
     more: Cell<Rect>,
     /// The transport's origin in the window at its last layout.
     origin: Cell<Point>,
+    /// Where each child stands (zero while it isn't there), in the
+    /// transport's own coordinates.
+    placed: Cell<[Rect; CHILDREN]>,
 }
 
 impl Shared {
@@ -325,12 +349,28 @@ impl<W: Widget + 'static> crate::widget::Decorator for Follow<W> {
     }
 }
 
-/// The song's art: the cover, or its generated placeholder.
+/// The song's art: the cover, or its generated placeholder. While the app
+/// says what it opens, a press (or Enter on it) asks for that.
 struct Art {
     shared: Rc<Shared>,
     seen: Option<u64>,
     rect: Rect,
     dirty: bool,
+    pressed: bool,
+    focused: bool,
+    cursor: Point,
+}
+
+impl Art {
+    fn opens(&self) -> Option<String> {
+        self.shared.state.borrow().opens.clone()
+    }
+
+    fn open(&self) {
+        if self.opens().is_some() {
+            self.shared.push(TransportEvent::OpenPlaying);
+        }
+    }
 }
 
 impl Widget for Art {
@@ -390,6 +430,97 @@ impl Widget for Art {
     fn name(&self) -> &'static str {
         "TransportArt"
     }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("transport.art")
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.opens().is_none() {
+            self.pressed = false;
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => self.cursor = ctx.logical(position),
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let inside = self.rect.contains(self.cursor);
+                match state {
+                    ElementState::Pressed => {
+                        self.pressed = inside;
+                        if inside {
+                            *ctx.focus_target = Some(ctx.node_id);
+                            *ctx.handled = true;
+                        }
+                    }
+                    ElementState::Released => {
+                        if std::mem::take(&mut self.pressed) && inside {
+                            self.open();
+                            *ctx.handled = true;
+                        }
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.focused => {
+                self.open();
+                *ctx.handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.opens().is_some() && self.rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.opens().is_some()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.dirty |= self.focused != focused;
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
+        _root: &crate::widget::ModelPath,
+    ) -> bool {
+        if *action == crate::a11y::Action::Activate && self.opens().is_some() {
+            self.open();
+            return true;
+        }
+        false
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let name = self.opens()?;
+        Some(
+            AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_state(AccessState::new().focusable(true).focused(self.focused)),
+        )
+    }
 }
 
 // The transport's children, in placement order.
@@ -409,7 +540,10 @@ const QUEUE: usize = 12;
 const MUTE: usize = 13;
 const VOLUME: usize = 14;
 const MORE: usize = 15;
-const CHILDREN: usize = 16;
+/// The speaker whose popover holds the volume, where the slider doesn't
+/// fit inline.
+const VOLUME_MENU: usize = 16;
+const CHILDREN: usize = 17;
 
 /// Whether child `index` is there in `form` for `state`.
 fn present(index: usize, state: &TransportState, form: Form) -> bool {
@@ -421,7 +555,8 @@ fn present(index: usize, state: &TransportState, form: Form) -> bool {
         SHUFFLE => wide && state.shuffle.is_some(),
         REPEAT => wide && state.repeat.is_some(),
         QUEUE => wide && state.queue.is_some(),
-        VOLUME => form == Form::WideWithVolume,
+        VOLUME | MUTE => form == Form::WideWithVolume,
+        VOLUME_MENU => form != Form::WideWithVolume,
         MORE => !wide && state.more,
         _ => true,
     }
@@ -461,6 +596,57 @@ fn toggle(button: &mut Button, on: Option<bool>, idle: bool) -> bool {
     false
 }
 
+/// The volume slider in the speaker's popover, a comfortable width.
+struct VolumePanel {
+    slider: Slider,
+}
+
+impl crate::widget::Decorator for VolumePanel {
+    type Inner = Slider;
+
+    fn inner(&self) -> &Slider {
+        &self.slider
+    }
+
+    fn inner_mut(&mut self) -> &mut Slider {
+        &mut self.slider
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = self.slider.build_layout(taffy, theme, node_map);
+        if let Ok(style) = taffy.style(node) {
+            let mut style = style.clone();
+            style.size.width =
+                taffy::Dimension::length(crate::num::f32_of_f64(MediaSize::Large.extent(theme)));
+            let _ = taffy.set_style(node, style);
+        }
+        node
+    }
+}
+
+/// Set a volume slider from the declared volume, unless it is held.
+fn follow_volume(slider: &mut Slider, state: &TransportState) -> bool {
+    let before = slider.value();
+    if !slider.is_held() {
+        slider.set_value(state.volume.clamp(0.0, 1.0));
+    }
+    (before - slider.value()).abs() > f64::EPSILON
+}
+
+/// The speaker icon and name for `volume`.
+fn speaker(volume: f64) -> Icon {
+    if volume <= 0.0 {
+        Icon::VolumeX
+    } else {
+        Icon::Volume2
+    }
+}
+
 fn children(shared: &Rc<Shared>) -> Vec<Element> {
     let caption = |source: fn(&TransportState) -> String, align| {
         let shared = shared.clone();
@@ -487,9 +673,17 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             seen: None,
             rect: Rect::ZERO,
             dirty: true,
+            pressed: false,
+            focused: false,
+            cursor: Point::ZERO,
         }),
         Box::new(Follow::new(TextStack::new(""), shared, |stack, state| {
             stack.set_lines(&state.title, &state.subtitle, "");
+            stack.set_secondary_tone(if state.error {
+                Tone::Danger
+            } else {
+                Tone::Neutral
+            });
             false
         })),
         Box::new(Follow::new(
@@ -618,7 +812,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
                     };
                     slider.set_value(fraction);
                 }
-                before != (slider.value(), slider.is_enabled())
+                (before.0 - slider.value()).abs() > f64::EPSILON || before.1 != slider.is_enabled()
             },
         )),
         Box::new(caption(
@@ -647,7 +841,7 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             shared,
             |b, state| {
                 let muted = state.volume <= 0.0;
-                b.set_icon(if muted { Icon::VolumeX } else { Icon::Volume2 });
+                b.set_icon(speaker(state.volume));
                 let name = if muted { "Unmute" } else { "Mute" };
                 b.set_accessible_name(name);
                 b.set_tooltip(Some(name.to_owned()));
@@ -658,15 +852,9 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
             Slider::from_state(&crate::LocalState::new(1.0))
                 .with_id("transport.volume")
                 .with_accessible_name("Volume")
-                .on_change(volume),
+                .on_change(volume.clone()),
             shared,
-            |slider, state| {
-                let before = slider.value();
-                if !slider.is_held() {
-                    slider.set_value(state.volume.clamp(0.0, 1.0));
-                }
-                before != slider.value()
-            },
+            follow_volume,
         )),
         Box::new({
             let shared = shared.clone();
@@ -677,6 +865,23 @@ fn children(shared: &Rc<Shared>) -> Vec<Element> {
                     shared.push(TransportEvent::More(shared.more.get() + origin));
                 })
         }),
+        Box::new(Follow::new(
+            Button::icon_only("transport.volume-menu", Icon::Volume2, "Volume")
+                .control_size(ControlSize::Regular)
+                .with_popover(VolumePanel {
+                    slider: Slider::from_state(&crate::LocalState::new(1.0))
+                        .with_id("transport.volume-menu.slider")
+                        .with_accessible_name("Volume")
+                        .on_change(volume),
+                })
+                .side(PopoverSide::Above)
+                .aligned(PanelAlign::Trailing),
+            shared,
+            |menu, state| {
+                menu.button_mut().set_icon(speaker(state.volume));
+                follow_volume(&mut menu.popover_mut().content_mut().slider, state)
+            },
+        )),
     ];
     parts
         .into_iter()
@@ -780,7 +985,7 @@ fn layout(state: &TransportState, m: &Metrics, width: f64) -> (Form, [Rect; CHIL
             mid,
         };
         run.push_back(MORE, m.control, m.control, m.sibling);
-        run.push_back(MUTE, m.control, m.control, m.sibling);
+        run.push_back(VOLUME_MENU, m.control, m.control, m.sibling);
         run.push_back(NEXT, m.skip, m.skip, m.related);
         run.push_back(PLAY, m.play, m.play, m.related);
         run.push_back(PREVIOUS, m.skip, m.skip, m.sibling);
@@ -812,6 +1017,7 @@ fn layout(state: &TransportState, m: &Metrics, width: f64) -> (Form, [Rect; CHIL
     };
     run.push_back(VOLUME, m.small / 2.0, m.control, m.tight);
     run.push_back(MUTE, m.control, m.control, m.related);
+    run.push_back(VOLUME_MENU, m.control, m.control, m.related);
     run.push_back(QUEUE, m.control, m.control, m.related);
     let right = run.x + m.related;
     // The transport, centred over the scrubber between the two.
@@ -850,6 +1056,7 @@ fn policy(shared: &Shared, ctx: &mut ManualContext<'_>) -> Result<Size<f32>, Wid
     let (form, rects, height) = layout(&shared.state.borrow(), &metrics, width);
     shared.form.set(form);
     shared.more.set(rects[MORE]);
+    shared.placed.set(rects);
     for (index, rect) in rects.into_iter().enumerate() {
         ctx.place(index, rect)?;
     }
@@ -867,9 +1074,45 @@ pub struct MediaTransport {
     /// The form the children's presence was last built for.
     built_form: Form,
     structure_dirty: bool,
+    /// Where a press that may become a swipe began, in window coordinates.
+    swipe: Option<Point>,
+    cursor: Point,
 }
 
 impl MediaTransport {
+    /// Whether a drag from `point` (window coordinates) swipes the band:
+    /// it lands on the band, but on no control other than the song.
+    fn swipes_from(&self, point: Point) -> bool {
+        let rect = self.content.get_rect();
+        if !rect.contains(point) || self.shared.state.borrow().idle {
+            return false;
+        }
+        let local = point - rect.origin().to_vec2();
+        !self
+            .shared
+            .placed
+            .get()
+            .iter()
+            .enumerate()
+            .any(|(index, placed)| index != ART && index != SONG && placed.contains(local))
+    }
+
+    /// End a press: a long enough drag across the band skips a song.
+    fn end_swipe(&mut self) -> bool {
+        let Some(start) = self.swipe.take() else {
+            return false;
+        };
+        let (dx, dy) = (self.cursor.x - start.x, self.cursor.y - start.y);
+        if dx.abs() < self.shared.metrics.get().swipe || dx.abs() <= dy.abs() {
+            return false;
+        }
+        self.shared.push(if dx < 0.0 {
+            TransportEvent::Next
+        } else {
+            TransportEvent::Previous
+        });
+        true
+    }
     #[must_use]
     pub fn new(feed: &TransportFeed) -> Self {
         let shared = feed.0.clone();
@@ -884,6 +1127,8 @@ impl MediaTransport {
             shared,
             theme: None,
             structure_dirty: false,
+            swipe: None,
+            cursor: Point::ZERO,
         }
     }
 }
@@ -946,6 +1191,41 @@ impl crate::widget::decorator::concrete::Decorator for MediaTransport {
             self.built_form = self.shared.form.get();
             self.structure_dirty = true;
         }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => self.cursor = ctx.logical(position),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.swipes_from(self.cursor) => self.swipe = Some(self.cursor),
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.end_swipe() => {
+                // The swipe was the gesture: the art under it opens nothing.
+                *ctx.handled = true;
+                return;
+            }
+            _ => {}
+        }
+        Widget::handle_event(&mut self.content, event, ctx);
+    }
+
+    /// A finger dragged across the band swipes it, as the pointer does.
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        if self.swipes_from(point) {
+            crate::interaction::TouchClaim::Drag
+        } else {
+            Widget::touch_claim(&self.content, point)
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.swipe.is_some() || Widget::wants_pointer_capture(&self.content)
     }
 
     fn take_structure_dirty(&mut self) -> bool {

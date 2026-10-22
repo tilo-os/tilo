@@ -1415,6 +1415,11 @@ impl<C: Widget + 'static> PopoverButton<C> {
         &self.popover
     }
 
+    /// The popover, to change what it shows.
+    pub fn popover_mut(&mut self) -> &mut Popover<C> {
+        &mut self.popover
+    }
+
     pub fn button_mut(&mut self) -> &mut crate::widget::Button {
         &mut self.button
     }
