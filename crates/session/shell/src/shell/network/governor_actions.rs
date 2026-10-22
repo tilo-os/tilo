@@ -9,7 +9,18 @@ use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, ExactA
 use tokio::sync::mpsc;
 
 /// How long one invocation may take end to end.
-const GOVERNOR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(not(test))]
+fn governor_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(30)
+}
+/// How long one invocation may take end to end: in test builds, whose fixture
+/// governor shares a loaded runner with the rest of the suite, the shared test
+/// hang bound. Running out reports the outcome unknown and turns the caller's
+/// collaboration off, so a slow fixture would otherwise read as a refusal.
+#[cfg(test)]
+fn governor_timeout() -> std::time::Duration {
+    tilo_test_env::hang_bound()
+}
 /// How often an invocation still running is asked about.
 const STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -169,7 +180,7 @@ impl ShellNetwork {
         let route = self.governor_route(room)?;
         let invocation = tilo_actions::InvocationId(invocation);
         let redacted = String::from_utf8(redacted).map_err(|_| "invalid effect encoding")?;
-        let answer = tokio::time::timeout(GOVERNOR_TIMEOUT, async {
+        let answer = tokio::time::timeout(governor_timeout(), async {
             loop {
                 let answer = route
                     .ask(
@@ -238,7 +249,7 @@ impl ShellNetwork {
             target,
             RemoteActionMessage::CatalogueRequest { correlation, query },
         )?;
-        let answer = tokio::time::timeout(GOVERNOR_TIMEOUT, pending)
+        let answer = tokio::time::timeout(governor_timeout(), pending)
             .await
             .map_err(|_| "resource host lookup timed out")?
             .ok_or("resource host lookup ended")?;
@@ -357,7 +368,7 @@ impl ShellNetwork {
             action.to_owned(),
         );
         runtime.spawn(async move {
-            let result = tokio::time::timeout(GOVERNOR_TIMEOUT, async {
+            let result = tokio::time::timeout(governor_timeout(), async {
                 // Right after startup the room's relay session may still be dialing.
                 loop {
                     let result = invoke(
