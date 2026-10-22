@@ -10191,8 +10191,9 @@ pub fn run() {
     // Legacy X11 software runs through one rootless Xwayland per workspace.
     // A display is only a listening socket until its first client connects;
     // xwayland-satellite, itself a client of the public socket registered
-    // above, starts on that connection. The wake ping lets a launch made
-    // outside this loop's tick have its new display watched immediately.
+    // above, starts on that connection, on the supervisor's own thread. The
+    // wake ping brings the loop round to export a display the active
+    // workspace waited for, or to announce a workspace's failing bridge.
     let mut xwayland = match calloop::ping::make_ping() {
         Ok((wake, wake_source)) => {
             if let Err(error) = event_loop
@@ -10202,7 +10203,6 @@ pub fn run() {
                 tracing::warn!(%error, "X11 display wake source unavailable");
             }
             Some(super::xwayland::XwaylandSupervisor::start(
-                event_loop.handle(),
                 wake,
                 &socket_name,
             ))
