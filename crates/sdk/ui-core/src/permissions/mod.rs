@@ -1018,6 +1018,12 @@ impl LivePermissions {
     pub fn current(&self) -> PermissionContext {
         self.0.borrow().clone()
     }
+
+    /// Put `context` in force for everyone following these: what a host
+    /// does when the room's policy changes.
+    pub fn replace(&self, context: PermissionContext) {
+        *self.0.borrow_mut() = context;
+    }
 }
 
 impl std::fmt::Debug for LivePermissions {

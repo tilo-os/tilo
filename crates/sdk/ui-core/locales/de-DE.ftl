@@ -852,3 +852,8 @@ text-menu-numbered-list = Nummerierte Liste
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = { $label } öffnen
+
+# Choosing who may read something kept to its readers (a private issue).
+readers-heading = Wer es lesen darf
+readers-agents = Agenten, die es lesen dürfen, nach ID
+readers-waiting = Warten, bis der Arbeitsbereich es ihnen vorbehält
