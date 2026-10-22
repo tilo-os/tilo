@@ -741,6 +741,9 @@ pub struct CommandPalette {
     /// Tallest the result list may grow before it scrolls; the host knows
     /// the display, the palette does not ([`Self::set_max_list_height`]).
     max_list_height: Option<f64>,
+    /// The widest the card may be: the room the host has for it, so a
+    /// narrow display shows all of it ([`Self::set_max_width`]).
+    max_width: Option<f64>,
     /// The modifiers held now, so the selected row can show what its
     /// alternative activation would do before it is chosen.
     held: winit::keyboard::ModifiersState,
@@ -811,6 +814,7 @@ impl CommandPalette {
             platform: PlatformConventions::default(),
             scroll_start: std::cell::Cell::new(0),
             max_list_height: None,
+            max_width: None,
             held: winit::keyboard::ModifiersState::empty(),
             submitted_argument: None,
             argument_cancelled: false,
@@ -1106,6 +1110,13 @@ impl CommandPalette {
         self.max_list_height = Some(height.max(0.0));
     }
 
+    /// The widest the card may be, in logical pixels: the host sets it from
+    /// the room it shows the palette in, so on a phone the card narrows to
+    /// fit rather than run off the screen. `None` keeps its own width.
+    pub fn set_max_width(&mut self, width: Option<f64>) {
+        self.max_width = width.map(|width| width.max(0.0));
+    }
+
     /// How many result rows a full list holds: what a host asks its sources
     /// for, so the first screen is full and nothing is fetched that only
     /// scrolling could reach.
@@ -1190,10 +1201,11 @@ impl CommandPalette {
     }
 
     fn card_width(&self) -> f64 {
-        match self.mode {
+        let width = match self.mode {
             PaletteMode::Search => SEARCH_CARD_WIDTH * self.layout_scale(),
             PaletteMode::Commands => CMD_CARD_WIDTH * self.layout_scale(),
-        }
+        };
+        self.max_width.map_or(width, |max| width.min(max))
     }
 
     /// Exactly what Enter does; hosts also wire pointer clicks here, so

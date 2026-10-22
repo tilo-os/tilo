@@ -2176,3 +2176,39 @@ fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
     };
     assert_eq!(narrow_layout.place(&on_strip), None);
 }
+
+/// On a phone the search palette fits the screen: centred, within its
+/// edges, and as wide as the screen allows rather than its own width.
+#[test]
+fn search_fits_a_phone_screen() {
+    let mut minter = IdMinter::new(7);
+    let tabs = vec![tab(&mut minter, "Notes")];
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(390.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (390, 844),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    handle.toggle_search();
+    driver.relayout();
+    driver.relayout();
+    let [x, _, width, _] = find(&driver.inspection().root, "CommandPalette")
+        .expect("search is open")
+        .rect;
+    assert!(
+        x >= 0.0 && x + width <= 390.0,
+        "the palette at {x}..{} runs off a 390 px screen",
+        x + width
+    );
+    assert!(
+        ((x + width / 2.0) - 195.0).abs() < 1.0,
+        "and is centred: {x}, {width}"
+    );
+}
