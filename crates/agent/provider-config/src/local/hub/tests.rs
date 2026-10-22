@@ -343,6 +343,30 @@ fn fit_follows_accelerator_memory_then_system_memory() {
         driver: String::new(),
     });
     assert_eq!(rate(&inactive, gguf, 4 * gib).1, HubFitReason::Memory);
+    // A board's GPU sharing memory carries a GGUF past the processor floor;
+    // a Radeon's own memory counts for GGUF through Vulkan, not for vLLM.
+    let mut board = machine(8, None);
+    board.cpu_threads = 2;
+    board.accelerators.push(Accelerator::Vulkan {
+        vram_mib: 0,
+        driver: "panfrost".into(),
+    });
+    assert_eq!(
+        rate(&board, gguf, gib / 2),
+        (HardwareFit::Good, HubFitReason::Memory)
+    );
+    board.accelerators.clear();
+    assert_eq!(
+        rate(&board, gguf, gib / 2).1,
+        HubFitReason::ProcessorTooSmall
+    );
+    let mut radeon = machine(16, None);
+    radeon.accelerators.push(Accelerator::Amd {
+        vram_mib: 16 * 1024,
+        rocm: None,
+    });
+    assert_eq!(rate(&radeon, gguf, 8 * gib).1, HubFitReason::Accelerator);
+    assert_eq!(rate(&radeon, snapshot, 4 * gib).1, HubFitReason::Memory);
 }
 
 fn llama_cpp() -> RuntimeRelease {
