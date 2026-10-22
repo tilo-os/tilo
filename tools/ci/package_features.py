@@ -51,6 +51,9 @@ NATIVE_TEST_FEATURES = {
     "package-store": ("store",),
     "cloud-source": ("conformance",),
     "browser-continuity": ("native",),
+    # Its librespot session and GStreamer sink, and every test of them, are
+    # the `native` engine Music links; without it the package has no tests.
+    "tilo-spotify": ("native",),
 }
 
 # Packages whose tested features above are not their default build. The
