@@ -313,35 +313,49 @@ export function receivePictures({moq, incoming, call, deliver, report = () => {}
     void (async () => {
       try {
         entry.request = incoming.request(moq.Path.from(call, publisher));
-        let broadcast;
-        while (entry.active && !(broadcast = entry.request.active.peek())) await entry.request.active.changed();
-        if (!entry.active) return;
-        entry.subscriber = broadcast.track(videoTrack(source, layer)).subscribe({priority: 1, maxAge: PICTURE_AGE_MS});
-        let expectKey = true;
-        for (;;) {
-          const group = await entry.subscriber.recvGroup();
-          if (!group || !entry.active) return;
-          try {
-            for (;;) {
-              const frame = await group.readFrame();
-              if (!frame || !entry.active) break;
-              let object;
-              try { object = decodeVideoObject(frame.payload); } catch { report({type: 'video-receive-drop', reason: 'invalid-object'}); break; }
-              if (expectKey && !object.keyframe) break;
-              expectKey = false;
-              deliver(publisher, source, frame.payload, object.keyframe);
+        // The request follows the path: a renewed carrier's republish takes
+        // it over without a new announcement, and the broadcast read so far
+        // then ends. Read the broadcast that took the path, from its first
+        // keyframe. A stream its publisher ended on a broadcast that still
+        // holds the path ends here, and is read again when shown again.
+        let current;
+        while (entry.active) {
+          let broadcast;
+          while (entry.active && (!(broadcast = entry.request.active.peek()) || broadcast === current)) await entry.request.active.changed();
+          if (!entry.active) return;
+          current = broadcast;
+          entry.subscriber = broadcast.track(videoTrack(source, layer)).subscribe({priority: 1, maxAge: PICTURE_AGE_MS});
+          let expectKey = true;
+          for (;;) {
+            const group = await entry.subscriber.recvGroup();
+            if (!group || !entry.active) break;
+            try {
+              for (;;) {
+                const frame = await group.readFrame();
+                if (!frame || !entry.active) break;
+                let object;
+                try { object = decodeVideoObject(frame.payload); } catch { report({type: 'video-receive-drop', reason: 'invalid-object'}); break; }
+                if (expectKey && !object.keyframe) break;
+                expectKey = false;
+                deliver(publisher, source, frame.payload, object.keyframe);
+              }
+            } catch {
+              // A group cut short: its later pictures are lost; start again at a keyframe.
+              expectKey = true;
+            } finally {
+              try { group.close(); } catch {}
             }
-          } catch {
-            // A group cut short: its later pictures are lost; start again at a keyframe.
-            expectKey = true;
-          } finally {
-            try { group.close(); } catch {}
           }
+          try { entry.subscriber.close(); } catch {}
+          if (entry.request.active.peek() === current) return;
         }
       } catch (error) {
         if (entry.active) report({type: 'video-subscription-error', error});
       } finally {
-        if (reading.get(key) === entry) reading.delete(key);
+        if (reading.get(key) === entry) {
+          reading.delete(key);
+          try { entry.request?.close(); } catch {}
+        }
       }
     })();
   }
