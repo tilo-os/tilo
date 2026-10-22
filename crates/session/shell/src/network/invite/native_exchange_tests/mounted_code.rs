@@ -95,6 +95,13 @@ struct RefreshConsumer {
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// The relay's refusals of a refresh whose requesting session has ended: the
+/// device reconnected or left before the owner's turn finished.
+const REQUESTER_GONE: [&str; 2] = [
+    "checkpoint refresh session ended during owner turn",
+    "checkpoint refresh subscription is no longer current",
+];
+
 impl RefreshConsumer {
     fn start(
         mut requests: tokio::sync::mpsc::Receiver<tilo_relay::peer::sync_refresh::Request>,
@@ -108,6 +115,16 @@ impl RefreshConsumer {
             while let Some(request) = requests.recv().await {
                 observed.store(true, std::sync::atomic::Ordering::Release);
                 let result = super::refresh::refresh_shared_on_request(&authority, request).await;
+                if let Err(reason) = &result
+                    && REQUESTER_GONE.contains(&reason.as_str())
+                {
+                    // The device that asked reconnected or left while its
+                    // request waited: the relay answers no session that is
+                    // gone, and the device's current session asks again.
+                    // Nothing under test was refused.
+                    eprintln!("refresh for an ended session not answered: {reason}");
+                    continue;
+                }
                 if result.is_ok() {
                     publish(&authority, &publisher);
                 }
