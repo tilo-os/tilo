@@ -268,6 +268,39 @@ pub fn block_grant(room: &str, person: &str, granted_by: Subject) -> Grant {
     }
 }
 
+/// The id of the grant that keeps `record` of `app` to its readers: one per
+/// record, so naming them again replaces it.
+#[must_use]
+pub fn readers_grant_id(app: &str, record: &str) -> GrantId {
+    GrantId(format!("readers:{app}/{record}"))
+}
+
+/// The grant that keeps `record` of `app` in `room` to `readers`, given by
+/// `granted_by`: every kind denied there to everyone but them
+/// ([`Subject::AllBut`]). A reader keeps what their own grants give them on
+/// the record; nobody else reads, changes or acts on it, an agent acting for
+/// a reader included unless it is named itself. The room's owner owns it
+/// structurally. A record's channel key is admitted by the same decision, so
+/// no other device is given its bytes.
+#[must_use]
+pub fn readers_grant(
+    room: &str,
+    app: &str,
+    record: &str,
+    readers: impl IntoIterator<Item = Subject>,
+    granted_by: Subject,
+) -> Grant {
+    Grant {
+        id: readers_grant_id(app, record),
+        subject: Subject::all_but(readers),
+        node: TreePath::room(room).app(app).resource(record),
+        kinds: KindSet::ALL,
+        answer: Answer::Deny,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by,
+    }
+}
+
 /// The id of the grant that restricts `person` in a room.
 #[must_use]
 pub fn restriction_grant_id(person: &str) -> GrantId {

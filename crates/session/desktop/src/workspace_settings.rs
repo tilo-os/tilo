@@ -1913,7 +1913,12 @@ pub fn grant_given_by_label(
             "workspace-settings-granted-by-agent",
             &[("id", member_name_or_short_id(ws, id).into())],
         )),
-        Who::Role(_) | Who::Task(_) | Who::Shortcut(_) | Who::Bot(_) | Who::ForeignDevice => None,
+        Who::Role(_)
+        | Who::Task(_)
+        | Who::Shortcut(_)
+        | Who::Bot(_)
+        | Who::ForeignDevice
+        | Who::AllBut(_) => None,
     }
 }
 
@@ -3795,6 +3800,11 @@ fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
         Who::ForeignDevice => GrantSubject {
             kind: SubjectKind::Other,
             id: t("workspace-settings-subject-foreign-device"),
+        },
+        // A record kept to its readers.
+        Who::AllBut(_) => GrantSubject {
+            kind: SubjectKind::Other,
+            id: grant.subject.to_string(),
         },
     }
 }
