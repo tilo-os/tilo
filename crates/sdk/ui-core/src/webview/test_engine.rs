@@ -47,6 +47,8 @@ struct Inner {
     selection: String,
     /// Links the page asked to open in a new window, not taken yet.
     new_tabs: Vec<(String, bool)>,
+    /// It paints nothing new, as a busy renderer has not yet.
+    holds_frames: bool,
 }
 
 pub struct TestEngine {
@@ -111,6 +113,16 @@ impl TestEngine {
         self.lock_inner().selection = text.into();
     }
 
+    /// Hold back every frame, as a renderer still laying out a page does,
+    /// or paint the page at the view's current size now.
+    pub fn hold_frames(&self, hold: bool) {
+        let mut inner = self.lock_inner();
+        inner.holds_frames = hold;
+        if !hold {
+            self.render_locked(&inner);
+        }
+    }
+
     /// Deliver `event` on the next drain, as the engine would on its own (a
     /// page reporting its document size).
     pub fn push_event(&self, event: WebViewEvent) {
@@ -172,6 +184,9 @@ impl TestEngine {
     }
 
     fn render_locked(&self, inner: &Inner) {
+        if inner.holds_frames {
+            return;
+        }
         let Some(uri) = inner.history.get(inner.index) else {
             return;
         };

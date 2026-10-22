@@ -77,7 +77,6 @@ pub(crate) struct Setting {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Measured {
     pub height: f64,
-    pub scroll_y: f64,
     pub width: f64,
 }
 
@@ -88,6 +87,9 @@ pub(super) struct Said {
     pub open: Vec<String>,
     /// The layout or the view changed: draw again.
     pub dirty: bool,
+    /// Where the active find match is, top and bottom in the view's
+    /// logical pixels: the reader scrolls it into sight.
+    pub found_at: Option<(f64, f64)>,
 }
 
 /// How far a loaded document is.
@@ -116,8 +118,8 @@ pub(super) struct HtmlBody {
     /// finished loading.
     stage: Stage,
     /// The last size the engine reported for the loaded document before it
-    /// finished loading, in CSS pixels (width, height, scroll).
-    early_size: Option<(f64, f64, f64)>,
+    /// finished loading, in CSS pixels (width, height).
+    early_size: Option<(f64, f64)>,
     measured: Option<Measured>,
     /// The view width the body is being measured at: it is laid out a
     /// sliver tall, and not drawn, until its engine says how tall it is.
@@ -128,6 +130,9 @@ pub(super) struct HtmlBody {
     zoom_width: Option<f64>,
     /// The view's rect as last drawn.
     rect: Option<Rect>,
+    /// The engine has painted this message at the size the body is shown
+    /// at; until it has, the body is not drawn.
+    painted: bool,
     /// The address of the link under the pointer.
     hovered: String,
     /// The page has the keyboard: the person pressed in it.
@@ -156,6 +161,7 @@ impl HtmlBody {
             zoom: 1.0,
             zoom_width: None,
             rect: None,
+            painted: false,
             hovered: String::new(),
             focused: false,
             next_request: 0,
@@ -204,10 +210,6 @@ impl HtmlBody {
 
     pub fn rect(&self) -> Option<Rect> {
         self.rect
-    }
-
-    pub fn measured(&self) -> Option<Measured> {
-        self.measured
     }
 
     pub fn hovered(&self) -> Option<&str> {
@@ -306,6 +308,7 @@ impl HtmlBody {
             .is_some_and(|loaded| loaded.message == setting.message);
         if !same_message {
             self.measured = None;
+            self.painted = false;
         }
         self.stage = Stage::Loading;
         self.early_size = None;
@@ -324,15 +327,16 @@ impl HtmlBody {
         self.hovered.clear();
     }
 
-    /// The height to lay the body out at in a view `width` wide, at most
-    /// `most`, and the room to keep for it: a sliver until its height is
-    /// known, keeping the room it had at another width.
-    pub fn layout(&mut self, width: f64, most: f64, sliver: f64) -> (f64, f64) {
+    /// The height to lay the body out at in a view `width` wide, and the
+    /// room to keep for it: its document's whole height, so the reader
+    /// scrolls the conversation and the mail as one page; a sliver until
+    /// that is known, keeping the room it had at another width.
+    pub fn layout(&mut self, width: f64, sliver: f64) -> (f64, f64) {
         if let Some(doc) = self
             .measured
             .filter(|doc| (doc.width - width).abs() < 0.5 && self.measuring.is_none())
         {
-            let height = doc.height.clamp(1.0, most);
+            let height = doc.height.ceil().max(1.0);
             return (height, height);
         }
         if self
@@ -349,7 +353,7 @@ impl HtmlBody {
         self.measuring = Some(width);
         let kept = self
             .measured
-            .map_or(sliver, |doc| doc.height.clamp(1.0, most));
+            .map_or(sliver, |doc| doc.height.ceil().max(1.0));
         (sliver, kept)
     }
 
@@ -382,6 +386,15 @@ impl HtmlBody {
         };
         let rect = view.get_rect();
         if measuring {
+            return;
+        }
+        // Grown to its document's height, the view has nothing of the page
+        // until the engine paints at that size: a blank sheet. The message's
+        // body appears with its first painted frame; later resizes keep
+        // showing the last one until the next arrives.
+        if view.has_fitting_frame() {
+            self.painted = true;
+        } else if !self.painted {
             return;
         }
         // Scrolled partly out of the reader, it is cut at its edges like
@@ -438,25 +451,24 @@ impl HtmlBody {
                     if self.stage == Stage::Committed =>
                 {
                     self.stage = Stage::Finished;
-                    if let Some((width, height, scroll_y)) = self.early_size.take() {
-                        said.dirty |= self.document_size(width, height, scroll_y);
+                    if let Some((width, height)) = self.early_size.take() {
+                        said.dirty |= self.document_size(width, height);
                     }
                 }
-                WebViewEvent::DocumentSize {
-                    width,
-                    height,
-                    scroll_y,
-                } if self.stage == Stage::Finished => {
-                    said.dirty |= self.document_size(width, height, scroll_y);
+                WebViewEvent::DocumentSize { width, height, .. }
+                    if self.stage == Stage::Finished =>
+                {
+                    said.dirty |= self.document_size(width, height);
                 }
-                WebViewEvent::DocumentSize {
-                    width,
-                    height,
-                    scroll_y,
-                } if self.stage == Stage::Committed => {
+                WebViewEvent::DocumentSize { width, height, .. }
+                    if self.stage == Stage::Committed =>
+                {
                     // Measured before its content is laid out, a page is as
                     // tall as the sliver it is shown in.
-                    self.early_size = Some((width, height, scroll_y));
+                    self.early_size = Some((width, height));
+                }
+                WebViewEvent::FindSelection { id, y, height, .. } if self.finding == Some(id) => {
+                    said.found_at = Some((y, y + height));
                 }
                 WebViewEvent::LinkHovered(url) => {
                     if url != self.hovered {
@@ -492,7 +504,7 @@ impl HtmlBody {
     /// than the view is zoomed out to fit it, so a mail laid out for a
     /// wider window reads without scrolling sideways. Returns whether the
     /// reader's layout changes.
-    fn document_size(&mut self, css_width: f64, css_height: f64, css_scroll: f64) -> bool {
+    fn document_size(&mut self, css_width: f64, css_height: f64) -> bool {
         let Some(width) = self
             .measuring
             .or_else(|| self.measured.map(|doc| doc.width))
@@ -512,7 +524,6 @@ impl HtmlBody {
         self.zoom_width = Some(width);
         let next = Measured {
             height: css_height * self.zoom,
-            scroll_y: css_scroll * self.zoom,
             width,
         };
         let changed = self.measuring.is_some()
@@ -674,13 +685,25 @@ impl HtmlBody {
             .is_some_and(Widget::needs_animation_frame)
     }
 
+    /// The view holds a frame of the page at the size it is shown at.
+    #[cfg(test)]
+    pub fn has_fitting_frame(&self) -> bool {
+        self.view.as_ref().is_some_and(WebView::has_fitting_frame)
+    }
+
     /// The loaded document is not on screen yet.
     pub fn pending(&self) -> bool {
         self.live
             && self.loaded.is_some()
             && (self.measuring.is_some()
                 || self.stage != Stage::Finished
-                || !self.view.as_ref().is_some_and(WebView::has_fitting_frame))
+                || !self.view.as_ref().is_some_and(|view| {
+                    // Placed at the height it was measured at, and painted there.
+                    let placed = view.get_rect().height();
+                    self.measured
+                        .is_none_or(|doc| (placed - doc.height.ceil().max(1.0)).abs() < 0.5)
+                        && view.has_fitting_frame()
+                }))
     }
 
     pub fn mark_drawn(&mut self) {

@@ -1927,6 +1927,14 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_some_and(|text| text.len() <= 1024 * 1024)
         }
         "link_status" => value["url"].as_str().is_some_and(|url| url.len() <= 8192),
+        "find_selection" => {
+            valid_id(value)
+                && ["x", "y", "width", "height"].iter().all(|key| {
+                    value[*key]
+                        .as_f64()
+                        .is_some_and(|n| n.is_finite() && (-1e7..=1e7).contains(&n))
+                })
+        }
         "document_size" => ["width", "height", "scroll_y"].iter().all(|key| {
             value[*key]
                 .as_f64()
@@ -2337,6 +2345,13 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             text: value["text"].as_str()?.into(),
         },
         "link_status" => WebViewEvent::LinkHovered(value["url"].as_str()?.into()),
+        "find_selection" => WebViewEvent::FindSelection {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            x: value["x"].as_f64()?,
+            y: value["y"].as_f64()?,
+            width: value["width"].as_f64()?,
+            height: value["height"].as_f64()?,
+        },
         "document_size" => WebViewEvent::DocumentSize {
             width: value["width"].as_f64()?,
             height: value["height"].as_f64()?,
