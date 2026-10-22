@@ -690,7 +690,6 @@ settings-appearance-scope-all = Jeder Arbeitsbereich
 settings-appearance-target-desktop = Desktop
 settings-appearance-target-lock = Sperrbildschirm
 settings-appearance-target-both = Desktop und Sperrbildschirm
-settings-appearance-choose-picture = Bild wählen…
 settings-appearance-your-picture = Eigenes Bild
 settings-wallpaper-alps = Alpendunst
 settings-wallpaper-cloud-sea = Wolkenmeer

@@ -690,7 +690,6 @@ settings-appearance-scope-all = Every workspace
 settings-appearance-target-desktop = Desktop
 settings-appearance-target-lock = Lock screen
 settings-appearance-target-both = Desktop and lock screen
-settings-appearance-choose-picture = Choose picture…
 settings-appearance-your-picture = Your picture
 settings-wallpaper-alps = Alpine haze
 settings-wallpaper-cloud-sea = Sea of clouds
