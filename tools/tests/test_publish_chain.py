@@ -234,6 +234,22 @@ class GeneratorTests(unittest.TestCase):
             checks({"family": "f", "name": "x", "repository": "r", "release": ["t"], "build": {"run": "b"},
                     "release_build": {"name": "d", "run": "d", "on": ["main"]}})
 
+    def test_a_build_waits_for_a_credentialed_step_only_where_it_runs(self):
+        c = checks({"family": "f", "name": "b", "repository": "r/b",
+                    "build": {"run": "b {out}", "optional_needs": ["mirror-base"]}})
+        self.assertEqual(c["image-b"]["optional_needs"], ["mirror-base"])
+        self.assertNotIn("needs", c["image-b"])
+
+    def test_the_rpm_snapshot_builds_after_its_base_is_mirrored(self):
+        expanded = {check["name"]: check for check in t_matrix.checks(ROOT)}
+        mirror = expanded["mirror-base"]
+        self.assertEqual(mirror["id_token"], ["registry.tilo.so"])
+        self.assertIn("stable", mirror["on"])
+        self.assertIn("main", mirror["on"])
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch):
+                self.assertEqual(expanded[f"image-rpms-{arch}"]["optional_needs"], ["mirror-base"])
+
     def test_products_without_tags_are_only_built(self):
         c = checks({"family": "f", "name": "b", "repository": "r/b", "build": {"run": "b {out}"}})
         self.assertEqual(sorted(c), ["image-b"])
