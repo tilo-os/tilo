@@ -7,7 +7,9 @@
 //! ([`ShellNetwork::run_off_loop`], [`ShellNetwork::peer_sync_request`])
 //! and applies its outcome once the worker wakes the loop. Shared rooms
 //! whose enrollment completed are installed here too, at the frame loop's
-//! prompting ([`ShellNetwork::frame_tick`]). One thread runs them all, in
+//! prompting ([`ShellNetwork::frame_tick`]), and every sync round, whose
+//! requests carry identity material read from the disk
+//! ([`ShellNetwork::publish_sync_requests`]). One thread runs them all, in
 //! the order they came, so enrollments are finished by one writer at a
 //! time.
 use super::ShellNetwork;
@@ -35,6 +37,7 @@ pub(crate) type Job = Box<dyn FnOnce() + Send>;
 enum Work {
     Job(Job),
     FinishSharedRooms,
+    SyncRound,
 }
 
 #[derive(Default)]
@@ -43,6 +46,9 @@ pub(super) struct State {
     /// A shared-room pass is queued and has not run yet.
     shared_rooms_queued: Arc<AtomicBool>,
     shared_rooms_asked: Mutex<Option<Instant>>,
+    /// A sync round is queued and has not run yet: one covers every ask
+    /// made before it runs.
+    sync_round_queued: Arc<AtomicBool>,
 }
 
 impl ShellNetwork {
@@ -55,6 +61,7 @@ impl ShellNetwork {
         let (sender, work) = mpsc::channel::<Work>();
         let network = Arc::downgrade(self);
         let queued = Arc::clone(&self.peer_sync_worker.shared_rooms_queued);
+        let sync_queued = Arc::clone(&self.peer_sync_worker.sync_round_queued);
         let wake = Arc::clone(&self.event_wake);
         let spawned = std::thread::Builder::new()
             .name("peer-sync-worker".into())
@@ -71,6 +78,10 @@ impl ShellNetwork {
                             Work::FinishSharedRooms => {
                                 queued.store(false, Ordering::Release);
                                 network.finish_shared_rooms();
+                            }
+                            Work::SyncRound => {
+                                sync_queued.store(false, Ordering::Release);
+                                network.publish_sync_requests_now();
                             }
                         }));
                     if ran.is_err() {
@@ -235,7 +246,7 @@ impl ShellNetwork {
         };
         match worker.send(Work::Job(job)) {
             Err(mpsc::SendError(Work::Job(job))) => Err(job),
-            Ok(()) | Err(mpsc::SendError(Work::FinishSharedRooms)) => Ok(()),
+            Ok(()) | Err(mpsc::SendError(Work::FinishSharedRooms | Work::SyncRound)) => Ok(()),
         }
     }
 
@@ -276,5 +287,33 @@ impl ShellNetwork {
                 .shared_rooms_queued
                 .store(false, Ordering::Release);
         }
+    }
+
+    /// Ask every room this machine is in for whatever it is missing, and
+    /// publish the requests. Each carries the identity the room is
+    /// presented with, read from the identity directory and this device's
+    /// certificates, which can wait on the disk: with the peer-sync worker
+    /// running the round runs there, never on the compositor's loop.
+    pub fn publish_sync_requests(&self) {
+        if !self.publish_sync_requests_off_loop() {
+            self.publish_sync_requests_now();
+        }
+    }
+
+    /// Queue a sync round on the peer-sync worker: whether there is one to
+    /// run it. A round already queued covers this ask.
+    fn publish_sync_requests_off_loop(&self) -> bool {
+        let Some(worker) = self.peer_sync_worker.worker.get() else {
+            return false;
+        };
+        let queued = &self.peer_sync_worker.sync_round_queued;
+        if queued.swap(true, Ordering::AcqRel) {
+            return true;
+        }
+        if worker.send(Work::SyncRound).is_err() {
+            queued.store(false, Ordering::Release);
+            return false;
+        }
+        true
     }
 }
