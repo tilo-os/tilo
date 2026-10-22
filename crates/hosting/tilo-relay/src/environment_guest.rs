@@ -442,6 +442,7 @@ pub fn open_ush_session(
         runs: None,
         // Native editor custody is participant-private and never relayed.
         editor_protocol: None,
+        end_report: false,
     };
     let mut line = serde_json::to_vec(&serve)
         .map_err(|error| LaunchError::Failed(format!("encode the request: {error}")))?;

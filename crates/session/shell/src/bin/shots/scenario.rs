@@ -2619,6 +2619,7 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_browser_scenario(),
         window_bar_tabbed_scenario(),
         window_bar_files_scenario(),
+        window_bar_terminal_scenario(),
         window_bar_writer_scenario(),
         window_bar_overflow_scenario(),
         window_bar_suggestions_scenario(),
@@ -5482,6 +5483,34 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
     }
 }
 
+/// The terminal's slots, as Terminal declares them on the device's own
+/// shell: where the shell runs as the window's title, and the places the
+/// target picker offers, the current one checked.
+fn terminal_slots() -> ui::window_toolbar::WindowToolbar {
+    use ui::window_toolbar::{LocationChoice, ToolbarLocation, WindowToolbar};
+    let choice = |label: &str, value: &str, current: bool, separated: bool| LocationChoice {
+        label: label.into(),
+        value: value.into(),
+        current,
+        separated,
+    };
+    WindowToolbar {
+        location: Some(ToolbarLocation {
+            label: "Your shell on this device".into(),
+            name: "Choose where this runs".into(),
+            choices: vec![
+                choice("Default", "open:default", false, false),
+                choice("Work", "open:work", false, false),
+                choice("Your shell on this device", "open:host", true, false),
+                choice("linux virtual machine", "open:linux", false, false),
+                choice("Manage environments…", "manage", false, true),
+            ],
+            ..ToolbarLocation::default()
+        }),
+        ..WindowToolbar::default()
+    }
+}
+
 /// The browser's slots while "youtube.com" is typed into its address: the
 /// omnibox's rows under the field, as Browser answers (the address, the
 /// search with its engine, pages visited before with their addresses, the
@@ -5538,6 +5567,12 @@ const BAR_FILES: BarTab = BarTab {
     title: "Downloads",
     surface_id: 9102,
     slots: Some(files_slots),
+};
+const BAR_TERMINAL: BarTab = BarTab {
+    app_id: "so.tilo.terminal",
+    title: "Terminal",
+    surface_id: 9104,
+    slots: Some(terminal_slots),
 };
 /// A foreign app: no slots, its client's title is its location.
 const BAR_WRITER: BarTab = BarTab {
@@ -5629,6 +5664,29 @@ fn window_bar_files_scenario() -> Scenario {
             Action::Wait(30),
             Action::Relayout,
             Action::Snapshot("01-untabbed"),
+        ],
+    }
+}
+
+fn window_bar_terminal_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-terminal",
+        description: "A terminal's window: where its shell runs is the \
+             window's title in its bar, a picker with a chevron; a click opens \
+             the system menu of the places it can run, the current one checked, \
+             and Manage environments… after a separator.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_TERMINAL],
+                active: 0,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("01-title"),
+            Action::ClickNamed("window_location"),
+            Action::Wait(20),
+            Action::Snapshot("02-picker"),
         ],
     }
 }

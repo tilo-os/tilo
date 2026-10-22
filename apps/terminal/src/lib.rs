@@ -47,6 +47,7 @@ pub use portable_pty::CommandBuilder;
 mod inner {
     include!("main_body.rs");
     include!("target_ui.rs");
+    include!("window_ui.rs");
 }
 
 mod async_open;

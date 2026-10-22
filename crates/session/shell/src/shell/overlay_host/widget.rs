@@ -277,7 +277,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_tab_reorder();
         self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
-        self.sync_window_toolbars();
+        let hosted_windows_dirty = self.sync_hosted_windows();
         let chips_dirty = self.sync_device_local_chips();
         // Refreshing here (not inside the harvest) means the palette never
         // shows "Nothing to show" before the user's first keystroke.
@@ -375,6 +375,7 @@ impl Widget for ShellOverlayHost {
             || follow_dirty
             || peer_sync_dirty
             || activity_records_dirty
+            || hosted_windows_dirty
     }
 
     #[allow(

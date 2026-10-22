@@ -7,6 +7,11 @@
 //! the same way: the app says what its window offers them
 //! ([`WindowOffer`]), and the query, steps, close and History presses go
 //! back to it as toolbar events.
+//!
+//! An app the shell mounts in its own process (a Terminal tab) has no
+//! connection: it declares its slots, and asks to close its tab, on the
+//! window the shell lent it ([`ui::hosted_window::HostedWindow`]), which the
+//! shell looks at every frame ([`ShellOverlayHost::sync_hosted_windows`]).
 
 use std::collections::HashMap;
 
@@ -15,6 +20,11 @@ use ui::window_toolbar::{ToolbarEvent, WindowOffer, WindowToolbar};
 
 use super::ShellOverlayHost;
 use crate::shell::state::TabId;
+
+/// The connection id the slots of an app the shell mounts in its own
+/// process are kept under: what the person does with them goes back on its
+/// window, never on a connection.
+const IN_PROCESS: u64 = u64::MAX;
 
 /// Every tab's declared slots and the connection of the app that declared
 /// them, and what goes back to the apps on the next pump.
@@ -29,6 +39,11 @@ pub(crate) struct WindowToolbars {
     /// Tabs whose offer went away since the groups last saw them.
     offers_cleared: Vec<TabId>,
     outbox: Vec<(u64, ToolbarEvent)>,
+    /// For an app the shell mounts in its own process: the revision of its
+    /// window's slots last taken, by tab.
+    hosted_seen: HashMap<TabId, u64>,
+    /// What goes back to apps the shell mounts in its own process, by tab.
+    hosted_outbox: Vec<(TabId, ToolbarEvent)>,
 }
 
 impl WindowToolbars {
@@ -125,8 +140,33 @@ impl WindowToolbars {
         let Some(connection) = connection else {
             return false;
         };
-        self.outbox.push((connection, event));
+        if connection == IN_PROCESS {
+            self.hosted_outbox.push((tab, event));
+        } else {
+            self.outbox.push((connection, event));
+        }
         true
+    }
+
+    /// Tab `tab`'s app, mounted in the shell's process, declared `toolbar`
+    /// on its window as revision `revision`. Returns whether it changed
+    /// anything.
+    fn declare_hosted(
+        &mut self,
+        tab: TabId,
+        revision: u64,
+        toolbar: Option<WindowToolbar>,
+    ) -> bool {
+        self.hosted_seen.insert(tab, revision);
+        self.declare(tab, IN_PROCESS, toolbar)
+    }
+
+    /// Tab `tab`, mounted in the shell's process, is gone: its slots go.
+    fn forget_hosted(&mut self, tab: TabId) {
+        self.hosted_seen.remove(&tab);
+        if self.by_tab.remove(&tab).is_some() {
+            self.cleared.push(tab);
+        }
     }
 
     pub(crate) fn take_outbox(&mut self) -> Vec<(u64, ToolbarEvent)> {
@@ -336,6 +376,90 @@ impl ShellOverlayHost {
         for (tab, event) in events {
             self.window_toolbars.route(tab, event);
         }
+    }
+
+    /// Look at the windows the shell lent the apps it mounts in its own
+    /// process: show the slots each declared in its tab's bar, hand it what
+    /// the person did with them, and close the tab of each that asked (its
+    /// shell exited), the window with it when it was the only tab. Runs every
+    /// frame, after the groups took this frame's input. Returns whether the
+    /// desktop shows something new or an app has something to hear.
+    pub(super) fn sync_hosted_windows(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            self.sync_window_toolbars();
+            return false;
+        };
+        let windows = {
+            let state = chrome.borrow();
+            state
+                .hosted_inputs
+                .in_process()
+                .map(|apps| apps.borrow().hosted_windows())
+                .unwrap_or_default()
+        };
+        let mut changed = false;
+        let mut closing = Vec::new();
+        for (tab, window) in &windows {
+            let seen = self.window_toolbars.hosted_seen.get(tab).copied();
+            if let Some((revision, toolbar)) = window.toolbar_since(seen) {
+                changed |= self.window_toolbars.declare_hosted(*tab, revision, toolbar);
+            }
+            if window.take_close() {
+                closing.push(*tab);
+            }
+        }
+        self.sync_window_toolbars();
+        for (tab, event) in std::mem::take(&mut self.window_toolbars.hosted_outbox) {
+            if let Some((_, window)) = windows.iter().find(|(shown, _)| *shown == tab) {
+                window.deliver(event);
+                // The app hears it on its next frame.
+                changed = true;
+            }
+        }
+        if !closing.is_empty() {
+            let mut state = chrome.borrow_mut();
+            for tab in closing {
+                if let Err(error) = crate::shell::window_actions::close_tab(&mut state, tab) {
+                    tracing::debug!(?error, tab, "the tab of an ended session did not close");
+                }
+            }
+            changed = true;
+        }
+        // The windows of tabs that are gone go with them.
+        let revision = chrome.borrow().revision;
+        if !windows.is_empty() && self.hosted_windows_revision != Some(revision) {
+            self.hosted_windows_revision = Some(revision);
+            let present: std::collections::HashSet<TabId> = {
+                let state = chrome.borrow();
+                let tree = state.tree();
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .map(|tab| tab.id)
+                    .collect()
+            };
+            let gone: Vec<TabId> = windows
+                .iter()
+                .map(|(tab, _)| *tab)
+                .filter(|tab| !present.contains(tab))
+                .collect();
+            if !gone.is_empty() {
+                if let Some(apps) = chrome.borrow().hosted_inputs.in_process() {
+                    let mut apps = apps.borrow_mut();
+                    for tab in &gone {
+                        apps.forget_hosted_window(*tab);
+                    }
+                }
+                for tab in gone {
+                    self.window_toolbars.forget_hosted(tab);
+                }
+                self.sync_window_toolbars();
+            }
+        }
+        changed
     }
 
     /// What goes back to the apps: their slots were used.

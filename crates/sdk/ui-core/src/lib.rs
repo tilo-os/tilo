@@ -185,6 +185,7 @@ mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
+pub mod hosted_window;
 pub mod owner_wake;
 /// The app's own vello pipelines, kept across launches in its cache directory.
 #[cfg(feature = "native")]

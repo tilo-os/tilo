@@ -93,6 +93,9 @@ pub enum BridgeStatus {
         code: Option<i32>,
         /// Why, when it did not simply exit.
         reason: Option<String>,
+        /// Another terminal took the session over: it still runs, there.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        superseded: bool,
     },
 }
 

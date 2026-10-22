@@ -19,7 +19,11 @@
 //!   favicon) stands at the bar's leading edge in place of the app's icon.
 //!   While the field is edited the app hears each change of its text
 //!   ([`ToolbarEvent::Edit`]) and may answer with [`LocationSuggestion`]s,
-//!   which the bar lists under the field;
+//!   which the bar lists under the field. A location that is one of a few
+//!   places (where a terminal's shell runs) declares them as
+//!   [`LocationChoice`]s instead: the label reads as a picker, with a chevron,
+//!   and a click opens the system's menu of them; choosing one commits its
+//!   value;
 //! - **actions:** icon buttons (reload, bookmark…), at most [`MAX_ACTIONS`]
 //!   of them in the row; the rest, and those the row has no room for, are
 //!   in the menu of a trailing overflow button.
@@ -61,6 +65,9 @@ pub const MAX_SEGMENTS: usize = 64;
 
 /// The most suggestions the bar lists under an edited location.
 pub const MAX_SUGGESTIONS: usize = 8;
+
+/// The most choices a location's picker lists.
+pub const MAX_CHOICES: usize = 32;
 
 /// Largest encoded location picture, in bytes. A favicon is a few hundred.
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024;
@@ -134,6 +141,28 @@ pub struct ToolbarLocation {
     /// the app's answer to the text it heard last ([`ToolbarEvent::Edit`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<LocationSuggestion>,
+    /// The places the location can be switched to, for a location that is
+    /// one of a few (where a terminal's shell runs): the label reads as a
+    /// picker and a click opens the menu of them. Choosing one commits its
+    /// value ([`ToolbarEvent::Commit`]). Empty: no picker. Not for an
+    /// editable location, which edits instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<LocationChoice>,
+}
+
+/// One row of a location's picker.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationChoice {
+    /// What the row says ("Your shell on this device").
+    pub label: String,
+    /// What choosing it commits ([`ToolbarEvent::Commit`]).
+    pub value: String,
+    /// It is where the window is now: the row carries the menu's check.
+    #[serde(default)]
+    pub current: bool,
+    /// A separator stands above it: it begins another group of rows.
+    #[serde(default)]
+    pub separated: bool,
 }
 
 /// One level of a location's hierarchy.
@@ -446,6 +475,11 @@ impl WindowToolbar {
             for segment in &mut location.segments {
                 cut(&mut segment.label);
                 cut(&mut segment.value);
+            }
+            location.choices.truncate(MAX_CHOICES);
+            for choice in &mut location.choices {
+                cut(&mut choice.label);
+                cut(&mut choice.value);
             }
             location.suggestions.truncate(MAX_SUGGESTIONS);
             for suggestion in &mut location.suggestions {
