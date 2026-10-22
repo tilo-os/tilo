@@ -1513,6 +1513,71 @@ mod tests {
         );
     }
 
+    /// A reference opens in the record that keeps it: a window of the app
+    /// on another record is left alone, the app is launched on the record,
+    /// and the window showing it then takes the next one without another
+    /// launch. A caller who may not launch the app opens nothing.
+    #[test]
+    fn an_application_record_target_opens_in_that_record() {
+        let (state, room) = broker(&workspace());
+        let (streams, launches, places) = app_comes_up_placed(&state, 8);
+        let (elsewhere_tx, mut elsewhere) = tokio::sync::mpsc::unbounded_channel();
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("subscribers")
+            .insert(7, elsewhere_tx);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(7, surface_of(&room, "uuid:other"));
+        let target = tilo_actions::remote::application_record_target(
+            &room,
+            APP,
+            "uuid:plan",
+            "files.app",
+            "new-window",
+        );
+
+        assert_eq!(
+            invoke(
+                &state,
+                &Caller::local_person("stranger").in_room(&room),
+                &target.provider,
+                "new-window",
+                None,
+            ),
+            Err(ActionHostError::NotPermitted),
+        );
+        assert!(launches.lock().expect("launches").is_empty());
+
+        let owner = Caller::local_person("owner").in_room(&room);
+        invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+        assert_eq!(
+            places
+                .lock()
+                .expect("places")
+                .first()
+                .map(|(record, _)| record.clone()),
+            Some(Some("uuid:plan".to_owned())),
+            "launched on the record the reference names"
+        );
+        let mut stream = streams.try_recv().expect("the app came up");
+        assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
+        assert!(
+            elsewhere.try_recv().is_err(),
+            "another record's window is left alone"
+        );
+
+        invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+        assert_eq!(launches.lock().expect("launches").len(), 1);
+        assert_eq!(
+            stream.try_recv().expect("delivered again").action,
+            "new-window"
+        );
+    }
+
     /// What an installed app's signed manifest offers while it is closed.
     fn offer(
         action: &str,
