@@ -462,6 +462,9 @@ pub struct BrowserWidget {
     download_picker: Option<(String, ui::portal::PortalChannel)>,
     download_picker_queue: std::collections::VecDeque<(String, String)>,
     download_save_due: Option<ui::time::Instant>,
+    /// This window's engine session, which keys its downloads in the saved
+    /// list: the engine numbers them from 1 again at every start.
+    download_session: String,
     /// Retained full-corpus index. Provider handles are cheap and unchanged
     /// frames compare only the durable corpus revision tokens.
     search_index: crate::search_provider::BrowserSearchIndex,
@@ -1271,6 +1274,7 @@ impl BrowserWidget {
             download_picker: None,
             download_picker_queue: std::collections::VecDeque::new(),
             download_save_due: None,
+            download_session: crate::downloads::new_session(),
             search_index,
             suggestions: AddressSuggestions::new(),
             bar_rows: Vec::new(),
@@ -1938,7 +1942,11 @@ impl BrowserWidget {
                 ) {
                     return Err("download is not active".into());
                 }
-                self.engine.send(WebViewCommand::CancelDownload { id });
+                let command = match self.native_download_id(&id) {
+                    Some(native) => WebViewCommand::CancelNativeDownload { id: native },
+                    None => WebViewCommand::CancelDownload { id },
+                };
+                self.engine.send(command);
             }
             BrowserOperation::RetryDownload { id } => {
                 let entry = self
@@ -3099,6 +3107,7 @@ impl BrowserWidget {
                 | WebViewEvent::NativeDownloadRequested { .. }
                 | WebViewEvent::DownloadUpdated { .. }
                 | WebViewEvent::DownloadRuntime { .. }) => {
+                    self.keep_native_download(&event);
                     self.capabilities.apply(event);
                     self.structure_dirty = true;
                 }
@@ -3388,6 +3397,77 @@ impl BrowserWidget {
             }
             _ => tracing::warn!("non-download event reached the download event handler"),
         }
+    }
+
+    /// The saved list's key for the engine's download `id`.
+    fn native_download_key(&self, id: u32) -> String {
+        format!("native-{}-{id}", self.download_session)
+    }
+
+    /// The engine's download `id` a saved list `key` names, when it is one
+    /// of this session's.
+    fn native_download_id(&self, key: &str) -> Option<u32> {
+        key.strip_prefix("native-")?
+            .strip_prefix(self.download_session.as_str())?
+            .strip_prefix('-')?
+            .parse()
+            .ok()
+    }
+
+    /// Keep an engine download in the saved list, which the Library shows
+    /// after a restart and search, agents and the download actions read: the
+    /// engine's own list lives as long as the engine.
+    fn keep_native_download(&mut self, event: &WebViewEvent) {
+        let WebViewEvent::DownloadUpdated {
+            id,
+            state,
+            path,
+            name,
+            url,
+            received,
+            total,
+            error,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let key = self.native_download_key(*id);
+        // A page's own export (`data:`, `blob:`) has no address to fetch
+        // again, and is not kept.
+        if self.downloads.get(&key).is_none()
+            && !self.downloads.requested(key.clone(), url.clone(), name)
+        {
+            return;
+        }
+        match state.as_str() {
+            "progress" => {
+                if !path.is_empty() {
+                    self.downloads.destination(&key, path.into());
+                }
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "a fraction of a download only draws a progress bar"
+                )]
+                let fraction = if *total > 0 {
+                    *received as f64 / *total as f64
+                } else {
+                    0.0
+                };
+                self.downloads
+                    .progress(&key, *received, (*total > 0).then_some(*total), fraction);
+                if self.download_save_due.is_none() {
+                    self.download_save_due =
+                        Some(ui::time::now() + std::time::Duration::from_secs(1));
+                }
+                return;
+            }
+            "complete" => self.downloads.finished(&key, path.into()),
+            "cancelled" => self.downloads.failed(&key, error.clone(), true),
+            _ => self.downloads.failed(&key, error.clone(), false),
+        }
+        self.persist_downloads_now();
+        self.download_save_due = None;
     }
 
     fn persist_downloads_now(&self) {

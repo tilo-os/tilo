@@ -85,9 +85,12 @@ impl Capabilities {
         self.observed_download_version = version;
         changed
     }
+    /// Whether the Library shows this engine's downloads: those it has, or
+    /// what it says about them. An engine with neither leaves the section to
+    /// the saved list, with the downloads of earlier sessions.
     pub fn owns_download_presentation(&self) -> bool {
         let downloads = self.downloads.borrow();
-        downloads.runtime_known
+        (downloads.runtime_known && !downloads.accepting)
             || !downloads.records.is_empty()
             || !downloads.prompts.is_empty()
             || !downloads.terminal_notice.is_empty()

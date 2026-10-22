@@ -246,6 +246,17 @@ impl Downloads {
     }
 }
 
+/// A name for one engine session's downloads, unlike any other's: the
+/// engine numbers its downloads from 1 again at every start.
+pub fn new_session() -> String {
+    uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(12)
+        .collect()
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
