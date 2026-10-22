@@ -130,6 +130,9 @@ pub struct WebView {
     cached_image: Option<PenikoImage>,
     cached_trace_id: Option<u64>,
     cached_key: (usize, u32, u32),
+    /// The frames the view may show ([`Self::accept_frames`]); `None`
+    /// shows every frame that fits.
+    accepts: Option<fn(&crate::webview::Frame) -> bool>,
     /// Draws the engine's display list when it has one (the paint stream).
     page: crate::webview::paint::PageRenderer,
     test_id: String,
@@ -156,6 +159,7 @@ impl WebView {
             cached_image: None,
             cached_trace_id: None,
             cached_key: (0, 0, 0),
+            accepts: None,
             page: crate::webview::paint::PageRenderer::new(),
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
@@ -265,6 +269,77 @@ impl WebView {
                     && frame.height.abs_diff(expected.1) <= slack
             })
         })
+    }
+
+    /// The view lands on screen through `transform`. Without a live host,
+    /// the page renders at the scale it lands on screen with: through any
+    /// cache a container records it into, which draws it at the identity
+    /// (module docs, "Device scale"). [`Widget::draw`] says so itself; a
+    /// host that holds the view back until its page has painted says so
+    /// while it does, so the page paints at that scale before it is shown.
+    pub fn lands_at(&mut self, transform: Affine) {
+        if !self.host_scaled {
+            let coefficients = crate::scroll_copy::on_screen(transform).as_coeffs();
+            self.rescale(f32_of_f64(coefficients[0].hypot(coefficients[1])));
+        }
+    }
+
+    /// Show only the frames `accepts` passes, for a host that knows its
+    /// own page's frames (an HTML mail marks its document's end): a frame it
+    /// rejects, or one that does not fit the view, is never drawn, and the
+    /// view goes on drawing the last frame it showed. Whatever the engine
+    /// delivers between a host's look at the view and its draw, the draw
+    /// shows a frame the host accepted.
+    pub fn accept_frames(&mut self, accepts: fn(&crate::webview::Frame) -> bool) {
+        self.accepts = Some(accepts);
+    }
+
+    /// Take the engine's latest frame to draw, if the view may show it, and
+    /// say whether the view has a frame to draw: what [`Widget::draw`]
+    /// would put on screen now, beyond its placeholder.
+    pub fn refresh_frame(&mut self) -> bool {
+        self.adopt_frame();
+        self.cached_image.is_some()
+    }
+
+    /// Take the engine's latest frame as the one to draw if it fits the
+    /// view (and passes [`Self::accept_frames`]). A view without that
+    /// filter drops its frame for a stale one, and returns the stale size.
+    fn adopt_frame(&mut self) -> Option<(u32, u32)> {
+        let latest = {
+            let slot = self.engine.frames();
+            let guard = slot.lock();
+            guard.ok().and_then(|g| g.clone())
+        };
+        let frame = latest?;
+        if !self.retry_resize_for_stale_frame((frame.width, frame.height)) {
+            if self.accepts.is_some() {
+                return None;
+            }
+            self.cached_image = None;
+            self.cached_trace_id = None;
+            self.cached_key = (0, 0, 0);
+            return Some((frame.width, frame.height));
+        }
+        if self.accepts.is_some_and(|accepts| !accepts(&frame)) {
+            return None;
+        }
+        let key = (Arc::as_ptr(&frame.rgba) as usize, frame.width, frame.height);
+        if self.cached_image.is_none() || key != self.cached_key {
+            let expected = (frame.width as usize)
+                .saturating_mul(frame.height as usize)
+                .saturating_mul(4);
+            if frame.rgba.len() == expected && expected > 0 {
+                self.cached_image = Some(crate::raster::rgba8(
+                    Blob::new(frame.rgba.clone()),
+                    frame.width,
+                    frame.height,
+                ));
+                self.cached_key = key;
+                self.cached_trace_id = frame.trace_id;
+            }
+        }
+        None
     }
 
     /// Forget the page's last frame, for a host loading another document
@@ -580,13 +655,7 @@ impl Widget for WebView {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Without a live host, the page renders at the scale it lands on
-        // screen with: through any cache a container records it into, which
-        // draws it at the identity (module docs, "Device scale").
-        if !self.host_scaled {
-            let coefficients = crate::scroll_copy::on_screen(transform).as_coeffs();
-            self.rescale(f32_of_f64(coefficients[0].hypot(coefficients[1])));
-        }
+        self.lands_at(transform);
         // Placeholder before the first frame, letterbox backing afterwards.
         scene.fill(
             Fill::NonZero,
@@ -614,39 +683,13 @@ impl Widget for WebView {
             return;
         }
 
-        let latest = {
-            let slot = self.engine.frames();
-            let guard = slot.lock();
-            guard.ok().and_then(|g| g.clone())
-        };
-
-        if let Some(frame) = latest {
-            if !self.retry_resize_for_stale_frame((frame.width, frame.height)) {
-                self.cached_image = None;
-                self.cached_trace_id = None;
-                self.cached_key = (0, 0, 0);
-                crate::webview::profile::record_draw(
-                    self.rect.width(),
-                    self.rect.height(),
-                    Some((frame.width, frame.height)),
-                );
-                return;
-            }
-            let key = (Arc::as_ptr(&frame.rgba) as usize, frame.width, frame.height);
-            if self.cached_image.is_none() || key != self.cached_key {
-                let expected = (frame.width as usize)
-                    .saturating_mul(frame.height as usize)
-                    .saturating_mul(4);
-                if frame.rgba.len() == expected && expected > 0 {
-                    self.cached_image = Some(crate::raster::rgba8(
-                        Blob::new(frame.rgba.clone()),
-                        frame.width,
-                        frame.height,
-                    ));
-                    self.cached_key = key;
-                    self.cached_trace_id = frame.trace_id;
-                }
-            }
+        if let Some(stale) = self.adopt_frame() {
+            crate::webview::profile::record_draw(
+                self.rect.width(),
+                self.rect.height(),
+                Some(stale),
+            );
+            return;
         }
 
         if let Some(img) = self.cached_image.clone() {

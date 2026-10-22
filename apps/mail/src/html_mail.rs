@@ -342,16 +342,13 @@ fn dark_ready(html: &str) -> bool {
     false
 }
 
-/// The document's own style, before the mail's: a light sheet or the
-/// reader's dark ground, preformatted text that wraps, long words that
-/// break, and images without a set height that fit the width.
 /// The document's end mark: a square in the view's bottom-right corner,
 /// blended to differ from what is under it by one level, so it is invisible
-/// yet never the view's white background. Offscreen Chromium on Linux paints
-/// a resized view before the page has drawn at its new size, the page's old
-/// frame and the view's background in the rest; only the page's own frame
-/// at the size the view has carries the mark there, so the reader shows a
-/// body once a frame has it (`reader::html`). A pseudo-element of the root,
+/// yet unlike the colour beside it. Offscreen Chromium on Linux paints a
+/// resized view before the page has drawn at its new size: the page's old
+/// frame, and the page's background colour in the rest. Only the page's own
+/// frame at the size the view has carries the mark there, so the reader
+/// shows a body once a frame has it (`reader::html`). A pseudo-element of the root,
 /// above everything, so nothing the mail lays out moves or covers it.
 /// `apps/browser/chromium/tests/resize_frames.py` holds Chromium to it.
 pub const END_MARK: &str = "html::after{content:\"\"!important;display:block!important;\
@@ -360,6 +357,9 @@ height:2px!important;margin:0!important;background:rgb(1,1,1)!important;\
 mix-blend-mode:difference!important;pointer-events:none!important;\
 z-index:2147483647!important}";
 
+/// The document's own style, before the mail's: a light sheet or the
+/// reader's dark ground, preformatted text that wraps, long words that
+/// break, and images without a set height that fit the width.
 fn base_css(dark: bool, policy: &Policy<'_>) -> String {
     let ground = css_color(policy.ground);
     let ink = css_color(policy.ink);
@@ -372,6 +372,10 @@ fn base_css(dark: bool, policy: &Policy<'_>) -> String {
         "body{overflow-wrap:break-word}pre{white-space:pre-wrap}\
 img:not([height]){max-width:100%}",
     );
+    // The view is as tall as the document and the reader scrolls it: the
+    // page never shows a scroll bar of its own, not for the pixel a zoomed
+    // mail rounds over its view.
+    css.push_str("html{scrollbar-width:none!important}");
     css.push_str(END_MARK);
     css
 }
@@ -965,6 +969,15 @@ impl<'p> Sanitizer<'p> {
             if sized {
                 style.push_str(";background-color:rgba(128,128,128,0.14)");
             }
+            // Its proportions are the declared ones, not the held-back
+            // pixel's square, when the mail scales it (`height:auto`).
+            if let (Some(width), Some(height)) = (
+                tag.attribute("width").and_then(image_length),
+                tag.attribute("height").and_then(image_length),
+            ) && !css_declares(&style, "aspect-ratio")
+            {
+                let _ = write!(style, ";aspect-ratio:{width}/{height}");
+            }
         }
         if !style.trim().trim_matches(';').trim().is_empty() {
             let _ = write!(out, " style=\"{}\"", escape_decoded(&style));
@@ -1220,6 +1233,18 @@ fn at_rule_end(css: &str) -> usize {
 /// A transparent image one pixel square: what an image held back shows.
 const HELD_BACK_IMAGE: &str =
     "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
+/// An image's `width` or `height` attribute as a length in pixels, if it
+/// is one.
+fn image_length(raw: &str) -> Option<u32> {
+    let raw = raw.trim();
+    raw.strip_suffix("px")
+        .unwrap_or(raw)
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|length| *length > 0)
+}
 
 /// Whether the declarations in `css` set the property `name`.
 fn css_declares(css: &str, name: &str) -> bool {

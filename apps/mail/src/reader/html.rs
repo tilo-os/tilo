@@ -11,7 +11,7 @@
 //! document's own policy and the sanitizer refuse them again.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -130,9 +130,6 @@ pub(super) struct HtmlBody {
     zoom_width: Option<f64>,
     /// The view's rect as last drawn.
     rect: Option<Rect>,
-    /// The engine has painted this message at the size the body is shown
-    /// at; until it has, the body is not drawn.
-    painted: bool,
     /// The address of the link under the pointer.
     hovered: String,
     /// The page has the keyboard: the person pressed in it.
@@ -146,11 +143,29 @@ pub(super) struct HtmlBody {
     found: Option<(usize, Option<usize>)>,
 }
 
-/// Whether `view` holds the page's own frame at the size it is shown at: a
-/// frame of that size with the document's end mark
-/// ([`crate::html_mail::END_MARK`]) in its bottom-right corner. A frame the
-/// engine painted at a new size before the page drew there shows the view's
-/// white background (or nothing) in that corner instead.
+/// Whether `frame` is the page's own: its document's end mark
+/// ([`crate::html_mail::END_MARK`]) is in its bottom-right corner, one level
+/// off what lies beside it on the same row. A frame the engine painted at a
+/// new size before the page drew there has one colour across that row (the
+/// page's background, which Chromium fills the new part with) or nothing.
+fn is_page(frame: &ui::webview::Frame) -> bool {
+    /// How far left of the corner the colour beside the mark is read, in
+    /// pixels: past the mark at any device scale up to 8.
+    const BESIDE: usize = 16;
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    let row = height.saturating_sub(2) * width;
+    let corner = width.saturating_sub(2);
+    let pixel = |x: usize| frame.rgba.get((row + x) * 4..(row + x) * 4 + 4);
+    match (pixel(corner), pixel(corner.saturating_sub(BESIDE))) {
+        (Some(mark), Some(beside)) => {
+            corner > BESIDE && mark.get(3).is_some_and(|alpha| *alpha != 0) && mark != beside
+        }
+        _ => false,
+    }
+}
+
+/// Whether the engine's latest frame is the page's own at the size `view`
+/// is shown at.
 fn shows_page(view: &WebView) -> bool {
     if !view.has_fitting_frame() {
         return false;
@@ -159,13 +174,7 @@ fn shows_page(view: &WebView) -> bool {
     let Ok(guard) = slot.lock() else {
         return false;
     };
-    guard.as_ref().is_some_and(|frame| {
-        let (width, height) = (frame.width as usize, frame.height as usize);
-        let at = (height.saturating_sub(2) * width + width.saturating_sub(2)) * 4;
-        frame.rgba.get(at..at + 4).is_some_and(
-            |pixel| matches!(pixel, [r, g, b, a] if *a != 0 && [*r, *g, *b] != [0xff; 3]),
-        )
-    })
+    guard.as_ref().is_some_and(is_page)
 }
 
 impl HtmlBody {
@@ -183,7 +192,6 @@ impl HtmlBody {
             zoom: 1.0,
             zoom_width: None,
             rect: None,
-            painted: false,
             hovered: String::new(),
             focused: false,
             next_request: 0,
@@ -290,7 +298,11 @@ impl HtmlBody {
             // The body is sized to its document, so the reader scrolls as
             // one page.
             engine.send(WebViewCommand::ReportDocumentSize(true));
-            WebView::new(engine).with_test_id("mail_html_body")
+            let mut view = WebView::new(engine).with_test_id("mail_html_body");
+            // It draws the page's own frames only: never the blank one the
+            // engine paints a grown view with first.
+            view.accept_frames(is_page);
+            view
         }))
     }
 
@@ -309,12 +321,18 @@ impl HtmlBody {
         else {
             return false;
         };
+        let same_message = self
+            .loaded
+            .is_some_and(|loaded| loaded.message == setting.message);
         let Some(view) = self.view() else {
             return false;
         };
         // What the view shows until this mail paints is never the mail
-        // before it.
-        view.forget_frame();
+        // before it; the same mail, loaded again with its images, stays up
+        // until it paints again.
+        if !same_message {
+            view.forget_frame();
+        }
         let engine = view.engine().clone();
         engine.send(WebViewCommand::SetNativeFilterRules {
             rules: std::sync::Arc::new(crate::html_mail::filter_rules(setting.remote)),
@@ -325,12 +343,8 @@ impl HtmlBody {
         engine.send(WebViewCommand::SetZoomLevel(0.0));
         self.zoom = 1.0;
         self.zoom_width = None;
-        let same_message = self
-            .loaded
-            .is_some_and(|loaded| loaded.message == setting.message);
         if !same_message {
             self.measured = None;
-            self.painted = false;
         }
         self.stage = Stage::Loading;
         self.early_size = None;
@@ -401,12 +415,14 @@ impl HtmlBody {
         let sheet = self
             .loaded
             .is_some_and(|setting| !self.prepared(setting).is_some_and(|prepared| prepared.dark));
-        let radius = f64::from(theme.tokens.radii.control);
         self.rect = None;
         let Some(view) = self.view.as_mut() else {
             return;
         };
         let rect = view.get_rect();
+        // Hidden until it has painted, it still paints at the scale it is
+        // shown at: a frame at another scale is not the page on screen.
+        view.lands_at(t);
         if measuring {
             return;
         }
@@ -415,26 +431,16 @@ impl HtmlBody {
         // size first with the page's old frame and a blank rest. The
         // message's body appears with the page's own frame at its size;
         // later resizes keep showing the last one until the next arrives.
-        if shows_page(view) {
-            self.painted = true;
-        } else if !self.painted {
+        if !view.refresh_frame() {
             return;
         }
         // Scrolled partly out of the reader, it is cut at its edges like
         // the rest of the conversation.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         if sheet {
-            let shape = RoundedRect::from_rect(rect, radius);
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
-            view.draw(scene, t, tr, theme, presence);
-            scene.pop_layer();
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                t,
-                theme.tokens.colors.border_standard,
-                None,
-                &shape,
-            );
+            ui::widget::primitives::paint_document_sheet(scene, t, rect, theme, |scene| {
+                view.draw(scene, t, tr, theme, presence);
+            });
         } else {
             view.draw(scene, t, tr, theme, presence);
         }
@@ -708,10 +714,11 @@ impl HtmlBody {
             .is_some_and(Widget::needs_animation_frame)
     }
 
-    /// The view holds the page's own frame at the size it is shown at.
+    /// The view draws a frame of the page's own: what it shows beyond its
+    /// placeholder.
     #[cfg(test)]
-    pub fn shows_page(&self) -> bool {
-        self.view.as_ref().is_some_and(shows_page)
+    pub fn draws_page(&mut self) -> bool {
+        self.view.as_mut().is_some_and(WebView::refresh_frame)
     }
 
     /// The loaded document is not on screen yet.
@@ -743,4 +750,44 @@ pub(crate) fn is_openable(url: &str) -> bool {
         .iter()
         .any(|scheme| lower.starts_with(scheme))
         && url.len() <= 8192
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_page;
+    use std::sync::Arc;
+    use ui::webview::Frame;
+
+    fn frame(width: u32, height: u32, fill: [u8; 4], mark: Option<[u8; 4]>) -> Frame {
+        let mut rgba = fill.repeat(width as usize * height as usize);
+        if let Some(mark) = mark {
+            for y in height - 2..height {
+                for x in width - 2..width {
+                    let at = (y * width + x) as usize * 4;
+                    rgba[at..at + 4].copy_from_slice(&mark);
+                }
+            }
+        }
+        Frame {
+            trace_id: None,
+            rgba: Arc::new(rgba),
+            width,
+            height,
+        }
+    }
+
+    /// Chromium paints a grown view before the page has drawn there in the
+    /// page's own background colour: on a dark mail that is the reader's
+    /// dark ground, not white. Only the end mark, one level off its row,
+    /// tells the page's frame from it, on a light page and a dark one.
+    #[test]
+    fn the_page_is_told_by_its_end_mark_on_any_background() {
+        for ground in [[0xff_u8, 0xff, 0xff, 0xff], [18, 20, 23, 0xff]] {
+            let mark = ground.map(|c| c.abs_diff(1));
+            let mark = [mark[0], mark[1], mark[2], 0xff];
+            assert!(is_page(&frame(64, 32, ground, Some(mark))), "{ground:?}");
+            assert!(!is_page(&frame(64, 32, ground, None)), "{ground:?}");
+        }
+        assert!(!is_page(&frame(64, 32, [0; 4], None)), "nothing painted");
+    }
 }

@@ -1636,6 +1636,14 @@ mod tests {
         reader
     }
 
+    /// An engine that paints a mail's pages as Chromium does: each with the
+    /// document's end mark (`crate::html_mail::END_MARK`).
+    fn html_engine() -> std::sync::Arc<TestEngine> {
+        let engine = TestEngine::new();
+        engine.mark_page_end();
+        engine
+    }
+
     fn draw(reader: &mut MessageReader) {
         let mut scene = Scene::new();
         reader.draw(
@@ -1774,7 +1782,7 @@ mod tests {
         let shared = shared();
         let id = message_from(&shared, "hello@fieldnotes.example");
         let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = TestEngine::new();
+        let engine = html_engine();
         engine.set_measures_document(true);
         reader.set_html_engine(engine.clone());
         draw(&mut reader);
@@ -1838,21 +1846,23 @@ mod tests {
     /// The body appears with the engine's first frame of the page at the
     /// size it is shown at. Grown to its document's height, the view has no
     /// such frame until the engine paints again, and a body drawn then is a
-    /// blank sheet that flashes before the mail.
+    /// blank sheet that flashes before the mail. Once shown, it stays: a
+    /// frame the engine delivers late, for another size or before the page
+    /// drew, never replaces the mail with a blank sheet.
     #[test]
     fn an_opened_html_mail_is_never_presented_blank() {
         use ui::webview::WebViewEvent;
         let shared = shared();
         let id = message_from(&shared, "hello@fieldnotes.example");
         let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = TestEngine::new();
+        let engine = html_engine();
         engine.set_measures_document(true);
         reader.set_html_engine(engine.clone());
         // Every frame of the open, as it is presented.
         let present = |reader: &mut MessageReader, when: &str| {
             draw(reader);
             assert!(
-                reader.html.rect().is_none() || reader.html.shows_page(),
+                reader.html.rect().is_none() || reader.html.draws_page(),
                 "{when}: the body is drawn without a frame of the page at its size"
             );
         };
@@ -1883,6 +1893,14 @@ mod tests {
         let shown = reader.html.rect().expect("shown with its first frame");
         assert!((shown.height() - 1400.0).abs() < 0.01, "{shown:?}");
         assert!(!reader.html.pending(), "on screen");
+        // Ready for the screen, and then the engine delivers a frame it
+        // painted for an earlier size, or a blank one, before the draw.
+        engine.paint_stale(912, 600);
+        present(&mut reader, "a late frame for another size");
+        assert!(reader.html.rect().is_some(), "the message stays on screen");
+        engine.paint_before_page();
+        present(&mut reader, "a late blank frame");
+        assert!(reader.html.rect().is_some(), "the message stays on screen");
 
         // A later resize keeps the last frame up until the next one comes.
         engine.hold_frames(true);
@@ -1894,6 +1912,53 @@ mod tests {
         draw(&mut reader);
         draw(&mut reader);
         assert!(reader.html.rect().is_some(), "the message stays on screen");
+    }
+
+    /// On a dense display the body appears with the page painted at that
+    /// display's scale. Held back until it has painted, it still tells the
+    /// engine the scale it will be shown at; a frame painted at another
+    /// scale is not the page on screen, and drawn, it is a page at half
+    /// size in a blank sheet.
+    #[test]
+    fn an_html_body_appears_painted_at_the_scale_it_is_shown_at() {
+        use ui::webview::WebViewEvent;
+        let shared = shared();
+        let id = message_from(&shared, "hello@fieldnotes.example");
+        let mut reader = reader_for(&shared, id, 960.0, 820.0);
+        let engine = html_engine();
+        engine.set_measures_document(true);
+        reader.set_html_engine(engine.clone());
+        let dense = |reader: &mut MessageReader| {
+            let mut scene = Scene::new();
+            reader.draw(
+                &mut scene,
+                Affine::scale(2.0),
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+        };
+        dense(&mut reader);
+        engine.hold_frames(true);
+        engine.push_event(WebViewEvent::DocumentSize {
+            width: 912.0,
+            height: 1400.0,
+            scroll_y: 0.0,
+        });
+        for _ in 0..4 {
+            dense(&mut reader);
+        }
+        assert!(reader.html.pending(), "held back until the engine paints");
+        engine.hold_frames(false);
+        let frame = ui::webview::WebViewEngine::frames(&*engine)
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("painted");
+        assert!(!reader.html.pending(), "painted at the size it is shown at");
+        assert_eq!(frame.height, 1400 * 2, "painted at the display's scale");
+        dense(&mut reader);
+        assert!(reader.html.rect().is_some() && reader.html.draws_page());
     }
 
     /// The `(message, remote)` the HTML view has loaded.
@@ -1934,7 +1999,7 @@ mod tests {
         let shared = shared();
         let id = message_from(&shared, "hello@fieldnotes.example");
         let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = TestEngine::new();
+        let engine = html_engine();
         reader.set_html_engine(engine.clone());
         draw(&mut reader);
         assert_eq!(
@@ -2023,7 +2088,7 @@ mod tests {
         let shared = shared();
         let id = message_from(&shared, "hello@fieldnotes.example");
         let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = TestEngine::new();
+        let engine = html_engine();
         reader.set_html_engine(engine.clone());
         draw(&mut reader);
         let rect = reader.html.rect().expect("the body is shown");
@@ -2088,7 +2153,7 @@ mod tests {
         let shared = shared();
         let id = message_from(&shared, "hello@fieldnotes.example");
         let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = TestEngine::new();
+        let engine = html_engine();
         reader.set_html_engine(engine.clone());
         draw(&mut reader);
         let mut bar = ui::widget::FindBar::new();
@@ -2154,7 +2219,7 @@ mod tests {
         let shared = shared();
         let id = message_from(&shared, "hello@fieldnotes.example");
         let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        reader.set_html_engine(TestEngine::new());
+        reader.set_html_engine(html_engine());
         draw(&mut reader);
         assert!(
             ui::widget::with_findable(&mut reader, &mut |_| ()).is_none(),

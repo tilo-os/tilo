@@ -6,13 +6,14 @@ A mail reader sizes its view to the document: it measures the page in a sliver
 of a view, then grows the view to the document's height the moment it has
 loaded. Offscreen Chromium on Linux does not wait for the renderer when a view
 is resized (DelegatedFrameHost uses no resize deadline there): it paints the
-new size at once with the page's old, smaller frame and the view's background
-in the rest, a blank sheet where the document belongs. The page cannot be made
-to arrive sooner, so the mail marks its end (apps/mail/src/html_mail.rs,
-END_MARK): a fixed square in the view's bottom-right corner, blended so it is
-invisible yet never the background's white. Only the page's own frame at the
-new size has it there. This test holds Chromium to that: every open yields a
-marked frame, and every marked frame shows the page.
+new size at once with the page's old, smaller frame and the page's background
+colour in the rest, a blank sheet where the document belongs. The page cannot
+be made to arrive sooner, so the mail marks its end (apps/mail/src/html_mail.rs,
+END_MARK): a fixed square in the view's bottom-right corner, blended to differ
+from what is under it by one level, so it is invisible yet unlike the colour
+beside it on its row. Only the page's own frame at the new size has it there.
+This test holds Chromium to that, on a light page and on a dark one: every open
+yields a marked frame, and every marked frame shows the page.
 """
 import argparse
 import base64
@@ -33,7 +34,7 @@ parser.add_argument('host', type=Path)
 parser.add_argument('host_args', nargs='*')
 args = parser.parse_args()
 
-PAGE = ('<!doctype html><html><head><style>html,body{margin:0;background:#fff}'
+PAGE = ('<!doctype html><html><head><style>html,body{margin:0;background:BACKGROUND}'
         '#block{position:absolute;top:150px;left:0;width:100%;height:100px;background:#d02020}'
         # The end mark as apps/mail/src/html_mail.rs writes it (END_MARK).
         'html::after{content:""!important;display:block!important;'
@@ -67,11 +68,21 @@ def block_shown(pixels, width, y):
     return r > 160 and g < 90 and b < 90
 
 
+# A light mail's sheet and the reader's dark ground.
+BACKGROUNDS = ('#ffffff', '#121417')
+# How far left of the corner the colour beside the mark is read, as the reader
+# reads it (apps/mail/src/reader/html.rs, is_page).
+BESIDE = 16
+
+
 def marked(frame):
-    """Whether the page's end mark is in the frame's bottom-right corner (BGRA)."""
+    """Whether the page's end mark is in the frame's bottom-right corner (BGRA):
+    one level off the colour beside it on its row."""
     width, height, pixels = frame['width'], frame['height'], frame['pixels']
-    at = ((height - 2) * width + width - 2) * 4
-    return pixels[at + 3] != 0 and pixels[at:at + 3] != b'\xff\xff\xff'
+    row = (height - 2) * width
+    at = (row + width - 2) * 4
+    beside = (row + width - 2 - BESIDE) * 4
+    return pixels[at + 3] != 0 and pixels[at:at + 4] != pixels[beside:beside + 4]
 
 
 def describe(frame):
@@ -145,7 +156,8 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-resize-') as profile:
             send({'op': 'resize', 'width': grown[0], 'height': int(LAST * SCALE),
                   'scale_factor': SCALE})
             url = 'data:text/html;base64,' + base64.b64encode(
-                (PAGE + f'<!-- open {opened} -->').encode()).decode()
+                (PAGE.replace('BACKGROUND', BACKGROUNDS[opened % len(BACKGROUNDS)])
+                 + f'<!-- open {opened} -->').encode()).decode()
             send({'op': 'navigate', 'url': url})
             send({'op': 'resize', 'width': grown[0], 'height': int(SLIVER * SCALE),
                   'scale_factor': SCALE})

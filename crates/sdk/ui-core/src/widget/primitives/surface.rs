@@ -159,6 +159,49 @@ pub fn paint_surface(
     theme.on_ground(fill)
 }
 
+/// A document set on a reader: a page that brings its own colours (an HTML
+/// mail on its light sheet, a web page), drawn by `content` and clipped to
+/// the raised level's radius, with the hairline derived from the window
+/// content it stands on just inside its edge, so a sheet as light as that
+/// content still has one.
+pub fn paint_document_sheet(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    content: impl FnOnce(&mut Scene),
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let sheet = RoundedRect::from_rect(
+        rect,
+        SurfaceLevel::Raised.radius(theme).min(rect.height() / 2.0),
+    );
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &sheet,
+    );
+    content(scene);
+    scene.pop_layer();
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        sheet_edge(theme),
+        None,
+        &crate::surface::edge_outline(rect, sheet.radii().top_left),
+    );
+}
+
+/// The hairline at a document sheet's edge: measured against the window
+/// content the sheet stands on.
+fn sheet_edge(theme: &Theme) -> Color {
+    crate::surface::edge_on(SurfaceLevel::Window.color(theme))
+}
+
 /// Paint the see-through material over `rect` at `radius`: half the panel
 /// ground over the blurred backdrop, its floating shadow outside it only (a
 /// shadow under the body would darken what shows through) and the floating
@@ -371,6 +414,33 @@ mod tests {
         assert!(!inner.paints_ground(&[SurfaceLevel::Window, SurfaceLevel::Raised]));
         assert!(inner.paints_ground(&[SurfaceLevel::Window]));
         assert!(inner.paints_ground(&[SurfaceLevel::Raised, SurfaceLevel::Floating]));
+    }
+
+    #[test]
+    fn a_document_sheet_draws_its_content_inside_its_edge() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let page = Color::from_rgba8(250, 250, 250, 255);
+            let rect = Rect::new(10.0, 10.0, 310.0, 410.0);
+            let mut scene = Scene::new();
+            let mut drawn = false;
+            paint_document_sheet(&mut scene, Affine::IDENTITY, rect, &theme, |scene| {
+                drawn = true;
+                scene.fill(Fill::NonZero, Affine::IDENTITY, page, None, &rect);
+            });
+            assert!(drawn, "the page is drawn on its sheet");
+            let colours = &scene.encoding().draw_data;
+            let packed = |c: Color| c.premultiply().to_rgba8().to_u32();
+            assert!(colours.contains(&packed(page)));
+            assert!(colours.contains(&packed(sheet_edge(&theme))), "its edge");
+        }
+        let mut scene = Scene::new();
+        paint_document_sheet(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::ZERO,
+            &Theme::dark(),
+            |_| panic!("an empty sheet draws nothing"),
+        );
     }
 
     #[test]

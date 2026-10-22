@@ -49,6 +49,8 @@ struct Inner {
     new_tabs: Vec<(String, bool)>,
     /// It paints nothing new, as a busy renderer has not yet.
     holds_frames: bool,
+    /// Its pages carry an end mark, as a mail's document does.
+    marks_page_end: bool,
 }
 
 pub struct TestEngine {
@@ -123,18 +125,44 @@ impl TestEngine {
         }
     }
 
-    /// Paint the view's white background at its current size, as Chromium
-    /// paints a resized view before the page has drawn there.
+    /// Paint its pages with a document's end mark: the bottom-right 2×2
+    /// pixels one level off the page beneath, as a mail's document marks
+    /// them (`mix-blend-mode: difference` with `rgb(1,1,1)`).
+    pub fn mark_page_end(&self) {
+        self.lock_inner().marks_page_end = true;
+    }
+
+    /// Paint the view at its current size in the page's background colour
+    /// and nothing of the page, as Chromium paints a resized view before
+    /// the page has drawn there.
     pub fn paint_before_page(&self) {
         let inner = self.lock_inner();
         let (width, height) = (inner.width.max(1), inner.height.max(1));
+        let [r, g, b] = inner
+            .history
+            .get(inner.index)
+            .map_or([0xFF; 3], |uri| Self::page_color(uri));
+        let pixels = usize::try_from(width)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX));
+        *self.lock_frames() = Some(Frame {
+            trace_id: None,
+            rgba: Arc::new([r, g, b, 0xFF].repeat(pixels)),
+            width,
+            height,
+        });
+    }
+
+    /// Deliver a frame painted for an earlier `width` × `height`, as an
+    /// engine does that finishes a paint after the view has moved on.
+    pub fn paint_stale(&self, width: u32, height: u32) {
         let bytes = usize::try_from(width)
             .unwrap_or(usize::MAX)
             .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX))
             .saturating_mul(4);
         *self.lock_frames() = Some(Frame {
             trace_id: None,
-            rgba: Arc::new(vec![0xFF; bytes]),
+            rgba: Arc::new(vec![0x80; bytes]),
             width,
             height,
         });
@@ -216,7 +244,11 @@ impl TestEngine {
         let mut rgba = Vec::with_capacity(pixel_count.saturating_mul(4));
         for y in 0..height {
             let px: [u8; 3] = if y < HEADER_BAND_PX { band } else { [r, g, b] };
-            for _ in 0..width {
+            for x in 0..width {
+                let mark = inner.marks_page_end
+                    && x.saturating_add(2) >= width
+                    && y.saturating_add(2) >= height;
+                let px = if mark { px.map(|c| c.abs_diff(1)) } else { px };
                 rgba.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
             }
         }
