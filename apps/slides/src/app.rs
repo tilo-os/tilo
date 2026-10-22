@@ -257,6 +257,8 @@ pub(super) enum Hit {
     OpenFillPicker,
     ToggleBold,
     ToggleItalic,
+    /// A bulleted list, or a numbered one when `true`.
+    ToggleList(bool),
     SetAlign(TextAlign),
     BringFront,
     SendBack,
@@ -307,16 +309,6 @@ impl RoutedEvent<'_, '_> {
     }
 }
 
-/// The words of one text box being edited on the canvas: the SDK editor,
-/// embedded where the box is drawn and laid out at the slide's size, editing
-/// the element's rich-text body, each edit a field edit of the deck at the
-/// body's path.
-struct TextBoxEditor {
-    slide_id: String,
-    element_id: String,
-    host: Embedded<RichTextSurface<RichTextField>>,
-}
-
 /// The editor of slide `slide`'s speaker notes, each edit a field edit of
 /// them through `deck`.
 fn notes_control(deck: &Dispatcher<DeckRecord>, slide: &str) -> TextControl<TextInput, DeckRecord> {
@@ -328,47 +320,6 @@ fn notes_control(deck: &Dispatcher<DeckRecord>, slide: &str) -> TextControl<Text
         deck.clone(),
         actions::slide_paths(slide).notes,
     )
-}
-
-impl TextBoxEditor {
-    fn open(
-        doc: &AutoCommit,
-        slide_id: &str,
-        element: &Element,
-        deck: &Dispatcher<DeckRecord>,
-    ) -> Self {
-        let body = crate::deck::body_object(doc, slide_id, &element.id);
-        let field = RichTextField::view_only(move |doc| {
-            body.clone()
-                .filter(|body| tilo_doc::model::open(doc, body).is_ok())
-        });
-        let surface = RichTextSurface::field(field)
-            .with_editor(render::text_box_editor(element))
-            .with_submit(SubmitKey::ModEnter);
-        let mut editor = Self {
-            slide_id: slide_id.to_owned(),
-            element_id: element.id.clone(),
-            host: Embedded::new(surface),
-        };
-        editor.attach(deck);
-        let surface = editor.host.widget_mut();
-        surface.present_from(doc);
-        surface.set_focus(true);
-        surface
-            .editor_mut()
-            .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
-        editor
-    }
-
-    /// Edit through the deck's dispatcher.
-    fn attach(&mut self, deck: &Dispatcher<DeckRecord>) {
-        let (slide, element) = (self.slide_id.clone(), self.element_id.clone());
-        self.host.widget_mut().source_mut().attach(
-            deck.child::<tilo_document::RichText>(&actions::slide_resource_id(&slide), move |op| {
-                actions::edit_text_action(&slide, &element, op)
-            }),
-        );
-    }
 }
 
 /// The slides an opener may show, and the ones asked for since the last
@@ -445,6 +396,14 @@ pub struct SlidesApp {
     text_edit_select_all: bool,
     /// Where the text box being edited is drawn, in window coordinates.
     text_edit_box: Rect,
+    /// The press that opened the selected text box for editing, at a point
+    /// in the window, pressed this many times (two for a double-click): the
+    /// box's editor takes it once the event is through, so the caret lands
+    /// where the person pressed.
+    opening_press: Option<(Point, u8)>,
+    /// The finger driving the canvas as the pointer does
+    /// ([`Self::touch_as_pointer`]).
+    finger: Option<Finger>,
 
     /// Every edit of the deck goes through the resource's dispatcher as a
     /// deck's action.
@@ -613,6 +572,8 @@ impl SlidesApp {
             text_editor: None,
             text_edit_select_all: false,
             text_edit_box: Rect::ZERO,
+            opening_press: None,
+            finger: None,
             dispatch,
             rail_drawer: Self::new_drawers().0,
             inspector_drawer: Self::new_drawers().1,
@@ -1206,7 +1167,7 @@ impl SlidesApp {
     }
 
     fn handles_of(&self, dest: Rect, s: f64, el: &Element) -> Vec<(Handle, Rect)> {
-        let er = render::element_dest(dest, s, el);
+        let er = self.element_frame(dest, s, el);
         // Anchor the handles on a rect outset from the content by
         // the theme's related spacing, so each handle sits *outside* the element and
         // can never overlap the content (e.g. the first glyph of a left-anchored
@@ -1309,18 +1270,9 @@ impl SlidesApp {
                     self.set_sel_f64("stroke_width", 4.0);
                 }
             }
-            Hit::ToggleBold => {
-                if let Some(el) = self.selected_element() {
-                    let v = !el.bold;
-                    self.set_sel_bool("bold", v);
-                }
-            }
-            Hit::ToggleItalic => {
-                if let Some(el) = self.selected_element() {
-                    let v = !el.italic;
-                    self.set_sel_bool("italic", v);
-                }
-            }
+            Hit::ToggleBold => self.toggle_mark(ui::widget::marks::Mark::Bold),
+            Hit::ToggleItalic => self.toggle_mark(ui::widget::marks::Mark::Italic),
+            Hit::ToggleList(ordered) => self.toggle_list(ordered),
             Hit::SetAlign(a) => self.set_sel_str("align", a.as_str()),
             Hit::BringFront => self.restack(true),
             Hit::SendBack => self.restack(false),
@@ -1392,6 +1344,96 @@ impl SlidesApp {
         };
         self.restyle(&style);
     }
+    /// Toggle `mark` as the toolbar's button does: over the selected words
+    /// while a text box is being edited, through the shared editor exactly
+    /// as its shortcut does; over every word of a selected box otherwise.
+    fn toggle_mark(&mut self, mark: ui::widget::marks::Mark) {
+        if let Some(editor) = self.editing_words() {
+            // The editor's change is written in this frame's settle pass.
+            editor.host.widget_mut().editor_mut().toggle_mark(mark);
+            return;
+        }
+        let Some(el) = self.selected_element() else {
+            return;
+        };
+        let on = !mark_covers(&el.rich_blocks(), &mark);
+        self.set_sel_bool(
+            if mark == ui::widget::marks::Mark::Italic {
+                "italic"
+            } else {
+                "bold"
+            },
+            on,
+        );
+    }
+
+    /// Toggle a bulleted list, or a numbered one when `ordered`: over the
+    /// selected paragraphs while a text box is being edited, through the
+    /// shared editor; over every paragraph of a selected box otherwise.
+    fn toggle_list(&mut self, ordered: bool) {
+        if let Some(editor) = self.editing_words() {
+            editor.host.widget_mut().editor_mut().toggle_list(ordered);
+            return;
+        }
+        let Some((slide, el)) = self.selected_text_box() else {
+            return;
+        };
+        let on = !el
+            .rich_blocks()
+            .iter()
+            .all(|block| listed(&block.kind, ordered));
+        if let Some(action) = actions::list_action(&slide, &el, on.then_some(ordered)) {
+            self.submit(&action);
+        }
+    }
+
+    /// The editor of the words being edited.
+    fn editing_words(&mut self) -> Option<&mut TextBoxEditor> {
+        self.editing_text_box()?;
+        self.text_editor.as_mut().filter(|editor| editor.focused)
+    }
+
+    /// Whether the toolbar shows `mark` as on: over the selected words (or
+    /// for the text typed next) while a box is being edited, over all of a
+    /// selected box's words otherwise.
+    fn mark_on(&self, mark: &ui::widget::marks::Mark) -> bool {
+        if self.editing_text
+            && let Some(editor) = self.text_editor.as_ref().filter(|editor| editor.focused)
+        {
+            return editor
+                .host
+                .widget()
+                .editor()
+                .active_marks()
+                .iter()
+                .any(|active| active.same_kind(mark));
+        }
+        self.selected_element()
+            .is_some_and(|el| el.kind == ElementKind::Text && mark_covers(&el.rich_blocks(), mark))
+    }
+
+    /// Whether the toolbar shows the list (numbered when `ordered`) as on:
+    /// for the paragraph with the caret while a box is being edited, for
+    /// all of a selected box's paragraphs otherwise.
+    fn list_on(&self, ordered: bool) -> bool {
+        if self.editing_text
+            && let Some(editor) = self.text_editor.as_ref().filter(|editor| editor.focused)
+        {
+            return editor
+                .host
+                .widget()
+                .editor()
+                .focused_kind()
+                .is_some_and(|kind| listed(kind, ordered));
+        }
+        self.selected_element().is_some_and(|el| {
+            let blocks = el.rich_blocks();
+            el.kind == ElementKind::Text
+                && !blocks.is_empty()
+                && blocks.iter().all(|block| listed(&block.kind, ordered))
+        })
+    }
+
     fn set_sel_bool(&self, key: &str, v: bool) {
         self.restyle(&if key == "italic" {
             actions::Style::Italic(v)
@@ -2288,6 +2330,8 @@ impl SlidesApp {
             Hit::OpenFillPicker => "slides.control.custom-fill".into(),
             Hit::ToggleBold => "slides.control.bold".into(),
             Hit::ToggleItalic => "slides.control.italic".into(),
+            Hit::ToggleList(false) => "slides.control.bulleted-list".into(),
+            Hit::ToggleList(true) => "slides.control.numbered-list".into(),
             Hit::SetAlign(align) => format!("slides.control.align:{}", align.as_str()),
             Hit::BringFront => "slides.control.bring-front".into(),
             Hit::SendBack => "slides.control.send-back".into(),
@@ -2379,12 +2423,21 @@ impl SlidesApp {
             Hit::ToggleBold => (
                 Role::ToggleButton,
                 tr("slides-a11y-bold"),
-                AccessState::new().checked(selected.is_some_and(|element| element.bold)),
+                AccessState::new().checked(self.mark_on(&ui::widget::marks::Mark::Bold)),
             ),
             Hit::ToggleItalic => (
                 Role::ToggleButton,
                 tr("slides-a11y-italic"),
-                AccessState::new().checked(selected.is_some_and(|element| element.italic)),
+                AccessState::new().checked(self.mark_on(&ui::widget::marks::Mark::Italic)),
+            ),
+            Hit::ToggleList(ordered) => (
+                Role::ToggleButton,
+                tr(if *ordered {
+                    "slides-a11y-numbered-list"
+                } else {
+                    "slides-a11y-bulleted-list"
+                }),
+                AccessState::new().checked(self.list_on(*ordered)),
             ),
             Hit::SetAlign(align) => (
                 Role::RadioButton,
@@ -2733,6 +2786,11 @@ impl Widget for SlidesApp {
             // A live thumbnail reorder pumps frames so the ghost tracks the
             // cursor and the rail auto-scrolls at its edges.
             || self.page_sidebar.is_dragging()
+            // The words being edited animate as any text field's do.
+            || self
+                .text_editor
+                .as_ref()
+                .is_some_and(|editor| self.editing_text && editor.host.needs_animation_frame())
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -2744,6 +2802,11 @@ impl Widget for SlidesApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // The press that opens a box is taken up within its own event.
+        self.opening_press = None;
+        if self.touch_as_pointer(event, ctx) {
+            return;
+        }
         // A restore replaces the notes' text object; the first event may
         // precede the sync that follows it.
         if self.editing_notes {
@@ -2818,6 +2881,7 @@ impl Widget for SlidesApp {
             routed.modifiers,
             ctx.handled,
         );
+        self.open_at_press(&mut routed);
     }
 
     fn name(&self) -> &'static str {
@@ -3112,7 +3176,44 @@ impl Widget for SlidesApp {
         if self.editing_notes {
             return self.notes.control().cursor_shape(point);
         }
+        // The words being edited show the text beam, as in any text field.
+        if self.editing_text
+            && self.text_edit_box.contains(point)
+            && let Some(editor) = &self.text_editor
+        {
+            return editor
+                .host
+                .cursor_shape(point)
+                .or(Some(winit::window::CursorIcon::Text));
+        }
         None
+    }
+
+    /// A finger landing on something on the canvas drives it as the pointer
+    /// does ([`Self::touch_as_pointer`]); anywhere else the toolkit's touch
+    /// applies (a tap clicks, a drag scrolls).
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.canvas_takes_finger(point)
+    }
+
+    /// The edit that typing or a toolbar left for after the event: the
+    /// formatting a keystroke closed, a mark the toolbar set on the
+    /// selection. The words' editor writes it now, in this frame.
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        if self.editing_text
+            && let Some(editor) = self.text_editor.as_mut()
+        {
+            editor.host.settle(edits, path);
+        }
+    }
+
+    /// The words being edited wake the editor when a spelling mark settles
+    /// or the word under the caret has a suggestion.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.text_editor
+            .as_ref()
+            .filter(|_| self.editing_text)
+            .and_then(|editor| editor.host.next_wake_deadline())
     }
 
     fn tooltip(&self) -> Option<&str> {
@@ -3133,12 +3234,28 @@ impl Widget for SlidesApp {
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
         // A text box being edited takes the input method too, so composed
         // text (and, on the web, the page's text field) reaches it.
-        if self.editing_text && self.text_editor.is_some() {
-            return Some(ui::ime::InputContent::TEXT);
+        if self.editing_text
+            && let Some(editor) = &self.text_editor
+        {
+            return editor
+                .host
+                .ime_content()
+                .or(Some(ui::ime::InputContent::TEXT));
         }
         self.editing_notes
             .then(|| self.notes.control().ime_content())
             .flatten()
+    }
+
+    /// A text box and the speaker notes take line feeds as text: the input
+    /// method may commit several lines into them.
+    fn ime_multiline(&self) -> bool {
+        if self.editing_text
+            && let Some(editor) = &self.text_editor
+        {
+            return editor.host.ime_multiline();
+        }
+        self.editing_notes && self.notes.control().ime_multiline()
     }
 
     /// Keep receiving pointer events for the whole of a canvas move/resize or a
@@ -3738,11 +3855,14 @@ impl SlidesApp {
         {
             for (h, hr) in self.handles_of(dest, s, &el) {
                 if hr.contains(p) {
+                    // A text box resizes from the size it shows, grown to
+                    // its words.
+                    let shown_h = self.element_frame(dest, s, &el).height() / s.max(0.0001);
                     self.drag = Drag::Resize {
                         id: el.id.clone(),
                         handle: h,
                         start: self.to_slide(dest, s, p),
-                        orig: (el.x, el.y, el.w, el.h),
+                        orig: (el.x, el.y, el.w, shown_h),
                     };
                     *handled = true;
                     return;
@@ -3755,7 +3875,7 @@ impl SlidesApp {
             let mut z: Vec<&Element> = slide.elements.iter().collect();
             z.sort_by(|a, b| b.z.cmp(&a.z).then_with(|| b.id.cmp(&a.id)));
             for el in z {
-                let er = render::element_dest(dest, s, el);
+                let er = self.element_frame(dest, s, el);
                 if er.inflate(2.0, 2.0).contains(p) {
                     picked = Some(el.id.clone());
                     break;
@@ -3769,10 +3889,16 @@ impl SlidesApp {
                 .is_some_and(|e| e.kind == ElementKind::Text);
             // Double-click = same element, pressed again quickly and near
             // the first press.
+            // A finger's second tap lands within a tap's slop of its first.
+            let slop = if self.finger.is_some() {
+                ui::gesture::TouchGestureArena::TAP_SLOP
+            } else {
+                6.0
+            };
             let double = self.last_click.as_ref().is_some_and(|(cid, t, cp)| {
                 cid == &id
                     && t.elapsed() < ui::gesture::multi_click_interval()
-                    && cp.distance(p) < 6.0
+                    && cp.distance(p) < slop
             });
             self.last_click = Some((id.clone(), ui::time::now(), p));
             self.editing_notes = false;
@@ -3794,7 +3920,10 @@ impl SlidesApp {
                 // A deliberate double-click opens the text for editing and
                 // selects the word under the point; an empty box (one showing
                 // its prompt) opens on the first click, ready for its words.
+                // The box's editor takes the press once this event is
+                // through ([`Self::open_at_press`]).
                 self.begin_text_edit(false);
+                self.opening_press = Some((p, if double { 2 } else { 1 }));
             } else {
                 // Single press: select AND arm a move so a selected element
                 // can be dragged on the very first grab (the reported bug was
@@ -3829,7 +3958,8 @@ impl SlidesApp {
         let mut z: Vec<&Element> = slide.elements.iter().collect();
         z.sort_by(|a, b| b.z.cmp(&a.z).then_with(|| b.id.cmp(&a.id)));
         for el in z {
-            if render::element_dest(dest, s, el)
+            if self
+                .element_frame(dest, s, el)
                 .inflate(2.0, 2.0)
                 .contains(p)
             {
@@ -4513,212 +4643,6 @@ impl SlidesApp {
     }
 }
 
-impl SlidesApp {
-    /// Start editing the selected text box's words; `select_all` selects
-    /// them all once the editor opens.
-    fn begin_text_edit(&mut self, select_all: bool) {
-        self.editing_text = true;
-        self.editing_notes = false;
-        self.text_edit_select_all = select_all;
-    }
-
-    /// Open the selected text box for editing when `event` would type into
-    /// it: a printable key without a command modifier, or text from the
-    /// input method. Its words are selected first, so the typing replaces
-    /// them. The event then reaches the box's editor like any other key.
-    fn begin_typing_into_selection(&mut self, event: &WindowEvent, modifiers: Modifiers) {
-        if self.mode != Mode::Edit
-            || self.editing_text
-            || self.editing_notes
-            || self.editing_title
-            || !self
-                .selected_element()
-                .is_some_and(|e| e.kind == ElementKind::Text)
-        {
-            return;
-        }
-        let m = modifiers.state();
-        let types = match event {
-            WindowEvent::KeyboardInput { event: key, .. } => {
-                key.state == ElementState::Pressed
-                    && !(m.control_key() || m.super_key() || m.alt_key())
-                    && key
-                        .text
-                        .as_ref()
-                        .is_some_and(|text| text.chars().any(|c| !c.is_control()))
-            }
-            WindowEvent::Ime(
-                winit::event::Ime::Commit(text) | winit::event::Ime::Preedit(text, _),
-            ) => !text.is_empty(),
-            _ => false,
-        };
-        if types {
-            self.begin_text_edit(true);
-        }
-    }
-
-    /// Stop editing the text box: its editor closes on the next sync.
-    fn end_text_edit(&mut self) {
-        self.editing_text = false;
-        self.text_drag = false;
-        self.text_editor = None;
-    }
-
-    /// The text box being edited and its slide, when there is one.
-    fn editing_text_box(&self) -> Option<(String, Element)> {
-        if !self.editing_text || self.mode != Mode::Edit {
-            return None;
-        }
-        let slide = self.slide()?;
-        let element = slide.element(self.sel.as_deref()?)?;
-        (element.kind == ElementKind::Text).then(|| (slide.id.clone(), element.clone()))
-    }
-
-    /// Open the editor for the text box being edited, close it when editing
-    /// ended, and bring it up to date with the document.
-    fn ensure_text_editor(&mut self, doc: &AutoCommit) {
-        let Some((slide_id, element)) = self.editing_text_box() else {
-            self.text_editor = None;
-            self.text_drag = false;
-            return;
-        };
-        let current = self
-            .text_editor
-            .as_ref()
-            .is_some_and(|editor| editor.slide_id == slide_id && editor.element_id == element.id);
-        if !current {
-            self.text_editor = Some(TextBoxEditor::open(
-                doc,
-                &slide_id,
-                &element,
-                &self.dispatch,
-            ));
-        }
-        let select_all = std::mem::take(&mut self.text_edit_select_all);
-        if let Some(editor) = self.text_editor.as_mut() {
-            editor.host.sync(doc, &automerge::ROOT);
-            if select_all {
-                editor.host.widget_mut().editor_mut().select_all();
-            }
-        }
-    }
-
-    /// Give the text box being edited its keyboard and pointer events.
-    /// Returns whether the event was the box's.
-    fn route_text_edit(&mut self, routed: &mut RoutedEvent<'_, '_>, handled: &mut bool) -> bool {
-        if self.editing_text_box().is_none() {
-            return false;
-        }
-        let keyboard = matches!(
-            routed.event,
-            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-        );
-        let pointer = match routed.event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.text_edit_box.contains(self.last_mouse),
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.text_drag,
-            _ => false,
-        };
-        // The pointer's position always reaches the box, so a press lands
-        // where it was last seen.
-        let moved = matches!(routed.event, WindowEvent::CursorMoved { .. });
-        if !keyboard && !pointer && !moved {
-            return false;
-        }
-        self.ensure_text_editor(routed.state);
-        let Some(editor) = self.text_editor.as_mut() else {
-            return false;
-        };
-        let mut consumed = false;
-        editor.host.handle_event(
-            routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut consumed,
-        );
-        editor.host.sync(routed.state.doc(), routed.path);
-        let outcome = editor.host.widget_mut().take_outcome();
-        match routed.event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } => self.text_drag = true,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                ..
-            } => self.text_drag = false,
-            _ => {}
-        }
-        if outcome.is_some() {
-            // Escape or Ctrl+Enter: done with the words, the box stays selected.
-            debug_assert!(matches!(
-                outcome,
-                Some(FieldOutcome::Submit | FieldOutcome::Cancel)
-            ));
-            self.end_text_edit();
-            consumed = true;
-        }
-        if keyboard || pointer {
-            // Keys the editor left alone (global undo) fall through to the host.
-            *handled |= consumed || pointer;
-            return true;
-        }
-        false
-    }
-
-    /// Paint the text box being edited: its editor, laid out at the slide's
-    /// size and drawn where the box is, in the box's colour.
-    fn draw_text_editor(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        chrome: &Chrome,
-        pal: &Palette,
-    ) {
-        let Some((_, element)) = self.editing_text_box() else {
-            return;
-        };
-        let background = self.slide().map(|slide| slide.background);
-        let Some(editor) = self.text_editor.as_mut() else {
-            return;
-        };
-        if editor.element_id != element.id {
-            return;
-        }
-        let palette = background.map_or(*pal, |background| pal.on(background));
-        let color = palette.resolve_role(&element.fill).unwrap_or(palette.text);
-        let surface = editor.host.widget_mut();
-        surface.editor_mut().set_body_size(element.font_size as f32);
-        surface
-            .editor_mut()
-            .set_text_align(render::text_align(element.align));
-        editor.host.set_text_color(Some(color));
-        let content_h = editor
-            .host
-            .layout(render::text_box_rect(&element), theme, tr);
-        editor.host.set_transform(render::text_box_transform(
-            chrome.slide_dest,
-            chrome.scale,
-            &element,
-            content_h,
-        ));
-        editor.host.draw(scene, t, tr, theme, &PresenceCtx::empty());
-        self.text_edit_box = render::element_dest(chrome.slide_dest, chrome.scale, &element);
-    }
-}
-
 /// The inspector's "Custom · #rrggbb" fill button face.
 fn custom_colour_hex(hex: &str) -> String {
     tr_args("slides-custom-colour-hex", &[("hex", ArgValue::from(hex))])
@@ -4751,6 +4675,10 @@ mod tests_text;
 #[cfg(test)]
 #[path = "app/tests_files.rs"]
 mod tests_files;
+
+#[cfg(test)]
+#[path = "app/tests_editing.rs"]
+mod tests_editing;
 
 impl SlidesApp {
     fn new_layout_picker() -> Dropdown {
@@ -4792,7 +4720,9 @@ impl SlidesApp {
 }
 
 mod editor_chrome;
+mod text_box;
 use editor_chrome::{ButtonKind, Chrome, ChromeMetrics};
+use text_box::{Finger, TextBoxEditor, listed, mark_covers};
 
 impl SlidesApp {
     fn open_layout_picker(&mut self) {
@@ -4808,13 +4738,13 @@ impl SlidesApp {
 impl SlidesApp {
     fn selection_frame(&self, dest: Rect, scale: f64, el: &Element) -> Rect {
         let m = &self.chrome_metrics;
-        let er = render::element_dest(dest, scale, el);
+        let er = self.element_frame(dest, scale, el);
         // Room a handle needs beyond the frame line, plus a clear gap.
         let reach = m.target * 0.25 / 2.0 + m.s1;
         let (mut left, mut top, mut right, mut bottom) = (m.s2, m.s2, m.s2, m.s2);
         if let Some(slide) = self.slide() {
             for other in slide.elements.iter().filter(|other| other.id != el.id) {
-                let or = render::element_dest(dest, scale, other);
+                let or = self.element_frame(dest, scale, other);
                 if er.intersect(or).area() > 0.0 {
                     continue;
                 }

@@ -8636,6 +8636,35 @@ impl FrameHarness {
         );
     }
 
+    /// Three left clicks at logical `(x, y)` that count as one triple-click
+    /// however slow the frames between them.
+    pub fn triple_click_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
+        crate::gesture::with_capture_multi_click_interval(
+            crate::time::Duration::from_secs(3600),
+            || {
+                for _ in 0..3 {
+                    self.click_at(x, y);
+                }
+            },
+        );
+    }
+
+    /// Two finger taps at logical `(x, y)` that count as one double tap
+    /// however slow the frames between them.
+    pub fn double_tap_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
+        crate::gesture::with_capture_multi_click_interval(
+            crate::time::Duration::from_secs(3600),
+            || {
+                for id in [u64::MAX - 1, u64::MAX] {
+                    self.touch(id, winit::event::TouchPhase::Started, x, y);
+                    self.touch(id, winit::event::TouchPhase::Ended, x, y);
+                }
+            },
+        );
+    }
+
     /// Press the left button at `from`, move through intermediate points to
     /// `to` and release there: a pointer drag in logical coordinates, as a
     /// drawing or a handle drag sees it.

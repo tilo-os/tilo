@@ -822,6 +822,28 @@ pub fn mark_all(blocks: &[BlockContent], mark: &Mark, on: bool) -> RichTextActio
     }
 }
 
+/// The rich-text op making every paragraph of a text box showing `blocks`
+/// a bulleted list (`Some(false)`), a numbered one (`Some(true)`), or
+/// paragraphs again (`None`), each at the top of the outline.
+#[must_use]
+pub fn list_all(blocks: &[BlockContent], list: Option<bool>) -> RichTextAction {
+    let (kind, level) = match list {
+        Some(_) => ("list_item", Some(0)),
+        None => ("paragraph", None),
+    };
+    RichTextAction::SetParagraphStyle {
+        region: tilo_document::action::RegionKind::Body,
+        blocks: blocks
+            .iter()
+            .filter(|block| !block.id.is_empty())
+            .map(|block| block.id.clone())
+            .collect(),
+        kind: kind.to_owned(),
+        level,
+        ordered: list,
+    }
+}
+
 /// Whether a deck titled `title` of `slides` stays within what one deck
 /// holds, counted across the deck.
 fn within_limits(title: &str, slides: &[SlideData]) -> bool {

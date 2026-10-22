@@ -402,7 +402,21 @@ thread_local! {
     /// Each text element's words, laid out once at the slide's size and
     /// drawn scaled wherever the slide is painted (the canvas, a thumbnail,
     /// the presentation), so all of them wrap exactly alike.
-    static TEXT_VIEWS: RefCell<HashMap<String, RichTextView>> = RefCell::new(HashMap::new());
+    static TEXT_VIEWS: RefCell<HashMap<String, LaidText>> = RefCell::new(HashMap::new());
+}
+
+/// A text element's words as last laid out, and how tall they came to.
+struct LaidText {
+    view: RichTextView,
+    /// In slide units.
+    height: f64,
+}
+
+/// How tall text element `id`'s words came to when last laid out, in slide
+/// units: what a box that its words outgrew grows to. `None` before it was
+/// first drawn.
+pub fn text_height(id: &str) -> Option<f64> {
+    TEXT_VIEWS.with(|views| views.borrow().get(id).map(|laid| laid.height))
 }
 
 /// The most text boxes whose layout is kept between frames.
@@ -460,9 +474,11 @@ fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Re
         if views.len() > KEPT_TEXT_VIEWS && !views.contains_key(&e.id) {
             views.clear();
         }
-        let view = views
-            .entry(e.id.clone())
-            .or_insert_with(|| RichTextView::with_editor(text_box_editor(e)));
+        let laid = views.entry(e.id.clone()).or_insert_with(|| LaidText {
+            view: RichTextView::with_editor(text_box_editor(e)),
+            height: 0.0,
+        });
+        let view = &mut laid.view;
         view.editor_mut().set_body_size(e.font_size as f32);
         view.editor_mut().set_text_align(text_align(e.align));
         view.set_text_color(Some(color));
@@ -470,6 +486,7 @@ fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Re
         let content_h = view.layout(text_box_rect(e), theme, tr);
         view.set_transform(text_box_transform(dest, s, e, content_h));
         view.draw(scene, transform, tr, theme);
+        laid.height = content_h;
     });
     tr.set_text_scale(reader_scale);
 }

@@ -218,6 +218,18 @@ pub fn restyle_action(slide: &str, element: &Element, style: &Style) -> Action {
     })
 }
 
+/// Make every paragraph of text box `element` of slide `slide` a bulleted
+/// list (`Some(false)`), a numbered one (`Some(true)`), or paragraphs again
+/// (`None`). `None` when the box holds no paragraph the document names.
+#[must_use]
+pub fn list_action(slide: &str, element: &Element, list: Option<bool>) -> Option<Action> {
+    element_paths(slide, &element.id)
+        .body
+        .perform(&deck::list_all(&element.rich_blocks(), list))
+        .ok()
+        .map(edit)
+}
+
 /// One rich-text op on the words of text box `element` of slide `slide`.
 ///
 /// # Panics
