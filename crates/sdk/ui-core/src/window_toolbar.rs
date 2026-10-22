@@ -12,7 +12,8 @@
 //!   whether it can be edited. An editable location turns into a field
 //!   holding the full value, all of it selected, on a click or Ctrl+L, with a
 //!   go button at its end; Enter or the go button commits the text to the
-//!   app, Esc puts the location back. A location with a hierarchy (a
+//!   app, Esc puts the location back (and the app hears the field hold its
+//!   value again, as an [`ToolbarEvent::Edit`]). A location with a hierarchy (a
 //!   folder's path) declares its levels as [`LocationSegment`]s: the bar
 //!   draws them as a breadcrumb with drawn chevrons, and a click on a level
 //!   commits that level's value. Its own picture ([`ToolbarImage`], a page's

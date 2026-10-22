@@ -216,3 +216,19 @@ fn option_arrow_moves_by_word_on_macos_and_goes_back_elsewhere() {
         !mac
     );
 }
+
+#[test]
+fn an_address_abandoned_in_the_bar_is_not_suggested_for_again() {
+    let mut widget = BrowserWidget::new_headless();
+    widget.current_uri = "https://page.test/".into();
+    widget.run_window_toolbar_event(ui::window_toolbar::ToolbarEvent::Edit {
+        text: "secret words".into(),
+    });
+    assert_eq!(widget.bar_query.as_deref(), Some("secret words"));
+    // Esc in the bar: the field holds the page's address again.
+    widget.run_window_toolbar_event(ui::window_toolbar::ToolbarEvent::Edit {
+        text: "https://page.test/".into(),
+    });
+    assert_eq!(widget.bar_query, None);
+    assert!(widget.bar_suggestions().is_empty());
+}

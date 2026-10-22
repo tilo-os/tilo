@@ -132,7 +132,7 @@ impl BrowserWidget {
 
     /// What the bar lists under its edited address: the omnibox's rows for
     /// what the bar said is typed there, nothing while it is not edited.
-    fn bar_suggestions(&self) -> Vec<LocationSuggestion> {
+    pub(super) fn bar_suggestions(&self) -> Vec<LocationSuggestion> {
         if self.bar_query.is_none() {
             return Vec::new();
         }
@@ -332,8 +332,10 @@ impl BrowserWidget {
                 self.reset_omnibox();
             }
             ToolbarEvent::Edit { text } => {
-                // The omnibox answers on this frame's suggestion pass.
-                self.bar_query = Some(text);
+                // The omnibox answers on this frame's suggestion pass. The
+                // page's own address is the field put back: no query, so
+                // nothing abandoned is suggested for again.
+                self.bar_query = (text.trim() != self.current_uri.trim()).then_some(text);
             }
             ToolbarEvent::Action { id } => match id.as_str() {
                 RELOAD => self.queue_unit_operation("browser.page", "reload"),
