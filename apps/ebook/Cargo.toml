@@ -19,6 +19,8 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# The book store (Project Gutenberg) searched beside the library.
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # "Open a book…" goes through `ui::portal`, the platform's own picker (the

@@ -701,7 +701,10 @@ fn the_words_a_search_found_are_marked_at_word_starts_whatever_their_case() {
     assert!(found_spans(line, &[""]).is_empty());
     // The longer of two words found at one place is marked whole.
     let spans = found_spans("Tideglass letters", &["tide", "tideglass"]);
-    assert_eq!(spans, [0..9]);
+    assert_eq!(spans, [std::ops::Range { start: 0, end: 9 }]);
     // Letters whose lower case is longer still line up with the text.
-    assert_eq!(found_spans("İstanbul", &["i̇stan"]), [0..6]);
+    assert_eq!(
+        found_spans("İstanbul", &["i̇stan"]),
+        [std::ops::Range { start: 0, end: 6 }]
+    );
 }
