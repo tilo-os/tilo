@@ -2796,8 +2796,9 @@ impl FrameHarness {
         self.text.take_browser_font_demands()
     }
 
-    /// Install one verified optional font, invalidate text caches, then
-    /// rebuild layout before the browser is allowed to request a redraw.
+    /// Install one verified optional font and invalidate text caches; the
+    /// next frame rebuilds the layout, once for every font installed before
+    /// it, where rebuilding after each held a page loading several fonts.
     /// # Errors
     /// Propagates canonical font integrity and face-validation failures.
     pub fn install_browser_font(
@@ -2808,8 +2809,7 @@ impl FrameHarness {
         self.invalidate_local();
         let changed = self.text.install_browser_font(name, bytes)?;
         if changed {
-            self.invalidate_layout_tree();
-            self.relayout();
+            self.request_layout();
         }
         Ok(changed)
     }
@@ -10882,6 +10882,8 @@ mod tests {
                 )
                 .unwrap()
         );
+        assert_eq!(driver.relayout_frames(), frames, "the next frame lays out");
+        driver.relayout();
         assert_eq!(driver.relayout_frames(), frames + 1);
         assert!(driver.last_relayout().rebuilt);
         assert_eq!(driver.state.doc.get_heads(), heads);
