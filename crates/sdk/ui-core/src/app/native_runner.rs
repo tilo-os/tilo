@@ -1948,13 +1948,14 @@ impl AppHandler {
             }
         };
         damage_regions.clear();
-        let size = audience.window.inner_size();
-        let scale = audience.window.scale_factor();
+        let extent =
+            render.frame_extent(audience.window.inner_size(), audience.window.scale_factor());
+        let scale = extent.scale;
         let rect = vello::kurbo::Rect::new(
             0.0,
             0.0,
-            f64::from(size.width) / scale,
-            f64::from(size.height) / scale,
+            f64::from(extent.width) / scale,
+            f64::from(extent.height) / scale,
         );
         let secrets = crate::secret_paint::SecretPaint::begin();
         let drawn = self.app.root_widget.draw_audience_presentation(
@@ -1981,8 +1982,8 @@ impl AppHandler {
                 cpu_frame_id: None,
                 on_present: None,
                 scene,
-                width: size.width.max(1),
-                height: size.height.max(1),
+                width: extent.width,
+                height: extent.height,
                 base_color: self.app.theme.tokens.colors.surfaces.content,
                 damage_regions,
                 scroll_copies: Vec::new(),
@@ -2551,9 +2552,9 @@ impl AppHandler {
         // Every pooled scene is either newly seeded or reset by the worker
         // before recycling. Resetting it again here only rewrote all stream
         // lengths on every frame.
-        let inner = surface.window.inner_size();
         let scale = surface.window.scale_factor();
-        let transform = crate::scale::composite_transform(scale)
+        let extent = render.frame_extent(surface.window.inner_size(), scale);
+        let transform = crate::scale::composite_transform(extent.scale)
             .pre_translate((-surface.desktop_rect.x0, -surface.desktop_rect.y0).into());
         let presentation = app
             .root_widget
@@ -2620,8 +2621,8 @@ impl AppHandler {
                 cpu_frame_id: None,
                 on_present: None,
                 scene,
-                width: inner.width.max(1),
-                height: inner.height.max(1),
+                width: extent.width,
+                height: extent.height,
                 base_color: Color::TRANSPARENT,
                 damage_regions,
                 scroll_copies: Vec::new(),
@@ -2901,13 +2902,20 @@ impl AppHandler {
         }
 
         let inner = window.inner_size();
-        let width = inner.width;
-        let height = inner.height;
+        // The frame is drawn at the window's size and scale unless that is
+        // past the device's largest texture (a window over several
+        // displays): then at the lower scale that fits, which the
+        // compositor stretches over the window. Input and accessibility
+        // keep the window's own scale; both meet in logical pixels.
+        let extent = render.frame_extent(inner, window.scale_factor());
+        let width = extent.width;
+        let height = extent.height;
         #[allow(
             clippy::cast_possible_truncation,
             reason = "scale factor is intentionally narrowed to f32 for the render pipeline; identical to today's output"
         )]
-        let scale_factor = window.scale_factor() as f32;
+        let scale_factor = extent.scale as f32;
+        let window_scale = window.scale_factor();
         app.layout.last_frame_size = Some(inner);
         let mut floating_content_changed =
             app.layout.layout_dirty || app.layout.structure_dirty || app.needs_sync;
@@ -3275,7 +3283,7 @@ impl AppHandler {
             if let Some(adapter) = self.a11y_adapter.as_mut() {
                 let _a11y = slow_event::phase("a11y");
                 let app_ref: &mut App = app;
-                let scale = f64::from(scale_factor);
+                let scale = window_scale;
                 adapter.update_if_active(|| {
                     crate::accesskit_bridge::native_tree_update(
                         app_ref.build_a11y_tree_update(scale),

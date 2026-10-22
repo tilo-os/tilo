@@ -169,6 +169,15 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
     (target_texture, target_view)
 }
 
+/// The largest texture edge of every device this module opens: wgpu's
+/// default, which [`required_limits`] keeps. A window's frame is fitted under
+/// it before it is drawn (`crate::scale::fit_to_texture_limit`), since a
+/// surface target past it fails validation and the window stops.
+#[must_use]
+pub fn requested_texture_limit() -> u32 {
+    Limits::default().max_texture_dimension_2d
+}
+
 /// wgpu's defaults, except the two a renderer's scratch buffers are bound
 /// against, which come from the adapter.
 ///
@@ -559,6 +568,16 @@ impl RenderContext {
         let direct_copy = format == TextureFormat::Rgba8Unorm
             && capabilities.usages.contains(wgpu::TextureUsages::COPY_DST);
         tilo_startup_metrics::mark("surface-capabilities-done");
+        // The window's size now is only where the surface starts: each frame
+        // resizes it to the extent it was drawn at, which fits the device.
+        // Start inside the device's limit too, so a window wider than any
+        // texture (a kiosk over several displays) gets a surface at all.
+        let start = crate::scale::fit_to_texture_limit(
+            (width, height),
+            1.0,
+            handle.device.limits().max_texture_dimension_2d,
+        );
+        let (width, height) = (start.width, start.height);
 
         let config = SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -813,6 +832,44 @@ mod tests {
             passed_over_hardware(DeviceType::Cpu, [(DeviceType::Cpu, "llvmpipe".to_owned())])
                 .is_empty(),
             "a machine with only a software adapter has nothing to fall back from"
+        );
+    }
+
+    /// The reported kiosk window, 4864x1840 logical at scale 2 over a panel
+    /// and a monitor: its surface target failed validation ("Dimension X
+    /// value 9728 exceeds the limit of 8192") and the login screen exited.
+    /// Fitted to the device's own limit, the same window gets its target.
+    #[test]
+    fn a_window_wider_than_any_texture_gets_a_surface_target_at_its_fitted_extent() {
+        let mut context = super::RenderContext::new();
+        let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
+        let device = &context.devices[index].device;
+        let limit = device.limits().max_texture_dimension_2d;
+        assert_eq!(
+            limit,
+            super::requested_texture_limit(),
+            "windows fit their frames to the limit every device is opened with"
+        );
+        let window = (limit + limit / 4, 3680);
+
+        // Unfitted, the target is refused: the check observes the failure.
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (refused, _) = create_targets(window.0, window.1, device);
+        assert!(
+            pollster::block_on(scope.pop()).is_some(),
+            "a {}-wide target must exceed the device limit {limit}",
+            window.0
+        );
+        refused.destroy();
+
+        let extent = crate::scale::fit_to_texture_limit(window, 2.0, limit);
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (target, _) = create_targets(extent.width, extent.height, device);
+        let error = pollster::block_on(scope.pop());
+        target.destroy();
+        assert!(
+            error.is_none(),
+            "fitted target {extent:?} refused: {error:?}"
         );
     }
 

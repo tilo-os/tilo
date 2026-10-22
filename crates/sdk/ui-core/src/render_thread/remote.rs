@@ -450,6 +450,10 @@ pub(crate) fn spawn(
         frame_complete,
         retry: super::retry::RenderRetryState::default(),
         full_repaint,
+        // The render service opens its device as this process would.
+        texture_limit: Arc::new(std::sync::atomic::AtomicU32::new(
+            crate::gpu::requested_texture_limit(),
+        )),
         join: Some(join),
     })
 }
