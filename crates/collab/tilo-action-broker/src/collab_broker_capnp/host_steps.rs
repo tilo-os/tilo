@@ -1,6 +1,6 @@
 //! Steps the host itself runs for the person at this device: pairing a
-//! nearby device, and administering the person's identities and the devices
-//! trusted under them.
+//! nearby device, administering the person's identities and the devices
+//! trusted under them, and changing the person's settings.
 //!
 //! Each is answered under the host's own provider, offered only to a caller
 //! on this machine confined to a room, and admitted against that room's
@@ -10,13 +10,13 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{Pending, device_pairing, identity_admin};
+use tilo_actions::remote::{Pending, device_pairing, identity_admin, settings_records};
 use tilo_actions::{ActionAddress, ActionDescriptor};
 
 use super::{BrokerActor, CapnpBrokerState};
 use crate::services::{
     DevicePairingOutcome, DevicePairingRequest, DevicePairingServices, HostServices,
-    IdentityAdminRequest, IdentityAdminServices,
+    IdentityAdminRequest, IdentityAdminServices, SettingsRecordServices,
 };
 use tilo_actions::remote::{
     ActionHostError, Caller, InvocationReceipt, InvokeRequest, Reservation,
@@ -27,6 +27,7 @@ use tilo_actions::remote::{
 pub(super) enum HostSteps {
     Pairing(Arc<dyn DevicePairingServices>),
     Identity(Arc<dyn IdentityAdminServices>),
+    Settings(Arc<dyn SettingsRecordServices>),
 }
 
 impl HostSteps {
@@ -34,7 +35,12 @@ impl HostSteps {
     pub(super) fn installed(services: &HostServices) -> Vec<Self> {
         let pairing = services.device_pairing.clone().map(Self::Pairing);
         let identity = services.identity_admin.clone().map(Self::Identity);
-        pairing.into_iter().chain(identity).collect()
+        let settings = services.settings_records.clone().map(Self::Settings);
+        pairing
+            .into_iter()
+            .chain(identity)
+            .chain(settings)
+            .collect()
     }
 
     /// The installed service that answers under `provider`, if any.
@@ -49,6 +55,7 @@ impl HostSteps {
         match self {
             Self::Pairing(_) => device_pairing::PROVIDER,
             Self::Identity(_) => identity_admin::PROVIDER,
+            Self::Settings(_) => settings_records::PROVIDER,
         }
     }
 
@@ -57,6 +64,7 @@ impl HostSteps {
         match self {
             Self::Pairing(service) => service.app_id(),
             Self::Identity(service) => service.app_id(),
+            Self::Settings(service) => service.app_id(),
         }
     }
 
@@ -65,6 +73,23 @@ impl HostSteps {
         match self {
             Self::Pairing(service) => service.descriptors(),
             Self::Identity(service) => service.descriptors(),
+            Self::Settings(service) => service.descriptors(),
+        }
+    }
+
+    /// The step at `address` as one invocation with `argument` is: a
+    /// setting's change is as risky as the value it carries makes it.
+    pub(super) fn invocation(
+        &self,
+        address: &ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<ActionDescriptor> {
+        match self {
+            Self::Settings(service) => service.invocation(address, argument),
+            _ => self
+                .descriptors()
+                .into_iter()
+                .find(|descriptor| &descriptor.address == address),
         }
     }
 
@@ -93,6 +118,14 @@ impl HostSteps {
                 address,
                 argument,
             }),
+            Self::Settings(service) => service
+                .apply(&DevicePairingRequest {
+                    room,
+                    actor,
+                    address,
+                    argument,
+                })
+                .map(|()| Pending::ready(Ok(tilo_actions::ActionOutput::default()))),
         }
     }
 }
@@ -208,17 +241,13 @@ impl CapnpBrokerState {
             return Err(abandon(ActionHostError::NotPermitted));
         };
         let address = &request.target.address;
-        let Some(descriptor) = steps
-            .descriptors()
-            .into_iter()
-            .find(|descriptor| &descriptor.address == address)
-        else {
+        let argument = request.argument.to_slot();
+        let Some(descriptor) = steps.invocation(address, argument.as_deref()) else {
             return Err(abandon(ActionHostError::UnknownAction));
         };
         let (workspace, policy, now) = self
             .current_framework_authority(caller, origin, room)
             .map_err(abandon)?;
-        let argument = request.argument.to_slot();
         // One answer covers both gates of this exact host invocation.
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
@@ -1399,5 +1428,195 @@ mod identity_admin_tests {
         let unconfined = Caller::local_person(owner);
         assert!(invoked(&state, &unconfined, &request(identity_admin::LIST, None)).is_err());
         assert!(host.started.lock().unwrap().is_empty(), "nothing started");
+    }
+}
+
+#[cfg(test)]
+mod settings_records_tests {
+    use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+    use crate::services::{SettingsRecordRequest, SettingsRecordServices};
+    use crate::test_support::{
+        Grants as _, KindSet, Subject, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use std::sync::{Arc, Mutex};
+    use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
+    use tilo_actions::remote::{
+        ActionHostError, Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+        settings_records,
+    };
+
+    const APP: &str = "so.tilo.settings";
+    const RESOURCE: &str = "settings:power";
+
+    /// The session's settings, standing in: one section whose lock delay
+    /// weakens the lock when longer or never.
+    struct Host {
+        minutes: Mutex<u32>,
+    }
+
+    impl Host {
+        fn descriptor(&self, privileged: bool) -> tilo_actions::ActionDescriptor {
+            let now = self.minutes.lock().unwrap().to_string();
+            tilo_actions::ActionDescriptor {
+                semantic_identity: None,
+                address: tilo_actions::ActionAddress::new(RESOURCE, "field-edit"),
+                resource_kind: "settings.power".into(),
+                resource_label: "Power".into(),
+                action_label: "Edit".into(),
+                description: None,
+                locus: tilo_actions::ExecutionLocus::default(),
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Undoable,
+                    risk: if privileged {
+                        tilo_actions::RiskLevel::Privileged
+                    } else {
+                        tilo_actions::RiskLevel::Low
+                    },
+                    tags: vec![
+                        FIELD_EDIT_TAG.into(),
+                        tilo_actions::ARGUMENT_RISK_TAG.into(),
+                        weakening_tag(
+                            "lock_minutes",
+                            Some(&now),
+                            Weaker::Higher { weakest: Some(0) },
+                        ),
+                    ],
+                    ..tilo_actions::ActionContract::default()
+                },
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            }
+        }
+    }
+
+    impl SettingsRecordServices for Host {
+        fn app_id(&self) -> &'static str {
+            APP
+        }
+
+        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+            vec![self.descriptor(false)]
+        }
+
+        fn invocation(
+            &self,
+            address: &tilo_actions::ActionAddress,
+            argument: Option<&str>,
+        ) -> Option<tilo_actions::ActionDescriptor> {
+            let weakens = self
+                .descriptor(false)
+                .contract
+                .confirmation_for_argument(argument)
+                != tilo_actions::ConfirmationPolicy::None;
+            Some(self.descriptor(weakens)).filter(|descriptor| &descriptor.address == address)
+        }
+
+        fn apply(&self, request: &SettingsRecordRequest<'_>) -> Result<(), String> {
+            let json = request
+                .argument
+                .and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+                .ok_or("no edit")?;
+            let arguments: serde_json::Value =
+                serde_json::from_str(json).map_err(|error| error.to_string())?;
+            let minutes = arguments["edit"]["value"].as_u64().ok_or("no value")?;
+            *self.minutes.lock().unwrap() = u32::try_from(minutes).map_err(|e| e.to_string())?;
+            Ok(())
+        }
+    }
+
+    fn lock_after(minutes: u32, confirmation: Option<Confirmation>) -> InvokeRequest {
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: settings_records::PROVIDER.into(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, "field-edit"),
+            },
+            argument: InvokeArgument::Json(
+                serde_json::from_value(serde_json::json!({
+                    "edit": { "path": [{ "field": "lock_minutes" }], "op": "set", "value": minutes }
+                }))
+                .unwrap(),
+            ),
+            context: None,
+            confirmation,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        }
+    }
+
+    fn invoked(
+        state: &Arc<CapnpBrokerState>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+        state
+            .action_invoke(caller, None, None, request)
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("admission answers at once")
+    }
+
+    /// With no window of Settings, the session changes the person's
+    /// settings: a change that weakens the lock asks the person first, and
+    /// an agent's needs their own answer; a stricter one asks nothing.
+    #[test]
+    fn a_setting_that_weakens_asks_the_person_and_an_agent_needs_their_answer() {
+        let host = Arc::new(Host {
+            minutes: Mutex::new(5),
+        });
+        let owner = hex::encode([41; 32]);
+        let mut workspace = Workspace::new(WorkspaceId(9), "Settings");
+        workspace.set_owner(owner.clone());
+        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
+        let room = workspace.room().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared().authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                settings_records: Some(host.clone()),
+                ..Default::default()
+            },
+        );
+        let person = Caller::local_person(owner).in_room(room.clone());
+        let agent = Caller::local_agent("scribe").in_room(room);
+        let minutes = || *host.minutes.lock().unwrap();
+
+        invoked(&state, &person, &lock_after(1, None)).expect("locking sooner asks nothing");
+        assert_eq!(minutes(), 1);
+        assert_eq!(
+            invoked(&state, &person, &lock_after(0, None)),
+            Err(ActionHostError::ConfirmationRequired),
+            "never locking asks first"
+        );
+        assert_eq!(minutes(), 1);
+        invoked(
+            &state,
+            &person,
+            &lock_after(10, Some(Confirmation::Confirmed)),
+        )
+        .expect("the person confirmed it");
+        assert_eq!(minutes(), 10);
+
+        invoked(&state, &agent, &lock_after(5, None)).expect("the agent locks sooner");
+        assert_eq!(minutes(), 5);
+        for confirmation in [None, Some(Confirmation::Confirmed)] {
+            assert!(
+                invoked(&state, &agent, &lock_after(0, confirmation)).is_err(),
+                "an agent's own confirmation is no answer of the person's"
+            );
+        }
+        assert_eq!(minutes(), 5, "nothing weakened");
     }
 }

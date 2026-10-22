@@ -504,6 +504,16 @@ pub mod device_pairing {
     }
 }
 
+/// The person's settings, kept by the host whether or not the app that shows
+/// them is open: each section a record published with its field edits and
+/// verbs (`settings:<kind>`), changed through them as that app's window
+/// changes them. It is answered under the host's provider for the person at
+/// this device in the room their connection was admitted to.
+pub mod settings_records {
+    /// The provider the host answers the person's settings under.
+    pub const PROVIDER: &str = "tilo.settings";
+}
+
 /// Administering the person's identities and the devices trusted under
 /// them. The host keeps the identity store — records, root secrets, the
 /// active selector, device fleets — and runs every step, so no application
