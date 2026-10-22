@@ -3,6 +3,7 @@
 
 use automerge::{AutoCommit, ObjId};
 
+use crate::application_view::ApplicationViewState;
 use crate::widget::Widget;
 use crate::widget::capability::{capability, capability_mut};
 
@@ -193,6 +194,36 @@ pub fn history_entry_presenter(
         .children()
         .into_iter()
         .find_map(history_entry_presenter)
+}
+
+/// The presentation of the first widget in `widget`'s tree that keeps one
+/// ([`ApplicationViewState`]): how the window shows its record (a mode, the
+/// open item), so History opens a past version as the window shows it.
+pub fn live_presentation(
+    widget: &dyn Widget,
+) -> Option<crate::application_view::ApplicationLocalView> {
+    if let Some(view) = capability::<dyn ApplicationViewState>(widget) {
+        return view.capture_application_view().ok().flatten();
+    }
+    widget.children().into_iter().find_map(live_presentation)
+}
+
+/// Show `local`, a live window's presentation, in the first widget in
+/// `widget`'s tree that keeps one, over the document `doc` it draws.
+/// Returns whether one took it.
+pub fn adopt_presentation(
+    widget: &mut dyn Widget,
+    local: &crate::application_view::ApplicationLocalView,
+    doc: &AutoCommit,
+) -> bool {
+    if let Some(view) = capability_mut::<dyn ApplicationViewState>(&mut *widget) {
+        return view.restore_application_view(local, doc).is_ok()
+            && view.finish_application_view_restore().is_ok();
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| adopt_presentation(child, local, doc))
 }
 
 /// Hand `entry` to the first widget in `widget`'s tree that presents History

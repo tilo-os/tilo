@@ -78,7 +78,10 @@ impl HistoryHost {
                 };
                 canvas.install(create(PreviewInput {
                     snapshot: snapshot.clone(),
-                    initial_view: PreviewView::default(),
+                    initial_view: PreviewView {
+                        application: self.live_presentation.clone(),
+                        ..PreviewView::default()
+                    },
                     assets: FrozenPreviewAssets::default(),
                 }));
                 if let Some(provider) = &provider {

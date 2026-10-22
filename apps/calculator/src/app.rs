@@ -1037,7 +1037,8 @@ impl ui::history_mode::capability::PresentsHistoryEntries for CalculatorApp {
 impl Widget for CalculatorApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::history_mode::capability::PresentsHistoryEntries
+        dyn ui::history_mode::capability::PresentsHistoryEntries,
+        dyn ui::application_view::ApplicationViewState
     );
 
     fn is_focusable(&self) -> bool {
@@ -1663,6 +1664,7 @@ impl CalculatorApp {
     }
 }
 
+mod local_view;
 mod window_bar;
 
 #[cfg(test)]

@@ -132,6 +132,9 @@ pub struct HistoryHost {
     /// A change a person chose to open in the app, handed to the live app
     /// once History has returned to it ([`Self::deliver_opened_entry`]).
     opened: Option<crate::widget::HistoryEntry>,
+    /// How the live window shows its record while History is open (a mode,
+    /// the open item): a past version opens as the window shows it.
+    live_presentation: Option<crate::application_view::ApplicationLocalView>,
     open: bool,
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
@@ -392,6 +395,7 @@ impl HistoryHost {
             open_requested: request,
             requested_entry: None,
             opened: None,
+            live_presentation: None,
             open: false,
             open_button: true,
             fallback_bar: true,
@@ -1206,12 +1210,15 @@ impl HistoryHost {
     }
 
     /// Present the listed changes as the live app `live` says they look
-    /// ([`super::capability::PresentsHistoryEntries`]). Asked only while
-    /// History is open or opening: the walk costs nothing to a closed one.
+    /// ([`super::capability::PresentsHistoryEntries`]), and keep how the
+    /// window shows its record for the previews
+    /// ([`super::capability::live_presentation`]). Asked only while History
+    /// is open or opening: the walk costs nothing to a closed one.
     pub(crate) fn present_entries_of(&mut self, live: &dyn Widget) {
         if self.captures_input() {
             self.timeline
                 .set_entry_presenter(super::capability::history_entry_presenter(live));
+            self.live_presentation = super::capability::live_presentation(live);
         }
     }
 

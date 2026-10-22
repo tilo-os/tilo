@@ -267,3 +267,64 @@ fn a_long_formula_passed_to_an_action_reaches_history_whole() {
         "the calculation is put back whole"
     );
 }
+
+/// History opens a past version as the window shows it: in Graph 2D, a
+/// version's preview is the graph as it was, its functions drawn by the
+/// same view, not the keypad of a calculator just opened.
+#[test]
+fn a_past_version_previews_the_graph_the_window_shows() {
+    fn described(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        out.extend(node.description.clone());
+        out.extend(node.name.clone());
+        for child in &node.children {
+            described(child, out);
+        }
+    }
+    fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+        if let Some(semantics) = &node.semantics {
+            described(semantics, out);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut app = hosted();
+    press_bar(&mut app, "calculator.mode:1");
+    click(&mut app, "calculator.graph.field:2d:0");
+    app.harness().type_text("x+1");
+    app.settle();
+    app.flush().unwrap();
+    app.harness()
+        .open_history()
+        .expect("the window's History opens");
+    app.settle();
+    app.harness().relayout();
+    let rows = history_rows(&mut app);
+    let version = rows
+        .iter()
+        .find(|(_, name)| name.ends_with("y = x+1"))
+        .map_or_else(|| panic!("{rows:?}"), |(target, _)| target.clone());
+    app.harness()
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&version),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.settle();
+    app.harness().relayout();
+    let mut texts = Vec::new();
+    walk(&app.harness().inspection().root, &mut texts);
+    let preview = texts
+        .iter()
+        .find(|text| text.contains("as of this version"))
+        .unwrap_or_else(|| panic!("a version is previewed: {texts:?}"));
+    assert!(
+        preview.contains("Function 1 formula") && preview.contains("x+1"),
+        "the preview is the graph with its function: {preview}"
+    );
+    assert!(
+        !preview.contains("Scientific keypad"),
+        "the preview shows the graph, not the keypad: {preview}"
+    );
+}

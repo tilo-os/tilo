@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 /// Opaque application-owned local presentation; never document bytes.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ApplicationLocalView {
     pub app_id: String,
     pub version: u32,
