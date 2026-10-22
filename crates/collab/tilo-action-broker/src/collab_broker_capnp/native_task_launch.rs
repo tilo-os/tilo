@@ -112,35 +112,24 @@ impl NativeLaunch {
             {
                 return Err("closed task action requires person confirmation".into());
             }
-            state
-                .native_tasks(&self.run.cluster_id)
-                .ok_or("native launch owner unavailable")?
-                .authorize_action(
-                    &self.run.cluster_id,
-                    &self.run.agent_id,
-                    &NativeTaskActionRequirement {
-                        binding: Some(self.binding()?),
-                        app: self.app.clone(),
-                        resource_kind: retained.resource_kind.clone(),
-                        resource: self.resource.clone(),
-                        action: self.action.clone(),
-                        need: retained.contract.need(),
-                        consequential: false,
-                        confirmed: self.confirmed,
-                    },
-                )?;
+            state.authorize_task_action(
+                &self.run,
+                &NativeTaskActionRequirement {
+                    binding: Some(self.binding()?),
+                    app: self.app.clone(),
+                    resource_kind: retained.resource_kind.clone(),
+                    resource: self.resource.clone(),
+                    action: self.action.clone(),
+                    need: retained.contract.need(),
+                    consequential: false,
+                    confirmed: self.confirmed,
+                },
+            )?;
         }
         // A ready app does not need launch authority. Its action still takes
         // the exact current task admission below, including starter revocation.
         if self.bootstrap || self.ready(state).is_none() {
-            state
-                .native_tasks(&self.run.cluster_id)
-                .ok_or("native launch owner unavailable")?
-                .authorize_action(
-                    &self.run.cluster_id,
-                    &self.run.agent_id,
-                    &self.requirement()?,
-                )?;
+            state.authorize_task_action(&self.run, &self.requirement()?)?;
         }
         Ok(())
     }
@@ -219,10 +208,8 @@ impl NativeLaunch {
     ) -> Result<(), String> {
         let binding = self.binding()?;
         state
-            .native_tasks(&self.run.cluster_id)
-            .ok_or("native launch owner absent")?
-            .admit_host_launch(
-                &self.run.cluster_id,
+            .admit_task_launch(
+                &self.run,
                 &binding,
                 &self.requirement()?,
                 &mut || {
@@ -567,17 +554,8 @@ impl CapnpBrokerState {
         {
             return Err("host activation request changed or its outcome is uncertain".into());
         }
-        let service = self
-            .native_tasks(&run.cluster_id)
-            .ok_or("native launch owner absent")?;
         let mut binding = run.native.clone().ok_or("native launch binding absent")?;
-        binding.revision = service
-            .snapshot(&run.cluster_id)?
-            .controls
-            .get(&binding.task_id)
-            .and_then(|control| control.active_run.as_ref())
-            .ok_or("native task run ended")?
-            .applied_direction_revision;
+        binding.revision = self.applied_task_revision(run)?;
         let requirement = NativeTaskActionRequirement {
             binding: Some(binding.clone()),
             app: app.into(),
@@ -588,7 +566,7 @@ impl CapnpBrokerState {
             consequential: false,
             confirmed: false,
         };
-        service.admit_host_launch(&run.cluster_id, &binding, &requirement, &mut || {
+        self.admit_task_launch(run, &binding, &requirement, &mut || {
             caller.authorize_host_action(self, &run.cluster_id, &requirement)?;
             Ok(())
         })?;

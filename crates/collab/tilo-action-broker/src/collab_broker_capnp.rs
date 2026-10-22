@@ -57,6 +57,7 @@ mod private_draft;
 mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
+mod tracker_runs;
 #[path = "workspace_checkpoints.rs"]
 mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
@@ -5358,7 +5359,7 @@ impl CapnpBrokerState {
             .collect::<Vec<_>>();
         let retained = self.launchable.surfaces().into_iter().filter(|surface| {
             scope.is_none()
-                && self.native_tasks(cluster_id).is_some()
+                && self.task_admitted_room(cluster_id)
                 && !routes.contains(&surface.route)
         });
         let published = live
@@ -5910,7 +5911,7 @@ impl CapnpBrokerState {
         // In native rooms an agent's action authority comes only from the
         // authenticated task admission callback, never from ambient context
         // or a room grant alone (including after its run has stopped).
-        if actor.is_agent && self.native_tasks(&offered.0.route.cluster_id).is_some() {
+        if actor.is_agent && self.task_admitted_room(&offered.0.route.cluster_id) {
             match durable {
                 Some(DurableContext::Task { binding, .. })
                     if actor.id.strip_prefix("agent:").unwrap_or(&actor.id) == binding.agent_id => {
@@ -7125,6 +7126,13 @@ impl CapnpBrokerState {
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if run
+            .native
+            .as_ref()
+            .is_some_and(|binding| crate::services::is_tracker_issue(&binding.task_id))
+        {
+            return self.report_tracker_run(&run, &update);
+        }
         if run.native.is_some() {
             return self.report_native_task(run, update).await;
         }
@@ -7289,18 +7297,23 @@ impl CapnpBrokerState {
             current.revision = runtime_collab::native_task_revision(lease)
                 .ok_or("invalid native lease")?
                 .1;
-            self.native_tasks(&run.cluster_id)
-                .ok_or("native task owner unavailable")?
-                .admit(&run.cluster_id, &current, &requirement, &mut || {
-                    self.start_native_task_invocation(
-                        &run,
-                        target,
-                        caller,
-                        *invocation,
-                        (surface.clone(), descriptor.clone()),
-                        (confirmed.0 || consequential, confirmed.1),
-                    )
-                })
+            let mut start = || {
+                self.start_native_task_invocation(
+                    &run,
+                    target,
+                    caller,
+                    *invocation,
+                    (surface.clone(), descriptor.clone()),
+                    (confirmed.0 || consequential, confirmed.1),
+                )
+            };
+            if crate::services::is_tracker_issue(&binding.task_id) {
+                self.admit_tracker_action(&run, &current, &requirement, &mut start)
+            } else {
+                self.native_tasks(&run.cluster_id)
+                    .ok_or("native task owner unavailable")?
+                    .admit(&run.cluster_id, &current, &requirement, &mut start)
+            }
         } else {
             self.start_invocation_confirmed_for(
                 target_peer,
@@ -11091,7 +11104,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         mut results: channel_handle::SubscribeTaskRunsResults,
     ) -> Promise<(), capnp::Error> {
         if self.state.services.legacy_workspace.is_none()
-            && self.state.native_tasks(&self.route().cluster_id).is_none()
+            && !self.state.task_admitted_room(&self.route().cluster_id)
         {
             return Promise::err(capnp::Error::failed(
                 "task execution service unsupported".into(),

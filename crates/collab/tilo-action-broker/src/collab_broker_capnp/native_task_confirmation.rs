@@ -89,6 +89,15 @@ impl CapnpBrokerState {
         let Some(binding) = run.native.clone() else {
             return Ok(NativeGate::Proceed);
         };
+        if crate::services::is_tracker_issue(&binding.task_id) {
+            return self.tracker_confirmation(
+                run,
+                lease,
+                (app, offered),
+                (resource, action),
+                argument,
+            );
+        }
         // An agent sends its arguments in the wire form every caller uses,
         // JSON behind `ARGUMENTS_JSON_PREFIX`; a bare object is read the same.
         let prefixed =
@@ -249,6 +258,10 @@ impl CapnpBrokerState {
         id: &str,
     ) -> Result<(), String> {
         let binding = run.native.clone().ok_or("not a native task run")?;
+        // An issue's run settles its own question through the tracker.
+        if crate::services::is_tracker_issue(&binding.task_id) {
+            return Ok(());
+        }
         let service = self
             .native_tasks(&run.cluster_id)
             .ok_or("native task owner unavailable")?;

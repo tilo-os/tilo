@@ -22,6 +22,7 @@ mod confirmation;
 mod native_task;
 mod outstanding;
 mod selection_prompt;
+mod tracker;
 
 /// The most characters the Task Center carrier of a non-workspace task
 /// takes in one update.
@@ -617,6 +618,7 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<()> {
+        self.report_to_tracker(run, &update)?;
         let request_id = self.native_task.as_ref().map(|_| self.next_broker_request);
         if request_id.is_some() {
             self.next_request_id();
