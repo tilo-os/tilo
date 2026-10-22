@@ -178,6 +178,17 @@ pub enum AgentModelsEffect {
         #[param("The provider's id")]
         provider: String,
     },
+    /// Choose the model one agent plans with; omit both to let it use the
+    /// default again.
+    #[effect(job, device_only, idempotent)]
+    SetAgentModel {
+        #[param("The agent's id")]
+        agent: String,
+        #[param("The provider's id")]
+        provider: Option<String>,
+        #[param("The model's id, one the provider offers")]
+        model: Option<String>,
+    },
     /// Remove a provider and its stored API key.
     #[effect(job, device_only, row, destructive, label = "Remove provider")]
     RemoveProvider {
@@ -3016,6 +3027,7 @@ mod tests {
         ProviderConfig {
             profiles: vec![profile],
             default_profile: None,
+            ..Default::default()
         }
         .save_at(&path)
         .unwrap();

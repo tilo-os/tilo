@@ -13,7 +13,7 @@ use ui::presence::PresenceKey;
 use uuid::Uuid;
 
 use crate::model::Chooser;
-use crate::providers::default_selection;
+use crate::providers::agent_selection;
 use crate::surface;
 use crate::wire::Link;
 
@@ -326,10 +326,14 @@ impl Session {
                 anyhow::ensure!(chooser.is_live(), "managed model gateway unavailable");
                 chooser
             }
-            None => cfg.provider.clone().or_else(default_selection).map_or_else(
-                || Chooser::new(false, cfg.model_timeout),
-                |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
-            ),
+            None => cfg
+                .provider
+                .clone()
+                .or_else(|| agent_selection(&cfg.agent_id))
+                .map_or_else(
+                    || Chooser::new(false, cfg.model_timeout),
+                    |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
+                ),
         };
         Ok(Self {
             cfg,

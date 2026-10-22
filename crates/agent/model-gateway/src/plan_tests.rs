@@ -184,6 +184,7 @@ fn child_plan(case: &str) {
     ProviderConfig {
         profiles: vec![profile.clone()],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();

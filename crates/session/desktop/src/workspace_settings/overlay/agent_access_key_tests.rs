@@ -50,6 +50,8 @@ fn paint(
             editable: true,
             scroll: overlay.agent_access_scroll,
             focus: overlay.agent_access_focus.as_ref(),
+            models: overlay.agent_models.as_ref(),
+            models_open: overlay.agent_models_open,
         },
     );
 }
@@ -105,4 +107,72 @@ fn arrows_change_the_focused_answer_one_step_at_a_time() {
         None,
         "Enter on an answer control changes nothing by itself"
     );
+}
+
+#[test]
+fn the_agent_plans_with_the_model_chosen_in_its_view() {
+    use super::super::agent_access::{AgentModelOption, AgentModels};
+    let option = |model: &str| AgentModelOption {
+        profile: "provider".into(),
+        model: model.into(),
+        label: format!("{model} from Provider"),
+    };
+    let ws = ws(1);
+    let mut overlay = WorkspaceSettingsOverlay::default();
+    overlay.open_agent_review(AGENT.into());
+    overlay.set_agent_models(Some(AgentModels {
+        default: Some("large from Provider".into()),
+        chosen: Some(option("small")),
+        offered: vec![option("large"), option("small")],
+    }));
+    paint(&mut overlay, &ws, None);
+    let head = overlay
+        .agent_access
+        .stop_rect(&AccessFocus::ExpandModels)
+        .expect("the model is shown above the apps");
+    assert_eq!(
+        overlay.agent_access_outcome(head.center()),
+        Some(EventOutcome::ToggleAgentModels)
+    );
+    overlay.toggle_agent_models();
+    paint(&mut overlay, &ws, None);
+    let stops: Vec<_> = overlay
+        .agent_access
+        .stops
+        .iter()
+        .map(|(stop, _)| stop.clone())
+        .take(4)
+        .collect();
+    // The model in use has no Use of its own.
+    assert_eq!(
+        stops,
+        [
+            AccessFocus::Back,
+            AccessFocus::ExpandModels,
+            AccessFocus::Model(None),
+            AccessFocus::Model(Some(option("large"))),
+        ]
+    );
+    let large = overlay
+        .agent_access
+        .stop_rect(&AccessFocus::Model(Some(option("large"))))
+        .unwrap();
+    assert_eq!(
+        overlay.agent_access_outcome(large.center()),
+        Some(EventOutcome::SetAgentModel {
+            agent: AGENT.into(),
+            model: Some(option("large")),
+        })
+    );
+    overlay.agent_access_focus = Some(AccessFocus::Model(None));
+    assert_eq!(
+        overlay.handle_agent_access_key(AgentAccessKey::Activate),
+        Some(EventOutcome::SetAgentModel {
+            agent: AGENT.into(),
+            model: None,
+        })
+    );
+    overlay.close_agent_review();
+    overlay.open_agent_review(AGENT.into());
+    assert!(!overlay.agent_models_open);
 }

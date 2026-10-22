@@ -558,6 +558,7 @@ mod tests {
         let mut config = ProviderConfig {
             profiles: vec![hosted, lan, local.clone()],
             default_profile: Some("hosted".into()),
+            ..Default::default()
         };
         assert_eq!(
             on_device_model(&config).map(|(profile, model)| (profile.id.as_str(), model)),

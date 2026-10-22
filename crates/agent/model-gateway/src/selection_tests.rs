@@ -68,6 +68,7 @@ fn save_case_config(case: &str) -> ProviderProtocol {
     ProviderConfig {
         profiles: vec![profile.clone()],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();

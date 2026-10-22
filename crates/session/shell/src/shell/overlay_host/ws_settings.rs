@@ -183,8 +183,28 @@ impl ShellOverlayHost {
             WorkspaceSettingsOutcome::ReviewAgent(agent) => {
                 // Anyone in the workspace may see what an agent may do; only
                 // someone who governs it gets live controls (`owner_controls`).
+                let models = agent_models(&agent_provider_config::ProviderConfig::load(), &agent);
                 self.workspace_settings_overlay.open_agent_review(agent);
+                self.workspace_settings_overlay.set_agent_models(models);
                 self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::ToggleAgentModels => {
+                self.workspace_settings_overlay.toggle_agent_models();
+                self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::SetAgentModel { agent, model } => {
+                // The model is the person's own Settings, and is what the
+                // agent starts with when they launch it, which takes
+                // administering the workspace.
+                if is_owner {
+                    match choose_agent_model(&agent, model) {
+                        Ok(config) => self
+                            .workspace_settings_overlay
+                            .set_agent_models(agent_models(&config, &agent)),
+                        Err(error) => tracing::warn!(%error, "agent model not saved"),
+                    }
+                    self.bump_chrome();
+                }
             }
             WorkspaceSettingsOutcome::CloseAgentReview => {
                 self.workspace_settings_overlay.close_agent_review();
@@ -504,6 +524,83 @@ impl ShellOverlayHost {
         }
         WorkspaceSettingsOverlay::finish_draw(scene, plan);
     }
+}
+
+/// The models of `config` the person may choose for `agent`, and the one it
+/// plans with; `None` while they have no switched-on model at all.
+fn agent_models(
+    config: &agent_provider_config::ProviderConfig,
+    agent: &str,
+) -> Option<tilo_desktop::workspace_settings::agent_access::AgentModels> {
+    use tilo_desktop::workspace_settings::agent_access::{AgentModelOption, AgentModels};
+    let option =
+        |profile: &agent_provider_config::ProviderProfile,
+         model: &agent_provider_config::ModelDescriptor| AgentModelOption {
+            profile: profile.id.clone(),
+            model: model.id.clone(),
+            label: crate::shell::i18n::t_args(
+                "workspace-settings-agent-model-option",
+                &[
+                    ("model", model.display_label().into()),
+                    ("provider", profile.display_label().into()),
+                ],
+            ),
+        };
+    let offered: Vec<_> = config
+        .profiles
+        .iter()
+        .filter(|profile| profile.enabled)
+        .flat_map(|profile| {
+            profile
+                .models
+                .iter()
+                .map(move |model| option(profile, model))
+        })
+        .collect();
+    if offered.is_empty() {
+        return None;
+    }
+    let default = config.active_profile().and_then(|profile| {
+        let model = profile.default_model.as_ref()?;
+        let model = profile.models.iter().find(|m| &m.id == model)?;
+        Some(option(profile, model).label)
+    });
+    let chosen = config.agent_models.get(agent).and_then(|chosen| {
+        offered
+            .iter()
+            .find(|option| option.profile == chosen.profile && option.model == chosen.model)
+            .cloned()
+    });
+    Some(AgentModels {
+        default,
+        chosen,
+        offered,
+    })
+}
+
+/// Have `agent` plan with `model`, or the default with `None`, in the
+/// person's Settings, unless Settings changed meanwhile. Answers what was
+/// saved.
+fn choose_agent_model(
+    agent: &str,
+    model: Option<tilo_desktop::workspace_settings::agent_access::AgentModelOption>,
+) -> Result<agent_provider_config::ProviderConfig, String> {
+    let read = agent_provider_config::ProviderConfig::load();
+    let mut config = read.clone();
+    config.set_agent_model(
+        agent,
+        model.map(|model| agent_provider_config::AgentModel {
+            profile: model.profile,
+            model: model.model,
+        }),
+    )?;
+    if !config
+        .compare_save(&read)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Settings changed meanwhile; choose again".into());
+    }
+    Ok(config)
 }
 
 /// The room of the `index`th archived workspace, in the order the settings

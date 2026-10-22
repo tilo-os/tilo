@@ -42,6 +42,7 @@ async fn native_stop_retry() {
     ProviderConfig {
         profiles: vec![profile.clone()],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();
