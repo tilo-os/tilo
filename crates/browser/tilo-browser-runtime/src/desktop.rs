@@ -361,8 +361,8 @@ impl Shared {
                 shared.settle_load(id, loaded, &fetched);
             }
         });
-        // A fetch that never ends must not leave its windows saying
-        // "Opening…": past the bound they say it could not be loaded.
+        // A fetch that never ends must not leave its windows holding their
+        // place for ever: past the bound they say it could not be loaded.
         let shared = self.clone();
         let bounded = Arc::clone(notify);
         wasm_bindgen_futures::spawn_local(async move {
@@ -806,33 +806,37 @@ impl Tiles {
 
     /// The app `tab` shows once it can be built here, or the line the
     /// window shows instead.
-    fn ready_app<'t>(&self, tab: &'t Tab) -> Result<&'t str, String> {
+    fn ready_app<'t>(&self, tab: &'t Tab) -> Result<&'t str, Unready> {
         if let TileContent::PeerWindow { label, .. } = &tab.tile {
             // The page draws the stream over this window's content.
-            return Err(if self.shared.peer_windows.borrow().contains_key(&tab.id) {
-                format!("Connecting to {label}…")
-            } else {
-                format!("{label} is no longer shared")
-            });
+            return Err(Unready::Notice(
+                if self.shared.peer_windows.borrow().contains_key(&tab.id) {
+                    format!("Connecting to {label}…")
+                } else {
+                    format!("{label} is no longer shared")
+                },
+            ));
         }
         let TileContent::LocalApp { app_id, .. } = &tab.tile else {
-            return Err("This window has no application in the browser".into());
+            return Err(Unready::Notice(
+                "This window has no application in the browser".into(),
+            ));
         };
         if self.shared.failed.borrow_mut().remove(app_id.as_str()) {
-            return Err(format!(
+            return Err(Unready::Notice(format!(
                 "{} could not be loaded. Check the connection, then open it again.",
                 tab.title
-            ));
+            )));
         }
         if ui::application::registry::is_deferred(app_id) {
             self.load(app_id);
             self.shared.waiting.borrow_mut().insert(tab.id);
-            return Err(format!("Opening {}…", tab.title));
+            return Err(Unready::Arriving);
         }
         Ok(app_id)
     }
 
-    fn component(&mut self, tab: &Tab) -> Result<AppComponent, String> {
+    fn component(&mut self, tab: &Tab) -> Result<AppComponent, Unready> {
         let app_id = self.ready_app(tab)?;
         let definition = application(app_id)
             .ok_or_else(|| format!("{app_id} is not available in the browser"))?;
@@ -842,7 +846,7 @@ impl Tiles {
             self.shared.records.borrow_mut().insert(tab.id, checkout);
         }
         if definition.app_id == tilo_desktop::feedback::PACKAGE {
-            return self.private_feedback(tab.id);
+            return Ok(self.private_feedback(tab.id)?);
         }
         let store = self.store(definition)?;
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
@@ -924,6 +928,20 @@ impl Tiles {
     }
 }
 
+/// Why a window cannot show its app yet.
+enum Unready {
+    /// The app's code is still being fetched.
+    Arriving,
+    /// What the window says instead.
+    Notice(String),
+}
+
+impl From<String> for Unready {
+    fn from(detail: String) -> Self {
+        Self::Notice(detail)
+    }
+}
+
 impl Tiles {
     /// Fetch a deferred application's code; its tabs are built again once
     /// it is in, or show that it failed.
@@ -933,7 +951,7 @@ impl Tiles {
 
     fn private_feedback(&self, instance: TabId) -> Result<AppComponent, String> {
         // Only reached once the composer's code is in: a deferred composer's
-        // window says "Opening…" until then (`ready_app`).
+        // window holds its place with the opening card until then (`ready_app`).
         let code = crate::feedback_composer::code()
             .ok_or_else(|| "Feedback could not be loaded".to_owned())?;
         let services = self
@@ -1049,7 +1067,10 @@ impl TileSource for Tiles {
                 self.shared.waiting.borrow_mut().remove(&tab.id);
                 TileHost::from_component(component)
             }
-            Err(detail) => {
+            // The app's code is on its way: its window holds the place with
+            // the opening card, and the app takes it over once built.
+            Err(Unready::Arriving) => TileHost::new(ui::widget::TileContent::Arriving),
+            Err(Unready::Notice(detail)) => {
                 if self.shared.records.borrow().contains_key(&tab.id) {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                 }

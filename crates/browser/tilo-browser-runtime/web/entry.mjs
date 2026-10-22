@@ -235,10 +235,6 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     say(error?.message ?? String(error));
     throw error;
   }
-  // The app in front (a home workspace's, or the link's) is what the first
-  // frame shows: its code downloads as soon as the runtime is in, while
-  // admission runs, not when the desktop first opens it.
-  if (route.target.app) deps.prefetchApplication?.(route.target.app);
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   // The page hears which room it is getting into, under which entry, before admission.
   deps.onScope?.({scope: route.target.scope, entry});
@@ -253,6 +249,13 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     },
   });
   if (peer) deps.onAdmitted?.(peer);
+  // The app in front (a home workspace's, or the link's) downloads once the
+  // page is in, while the desktop mounts, not when the desktop first opens
+  // it. Not before: admission is a run of small round trips to the host,
+  // and megabytes of app code on the same link held each of them up, so
+  // the desktop drew only once the app had arrived. Its window holds the
+  // app's place until then.
+  if (route.target.app) deps.prefetchApplication?.(route.target.app);
   // The apps in the page read sites without CORS headers through the
   // host it got into, when that host serves a fetch proxy.
   wireFetchProxy(peer, window);

@@ -1044,12 +1044,16 @@ impl DesktopSurface {
             }) else {
                 continue;
             };
-            *host = build_tile(
+            let mut rebuilt = build_tile(
                 self.tiles.as_mut(),
                 self.controls.as_ref(),
                 workspace,
                 model,
             );
+            // A window that held an app's place (its code or record still
+            // coming) hands its opening card to what is built there now.
+            rebuilt.continue_opening_card(host);
+            *host = rebuilt;
             built = true;
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
                 break;

@@ -1,6 +1,6 @@
 //! Fetches of applications' code that the bundle defers, each bounded in
 //! time: a window waiting for its application says that the code could not
-//! be loaded once the bound passes, instead of saying "Opening…" forever.
+//! be loaded once the bound passes, instead of holding its place forever.
 
 use std::collections::HashMap;
 
