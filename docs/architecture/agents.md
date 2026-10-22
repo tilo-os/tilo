@@ -142,16 +142,26 @@ provider-exposed reasoning tokens need not be summaries and are not suppressed
 merely for being raw reasoning. No reasoning is fabricated when a provider
 exposes none, and the assistant's own hidden chain of thought is never substituted.
 
-A local model deployment can use the [Hugging Face Hub download/cache
-workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned
-to an immutable revision, and starts [vLLM's OpenAI-compatible
-server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)
-against that resolved snapshot. A managed installation UI must present license,
-size, revision, download/load progress and VRAM state, and supervise the process
-behind a loopback or network-namespace boundary. This is a deployment/lifecycle
-requirement, not a claim that the gateway downloads or supervises models today.
-Downloading must be an explicit management operation, never a side effect of an
-agent request.
+Local models come from two sources: the signed catalog's curated
+recommendation, and any model a person picks on Hugging Face (search, an id or
+link, their own fine-tunes) or adds as a GGUF file from the device. The
+per-user model manager pins a Hub pick to the commit it was shown at, downloads
+each file resumably and verifies it against the hash the Hub publishes (the
+LFS SHA-256 of weights, the git blob id of small config files) before it enters
+the device's content-addressed store. Settings shows every variant's files,
+size, fit for the probed hardware and licence first; gated models use the
+person's Hugging Face token from the device vault. Either way the model is
+served by a digest-pinned runtime from the signed catalog —
+[llama.cpp](https://github.com/ggml-org/llama.cpp) for GGUF,
+[vLLM's OpenAI-compatible server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)
+for safetensors — supervised behind a loopback port, and a running model
+becomes a model of the local provider profile that agents and Chat choose
+from. Weights are data a signed runtime reads; runtimes are code and stay
+signed. Why that split is safe, and the store's layout, are in
+[system extensions and local models](../system-extensions-and-local-models.md#a-persons-own-models).
+Downloading is an explicit management action (`install-hub-model`), granted
+or denied like every other; it is never a side effect of an agent's model
+request.
 
 ## Agent experience and MCP
 
