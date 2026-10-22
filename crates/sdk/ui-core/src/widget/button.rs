@@ -52,6 +52,9 @@ pub struct Button {
     /// optional badge pill on its corner: what an extension's toolbar action
     /// shows. The glyph in `icon` remains the fallback and the layout key.
     image: Option<vello::peniko::ImageData>,
+    /// A media transport's control (previous, play/pause, next), drawn as
+    /// its [`crate::widget::TransportFace`] at that face's side.
+    transport: Option<(crate::widget::TransportControl, f64)>,
     badge: Option<String>,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
@@ -169,6 +172,7 @@ impl Button {
             pressed_into_focus: false,
             icon: None,
             image: None,
+            transport: None,
             badge: None,
             fill_width: false,
             role: ButtonRole::Secondary,
@@ -368,6 +372,37 @@ impl Button {
             self.dirty = true;
             // A new locale re-shapes the label, and the width follows it.
             self.layout_dirty = true;
+        }
+    }
+
+    /// A media transport's control: previous, play/pause or next, drawn as
+    /// the transport draws it (play/pause the one round, prominent control)
+    /// and named for what it does now.
+    pub fn transport(id: &str, control: crate::widget::TransportControl) -> Self {
+        let mut button = Self::icon_only(id, control.icon(), control.name());
+        button.transport = Some((control, 0.0));
+        button
+    }
+
+    /// Show `control` now (play while paused, pause while playing).
+    pub fn set_transport(&mut self, control: crate::widget::TransportControl) {
+        if self.transport.map(|(shown, _)| shown) == Some(control) {
+            return;
+        }
+        let side = self.transport.map_or(0.0, |(_, side)| side);
+        self.transport = Some((control, side));
+        self.icon = Some(control.icon());
+        self.set_accessible_name(control.name());
+        self.tooltip = Some(control.name().to_owned());
+        self.dirty = true;
+    }
+
+    /// Show `icon` now, for a control whose glyph follows its state (a
+    /// speaker that is muted, a repeat that repeats one).
+    pub fn set_icon(&mut self, icon: crate::icons::Icon) {
+        if self.icon != Some(icon) {
+            self.icon = Some(icon);
+            self.dirty = true;
         }
     }
 
@@ -1440,18 +1475,20 @@ impl Button {
     /// size's height and reaches the minimum target through the hit rect
     /// ([`Self::hit_rect`]); a coarse pointer grows the face to it.
     fn face_height(&self) -> f64 {
+        let height = self.transport.map_or(self.metrics.height, |(_, side)| side);
         if self.interaction.supports_hover() {
-            self.metrics.height
+            height
         } else {
-            self.metrics
-                .height
-                .max(f64::from(self.interaction.minimum_target()))
+            height.max(f64::from(self.interaction.minimum_target()))
         }
     }
 
     /// The face's width with everything shown, measured with the geometry
     /// captured in `build_layout`.
     fn intrinsic_width(&self, text: &mut TextRenderer) -> f32 {
+        if self.transport.is_some() {
+            return f32_of_f64(self.face_height());
+        }
         let (label, hint) = self.content();
         f32_of_f64(
             FaceContent {
@@ -1561,6 +1598,9 @@ impl Widget for Button {
         self.observe_i18n_revision();
         self.measured_width = None;
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        if let Some((control, side)) = &mut self.transport {
+            *side = crate::widget::TransportFace::side(*control, theme);
+        }
         if metrics != self.metrics {
             // A theme scale change re-shapes the label; the cached face must
             // not survive at the old metrics. (The live App rebuilds widgets
@@ -1691,6 +1731,24 @@ impl Widget for Button {
         // theme's type; `measure` uses the copy captured in `build_layout`,
         // the same value on every taffy-driven path.
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        if let Some((control, _)) = self.transport {
+            let face = crate::widget::TransportFace::new(self.rect, control)
+                .hovered(self.is_hovered)
+                .pressed(self.press.is_held())
+                .focused(self.focus_visible())
+                .disabled(!enabled);
+            crate::widget::TransportFace::paint(&mut self.cached, Affine::IDENTITY, theme, &face);
+            self.cache_rect = self.rect;
+            self.append_cached(out_scene, out_transform);
+            crate::widget::draw_gate_and_peer_focus(
+                self,
+                out_scene,
+                out_transform,
+                theme,
+                presence,
+            );
+            return;
+        }
         let (label, hint) = self.content();
         let on = self.is_toggled();
         FacePaint {

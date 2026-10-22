@@ -576,6 +576,7 @@ decorator_trait! {
 // The toolkit's decorators that apps box themselves. A type here implements
 // `concrete::Decorator` instead of `Decorator`.
 concrete_decorator_widget!(super::nav_list::NavList);
+concrete_decorator_widget!(super::media_transport::MediaTransport);
 
 #[cfg(test)]
 #[path = "decorator_tests.rs"]
