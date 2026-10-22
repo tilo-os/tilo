@@ -444,6 +444,50 @@ impl<R: Resource> Actions<R> {
         ))
     }
 
+    /// The resource's own actions as published now: what a query view's
+    /// "In this app" group searches, beside the app's effects.
+    #[must_use]
+    pub fn published(&self) -> Vec<tilo_actions::ActionSpec> {
+        let published = self.table.resource.borrow();
+        let mut specs = published.overlay.clone();
+        specs.extend(
+            published
+                .base
+                .actions
+                .iter()
+                .filter(|spec| !published.overlay.iter().any(|over| over.id == spec.id))
+                .cloned(),
+        );
+        specs
+    }
+
+    /// The binding of a button that runs `spec`, one of the resource's
+    /// published actions or one of its effects, with no arguments; `None`
+    /// where it asks for some.
+    #[must_use]
+    pub fn spec_binding(&self, spec: &tilo_actions::ActionSpec) -> Option<ActionBinding<()>> {
+        let resource = self.table.exporting(spec.clone());
+        let spec = resource.actions.first()?.clone();
+        ActionBinding::static_json(&resource, &spec, serde_json::Map::new())
+            .map_err(|error| tracing::debug!(%error, action = %spec.id, "control not bound"))
+            .ok()
+    }
+
+    /// The binding of a switch that runs `spec`, with no arguments, whichever
+    /// way it is flipped: the action itself flips what it controls.
+    #[must_use]
+    pub fn spec_switch_binding(
+        &self,
+        spec: &tilo_actions::ActionSpec,
+    ) -> Option<ActionBinding<bool>> {
+        let resource = self.table.exporting(spec.clone());
+        let spec = resource.actions.first()?.clone();
+        let arguments: Arguments<bool> = Box::new(|_| Ok(serde_json::Map::new()));
+        ActionBinding::fallible(&resource, &spec, arguments)
+            .map_err(|error| tracing::debug!(%error, action = %spec.id, "control not bound"))
+            .ok()
+    }
+
     /// The table these actions bind from, which follows the publication
     /// whatever the resource's type.
     pub(crate) fn table(&self) -> ActionTable {

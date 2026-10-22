@@ -348,6 +348,7 @@ mod switch;
 pub mod testing;
 mod text;
 mod view;
+pub mod views;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::definition_launch_spec;
