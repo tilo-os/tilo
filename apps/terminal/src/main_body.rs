@@ -56,26 +56,30 @@ pub(crate) enum PtyReadDisposition {
     Closed,
 }
 
-/// Linux PTY masters report `EIO` whenever no slave descriptor is open. For a
-/// hosted `ush` session that happens briefly in the hand-off window, after the
-/// master reaches the app but before the guest opens its slave, and it also
-/// happens for good once the guest exits. `session_open` tells the two apart:
-/// the supervisor keeps the session's lifetime socket open exactly while its
-/// guest runs, so `EIO` retries only while that socket is still open. A local
-/// PTY has no hand-off window, so its `EIO` always means the shell exited.
-/// `EINTR` is never closure. EOF and every other error remain terminal.
+/// A PTY master reports that no slave descriptor is open: Linux with `EIO`,
+/// macOS with the end of the file. For a hosted `ush` session that happens
+/// briefly in the hand-off window, after the master reaches the app but before
+/// the guest opens its slave, and it also happens for good once the guest
+/// exits. `session_open` tells the two apart: the supervisor keeps the
+/// session's lifetime socket open exactly while its guest runs, so the signal
+/// retries only while that socket is still open. A local PTY has no hand-off
+/// window, so for it the signal always means the shell exited. `EINTR` is
+/// never closure; every other error is.
 pub(crate) fn classify_pty_read(
     result: &std::io::Result<usize>,
     session_open: impl FnOnce() -> bool,
 ) -> PtyReadDisposition {
     match result {
-        Ok(0) => PtyReadDisposition::Closed,
-        Ok(n) => PtyReadDisposition::Data(*n),
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => PtyReadDisposition::Retry,
-        Err(error) if error.raw_os_error() == Some(libc::EIO) && session_open() => {
-            PtyReadDisposition::Retry
+        Ok(n) if *n > 0 => return PtyReadDisposition::Data(*n),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+            return PtyReadDisposition::Retry;
         }
-        Err(_) => PtyReadDisposition::Closed,
+        _ => {}
+    }
+    if tilo_process::editor::read_finds_no_slave(result) && session_open() {
+        PtyReadDisposition::Retry
+    } else {
+        PtyReadDisposition::Closed
     }
 }
 
@@ -7478,9 +7482,7 @@ pub(crate) fn ush_backend_on(
     // The supervisor declares PTY first, then the private session lease, and
     // only after negotiation the editor capability last.
     let master = std::fs::File::from(fd);
-    let lifetime = std::os::unix::net::UnixStream::from(lifetime);
-    lifetime
-        .peer_addr()
+    let lifetime = runtime_portal::pending_connection::SessionLifetime::adopt(lifetime)
         .map_err(|_| OpenError::Failed(t("terminal-service-invalid-lease")))?;
     tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
@@ -7494,9 +7496,7 @@ pub(crate) fn ush_backend_on(
         supervisor_session: Some(response.session),
         runs: response.runs.then_some(key),
         native_editor,
-        service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
-            lifetime,
-        )),
+        service_lifetime: Some(lifetime),
     })
 }
 
