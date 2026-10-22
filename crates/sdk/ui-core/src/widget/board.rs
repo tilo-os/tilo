@@ -18,6 +18,9 @@
 //! status in its page, the action the drop stands for), never only by
 //! dragging.
 
+use std::collections::HashMap;
+
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -29,7 +32,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
-use crate::widget::{Column, Container, Element, EventCtx, Row, Widget};
+use crate::widget::{CardWidth, Column, Container, Element, EventCtx, Row, Widget};
 
 /// Where a dragged card was dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +67,6 @@ struct Drag {
 pub struct Board {
     row: Row,
     lanes: Vec<LaneKeys>,
-    lane_width: f32,
     drag: Option<Drag>,
     cursor: Point,
     dirty: bool,
@@ -77,18 +79,12 @@ impl Default for Board {
     }
 }
 
-/// The width of a lane, in logical pixels: a card's comfortable measure.
-const LANE_WIDTH: f32 = 280.0;
-/// The insertion line's thickness.
-const LINE_PX: f64 = 2.0;
-
 impl Board {
     #[must_use]
     pub fn new() -> Self {
         Self {
             row: Row::new().no_wrap().align_start(),
             lanes: Vec::new(),
-            lane_width: LANE_WIDTH,
             drag: None,
             cursor: Point::ZERO,
             dirty: false,
@@ -115,9 +111,11 @@ impl Board {
             keys.push(card);
             column = column.push(widget);
         }
+        // The lane's width is a card's comfortable measure, set at layout
+        // from the theme (`Board::size_lanes`).
         let lane = Container::new()
             .with_no_padding()
-            .with_width(self.lane_width)
+            .with_width(0.0)
             .with_child(Box::new(column));
         self.row = std::mem::take(&mut self.row).push(Box::new(lane));
         self.lanes.push(LaneKeys {
@@ -203,12 +201,28 @@ impl Board {
         Some((lane, before))
     }
 
+    /// Give every lane a regular card's measure under `theme`, so lanes
+    /// follow the text size the cards in them are set in.
+    fn size_lanes(&mut self, theme: &Theme) {
+        #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
+        let width = CardWidth::Regular.min_width(theme) as f32;
+        for lane in self.row.children_mut() {
+            if let Some(lane) = lane
+                .as_any_mut()
+                .and_then(|lane| lane.downcast_mut::<Container>())
+            {
+                lane.set_width(width);
+            }
+        }
+    }
+
     /// Where the insertion line goes for `target`, across its lane.
     fn line_rect(&self, (lane, before): &(usize, Option<String>), theme: &Theme) -> Option<Rect> {
         let band = *self.lane_rects().get(*lane)?;
         let keys = self.lanes.get(*lane)?;
         let rects = self.card_rects(*lane);
         let gap = f64::from(theme.tokens.spacing.s2);
+        let line = f64::from(theme.tokens.metrics.drag_line_px);
         let y = match before {
             Some(before) => {
                 let at = keys.cards.iter().position(|key| key == before)?;
@@ -218,12 +232,7 @@ impl Board {
                 .last()
                 .map_or(band.y0 + gap, |rect| rect.y1 + gap / 2.0),
         };
-        Some(Rect::new(
-            band.x0,
-            y - LINE_PX / 2.0,
-            band.x1,
-            y + LINE_PX / 2.0,
-        ))
+        Some(Rect::new(band.x0, y - line / 2.0, band.x1, y + line / 2.0))
     }
 
     /// The pointer left every card: a drag started, so the press that began
@@ -255,6 +264,16 @@ impl crate::widget::Decorator for Board {
 
     fn needs_redraw(&self) -> bool {
         self.dirty || Widget::needs_redraw(&self.row)
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.size_lanes(theme);
+        Widget::build_layout(&mut self.row, taffy, theme, node_map)
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -360,6 +379,7 @@ impl crate::widget::Decorator for Board {
         };
         let colors = &theme.tokens.colors.intent;
         let radius = f64::from(theme.tokens.radii.control);
+        let line_px = f64::from(theme.tokens.metrics.drag_line_px);
         if let Some(target) = &drag.target {
             if let Some(band) = self.lane_rects().get(target.0) {
                 scene.fill(
@@ -376,7 +396,7 @@ impl crate::widget::Decorator for Board {
                     transform,
                     colors.accent,
                     None,
-                    &RoundedRect::from_rect(line, LINE_PX / 2.0),
+                    &RoundedRect::from_rect(line, line_px / 2.0),
                 );
             }
         }
@@ -391,7 +411,7 @@ impl crate::widget::Decorator for Board {
             &shape,
         );
         scene.stroke(
-            &Stroke::new(LINE_PX),
+            &Stroke::new(line_px),
             transform,
             colors.accent,
             None,

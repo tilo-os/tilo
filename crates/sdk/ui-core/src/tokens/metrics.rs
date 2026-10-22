@@ -194,6 +194,9 @@ pub struct Metrics {
     pub figure_size: f32,
     /// How far a press may move and still be a click.
     pub click_slop: f32,
+    /// The line a drag draws where the dragged item would land, and the
+    /// outline of the ghost it carries under the pointer.
+    pub drag_line_px: f32,
 }
 
 impl Metrics {
@@ -269,6 +272,7 @@ impl Metrics {
         aside_min_width: 240.0,
         figure_size: 280.0,
         click_slop: 4.0,
+        drag_line_px: 2.0,
     };
 
     /// The factor a **text-sized** width or breakpoint grows by at a given
@@ -390,6 +394,7 @@ impl Metrics {
             aside_min_width: self.aside_min_width * factor,
             figure_size: self.figure_size * factor,
             click_slop: self.click_slop * factor,
+            drag_line_px: self.drag_line_px * factor,
         }
     }
 }
