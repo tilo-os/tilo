@@ -647,6 +647,20 @@ pub fn card(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, fill:
     );
 }
 
+/// Clip what is painted next to the inside of a [`card`] at `rect` with
+/// `radius`, until the caller's `scene.pop_layer()`: content held past the
+/// card's edge (a dragged marker, a scrolled drawing) is cut there instead
+/// of spilling over what surrounds the card.
+pub fn push_card_clip(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64) {
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &RoundedRect::from_rect(snap(rect), radius),
+    );
+}
+
 /// [`card`] for a translucent `fill` (an accent wash, a hover tint): the
 /// edge derives from what the eye sees — `fill` composited over `ground` —
 /// not from the wash's own RGB. A 16 % accent wash on a light panel is
