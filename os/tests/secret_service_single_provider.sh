@@ -10,6 +10,8 @@ bus_file="$repo_root/os/usr/share/dbus-1/services/org.freedesktop.secrets.servic
 unit="$repo_root/os/usr/lib/systemd/user/tilo-secret-service.service"
 container="$repo_root/os/Containerfile"
 components="$repo_root/os/components.toml"
+# The image's binaries are compiled outside the image build, by this script.
+compile="$repo_root/os/image/compile.sh"
 pam="$repo_root/os/etc/pam.d/greetd"
 
 ok() { printf 'ok - %s\n' "$1"; }
@@ -48,8 +50,8 @@ else
   bad 'the image would overwrite a package-owned org.freedesktop.secrets activation file'
 fi
 
-if grep -Fq -- '-p tilo-secret-service' "$container" \
-   && grep -Fq -- '--bin tilo-secret-service' "$container" \
+if grep -Fq -- '-p tilo-secret-service' "$compile" \
+   && grep -Fq -- '--bin tilo-secret-service' "$compile" \
    && grep -Fq 'name = "secret-service"' "$components"; then
   ok 'tilo-secret-service is built and installed'
 else
