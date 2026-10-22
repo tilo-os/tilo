@@ -797,6 +797,12 @@ impl Worker {
             }
             Refusal::Invalid(reason) | Refusal::OverLimit(reason) => {
                 tracing::error!(%reason, "the render service refused a frame");
+                // The refused frame's damage never reached the service's
+                // buffer, so a later frame that repaints only its own damage
+                // would leave this one's regions stale on screen. The next
+                // frame is whole. It is not woken for: the same scene would
+                // be refused again.
+                self.full_repaint.store(true, Ordering::SeqCst);
                 FrameOutcome::Skipped
             }
         }
