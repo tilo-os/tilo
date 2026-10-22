@@ -4842,9 +4842,14 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     let workspace_patches = workspace["patch"]["crates-io"].as_table().unwrap();
     // winit, vello and automerge are not patched: the SDK depends on its forks
     // by path, as `tilo-winit`, `tilo-vello` and `tilo-automerge-fork`.
-    let forks = ["wayland-backend", "rustls-native-certs"];
-    // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
-    let git_forks = ["accesskit", "atspi"];
+    // The accessibility crates are vendored releases with a manifest edit,
+    // reached like every other fork under vendor/.
+    let forks = [
+        "wayland-backend",
+        "rustls-native-certs",
+        "accesskit_unix",
+        "atspi",
+    ];
     // A fork only an engine library's graph uses (rustypipe, which Music and
     // Tube load from the YouTube engine) is not the SDK's and stays out.
     let engine_forks = ["rustypipe"];
@@ -4853,14 +4858,10 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
             assert!(workspace_patches.contains_key(name), "{name}");
             assert!(!patches.contains_key(name), "{name}");
         }
-        for name in git_forks {
-            assert_eq!(patches.get(name), workspace_patches.get(name), "{name}");
-            assert!(
-                workspace_patches[name]["git"]
-                    .as_str()
-                    .is_some_and(|url| url.starts_with("https://")),
-                "{name}"
-            );
+        // No fork is fetched from another git host, which would fail every
+        // build of the app whenever that host is down.
+        for (name, patch) in workspace_patches {
+            assert!(patch.get("git").is_none(), "{name} is fetched from git");
         }
     };
 
