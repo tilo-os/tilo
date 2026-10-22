@@ -1,10 +1,5 @@
 [
   {
-    "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
-    "oid": "5ecbd4ce2fbdab0d3693e0a214b2a7818702e013",
-    "reason": "Visual regression reference for the overview open/close settle. Re-pinned to the overview reference 5d33fc7f3e refreshed; refresh it only for an intended UI change, never to silence a mismatch."
-  },
-  {
     "path": "crates/browser/tilo-browser-runtime/web/apple-touch-icon.png",
     "oid": "b675c1a67561f81cf00e09fe0c3ab056d6dd8afb",
     "reason": "Safari takes a home-screen icon only as a PNG; rendered from the brand's app-icon.svg at 180 px. Re-pin it only when the brand icon changes."

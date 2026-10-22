@@ -366,7 +366,7 @@ fn e2e_open_close_overview() {
     let rendered = out_dir.join("e2e-02-overview-open.png");
     SnapshotAssertion::new(
         rendered,
-        goldens_dir().join("e2e-open-close-overview-settled.png"),
+        pinned_golden_path(goldens_dir().join("e2e-open-close-overview-settled.png")),
     )
     .assert();
 }

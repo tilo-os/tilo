@@ -2,6 +2,12 @@
   "schema": 1,
   "assets": [
     {
+      "file": "e2e-open-close-overview-settled.png",
+      "sha256": "d81a4c170a7c0a280353ac5fc7c677c833713d7f57dc8e0d064895d5b2c460d9",
+      "bytes": 79283,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d81a4c170a7c0a280353ac5fc7c677c833713d7f57dc8e0d064895d5b2c460d9/e2e-open-close-overview-settled.png"
+    },
+    {
       "file": "e2e-tab-drag-reorder-settled.png",
       "sha256": "7513ec7d612ab17872c64391b1be9cc9b1b64f7bb66d0467fac9f6004b7a6c5a",
       "bytes": 23634,

@@ -171,16 +171,17 @@ class TestAssets(unittest.TestCase):
 
     def test_shell_decision_states_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/session/shell/tests/snapshots/artifacts.json")
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(sum(row["bytes"] for row in rows), 47929)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(sum(row["bytes"] for row in rows), 127212)
         self.assertEqual({row["file"] for row in rows}, {
+            "e2e-open-close-overview-settled.png",
             "e2e-tab-drag-reorder-settled.png",
             "e2e-maximized-tile-controls.png"})
 
     def test_reader_linux_and_windows_baselines_remain_pinned(self):
         rows = assets.manifest(ROOT / "apps/ebook/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 4)
-        self.assertEqual(sum(row["bytes"] for row in rows), 801283)
+        self.assertEqual(sum(row["bytes"] for row in rows), 802679)
         self.assertEqual({row["file"] for row in rows}, {
             "serif-reader.png", "serif-reader-windows.png",
             "math-reader.png", "math-reader-windows.png"})
