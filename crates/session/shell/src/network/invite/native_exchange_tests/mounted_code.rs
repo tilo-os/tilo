@@ -225,6 +225,27 @@ impl Mounted {
             ))
             .await
             .unwrap();
+        // Joining installs the room's governance alone; the record Code opens
+        // arrives through the room's sync once the device is connected. The
+        // network's turn admits that input into the owner; mounting waits
+        // until the owner holds the record, as a person opens a file they
+        // see in the workspace.
+        tilo_test_env::within("the room's sync to deliver the Code record", async {
+            loop {
+                network.tick();
+                let held = device
+                    .owner
+                    .with_current(room, |view| {
+                        Ok(view.peer().document(APP, cold_code::RECORD).is_some())
+                    })
+                    .unwrap_or(false);
+                if held {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
         let code = cold_code::mount_with_network_and_reads(
             &device.owner,
             &device.identity,
@@ -381,6 +402,19 @@ pub(super) async fn run(
         endpoint: context.endpoint.clone(),
     };
     let active_writer = active_reads::enroll_writer(&context, &authority, &receiving_custody).await;
+    // The host answers a device's sync with fresh checkpoints of the room's
+    // records: joining installed governance alone, so the records the roots
+    // open reach each device this way before it mounts them.
+    let (mailbox, requests) = tilo_relay::peer::sync_refresh::Mailbox::bounded();
+    let topic = tilo_relay::room_workspace_id(tilo_joined_room::testing::ROOM).unwrap();
+    context
+        .relay
+        .install_sync_refresh(topic, mailbox)
+        .await
+        .unwrap();
+    let mut refreshes =
+        RefreshConsumer::start(requests, authority.clone(), context.publisher.clone());
+    publish(&authority, context.publisher);
     eprintln!("mounted journey: mounting both original Code roots");
     let mut mounted = vec![
         Mounted::new_observed(
@@ -403,16 +437,6 @@ pub(super) async fn run(
         )
         .await,
     ];
-    let (mailbox, requests) = tilo_relay::peer::sync_refresh::Mailbox::bounded();
-    let topic = tilo_relay::room_workspace_id(tilo_joined_room::testing::ROOM).unwrap();
-    context
-        .relay
-        .install_sync_refresh(topic, mailbox)
-        .await
-        .unwrap();
-    let mut refreshes =
-        RefreshConsumer::start(requests, authority.clone(), context.publisher.clone());
-    publish(&authority, context.publisher);
     // Showing the file is the editor's own effect, which the effect broker
     // signs a receipt for; the framework's `open` is a view and signs none.
     let show =

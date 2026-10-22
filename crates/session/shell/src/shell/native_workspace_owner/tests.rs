@@ -912,9 +912,23 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
     let complete = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&complete, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
+    // The historical governance is admitted on Complete's evidence: the
+    // room's call policy is there, bound to the room's Chat. Joining takes
+    // governance alone, so the Chat checkpoint the binding names is not part
+    // of it; it arrives through the room's sync (the host answers that with
+    // a fresh checkpoint), and until then the policy fails closed.
     owner
         .with_current(room, |view| {
-            assert!(view.peer().validated_media_policy()?.is_some());
+            assert!(view.peer().has_governance());
+            assert_eq!(
+                view.peer().validated_media_policy().unwrap_err(),
+                "media binding requires exact admitted Chat checkpoint",
+                "the governed call policy is installed, waiting only for its Chat"
+            );
+            assert!(
+                view.peer().document(APP, "").is_none(),
+                "app data is not part of becoming a member"
+            );
             Ok(())
         })
         .unwrap();
