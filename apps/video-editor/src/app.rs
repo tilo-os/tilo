@@ -64,6 +64,7 @@ mod layout;
 mod paint;
 mod preview_paint;
 mod project_workflow;
+mod render_action;
 mod scenario;
 mod selection;
 mod timeline_paint;
@@ -1028,6 +1029,9 @@ pub struct VideoEditorApp {
     /// the next edit of one of them is the difference from, and what the
     /// optimistic `project` returns to once a drag lets go.
     stored: std::rc::Rc<Project>,
+    /// The content store the host lent the window: where a render made for
+    /// a caller is kept.
+    content: Option<ui::framework::content::ContentStore>,
     /// The local state each existing clip had immediately before the current
     /// UI edit began. Optimistic actions diff this baseline against the local
     /// result, then check only those old values against the live CRDT. They
@@ -1478,6 +1482,7 @@ impl VideoEditorApp {
         Self {
             project: Project::new("Untitled"),
             stored: std::rc::Rc::new(Project::new("Untitled")),
+            content: None,
             clip_edit_bases: HashMap::new(),
             shot_scenario: ShotScenario::Live,
             shot_lifecycle: ShotLifecycle::default(),
@@ -5359,6 +5364,9 @@ impl VideoEditorApp {
             | VideoEditorEffect::SaveAs { path: Some(_) } => {
                 return Err("direct project I/O requires lifecycle dispatch".into());
             }
+            VideoEditorEffect::Render { .. } => {
+                return Err("a render is answered as a job of its own".into());
+            }
             VideoEditorEffect::CancelExport => {
                 let Some(job) = self.export_job.as_ref() else {
                     return Err("no export is running".into());
@@ -7652,6 +7660,20 @@ impl VideoEditorApp {
     ) -> ui::framework::EffectAnswer {
         use crate::actions::VideoEditorEffect;
         match &effect {
+            VideoEditorEffect::Render {
+                start,
+                end,
+                format,
+                size,
+            } => {
+                let request = render_action::RenderRequest {
+                    start: *start,
+                    end: *end,
+                    format: format.clone(),
+                    size: size.clone(),
+                };
+                return self.render_effect(&request, cx);
+            }
             VideoEditorEffect::RevealTrack { .. }
             | VideoEditorEffect::RevealClip { .. }
             | VideoEditorEffect::RevealEffect { .. }
@@ -9409,6 +9431,11 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
                 "export_unavailable",
                 reason,
             ));
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                VideoEditorEffect::RENDER,
+                "export_unavailable",
+                reason,
+            ));
         }
         if self.export_job.is_none() {
             statuses.push(ui::framework::EffectStatus::unavailable(
@@ -9444,6 +9471,7 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
     /// version of anything else is hermetic.
     fn attach(&mut self, cx: ui::framework::SurfaceCx<Project>) {
         self.actions = Some(cx.dispatcher());
+        self.content = cx.content();
         let mode = cx.mode();
         self.seed.capture = mode == ui::framework::RunMode::Capture;
         let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();

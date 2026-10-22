@@ -14,7 +14,7 @@ use crate::resource::video_project;
 
 /// What the editor does that is no edit of the project: revealing a track,
 /// clip, effect, marker or source, and the project file and render jobs.
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video_editor.effect")]
 pub enum VideoEditorEffect {
     /// Reveal track.
@@ -84,6 +84,23 @@ pub enum VideoEditorEffect {
     /// Cancel export.
     #[effect(destructive)]
     CancelExport,
+    /// Render video.
+    ///
+    /// Renders the timeline, or a part of it, on this device into a video
+    /// kept as content, and answers with its content address, the range it
+    /// covers and its size. Changes nothing; putting the video in a file is
+    /// another action that takes the content.
+    #[effect(kind = "read", job, cancellable, returns)]
+    Render {
+        #[param("Seconds on the timeline where it begins; omit for the render range's start")]
+        start: Option<f64>,
+        #[param("Seconds where it ends; omit for the render range's end")]
+        end: Option<f64>,
+        #[param("The file format; mp4 when omitted", choices = ["mp4", "webm", "mov"])]
+        format: Option<String>,
+        #[param("The picture's height; 1080p when omitted", choices = ["720p", "1080p", "2160p"])]
+        size: Option<String>,
+    },
 }
 
 /// Where this participant is, which the verbs it offers are bound to.
