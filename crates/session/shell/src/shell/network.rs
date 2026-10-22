@@ -1591,6 +1591,9 @@ pub struct ShellNetwork {
     /// What live members say beside their pointers and react with, as it
     /// arrived, for the presence pump ([`Self::take_live_chat`]).
     live_chat: Mutex<Vec<LiveChat>>,
+    /// Live members' pointers over the empty desktop, oldest first, for
+    /// the presence pump to place in this desktop's layout.
+    live_desk_pointers: Mutex<Vec<LiveDeskPointer>>,
     /// Waves sent and heard on the room's live presence.
     live_waves: Mutex<crate::shell::live_waves::LiveWaves>,
     /// The last reaction counter said in each room over its presence
@@ -1835,16 +1838,7 @@ pub(crate) fn own_name_is_chosen() -> bool {
         .is_some_and(|identity| runtime_identity::is_chosen_display_name(&identity.display_name))
 }
 
-/// What one live member said or reacted with, in one frame.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LiveChat {
-    /// The sender's session handle (`peer@<handle>` in presence).
-    pub peer: u64,
-    pub room: String,
-    /// What they are saying beside their pointer; `None` for nothing.
-    pub chat: Option<tilo_relay_protocol::live::CursorChat>,
-    pub reaction: Option<tilo_relay_protocol::live::LiveReaction>,
-}
+pub use crate::shell::live_presence::{LiveChat, LiveDeskPointer};
 
 /// One received app-presence frame, fanned to local apps by the
 /// `collab_broker` drainer. Carries no record id: presence is fanned
@@ -2357,6 +2351,7 @@ impl ShellNetwork {
             live_labels: Mutex::default(),
             live_apps: Mutex::default(),
             live_chat: Mutex::default(),
+            live_desk_pointers: Mutex::default(),
             live_waves: Mutex::default(),
             room_reactions: Mutex::default(),
             presence_visibility: Mutex::default(),
@@ -3847,6 +3842,15 @@ impl ShellNetwork {
             .unwrap_or_default()
     }
 
+    /// Where live members' pointers went on the empty desktop since the
+    /// last call, oldest first.
+    pub fn take_live_desk_pointers(&self) -> Vec<LiveDeskPointer> {
+        self.live_desk_pointers
+            .lock()
+            .map(|mut pointers| std::mem::take(&mut *pointers))
+            .unwrap_or_default()
+    }
+
     /// Repeat quiet live presence so other devices keep drawing it.
     fn live_keepalive(&self) {
         let due = self
@@ -3951,6 +3955,16 @@ impl ShellNetwork {
                 room: cluster_id.clone(),
                 chat: inbound.chat.clone(),
                 reaction: inbound.reaction.clone(),
+            });
+        }
+        // Someone who shows nothing sees nothing of where others are.
+        if self.presence_visibility(&cluster_id).sees_pointers()
+            && let Ok(mut pointers) = self.live_desk_pointers.lock()
+        {
+            pointers.push(LiveDeskPointer {
+                peer,
+                room: cluster_id.clone(),
+                pointer: inbound.desk_pointer.clone(),
             });
         }
         if let Ok(mut apps) = self.live_apps.lock() {
@@ -9068,6 +9082,7 @@ pub(crate) fn shell_network_for_test(
         live_labels: Mutex::default(),
         live_apps: Mutex::default(),
         live_chat: Mutex::default(),
+        live_desk_pointers: Mutex::default(),
         live_waves: Mutex::default(),
         room_reactions: Mutex::default(),
         presence_visibility: Mutex::new(presence_visibility),

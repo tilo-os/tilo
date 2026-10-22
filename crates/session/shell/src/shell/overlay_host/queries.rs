@@ -175,6 +175,28 @@ impl ShellOverlayHost {
         tiles
     }
 
+    /// The strip shown, the area it is drawn in and how far it is panned,
+    /// in screen space, as [`Self::tab_tiles`]: what a live member's pointer
+    /// on a strip showing no window is placed in
+    /// ([`crate::shell::peer_presence::PeerPresence::set_shown_strip`]).
+    pub fn shown_strip(&self) -> Option<tilo_relay_protocol::live::ShownStrip> {
+        let id = self.active_strip_id()?;
+        let ptr = self.group_row_ptrs.get(&id).copied()?;
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &GroupRow = unsafe { &*ptr };
+        let area = row.viewport();
+        (area.width() > 0.0 && area.height() > 0.0).then(|| tilo_relay_protocol::live::ShownStrip {
+            id: id.0,
+            area: [
+                ui::num::f32_of_f64(area.x0),
+                ui::num::f32_of_f64(area.y0),
+                ui::num::f32_of_f64(area.x1),
+                ui::num::f32_of_f64(area.y1),
+            ],
+            scroll_x: ui::num::f32_of_f64(row.drawn_scroll_x()),
+        })
+    }
+
     /// Keep [`Self::tab_tiles`] and the pointer current in a handle a
     /// presence pump outside this tree can read — the hosted shell's frame
     /// tick, which is handed no host. Tiles refresh after every layout, the

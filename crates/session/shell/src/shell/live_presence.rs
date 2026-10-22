@@ -320,6 +320,28 @@ impl Outbound {
     }
 }
 
+/// What one live member said or reacted with, in one frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveChat {
+    /// The sender's session handle (`peer@<handle>` in presence).
+    pub peer: u64,
+    pub room: String,
+    /// What they are saying beside their pointer; `None` for nothing.
+    pub chat: Option<CursorChat>,
+    pub reaction: Option<LiveReaction>,
+}
+
+/// Where a live member's pointer is on the empty desktop, from one frame:
+/// beside a window or on a strip ([`LivePointer`]),
+/// or `None` once it is over a window (an app's to draw) or nowhere.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveDeskPointer {
+    /// The sender's session handle (`peer@<handle>` in presence).
+    pub peer: u64,
+    pub room: String,
+    pub pointer: Option<LivePointer>,
+}
+
 /// What one inbound live frame means to local apps.
 #[derive(Debug, Default, PartialEq)]
 pub struct Inbound {
@@ -338,6 +360,13 @@ pub struct Inbound {
     pub reaction: Option<LiveReaction>,
     /// The sender's latest wave.
     pub wave: Option<LiveWave>,
+    /// The sender's pointer when it is over the empty desktop (beside a
+    /// window, or on a strip showing none): no app's to draw, so the
+    /// desktop places it in its own layout ([`PointerLayout::place`]).
+    /// `None` while it is over a window, or nowhere.
+    ///
+    /// [`PointerLayout::place`]: tilo_relay_protocol::live::PointerLayout::place
+    pub desk_pointer: Option<LivePointer>,
 }
 
 /// Translate one live frame. Previews and malformed frames mean nothing
@@ -347,13 +376,17 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
         return None;
     };
     // A pointer over a window is in that app's own coordinates, which is
-    // how an app here draws it; one over a browser desktop's empty desktop
-    // (beside a window, or on a strip) has no place in a native app's
-    // window, and is not drawn.
+    // how an app here draws it; one over the empty desktop (beside a
+    // window, or on a strip) has no place in an app's window: the desktop
+    // places it.
     let pointer = match &presence.pointer {
         Some(LivePointer::Window { record, at }) => Some((record, *at)),
         Some(LivePointer::Beside { .. } | LivePointer::Strip { .. }) | None => None,
     };
+    let desk_pointer = presence
+        .pointer
+        .clone()
+        .filter(|pointer| !matches!(pointer, LivePointer::Window { .. }));
     let mut inbound = Inbound {
         app_id: pointer
             .map(|(record, _)| record)
@@ -371,6 +404,7 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
         chat: presence.chat.clone(),
         reaction: presence.reaction.clone(),
         wave: presence.wave.clone(),
+        desk_pointer,
         ..Inbound::default()
     };
     if let Some((_, [x, y])) = pointer {

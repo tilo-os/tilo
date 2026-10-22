@@ -4320,6 +4320,7 @@ impl FrameBuilder {
             return false;
         };
         let tiles = self.host.tab_tiles();
+        relay.set_shown_strip(self.host.shown_strip());
         let moved = relay.pump(&mut self.presence, &tiles);
         let roster_changed = relay.refresh_roster(&self.presence);
         // Cursor chat: offered over a shared window, and what was typed goes
