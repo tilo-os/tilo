@@ -319,6 +319,8 @@ pub struct ListRowFace<'a> {
     title: &'a str,
     title_lines: u8,
     title_family: Option<&'a FontChoice>,
+    /// The words a search found the row by, marked where the title has them.
+    found: &'a [&'a str],
     subtitle: Option<&'a str>,
     secondary: Option<&'a str>,
     secondary_lines: u8,
@@ -353,6 +355,57 @@ pub struct ListRowFace<'a> {
     frame: Option<Rect>,
 }
 
+/// Where `line` has one of `words`: at the start of a word of it, compared
+/// letter by letter whatever their case. Byte ranges into `line`, in order.
+fn found_spans(line: &str, words: &[&str]) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    let mut previous: Option<char> = None;
+    for (at, c) in line.char_indices() {
+        let starts_word = c.is_alphanumeric() && !previous.is_some_and(char::is_alphanumeric);
+        previous = Some(c);
+        if !starts_word {
+            continue;
+        }
+        let Some(rest) = line.get(at..) else {
+            continue;
+        };
+        let longest = words
+            .iter()
+            .filter_map(|word| matched_len(rest, word))
+            .max();
+        if let Some(len) = longest
+            && spans
+                .last()
+                .is_none_or(|last: &std::ops::Range<usize>| last.end <= at)
+        {
+            spans.push(at..at + len);
+        }
+    }
+    spans
+}
+
+/// How many bytes of the start of `text` are `word`, letter for letter
+/// whatever their case; `None` when it does not start with it.
+fn matched_len(text: &str, word: &str) -> Option<usize> {
+    if word.is_empty() {
+        return None;
+    }
+    let mut wanted = word.chars().flat_map(char::to_lowercase).peekable();
+    let mut len = 0;
+    for c in text.chars() {
+        if wanted.peek().is_none() {
+            break;
+        }
+        for lower in c.to_lowercase() {
+            if wanted.next() != Some(lower) {
+                return None;
+            }
+        }
+        len += c.len_utf8();
+    }
+    wanted.peek().is_none().then_some(len)
+}
+
 impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn new(title: &'a str) -> Self {
@@ -360,6 +413,7 @@ impl<'a> ListRowFace<'a> {
             title,
             title_lines: 1,
             title_family: None,
+            found: &[],
             subtitle: None,
             secondary: None,
             secondary_lines: 1,
@@ -388,6 +442,15 @@ impl<'a> ListRowFace<'a> {
             interaction: Interaction::default(),
             frame: None,
         }
+    }
+
+    /// Mark `words`, what a search found the row by, where the title has
+    /// them: each at the start of a word, whatever its case, under the find
+    /// bar's match wash ([`paint_find_match`](crate::widget::paint_find_match)).
+    #[must_use]
+    pub fn found(mut self, words: &'a [&'a str]) -> Self {
+        self.found = words;
+        self
     }
 
     /// Let the title wrap to two lines before it is elided (a long name in a
@@ -1142,6 +1205,17 @@ impl<'a> ListRowFace<'a> {
         );
         let mut last_end = text_x;
         for line in &lines {
+            for span in found_spans(line, self.found) {
+                let (Some(before), Some(word)) = (line.get(..span.start), line.get(span.clone()))
+                else {
+                    continue;
+                };
+                let start =
+                    text_x + f64::from(ctx.text.measure_style(before, None, &title_style).0);
+                let (width, height) = ctx.text.measure_style(word, None, &title_style);
+                let mark = Rect::new(start, y, start + f64::from(width), y + f64::from(height));
+                crate::widget::paint_find_match(ctx.scene, ctx.transform, mark, false, theme);
+            }
             ctx.text(
                 line,
                 &title_style,
