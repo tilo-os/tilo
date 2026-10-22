@@ -29,9 +29,11 @@ use std::path::Path;
 use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
 use tilo_content::ContentStore;
 use ui::widget::BlockContent;
+use vello::peniko::Color;
 
 use crate::model::{
-    Background, Deck, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W, Slide, TextAlign,
+    Background, Deck, DeckLook, Element, ElementKind, Layout, Palette, PaletteKind, SLIDE_H,
+    SLIDE_W, Slide, TextAlign,
 };
 
 /// Physical page size we map the 1280×720 slide space onto (16:9, 25.4 cm
@@ -112,40 +114,149 @@ fn content_xml(
 ) -> String {
     let sx = PAGE_W_CM / SLIDE_W;
     let sy = PAGE_H_CM / SLIDE_H;
+    // The deck's colours as Slides draws them, in its own look: the file
+    // shows the deck as every collaborator sees it.
+    let palette = Palette::resolve(deck.palette, deck.look);
+    let mut styles = AutoStyles::default();
+    let mut body = String::new();
+    body.push_str("<office:body><office:presentation");
+    push_attr(&mut body, "qslides:title", &deck.title);
+    push_attr(&mut body, "qslides:palette", deck.palette.as_str());
+    push_attr(&mut body, "qslides:look", deck.look.as_str());
+    body.push('>');
+    for slide in &deck.slides {
+        let on = palette.on(slide.background);
+        let page = styles.name(
+            "drawing-page",
+            &format!(
+                r#"<style:drawing-page-properties draw:fill="solid" draw:fill-color="{}"/>"#,
+                ui::color::to_hex(on.slide_bg(slide.background))
+            ),
+        );
+        body.push_str("<draw:page draw:name=\"");
+        body.push_str(&quick_xml::escape::escape(&slide.id));
+        body.push_str("\" draw:master-page-name=\"Default\"");
+        push_attr(&mut body, "draw:style-name", &page);
+        push_attr(&mut body, "qslides:layout", slide.layout.as_str());
+        push_attr(&mut body, "qslides:background", slide.background.as_str());
+        push_attr(&mut body, "qslides:notes", &slide.notes);
+        body.push('>');
+        for el in slide.z_sorted() {
+            let look = Look {
+                palette: &on,
+                slide,
+            };
+            push_element(
+                &mut body,
+                el,
+                (sx, sy),
+                (picture_hrefs, shown),
+                (&mut styles, look),
+            );
+        }
+        body.push_str("</draw:page>");
+    }
+    body.push_str("</office:presentation></office:body></office:document-content>");
     let mut s = String::new();
     s.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     s.push_str(
         r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:qslides="urn:tilo:slides:1.0" office:version="1.3">"#,
     );
-    // Bold and italic runs of text boxes.
+    // The pages', shapes' and runs' colours, then the lists' markers.
+    s.push_str("<office:automatic-styles>");
+    s.push_str(&styles.xml);
     s.push_str(concat!(
-        "<office:automatic-styles>",
-        r#"<style:style style:name="qsB" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#,
-        r#"<style:style style:name="qsI" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>"#,
-        r#"<style:style style:name="qsBI" style:family="text"><style:text-properties fo:font-weight="bold" fo:font-style="italic"/></style:style>"#,
         r#"<text:list-style style:name="qsL"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/></text:list-style>"#,
         r#"<text:list-style style:name="qsN"><text:list-level-style-number text:level="1" style:num-format="1" style:num-suffix="."/></text:list-style>"#,
         "</office:automatic-styles>",
     ));
-    s.push_str("<office:body><office:presentation");
-    push_attr(&mut s, "qslides:title", &deck.title);
-    push_attr(&mut s, "qslides:palette", deck.palette.as_str());
-    s.push('>');
-    for slide in &deck.slides {
-        s.push_str("<draw:page draw:name=\"");
-        s.push_str(&quick_xml::escape::escape(&slide.id));
-        s.push_str("\" draw:master-page-name=\"Default\"");
-        push_attr(&mut s, "qslides:layout", slide.layout.as_str());
-        push_attr(&mut s, "qslides:background", slide.background.as_str());
-        push_attr(&mut s, "qslides:notes", &slide.notes);
-        s.push('>');
-        for el in slide.z_sorted() {
-            push_element(&mut s, el, (sx, sy), picture_hrefs, shown);
-        }
-        s.push_str("</draw:page>");
-    }
-    s.push_str("</office:presentation></office:body></office:document-content>");
+    s.push_str(&body);
     s
+}
+
+/// The automatic styles a document's pages, shapes and runs name, one per
+/// distinct look.
+#[derive(Default)]
+struct AutoStyles {
+    xml: String,
+    names: HashMap<String, String>,
+}
+
+impl AutoStyles {
+    /// The name of the `family` style holding `properties`, written once.
+    fn name(&mut self, family: &str, properties: &str) -> String {
+        let key = format!("{family}\u{0}{properties}");
+        if let Some(name) = self.names.get(&key) {
+            return name.clone();
+        }
+        let name = format!("qs{}", self.names.len() + 1);
+        self.xml.push_str("<style:style");
+        push_attr(&mut self.xml, "style:name", &name);
+        push_attr(&mut self.xml, "style:family", family);
+        self.xml.push('>');
+        self.xml.push_str(properties);
+        self.xml.push_str("</style:style>");
+        self.names.insert(key, name.clone());
+        name
+    }
+
+    /// A text run's style: its ink, weight and slant.
+    fn run(&mut self, ink: Color, bold: bool, italic: bool) -> String {
+        let mut properties = String::from("<style:text-properties");
+        push_attr(&mut properties, "fo:color", &ui::color::to_hex(ink));
+        if bold {
+            push_attr(&mut properties, "fo:font-weight", "bold");
+        }
+        if italic {
+            push_attr(&mut properties, "fo:font-style", "italic");
+        }
+        properties.push_str("/>");
+        self.name("text", &properties)
+    }
+
+    /// A drawing object's style: its fill and outline, as Slides draws them.
+    fn graphic(&mut self, fill: Option<Color>, stroke: Option<(Color, f64)>) -> String {
+        let mut properties = String::from("<style:graphic-properties");
+        match fill {
+            Some(fill) => {
+                push_attr(&mut properties, "draw:fill", "solid");
+                push_attr(&mut properties, "draw:fill-color", &ui::color::to_hex(fill));
+                let alpha = fill.to_rgba8().a;
+                if alpha < u8::MAX {
+                    let percent = f64::from(alpha) * 100.0 / 255.0;
+                    push_attr(&mut properties, "draw:opacity", &format!("{percent:.0}%"));
+                }
+            }
+            None => push_attr(&mut properties, "draw:fill", "none"),
+        }
+        match stroke {
+            Some((color, width)) => {
+                push_attr(&mut properties, "draw:stroke", "solid");
+                push_attr(
+                    &mut properties,
+                    "svg:stroke-color",
+                    &ui::color::to_hex(color),
+                );
+                push_attr(
+                    &mut properties,
+                    "svg:stroke-width",
+                    &cm(width, PAGE_W_CM / SLIDE_W),
+                );
+            }
+            None => push_attr(&mut properties, "draw:stroke", "none"),
+        }
+        properties.push_str("/>");
+        self.name("graphic", &properties)
+    }
+}
+
+/// What an element's colours resolve against: the deck's palette on its
+/// slide's background, and the slide (a text box's ink follows what it
+/// stands on).
+#[derive(Clone, Copy)]
+struct Look<'a> {
+    palette: &'a Palette,
+    slide: &'a Slide,
 }
 
 /// The `qslides:*` attributes that carry the exact model fields on every draw
@@ -177,9 +288,15 @@ fn push_element(
     s: &mut String,
     el: &Element,
     (sx, sy): (f64, f64),
-    picture_hrefs: &HashMap<&str, &str>,
-    shown: &HashMap<String, f64>,
+    (picture_hrefs, shown): (&HashMap<&str, &str>, &HashMap<String, f64>),
+    (styles, look): (&mut AutoStyles, Look<'_>),
 ) {
+    let palette = look.palette;
+    let outline = || {
+        palette
+            .resolve_role(&el.stroke)
+            .map(|color| (color, el.stroke_width))
+    };
     let gx = cm(el.x, sx);
     let gy = cm(el.y, sy);
     let gw = cm(el.w, sx);
@@ -188,6 +305,9 @@ fn push_element(
         ElementKind::Text | ElementKind::Image => {
             s.push_str("<draw:frame");
             push_geo(s, &gx, &gy, &gw, &gh);
+            if el.kind == ElementKind::Text {
+                push_attr(s, "draw:style-name", &styles.graphic(None, None));
+            }
             let exported_src = if el.kind == ElementKind::Image {
                 picture_hrefs.get(el.src.as_str()).copied()
             } else {
@@ -227,24 +347,15 @@ fn push_element(
                         s.push_str("<text:list-item>");
                     }
                     s.push_str("<text:p>");
+                    // Every run in the ink Slides draws the box's words in.
+                    let ink = crate::render::text_ink(palette, look.slide, el);
                     for (text, bold, italic) in crate::model::runs_of(&block) {
                         let text = quick_xml::escape::partial_escape(text);
-                        let style = match (bold, italic) {
-                            (true, true) => Some("qsBI"),
-                            (true, false) => Some("qsB"),
-                            (false, true) => Some("qsI"),
-                            (false, false) => None,
-                        };
-                        match style {
-                            Some(style) => {
-                                s.push_str("<text:span text:style-name=\"");
-                                s.push_str(style);
-                                s.push_str("\">");
-                                s.push_str(&text);
-                                s.push_str("</text:span>");
-                            }
-                            None => s.push_str(&text),
-                        }
+                        s.push_str("<text:span");
+                        push_attr(s, "text:style-name", &styles.run(ink, bold, italic));
+                        s.push('>');
+                        s.push_str(&text);
+                        s.push_str("</text:span>");
                     }
                     s.push_str("</text:p>");
                     if list.is_some() {
@@ -261,12 +372,16 @@ fn push_element(
         ElementKind::Rect => {
             s.push_str("<draw:rect");
             push_geo(s, &gx, &gy, &gw, &gh);
+            let style = styles.graphic(palette.resolve_role(&el.fill), outline());
+            push_attr(s, "draw:style-name", &style);
             push_model_attrs(s, el, None);
             s.push_str("/>");
         }
         ElementKind::Ellipse => {
             s.push_str("<draw:ellipse");
             push_geo(s, &gx, &gy, &gw, &gh);
+            let style = styles.graphic(palette.resolve_role(&el.fill), outline());
+            push_attr(s, "draw:style-name", &style);
             push_model_attrs(s, el, None);
             s.push_str("/>");
         }
@@ -280,6 +395,13 @@ fn push_element(
             s.push_str("\" svg:y2=\"");
             s.push_str(&cm(el.y + el.h, sy));
             s.push('"');
+            // As the canvas strokes a line: its outline, else its fill.
+            let color = palette
+                .resolve_role(&el.stroke)
+                .or_else(|| palette.resolve_role(&el.fill))
+                .unwrap_or(palette.accent);
+            let style = styles.graphic(None, Some((color, el.stroke_width.max(2.0))));
+            push_attr(s, "draw:style-name", &style);
             push_model_attrs(s, el, None);
             s.push_str("/>");
         }
@@ -510,6 +632,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
 
     let mut title = "Untitled deck".to_string();
     let mut palette = PaletteKind::Indigo;
+    let mut look = DeckLook::default();
     let mut slides: Vec<Slide> = Vec::new();
 
     // In-progress text-frame accumulation (a `<draw:frame>` container whose
@@ -627,6 +750,9 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 if let Some(v) = attr(&e, b"qslides:palette") {
                     palette = PaletteKind::from_str(&v);
                 }
+                if let Some(v) = attr(&e, b"qslides:look") {
+                    look = DeckLook::from_str(&v);
+                }
             }
             b"draw:page" => {
                 let id = attr(&e, b"draw:name").unwrap_or_else(crate::model::new_id);
@@ -725,6 +851,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
     Some(Deck {
         title,
         palette,
+        look,
         slides,
     })
 }

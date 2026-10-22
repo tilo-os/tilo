@@ -11,7 +11,9 @@
 use ui::tilo_resource::{Atom, Edit, Id, Resource, Stamped, items};
 
 use crate::deck::{self, Deck, DeckAction, ElementData, SlideData};
-use crate::model::{Background, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign};
+use crate::model::{
+    Background, DeckLook, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign,
+};
 
 /// The deck's action: a field edit or a verb, stamped with when it was
 /// authored.
@@ -71,6 +73,12 @@ pub fn set_deck_palette_action(palette: PaletteKind) -> Action {
     edit(Deck::paths().palette.set(palette))
 }
 
+/// Set whether the deck looks light or dark.
+#[must_use]
+pub fn set_deck_look_action(look: DeckLook) -> Action {
+    edit(Deck::paths().look.set(look))
+}
+
 /// Set slide `slide`'s layout.
 #[must_use]
 pub fn set_slide_layout_action(slide: &str, layout: Layout) -> Action {
@@ -115,6 +123,7 @@ pub fn replace_deck_action(deck: &crate::model::Deck) -> Action {
     stamped(DeckAction::ReplaceDeck(deck::deck::ReplaceDeck {
         title: deck.title.clone(),
         palette: deck.palette,
+        look: Some(deck.look),
         slides: deck.slides.iter().map(SlideData::of).collect(),
     }))
 }

@@ -294,6 +294,7 @@ fn a_replacement_deck_is_checked_whole() {
         Deck::REPLACE_DECK.with(deck::ReplaceDeck {
             title: "Twice".into(),
             palette: PaletteKind::Indigo,
+            look: None,
             slides,
         })
     };

@@ -8,10 +8,10 @@
 //! the renderer at the top of every frame.
 
 use super::{
-    Affine, ArgValue, Background, BlendMode, DeckAssets, Element, ElementKind, FILL_ROLES, Fill,
-    HashMap, Hit, Icon, Mode, PaintCtx, Palette, PaletteKind, Point, PresenceCtx, Rect, SLIDE_H,
-    SLIDE_W, STROKE_ROLES, Scene, SidebarDrawer, SlidesApp, SplitLayout, TextAlign, TextRenderer,
-    Theme, custom_colour_hex, tr, tr_args,
+    Affine, ArgValue, Background, BlendMode, DeckAssets, DeckLook, Element, ElementKind,
+    FILL_ROLES, Fill, HashMap, Hit, Icon, Mode, PaintCtx, Palette, PaletteKind, Point, PresenceCtx,
+    Rect, SLIDE_H, SLIDE_W, STROKE_ROLES, Scene, SidebarDrawer, SlidesApp, SplitLayout, TextAlign,
+    TextRenderer, Theme, custom_colour_hex, tr, tr_args,
 };
 
 use ui::TextRole;
@@ -244,6 +244,7 @@ fn align_icon(align: TextAlign) -> Icon {
 
 const SEG_ALIGN: u8 = 0;
 const SEG_BACKGROUND: u8 = 1;
+const SEG_LOOK: u8 = 2;
 
 /// Which column of the window a control or a label belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1222,6 +1223,19 @@ impl SlidesApp {
         y = self.segment_rows(buttons, x0, x1, y, SEG_BACKGROUND, items);
         y += m.s6;
 
+        Self::push_section_label(m, labels, x0, &mut y, &tr("slides-look"));
+        let items: Vec<SegmentItem> = DeckLook::ALL
+            .iter()
+            .map(|look| SegmentItem {
+                label: look.label(),
+                icon: None,
+                active: *look == self.deck.look,
+                hit: Hit::SetLook(*look),
+            })
+            .collect();
+        y = self.segment_rows(buttons, x0, x1, y, SEG_LOOK, items);
+        y += m.s6;
+
         Self::push_section_label(m, labels, x0, &mut y, &tr("slides-deck-theme"));
         let widest = PaletteKind::ALL
             .iter()
@@ -1353,7 +1367,7 @@ impl SlidesApp {
         presence: &PresenceCtx,
     ) {
         let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let pal = self.palette(theme);
+        let pal = self.palette();
         let rail_docked = chrome.layout == SplitLayout::Docked;
         let inspector_docked = chrome.inspector_layout == SplitLayout::Docked;
 
@@ -1682,11 +1696,15 @@ impl SlidesApp {
                 // own place, so the chip shows one mark, not a ring beside
                 // a dot.
                 let swatch = face.icon_rect(tr, theme).unwrap_or(b.rect);
-                ColorSwatchFace::new(swatch, Palette::resolve(*kind, theme).accent, kind.label())
-                    .target_rect(b.rect)
-                    .selected(*selected)
-                    .hovered(hovered)
-                    .paint(scene, t, tr, theme);
+                ColorSwatchFace::new(
+                    swatch,
+                    Palette::resolve(*kind, self.deck.look).accent,
+                    kind.label(),
+                )
+                .target_rect(b.rect)
+                .selected(*selected)
+                .hovered(hovered)
+                .paint(scene, t, tr, theme);
             }
             ButtonKind::Notes | ButtonKind::LayoutPicker => {}
         }

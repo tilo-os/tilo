@@ -123,6 +123,7 @@ impl ResourceApp for SlidesShell {
             "words_menu",
             "delete_zone",
             "inspector_widgets",
+            "dark_deck",
         ]
     }
 
@@ -153,6 +154,11 @@ impl ResourceApp for SlidesShell {
                 Some(src) => crate::sample::picture_deck("Site photo", &src),
                 None => seed_deck(),
             },
+            // The sample deck in its dark look.
+            Some("dark_deck") => crate::model::Deck {
+                look: crate::model::DeckLook::Dark,
+                ..seed_deck()
+            },
             Some("image_loading") => {
                 crate::sample::picture_deck("Importing photo", crate::sample::MISSING_SRC)
             }
@@ -166,6 +172,7 @@ fn replace_deck(deck: &crate::model::Deck) -> Invoke<Deck> {
     Deck::REPLACE_DECK.with(crate::deck::deck::ReplaceDeck {
         title: deck.title.clone(),
         palette: deck.palette,
+        look: Some(deck.look),
         slides: deck.slides.iter().map(crate::deck::SlideData::of).collect(),
     })
 }

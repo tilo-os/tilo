@@ -22,8 +22,8 @@ use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
 
 use crate::model::{
-    Background, ElementKind, FILL_ROLES, Layout, PaletteKind, SLIDE_H, SLIDE_W, STROKE_ROLES,
-    TextAlign,
+    Background, DeckLook, ElementKind, FILL_ROLES, Layout, PaletteKind, SLIDE_H, SLIDE_W,
+    STROKE_ROLES, TextAlign,
 };
 
 /// The most slides one deck holds.
@@ -39,6 +39,9 @@ pub struct Deck {
     pub title: String,
     /// Theme
     pub palette: PaletteKind,
+    /// Light or dark: the deck's surfaces and inks, the same on every
+    /// screen whatever the reader's UI theme.
+    pub look: DeckLook,
     /// Slides
     pub slides: Collection<Slide>,
 }
@@ -594,13 +597,14 @@ impl Deck {
 
     /// Replace deck
     ///
-    /// Replace the whole deck — its title, theme and every slide — with
+    /// Replace the whole deck — its title, theme, look and every slide — with
     /// another: a presentation file opened into it.
     #[action]
     pub fn replace_deck(
         &mut self,
         #[param("Title")] title: String,
         #[param("Theme")] palette: PaletteKind,
+        #[param("Light or dark; light when left out")] look: Option<DeckLook>,
         #[param("Slides, in order")] slides: Vec<SlideData>,
     ) -> Result<(), Refusal> {
         if slides.is_empty() {
@@ -624,6 +628,7 @@ impl Deck {
         }
         self.title = title;
         self.palette = palette;
+        self.look = look.unwrap_or_default();
         self.slides = replaced;
         Ok(())
     }
@@ -666,6 +671,7 @@ impl Deck {
         Self {
             title: deck.title,
             palette: deck.palette,
+            look: deck.look,
             slides,
         }
     }
@@ -738,6 +744,7 @@ pub fn mirror(deck: &Deck) -> crate::model::Deck {
     crate::model::Deck {
         title: deck.title.clone(),
         palette: deck.palette,
+        look: deck.look,
         slides: deck
             .slides
             .iter()
