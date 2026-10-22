@@ -265,20 +265,29 @@ impl SlidesApp {
             routed.event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
         );
-        let pointer = match routed.event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.text_edit_box.contains(self.last_mouse),
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.text_drag,
-            _ => false,
-        };
+        // The words' menu, while open, takes every pointer event.
+        let menu_open = self.words_menu_open();
+        let pointer = menu_open
+            && matches!(
+                routed.event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+            )
+            || match routed.event {
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left | MouseButton::Right,
+                    ..
+                } => self.text_edit_box.contains(self.last_mouse),
+                WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                } => self.text_drag,
+                _ => false,
+            };
         // The pointer's position always reaches the box, so a press lands
         // where it was last seen.
         let moved = matches!(routed.event, WindowEvent::CursorMoved { .. });
@@ -303,8 +312,9 @@ impl SlidesApp {
         match routed.event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
+                button: MouseButton::Left,
                 ..
-            } => self.text_drag = true,
+            } if !menu_open => self.text_drag = true,
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
@@ -326,6 +336,54 @@ impl SlidesApp {
             return true;
         }
         false
+    }
+
+    /// Whether the words being edited have their menu open: then it is
+    /// modal, and takes every pointer and key event.
+    pub(super) fn words_menu_open(&self) -> bool {
+        self.editing_text_box().is_some()
+            && self
+                .text_editor
+                .as_ref()
+                .is_some_and(|editor| editor.host.modal_capture().is_some())
+    }
+
+    /// Whether `event` is the words' to take ahead of the canvas's own
+    /// menus: a secondary press on the words being edited opens their
+    /// menu (cut, copy, paste, formatting) rather than the box's, and an
+    /// open words' menu takes every pointer event.
+    pub(super) fn words_take_menu_event(&self, event: &WindowEvent) -> bool {
+        let secondary_press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            }
+        );
+        self.editing_text_box().is_some()
+            && (self.words_menu_open()
+                || (secondary_press && self.text_edit_box.contains(self.last_mouse)))
+    }
+
+    /// Paint what the words being edited float over everything (their
+    /// menu), above the canvas, at the reader's own scale.
+    pub(super) fn draw_words_overlay(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: ui::vello::kurbo::Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if !self.editing_text {
+            return;
+        }
+        if let Some(editor) = self.text_editor.as_mut() {
+            editor
+                .host
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
     }
 
     /// Lay the selected text box's editor out at the slide's size, where

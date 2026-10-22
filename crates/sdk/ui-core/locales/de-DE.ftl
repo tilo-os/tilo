@@ -821,3 +821,15 @@ history-preview-now = Zurück zu jetzt
 workspace-identity-required-title = Wähle, wer du hier bist
 workspace-identity-required-body = Dieser Arbeitsbereich muss wissen, wer darin arbeitet, bevor { $app } öffnen kann.
 workspace-identity-required-choose = Identität wählen
+
+# Das Menü, das ein Rechtsklick oder langes Drücken auf bearbeitbarem Text öffnet.
+text-menu-cut = Ausschneiden
+text-menu-copy = Kopieren
+text-menu-paste = Einfügen
+text-menu-select-all = Alles auswählen
+text-menu-bold = Fett
+text-menu-italic = Kursiv
+text-menu-underline = Unterstrichen
+text-menu-strikethrough = Durchgestrichen
+text-menu-bulleted-list = Aufzählung
+text-menu-numbered-list = Nummerierte Liste

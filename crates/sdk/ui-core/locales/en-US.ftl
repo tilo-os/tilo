@@ -827,3 +827,15 @@ history-preview-now = Back to now
 workspace-identity-required-title = Choose who you are here
 workspace-identity-required-body = This workspace needs to know who’s working in it before { $app } can open.
 workspace-identity-required-choose = Choose identity
+
+# The menu a secondary click or a long press opens on editable words.
+text-menu-cut = Cut
+text-menu-copy = Copy
+text-menu-paste = Paste
+text-menu-select-all = Select all
+text-menu-bold = Bold
+text-menu-italic = Italic
+text-menu-underline = Underline
+text-menu-strikethrough = Strikethrough
+text-menu-bulleted-list = Bulleted list
+text-menu-numbered-list = Numbered list

@@ -2752,7 +2752,9 @@ impl Widget for SlidesApp {
             self.rect,
             ToastAnchor::BottomCenter,
         );
-        // Right-click context menu floats above everything else.
+        // The words' menu and the right-click context menu float above
+        // everything else.
+        self.draw_words_overlay(scene, transform, text_renderer, theme, presence);
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -2834,6 +2836,13 @@ impl Widget for SlidesApp {
             taffy: ctx.taffy,
         };
         if self.route_notes_edit(&mut routed) {
+            *ctx.handled = true;
+            return;
+        }
+        // The words being edited take a secondary press on them (their own
+        // menu) and every pointer event while that menu is open.
+        if self.words_take_menu_event(routed.event) {
+            self.route_text_edit(&mut routed, ctx.handled);
             *ctx.handled = true;
             return;
         }

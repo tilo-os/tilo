@@ -244,8 +244,35 @@ impl<W: Widget + 'static> Embedded<W> {
     ) {
         let recoloured = self.recoloured(theme);
         let theme = recoloured.as_ref().unwrap_or(theme);
+        let placed = self.overlay_transform().unwrap_or(self.transform);
         self.widget
-            .draw_overlay(scene, transform * self.transform, text, theme, presence);
+            .draw_overlay(scene, transform * placed, text, theme, presence);
+    }
+
+    /// While the child has a panel open over everything (a menu,
+    /// [`Widget::modal_capture`]), what places the child's space for it: the
+    /// panel stands where the child drawn under [`Self::set_transform`] puts
+    /// its corner, at the owner's own scale, so a menu opened on words drawn
+    /// small on a canvas reads and is hit as a menu anywhere else does.
+    fn overlay_transform(&self) -> Option<Affine> {
+        let panel = self.widget.modal_capture()?;
+        let corner = panel.origin();
+        Some(Affine::translate((self.transform * corner) - corner))
+    }
+
+    /// The panel the child has open over everything, in the owner's space
+    /// ([`Widget::modal_capture`]): while there is one, the owner routes
+    /// every pointer and key event to the child, which takes the panel's.
+    pub fn modal_capture(&self) -> Option<Rect> {
+        let panel = self.widget.modal_capture()?;
+        Some(self.overlay_transform()?.transform_rect_bbox(panel))
+    }
+
+    /// From the child's space to the owner's for pointer input and what is
+    /// drawn over everything: the panel's placement while one is open,
+    /// else the child's transform.
+    fn input_transform(&self) -> Affine {
+        self.overlay_transform().unwrap_or(self.transform)
     }
 
     /// Route one window event to the widget.
@@ -273,14 +300,14 @@ impl<W: Widget + 'static> Embedded<W> {
             WindowEvent::CursorMoved {
                 device_id,
                 position,
-            } if self.transform != Affine::IDENTITY => {
+            } if self.input_transform() != Affine::IDENTITY => {
                 mapped = WindowEvent::CursorMoved {
                     device_id: *device_id,
                     position: self.to_child(*position, scale_factor),
                 };
                 &mapped
             }
-            WindowEvent::Touch(touch) if self.transform != Affine::IDENTITY => {
+            WindowEvent::Touch(touch) if self.input_transform() != Affine::IDENTITY => {
                 mapped = WindowEvent::Touch(winit::event::Touch {
                     location: self.to_child(touch.location, scale_factor),
                     ..*touch
@@ -317,7 +344,7 @@ impl<W: Widget + 'static> Embedded<W> {
         scale_factor: f64,
     ) -> PhysicalPosition<f64> {
         let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
-        let local = self.transform.inverse() * logical;
+        let local = self.input_transform().inverse() * logical;
         PhysicalPosition::new(local.x * scale_factor, local.y * scale_factor)
     }
 

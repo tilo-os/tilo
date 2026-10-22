@@ -683,6 +683,8 @@ pub struct BlockEditor {
     /// Exact membership retained after a structural batch command. Text alone
     /// cannot distinguish an included empty last block from a column-zero end.
     retained_block_selection: Option<RetainedBlockSelection>,
+    /// The menu a secondary click or long press opens on the words.
+    text_menu: text_menu::TextMenu,
     slash_menu: SlashMenu,
     /// Byte offset where `/` was typed. The query after it stays in the
     /// block as typed; `/<query>` is spliced back out on commit.
@@ -944,6 +946,7 @@ impl BlockEditor {
             cross_block_drag_touched: None,
             document_selection: None,
             retained_block_selection: None,
+            text_menu: text_menu::TextMenu::default(),
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
             slash_request: None,
@@ -3380,6 +3383,7 @@ impl BlockEditor {
         theme: &Theme,
     ) {
         self.refresh_popover_anchors(theme);
+        self.paint_text_menu(scene, transform, text_renderer, theme);
         self.slash_menu
             .draw_overlay(scene, transform, text_renderer, theme);
         self.link_popover
@@ -4314,6 +4318,18 @@ impl BlockEditor {
             self.pending_semantic_ops.extend(ops);
             return changed;
         }
+        let edits = self.clipboard_command(command);
+        let ops = self.take_edit_ops();
+        self.pending_semantic_ops.extend(ops);
+        edits
+    }
+
+    /// Cut, copy, paste or select all (`command`), as the shortcuts and the
+    /// text menu do, over the document selection, the focused paragraph's
+    /// or the focused table cell's. An edit it makes is left for the owner
+    /// to take ([`Self::take_edit_ops`]); within an event, the event's edit
+    /// scope covers it. `false` when `command` is none of those.
+    pub(super) fn clipboard_command(&mut self, command: &str) -> bool {
         if let Some((index, result)) = self.blocks.iter().enumerate().find_map(|(index, block)| {
             self.table_editors
                 .get_mut(&block.id)
@@ -4323,8 +4339,6 @@ impl BlockEditor {
             if let Some((row, column, value)) = result {
                 self.begin_edit();
                 self.apply_table_cell_edit(index, row, column, &value);
-                let ops = self.take_edit_ops();
-                self.pending_semantic_ops.extend(ops);
             }
             self.dirty = true;
             return true;
@@ -4407,8 +4421,6 @@ impl BlockEditor {
             self.begin_edit();
             self.replace_document_selection(&replacement);
             self.set_focus(true);
-            let ops = self.take_edit_ops();
-            self.pending_semantic_ops.extend(ops);
         }
         self.dirty = true;
         true
@@ -10623,8 +10635,16 @@ impl Widget for BlockEditor {
         earliest
     }
 
+    /// The open text menu is modal; else whatever a child holds open.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.text_menu
+            .modal_rect()
+            .or_else(|| super::defaults::modal_capture(&|visit| self.for_each_child(visit)))
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.copied_code_feedback.is_some()
+            || self.text_menu.needs_animation_frame()
             || self.handles_need_frame()
             || self
                 .image_store
@@ -12446,6 +12466,8 @@ mod handle_reveal;
 mod inline_markdown;
 #[path = "block_editor_present.rs"]
 mod present;
+#[path = "block_editor_text_menu.rs"]
+mod text_menu;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};
 
 #[path = "block_editor_callout.rs"]
@@ -13642,6 +13664,10 @@ impl BlockEditor {
         };
         if changes_selection {
             self.retained_block_selection = None;
+        }
+
+        if self.handle_text_menu_event(event, ctx) {
+            return;
         }
 
         if self.handle_find_event(event, ctx) {
