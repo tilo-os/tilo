@@ -2921,9 +2921,7 @@ pub fn run(_args: &[String]) {
     // the Unit 1+2 gate skips when nothing in the tree mutates.
     // SCROLL — fire a wheel event every iteration; exercises the
     // translation-invariant cache + Scrollable's scroll-dirty
-    // signal. The 2026-05-23 user report ("scrolling does
-    // something after a few seconds but isn't smooth") was the
-    // motivation for this mode.
+    // signal, which must keep scrolling smooth.
     let frozen = tilo_ui::env::var("TILO_UI_DASH_FROZEN").is_ok();
     let scroll_mode = tilo_ui::env::var("TILO_UI_DASH_SCROLL").is_ok();
     if frozen {

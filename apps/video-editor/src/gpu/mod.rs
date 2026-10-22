@@ -1723,11 +1723,10 @@ mod tests {
         // document persisted before it existed, or one replicated from a peer,
         // carries its items straight past it. Such an item reached the decoder on
         // every frame, each attempt paying the full frame timeout, so an editor
-        // holding one stalled on a fixed cadence indefinitely — which is exactly
-        // what a user reported as a "pseudo video" sitting in the clips.
+        // holding one stalled on a fixed cadence indefinitely, showing a frozen
+        // clip.
         //
-        // The fixture is an HTML page named `.mp4`, the real shape of the report:
-        // a saved web page whose extension says video. It is deliberately *not*
+        // The fixture is an HTML page named `.mp4`: a saved web page whose extension says video. It is deliberately *not*
         // checked through `probe`, because probing is the guard that already
         // works — this asserts the decode path gives up on its own.
         #[cfg(feature = "decode")]

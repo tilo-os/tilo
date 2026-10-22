@@ -3141,9 +3141,6 @@ mod tests {
         assert!(app.active_operation.is_none());
     }
 
-    // REQUIREMENT (2026-10-22): "Viewing a Store app page must not
-    // require choosing an identity. Browsing is anonymous; only an action that
-    // needs an identity [...] asks, at that moment."
     #[test]
     fn viewing_an_app_page_needs_no_identity_only_signing_asks() {
         use ui::framework::ResourceApp as _;
