@@ -266,11 +266,14 @@ pub(crate) struct RemoteCaptureFabricRuntime {
 }
 
 impl RemoteCaptureFabricRuntime {
+    /// This machine's capture, its programs and devices probed off the
+    /// compositor thread ([`CaptureHost::watch`]).
     pub(crate) fn production(broker: Arc<Mutex<CaptureBroker>>) -> Self {
+        let host = crate::shell::remote_capture::host::CaptureHost::watch();
         Self::new(
             broker,
-            Box::new(ProductionRemoteCaptureAdapter::detect()),
-            Box::new(ProductionRemoteCaptureSource::detect()),
+            Box::new(ProductionRemoteCaptureAdapter::new(host.clone())),
+            Box::new(ProductionRemoteCaptureSource::new(host)),
         )
     }
 
