@@ -161,6 +161,7 @@ tube-notice-video-gone = That video is no longer available
 tube-notice-creator-gone = That creator is no longer available
 tube-notice-playlist-gone = That playlist is no longer available
 tube-notice-unplayable = This video can't be played right now. Try again later.
+tube-live-in-app = Live streams play in the Tilo app for now
 tube-notice-playback-limit = Playback limit reached on this host. Try again later.
 tube-notice-no-downloads = Tube can't save videos for offline viewing
 tube-notice-pairing-busy = Device pairing is busy or unavailable

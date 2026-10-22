@@ -378,6 +378,13 @@ pub struct Video {
 }
 
 impl Video {
+    /// Whether this video plays only in the Tilo app: a live stream comes as
+    /// HLS alone, which the browser build has no player for (its media
+    /// element plays one progressive file through the fetch proxy).
+    pub fn plays_only_in_app(&self) -> bool {
+        self.live && cfg!(target_arch = "wasm32")
+    }
+
     /// The title to display given the `DeArrow` toggle.
     pub fn display_title(&self, dearrow: bool) -> &str {
         if dearrow && let Some(t) = &self.dearrow_title {
