@@ -663,23 +663,23 @@ impl FileExplorerWidget {
     }
 
     /// The Recent list as stored.
-    fn recent_list(&self) -> crate::recent::RecentFiles {
+    pub(super) fn recent_list(&self) -> crate::recent::RecentFiles {
         self.recent_setting
             .as_ref()
             .map_or_else(|| self.recent.clone(), ui::framework::Setting::get)
     }
 
+    /// The Recent listing: every remembered path that still exists, in
+    /// recency order.
     #[cfg(test)]
     pub(super) fn recent_entries(&self) -> Vec<Entry> {
-        recent_entries_of(&self.recent_paths())
-    }
-
-    pub(super) fn recent_paths(&self) -> Vec<PathBuf> {
-        self.recent_list()
+        let paths: Vec<PathBuf> = self
+            .recent_list()
             .items()
             .iter()
             .map(|item| item.path.clone())
-            .collect()
+            .collect();
+        recent_entries_of(&paths)
     }
 
     /// `FileCommand::RevealInFolder` — go to the item's folder with it selected.
@@ -687,15 +687,12 @@ impl FileExplorerWidget {
         let Some(parent) = path.parent() else {
             return false;
         };
-        self.navigate(parent.to_path_buf());
-        if let Some(index) = self
-            .displayed_entries()
-            .iter()
-            .position(|entry| entry.path == path)
-        {
-            self.selection.select_only(index);
-            self.retain_shown_selection();
+        let parent = parent.to_path_buf();
+        if parent != self.current_path {
+            self.history.push(self.current_path.clone());
+            self.forward.clear();
         }
+        self.load_then(parent, super::Then::Select(path.to_path_buf()));
         true
     }
 
@@ -739,8 +736,7 @@ impl FileExplorerWidget {
     }
 }
 
-/// The Recent listing: every remembered path that still exists, in recency
-/// order.
+/// The Recent listing of `paths`: every one that still exists, in their order.
 pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
     paths
         .iter()
