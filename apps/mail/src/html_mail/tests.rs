@@ -471,6 +471,13 @@ fn a_held_back_image_is_an_empty_box_at_its_declared_size() {
         "{}",
         sized.document
     );
+    // Scaled to the mail's width (`height:auto`), it keeps the declared
+    // proportions, never the held-back pixel's square.
+    assert!(
+        sized.document.contains("aspect-ratio:600/300"),
+        "{}",
+        sized.document
+    );
 
     let styled = prepare(
         "<img src=\"https://t.example/a.png\" style=\"width:120px; height:40px\">",
@@ -660,6 +667,22 @@ fn every_document_carries_its_end_mark() {
         );
         assert!(
             prepared.document.contains(END_MARK),
+            "{}",
+            prepared.document
+        );
+    }
+}
+
+/// The reader scrolls the mail as one page: the document, as tall as its
+/// view, never shows a scroll bar of its own.
+#[test]
+fn a_document_shows_no_scroll_bar_of_its_own() {
+    for dark in [false, true] {
+        let prepared = prepare("<p>Hi</p>", &policy(false, dark));
+        assert!(
+            prepared
+                .document
+                .contains("html{scrollbar-width:none!important}"),
             "{}",
             prepared.document
         );
