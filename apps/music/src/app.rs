@@ -30,11 +30,9 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
-#[cfg(test)]
-use ui::widget::SplitLayout;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{Notice, ToastKind};
-use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, Widget};
+use ui::widget::{ModalDialog, NavFeed, PromptBody, TransportFeed, Widget, WindowBarLink};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -191,9 +189,6 @@ enum Action {
     VolumeFrac(f64),
     /// Toggle mute: drop the volume to 0, or restore the pre-mute level.
     ToggleMute,
-    /// Open / close the volume popover (shown when the inline slider collapses
-    /// to a button on a narrower bar).
-    ToggleVolumePopover,
     /// Open the native file portal to pick a cover image for this playlist.
     PickPlaylistCover(String),
     /// Append a track to the end of the play queue.
@@ -269,10 +264,6 @@ enum Action {
     /// current view), or, when already on it, hide it and return to where the
     /// user was before.
     ToggleQueue,
-    /// Show or hide the adaptive navigation sidebar.
-    ToggleSidebar,
-    /// Dismiss the overlay sidebar (scrim tap / Esc).
-    CloseSidebar,
     /// Ask the query view this: a chip picked or taken away.
     SetQuery(ui::framework::views::QuerySpec),
     /// Open the values of the query view's filter with this key.
@@ -290,12 +281,6 @@ enum Action {
     /// A no-op hit used to swallow clicks inside a modal surface so they don't
     /// fall through to the scrim behind it.
     None,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Drag {
-    Scrubber,
-    Volume,
 }
 
 #[derive(Clone)]
@@ -511,15 +496,16 @@ pub struct MusicApp {
     frame_theme: Option<Theme>,
     content_height: f64,
 
-    /// Adaptive navigation sidebar: the shared [`ui::widget::sidebar::SidebarDrawer`]
-    /// primitive. It owns the docked-vs-overlay decision, the eased reveal, the
-    /// dimming scrim and the user-toggle memory, and hands back the resolved
-    /// sidebar/content rects — so collapse clears cleanly (its own clip) and the
-    /// panel never resizes against the content.
-    drawer: SidebarDrawer,
-    /// Height of the now-playing bar in the last painted theme, so the event
-    /// path hit-tests the bar that was drawn.
-    bar_h: f64,
+    /// The places the window's shell shows in its sidebar.
+    places: NavFeed,
+    /// What plays, as the transport in the shell's band shows it.
+    transport: TransportFeed,
+    /// The shell's own buttons in the window's bar; none outside a shell.
+    bar: Option<WindowBarLink>,
+    /// The shell's front screen in a narrow window.
+    pane: Option<ui::LocalState<ui::widget::NavPane>>,
+    /// The view the shell was last told about.
+    shown_view: Option<View>,
 
     mouse: Point,
     hits: Vec<Hit>,
@@ -540,29 +526,6 @@ pub struct MusicApp {
     page_parts_drawn: usize,
     /// The name of the row control under the pointer, for its tooltip.
     table_tooltip: Option<String>,
-    drag: Option<Drag>,
-    /// A horizontal swipe in progress on the now-playing bar: `(start point,
-    /// tap action under the press)`. On release a large horizontal delta skips
-    /// track (swipe left → next, right → previous); a small delta falls back to
-    /// the captured tap. Enables touch-style prev/next on the bottom bar.
-    bar_press: Option<(Point, Option<Action>)>,
-    /// Interactive bar rects in the now-playing transport, captured during
-    /// draw so the event handler can map drags to fractions.
-    scrubber_rect: Rect,
-    volume_rect: Rect,
-    /// Where a pointer takes the scrubber and the volume slider: their
-    /// faces' hit rects, captured at paint.
-    scrubber_hit: Rect,
-    volume_hit: Rect,
-    /// The volume button's hit rect (shown when the inline slider is collapsed)
-    /// and the open state + slider rect of its popover.
-    volume_btn_rect: Rect,
-    volume_popover_open: bool,
-    volume_popover_rect: Rect,
-    volume_popover_slider: Rect,
-    /// The now-playing bar's queue-button rect, captured during draw. Hovering
-    /// it opens the queue preview overlay; clicking it toggles the queue view.
-    queue_btn_rect: Rect,
     /// The view (+ scroll offset) to return to when the queue view is toggled
     /// back off, so "Queue" restores exactly where the user was rather than
     /// resetting. `None` when the queue view wasn't opened via the toggle.
@@ -629,7 +592,6 @@ pub struct MusicApp {
     /// pointer.
     staged_row_pointer: Option<usize>,
     /// Open the narrow transport's More menu once the bar is laid out.
-    staged_player_menu: bool,
     /// A capture opens this filter's values over its chip once the chips
     /// are laid out.
     staged_facet: Option<String>,
@@ -942,10 +904,11 @@ impl MusicApp {
             scroll_target: None,
             frame_theme: None,
             content_height: 0.0,
-            drawer: SidebarDrawer::new()
-                .left()
-                .content_kind(ui::widget::ContentKind::List),
-            bar_h: 0.0,
+            places: NavFeed::new(),
+            transport: TransportFeed::new(),
+            bar: None,
+            pane: None,
+            shown_view: None,
             mouse: Point::ZERO,
             hits: Vec::new(),
             body_hits: 0,
@@ -956,17 +919,6 @@ impl MusicApp {
             page_parts: Vec::new(),
             page_parts_drawn: 0,
             table_tooltip: None,
-            drag: None,
-            bar_press: None,
-            scrubber_rect: Rect::ZERO,
-            volume_rect: Rect::ZERO,
-            scrubber_hit: Rect::ZERO,
-            volume_hit: Rect::ZERO,
-            volume_btn_rect: Rect::ZERO,
-            volume_popover_open: false,
-            volume_popover_rect: Rect::ZERO,
-            volume_popover_slider: Rect::ZERO,
-            queue_btn_rect: Rect::ZERO,
             dirty: true,
             toast: Notice::default(),
             context: ContextMenu::new(),
@@ -987,7 +939,6 @@ impl MusicApp {
             shot_stage: None,
             staged_menu_track: None,
             staged_row_pointer: None,
-            staged_player_menu: false,
             staged_facet: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
@@ -1661,26 +1612,6 @@ impl MusicApp {
             .as_ref()
             .and_then(|id| self.playback_track(id))
             .map_or(0, super::model::Track::duration_ms)
-    }
-
-    /// The next few queued track ids (after the current one), for the queue
-    /// hover preview. Respects the linear queue order; empty when nothing is
-    /// queued up next.
-    fn queue_preview_tracks(&self) -> Vec<String> {
-        self.pb
-            .queue
-            .iter()
-            .skip(self.pb.queue_index + 1)
-            .take(4)
-            .cloned()
-            .collect()
-    }
-
-    /// Whether the queue hover preview should be showing: the pointer is over
-    /// the now-playing bar's queue button. Captured geometry, so this reflects
-    /// the real, laid-out button rect.
-    pub(crate) fn queue_preview_active(&self) -> bool {
-        self.queue_btn_rect.width() > 0.0 && self.queue_btn_rect.contains(self.mouse)
     }
 
     /// The best cover-art id for a track: the track's own recorded cover when
@@ -2456,9 +2387,6 @@ impl MusicApp {
             Action::OpenPlayerMenu(anchor) => self.open_player_menu(anchor),
             Action::SeekFrac(f) => self.on_seek_frac(f, state),
             Action::VolumeFrac(f) => self.on_volume_frac(f, state),
-            Action::ToggleVolumePopover => {
-                self.volume_popover_open = !self.volume_popover_open;
-            }
             Action::ToggleMute => self.on_toggle_mute(state),
             Action::PickPlaylistCover(playlist_id) => self.on_pick_playlist_cover(playlist_id),
             Action::AddToQueue(id) => self.on_add_to_queue(&id, state),
@@ -2509,8 +2437,6 @@ impl MusicApp {
             }
             Action::OpenSpotifyPlaylistMenu(playlist) => self.open_spotify_playlist_menu(&playlist),
             Action::ToggleQueue => self.on_toggle_queue(),
-            Action::ToggleSidebar => self.toggle_sidebar(),
-            Action::CloseSidebar => self.drawer.close(),
             Action::CloseNamePrompt => self.on_close_name_prompt(),
             Action::SetQuery(query) => self.on_set_query(query),
             Action::OpenFacet(key) => self.open_facet(&key),
@@ -2646,11 +2572,6 @@ impl MusicApp {
         } else {
             self.open_view(v);
         }
-        // Picking a destination dismisses the overlay sidebar so the
-        // chosen screen takes the full width (Adwaita flap behaviour).
-        if self.drawer.is_overlay() {
-            self.drawer.close();
-        }
     }
 
     fn on_back(&mut self) {
@@ -2662,9 +2583,6 @@ impl MusicApp {
         // the genre; the live catalogue answers through the search provider.
         self.search_opener
             .open(ui::search::SearchRequest::this_app().with_query(genre));
-        if self.drawer.is_overlay() {
-            self.drawer.close();
-        }
     }
 
     fn on_play(
@@ -2983,9 +2901,6 @@ impl MusicApp {
             self.go_back();
         } else {
             self.open_view(View::Queue);
-        }
-        if self.drawer.is_overlay() {
-            self.drawer.close();
         }
     }
 
@@ -4266,41 +4181,6 @@ impl MusicApp {
         hovered
     }
 
-    // ---- adaptive sidebar geometry (delegated to `SidebarDrawer`) --------
-
-    /// The width-driven sidebar layout (docked vs overlay). Computed straight
-    /// from the allocated width so it's valid even before the first `resolve`.
-    #[cfg(test)]
-    fn sidebar_layout(&self) -> SplitLayout {
-        self.drawer.layout_for(self.rect.width())
-    }
-
-    /// The width the content column is inset by on the left for the docked
-    /// sidebar (0 while overlaying — the flap floats over the content). Read
-    /// from the drawer's last-resolved geometry.
-    #[cfg(test)]
-    fn content_inset(&self) -> f64 {
-        (self.drawer.content_rect().x0 - self.rect.x0).max(0.0)
-    }
-
-    /// The sidebar's on-screen rect, ending above the persistent transport.
-    fn sidebar_rect(&self) -> Rect {
-        self.drawer.sidebar_rect()
-    }
-
-    /// Playback belongs to every destination, so its transport spans the
-    /// window rather than competing with the sidebar for the song's width.
-    fn nowplaying_rect(&self) -> Rect {
-        let r = self.rect;
-        Rect::new(r.x0, r.y1 - self.bar_h, r.x1, r.y1)
-    }
-
-    /// Flip the sidebar open/closed for the current layout.
-    fn toggle_sidebar(&mut self) {
-        self.drawer.toggle();
-        self.dirty = true;
-    }
-
     /// Take up what the launch named: a `music://` link plays the track
     /// (continuing a handoff's position once the track is in the library)
     /// or opens the album, artist or playlist; anything else is a local
@@ -4394,12 +4274,12 @@ impl MusicApp {
         }
     }
 
-    /// Stage the sidebar for a deterministic `--shots` frame (no event loop to
-    /// drive the reveal animation). `open` snaps it fully revealed.
-    /// Before the first layout the drawer keeps the snap until it knows the
-    /// window's size class.
+    /// Stage the shell's sidebar open or closed for a `--shots` frame, through
+    /// the window bar's toggle.
     pub fn snap_sidebar(&mut self, open: bool) {
-        self.drawer.snap(open);
+        if let Some(bar) = &self.bar {
+            bar.stage_sidebar(open);
+        }
         self.dirty = true;
     }
 
@@ -5513,6 +5393,9 @@ mod media_grid;
 mod page_part;
 mod recommendations;
 mod render;
+mod shell;
+#[cfg(test)]
+use shell::place_id as shell_place;
 mod spotify;
 mod track_table;
 mod window_bar;

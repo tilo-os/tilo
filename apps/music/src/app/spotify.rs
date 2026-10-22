@@ -963,7 +963,7 @@ mod tests {
         app.snap_spotify("spotify-home");
         app.source_error = Some("Reconnect Spotify to grant library access".into());
         let tree = app.accessibility().unwrap();
-        let page = &tree.children[2];
+        let page = &tree.children[1];
         assert!(page.children.iter().any(|node| node.name.as_deref()
             == Some(app.source_status().as_str())
             && node.description.as_deref() == app.source_error.as_deref()));
@@ -986,7 +986,7 @@ mod tests {
         );
         app.view = super::super::View::Artist(id.into());
         assert_eq!(
-            app.accessibility().unwrap().children[2].name.as_deref(),
+            app.accessibility().unwrap().children[1].name.as_deref(),
             Some("Provider artist")
         );
         assert!(
@@ -1004,7 +1004,7 @@ mod tests {
         );
         app.view = super::super::View::Album(album.into());
         assert_eq!(
-            app.accessibility().unwrap().children[2].name.as_deref(),
+            app.accessibility().unwrap().children[1].name.as_deref(),
             Some("Provider album")
         );
         let playlist = "spotify:playlist:1234567890123456789012";
@@ -1018,7 +1018,7 @@ mod tests {
         );
         app.view = super::super::View::Playlist(playlist.into());
         assert_eq!(
-            app.accessibility().unwrap().children[2].name.as_deref(),
+            app.accessibility().unwrap().children[1].name.as_deref(),
             Some("Provider playlist")
         );
     }
