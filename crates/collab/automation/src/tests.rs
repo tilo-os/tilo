@@ -687,6 +687,67 @@ fn an_unattended_run_takes_only_the_exact_actions_consented_to() {
     assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
 }
 
+/// An action that needs its person attending (it opens a chooser) is never
+/// consented to in advance: an unattended run stops at it even when a rule
+/// names it, and an interactive run asks.
+#[test]
+fn an_attended_action_is_never_consented_to_in_advance() {
+    let mut host = FakeHost::new();
+    host.rows.push(row(
+        NOTES,
+        NOTE,
+        "notes.note",
+        "attach",
+        Vec::new(),
+        ActionContract {
+            tags: vec![tilo_actions::ATTENDED_TAG.to_owned()],
+            ..ActionContract::default()
+        },
+    ));
+    let mut attach = shortcut(
+        "attach",
+        vec![invoke(
+            "attach",
+            NOTES,
+            Selector::Fixed(NOTE.into()),
+            "attach",
+            &[],
+        )],
+    );
+    attach.grant.push(crate::action_rule(
+        NOTES,
+        "notes.note",
+        Some(NOTE),
+        "attach",
+        KindSet::ALL,
+        Answer::Allow,
+    ));
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &attach,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert!(
+        matches!(
+            failure(&report),
+            Some((_, StepFailure::ConfirmationRequired))
+        ),
+        "{report:?}"
+    );
+    let declining = Hooks::default();
+    run_with(
+        &host,
+        &declining,
+        &attach,
+        RunId::new(),
+        RunMode::Interactive,
+    );
+    assert_eq!(declining.confirmations.lock().unwrap().len(), 1);
+    assert!(host.started().is_empty());
+}
+
 #[test]
 fn a_retried_run_reuses_its_invocation_ids_and_acts_once() {
     let host = FakeHost::new();

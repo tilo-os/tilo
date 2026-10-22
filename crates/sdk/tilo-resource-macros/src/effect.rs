@@ -159,6 +159,10 @@ struct VariantOptions {
     /// `own_device`: the effect's whole scope is the invoking person's own
     /// device, touching nothing shared and no one else; device-only too.
     own_device: bool,
+    /// `attended`: the effect needs its person attending (a chooser, a
+    /// credential, something only they may see): anyone acting for them is
+    /// always asked first.
+    attended: bool,
     risk: Option<syn::Path>,
     /// `audience = "agents"` or `"people"`: who listings offer it to.
     audience: Option<syn::Ident>,
@@ -268,6 +272,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 });
             } else if meta.path.is_ident("own_device") {
                 options.own_device = true;
+            } else if meta.path.is_ident("attended") {
+                options.attended = true;
             } else if meta.path.is_ident("risk") {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
             } else if meta.path.is_ident("audience") {
@@ -300,7 +306,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `own_device`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
+                     `own_device`, `attended`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)` or `kind`",
                 ));
             }
@@ -501,6 +507,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let idempotent = options.idempotent;
         let own_device = options.own_device;
+        let attended = options.attended;
         let device_only = own_device || options.device_only.unwrap_or(all_device_only);
         let risk_of = if let Some(classify) = &options.risk {
             quote! {
@@ -608,6 +615,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 action_kind: #krate::__private::ActionKind::#action_kind,
                 device_only: #device_only,
                 own_device: #own_device,
+                attended: #attended,
                 risk_of: #risk_of,
                 audience: #krate::__private::Audience::#audience,
                 untrusted: #untrusted,

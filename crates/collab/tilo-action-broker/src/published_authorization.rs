@@ -127,6 +127,52 @@ mod tests {
         );
     }
 
+    /// An agent the owner's device handed the session reads where reading
+    /// is allowed and is asked before an outside effect; an attended action
+    /// asks it every time, even where the owner allowed the agent
+    /// everything, while the owner pressing it is not asked.
+    #[test]
+    fn an_agent_is_asked_before_an_attended_action_whatever_it_is_allowed() {
+        let mut w = workspace();
+        let agent = || {
+            BrokerActor::agent("agent:scribe")
+                .for_person(OWNER)
+                .session_delegated()
+        };
+        let mut read = action("read-text");
+        read.contract.kind = tilo_actions::ActionKind::Read;
+        let mut save = action("save");
+        save.contract.kind = tilo_actions::ActionKind::Outside;
+        let mut choose = read.clone();
+        choose.action = "open-file".into();
+        choose
+            .contract
+            .tags
+            .push(tilo_actions::ATTENDED_TAG.to_owned());
+        let s = surface("rec-1", vec![read.clone(), save.clone(), choose.clone()]);
+        let asks = |w: &Workspace, action: &PublishedAction| {
+            agent()
+                .admit_published_in(w, 10, None, (&s, action))
+                .map(|(asks, _)| asks)
+        };
+        assert_eq!(asks(&w, &read), Ok(false));
+        assert_eq!(asks(&w, &save), Ok(true), "an outside effect asks first");
+        assert_eq!(asks(&w, &choose), Ok(true));
+        w.grant(Grant::new(
+            "scribe-everything",
+            Subject::agent("scribe"),
+            w.node().app(WRITER),
+            KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            Subject::person(OWNER),
+        ));
+        assert_eq!(asks(&w, &choose), Ok(true), "no grant lifts it");
+        assert_eq!(
+            authorize_person_published(&w, 10, OWNER, false, &s, &choose),
+            Ok(false)
+        );
+    }
+
     #[test]
     fn a_person_is_checked_on_the_route_record_too() {
         let mut w = workspace();

@@ -183,6 +183,7 @@ impl LocalCaller {
             // Observing what was admitted: an admission that asked first
             // was answered by the person.
             consequential: false,
+            attended: false,
             confirmed: true,
         })
     }

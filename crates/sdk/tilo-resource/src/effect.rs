@@ -52,6 +52,12 @@
 //! ([`tilo_actions::OWN_DEVICE_SCOPE`]). A device-only effect that reaches
 //! other people (a direct message, a call) is not.
 //!
+//! An effect that needs its person attending — it opens a chooser for
+//! them, asks them for a credential or a sign-in, or shows something only
+//! they may see — is `attended`: whoever acts for the person (an agent, a
+//! bot) is always asked first, and no answer allows it unasked
+//! ([`tilo_actions::ATTENDED_TAG`]).
+//!
 //! An effect that acts on one item — open *this* snippet, connect *this*
 //! connection — is offered on the item itself with its arguments bound
 //! ([`Effect::bound`]): a published child or a live row carries it, and
@@ -406,6 +412,7 @@ pub struct EffectRow {
     pub action_kind: ActionKind,
     pub device_only: bool,
     pub own_device: bool,
+    pub attended: bool,
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
     pub audience: tilo_actions::Audience,
     pub untrusted: bool,
@@ -492,6 +499,10 @@ pub struct EffectDecl {
     /// nothing shared and no one else, so a room's grants have nothing to
     /// consent to ([`tilo_actions::OWN_DEVICE_SCOPE`]). Device-only too.
     pub own_device: bool,
+    /// Needs its person attending: it opens a chooser, asks for a credential
+    /// or a sign-in, or shows what only they may see, so whoever acts for
+    /// them is always asked first ([`tilo_actions::ATTENDED_TAG`]).
+    pub attended: bool,
     /// How much harm one invocation can do, classified from its arguments
     /// (formatting the system disk, against any other): an invocation the
     /// classifier finds destructive asks for the confirmation a declared
@@ -585,6 +596,7 @@ impl EffectDecl {
             action_kind: row.action_kind,
             device_only: row.device_only || row.own_device,
             own_device: row.own_device,
+            attended: row.attended,
             risk_of: row.risk_of,
             audience: row.audience,
             untrusted: row.untrusted,
@@ -678,6 +690,9 @@ impl EffectDecl {
                 };
                 if self.own_device {
                     tags.push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
+                }
+                if self.attended {
+                    tags.push(tilo_actions::ATTENDED_TAG.to_owned());
                 }
                 if let Some(tag) = self.audience.tag() {
                     tags.push(tag.to_owned());

@@ -771,7 +771,9 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             .contract
             .confirmation_for_argument(Some(&argument))
         {
-            ConfirmationPolicy::None if granted.answer == Answer::Ask => {
+            ConfirmationPolicy::None
+                if granted.answer == Answer::Ask || descriptor.contract.is_attended() =>
+            {
                 ConfirmationPolicy::Confirm
             }
             policy => policy,
@@ -781,8 +783,9 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         }
         if self.mode == RunMode::Unattended {
             // Only a rule that names this exact action consents in advance
-            // for a run nobody is present at.
-            if !granted.names_action {
+            // for a run nobody is present at, and nothing does for one that
+            // needs its person attending.
+            if !granted.names_action || descriptor.contract.is_attended() {
                 return Err(StepFailure::ConfirmationRequired);
             }
             return Ok(Some(match policy {

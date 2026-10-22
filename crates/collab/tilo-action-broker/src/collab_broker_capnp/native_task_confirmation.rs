@@ -134,12 +134,9 @@ impl CapnpBrokerState {
         }
         let contract_argument =
             json.map(|text| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX));
-        let consequential = !matches!(
-            descriptor
-                .contract
-                .confirmation_for_argument(contract_argument.as_deref()),
-            tilo_actions::ConfirmationPolicy::None
-        );
+        let consequential = descriptor
+            .contract
+            .asks_for_argument(contract_argument.as_deref());
         let mut current = binding.clone();
         current.revision = runtime_collab::native_task_revision(lease)
             .ok_or("invalid native lease")?
@@ -152,6 +149,7 @@ impl CapnpBrokerState {
             action: descriptor.address.action.clone(),
             need: descriptor.contract.need(),
             consequential,
+            attended: descriptor.contract.is_attended(),
             confirmed: false,
         };
         match service.authorize_action(&run.cluster_id, &run.agent_id, &requirement) {
