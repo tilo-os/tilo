@@ -87,7 +87,6 @@ media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.
-automerge.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -96,11 +95,10 @@ zeroize.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,
 # Sheets, Weather) read. serde/serde_json render them; dirs resolves the
-# per-user config root; uuid mints stable account ids.
+# per-user config root.
 serde.workspace = true
 serde_json.workspace = true
 quick-xml.workspace = true
-uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
@@ -110,7 +108,6 @@ runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 account-custody = { path = "../../crates/system/account-custody" }
 # Exercise the published Files surface against the production cloud service.
 file-explorer = { path = "../file-explorer" }
-zip.workspace = true
 # The platform adapter the native runner feeds, for the live-bus benchmark.
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
