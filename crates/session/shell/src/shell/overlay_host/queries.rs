@@ -682,7 +682,7 @@ impl ShellOverlayHost {
                     .collaborators
                     .iter()
                     .any(|person| person.id != state.local_user_id);
-            (workspace.room, others)
+            (workspace.room(), others)
         };
         drop(tree);
         drop(state);
