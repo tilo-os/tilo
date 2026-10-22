@@ -244,6 +244,52 @@ fn a_windows_search_control_opens_search() {
     assert!(handle.search_open());
 }
 
+/// Search over one window stands over that window, as an app's own
+/// palette does, not centred on the screen over another window.
+#[test]
+fn a_windows_search_stands_over_that_window() {
+    let (surface, handle) = desktop(2);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1400, 800),
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (control, window) = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .and_then(|row| {
+            row.groups
+                .iter()
+                .filter(|group| {
+                    group.get_rect().x1 <= 1400.0 && group.window_search().anchor().area() > 0.0
+                })
+                .max_by(|a, b| a.get_rect().x0.total_cmp(&b.get_rect().x0))
+        })
+        .map(|group| (group.window_search().anchor(), group.get_rect()))
+        .expect("a window on screen offers its search control");
+    assert!(
+        (window.center().x - 700.0).abs() > 100.0,
+        "the window {window:?} is off the screen's centre"
+    );
+    frame.click_at(control.center().x, control.center().y);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert!(handle.search_open());
+    let palette = frame.root::<DesktopSurface>().search_palette_rect();
+    assert!(
+        (palette.center().x - window.center().x).abs() < 1.0
+            || palette.x0 <= 8.5
+            || palette.x1 >= 1400.0 - 8.5,
+        "the palette {palette:?} stands over the window {window:?}"
+    );
+    assert!(palette.y0 > window.y0, "below the window's top");
+}
+
 /// An acknowledgement is said politely over the desktop, wakes the host
 /// for its fade and end, and is no notification.
 #[test]
