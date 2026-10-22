@@ -27,6 +27,7 @@ mod limits;
 mod private_direct_conversations;
 mod publication;
 mod record;
+pub mod renewal;
 pub mod session;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

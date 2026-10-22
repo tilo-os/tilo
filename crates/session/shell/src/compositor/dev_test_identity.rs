@@ -41,11 +41,16 @@ fn provision(
 ) -> Response {
     use tilo_identity_host::provisioning::{ProvisionOutcome, THROWAWAY_TEST_IDENTITY_NAME};
     match crate::firstboot::ensure_throwaway_test_identity(identity_dir, paths) {
-        Ok(outcome) => Response::Answer(serde_json::json!({
+        Ok(outcome) => {
+            // A throwaway's certificate expires: renewed while the session
+            // runs, it never costs the session its rooms.
+            crate::firstboot::keep_device_certificates_renewed(identity_dir);
+            Response::Answer(serde_json::json!({
             "created": matches!(outcome, ProvisionOutcome::Created { .. }),
             "display_name": THROWAWAY_TEST_IDENTITY_NAME,
             "throwaway": true,
-        })),
+            }))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Response::Err {
             code: "identity_exists".into(),
             message: error.to_string(),

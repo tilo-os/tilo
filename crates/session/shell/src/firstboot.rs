@@ -73,6 +73,53 @@ pub fn ensure_collaboration_identity_with_device_label(
     )
 }
 
+/// Keep this device's expiring certificates for the identity in
+/// `identity_dir` renewed while the session runs
+/// ([`tilo_identity_host::provisioning::keep_device_certificates_renewed`]),
+/// on a thread of its own that sleeps until the next one is due. Started
+/// once per session; a session whose certificates never expire ends it at
+/// once.
+pub fn keep_device_certificates_renewed(identity_dir: &Path) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let identity_dir = identity_dir.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("tilo-device-certificate-renewal".into())
+        .spawn(move || {
+            let paths = collaboration_identity_paths();
+            tilo_identity_host::provisioning::keep_device_certificates_renewed(
+                &identity_dir,
+                &paths,
+                &SystemRenewalClock,
+                || {
+                    if tilo_identity_host::provisioning::is_throwaway_test_identity(&identity_dir) {
+                        ensure_throwaway_test_identity(&identity_dir, &paths).map(drop)
+                    } else {
+                        ensure_collaboration_identity(&identity_dir, &paths).map(drop)
+                    }
+                },
+            );
+        });
+    if let Err(error) = spawned {
+        STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        tracing::warn!(%error, "could not start renewing this device's certificate");
+    }
+}
+
+/// The wall clock a running session renews its certificates by.
+struct SystemRenewalClock;
+impl tilo_identity_host::provisioning::RenewalClock for SystemRenewalClock {
+    fn now_ns(&self) -> u64 {
+        tilo_clock::unix_now_ns()
+    }
+    fn wait(&self, duration: Duration) -> bool {
+        std::thread::sleep(duration);
+        true
+    }
+}
+
 /// [`tilo_identity_host::provisioning::ensure_throwaway_test_identity`] in
 /// this session's identity storage.
 ///

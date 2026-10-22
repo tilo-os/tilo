@@ -81,7 +81,8 @@ pub async fn prepare_and_complete(
             );
         }
         let intent = VerifiedNativeEnrollmentIntent::restore(pending.intent_bytes())?;
-        if intent.local_device() != &device
+        if (intent.local_device() != &device
+            && !crate::renewal::renews(&device, intent.local_device()))
             || join::encode_invitation_text(intent.verified_join().signed_invitation())
                 != invitation
         {
@@ -211,8 +212,15 @@ pub async fn prepare_and_complete(
         // exchange. Resending the proof would be refused forever, keeping
         // the slot from the room it joined.
         JoinTransportResponse::Error { code, message } if completed(code, &message) => {
-            let bootstrap =
-                refresh_membership(&client, &host.endpoint_addr, &intent, &identity).await?;
+            let grant = intent.verified_join().grant();
+            let bootstrap = prove_membership(
+                &client,
+                &host.endpoint_addr,
+                (grant.room.clone(), grant.workspace_id),
+                &device,
+                &identity,
+            )
+            .await?;
             current(&identity, identity_topic, &device)?;
             active(&owner, &intent, &id)?;
             VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
@@ -258,17 +266,20 @@ fn completed(code: u16, message: &str) -> bool {
                 == "join request ID already completed; refresh membership for the current workspace")
 }
 
-/// The room's current state for `intent`'s device, a member since the host
-/// admitted its proof: the membership exchange, challenged and proven with
-/// the device's key. The answer is checked against the intent like the
-/// Complete it stands in for ([`VerifiedNativeEnrollment::finalize`]).
-async fn refresh_membership(
+/// The room's current state for a device that is a member: the membership
+/// exchange for `room` (its id and workspace), challenged and proven with
+/// the device's key and presenting `device`, the certificate it is a member
+/// with or the renewal of it. The answer is checked by whoever takes it in
+/// ([`VerifiedNativeEnrollment::finalize`],
+/// [`NativeWorkspaceOwner::renew_membership`]).
+async fn prove_membership(
     client: &WorkspaceJoinClient,
     host: &iroh::EndpointAddr,
-    intent: &VerifiedNativeEnrollmentIntent,
+    room: (String, u64),
+    device: &DeviceCert,
     identity: &HostIdentity,
 ) -> Result<join::JoinBootstrap, String> {
-    let grant = intent.verified_join().grant();
+    let (room, workspace_id) = room;
     let mut request_id = [0; 32];
     rand_core::Rng::fill_bytes(
         &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
@@ -278,9 +289,9 @@ async fn refresh_membership(
         .request(
             host.clone(),
             JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
-                room: grant.room.clone(),
-                workspace_id: grant.workspace_id,
-                device_cert: intent.local_device().clone(),
+                room,
+                workspace_id,
+                device_cert: device.clone(),
                 request_id,
             }),
         )
@@ -304,6 +315,46 @@ async fn refresh_membership(
         JoinTransportResponse::Error { message, .. } => Err(refused(&message)),
         _ => Err("the host answered no membership".into()),
     }
+}
+
+/// Prove this device's membership of `room`, a room it joined, with the
+/// renewal of the certificate the room's record holds, when its custody
+/// holds one, and take the governor's answer in
+/// ([`NativeWorkspaceOwner::renew_membership`]). Answers whether it renewed.
+///
+/// # Errors
+/// The room is not joined here, custody is unreadable or changes during
+/// the exchange, or the host refuses.
+pub async fn renew_membership(
+    client: WorkspaceJoinClient,
+    identity: HostIdentity,
+    owner: NativeWorkspaceOwner,
+    room: crate::RoomId,
+) -> Result<bool, String> {
+    let (topic, hint, held) = owner.with_current(room, |view| {
+        Ok((
+            view.workspace(),
+            view.transport_hint()?.clone(),
+            view.device().clone(),
+        ))
+    })?;
+    let (renewed, _) = identity.current_native_material(topic)?;
+    if !crate::renewal::renews(&renewed, &held) {
+        return Ok(false);
+    }
+    let (host, _) =
+        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
+    let bootstrap = prove_membership(
+        &client,
+        &host.endpoint_addr,
+        (room.to_string(), topic),
+        &renewed,
+        &identity,
+    )
+    .await?;
+    current(&identity, topic, &renewed)?;
+    owner.renew_membership(room, &renewed, &bootstrap, SystemTime::now())?;
+    Ok(true)
 }
 
 /// The host's refusal, in its own words: what the person is shown.

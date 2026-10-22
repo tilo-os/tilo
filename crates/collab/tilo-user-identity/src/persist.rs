@@ -1272,20 +1272,21 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
     let pubkey = read_public_key(&paths.user_pubkey)?;
     let device = read_device_key(&paths.device_privkey)?;
     let cert = read_device_cert(&paths.device_cert)?;
+    // A primary device can admit further devices. That is an ordinary
+    // machine, not one the imager already enrolled, even when its root
+    // secret lives in the identity record rather than
+    // user-identity/privkey.bin, so first-boot provisioning must still run
+    // for each OS user: it verifies the certificate, and renews one that
+    // is due before it is ever refused for having expired.
+    if cert.capabilities.can_admit_devices {
+        return Ok(false);
+    }
     verify_device_cert_at(&cert, now_ns).map_err(|error| {
         PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("enrolled device certificate did not verify: {error}"),
         ))
     })?;
-    // A primary device can admit further devices. That is an ordinary
-    // machine, not one the imager already enrolled, even when its root
-    // secret lives in the identity record rather than
-    // user-identity/privkey.bin, so first-boot provisioning must still run
-    // for each OS user.
-    if cert.capabilities.can_admit_devices {
-        return Ok(false);
-    }
     if cert.user_public_key != pubkey || cert.device_public_key != device.verifying_key().to_bytes()
     {
         return Err(PersistError::Io(io::Error::new(

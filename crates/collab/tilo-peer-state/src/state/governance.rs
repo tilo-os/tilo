@@ -273,26 +273,21 @@ impl PeerGovernance<'_> {
         expires_at_ns: u64,
         now: SystemTime,
     ) -> Result<crate::join::MembershipChallenge, String> {
-        if self
-            .peer
-            .core
-            .certificates
-            .get(&device_cert.device_public_key)
-            .map(AsRef::as_ref)
-            != Some(device_cert)
-        {
-            return Err("membership certificate is absent from governed state".into());
-        }
-        self.peer.certificate(&device_cert.device_public_key, now)?;
-        match self.peer.permissions(device_cert.device_public_key, now) {
-            Ok(_) => {}
-            Err(error)
-                if error.contains("no room membership")
-                    && self.peer.has_governed_admission(device_cert) =>
-            {
-                return Err("member has been removed".into());
+        // A renewed certificate is challenged as the device it renews; its
+        // membership is decided once the governor holds it
+        // ([`PeerGovernanceMut::renew_member_certificate`]).
+        if self.renewal_of(device_cert, now)?.is_none() {
+            self.peer.certificate(&device_cert.device_public_key, now)?;
+            match self.peer.permissions(device_cert.device_public_key, now) {
+                Ok(_) => {}
+                Err(error)
+                    if error.contains("no room membership")
+                        && self.peer.has_governed_admission(device_cert) =>
+                {
+                    return Err("member has been removed".into());
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) => return Err(error),
         }
         crate::join::MembershipChallenge::new(
             &self.peer.core.room,

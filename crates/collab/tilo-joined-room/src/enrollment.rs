@@ -77,7 +77,8 @@ fn validate_enrollment(
     if intent.room() != room
         || record.governor != grant.authority
         || record.workspace != grant.workspace_id
-        || record.device != *intent.local_device()
+        || (record.device != *intent.local_device()
+            && !crate::renewal::renews(&record.device, intent.local_device()))
         || enrollment.transport_hint != *intent.transport_hint()
         || enrollment.invitation != intent.verified_join().signed_invitation()
     {
@@ -373,7 +374,8 @@ impl NativeWorkspaceOwner {
         }
         let intent = VerifiedNativeEnrollmentIntent::restore(&pending.intent)?;
         if intent.verified_join() != enrollment.verified_join()
-            || intent.local_device() != enrollment.local_device()
+            || (intent.local_device() != enrollment.local_device()
+                && !crate::renewal::renews(enrollment.local_device(), intent.local_device()))
             || intent.transport_hint() != enrollment.transport_hint()
         {
             return Err("native Complete differs from persisted enrollment intent".into());
@@ -624,7 +626,7 @@ impl NativeWorkspaceOwner {
 /// publications on its record's channel, and the room's sync delivers them
 /// once the room is installed, where each is authorized exactly as any later
 /// write is.
-fn install_governance(
+pub(crate) fn install_governance(
     peer: &mut StatePeer,
     bootstrap: &tilo_peer_state::join::JoinBootstrap,
     now: SystemTime,

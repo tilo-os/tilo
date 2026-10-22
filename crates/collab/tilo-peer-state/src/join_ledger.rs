@@ -876,20 +876,40 @@ impl JoinLedger {
         Ok(challenge)
     }
 
-    /// The room's current bootstrap for a member that proved its membership
-    /// against a challenge this room issued.
+    /// The renewed certificate a member proved its membership with, which
+    /// the governor puts in place of the one the room holds
+    /// ([`crate::PeerGovernanceMut::renew_member_certificate`]) before it
+    /// answers [`Self::membership_complete`]. `None` when the room holds the
+    /// certificate the member proved with.
     ///
     /// # Errors
     ///
-    /// The challenge was not issued here, the proof is not the endpoint's or
-    /// does not verify, or the device is no longer a member.
-    pub fn membership_complete(
+    /// As [`Self::membership_complete`], or the certificate does not renew
+    /// the one the room holds ([`crate::PeerGovernance::renewal_of`]).
+    pub fn membership_renewal(
         &self,
         room: &Governed<'_>,
         remote_endpoint: [u8; 32],
         request: &MembershipCompleteRequest,
         now: u64,
-    ) -> Result<JoinBootstrap, JoinError> {
+    ) -> Result<Option<DeviceCert>, JoinError> {
+        let (issued, _) = self.proven_membership(room, remote_endpoint, request, now)?;
+        Ok(room
+            .peer
+            .governance()
+            .renewal_of(&issued.device_cert, system_time(now))?
+            .map(|_| issued.device_cert.clone()))
+    }
+
+    /// The challenge `request` proves, checked against the endpoint that
+    /// sent it and the room's revocations.
+    fn proven_membership(
+        &self,
+        room: &Governed<'_>,
+        remote_endpoint: [u8; 32],
+        request: &MembershipCompleteRequest,
+        now: u64,
+    ) -> Result<(&MembershipChallengeRecord, crate::join::VerifiedMembership), JoinError> {
         let issued = self
             .membership_challenges
             .iter()
@@ -909,6 +929,24 @@ impl JoinLedger {
             &room.revocations()?,
             now,
         )?;
+        Ok((issued, membership))
+    }
+
+    /// The room's current bootstrap for a member that proved its membership
+    /// against a challenge this room issued.
+    ///
+    /// # Errors
+    ///
+    /// The challenge was not issued here, the proof is not the endpoint's or
+    /// does not verify, or the device is no longer a member.
+    pub fn membership_complete(
+        &self,
+        room: &Governed<'_>,
+        remote_endpoint: [u8; 32],
+        request: &MembershipCompleteRequest,
+        now: u64,
+    ) -> Result<JoinBootstrap, JoinError> {
+        let (issued, membership) = self.proven_membership(room, remote_endpoint, request, now)?;
         let role = room
             .peer
             .governance()

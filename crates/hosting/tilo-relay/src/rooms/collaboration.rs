@@ -1212,6 +1212,10 @@ impl Rooms {
         Ok(MembershipChallengeResponse { challenge })
     }
 
+    /// The room's current state for a member that proved its membership.
+    /// A member proving with its renewed certificate first has the room
+    /// hold that certificate in place of the one it replaces, committed and
+    /// published before the answer.
     async fn membership_complete(
         &self,
         remote_endpoint: [u8; 32],
@@ -1219,7 +1223,33 @@ impl Rooms {
         now: u64,
     ) -> Result<JoinBootstrap, CollaborationError> {
         let room = self.room(&request.proof.challenge.room).await?;
-        let room = room.lock().await;
+        let mut room = room.lock().await;
+        let renewal = room.collaboration().membership_renewal(
+            &room.governed(),
+            remote_endpoint,
+            &request,
+            now,
+        )?;
+        if let Some(renewed) = renewal {
+            let mut candidate = room.peer().clone();
+            candidate.governance_mut().renew_member_certificate(
+                &renewed,
+                &self.inner.host.key,
+                system_time(now),
+            )?;
+            let state = room.collaboration().clone();
+            room.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+                Ok(state)
+            })?;
+            self.settle(&mut room).await?;
+            tracing::info!(
+                room = %room.room(),
+                person = %hex::encode(renewed.user_public_key),
+                device = %hex::encode(renewed.device_public_key),
+                outcome = "renewed",
+                "member device certificate renewed"
+            );
+        }
         room.collaboration()
             .membership_complete(&room.governed(), remote_endpoint, &request, now)
     }

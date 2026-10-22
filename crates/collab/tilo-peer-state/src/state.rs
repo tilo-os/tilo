@@ -40,6 +40,7 @@ pub use facades::{
     PeerOutboxMut, PeerWorkspace, PeerWorkspaceMut,
 };
 mod bot_members;
+pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};

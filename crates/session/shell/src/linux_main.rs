@@ -253,6 +253,7 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                 return Some(std::process::ExitCode::SUCCESS);
             }
             tracing::info!("loaded Tilo identity from {}", store.path().display());
+            firstboot::keep_device_certificates_renewed(identity_dir);
         }
         Err(error) => {
             tracing::error!("could not initialise identity store: {error}");
