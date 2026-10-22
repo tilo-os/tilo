@@ -1372,7 +1372,10 @@ fn prepare_named(
             ui_core::storage::SettingsDocument::File(super::testing::profile_settings(
                 &profile_root,
             ))
-            .update_section("appearance", ui_core::launch::capture_appearance(args))
+            .update_section(
+                ui_core::theme::APPEARANCE_SECTION,
+                ui_core::launch::capture_appearance(args),
+            )
             .map_err(operation)?;
         }
         if private {

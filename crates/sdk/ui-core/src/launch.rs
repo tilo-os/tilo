@@ -1410,10 +1410,7 @@ fn with_capture_letters(mut theme: Theme, explicit: Option<bool>) -> Theme {
 /// `TILO_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = args
-        .theme
-        .clone()
-        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
+    let theme = shot_theme_name(args)
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
     // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
@@ -1436,6 +1433,14 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     // headless harness does not construct `ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
+}
+
+/// The theme a capture draws in, by name: `--theme`, else
+/// `TILO_SHOTS_THEME`.
+fn shot_theme_name(args: &LaunchArgs) -> Option<String> {
+    args.theme
+        .clone()
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
 }
 
 /// The screenshot theme for capture frontends that have no [`LaunchArgs`]

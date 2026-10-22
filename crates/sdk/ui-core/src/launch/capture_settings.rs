@@ -12,12 +12,8 @@ use crate::theme_layers::{DARK_THEME_KEY, LIGHT_THEME_KEY, MODE_KEY};
 /// screen.
 #[must_use]
 pub fn capture_appearance(args: &super::LaunchArgs) -> Map<String, Value> {
-    let theme = args
-        .theme
-        .clone()
-        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok());
     appearance(
-        theme
+        super::shot_theme_name(args)
             .as_deref()
             .and_then(Preset::find)
             .unwrap_or(Preset::Dark),

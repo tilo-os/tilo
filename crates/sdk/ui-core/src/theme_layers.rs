@@ -69,6 +69,8 @@ pub const ACCESSIBILITY_SCHEMA_VERSION: u32 = 1;
 /// store the same fields as flat flags; those open as schema 1.
 pub(crate) const ACCESSIBILITY_LAYER_KEY: &str = "accessibility";
 
+/// The settings section the person's appearance lives in.
+pub const APPEARANCE_SECTION: &str = settings_store::day_schedule::SECTION;
 /// `appearance` key: `"dark"`, `"light"` or `"automatic"`.
 pub const MODE_KEY: &str = settings_store::day_schedule::MODE_KEY;
 /// `appearance` key: the theme dark mode shows, a preset id or `custom:<id>`.
