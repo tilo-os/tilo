@@ -112,32 +112,43 @@ impl FrameHarness {
 
     /// Press one of the app's own slots in the window's bar (a mode, an
     /// action, the sidebar toggle), as the desktop hands the press to the
-    /// app. The press is a press on the app: when nothing in the window
-    /// holds the keyboard, the app's keyboard entry takes it, as in the
-    /// native window, so what is typed next reaches the app.
+    /// app. The press is a press on the app: it hands the app the keyboard
+    /// ([`Self::hand_keyboard_to_app`]), as in the native window.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
         self.invalidate_local();
         let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
         crate::window_toolbar::deliver(event);
-        if hands_keyboard && self.focused.is_none() {
-            let instance = self.component_instance_id();
-            let order: Vec<_> = self
-                .focus_order()
-                .into_iter()
-                .filter(|&node| {
-                    self.app_focus_eligible(node)
-                        && instance.is_none_or(|instance| {
-                            self.bindings
-                                .binding_for(node)
-                                .is_some_and(|binding| binding.instance_id == instance)
-                        })
-                })
-                .collect();
-            if let Some(target) = self.keyboard_entry(&order) {
-                self.set_focused(Some(target));
-            }
+        if hands_keyboard {
+            self.hand_keyboard_to_app();
         }
         self.relayout();
+    }
+
+    /// The window took the keyboard (it opened, was brought forward —
+    /// `WindowEvent::Focused(true)` — or the person pressed one of the app's
+    /// slots in its bar): when nothing in it holds the keyboard, the app's
+    /// keyboard entry ([`crate::widget::keyboard_entry_rank`]) takes it, as
+    /// in the native window.
+    pub(super) fn hand_keyboard_to_app(&mut self) {
+        if self.focused.is_some() {
+            return;
+        }
+        let instance = self.component_instance_id();
+        let order: Vec<_> = self
+            .focus_order()
+            .into_iter()
+            .filter(|&node| {
+                self.app_focus_eligible(node)
+                    && instance.is_none_or(|instance| {
+                        self.bindings
+                            .binding_for(node)
+                            .is_some_and(|binding| binding.instance_id == instance)
+                    })
+            })
+            .collect();
+        if let Some(target) = self.keyboard_entry(&order) {
+            self.set_focused(Some(target));
+        }
     }
 
     /// The app's frame for a window of `viewport`: the part under the bar.
@@ -339,6 +350,89 @@ mod tests {
         let (_, _, _, actions) = bar.toolbar_rects();
         assert_eq!(actions.len(), 1);
         crate::window_toolbar::declare(None);
+    }
+
+    fn harness_of(root: Box<dyn Widget>) -> FrameHarness {
+        FrameHarness::new_with_controlled_inputs(
+            crate::State::new(),
+            root,
+            (800, 600),
+            crate::theme::Theme::dark().with_reduce_motion(true),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        )
+    }
+
+    fn focused_name(harness: &FrameHarness) -> Option<String> {
+        ["first", "chosen"]
+            .into_iter()
+            .find(|name| {
+                harness
+                    .access_node_named(name, None)
+                    .is_ok_and(|node| node.state.focused)
+            })
+            .map(str::to_owned)
+    }
+
+    /// A press on one of the app's own slots in the window's bar is a press
+    /// on the app: with nothing in the window holding the keyboard, the
+    /// control the app declares its default takes it, never the first
+    /// button merely for being first, so what is typed next reaches the
+    /// app. Typing in the bar's search keeps the keyboard where it is, and
+    /// a control that holds it keeps it.
+    #[test]
+    fn a_slot_press_hands_the_keyboard_to_the_apps_default_control() {
+        let root = crate::widget::Column::new()
+            .push(Box::new(crate::widget::Button::new("first", "First")))
+            .push(Box::new(
+                crate::widget::Button::new("chosen", "Chosen").with_default_focus(),
+            ));
+        let mut harness = harness_of(Box::new(root));
+        harness.relayout();
+        assert_eq!(harness.focused(), None, "nothing holds the keyboard");
+
+        harness
+            .press_window_slot(crate::window_toolbar::ToolbarEvent::Search { query: "a".into() });
+        assert_eq!(harness.focused(), None, "the bar's search keeps it");
+
+        harness.press_window_slot(crate::window_toolbar::ToolbarEvent::Action {
+            id: "mode:1".into(),
+        });
+        assert_eq!(focused_name(&harness).as_deref(), Some("chosen"));
+
+        harness.click_named("first").unwrap();
+        assert_eq!(focused_name(&harness).as_deref(), Some("first"));
+        harness.press_window_slot(crate::window_toolbar::ToolbarEvent::ToggleSidebar);
+        assert_eq!(
+            focused_name(&harness).as_deref(),
+            Some("first"),
+            "a control that holds the keyboard keeps it"
+        );
+        let _ = crate::window_toolbar::take_events();
+    }
+
+    /// A window that takes the keyboard (it opened, or was brought
+    /// forward) hands it to the app's default control when nothing holds
+    /// it; a window of buttons only keeps none focused, since Enter would
+    /// press the first.
+    #[test]
+    fn a_window_taking_the_keyboard_hands_it_to_the_apps_default_control() {
+        let root = crate::widget::Column::new()
+            .push(Box::new(crate::widget::Button::new("first", "First")))
+            .push(Box::new(
+                crate::widget::Button::new("chosen", "Chosen").with_default_focus(),
+            ));
+        let mut harness = harness_of(Box::new(root));
+        harness.relayout();
+        harness.send(&winit::event::WindowEvent::Focused(true));
+        assert_eq!(focused_name(&harness).as_deref(), Some("chosen"));
+
+        let buttons = crate::widget::Column::new()
+            .push(Box::new(crate::widget::Button::new("first", "First")));
+        let mut harness = harness_of(Box::new(buttons));
+        harness.relayout();
+        harness.send(&winit::event::WindowEvent::Focused(true));
+        assert_eq!(harness.focused(), None, "never a button for being first");
     }
 
     /// Hosting is per thread: a test leaves it as it found it.

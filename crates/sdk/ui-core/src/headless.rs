@@ -6288,6 +6288,11 @@ impl FrameHarness {
             return;
         };
         self.send_with_host_navigation(event, false);
+        if matches!(event, WindowEvent::Focused(true)) {
+            // As in the native window: the window took the keyboard.
+            self.hand_keyboard_to_app();
+            self.relayout();
+        }
     }
 
     fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
