@@ -8612,24 +8612,28 @@ impl FrameHarness {
     }
 
     /// What a contact beginning at `point` (logical coords) means: raw for a
-    /// widget that reads fingers itself, a pointer drag where a widget moves
-    /// things by dragging, else ordinary pointer emulation.
+    /// widget that reads fingers itself, else what the widget under it
+    /// claims ([`crate::widget::Widget::touch_claim`]), else ordinary pointer
+    /// emulation.
     fn touch_claim_at(&self, point: Point) -> crate::interaction::TouchClaim {
         use crate::interaction::TouchClaim;
         if self.claims_raw_touch_at(point) {
             return TouchClaim::Raw;
         }
-        let drags = self.node_map.keys().any(|&node| {
-            self.inspect_node(node, |widget| {
-                widget.get_rect().contains(point) && widget.drags_by_touch(point)
+        self.node_map
+            .keys()
+            .find_map(|&node| {
+                self.inspect_node(node, |widget| {
+                    if widget.get_rect().contains(point) {
+                        widget.touch_claim(point)
+                    } else {
+                        TouchClaim::Pointer
+                    }
+                })
+                .ok()
+                .filter(|claim| *claim != TouchClaim::Pointer)
             })
-            .unwrap_or(false)
-        });
-        if drags {
-            TouchClaim::Drag
-        } else {
-            TouchClaim::Pointer
-        }
+            .unwrap_or(TouchClaim::Pointer)
     }
 
     /// Fire a touch long-press whose hold deadline passed at `now`.
@@ -8651,6 +8655,20 @@ impl FrameHarness {
         }
         self.relayout();
         self.send_touch_phase(winit::event::TouchPhase::Ended, x, y);
+    }
+
+    /// Put one finger down at logical `(x, y)` and hold it still past the
+    /// long-press delay, leaving it down: what a hold does, before the lift
+    /// or drag that follows it ([`Self::touch`] with the id `0`). The hold
+    /// is resolved at its deadline instead of waiting for it in real time.
+    pub fn touch_down_and_hold_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
+        self.pump_component_wakes();
+        self.send_touch_phase(winit::event::TouchPhase::Started, x, y);
+        if let Some(deadline) = self.touch_pointer.long_press_deadline() {
+            self.poll_touch_hold(deadline);
+        }
+        self.relayout();
     }
 
     /// Deliver one finger's contact update at logical `(x, y)`; `id`

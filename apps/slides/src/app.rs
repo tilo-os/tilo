@@ -3216,10 +3216,17 @@ impl Widget for SlidesApp {
     }
 
     /// A finger's drag on something on the canvas moves, resizes or
-    /// selects it as the mouse's does; a tap clicks and a hold opens the
-    /// menu, as everywhere. Elsewhere a drag scrolls.
-    fn drags_by_touch(&self, point: Point) -> bool {
-        self.canvas_takes_finger(point)
+    /// selects it as the mouse's does; a finger held on a slide in the list
+    /// picks it up to move it. A tap clicks and a hold reaches the menu, as
+    /// everywhere. Elsewhere a drag scrolls.
+    fn touch_claim(&self, point: Point) -> ui::TouchClaim {
+        if self.canvas_takes_finger(point) {
+            ui::TouchClaim::Drag
+        } else if self.rail_takes_held_finger(point) {
+            ui::TouchClaim::HoldDrag
+        } else {
+            ui::TouchClaim::Pointer
+        }
     }
 
     /// The edit that typing or a toolbar left for after the event: the

@@ -1663,18 +1663,22 @@ pub trait Widget {
         false
     }
 
-    /// Whether a one-finger drag that begins at `point` (logical coords)
-    /// moves something here rather than scrolling: a canvas whose items are
-    /// dragged, words selected by dragging.
+    /// What a one-finger contact that begins at `point` (logical coords)
+    /// means here, when a drag moves something rather than scrolling.
     ///
-    /// The host then turns that contact into a pointer drag: once the
-    /// finger travels past a tap's slop, a left press where it landed, a move
-    /// per update and a release where it lifts. A tap still clicks, a still
-    /// hold still opens the context menu, and a second finger still pinches
-    /// or pans (it ends the drag with a release first). Hit-tested like
+    /// [`TouchClaim::Drag`](crate::interaction::TouchClaim::Drag) where a
+    /// drag moves things at once (a canvas whose items are dragged, words
+    /// selected by dragging): past a tap's slop the contact is a left press
+    /// where it landed, a move per update and a release where it lifts.
+    /// [`TouchClaim::HoldDrag`](crate::interaction::TouchClaim::HoldDrag)
+    /// where a drag scrolls but a held item can be moved (pages in a list):
+    /// a still hold presses where the finger rests, and a drag after it
+    /// moves the item. Either way a tap still clicks, a hold still reaches
+    /// the context menu, and a second finger still pinches or pans (it
+    /// ends the drag with a release first). Hit-tested like
     /// [`claims_raw_touch`](Self::claims_raw_touch), which wins over it.
-    fn drags_by_touch(&self, _point: vello::kurbo::Point) -> bool {
-        false
+    fn touch_claim(&self, _point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+        crate::interaction::TouchClaim::Pointer
     }
 
     /// Revealed after a dwell over the widget's rect, via the toolkit's one

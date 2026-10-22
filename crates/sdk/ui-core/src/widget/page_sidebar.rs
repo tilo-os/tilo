@@ -557,6 +557,10 @@ impl PageSidebar {
     pub fn on_right_press(&mut self, p: Point) -> bool {
         self.last_pointer = p;
         self.menu = None;
+        // A secondary press during a left press ends its pick-up: the page
+        // stays where it is and the left button's lift is no click.
+        self.drag.cancel();
+        self.press_idx = None;
         let Some(i) = self.thumb_at(p) else {
             return self.list_vp.contains(p);
         };
@@ -605,6 +609,13 @@ impl PageSidebar {
         let before = self.scroll;
         self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll);
         (self.scroll - before).abs() > f64::EPSILON
+    }
+
+    /// Whether a finger held at `p` picks up a page to move it: on a page,
+    /// in a rail that reorders, with no menu open
+    /// ([`crate::interaction::TouchClaim::HoldDrag`]).
+    pub fn lifts_by_hold(&self, p: Point) -> bool {
+        !self.read_only && self.menu.is_none() && self.thumb_at(p).is_some()
     }
 
     /// Escape: cancel a live drag or close the menu. Returns true if either

@@ -445,7 +445,7 @@ impl SlidesApp {
     /// Whether a finger landing at `p` grabs something on the canvas: an
     /// element, a handle of the selection, the words being edited. Nothing
     /// modal is open over it. Its drag then moves, resizes or selects as
-    /// the mouse's does ([`ui::widget::Widget::drags_by_touch`]).
+    /// the mouse's does ([`ui::widget::Widget::touch_claim`]).
     pub(super) fn canvas_takes_finger(&self, p: Point) -> bool {
         if self.mode != Mode::Edit
             || self.help_overlay.is_visible()
@@ -476,6 +476,22 @@ impl SlidesApp {
                 .any(|(_, rect)| rect.contains(p))
         });
         on_handle || self.element_at(&chrome, p).is_some()
+    }
+
+    /// Whether a finger held at `p` picks up a slide in the list to move
+    /// it: the list is shown in the editor, and nothing modal is open.
+    pub(super) fn rail_takes_held_finger(&self, p: Point) -> bool {
+        if self.mode != Mode::Edit
+            || self.help_overlay.is_visible()
+            || self.ctx_menu.is_open()
+            || self.layout_picker.is_open()
+            || self.fill_picker_open
+            || self.toolbar_menu_open
+            || self.editing_title
+        {
+            return false;
+        }
+        self.compute_chrome().rail_viewport.contains(p) && self.page_sidebar.lifts_by_hold(p)
     }
 }
 

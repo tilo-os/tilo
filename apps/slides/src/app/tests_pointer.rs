@@ -843,3 +843,80 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
         );
     }
 }
+
+// USER REQUIREMENT (2026-10-22): "Reordering slides by dragging with a
+// finger": a finger held on a slide in the list picks it up and a drag then
+// moves it; a swipe still scrolls the list, and a hold put down in place
+// opens the slide's menu.
+#[test]
+fn a_finger_held_on_a_slide_moves_it_in_the_list() {
+    use winit::event::TouchPhase;
+    // Case `a_hold_then_a_drag_moves_the_slide`.
+    {
+        let mut bench = reorder_bench();
+        bench.frame();
+        let first_id = bench.deck().slides[0].id.clone();
+        let thumbs = bench.with(SlidesApp::rail_thumb_rects);
+        let (start, target) = (thumbs[0].1.center(), thumbs[3].1.center());
+        bench.app.harness().touch_down_and_hold_at(start.x, start.y);
+        assert!(
+            bench.read(|app| app.page_sidebar.is_pending_drag()),
+            "the hold picks the slide up"
+        );
+        let steps = 8_u32;
+        for step in 1..=steps {
+            let t = f64::from(step) / f64::from(steps);
+            let y = start.y + (target.y - start.y) * t;
+            bench.app.harness().touch(0, TouchPhase::Moved, start.x, y);
+        }
+        assert!(
+            bench.read(|app| app.page_sidebar.is_dragging()),
+            "the drag moves it live"
+        );
+        bench
+            .app
+            .harness()
+            .touch(0, TouchPhase::Ended, target.x, target.y);
+        let at = order(&bench).iter().position(|s| *s == first_id);
+        assert_eq!(at, Some(3), "the slide lands where the finger lifted");
+        assert_eq!(bench.read(|app| app.cur_slide), 3, "and stays current");
+        assert!(!bench.read(|app| app.page_sidebar.menu_open()), "no menu");
+    }
+    // Case `a_swipe_scrolls_the_list_and_moves_nothing`.
+    {
+        let mut bench = Bench::open(&crate::model::seed_deck(), (1280, 420));
+        bench.frame();
+        let order0 = order(&bench);
+        let thumbs = bench.with(SlidesApp::rail_thumb_rects);
+        let start = thumbs[1].1.center();
+        let harness = bench.app.harness();
+        harness.touch(0, TouchPhase::Started, start.x, start.y);
+        for step in 1..=6_u32 {
+            let y = start.y - 20.0 * f64::from(step);
+            harness.touch(0, TouchPhase::Moved, start.x, y);
+        }
+        harness.touch(0, TouchPhase::Ended, start.x, start.y - 120.0);
+        bench.frame();
+        assert_eq!(order(&bench), order0, "a swipe reorders nothing");
+        assert!(
+            bench.read(|app| app.page_sidebar.scroll()) > 0.0,
+            "a swipe scrolls the list"
+        );
+    }
+    // Case `a_hold_put_down_in_place_opens_the_slides_menu`.
+    {
+        let mut bench = reorder_bench();
+        bench.frame();
+        let order0 = order(&bench);
+        let thumbs = bench.with(SlidesApp::rail_thumb_rects);
+        let (index, rect) = thumbs[2];
+        let centre = rect.center();
+        bench.app.harness().touch_hold_at(centre.x, centre.y);
+        bench.read(|app| {
+            assert!(app.page_sidebar.menu_open(), "the slide's menu opens");
+            assert!(!app.page_sidebar.is_pending_drag(), "nothing is held");
+            assert_eq!(app.cur_slide, index, "the slide is selected");
+        });
+        assert_eq!(order(&bench), order0, "nothing moved");
+    }
+}
