@@ -148,12 +148,7 @@ pub fn build_group(
         .iter()
         .map(|tab| {
             let resolution = resolver.resolve(TileRequest { room, tab });
-            let checked = matches!(
-                &resolution,
-                crate::resolver::TileResolution::Component(_)
-                    | crate::resolver::TileResolution::App(..)
-                    | crate::resolver::TileResolution::Retained(_)
-            );
+            let checked = resolution.holds_its_own_record();
             let mut host = resolution.mount(failures, wake.clone());
             if !checked {
                 host.bind_record(records.clone(), crate::records::scratch_tab_record(tab.id));
@@ -941,7 +936,14 @@ impl DesktopSurface {
                         // desktop entry is installed, or the app sets its own.
                         changed |= live.set_tab_icon(tab.id, descriptor.icon.clone());
                         let refusal = resolver.creation_refusal(tab);
+                        // A window holding its place while its app's record
+                        // opens asks again: the host's storage wake brought
+                        // this pass.
+                        let arriving = live.host_for_tab_mut(tab.id).is_some_and(|h| {
+                            matches!(h.content(), ui::widget::TileContent::Arriving)
+                        });
                         let replace = tiles.get(&tab.id) != Some(&tab.tile)
+                            || arriving
                             || (refusal.is_none()
                                 && live
                                     .host_for_tab_mut(tab.id)
@@ -952,6 +954,11 @@ impl DesktopSurface {
                                 tab,
                             });
                             match resolution {
+                                // Still opening: the card it shows stays.
+                                crate::resolver::TileResolution::Opening if arriving => {
+                                    tiles.insert(tab.id, tab.tile.clone());
+                                    continue;
+                                }
                                 // Plain content swaps inside the live host, which keeps
                                 // its visibility and opening card until the new content
                                 // presents, and publishes the new content's size on the
@@ -972,18 +979,19 @@ impl DesktopSurface {
                                     continue;
                                 }
                                 other => {
-                                    if let Some((_, mut old)) = live.detach_tab(tab.id) {
+                                    let old = live.detach_tab(tab.id).map(|(_, mut old)| {
                                         reports.extend(ui::component_lifecycle::close_components(
                                             &mut old,
                                         ));
-                                    }
-                                    let checked = matches!(
-                                        &other,
-                                        crate::resolver::TileResolution::Component(_)
-                                            | crate::resolver::TileResolution::App(..)
-                                            | crate::resolver::TileResolution::Retained(_)
-                                    );
+                                        old
+                                    });
+                                    let checked = other.holds_its_own_record();
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
+                                    // The app whose record opened takes over
+                                    // the card its window showed meanwhile.
+                                    if let Some(old) = old.as_ref().filter(|_| arriving) {
+                                        host.continue_opening_card(old);
+                                    }
                                     if !checked {
                                         host.bind_record(
                                             records.clone(),
@@ -1000,7 +1008,9 @@ impl DesktopSurface {
                                 }
                             }
                         }
-                        if let Some(host) = live.host_for_tab_mut(tab.id) {
+                        if let Some(host) = live.host_for_tab_mut(tab.id)
+                            && !arriving
+                        {
                             if let Some(reason) = refusal {
                                 host.refuse_record_binding(reason);
                             } else if host.callback_binding().is_none() {
@@ -1031,12 +1041,7 @@ impl DesktopSurface {
                             room: workspace.room(),
                             tab,
                         });
-                        let checked = matches!(
-                            &resolution,
-                            crate::resolver::TileResolution::Component(_)
-                                | crate::resolver::TileResolution::App(..)
-                                | crate::resolver::TileResolution::Retained(_)
-                        );
+                        let checked = resolution.holds_its_own_record();
                         let mut host = resolution.mount(&mut failures, wake_sink.clone());
                         if !checked {
                             host.bind_record(

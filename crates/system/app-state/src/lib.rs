@@ -70,6 +70,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub enum StoreError {
     #[error("another writer owns {path}")]
     WriterBusy { path: PathBuf },
+    /// The store's own thread is still opening the key for a thread that
+    /// declined waiting ([`durable_store::DurableStore::decline_waiting`]),
+    /// and wakes it when done.
+    #[error("{0} is still being opened")]
+    Opening(String),
     #[error("existing document is empty: {path}")]
     EmptyExistingDocument { path: PathBuf },
     #[error("storage source changed: {path}")]

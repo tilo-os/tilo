@@ -14,17 +14,15 @@
 //! ancestor directory; an append is written and synced in place. A write is
 //! [`Durability::Durable`] only after that commit.
 //!
-//! The same thread opens documents for a caller that must not wait on the
-//! disk ([`DurableStore::prepare_shared`]): it creates the directory and its
-//! gate and lock files and reads what an opener reads, so the caller's lease
-//! then creates nothing and finds its reads in the page cache.
+//! The same thread opens keys for a thread that must not wait on the disk
+//! ([`DurableStore::decline_waiting`]): see [`prepared`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
-use std::thread;
+use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
 use durable_store::{
@@ -38,7 +36,10 @@ use crate::{
     claim_marker, ensure_state_dir, io_err, open_directory, same_file, sync_directory_ancestors,
     validate_absolute_directory, validate_package_id, validate_record_key,
 };
+use prepared::{Access, Preparation, Snapshot};
 use tilo_lock::MutexRecover as _;
+
+mod prepared;
 
 /// Directory below the profile root holding every instance's local view.
 pub const INSTANCE_VIEWS_DIR: &str = "instance-views";
@@ -94,11 +95,18 @@ struct State {
     /// no caller waits on the disk for them.
     sync_queue: BTreeSet<StorageKey>,
     syncing: BTreeSet<StorageKey>,
-    /// Documents being opened for a caller that would not wait
-    /// ([`DurableStore::prepare_shared`]), and what came of it.
+    /// The thread that declined waiting on the disk, and what wakes it
+    /// ([`DurableStore::decline_waiting`]).
+    waitless: Option<(ThreadId, ReadyWake)>,
+    /// Keys being opened for that thread, and what came of it.
     prepared: BTreeMap<StorageKey, Preparation>,
-    /// Keys whose preparation the writer thread has yet to take.
-    prepare_queue: VecDeque<StorageKey>,
+    /// Preparations the writer thread has yet to take.
+    prepare_queue: VecDeque<(StorageKey, Access)>,
+    /// What reads of a key leased by that thread answer: the bytes read for
+    /// it, kept current with the writes accepted since. Gone with the lease.
+    cache: BTreeMap<StorageKey, Snapshot>,
+    /// Load hints that thread handed over, for the writer thread to keep.
+    hints: VecDeque<(StorageKey, Vec<u8>)>,
     running: bool,
     stopping: bool,
 }
@@ -118,16 +126,6 @@ struct Writing {
     /// For an append: the file's length before the writer thread started
     /// appending, noted before its first byte is written. `None` until then.
     base_len: Option<u64>,
-}
-
-enum Preparation {
-    /// On its way; each waker is called once it is done.
-    Queued(Vec<ReadyWake>),
-    /// The directory and its gate and lock files exist, and what an opener
-    /// reads was just read.
-    Ready,
-    /// The work failed; reported once, to the next caller.
-    Failed(String),
 }
 
 struct Batch {
@@ -156,6 +154,16 @@ struct KeyStatus {
 }
 
 /// Live handles proving a leased document directory is still the one leased.
+/// The descriptors a lease locks, opened and checked on the store's thread.
+struct Files {
+    /// The document's directory and its handle; `None` for a view.
+    directory: Option<(PathBuf, File)>,
+    /// The single-owner gate (`canonical.lock`, or a view slot's `.lock`).
+    gate: File,
+    /// The primary shared writer's lock file, for [`prepared::Access::Shared`].
+    writer_lock: Option<File>,
+}
+
 struct Owner {
     directory: PathBuf,
     handle: File,
@@ -193,17 +201,16 @@ impl Drop for FsLease {
             return;
         };
         let mut state = lock(&shared.state);
-        match &self.owner {
-            Some(owner) => {
-                if let Some(live) = state.owners.get_mut(&self.key) {
-                    live.retain(|candidate| !Arc::ptr_eq(candidate, owner));
-                    if live.is_empty() {
-                        state.owners.remove(&self.key);
-                    }
-                }
-            }
-            None => {
-                state.view_leases.remove(&self.key);
+        let Some(owner) = &self.owner else {
+            state.view_leases.remove(&self.key);
+            state.cache.remove(&self.key);
+            return;
+        };
+        if let Some(live) = state.owners.get_mut(&self.key) {
+            live.retain(|candidate| !Arc::ptr_eq(candidate, owner));
+            if live.is_empty() {
+                state.owners.remove(&self.key);
+                state.cache.remove(&self.key);
             }
         }
     }
@@ -286,6 +293,7 @@ impl From<StoreError> for SeamError {
         match error {
             StoreError::WriterBusy { path } => Self::Busy(path.display().to_string()),
             StoreError::SourceChanged { path } => Self::SourceChanged(path.display().to_string()),
+            StoreError::Opening(key) => Self::Opening(key),
             StoreError::PackageId(key, reason) | StoreError::RecordKey(key, reason) => {
                 Self::InvalidKey {
                     key,
@@ -512,6 +520,11 @@ impl DurableStore for FsStore {
 
     fn read(&self, key: &StorageKey) -> Result<Option<Stored>, SeamError> {
         let target = self.target(key)?;
+        if let Some(wake) = self.shared.declined_here() {
+            self.ensure_worker()?;
+            return self.shared.read_without_waiting(key, &wake);
+        }
+        tilo_files::frame_loop::assert_may_wait("reading stored state");
         let (path, sidecar) = match target {
             Target::Document(directory) => (
                 directory.join(DOCUMENT_FILE),
@@ -605,6 +618,9 @@ impl DurableStore for FsStore {
                     message: "revision space exhausted".into(),
                 })?;
             state.issued = revision;
+            if let Some(snapshot) = state.cache.get_mut(key) {
+                snapshot.apply(&op, writer);
+            }
             let writer = writer.map(<[u8]>::to_vec);
             let view_gate = state.view_leases.get(key).cloned();
             if let Some(batch) = state.queue.get_mut(key) {
@@ -748,7 +764,14 @@ impl DurableStore for FsStore {
     }
 
     fn lease(&self, key: &StorageKey) -> Result<Lease, SeamError> {
-        match self.target(key)? {
+        let target = self.target(key)?;
+        if let Some(wake) = self.shared.declined_here() {
+            return self
+                .lease_without_waiting(key, &target, Access::Exclusive, &wake)
+                .map(|(lease, _)| lease);
+        }
+        tilo_files::frame_loop::assert_may_wait("opening stored state");
+        match target {
             Target::Document(directory) => {
                 if lock(&self.shared.state).owners.contains_key(key) {
                     return Err(SeamError::Busy(key.to_string()));
@@ -780,7 +803,14 @@ impl DurableStore for FsStore {
     }
 
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, SeamError> {
-        match self.target(key)? {
+        let target = self.target(key)?;
+        if let (Target::Document(_), Some(wake)) = (&target, self.shared.declined_here()) {
+            let (lease, primary) =
+                self.lease_without_waiting(key, &target, Access::Shared, &wake)?;
+            return Ok(SharedLease { lease, primary });
+        }
+        tilo_files::frame_loop::assert_may_wait("opening stored state");
+        match target {
             Target::Document(directory) => {
                 if lock(&self.shared.state)
                     .owners
@@ -789,13 +819,7 @@ impl DurableStore for FsStore {
                 {
                     return Err(SeamError::Busy(key.to_string()));
                 }
-                // A prepared directory exists with its gate and lock files:
-                // opening it creates nothing.
-                let prepared = matches!(
-                    lock(&self.shared.state).prepared.remove(key),
-                    Some(Preparation::Ready)
-                );
-                let owner = Arc::new(open_shared_owner(&directory, !prepared)?);
+                let owner = Arc::new(open_shared_owner(&directory)?);
                 let primary = owner.writer_lock.is_some();
                 Ok(SharedLease {
                     lease: Box::new(self.register(key, owner)?),
@@ -809,49 +833,12 @@ impl DurableStore for FsStore {
         }
     }
 
-    fn prepare_shared(&self, key: &StorageKey, ready: &ReadyWake) -> Result<(), SeamError> {
-        let Target::Document(_) = self.target(key)? else {
-            return Ok(());
-        };
-        let mut state = lock(&self.shared.state);
-        if state.owners.contains_key(key) {
-            // Already open here: the directory and its files exist.
-            return Ok(());
-        }
-        match state.prepared.remove(key) {
-            Some(Preparation::Ready) => {
-                state.prepared.insert(key.clone(), Preparation::Ready);
-                return Ok(());
-            }
-            Some(Preparation::Queued(mut waiting)) => {
-                waiting.push(Arc::clone(ready));
-                state
-                    .prepared
-                    .insert(key.clone(), Preparation::Queued(waiting));
-                return Err(SeamError::Opening(key.to_string()));
-            }
-            Some(Preparation::Failed(message)) => {
-                return Err(SeamError::Failed {
-                    context: format!("opening {key}"),
-                    message,
-                });
-            }
-            None => {}
-        }
-        state
-            .prepared
-            .insert(key.clone(), Preparation::Queued(vec![Arc::clone(ready)]));
-        state.prepare_queue.push_back(key.clone());
-        drop(state);
-        if let Err(error) = self.ensure_worker() {
-            let mut state = lock(&self.shared.state);
-            state.prepared.remove(key);
-            state.prepare_queue.retain(|queued| queued != key);
-            drop(state);
-            return Err(error);
-        }
-        self.shared.changed.notify_all();
-        Err(SeamError::Opening(key.to_string()))
+    fn decline_waiting(&self, ready: ReadyWake) {
+        lock(&self.shared.state).waitless = Some((thread::current().id(), ready));
+    }
+
+    fn declined_waiting_here(&self) -> bool {
+        self.shared.declined_here().is_some()
     }
 
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
@@ -933,22 +920,115 @@ impl DurableStore for FsStore {
         if !lock(&self.shared.state).owners.contains_key(key) {
             return Err(SeamError::NotLeased(key.to_string()));
         }
-        let path = directory.join(LOAD_HINT_FILE);
-        let staged = directory.join(format!("{LOAD_HINT_FILE}.tmp"));
-        fs::write(&staged, hint)
-            .and_then(|()| fs::rename(&staged, &path))
-            .map_err(|e| io_err(format!("writing {}", path.display()), e).into())
+        if self.shared.declined_here().is_some() {
+            self.ensure_worker()?;
+            let mut state = lock(&self.shared.state);
+            if let Some(snapshot) = state.cache.get_mut(key) {
+                snapshot.hint = Some(hint.to_vec());
+            }
+            state.hints.push_back((key.clone(), hint.to_vec()));
+            drop(state);
+            self.shared.changed.notify_all();
+            return Ok(());
+        }
+        keep_hint(&directory, hint).map_err(Into::into)
     }
 
     fn read_hint(&self, key: &StorageKey) -> Option<Vec<u8>> {
         let Target::Document(directory) = self.target(key).ok()? else {
             return None;
         };
-        fs::read(directory.join(LOAD_HINT_FILE)).ok()
+        if self.shared.declined_here().is_some() {
+            return self.shared.hint_without_waiting(key);
+        }
+        read_hint_in(&directory)
     }
 }
 
 impl FsStore {
+    /// [`DurableStore::lease`] or [`DurableStore::lease_shared`] on the
+    /// thread that declined waiting: lock what the store's thread opened for
+    /// it, or have that thread open it ([`prepared`]). With whether the
+    /// lease is its document's primary writer.
+    fn lease_without_waiting(
+        &self,
+        key: &StorageKey,
+        target: &Target,
+        access: Access,
+        wake: &ReadyWake,
+    ) -> Result<(Lease, bool), SeamError> {
+        let state = lock(&self.shared.state);
+        let held = match target {
+            Target::Document(_) => state.owners.get(key).is_some_and(|live| {
+                access == Access::Exclusive || live.iter().any(|owner| owner.exclusive)
+            }),
+            Target::View(_) => state.view_leases.contains_key(key),
+        };
+        drop(state);
+        if held {
+            return Err(SeamError::Busy(key.to_string()));
+        }
+        self.ensure_worker()?;
+        let prepared = self.shared.take_prepared(key, access, wake)?;
+        let files = prepared.files.ok_or_else(|| SeamError::Failed {
+            context: format!("opening {key}"),
+            message: "prepared for reading only".into(),
+        })?;
+        let mode = if access == Access::Shared {
+            advisory_lock::LockMode::Shared
+        } else {
+            advisory_lock::LockMode::Exclusive
+        };
+        let gate =
+            advisory_lock::FileLock::try_lock(files.gate, mode).map_err(|error| match error {
+                advisory_lock::TryLockError::WouldBlock => SeamError::Busy(key.to_string()),
+                advisory_lock::TryLockError::Error(error) => SeamError::Failed {
+                    context: format!("acquiring the gate of {key}"),
+                    message: error.to_string(),
+                },
+            })?;
+        let Some((directory, handle)) = files.directory else {
+            let gate = Arc::new(gate);
+            let mut state = lock(&self.shared.state);
+            if state.view_leases.contains_key(key) {
+                return Err(SeamError::Busy(key.to_string()));
+            }
+            state.view_leases.insert(key.clone(), Arc::clone(&gate));
+            state.cache.insert(key.clone(), prepared.snapshot);
+            drop(state);
+            let lease: Lease = Box::new(FsLease {
+                _view_gate: Some(gate),
+                key: key.clone(),
+                owner: None,
+                shared: Arc::downgrade(&self.shared),
+            });
+            return Ok((lease, true));
+        };
+        let writer_lock = files
+            .writer_lock
+            .and_then(|file| advisory_lock::FileLock::try_exclusive(file).ok());
+        if access == Access::Shared && writer_lock.is_none() {
+            tracing::warn!(
+                directory = %directory.display(),
+                "another instance holds the state lock; running on a fresh automerge actor"
+            );
+        }
+        let primary = access == Access::Exclusive || writer_lock.is_some();
+        let owner = Arc::new(Owner {
+            directory,
+            handle,
+            gate,
+            exclusive: access == Access::Exclusive,
+            writer_lock,
+        });
+        let lease = self.register(key, owner)?;
+        lock(&self.shared.state)
+            .cache
+            .entry(key.clone())
+            .or_insert(prepared.snapshot);
+        Ok((Box::new(lease), primary))
+    }
+
     fn register(&self, key: &StorageKey, owner: Arc<Owner>) -> Result<FsLease, SeamError> {
         let mut state = lock(&self.shared.state);
         let live = state.owners.entry(key.clone()).or_default();
@@ -1044,6 +1124,42 @@ fn durability_in(state: &State, key: &StorageKey, revision: Revision) -> Durabil
     }
 }
 
+/// A key's stored bytes and writer identity, read from the disk.
+fn read_stored(target: &Target) -> Result<Option<Stored>, SeamError> {
+    let (path, writer) = match target {
+        Target::Document(directory) => (
+            directory.join(DOCUMENT_FILE),
+            Some(directory.join(ACTOR_FILE)),
+        ),
+        Target::View(path) => (path.clone(), None),
+    };
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_err(format!("reading {}", path.display()), error).into()),
+    };
+    let writer = match writer {
+        Some(sidecar) => read_writer(&sidecar)?,
+        None => None,
+    };
+    Ok(Some(Stored { bytes, writer }))
+}
+
+/// A document's load hint, if it has a readable one.
+fn read_hint_in(directory: &Path) -> Option<Vec<u8>> {
+    fs::read(directory.join(LOAD_HINT_FILE)).ok()
+}
+
+/// Replace a document's load hint. Unsynced, as
+/// [`DurableStore::write_hint`] allows.
+fn keep_hint(directory: &Path, hint: &[u8]) -> Result<(), StoreError> {
+    let path = directory.join(LOAD_HINT_FILE);
+    let staged = directory.join(format!("{LOAD_HINT_FILE}.tmp"));
+    fs::write(&staged, hint)
+        .and_then(|()| fs::rename(&staged, &path))
+        .map_err(|e| io_err(format!("writing {}", path.display()), e))
+}
+
 fn read_writer(path: &Path) -> Result<Option<Vec<u8>>, SeamError> {
     match fs::read_to_string(path) {
         Ok(text) => {
@@ -1083,11 +1199,8 @@ fn open_owner(directory: &Path) -> Result<Owner, StoreError> {
 
 /// Join a document's shared writers: the shared gate keeps exclusive owners
 /// out, and whoever wins the writer lock is primary.
-/// `create` makes the directory first; a prepared one already exists.
-fn open_shared_owner(directory: &Path, create: bool) -> Result<Owner, StoreError> {
-    if create {
-        ensure_state_dir(directory)?;
-    }
+fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
+    ensure_state_dir(directory)?;
     let handle =
         open_directory(directory, false).map_err(|e| io_err("opening state directory", e))?;
     let gate = acquire_gate(&directory.join(CANONICAL_GATE), false)?;
@@ -1169,8 +1282,10 @@ enum Work {
     Commit(Taken),
     /// Sync the key's file and ancestors: bytes it read, not wrote.
     Sync(StorageKey),
-    /// Open the key's document for a caller that would not wait.
-    Prepare(StorageKey),
+    /// Open the key for the thread that declined waiting.
+    Prepare(StorageKey, Access),
+    /// Keep a load hint that thread handed over.
+    Hint(StorageKey, Vec<u8>),
 }
 
 struct Taken {
@@ -1198,9 +1313,13 @@ fn writer_loop(shared: &Shared) {
                 finish_sync(shared, &key, &result);
                 continue;
             }
-            Work::Prepare(key) => {
-                let result = prepare_in(shared, &key);
-                finish_prepare(shared, &key, result);
+            Work::Prepare(key, access) => {
+                let result = prepared::prepare_in(shared, &key, access);
+                prepared::finish_prepare(shared, &key, access, result);
+                continue;
+            }
+            Work::Hint(key, hint) => {
+                prepared::write_hint_in(shared, &key, &hint);
                 continue;
             }
         };
@@ -1228,8 +1347,11 @@ fn next_work(shared: &Shared) -> Option<Work> {
     let mut state = lock(&shared.state);
     loop {
         // An opener is waiting on these (a new tab, say); a commit is not.
-        if let Some(key) = state.prepare_queue.pop_front() {
-            return Some(Work::Prepare(key));
+        if let Some((key, access)) = state.prepare_queue.pop_front() {
+            return Some(Work::Prepare(key, access));
+        }
+        if let Some((key, hint)) = state.hints.pop_front() {
+            return Some(Work::Hint(key, hint));
         }
         let now = Instant::now();
         let stopping = state.stopping;
@@ -1310,52 +1432,6 @@ fn next_work(shared: &Shared) -> Option<Work> {
     }
 }
 
-/// Create `key`'s directory with its gate and lock files, and read what an
-/// opener reads, so that a lease and its reads, on the caller's thread,
-/// create nothing and find the bytes cached. Nothing is held afterwards: no
-/// lock is taken, so no other process is kept from becoming primary.
-fn prepare_in(shared: &Shared, key: &StorageKey) -> Result<(), StoreError> {
-    #[cfg(test)]
-    {
-        let hold = lock(&shared.faults).prepare_hold.take();
-        if let Some(hold) = hold {
-            let _ = hold.recv();
-        }
-    }
-    let Target::Document(directory) = target_in(&shared.root, key).map_err(seam_to_store)? else {
-        return Ok(());
-    };
-    ensure_state_dir(&directory)?;
-    for name in [CANONICAL_GATE, LOCK_FILE] {
-        let path = directory.join(name);
-        advisory_lock::open_lock_file(&path)
-            .map_err(|e| io_err(format!("creating {}", path.display()), e))?;
-    }
-    for name in [DOCUMENT_FILE, ACTOR_FILE, LOAD_HINT_FILE] {
-        // Only to have them cached: the opener reads them again and reports
-        // what it finds.
-        let _ = fs::read(directory.join(name));
-    }
-    Ok(())
-}
-
-fn finish_prepare(shared: &Shared, key: &StorageKey, result: Result<(), StoreError>) {
-    let outcome = match result {
-        Ok(()) => Preparation::Ready,
-        Err(error) => Preparation::Failed(error.to_string()),
-    };
-    let waiting = {
-        let mut state = lock(&shared.state);
-        match state.prepared.insert(key.clone(), outcome) {
-            Some(Preparation::Queued(waiting)) => waiting,
-            _ => Vec::new(),
-        }
-    };
-    for ready in waiting {
-        ready();
-    }
-}
-
 fn finish_sync(shared: &Shared, key: &StorageKey, result: &Result<(), StoreError>) {
     let mut state = lock(&shared.state);
     state.syncing.remove(key);
@@ -1402,6 +1478,9 @@ fn finish(
                 .failed
                 .push((batch.first, batch.last, error.to_string()));
             status.poisoned = true;
+            // A write whose commit failed is not visible to later reads: the
+            // next read of the key reads what is stored.
+            state.cache.remove(key);
         }
     }
     drop(state);
@@ -1537,35 +1616,38 @@ mod tests {
         StorageKey::record("so.tilo.test", "room-a", name)
     }
 
-    /// A caller that must not wait on the disk (the compositor opening a new
+    /// A wake that reports which thread called it.
+    fn thread_wake() -> (ReadyWake, std::sync::mpsc::Receiver<thread::ThreadId>) {
+        let (notify, notified) = std::sync::mpsc::channel();
+        let wake: ReadyWake = Arc::new(move || {
+            let _ = notify.send(thread::current().id());
+        });
+        (wake, notified)
+    }
+
+    /// A thread that must not wait on the disk (the compositor opening a new
     /// tab's record) is told to come back while the store's thread opens
-    /// the document, is woken when it is done, and then leases a directory
-    /// that already exists.
+    /// the document, is woken when it is done, and then leases and reads
+    /// what that thread opened and read for it, without the disk.
     #[test]
-    fn preparing_a_document_leaves_the_disk_to_the_stores_thread_and_wakes_the_caller() {
+    fn a_thread_that_declined_waiting_leases_what_the_stores_thread_opened() {
         let tmp = TempDir::new().unwrap();
-        let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+        // Nothing commits during the test unless flushed: a read that went
+        // to the disk would miss the write below.
+        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
         let key = record("fresh");
         let Target::Document(directory) = fs.target(&key).unwrap() else {
             panic!("a record is a document");
         };
         let (release, held) = std::sync::mpsc::channel();
         fs.faults().prepare_hold = Some(held);
-        let (notify, notified) = std::sync::mpsc::channel();
-        let wake: ReadyWake = Arc::new(move || {
-            let _ = notify.send(thread::current().id());
-        });
+        let (wake, notified) = thread_wake();
+        fs.decline_waiting(wake);
 
         // The disk is held until after these return: a caller that waited
         // for it would never return.
-        assert!(matches!(
-            fs.prepare_shared(&key, &wake),
-            Err(SeamError::Opening(_))
-        ));
-        assert!(matches!(
-            fs.prepare_shared(&key, &wake),
-            Err(SeamError::Opening(_))
-        ));
+        assert!(matches!(fs.lease_shared(&key), Err(SeamError::Opening(_))));
+        assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
         assert!(!directory.exists(), "the caller created the directory");
         assert!(
             notified.try_recv().is_err(),
@@ -1575,18 +1657,114 @@ mod tests {
         release.send(()).unwrap();
         let worker = tilo_test_env::recv("the preparation's wake", &notified);
         assert_ne!(worker, thread::current().id());
-        // Both callers that asked are notified.
-        tilo_test_env::recv("the preparation's wake", &notified);
         for name in [CANONICAL_GATE, LOCK_FILE] {
             assert!(directory.join(name).is_file(), "{name} was not created");
         }
-        fs.prepare_shared(&key, &wake).unwrap();
         let lease = fs.lease_shared(&key).unwrap();
         assert!(lease.primary);
-        // The lease took the preparation; the key is open now, so asking
-        // again needs no work.
         assert!(lock(&fs.shared.state).prepared.is_empty());
-        fs.prepare_shared(&key, &wake).unwrap();
+        assert_eq!(fs.read(&key).unwrap(), None);
+
+        // Reads follow this thread's writes without waiting for them to
+        // commit.
+        fs.write(&key, WriteOp::Replace(b"doc".to_vec()), Some(b"actor"))
+            .unwrap();
+        fs.write(&key, WriteOp::Append(b"+1".to_vec()), None)
+            .unwrap();
+        assert!(lock(&fs.shared.state).queue.contains_key(&key));
+        assert_eq!(
+            fs.read(&key).unwrap(),
+            Some(Stored {
+                bytes: b"doc+1".to_vec(),
+                writer: Some(b"actor".to_vec()),
+            })
+        );
+        // A hint handed over is kept by the store's thread.
+        fs.write_hint(&key, b"hint").unwrap();
+        assert_eq!(fs.read_hint(&key).as_deref(), Some(b"hint".as_slice()));
+
+        // Another thread still works in place.
+        thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let other = fs.lease_shared(&key).unwrap();
+                    assert!(!other.primary, "the declined thread holds the writer lock");
+                })
+                .join()
+                .unwrap();
+        });
+        fs.flush(Some(&key)).unwrap();
+        assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc+1");
+        drop(lease);
+        assert!(lock(&fs.shared.state).cache.is_empty());
+        assert_eq!(
+            fs::read(directory.join(LOAD_HINT_FILE)).unwrap(),
+            b"hint",
+            "the hint was not kept"
+        );
+    }
+
+    /// What the thread that declined waiting reads includes writes another
+    /// owner in this store accepted and has yet to commit.
+    #[test]
+    fn a_read_without_waiting_includes_writes_still_queued() {
+        let tmp = TempDir::new().unwrap();
+        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+        let view = StorageKey::view("device", "room-a", 3);
+        let (written, wait_written) = std::sync::mpsc::channel();
+        let (done, wait_done) = std::sync::mpsc::channel::<()>();
+        thread::scope(|scope| {
+            let fs = &fs;
+            let view = &view;
+            scope.spawn(move || {
+                let _lease = fs.lease(view).unwrap();
+                fs.write(view, WriteOp::Replace(b"layout".to_vec()), None)
+                    .unwrap();
+                fs.flush(Some(view)).unwrap();
+                fs.write(view, WriteOp::Append(b"+queued".to_vec()), None)
+                    .unwrap();
+                written.send(()).unwrap();
+                let _ = wait_done.recv();
+            });
+            tilo_test_env::recv("the other owner's writes", &wait_written);
+            let (wake, notified) = thread_wake();
+            fs.decline_waiting(wake);
+            assert!(matches!(fs.read(view), Err(SeamError::Opening(_))));
+            tilo_test_env::recv("the read's wake", &notified);
+            assert_eq!(
+                fs.read(view).unwrap().map(|stored| stored.bytes),
+                Some(b"layout+queued".to_vec())
+            );
+            // A snapshot read only to be read is handed over once.
+            assert!(matches!(fs.read(view), Err(SeamError::Opening(_))));
+            tilo_test_env::recv("the read's wake", &notified);
+            done.send(()).unwrap();
+        });
+    }
+
+    /// A gate another process holds refuses the lease once the store's
+    /// thread has opened it, as it does a caller that waits.
+    #[test]
+    fn a_lease_without_waiting_is_refused_while_another_process_holds_the_gate() {
+        let tmp = TempDir::new().unwrap();
+        let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+        let key = record("held");
+        let Target::Document(directory) = fs.target(&key).unwrap() else {
+            panic!("a record is a document");
+        };
+        fs::create_dir_all(&directory).unwrap();
+        // Another open of the gate is another description: its lock
+        // conflicts as another process's would.
+        let _elsewhere = advisory_lock::FileLock::open(
+            &directory.join(CANONICAL_GATE),
+            advisory_lock::LockMode::Exclusive,
+        )
+        .unwrap();
+        let (wake, notified) = thread_wake();
+        fs.decline_waiting(wake);
+        assert!(matches!(fs.lease(&key), Err(SeamError::Opening(_))));
+        tilo_test_env::recv("the preparation's wake", &notified);
+        assert!(matches!(fs.lease(&key), Err(SeamError::Busy(_))));
     }
 
     /// A frame loop reads back what it just wrote while the store's thread
@@ -1670,24 +1848,16 @@ mod tests {
         fs::write(tmp.path().join("so.tilo.test"), b"not a directory").unwrap();
         let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
         let key = record("blocked");
-        let (notify, notified) = std::sync::mpsc::channel();
-        let wake: ReadyWake = Arc::new(move || {
-            let _ = notify.send(());
-        });
-        assert!(matches!(
-            fs.prepare_shared(&key, &wake),
-            Err(SeamError::Opening(_))
-        ));
+        let (wake, notified) = thread_wake();
+        fs.decline_waiting(wake);
+        assert!(matches!(fs.lease_shared(&key), Err(SeamError::Opening(_))));
         tilo_test_env::recv("the preparation's wake", &notified);
         assert!(matches!(
-            fs.prepare_shared(&key, &wake),
+            fs.lease_shared(&key),
             Err(SeamError::Failed { .. })
         ));
         // Reported once; the next call tries again.
-        assert!(matches!(
-            fs.prepare_shared(&key, &wake),
-            Err(SeamError::Opening(_))
-        ));
+        assert!(matches!(fs.lease_shared(&key), Err(SeamError::Opening(_))));
     }
 
     #[test]

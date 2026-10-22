@@ -1356,12 +1356,6 @@ pub struct RecordSet {
     // Retained from the private native construction scope; weakly borrows the
     // one actual worker after construction ends. Never a positive authority.
     native_initial: Option<crate::collaboration::native_initial::InitialReadBridge>,
-    /// Set by a caller that must not wait on the disk (the compositor, see
-    /// [`RecordStore::open_without_waiting`]): a record whose document the
-    /// store has yet to open is opened by the store's own thread, which
-    /// calls this when done, and the caller is told
-    /// [`RecordOpenError::Opening`] meanwhile.
-    storage_wake: Option<durable_store::ReadyWake>,
     /// How many times a record arrived in the backend without being
     /// opened here ([`RecordStore::note_kept`]).
     kept: std::cell::Cell<u64>,
@@ -1434,7 +1428,6 @@ impl RecordSet {
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
-            storage_wake: None,
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             _profile_lifetime: None,
@@ -1463,7 +1456,6 @@ impl RecordSet {
             lent: HashSet::new(),
             next_reservation: 0,
             native_initial: None,
-            storage_wake: None,
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             _profile_lifetime: None,
@@ -1848,22 +1840,6 @@ impl RecordSet {
             })
     }
 
-    /// With [`Self::storage_wake`] set, make sure leasing `record_key`'s
-    /// document waits on nothing: `Err(Opening)` while the store's thread
-    /// opens it.
-    fn prepare_scoped_document(&self, record_key: &str) -> Result<(), RecordOpenError> {
-        let Some(wake) = &self.storage_wake else {
-            return Ok(());
-        };
-        app_state::validate_record_identity(&self.package_id, &self.home, record_key)?;
-        let key = StorageKey::record(&self.package_id, &self.home, record_key);
-        match self.documents()?.prepare_shared(&key, wake) {
-            Ok(()) => Ok(()),
-            Err(durable_store::StoreError::Opening(_)) => Err(RecordOpenError::Opening),
-            Err(error) => Err(error.into()),
-        }
-    }
-
     /// The shared-writer document for one record in this set's room.
     fn scoped_document(
         &self,
@@ -2158,6 +2134,16 @@ impl RecordSet {
                 },
             );
             return Ok(RecordOpenOutcome::Loaded);
+        }
+        // On a thread that may not wait on the disk, whether there is a
+        // record at all is told by a read, not by a lease the reservation of
+        // a new one would take again: each lease there is opened by the
+        // store's own thread and handed over once.
+        if want.formerly.is_empty()
+            && backend.declined_waiting_here()
+            && backend.read(&key)?.is_none()
+        {
+            return Err(RecordOpenError::MissingRecord);
         }
         // The room's own document is the one every window of a room-record
         // app opens, each in its own process, and a relaunch overlaps the
@@ -2522,7 +2508,6 @@ impl RecordOwners {
             native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
-            storage_wake: None,
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
             _profile_lifetime: self.profile_lifetime.clone(),
@@ -2705,7 +2690,7 @@ pub enum RecordOpenOutcome {
 #[derive(Debug, thiserror::Error)]
 pub enum RecordOpenError {
     #[error(transparent)]
-    Store(#[from] app_state::StoreError),
+    Store(app_state::StoreError),
     #[error("record identity does not match its binding")]
     IdentityMismatch,
     #[error("record does not exist")]
@@ -2727,9 +2712,18 @@ pub enum RecordOpenError {
     Retired,
 }
 
+impl From<app_state::StoreError> for RecordOpenError {
+    fn from(error: app_state::StoreError) -> Self {
+        match error {
+            app_state::StoreError::Opening(_) => Self::Opening,
+            other => Self::Store(other),
+        }
+    }
+}
+
 impl From<durable_store::StoreError> for RecordOpenError {
     fn from(error: durable_store::StoreError) -> Self {
-        Self::Store(error.into())
+        Self::from(app_state::StoreError::from(error))
     }
 }
 
@@ -3758,7 +3752,10 @@ impl RecordStore {
     /// For a caller on a frame loop. A store with no thread of its own
     /// still opens in place.
     pub fn open_without_waiting(&self, wake: durable_store::ReadyWake) {
-        self.0.borrow_mut().storage_wake = Some(wake);
+        let set = self.0.borrow();
+        for store in [&set.backend, &set.documents].into_iter().flatten() {
+            store.decline_waiting(std::sync::Arc::clone(&wake));
+        }
     }
 
     /// Create exactly the new resource named by its owning action. Reopening
@@ -3792,7 +3789,6 @@ impl RecordStore {
         }
         let owner = if set.persistent {
             let key = want.id.storage_key();
-            set.prepare_scoped_document(&key)?;
             let mut owner = set.scoped_document(&key)?;
             // An empty/corrupt document is existing evidence too, never
             // permission to replace it with a freshly initialized one.
@@ -3893,7 +3889,6 @@ impl RecordStore {
                 return Err(RecordOpenError::IdentityMismatch);
             }
             let key = want.id.storage_key();
-            set.prepare_scoped_document(&key)?;
             let mut owner = set.scoped_document(&key)?;
             let (mut doc, adopted) = if let Some(doc) = owner.load_complete()? {
                 (doc, false)

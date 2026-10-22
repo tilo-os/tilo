@@ -1025,6 +1025,9 @@ pub fn mount_in_process(
             let collaboration = apps.borrow().collaboration(&component, &room);
             TileResolution::App(component, collaboration)
         }
+        // The loop never waits on the disk for an app's record: the store's
+        // thread opens it, and its wake has the tab resolved again.
+        Err(error) if error.is_opening() => TileResolution::Opening,
         Err(error) => TileResolution::Failed(error),
     })
 }

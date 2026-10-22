@@ -1917,11 +1917,18 @@ impl ChromeState {
             return;
         };
         let opened = std::sync::Arc::clone(&self.records_opened);
+        let ready: durable_store::ReadyWake = std::sync::Arc::new(move || {
+            opened.store(true, std::sync::atomic::Ordering::Release);
+            wake();
+        });
         self.records
-            .open_without_waiting(std::sync::Arc::new(move || {
-                opened.store(true, std::sync::atomic::Ordering::Release);
-                wake();
-            }));
+            .open_without_waiting(std::sync::Arc::clone(&ready));
+        // Apps mounted in this process keep their records in a store of
+        // their own: a tab whose app's record opened resolves again on the
+        // resync the same flag causes.
+        if let Some(apps) = self.hosted_inputs.in_process() {
+            apps.borrow().open_records_without_waiting(ready);
+        }
     }
 
     /// Finalize a new-tab action after its complete document reference/setup.
