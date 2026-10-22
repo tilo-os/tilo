@@ -401,9 +401,9 @@ pub struct SlidesApp {
     /// box's editor takes it once the event is through, so the caret lands
     /// where the person pressed.
     opening_press: Option<(Point, u8)>,
-    /// The finger driving the canvas as the pointer does
-    /// ([`Self::touch_as_pointer`]).
-    finger: Option<Finger>,
+    /// How many fingers are on the window: while any is, the presses
+    /// arriving are a finger's taps and drags.
+    fingers_down: u8,
 
     /// Every edit of the deck goes through the resource's dispatcher as a
     /// deck's action.
@@ -573,7 +573,7 @@ impl SlidesApp {
             text_edit_select_all: false,
             text_edit_box: Rect::ZERO,
             opening_press: None,
-            finger: None,
+            fingers_down: 0,
             dispatch,
             rail_drawer: Self::new_drawers().0,
             inspector_drawer: Self::new_drawers().1,
@@ -2804,8 +2804,17 @@ impl Widget for SlidesApp {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // The press that opens a box is taken up within its own event.
         self.opening_press = None;
-        if self.touch_as_pointer(event, ctx) {
-            return;
+        // The toolkit delivers a finger's taps and drags as pointer events
+        // before its contact update; the contact only says a finger is down.
+        if let WindowEvent::Touch(touch) = event {
+            use winit::event::TouchPhase;
+            match touch.phase {
+                TouchPhase::Started => self.fingers_down = self.fingers_down.saturating_add(1),
+                TouchPhase::Ended | TouchPhase::Cancelled => {
+                    self.fingers_down = self.fingers_down.saturating_sub(1);
+                }
+                TouchPhase::Moved => {}
+            }
         }
         // A restore replaces the notes' text object; the first event may
         // precede the sync that follows it.
@@ -3189,10 +3198,10 @@ impl Widget for SlidesApp {
         None
     }
 
-    /// A finger landing on something on the canvas drives it as the pointer
-    /// does ([`Self::touch_as_pointer`]); anywhere else the toolkit's touch
-    /// applies (a tap clicks, a drag scrolls).
-    fn claims_raw_touch(&self, point: Point) -> bool {
+    /// A finger's drag on something on the canvas moves, resizes or
+    /// selects it as the mouse's does; a tap clicks and a hold opens the
+    /// menu, as everywhere. Elsewhere a drag scrolls.
+    fn drags_by_touch(&self, point: Point) -> bool {
         self.canvas_takes_finger(point)
     }
 
@@ -3890,7 +3899,7 @@ impl SlidesApp {
             // Double-click = same element, pressed again quickly and near
             // the first press.
             // A finger's second tap lands within a tap's slop of its first.
-            let slop = if self.finger.is_some() {
+            let slop = if self.fingers_down > 0 {
                 ui::gesture::TouchGestureArena::TAP_SLOP
             } else {
                 6.0
@@ -4722,7 +4731,7 @@ impl SlidesApp {
 mod editor_chrome;
 mod text_box;
 use editor_chrome::{ButtonKind, Chrome, ChromeMetrics};
-use text_box::{Finger, TextBoxEditor, listed, mark_covers};
+use text_box::{TextBoxEditor, listed, mark_covers};
 
 impl SlidesApp {
     fn open_layout_picker(&mut self) {
