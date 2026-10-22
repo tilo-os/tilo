@@ -199,12 +199,12 @@ impl PartitionMap {
         // is; one whose use is known washes the free part, so the full
         // colour is what is in use.
         let Some(used) = entry.used else {
-            let fill = if hovered {
-                colour.multiply_alpha(0.8)
-            } else {
-                colour
-            };
-            ctx.fill_round(rect, radius, fill);
+            ctx.fill_round(rect, radius, colour);
+            // Hover is the theme's state veneer over the colour, as on any
+            // control: it reads on a light and on a dark block alike.
+            if hovered {
+                ctx.fill_round(rect, radius, colors.overlay_medium);
+            }
             return;
         };
         let wash = if hovered { 0.55 } else { 0.4 };
