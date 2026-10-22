@@ -117,6 +117,9 @@ pub struct WebView {
     /// The buttons pressed on the page and not yet released: the page keeps
     /// the pointer until they are, wherever it goes, as a drag does.
     held: Vec<MouseButton>,
+    /// The pointer was over the page at its last move: leaving it ends the
+    /// page's hover, so the page hears where it went.
+    pointer_inside: bool,
     /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
     last_sent_scale: f32,
@@ -151,6 +154,7 @@ impl WebView {
             focused: false,
             last_mouse: Point::ZERO,
             held: Vec::new(),
+            pointer_inside: false,
             last_sent_size: (0, 0),
             last_sent_scale: 0.0,
             stale_resize_retry: None,
@@ -766,11 +770,24 @@ impl Widget for WebView {
                 let logical = ctx.logical(position);
                 self.last_mouse = logical;
                 // A drag that began on the page goes on outside it: a text
-                // selection or a slider follows, and the page scrolls.
-                if self.rect.contains(logical) || !self.held.is_empty() {
+                // selection or a slider follows, and the page scrolls. The
+                // first move out of it is the page's too, so what it shows
+                // under the pointer (a menu, a highlight) lets go.
+                let inside = self.rect.contains(logical);
+                if inside || !self.held.is_empty() || self.pointer_inside {
                     let (x, y) = self.to_engine(logical);
                     self.engine.send(WebViewCommand::MouseMove { x, y });
                 }
+                self.pointer_inside = inside;
+            }
+            WindowEvent::CursorLeft { .. } => {
+                // Out of the window altogether: the page hears it go, past
+                // its own corner, unless a drag holds it.
+                if self.pointer_inside && self.held.is_empty() {
+                    let (x, y) = self.to_engine(Point::new(self.rect.x0 - 1.0, self.rect.y0 - 1.0));
+                    self.engine.send(WebViewCommand::MouseMove { x, y });
+                }
+                self.pointer_inside = false;
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -910,6 +927,15 @@ impl Widget for WebView {
 
     fn wants_pointer_capture(&self) -> bool {
         !self.held.is_empty()
+    }
+
+    /// The shape the page asks for over itself: a hand on its links, an
+    /// I-beam on its text.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.rect
+            .contains(point)
+            .then(|| self.engine.cursor())
+            .flatten()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -2205,6 +2231,45 @@ mod tests {
             dispatch(&mut w, &tree, node, &to(50.0, -40.0));
             dispatch(&mut w, &tree, node, &button(ElementState::Released));
             assert_eq!(engine.commands().len(), count);
+        }
+
+        // The page hears the pointer leave once, past its edge, so its
+        // hover ends; then nothing until the pointer comes back.
+        {
+            let engine = TestEngine::new();
+            let (mut w, tree, node) = laid_out(engine.clone());
+            let device = winit::event::DeviceId::dummy();
+            let to = |x: f64, y: f64| WindowEvent::CursorMoved {
+                device_id: device,
+                position: (x, y).into(),
+            };
+            dispatch(&mut w, &tree, node, &to(50.0, 60.0));
+            dispatch(&mut w, &tree, node, &to(50.0, -20.0));
+            dispatch(&mut w, &tree, node, &to(50.0, -40.0));
+            let moves: Vec<_> = engine
+                .commands()
+                .into_iter()
+                .filter(|c| matches!(c, WebViewCommand::MouseMove { .. }))
+                .collect();
+            assert_eq!(
+                moves,
+                [
+                    WebViewCommand::MouseMove { x: 50.0, y: 60.0 },
+                    WebViewCommand::MouseMove { x: 50.0, y: -20.0 },
+                ]
+            );
+            // And out of the window from over the page.
+            dispatch(&mut w, &tree, node, &to(50.0, 60.0));
+            dispatch(
+                &mut w,
+                &tree,
+                node,
+                &WindowEvent::CursorLeft { device_id: device },
+            );
+            assert_eq!(
+                engine.commands().last(),
+                Some(&WebViewCommand::MouseMove { x: -1.0, y: -1.0 })
+            );
         }
 
         {
