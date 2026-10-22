@@ -103,7 +103,7 @@ fn normalise_lexically(path: &Path) -> PathBuf {
 
 /// A stable, pleasant cover tint derived from the content id, so a book without
 /// cover art always gets the same generated spine colour.
-fn tint_for(id: &str) -> usize {
+pub(crate) fn tint_for(id: &str) -> usize {
     id.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % 5
 }
 

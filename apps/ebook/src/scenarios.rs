@@ -67,6 +67,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "search",
     "search-in-book",
     "search-elsewhere",
+    "fresh-device",
 ];
 
 /// The books a capture shows, and where each would live on a reader's
@@ -186,6 +187,9 @@ pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Ebook>> {
     if scenario == "onboarding" {
         return Vec::new();
     }
+    if scenario == "fresh-device" {
+        return fresh_device_library();
+    }
     let shelf = content::load_sample_library();
     let paths = Ebook::paths();
     let mut edits: Vec<Edit<Ebook>> = shelf
@@ -262,6 +266,62 @@ pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Ebook>> {
     if scenario == "search-elsewhere" {
         invokes.extend(elsewhere_shelved());
     }
+    invokes
+}
+
+/// The books of "fresh-device": a library synced from other devices, none
+/// of whose text is here yet, each its title, author and how far it is read.
+const FRESH_DEVICE_BOOKS: &[(&str, &str, f32)] = &[
+    ("Pride and Prejudice", "Jane Austen", 0.42),
+    ("Moby Dick", "Herman Melville", 0.0),
+    ("Middlemarch", "George Eliot", 0.18),
+    (
+        "The Adventures of Sherlock Holmes",
+        "Arthur Conan Doyle",
+        1.0,
+    ),
+    ("Frankenstein", "Mary Shelley", 0.0),
+    ("War and Peace", "Leo Tolstoy", 0.07),
+    ("Great Expectations", "Charles Dickens", 0.0),
+    ("Dracula", "Bram Stoker", 0.63),
+];
+
+/// A fresh device's library: the rows and reading positions of
+/// [`FRESH_DEVICE_BOOKS`], synced; their text is on other devices.
+fn fresh_device_library() -> Vec<Invoke<Ebook>> {
+    let mut progress: Vec<(String, Progress)> = Vec::new();
+    let mut invokes = Vec::new();
+    for (index, (title, author, fraction)) in FRESH_DEVICE_BOOKS.iter().enumerate() {
+        let text = format!("{title} by {author}");
+        let entry = LibraryEntry {
+            id: crate::epub::content_id(text.as_bytes()),
+            shared: false,
+            title: (*title).to_owned(),
+            author: (*author).to_owned(),
+            subject: String::new(),
+            added: STAGED_AT + index as u64,
+            content: LibraryEntry::stored(
+                &tilo_content::hash_bytes(text.as_bytes()),
+                text.len() as u64,
+            )
+            .unwrap_or_default(),
+            index: ui::tilo_resource::Bytes::Empty,
+        };
+        if *fraction > 0.0 {
+            progress.push((
+                entry.id.clone(),
+                Progress {
+                    chapter: 0,
+                    block: 0,
+                    fraction: *fraction,
+                    opened: STAGED_AT - index as u64 * 3_600_000,
+                },
+            ));
+        }
+        invokes.push(crate::resource::shelve(&entry));
+    }
+    let progress: Map<Progress> = progress.into_iter().collect();
+    invokes.extend(Invoke::edit(&Ebook::paths().progress.set(progress)).ok());
     invokes
 }
 
