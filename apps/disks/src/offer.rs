@@ -40,7 +40,10 @@ pub(crate) const LOCKED: &str = "Locked; unlock it first";
 /// The filesystem Mount and Unmount act on for `part` (or, for the whole
 /// drive, its only partition, so a single-filesystem stick mounts without
 /// drilling in).
-pub(crate) fn mount_target<'a>(drive: &'a Drive, part: Option<&'a Partition>) -> Option<&'a Partition> {
+pub(crate) fn mount_target<'a>(
+    drive: &'a Drive,
+    part: Option<&'a Partition>,
+) -> Option<&'a Partition> {
     part.or(match drive.partitions.as_slice() {
         [only] => Some(only),
         _ => None,
@@ -52,7 +55,11 @@ pub(crate) fn offer(drive: &Drive, part: Option<&Partition>, action: ActionKind)
     match action {
         ActionKind::Mount => match mount_target(drive, part) {
             Some(fs) if fs.mountpoint.is_none() => {
-                if fs.encryption.as_ref().is_some_and(|e| e.unlocked_as.is_none()) {
+                if fs
+                    .encryption
+                    .as_ref()
+                    .is_some_and(|e| e.unlocked_as.is_none())
+                {
                     Offer::Unavailable(LOCKED)
                 } else {
                     Offer::Available
@@ -112,10 +119,15 @@ mod tests {
     #[test]
     fn the_running_systems_drive_and_partitions_refuse_destructive_actions_with_the_reason() {
         let drive = yoga();
-        assert_eq!(offer(&drive, None, ActionKind::Format), Offer::Unavailable(HOLDS_SYSTEM));
+        assert_eq!(
+            offer(&drive, None, ActionKind::Format),
+            Offer::Unavailable(HOLDS_SYSTEM)
+        );
         assert_eq!(offer(&drive, None, ActionKind::Eject), Offer::Hidden);
         assert!(
-            shown(&drive, None).iter().all(|(action, _)| *action != ActionKind::Eject),
+            shown(&drive, None)
+                .iter()
+                .all(|(action, _)| *action != ActionKind::Eject),
             "a fixed internal drive never shows Eject"
         );
         assert_eq!(offer(&drive, None, ActionKind::Benchmark), Offer::Available);
@@ -132,10 +144,20 @@ mod tests {
         assert_eq!(offer(&drive, Some(home), ActionKind::Mount), Offer::Hidden);
 
         let root = part(&drive, "nvme0n1p7");
-        assert_eq!(offer(&drive, Some(root), ActionKind::Unmount), Offer::Unavailable(HOLDS_SYSTEM));
-        assert_eq!(offer(&drive, Some(root), ActionKind::Format), Offer::Unavailable(HOLDS_SYSTEM));
+        assert_eq!(
+            offer(&drive, Some(root), ActionKind::Unmount),
+            Offer::Unavailable(HOLDS_SYSTEM)
+        );
+        assert_eq!(
+            offer(&drive, Some(root), ActionKind::Format),
+            Offer::Unavailable(HOLDS_SYSTEM)
+        );
 
-        for (name, what) in [("nvme0n1p5", "Tilo's EFI"), ("nvme0n1p6", "Tilo's boot"), ("nvme0n1p1", "the firmware's EFI")] {
+        for (name, what) in [
+            ("nvme0n1p5", "Tilo's EFI"),
+            ("nvme0n1p6", "Tilo's boot"),
+            ("nvme0n1p1", "the firmware's EFI"),
+        ] {
             assert_eq!(
                 offer(&drive, Some(part(&drive, name)), ActionKind::Format),
                 Offer::Unavailable("Starts this device"),
@@ -150,7 +172,10 @@ mod tests {
         );
 
         let windows = part(&drive, "nvme0n1p3");
-        assert_eq!(offer(&drive, Some(windows), ActionKind::Format), Offer::Available);
+        assert_eq!(
+            offer(&drive, Some(windows), ActionKind::Format),
+            Offer::Available
+        );
     }
 
     /// A drive that holds no running system formats; a removable one ejects.
