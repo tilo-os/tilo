@@ -5,6 +5,8 @@ use std::time::Duration;
 use super::ShellDriver;
 
 mod open_app_scene;
+// The launcher's states build on the search sources staged here.
+mod launcher_seed;
 
 impl ShellDriver {
     /// What universal search reaches beyond the apps here: Flathub's cached

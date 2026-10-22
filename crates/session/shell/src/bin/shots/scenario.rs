@@ -32,6 +32,7 @@ use super::driver::ShellDriver;
 
 mod file_chooser;
 mod window_search;
+mod launcher;
 
 /// One tab of a window seeded for the window-bar shots.
 #[derive(Debug, Clone, Copy)]
@@ -234,6 +235,11 @@ pub enum Action {
     /// Add two present collaborators and representative shares to the active
     /// workspace through the production capability path.
     SeedSharedWorkspace,
+    /// Nobody else in any workspace: the launcher on a fresh device.
+    SeedLauncherFresh,
+    /// People in two workspaces, a call ringing, something shared with the
+    /// person and notes they opened lately: the launcher's busy state.
+    SeedLauncherBusy,
     /// Three strips in the shown workspace with people on two of them.
     SeedStripsWithPeople,
     /// Admit a named agent and expose one real foreign surface to its live
@@ -1113,6 +1119,8 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             "scenario: attributed history requires a real change authored by Ada"
         ),
         Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
+        Action::SeedLauncherFresh => driver.seed_launcher_fresh_for_shots(),
+        Action::SeedLauncherBusy => driver.seed_launcher_busy_for_shots(),
         Action::SeedStripsWithPeople => driver.seed_strips_with_people_for_shots(),
         Action::SeedAgentScreenExposure { surface_id } => {
             driver.seed_agent_screen_exposure_for_shots(*surface_id);
@@ -3476,6 +3484,8 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("02-app-chooser-filtered"),
             ],
         },
+        launcher::fresh(),
+        launcher::busy(),
         Scenario {
             name: "palette_typing",
             description: "Open the command palette, type 'h', clear it with Esc, then close it with Esc.",
