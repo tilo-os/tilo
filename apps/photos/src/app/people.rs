@@ -435,7 +435,7 @@ impl PhotosApp {
                     } else {
                         self.commit(PhotoLibrary::RENAME_PERSON.with((from, to.clone())));
                         self.people_selection = Some(PeopleSelection::Approved(to));
-                        self.notice = Some(tr("photos-people-renamed"));
+                        self.say_when_kept(tr("photos-people-renamed"));
                     }
                 }
             }

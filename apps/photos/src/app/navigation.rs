@@ -251,7 +251,7 @@ impl PhotosApp {
             .map(|id| paths.insert(id))
             .collect();
         self.commit_group(&edits);
-        self.notice = Some("Selected photographs added to the album".to_owned());
+        self.say_when_kept("Selected photographs added to the album".to_owned());
         self.finish_selection();
     }
 
