@@ -518,6 +518,9 @@ pub struct SlidesApp {
     /// frame (once the rail geometry is known) so a headless capture shows the
     /// floating ghost + reflow gap. Never set on a live launch.
     demo_reorder: bool,
+    /// `--shots`-only: open the words' menu on the text box being edited
+    /// once its words are laid out. Never set on a live launch.
+    demo_words_menu: bool,
     /// `--shots`-only: stage a thumbnail drag dropped over the red dashed
     /// delete zone on the first drawn frame, so a headless capture shows the
     /// armed "Drop to delete" target. Never set on a live launch.
@@ -617,6 +620,7 @@ impl SlidesApp {
             notes_caret_to_end: false,
             demo_menu: None,
             demo_reorder: false,
+            demo_words_menu: false,
             demo_delete_zone: false,
         }
     }
@@ -771,6 +775,13 @@ impl SlidesApp {
             "edit_text" => {
                 self.select_first_text_on_second_slide();
                 self.begin_text_edit(true);
+                self.bootstrapped = true;
+            }
+            // The words' menu open on a word of the text box being edited.
+            "words_menu" => {
+                self.select_first_text_on_second_slide();
+                self.begin_text_edit(false);
+                self.demo_words_menu = true;
                 self.bootstrapped = true;
             }
             // A thumbnail dragged onto the armed delete zone.
@@ -3540,6 +3551,24 @@ impl SlidesApp {
                     let _ = self.page_sidebar.take_events();
                 }
             }
+        }
+        // `--shots`-only: the words' menu, on the first word of the box
+        // being edited, once its words are laid out.
+        if self.demo_words_menu
+            && let Some(editor) = self.text_editor.as_mut()
+            && editor.words_h.is_some()
+        {
+            let surface = editor.host.widget_mut();
+            if let Some(line) = surface
+                .editor()
+                .blocks()
+                .first()
+                .map(|block| block.line.get_rect())
+            {
+                let at = Point::new(line.x0 + 24.0, line.center().y);
+                surface.editor_mut().open_text_menu(at);
+            }
+            self.demo_words_menu = false;
         }
         // `--shots`-only: stage a live reorder drag so the capture shows the
         // floating ghost + the reflowed drop gap.
