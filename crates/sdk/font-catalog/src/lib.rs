@@ -364,20 +364,13 @@ impl Asset {
     /// Check bytes already read from this asset's file (at `path`, for the
     /// error) against its pinned size and SHA-256.
     pub fn verify_bytes(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        self.check_len(path, bytes.len())?;
-        self.check_digest(path, &hex::encode(Sha256::digest(bytes)))
-    }
-
-    /// Compare a length in bytes with the pinned one.
-    pub fn check_len(&self, path: &Path, len: usize) -> Result<(), Error> {
-        if len as u64 == self.bytes {
-            Ok(())
-        } else {
-            Err(Error::at(
+        if bytes.len() as u64 != self.bytes {
+            return Err(Error::at(
                 path,
-                format!("expected {} bytes, found {len}", self.bytes),
-            ))
+                format!("expected {} bytes, found {}", self.bytes, bytes.len()),
+            ));
         }
+        self.check_digest(path, &hex::encode(Sha256::digest(bytes)))
     }
 
     /// Compare a lowercase hex SHA-256 with the pinned one.

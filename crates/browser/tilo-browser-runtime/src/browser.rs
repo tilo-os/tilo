@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use js_sys::{Function, Reflect, Uint8Array};
+use js_sys::{Function, Reflect};
 use ui::application::{
     ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
@@ -38,6 +38,9 @@ thread_local! {
     static REPLAYING: Cell<bool> = const { Cell::new(false) };
     static DEFERRED_EVENTS: RefCell<Vec<DeferredEvent>> = const { RefCell::new(Vec::new()) };
     static REQUESTS: RefCell<HashMap<u64, Request>> = RefCell::new(HashMap::new());
+    /// Startup fonts handed over for the next mount: name, bytes, and the
+    /// page's digest of them.
+    static STARTUP_FONTS: RefCell<Vec<StartupFont>> = const { RefCell::new(Vec::new()) };
     static NEXT: RefCell<u64> = const { RefCell::new(1) };
     static STOP: RefCell<Option<Function>> = const { RefCell::new(None) };
     static SHARED_GPU: RefCell<Option<Rc<RefCell<SharedGpu>>>> = const { RefCell::new(None) };
@@ -262,10 +265,12 @@ impl Config {
     }
 }
 
+type StartupFont = (String, Vec<u8>, String);
+
 struct Request {
     canvas: web_sys::HtmlCanvasElement,
     config: Config,
-    fonts: JsValue,
+    fonts: Vec<StartupFont>,
     hydrated: JsValue,
     status: Function,
 }
@@ -730,10 +735,20 @@ enum DeferredEvent {
     Window(WindowId, WindowEvent),
 }
 
+/// Hand over one verified startup font for the next [`mount`]. `sha256` is
+/// the page's lowercase hex digest of `bytes` from `crypto.subtle.digest`,
+/// which the runtime checks against the canonical manifest compiled into this
+/// build instead of hashing the font again.
+#[wasm_bindgen]
+pub fn provide_startup_font(name: String, bytes: Vec<u8>, sha256: String) {
+    STARTUP_FONTS.with_borrow_mut(|fonts| fonts.push((name, bytes, sha256)));
+}
+
 /// Mount an application on `canvas`. `config` is JSON (`app`, `profile`,
-/// `device`, `room`, `author`, `instance`, optional `record`, `mac`);
-/// `fonts` maps startup font file names to bytes; `hydrated` holds the
-/// namespace's stored rows. Statuses arrive on `status` as JSON text.
+/// `device`, `room`, `author`, `instance`, optional `record`, `mac`); its
+/// startup fonts are those handed over by [`provide_startup_font`] since the
+/// last mount; `hydrated` holds the namespace's stored rows. Statuses arrive
+/// on `status` as JSON text.
 ///
 /// # Errors
 ///
@@ -742,7 +757,6 @@ enum DeferredEvent {
 pub fn mount(
     canvas: web_sys::HtmlCanvasElement,
     config: &str,
-    fonts: JsValue,
     hydrated: JsValue,
     status: Function,
 ) -> Result<u64, JsValue> {
@@ -766,7 +780,7 @@ pub fn mount(
             Request {
                 canvas,
                 config,
-                fonts,
+                fonts: STARTUP_FONTS.take(),
                 hydrated,
                 status,
             },
@@ -1455,7 +1469,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let Request {
         canvas,
         config,
-        fonts,
+        mut fonts,
         hydrated,
         status,
     } = request;
@@ -1464,10 +1478,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     // to when those constructor-time renderers shape their labels.
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
         .load_browser_startup_bytes(|name| {
-            Reflect::get(&fonts, &name.into())
-                .ok()
-                .filter(|v| !v.is_undefined())
-                .map(|v| Uint8Array::new(&v).to_vec())
+            let at = fonts.iter().position(|(font, ..)| font == name)?;
+            let (_, bytes, sha256) = fonts.swap_remove(at);
+            Some((bytes, sha256))
         })
         .map_err(error)?;
     let text_renderer = ui::TextRenderer::with_browser_font_system(system);
@@ -3390,8 +3403,8 @@ pub fn font_demands(id: u64) -> Result<String, JsValue> {
 
 /// Install one fetched optional font. `sha256` is the page's lowercase hex
 /// digest of `bytes` from `crypto.subtle.digest`, which runs natively off the
-/// main thread; the runtime checks it and the size against the canonical
-/// manifest compiled into this build instead of hashing the font again.
+/// main thread; the runtime checks it against the canonical manifest compiled
+/// into this build instead of hashing the font again.
 #[wasm_bindgen]
 pub fn install_font(id: u64, name: &str, bytes: Vec<u8>, sha256: &str) -> Result<bool, JsValue> {
     let (changed, wake) = with_mount(id, |m| {

@@ -952,7 +952,7 @@ mod tests {
     fn unchanged_browser_query_reshapes_after_font_failure_and_install() {
         let root = crate::font_catalog::checkout_root();
         let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let mut composition = QueryComposition::new();
