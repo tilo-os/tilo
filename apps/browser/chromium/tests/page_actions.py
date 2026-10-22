@@ -9,6 +9,10 @@ import unittest
 from urllib.parse import parse_qs, urlparse
 from native_regressions import HANG_BOUND, Host
 
+# The longest settle the host accepts (host.cc's settle validation); a
+# longer one is a malformed command and the host closes.
+SETTLE_MS = min(int(HANG_BOUND * 1000), 20000)
+
 FORM = b'''<!doctype html><title>Checkout</title>
 <style>.visually-hidden{position:absolute;opacity:0;width:1px;height:1px}
 #shade{position:fixed;left:0;top:0;width:100%;height:60px;background:#0008}</style>
@@ -224,7 +228,7 @@ class PageActions(unittest.TestCase):
         add = self.ref(self.outline(), 'button "Add later"')
         self.ok('click', element=add)
         # The page adds its line a second after the click; settling waits for it.
-        settled = self.ok('settle', quiet_ms=1500, timeout_ms=int(HANG_BOUND * 1000))
+        settled = self.ok('settle', quiet_ms=1500, timeout_ms=SETTLE_MS)
         self.assertTrue(settled['data']['settled'], settled)
         self.assertGreater(settled['data']['mutations'], 0, settled)
         changed = self.ok('changes')
@@ -244,7 +248,7 @@ class PageActions(unittest.TestCase):
         self.h.navigate(self.url + '/agent')
         log = self.ref(self.outline(), 'button "Log"')
         self.ok('click', element=log)
-        self.ok('settle', quiet_ms=300, timeout_ms=int(HANG_BOUND * 1000))
+        self.ok('settle', quiet_ms=300, timeout_ms=SETTLE_MS)
         console = self.ok('console', since=0)['data']
         texts = [entry['text'] for entry in console['entries']]
         self.assertIn('clicked 7', texts, console)
