@@ -1542,6 +1542,7 @@ search-action-identity-select = Use identity in this workspace
 search-action-identity-select-subtitle = Select one of the identities already connected to this device
 search-action-identity-unnamed = Unnamed identity
 search-action-identity-none = No identity is connected to this device yet
+search-action-identity-setup = Set up your identity
 search-action-identity-device-pair-resource = Nearby device pairing
 search-action-identity-device-pair-discover = Find a nearby device to pair
 search-action-identity-device-pair-discover-subtitle = Look on this network for a new device or home server waiting to join

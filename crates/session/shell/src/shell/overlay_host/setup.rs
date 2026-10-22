@@ -614,6 +614,40 @@ impl ShellOverlayHost {
         self.onboarding_focus_reset = false;
     }
 
+    /// Start the first-identity setup the identity chooser asked for
+    /// ([`OverlayFlags::identity_setup`](crate::shell::chrome_state::OverlayFlags)):
+    /// the same ceremony a first login runs, with its backup and recovery
+    /// steps, and only on a device that has no identity.
+    pub(super) fn start_requested_identity_setup(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        if !chrome.borrow().overlays.identity_setup {
+            return;
+        }
+        {
+            let mut state = chrome.borrow_mut();
+            state.overlays.identity_setup = false;
+            state.bump();
+        }
+        if self.onboarding.is_some() {
+            return;
+        }
+        let store = match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::warn!(%error, "cannot resolve the identity directory to set one up");
+                return;
+            }
+        };
+        if store.identity_present() {
+            return;
+        }
+        if let Some(identity_dir) = store.path().parent().map(std::path::Path::to_path_buf) {
+            self.enable_onboarding(identity_dir);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
         self.onboarding = Some(view);

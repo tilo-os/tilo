@@ -186,25 +186,56 @@ fn live_params(action: &Action) -> Vec<ActionParam> {
     identity_select_params(&identities)
 }
 
+/// The choice that sets up this device's first identity, offered when it
+/// has none.
+pub(crate) const IDENTITY_SETUP_CHOICE: &str = "setup";
+
 /// [`IDENTITY_SELECT_PARAMS`], its identity one of `identities`
-/// (`(id, name)`), each read as its name with its avatar.
+/// (`(id, name)`), each read as its name with its avatar. With none, the one
+/// choice is the next step: "Set up your identity", which needs no
+/// confirmation, since it delegates nothing yet.
 pub(crate) fn identity_select_params(identities: &[(String, String)]) -> Vec<ActionParam> {
+    if identities.is_empty() {
+        let id = IDENTITY_SELECT_PARAMS
+            .iter()
+            .find(|param| param.name == "id")
+            .cloned()
+            .map(|mut param| {
+                param.description = t("search-action-identity-none").into();
+                param.with_labelled_choices([(
+                    IDENTITY_SETUP_CHOICE,
+                    t("search-action-identity-setup"),
+                )])
+            });
+        return id.into_iter().collect();
+    }
     IDENTITY_SELECT_PARAMS
         .iter()
         .map(|param| {
             if param.name != "id" {
                 return param.clone();
             }
-            let mut param = param
+            param
                 .clone()
                 .with_labelled_choices(identities.iter().cloned())
-                .choosing_people(identities.iter().map(|(id, _)| id.clone()));
-            if identities.is_empty() {
-                param.description = t("search-action-identity-none").into();
-            }
-            param
+                .choosing_people(identities.iter().map(|(id, _)| id.clone()))
         })
         .collect()
+}
+
+/// Ask for the first-identity setup: only on a device with no identity, as
+/// the chooser offers it.
+fn request_identity_setup(st: &mut ChromeState) -> Result<(), ActionError> {
+    let has_identity = crate::identity_registry::IdentityRegistryStore::from_env()
+        .and_then(|store| store.load_reconciled())
+        .is_ok_and(|registry| !registry.identities.is_empty());
+    if has_identity {
+        return Err(ActionError::Refused(
+            "this device has an identity already; choose it".into(),
+        ));
+    }
+    st.overlays.identity_setup = true;
+    Ok(())
 }
 
 /// How an identity reads in the chooser: its name, or "Unnamed identity"
@@ -1639,8 +1670,11 @@ impl Action {
             subtitle: "search-action-identity-select-subtitle",
             params: IDENTITY_SELECT_PARAMS,
             apply: |st, args| {
-                require_explicit_confirmation(args, "select this identity")?;
                 let identity_id = args.text("id").unwrap_or_default().trim();
+                if identity_id == IDENTITY_SETUP_CHOICE {
+                    return request_identity_setup(st);
+                }
+                require_explicit_confirmation(args, "select this identity")?;
                 let (workspace_id, room, actor) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;

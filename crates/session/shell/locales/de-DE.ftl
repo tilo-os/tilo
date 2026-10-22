@@ -1523,6 +1523,7 @@ search-action-identity-select = Identität in diesem Arbeitsbereich verwenden
 search-action-identity-select-subtitle = Eine der Identitäten wählen, die bereits mit diesem Gerät verbunden sind
 search-action-identity-unnamed = Unbenannte Identität
 search-action-identity-none = Mit diesem Gerät ist noch keine Identität verbunden
+search-action-identity-setup = Deine Identität einrichten
 search-action-identity-device-pair-resource = Geräte in der Nähe koppeln
 search-action-identity-device-pair-discover = Gerät in der Nähe zum Koppeln suchen
 search-action-identity-device-pair-discover-subtitle = In diesem Netzwerk nach einem neuen Gerät oder Heimserver suchen, das beitreten möchte
