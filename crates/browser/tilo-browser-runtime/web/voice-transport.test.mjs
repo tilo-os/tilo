@@ -71,6 +71,73 @@ test('a renewed publisher announcement replaces its old subscription and sequenc
   assert.equal(requests[1].closed, true, 'leave releases the renewed request');
 });
 
+test('a republish that takes the path without a new announcement is heard from its own sequence window', async () => {
+  const {encodeVoiceObject, encodeVoiceBundle} = await import('./voice-profile.mjs');
+  let announce;
+  let request;
+  // One broadcast per carrier of the remote publisher; ending it ends its
+  // track's receive loops as a closed carrier does.
+  const carrier = () => {
+    let datagram, group;
+    const track = {
+      recvDatagram: () => new Promise(resolve => {datagram = resolve;}),
+      recvGroup: () => new Promise(resolve => {group = resolve;}),
+      close() {datagram?.(); group?.();},
+    };
+    return {
+      track: () => ({subscribe: () => track}),
+      end() {track.close();},
+      deliver(sequence) {datagram({payload: encodeVoiceBundle([encodeVoiceObject({sequence, timestamp: sequence * 960n, duration: 960, payload: new Uint8Array([0xf8, 0xff, 0xfe])})])});},
+    };
+  };
+  class Producer {
+    announced() {return {next: () => new Promise(resolve => {announce = resolve;}), close() {announce?.();}};}
+    request() {
+      let current = carrier(), changed, waiters = 0;
+      request = {
+        active: {peek: () => current, changed: () => {waiters++; return new Promise(resolve => {changed = resolve;});}},
+        get waiters() {return waiters;},
+        current: () => current,
+        swap(next) {current = next; changed?.();},
+        closed: false, close() {this.closed = true;},
+      };
+      return request;
+    }
+    close() {}
+  }
+  const library = {Origin: {Producer}, Path: {from: (...parts) => parts.join('/'), Pattern: {subtree: path => path}, stripPrefix: (prefix, path) => path.slice(prefix.length + 1)},
+    Connection: {connect: async () => ({version: 'moq-lite-06', transport: 'webtransport', closed: new Promise(() => {}), close() {}})}};
+  const transport = createVoiceTransport({library, carrier: async () => ({transport: {}, revoked: new Promise(() => {}), close() {}})});
+  const session = await transport.connect({grant: {call: CALL, participation: SELF, token: '01', endpoint: 'https://localhost/moq/voice', directions: {publish: false, subscribe: true}}});
+  const frames = [];
+  const publishers = [];
+  session.subscribe({onFrame: frame => frames.push(frame), onPublisher: (publisher, active) => publishers.push([publisher, active])});
+  announce({kind: 'announced', prefix: `${CALL}/${REMOTE}`});
+  await drain();
+  const first = request.current();
+  first.deliver(0n);
+  await drain();
+  first.deliver(1n);
+  await drain();
+  assert.equal(frames.length, 2);
+  // The remote's renewed carrier republishes the path and its old carrier
+  // closes; the route never lapses, so no announcement says so.
+  const second = carrier();
+  first.end();
+  await drain();
+  assert.equal(request.waiters, 1, 'an ended broadcast waits for the path to resolve again, not spinning on it');
+  request.swap(second);
+  await drain();
+  second.deliver(0n);
+  await drain();
+  assert.equal(frames.length, 3, 'the broadcast that took the path is heard, sequence zero included');
+  assert.deepEqual(publishers, [[REMOTE, true]], 'the publisher never left the call');
+  assert.equal(request.closed, false);
+  session.close();
+  await drain();
+  assert.equal(request.closed, true, 'leave releases the request');
+});
+
 /** A publishing carrier whose datagrams and QUIC loss counters the test sees. */
 async function publisher({getStats} = {}) {
   const {decodeVoiceBundle} = await import('./voice-profile.mjs');

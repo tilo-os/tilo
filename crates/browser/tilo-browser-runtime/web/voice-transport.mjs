@@ -345,13 +345,14 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
         if (remotes.size >= MAX_REMOTE_PUBLISHERS) { report({type: 'voice-publisher-limit'}); return; }
         let finish;
         const finished = new Promise(resolve => {finish = resolve;});
+        const sequenceWindow = () => createMediaQueue({maxBytes: 10 * 4096, maxAgeMs: 200, maxFrames: 10, maxDurationMs: 200, maxDedupEntries: 32, now: monotonicNow});
         const remote = {
           publisher,
           finish,
           active: true,
           request: undefined,
           track: undefined,
-          queue: createMediaQueue({maxBytes: 10 * 4096, maxAgeMs: 200, maxFrames: 10, maxDurationMs: 200, maxDedupEntries: 32, now: monotonicNow}),
+          queue: sequenceWindow(),
         };
         remotes.set(publisher, remote);
         try { onPublisher(publisher, true); } catch {}
@@ -360,19 +361,29 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
             // Own the request before awaiting resolution so retract, leave
             // and grant replacement can release it immediately.
             remote.request = incoming.request(moq.Path.from(grant.call, publisher));
-            let broadcast;
-            while (remote.active && !(broadcast = remote.request.active.peek())) {
-              await Promise.race([remote.request.active.changed(), finished]);
+            // The request follows the path: a renewed carrier's republish
+            // takes it over without the announcement ever being retracted,
+            // and the broadcast this subscription read then ends. Hear the
+            // broadcast that took the path, from its own sequence window,
+            // until the publisher is retracted or the call is left.
+            let current;
+            while (remote.active) {
+              let broadcast;
+              while (remote.active && (!(broadcast = remote.request.active.peek()) || broadcast === current)) {
+                await Promise.race([remote.request.active.changed(), finished]);
+              }
+              if (!remote.active) return;
+              if (current) remote.queue = sequenceWindow();
+              current = broadcast;
+              remote.track = broadcast.track(AUDIO_TRACK).subscribe({priority: 0, maxAge: 200});
+              await Promise.all([pumpDatagrams(remote), pumpGroups(remote)]);
+              safeClose(remote.track);
             }
-            if (!remote.active) return;
-            remote.track = broadcast.track(AUDIO_TRACK).subscribe({priority: 0, maxAge: 200});
           } catch (error) {
             if (remote.active) report({type: 'voice-subscription-error', error});
+          } finally {
             stop(remote);
-            return;
           }
-          await Promise.all([pumpDatagrams(remote), pumpGroups(remote)]);
-          stop(remote);
         })();
       };
       const cleanup = () => {
