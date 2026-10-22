@@ -378,4 +378,29 @@ mod tests {
             Some(&ChromeIntent::ToggleCollaborators)
         );
     }
+
+    /// A count arriving on the bell, or growing, never moves a face: the
+    /// pointer already on its way to someone still lands on them. Holds
+    /// where the bell always stands (the web) from nothing unread on, and
+    /// where it comes with the first unread from then on.
+    #[test]
+    fn the_faces_stay_put_as_unread_notifications_arrive() {
+        let tree = room(&[("ada", "Ada Lovelace"), ("bo", "Bo Brave")]);
+        for only in [true, false] {
+            let (mut bar, chrome) = bar_over(&tree, true);
+            chrome.borrow_mut().notifications_only = only;
+            chrome.borrow_mut().notification_badge = u32::from(!only);
+            super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
+            let resting = bar.face_rects.clone();
+            assert_eq!(resting.len(), 2, "both faces stand");
+            for unread in [1, 7, 42, 100, 5000] {
+                chrome.borrow_mut().notification_badge = unread;
+                super::super::tests::lay_out_and_draw(&mut bar, 1024.0);
+                assert_eq!(
+                    bar.face_rects, resting,
+                    "with {unread} unread (bell always shown: {only})"
+                );
+            }
+        }
+    }
 }

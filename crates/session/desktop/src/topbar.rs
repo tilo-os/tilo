@@ -789,7 +789,8 @@ struct TrayLayout {
     icon_px: f64,
     pct_style: TextStyle,
     pct_label: Option<String>,
-    /// Width reserved for the unread-count badge, zero without one.
+    /// Width held beside the bell for the widest unread-count badge, zero
+    /// without a bell.
     badge_w: f64,
     slots: usize,
     center_y: f64,
@@ -2422,12 +2423,12 @@ impl TopBarChrome {
         let tray_gap = 0.0;
         let icon_px = BAR_GLYPH_PX;
         let pct_style = tokens.typography.style(TextRole::Caption);
-        // The unread count rides beside the bell; its width is measured
-        // here so the pill is sized for it before anything is painted.
-        let badge_w = if self.bell.unread > 0 {
-            let label = Self::notification_badge_label(self.bell.unread);
-            let (w, h) = text_renderer.measure_style(&label, None, &pct_style);
-            Self::notification_badge_size(w, h, theme).0
+        // The unread count rides beside the bell. Its room is held for the
+        // widest count whenever the bell stands, read or not, so a count
+        // arriving or growing never pushes the faces to its left out from
+        // under a pointer already on its way to one.
+        let badge_w = if self.bell.shown() {
+            Self::notification_badge_room(text_renderer, theme)
         } else {
             0.0
         };
@@ -2450,9 +2451,10 @@ impl TopBarChrome {
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
         }
-        if self.bell.unread > 0 {
-            // Bell plus a compact exact count (`99+` once the number no longer
-            // fits); the base slot calculation already paid for the bell.
+        if self.bell.shown() {
+            // Bell plus room for a compact exact count (`99+` once the number
+            // no longer fits); the base slot calculation already paid for the
+            // bell.
             tray_w += badge_w + tray_gap;
         }
 
@@ -2564,17 +2566,16 @@ impl TopBarChrome {
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         if self.bell.unread == 0 {
-            return sx + layout.tray_slot + layout.tray_gap;
+            return sx + layout.tray_slot + layout.badge_w + layout.tray_gap;
         }
         let label = Self::notification_badge_label(self.bell.unread);
         // The count is set at the chrome's numeric-readout size, so it
         // follows the person's text scale like every other bar label.
         let label_style = &layout.pct_style;
         let (label_w, label_h) = text_renderer.measure_style(&label, None, label_style);
-        // The width was reserved in `draw_tray_pill_body` from the same
-        // label; reading it back keeps the pill and the badge in agreement.
-        let (_, badge_h) = Self::notification_badge_size(label_w, label_h, theme);
-        let badge_w = layout.badge_w;
+        // The badge hugs its own count inside the room `draw_tray_pill_body`
+        // held for the widest one.
+        let (badge_w, badge_h) = Self::notification_badge_size(label_w, label_h, theme);
         let badge = Rect::new(
             sx + layout.tray_slot,
             layout.center_y - badge_h / 2.0,
@@ -2612,7 +2613,15 @@ impl TopBarChrome {
             None,
             label_style,
         );
-        sx + layout.tray_slot + badge_w + layout.tray_gap
+        sx + layout.tray_slot + layout.badge_w + layout.tray_gap
+    }
+
+    /// The width the widest count badge (`99+`) takes beside the bell.
+    fn notification_badge_room(text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+        let label = Self::notification_badge_label(u32::MAX);
+        let style = theme.tokens.typography.style(TextRole::Caption);
+        let (w, h) = text_renderer.measure_style(&label, None, &style);
+        Self::notification_badge_size(w, h, theme).0
     }
 
     /// `99+` once the exact number no longer fits the compact badge.
@@ -5184,9 +5193,11 @@ mod tests {
         bar.bell.quiet = true;
         lay_out_and_draw(&mut bar, 1280.0);
         let quiet = bar.tray_pill_rect;
+        let badge_room =
+            TopBarChrome::notification_badge_room(&mut TextRenderer::new(), &Theme::default());
         assert!(
-            (quiet.width() - loud.width() - BAR_CONTROL_PX).abs() < 1e-6,
-            "one glyph slot more: {loud:?} -> {quiet:?}"
+            (quiet.width() - loud.width() - BAR_CONTROL_PX - badge_room).abs() < 1e-6,
+            "one glyph slot more, and room for a count: {loud:?} -> {quiet:?}"
         );
         assert_eq!(quiet.x1, loud.x1, "the cluster keeps its right edge");
         bar.bell.unread = 2;
@@ -5222,9 +5233,11 @@ mod tests {
         bar.bell.only = true;
         lay_out_and_draw(&mut bar, 1280.0);
         assert_eq!(bar.tray_slot_count(), 1, "the bell takes the slot");
+        let badge_room =
+            TopBarChrome::notification_badge_room(&mut TextRenderer::new(), &Theme::default());
         assert!(
-            (bar.tray_pill_rect.width() - settings.width()).abs() < 1e-6,
-            "the bell replaces the glyph: {settings:?} -> {:?}",
+            (bar.tray_pill_rect.width() - settings.width() - badge_room).abs() < 1e-6,
+            "the bell replaces the glyph and holds room for a count: {settings:?} -> {:?}",
             bar.tray_pill_rect
         );
         let node = bar.accessibility().expect("topbar semantics");
@@ -6969,6 +6982,8 @@ mod fixture {
         pub strip_places: Option<StripPlaces>,
         pub can_invite: bool,
         pub waved: Option<WaveNotice>,
+        pub notification_badge: u32,
+        pub notifications_only: bool,
     }
     impl State {
         pub fn publish_activity_glance(
@@ -7007,6 +7022,8 @@ mod fixture {
                 strip_places: None,
                 can_invite: false,
                 waved: None,
+                notification_badge: 0,
+                notifications_only: false,
             })))
         }
         pub fn borrow(&self) -> Ref<'_, State> {
@@ -7037,6 +7054,8 @@ mod fixture {
                 strip_places: state.strip_places.clone(),
                 invite: crate::chrome::Invite::when(state.can_invite),
                 waved: state.waved.clone(),
+                notification_badge: state.notification_badge,
+                notifications_only: state.notifications_only,
                 ..Default::default()
             }
         }
