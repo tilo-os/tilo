@@ -232,6 +232,7 @@ grandfathered = [
 ]
 
 [shell_dependencies.added]
+"tasks" = "Runs of issues assigned to an agent (broker_services::tracker_runs) come from the tracker record, read with the Tasks app's own model as the shell already reads Notes, Code and Word records; it brings only tilo-document, tilo-rich-text and tilo-app, which the shell already depends on"
 "tilo-documents" = "The files a person chooses for an app in the shell's chooser, served into that app's sandbox: the shell mounts the store and gives into it; the table, the beneath-only host access and the FUSE adapter live in this crate, which the launcher shares for the paths"
 "tilo-lan-discovery" = "Replaces iroh-mdns-address-lookup, which the shell dropped: finding the person's own devices on the local network is an address lookup the shell's endpoint registers; the probe protocol, its freshness and the socket live in this crate"
 "tilo-location" = "The automatic time zone (time_zone_follower) asks where the device is through the XDG Location portal; tilo-location is the one location client, which the app host already uses for apps, and brings only ashpd's location feature, tilo-rt and tilo-clock with it"
