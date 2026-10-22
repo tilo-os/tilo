@@ -275,6 +275,33 @@ fn horizontal_detail(px: &[[u8; 3]]) -> f64 {
     total / (GRID_W * GRID_H) as f64
 }
 
+/// Asserts that `pixels` shows source frame `expected`: of the source
+/// frames around it, that one is the nearest, and near enough to be the
+/// same picture. A bound on the expected frame alone says little about a
+/// repeated frame: the stripes scroll two pixels a frame, so a neighbour
+/// differs by only a few times the encoding noise, and naming the nearest
+/// frame in the message tells a repeat from a bad encode at a glance.
+fn assert_shows_source_frame(
+    pixels: &[[u8; 3]],
+    source_frames: &[(u64, Vec<[u8; 3]>)],
+    expected: usize,
+    what: &str,
+) {
+    let around = expected.saturating_sub(2)..(expected + 3).min(source_frames.len());
+    let diffs: Vec<(usize, f64)> = around
+        .map(|index| (index, mean_abs_diff(pixels, &source_frames[index].1)))
+        .collect();
+    let (nearest, diff) = diffs
+        .iter()
+        .copied()
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("source frames around the expected one");
+    assert!(
+        nearest == expected && diff < 8.0,
+        "{what} must show source frame {expected}; MAE against frames around it: {diffs:.2?}"
+    );
+}
+
 /// Mean absolute per-channel difference between two frames, 0 = identical.
 fn mean_abs_diff(a: &[[u8; 3]], b: &[[u8; 3]]) -> f64 {
     let total: f64 = a
@@ -453,11 +480,7 @@ fn real_mp4_cuts_concatenate_without_padding_and_marks_rebase_the_file() {
             "incorrect PTS at frame {i}: {pts}"
         );
         let source_index = if i < 12 { 60 + i } else { 15 + i - 12 };
-        let diff = mean_abs_diff(pixels, &source_frames[source_index].1);
-        assert!(
-            diff < 8.0,
-            "frame {i} must show source frame {source_index}, MAE {diff:.2}"
-        );
+        assert_shows_source_frame(pixels, &source_frames, source_index, &format!("frame {i}"));
     }
     let sound = decode_audio_full(&output);
     assert_eq!(sound.native, Some((48_000, 2)));
@@ -484,10 +507,11 @@ fn real_mp4_cuts_concatenate_without_padding_and_marks_rebase_the_file() {
     assert_eq!(marked[0].0, 0, "marked file timestamps are zero-based");
     for (i, (_, pixels)) in marked.iter().enumerate() {
         let source_index = if i < 3 { 69 + i } else { 15 + i - 3 };
-        let diff = mean_abs_diff(pixels, &source_frames[source_index].1);
-        assert!(
-            diff < 8.0,
-            "marked frame {i}: source {source_index}, MAE {diff:.2}"
+        assert_shows_source_frame(
+            pixels,
+            &source_frames,
+            source_index,
+            &format!("marked frame {i}"),
         );
     }
 }
