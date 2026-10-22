@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {TiloMediaElement, proxiedMediaUrl} from './tilo-media.mjs';
+import {TiloMediaElement, proxiedMediaUrl, siteOf, lacksCors} from './tilo-media.mjs';
 
 const page = {location: {href: 'https://tilo.coffee/lounge'}};
 const video = 'https://rr1.googlevideo.com/videoplayback?itag=18&sig=a%2Bb';
+// A source on a site not known to refuse the page: tried directly first.
+const film = 'https://cdn.example.net/films/a.mp4';
 
 test('a source without CORS plays through the host the page got into', () => {
   const scope = {...page, __tiloFetchProxy: () => ({endpoint: 'https://eu1.tilo.coffee/peer/v1/fetch', session: 'ab12'})};
@@ -51,14 +53,46 @@ function fakePage(proxyError) {
     return {headers: {get: name => (name === 'x-tilo-proxy-error' ? proxyError : null)}};
   };
   const fail = () => { el.error = {code: 2}; return listeners.error(); };
-  return {el, asked, fail};
+  const played = () => listeners.loadedmetadata?.();
+  return {el, asked, fail, played};
 }
+
+test('a site known to refuse the page loads through the proxy from the start', t => {
+  t.after(() => { delete globalThis.document; delete globalThis.location; delete globalThis.__tiloFetchProxy; });
+  const {el} = fakePage(null);
+  assert.equal(siteOf(video, page), 'googlevideo.com');
+  assert.ok(lacksCors('https://rr10---sn-abc.googlevideo.com/videoplayback?id=1', page));
+  const media = new TiloMediaElement();
+  media.open(video);
+  const proxied = new URL(el.src);
+  assert.equal(proxied.origin, 'https://eu1.tilo.coffee', 'no direct request that is refused first');
+  assert.equal(proxied.searchParams.get('url'), video);
+});
+
+test('a site that refused the page and played through the proxy goes there first next time', t => {
+  t.after(() => { delete globalThis.document; delete globalThis.location; delete globalThis.__tiloFetchProxy; });
+  const {el, fail, played} = fakePage(null);
+  const media = new TiloMediaElement();
+  const first = 'https://a1.media.example.org/one.mp4';
+  media.open(first);
+  assert.equal(el.src, first, 'tried directly while nothing is known of the site');
+  fail();
+  assert.equal(new URL(el.src).origin, 'https://eu1.tilo.coffee');
+  played();
+  media.open('https://b2.media.example.org/two.mp4');
+  assert.equal(new URL(el.src).origin, 'https://eu1.tilo.coffee', 'another host of the same site');
+  // A source that plays directly teaches nothing.
+  media.open(film);
+  assert.equal(el.src, film);
+  played();
+  assert.equal(lacksCors(film, page), false);
+});
 
 test('a host that streamed all it allows says so, and the source is not loaded again', async t => {
   t.after(() => { delete globalThis.document; delete globalThis.location; delete globalThis.__tiloFetchProxy; });
   const {el, asked, fail} = fakePage('over-budget');
   const media = new TiloMediaElement();
-  media.open(video);
+  media.open(film);
   fail();
   assert.equal(new URL(el.src).origin, 'https://eu1.tilo.coffee', 'the refused source loads through the proxy');
   assert.equal(asked.length, 0, 'a direct load that fails asks the proxy nothing');
@@ -70,7 +104,7 @@ test('a host that streamed all it allows says so, and the source is not loaded a
   assert.match(media.takeError(), /as much as it allows/);
   assert.equal(media.takeLimitReached(), false);
   // A new source starts without the old reason.
-  media.open(video);
+  media.open(film);
   assert.equal(media.takeLimitReached(), false);
 });
 
@@ -78,7 +112,7 @@ test('a proxied load that failed for another reason is loaded again, then report
   t.after(() => { delete globalThis.document; delete globalThis.location; delete globalThis.__tiloFetchProxy; });
   const {el, fail} = fakePage(null);
   const media = new TiloMediaElement();
-  media.open(video);
+  media.open(film);
   fail();
   const proxied = el.src;
   for (let attempt = 0; attempt < 3; attempt += 1) {
