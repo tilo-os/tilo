@@ -4,6 +4,7 @@
 //! runtime and `LocalSet` while keeping one Cap'n Proto connection alive for
 //! its whole lifetime. It never reaches for a host path or executable.
 
+pub use crate::app_host_capnp::CatalogueRefusal as WireCatalogueRefusal;
 use crate::app_host_capnp::{
     FlatpakAction as WireFlatpakAction, Pinning as WirePinning, RemoteAction as WireRemoteAction,
     app_host,
@@ -15,24 +16,112 @@ use package_store::InstalledPackage;
 pub use pending::PendingRead;
 use tilo_app_package::PackageId;
 
-/// What a catalogue read's error starts with when the repository's catalogue
-/// is authentic but expired. Cap'n Proto carries errors as text, so the host
-/// writes this marker and [`expired_catalogue`] reads it back: the Store then
-/// says the catalogue expired instead of that the repository is unreachable.
-const EXPIRED_CATALOGUE: &str = "[expired-catalogue]";
-
-/// The catalogue read error the host sends for a catalogue that expired at
-/// `expired_at_unix`.
-pub fn expired_catalogue_error(expired_at_unix: u64) -> String {
-    format!(
-        "{EXPIRED_CATALOGUE} the repository's catalogue expired at {expired_at_unix} (Unix time) and has not been renewed"
-    )
+/// Why the host refused a catalogue read: the one thing the Store decides
+/// what to say from. It travels typed on the wire (`CatalogueRefusal`), so a
+/// reworded detail never changes how the Store handles it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The system's interface declaration cannot be read: the system needs
+    /// an update before any repository can be judged.
+    SystemUpdateNeeded,
+    /// The repository's catalogue is authentic but expired.
+    Expired,
+    /// The repository did not answer within the read's deadline.
+    TimedOut,
+    /// A device-provided Flatpak repository has no OCI summary yet.
+    DeviceRepositoryStale,
 }
 
-/// Whether a catalogue read failed because the repository's catalogue is
-/// authentic but expired. The transport may prefix the host's text.
-pub fn expired_catalogue(error: &str) -> bool {
-    error.contains(EXPIRED_CATALOGUE)
+impl Refusal {
+    /// This refusal as the wire carries it.
+    #[must_use]
+    pub fn to_wire(self) -> WireCatalogueRefusal {
+        match self {
+            Self::SystemUpdateNeeded => WireCatalogueRefusal::SystemUpdateNeeded,
+            Self::Expired => WireCatalogueRefusal::Expired,
+            Self::TimedOut => WireCatalogueRefusal::TimedOut,
+            Self::DeviceRepositoryStale => WireCatalogueRefusal::DeviceRepositoryStale,
+        }
+    }
+
+    /// The refusal the wire names; `None` for `none`.
+    #[must_use]
+    pub fn from_wire(wire: WireCatalogueRefusal) -> Option<Self> {
+        match wire {
+            WireCatalogueRefusal::None => None,
+            WireCatalogueRefusal::SystemUpdateNeeded => Some(Self::SystemUpdateNeeded),
+            WireCatalogueRefusal::Expired => Some(Self::Expired),
+            WireCatalogueRefusal::TimedOut => Some(Self::TimedOut),
+            WireCatalogueRefusal::DeviceRepositoryStale => Some(Self::DeviceRepositoryStale),
+        }
+    }
+}
+
+/// Why a catalogue read gave no rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CatalogueError {
+    /// The host refused it for a reason the Store explains.
+    Refused {
+        refusal: Refusal,
+        /// For logs; never decides anything.
+        detail: String,
+    },
+    /// Anything else: the transport, the host, the repository.
+    Failed(String),
+}
+
+impl CatalogueError {
+    /// The refusal, when the host refused.
+    #[must_use]
+    pub fn refusal(&self) -> Option<Refusal> {
+        match self {
+            Self::Refused { refusal, .. } => Some(*refusal),
+            Self::Failed(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CatalogueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused { refusal, detail } => write!(f, "{refusal:?}: {detail}"),
+            Self::Failed(error) => f.write_str(error),
+        }
+    }
+}
+
+impl From<String> for CatalogueError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl From<&str> for CatalogueError {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.to_owned())
+    }
+}
+
+/// The refusal a catalogue read's results name, if any.
+fn catalogue_refusal(
+    refusal: Result<WireCatalogueRefusal, capnp::NotInSchema>,
+    detail: Result<capnp::text::Reader<'_>, capnp::Error>,
+) -> Option<CatalogueError> {
+    // A refusal this client does not know is a host from another runtime
+    // version, which the interface check keeps from happening; read it as
+    // a failure rather than as rows.
+    let refusal = match refusal {
+        Ok(wire) => Refusal::from_wire(wire)?,
+        Err(unknown) => {
+            return Some(CatalogueError::Failed(format!(
+                "the app host refused the read for a reason this Store does not know ({unknown})"
+            )));
+        }
+    };
+    Some(CatalogueError::Refused {
+        refusal,
+        detail: text_result(detail).unwrap_or_default(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -457,7 +546,7 @@ impl BlockingClient {
     ///
     /// # Errors
     /// Returns why the configured repository cannot be verified or read.
-    pub fn registry_catalogue(&self, registry: &str) -> Result<String, String> {
+    pub fn registry_catalogue(&self, registry: &str) -> Result<String, CatalogueError> {
         self.complete(self.begin_registry_catalogue(registry))
     }
 
@@ -491,7 +580,7 @@ impl BlockingClient {
     ///
     /// # Errors
     /// Returns why no verified catalogue is held for the repository.
-    pub fn last_verified_catalogue(&self, registry: &str) -> Result<String, String> {
+    pub fn last_verified_catalogue(&self, registry: &str) -> Result<String, CatalogueError> {
         self.complete(self.begin_last_verified_catalogue(registry))
     }
 
@@ -499,7 +588,11 @@ impl BlockingClient {
     ///
     /// # Errors
     /// Returns why the repository cannot be read on this device.
-    pub fn flatpak_catalogue(&self, remote: &str, user_managed: bool) -> Result<String, String> {
+    pub fn flatpak_catalogue(
+        &self,
+        remote: &str,
+        user_managed: bool,
+    ) -> Result<String, CatalogueError> {
         self.complete(self.begin_flatpak_catalogue(remote, user_managed))
     }
 

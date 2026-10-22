@@ -78,27 +78,31 @@ pub fn refreshed_remotes(rows: &str, previous: &[Remote]) -> Vec<Remote> {
     remotes
 }
 
-/// Explain a device repository's known permission refusal in human terms.
-pub fn remote_error(remote: &Remote, error: &str) -> String {
+/// What the Store says when the Flatpak repository `remote` could not be
+/// read: decided by the host's typed refusal, never by an error's text.
+pub fn remote_error(remote: &Remote, error: &app_host::client::CatalogueError) -> String {
+    use app_host::client::Refusal;
     tracing::warn!(repository = %remote.name, %error, "could not read Flatpak repository");
-    if !remote.user_managed && error.contains("GenerateOciSummary") {
-        ui::i18n::I18nManager::format(
+    match error.refusal() {
+        Some(Refusal::DeviceRepositoryStale) => ui::i18n::I18nManager::format(
             "store-device-repository-refresh",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
-        )
-    } else if error.contains("command timed out after ") {
-        ui::i18n::I18nManager::format(
+        ),
+        Some(Refusal::TimedOut) => ui::i18n::I18nManager::format(
             "store-repository-timeout",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
-        )
-    } else {
-        ui::i18n::I18nManager::format(
+        ),
+        Some(Refusal::SystemUpdateNeeded) => ui::i18n::I18nManager::format(
+            "store-system-update-needed",
+            &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
+        ),
+        Some(Refusal::Expired) | None => ui::i18n::I18nManager::format(
             "store-repository-read-error",
             &[
                 ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
                 ("error", ui::i18n::ArgValue::Text(error.to_string())),
             ],
-        )
+        ),
     }
 }
 
@@ -566,7 +570,33 @@ mod tests {
         };
         let message = remote_error(
             &remote,
-            "Failed: remote exception: remote exception: command timed out after 8000 ms",
+            &app_host::client::CatalogueError::Refused {
+                refusal: app_host::client::Refusal::TimedOut,
+                detail: "Flatpak repository query: command timed out after 8000 ms".into(),
+            },
+        );
+        // Only the refusal decides: any wording of the detail reads the same.
+        for detail in ["", "it took too long", "Flatpak repository query timed out"] {
+            assert_eq!(
+                remote_error(
+                    &remote,
+                    &app_host::client::CatalogueError::Refused {
+                        refusal: app_host::client::Refusal::TimedOut,
+                        detail: detail.into(),
+                    },
+                ),
+                message
+            );
+        }
+        // And text alone never makes a refusal.
+        assert_ne!(
+            remote_error(
+                &remote,
+                &app_host::client::CatalogueError::Failed(
+                    "command timed out after 8000 ms GenerateOciSummary".into()
+                ),
+            ),
+            message
         );
         assert_eq!(
             message,

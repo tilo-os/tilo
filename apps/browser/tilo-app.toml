@@ -72,7 +72,7 @@ mode = "host"
 collab = "optional@2"
 tilo-fs = "optional@2"
 shell-ui = "optional@13"
-app-host = "optional@2"
+app-host = "optional@3"
 
 [entrypoint]
 bin             = "bin/browser"

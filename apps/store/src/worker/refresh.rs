@@ -3,7 +3,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use ui::time::Instant;
 
-use app_host::client::{FlatpakStatus, ListedPackage, PackageAbout, PendingRead};
+use app_host::client::{
+    CatalogueError, FlatpakStatus, ListedPackage, PackageAbout, PendingRead, Refusal,
+};
 use package_store::InstalledPackage;
 
 use super::{
@@ -29,9 +31,9 @@ enum Read {
     Status(PendingRead<FlatpakStatus>),
     Repositories(PendingRead<String>),
     Installed(PendingRead<Vec<ListedPackage>>),
-    LastVerified(RegistryConfig, PendingRead<String>),
-    Native(RegistryConfig, PendingRead<String>),
-    Flatpak(Remote, PendingRead<String>),
+    LastVerified(RegistryConfig, PendingRead<String, CatalogueError>),
+    Native(RegistryConfig, PendingRead<String, CatalogueError>),
+    Flatpak(Remote, PendingRead<String, CatalogueError>),
     Flathub(PendingRead<FlathubFeed>),
 }
 
@@ -39,9 +41,9 @@ enum Response {
     Status(Result<FlatpakStatus, String>),
     Repositories(Result<String, String>),
     Installed(Result<Vec<ListedPackage>, String>),
-    LastVerified(RegistryConfig, Result<String, String>),
-    Native(RegistryConfig, Result<String, String>),
-    Flatpak(Remote, Result<String, String>),
+    LastVerified(RegistryConfig, Result<String, CatalogueError>),
+    Native(RegistryConfig, Result<String, CatalogueError>),
+    Flatpak(Remote, Result<String, CatalogueError>),
     Flathub(Result<FlathubFeed, String>),
 }
 
@@ -70,9 +72,11 @@ impl Read {
             Self::Status(_) => Response::Status(Err(error)),
             Self::Repositories(_) => Response::Repositories(Err(error)),
             Self::Installed(_) => Response::Installed(Err(error)),
-            Self::LastVerified(registry, _) => Response::LastVerified(registry.clone(), Err(error)),
-            Self::Native(registry, _) => Response::Native(registry.clone(), Err(error)),
-            Self::Flatpak(remote, _) => Response::Flatpak(remote.clone(), Err(error)),
+            Self::LastVerified(registry, _) => {
+                Response::LastVerified(registry.clone(), Err(timed_out(error)))
+            }
+            Self::Native(registry, _) => Response::Native(registry.clone(), Err(timed_out(error))),
+            Self::Flatpak(remote, _) => Response::Flatpak(remote.clone(), Err(timed_out(error))),
             Self::Flathub(_) => Response::Flathub(Err(error)),
         }
     }
@@ -373,37 +377,40 @@ impl Refresh {
     /// The host's last verified catalogue stands in until the repository
     /// answers. Without one (none accepted yet, expired, or a host that
     /// predates it) the fresh read alone decides, so this reports nothing.
-    fn last_verified(&mut self, registry: RegistryConfig, result: Result<String, String>) {
+    fn last_verified(&mut self, registry: RegistryConfig, result: Result<String, CatalogueError>) {
         if self.answered.contains(&registry.name) {
             return;
         }
-        if let Ok(entries) = result.and_then(|json| {
+        if let Ok(entries) = result.map_err(|error| error.to_string()).and_then(|json| {
             serde_json::from_str(&json).map_err(|error: serde_json::Error| error.to_string())
         }) {
             self.native.insert(registry.name, entries);
         }
     }
 
-    fn native_response(&mut self, registry: RegistryConfig, result: Result<String, String>) {
+    fn native_response(
+        &mut self,
+        registry: RegistryConfig,
+        result: Result<String, CatalogueError>,
+    ) {
         let entries = result.and_then(|json| {
-            serde_json::from_str(&json)
-                .map_err(|error| format!("Invalid verified catalogue: {error}"))
+            serde_json::from_str(&json).map_err(|error| {
+                CatalogueError::Failed(format!("Invalid verified catalogue: {error}"))
+            })
         });
         match entries {
             Ok(entries) => {
                 self.answered.insert(registry.name.clone());
                 self.native.insert(registry.name, entries);
             }
-            // An expired catalogue is the repository's to renew, not a
-            // connection to check: say which, and that installed apps run on.
-            Err(error) if app_host::client::expired_catalogue(&error) => {
-                self.errors.push((
-                    0,
-                    ui::i18n!("store-repository-expired", "name" => registry.name.clone()),
-                ));
-                self.expired.push(registry.name);
+            Err(error) => {
+                // An expired catalogue is the repository's to renew, not a
+                // connection to check: say which, and that installed apps run on.
+                if error.refusal() == Some(Refusal::Expired) {
+                    self.expired.push(registry.name.clone());
+                }
+                self.errors.push((0, native_error(&registry.name, &error)));
             }
-            Err(error) => self.errors.push((0, native_error(&registry.name, &error))),
         }
     }
 
@@ -582,17 +589,30 @@ impl Refresh {
     }
 }
 
+/// A catalogue read the Store stopped waiting for: timed out, as typed as
+/// the host's own deadline.
+fn timed_out(detail: String) -> CatalogueError {
+    CatalogueError::Refused {
+        refusal: Refusal::TimedOut,
+        detail,
+    }
+}
+
 /// What the Store says when the repository `name` could not be read.
 ///
-/// The app host refuses every repository while the system's interface
-/// declaration cannot be read ([`app_host::SYSTEM_UPDATE_NEEDED`]): then
-/// the system needs an update, and saying so is the way out, where the
-/// transport details would read as an unreachable repository.
-fn native_error(name: &str, error: &str) -> String {
-    if error.contains(app_host::SYSTEM_UPDATE_NEEDED) {
-        ui::i18n!("store-system-update-needed", "name" => name.to_owned())
-    } else {
-        format!("Could not load {name}: {error}")
+/// Decided by the host's typed refusal alone, never by the text of an error:
+/// an expired catalogue is the repository's to renew; while the system's
+/// interface declaration cannot be read the system needs an update, and
+/// saying so is the way out, where transport details would read as an
+/// unreachable repository.
+fn native_error(name: &str, error: &CatalogueError) -> String {
+    match error.refusal() {
+        Some(Refusal::Expired) => ui::i18n!("store-repository-expired", "name" => name.to_owned()),
+        Some(Refusal::SystemUpdateNeeded) => {
+            ui::i18n!("store-system-update-needed", "name" => name.to_owned())
+        }
+        Some(Refusal::TimedOut) => ui::i18n!("store-repository-timeout", "name" => name.to_owned()),
+        Some(Refusal::DeviceRepositoryStale) | None => format!("Could not load {name}: {error}"),
     }
 }
 
@@ -858,11 +878,12 @@ mod tests {
             &mut state,
             Response::Native(
                 main_registry(),
-                Err(format!(
-                    "Failed: remote exception: {}: /usr/share/tilo/system-interfaces.toml is not a \
-                     system-interface declaration: invalid type: integer `2`, expected a sequence",
-                    app_host::SYSTEM_UPDATE_NEEDED
-                )),
+                Err(CatalogueError::Refused {
+                    refusal: Refusal::SystemUpdateNeeded,
+                    detail: "/usr/share/tilo/system-interfaces.toml is not a system-interface \
+                             declaration: invalid type: integer `2`, expected a sequence"
+                        .into(),
+                }),
             ),
         );
         refresh.rebuild(&mut state);
@@ -888,14 +909,114 @@ mod tests {
         );
     }
 
+    /// The Store's state follows the host's typed refusal alone: the same
+    /// refusal with any wording of its detail, or with none, reads the same,
+    /// and a failure whose text merely mentions a refusal is not one.
+    #[test]
+    fn a_refusal_reads_the_same_whatever_its_detail_says() {
+        crate::resource::STORE_CATALOG.ensure();
+        let state_after = |error: CatalogueError| {
+            let (mut state, mut refresh) = refresh_with_bundled_mail();
+            refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
+            refresh.rebuild(&mut state);
+            (state.catalogue_error, state.expired_repositories)
+        };
+        for refusal in [
+            Refusal::SystemUpdateNeeded,
+            Refusal::Expired,
+            Refusal::TimedOut,
+        ] {
+            let states: Vec<_> = [
+                "",
+                "the declaration is unreadable",
+                "command timed out after 8000 ms",
+                "[expired-catalogue] Failed: remote exception: something else entirely",
+            ]
+            .into_iter()
+            .map(|detail| {
+                state_after(CatalogueError::Refused {
+                    refusal,
+                    detail: detail.into(),
+                })
+            })
+            .collect();
+            assert!(
+                states.windows(2).all(|pair| pair[0] == pair[1]),
+                "{refusal:?}: {states:?}"
+            );
+        }
+        let (error, expired) = state_after(CatalogueError::Failed(
+            "[expired-catalogue] this system needs an update to read app repositories: \
+             command timed out after 8000 ms"
+                .into(),
+        ));
+        assert!(expired.is_empty());
+        let error = error.unwrap();
+        for refused in ["store-system-update-needed", "store-repository-expired"] {
+            let says = ui::i18n::I18nManager::format(
+                refused,
+                &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],
+            );
+            assert!(!error.lines().any(|line| line == says), "{error}");
+        }
+    }
+
+    /// A host that refuses every catalogue read with one refusal and the
+    /// detail it is given.
+    struct RefusingHost(app_host::client::WireCatalogueRefusal, &'static str);
+    impl app_host::app_host_capnp::app_host::Server for RefusingHost {
+        fn registry_catalogue(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::app_host_capnp::app_host::RegistryCatalogueParams,
+            mut results: app_host::app_host_capnp::app_host::RegistryCatalogueResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let mut out = results.get();
+            out.set_refusal(self.0);
+            out.set_detail(self.1);
+            std::future::ready(Ok(()))
+        }
+    }
+
+    /// The refusal crosses the wire typed: whatever the host's detail says,
+    /// the Store's pending read gets the refusal, and the same state follows.
+    #[test]
+    fn a_refusal_crosses_the_wire_typed_whatever_its_detail_says() {
+        crate::resource::STORE_CATALOG.ensure();
+        let mut seen = Vec::new();
+        for detail in [
+            "",
+            "declaration unreadable",
+            "Failed: remote exception: timed out",
+        ] {
+            let (service, connection) = app_host::testing::ConnectedService::start(RefusingHost(
+                app_host::client::WireCatalogueRefusal::SystemUpdateNeeded,
+                detail,
+            ))
+            .unwrap();
+            let client = app_host::client::BlockingClient::from_connected_fd(connection).unwrap();
+            let error = client.registry_catalogue(MAIN).unwrap_err();
+            assert_eq!(
+                error.refusal(),
+                Some(Refusal::SystemUpdateNeeded),
+                "{error}"
+            );
+            let (mut state, mut refresh) = refresh_with_bundled_mail();
+            refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
+            refresh.rebuild(&mut state);
+            seen.push(state.catalogue_error);
+            drop(client);
+            service.shutdown().unwrap();
+        }
+        assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
+    }
+
     #[test]
     fn an_expired_catalogue_is_reported_as_expired() {
         let (mut state, mut refresh) = refresh_with_bundled_mail();
-        // As the host's error reaches the pending read, transport prefix included.
-        let error = format!(
-            "remote exception: Failed: {}",
-            app_host::client::expired_catalogue_error(1_792_587_897)
-        );
+        let error = CatalogueError::Refused {
+            refusal: Refusal::Expired,
+            detail: "the repository's catalogue expired at 1792587897 (Unix time)".into(),
+        };
         refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
         refresh.rebuild(&mut state);
         assert_eq!(state.expired_repositories, [MAIN]);
@@ -903,7 +1024,7 @@ mod tests {
         // app::tests::an_expired_catalogue_is_named_as_expired_not_as_unreachable),
         // never as the host's raw text.
         let reported = state.catalogue_error.as_deref().unwrap();
-        assert!(!reported.contains("[expired-catalogue]"), "{reported}");
+        assert!(!reported.contains("1792587897"), "{reported}");
         assert!(!reported.contains("Could not load"), "{reported}");
 
         // Any other failure is not called expired.

@@ -12,9 +12,10 @@ use std::{io::Write as _, sync::Arc};
 use capnp::Error;
 
 use crate::app_host_capnp::{
-    FlatpakAction as WireFlatpakAction, Pinning as WirePinning, RemoteAction as WireRemoteAction,
-    app_host,
+    CatalogueRefusal as WireCatalogueRefusal, FlatpakAction as WireFlatpakAction,
+    Pinning as WirePinning, RemoteAction as WireRemoteAction, app_host,
 };
+use crate::client::Refusal;
 use crate::install::{InstallExpectation, install_verified_tapp};
 use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 use tilo_app_package::id::PackageId;
@@ -352,11 +353,53 @@ fn require_flatpak_selector(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// A catalogue read that gave no rows: refused for a reason the Store
+/// explains (carried typed on the wire), or failed.
+#[derive(Debug)]
+enum ReadError {
+    Refused(Refusal, String),
+    Failed(Error),
+}
+
+impl From<Error> for ReadError {
+    fn from(error: Error) -> Self {
+        Self::Failed(error)
+    }
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refusal, detail) => write!(f, "{refusal:?}: {detail}"),
+            Self::Failed(error) => error.fmt(f),
+        }
+    }
+}
+
+/// Write a catalogue read's outcome into its results: the rows, or the
+/// refusal with its detail; anything else is raised.
+fn set_catalogue(
+    read: Result<String, ReadError>,
+    set: impl FnOnce(&str, WireCatalogueRefusal, &str),
+) -> Result<(), Error> {
+    match read {
+        Ok(rows) => {
+            set(&rows, WireCatalogueRefusal::None, "");
+            Ok(())
+        }
+        Err(ReadError::Refused(refusal, detail)) => {
+            set("", refusal.to_wire(), &detail);
+            Ok(())
+        }
+        Err(ReadError::Failed(error)) => Err(error),
+    }
+}
+
 fn flatpak_catalogue_from(
     binary: &std::path::Path,
     remote: &str,
     user_managed: bool,
-) -> Result<String, Error> {
+) -> Result<String, ReadError> {
     flatpak_catalogue_with_timeout(
         binary,
         remote,
@@ -370,7 +413,7 @@ fn flatpak_catalogue_with_timeout(
     remote: &str,
     user_managed: bool,
     timeout: std::time::Duration,
-) -> Result<String, Error> {
+) -> Result<String, ReadError> {
     require_flatpak_selector(remote)?;
     let started = std::time::Instant::now();
     let cached = flatpak_catalogue_read(binary, remote, user_managed, true, timeout)?;
@@ -382,17 +425,29 @@ fn flatpak_catalogue_with_timeout(
             // change remote settings here. Both reads share the same bounded deadline.
             let remaining = timeout.saturating_sub(started.elapsed());
             if remaining.is_zero() {
-                return Err(Error::failed("Flatpak repository query timed out".into()));
+                return Err(ReadError::Refused(
+                    Refusal::TimedOut,
+                    "Flatpak repository query timed out".into(),
+                ));
             }
             flatpak_catalogue_read(binary, remote, user_managed, false, remaining)?
         } else {
             cached
         };
     if !output.status.success() {
-        return Err(Error::failed(format!(
-            "Flatpak repository query failed: {}",
-            safe_host_diagnostic(&output.stderr)
-        )));
+        let diagnostic = safe_host_diagnostic(&output.stderr);
+        // Flatpak names a device-provided OCI repository without a summary
+        // only in its diagnostic; this is the one place that reads it, and
+        // the Store gets the refusal, not the text.
+        if !user_managed && diagnostic.contains("GenerateOciSummary") {
+            return Err(ReadError::Refused(
+                Refusal::DeviceRepositoryStale,
+                format!("Flatpak repository query failed: {diagnostic}"),
+            ));
+        }
+        return Err(ReadError::Failed(Error::failed(format!(
+            "Flatpak repository query failed: {diagnostic}"
+        ))));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -403,7 +458,7 @@ fn flatpak_catalogue_read(
     user_managed: bool,
     cached: bool,
     timeout: std::time::Duration,
-) -> Result<bounded_command::Output, Error> {
+) -> Result<bounded_command::Output, ReadError> {
     let mut command = std::process::Command::new(binary);
     // Classify only Flatpak's explicit cache absence, independently of the user's
     // locale. No diagnostic text is used as catalogue or authority data.
@@ -420,7 +475,15 @@ fn flatpak_catalogue_read(
         "--",
         remote,
     ]);
-    bounded_command::run_prepared(command, None, 4 * 1024 * 1024, timeout).map_err(failed)
+    bounded_command::run_prepared(command, None, 4 * 1024 * 1024, timeout).map_err(|error| {
+        match error {
+            bounded_command::Error::Timeout(_) => ReadError::Refused(
+                Refusal::TimedOut,
+                format!("Flatpak repository query: {error}"),
+            ),
+            other => ReadError::Failed(failed(other)),
+        }
+    })
 }
 
 fn flatpak_remote_enabled_from(
@@ -609,7 +672,7 @@ fn repositories_json_from(app: &std::path::Path) -> Result<String, Error> {
 
 const MAX_REGISTRY_CATALOGUE_BYTES: usize = 4 * 1024 * 1024;
 
-fn registry_catalogue(registry: &str) -> Result<String, Error> {
+fn registry_catalogue(registry: &str) -> Result<String, ReadError> {
     system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
     let configured = app_cli::config::load_registries();
     registry_catalogue_from(&configured, registry, app_cli::client::fetch_entries)
@@ -617,7 +680,7 @@ fn registry_catalogue(registry: &str) -> Result<String, Error> {
 
 /// The catalogue last accepted from `registry`, without the network, under
 /// the same configuration and size rules as a fresh one.
-fn last_verified_catalogue(registry: &str) -> Result<String, Error> {
+fn last_verified_catalogue(registry: &str) -> Result<String, ReadError> {
     system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
     let configured = app_cli::config::load_registries();
     registry_catalogue_from(
@@ -628,22 +691,22 @@ fn last_verified_catalogue(registry: &str) -> Result<String, Error> {
 }
 
 /// Refuse to read any repository while the system's interface declaration
-/// at `path` cannot be read, with [`crate::SYSTEM_UPDATE_NEEDED`] first.
+/// at `path` cannot be read ([`Refusal::SystemUpdateNeeded`]).
 ///
 /// Which builds of an app run here is decided against that declaration.
 /// Unreadable, it is written for another version of the system than this
 /// app host (a component swapped over an older image), so the Store must
 /// say that the system needs an update, not list apps judged against
 /// nothing or show the repository as unavailable.
-fn system_declaration_readable(path: &std::path::Path) -> Result<(), Error> {
+fn system_declaration_readable(path: &std::path::Path) -> Result<(), ReadError> {
     match package_store::interfaces::read_interfaces(path) {
         Ok(_) => Ok(()),
         Err(error) => {
             tracing::error!(%error, "the system's interface declaration cannot be read; repositories are refused until the system is updated");
-            Err(Error::failed(format!(
-                "{}: {error}",
-                crate::SYSTEM_UPDATE_NEEDED
-            )))
+            Err(ReadError::Refused(
+                Refusal::SystemUpdateNeeded,
+                error.to_string(),
+            ))
         }
     }
 }
@@ -655,9 +718,9 @@ fn registry_catalogue_from(
         &app_cli::config::RegistryConfig,
     )
         -> Result<Vec<app_cli::client::VerifiedEntry>, app_cli::client::RegistryError>,
-) -> Result<String, Error> {
+) -> Result<String, ReadError> {
     if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
-        return Err(Error::failed("invalid repository name".into()));
+        return Err(Error::failed("invalid repository name".into()).into());
     }
     let registry = configured
         .registries
@@ -665,16 +728,17 @@ fn registry_catalogue_from(
         .find(|registry| registry.name == name && registry.enabled)
         .ok_or_else(|| Error::failed("repository is not configured and enabled".into()))?;
     let entries = fetch(registry).map_err(|error| match error {
-        app_cli::client::RegistryError::Expired { expired_at_unix } => {
-            Error::failed(crate::client::expired_catalogue_error(expired_at_unix))
+        app_cli::client::RegistryError::Expired { .. } => {
+            ReadError::Refused(Refusal::Expired, error.to_string())
         }
-        other => failed(other),
+        other => ReadError::Failed(failed(other)),
     })?;
     let json = serde_json::to_string(&entries).map_err(failed)?;
     if json.len() > MAX_REGISTRY_CATALOGUE_BYTES {
         return Err(Error::failed(
             "verified repository catalogue exceeds the response limit".into(),
-        ));
+        )
+        .into());
     }
     Ok(json)
 }
@@ -1370,11 +1434,15 @@ impl app_host::Server for AppHostServer {
                 .map_err(failed)?
                 .to_string()
                 .map_err(failed)?;
-            let json = tokio::task::spawn_blocking(move || registry_catalogue(&registry))
+            let read = tokio::task::spawn_blocking(move || registry_catalogue(&registry))
                 .await
-                .map_err(failed)??;
-            results.get().set_entries(&json);
-            Ok(())
+                .map_err(failed)?;
+            set_catalogue(read, |rows, refusal, detail| {
+                let mut out = results.get();
+                out.set_entries(rows);
+                out.set_refusal(refusal);
+                out.set_detail(detail);
+            })
         }
     }
 
@@ -1395,11 +1463,15 @@ impl app_host::Server for AppHostServer {
                 .map_err(failed)?
                 .to_string()
                 .map_err(failed)?;
-            let json = tokio::task::spawn_blocking(move || last_verified_catalogue(&registry))
+            let read = tokio::task::spawn_blocking(move || last_verified_catalogue(&registry))
                 .await
-                .map_err(failed)??;
-            results.get().set_entries(&json);
-            Ok(())
+                .map_err(failed)?;
+            set_catalogue(read, |rows, refusal, detail| {
+                let mut out = results.get();
+                out.set_entries(rows);
+                out.set_refusal(refusal);
+                out.set_detail(detail);
+            })
         }
     }
     #[allow(
@@ -1427,9 +1499,13 @@ impl app_host::Server for AppHostServer {
                 )
             })
             .await
-            .map_err(failed)??;
-            results.get().set_rows(&rows);
-            Ok(())
+            .map_err(failed)?;
+            set_catalogue(rows, |rows, refusal, detail| {
+                let mut out = results.get();
+                out.set_rows(rows);
+                out.set_refusal(refusal);
+                out.set_detail(detail);
+            })
         }
     }
 
@@ -1505,11 +1581,11 @@ mod command_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("system-interfaces.toml");
         std::fs::write(&path, "[interfaces]\nsystem = [1]\nshell-ui = [1]\n").unwrap();
-        let refused = super::system_declaration_readable(&path)
-            .unwrap_err()
-            .to_string();
-        assert!(refused.contains(crate::SYSTEM_UPDATE_NEEDED), "{refused}");
-        assert!(refused.contains("system-interfaces.toml"), "{refused}");
+        let refused = super::system_declaration_readable(&path).unwrap_err();
+        assert!(
+            matches!(&refused, super::ReadError::Refused(crate::client::Refusal::SystemUpdateNeeded, detail) if detail.contains("system-interfaces.toml")),
+            "{refused}"
+        );
 
         std::fs::write(
             &path,
@@ -1557,15 +1633,20 @@ mod command_tests {
             })
         })
         .unwrap_err();
-        // What the Store's pending read sees is the error's text.
-        assert!(crate::client::expired_catalogue(&error.to_string()));
+        assert!(
+            matches!(
+                error,
+                super::ReadError::Refused(crate::client::Refusal::Expired, _)
+            ),
+            "{error}"
+        );
         let other = super::registry_catalogue_from(&configured, "Configured source", |_| {
             Err(app_cli::client::RegistryError::Http(
                 "connection refused".into(),
             ))
         })
         .unwrap_err();
-        assert!(!crate::client::expired_catalogue(&other.to_string()));
+        assert!(matches!(other, super::ReadError::Failed(_)), "{other}");
     }
 
     #[test]
@@ -1877,7 +1958,7 @@ printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
     fn catalogue_within_hang_bound(
         binary: &std::path::Path,
         user_managed: bool,
-    ) -> Result<String, super::Error> {
+    ) -> Result<String, super::ReadError> {
         super::flatpak_catalogue_with_timeout(
             binary,
             "tools",
