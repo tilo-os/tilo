@@ -516,6 +516,20 @@ files = [
   { from = "tilo-system-extension-manager", to = "/usr/libexec/tilo-system-extension-manager", mode = "0755" },
 ]
 
+# This account's identity from a shell, for headless devices: create, status,
+# pair, approve, list and revoke devices. tilo-enroll and
+# tilo-home-peer-control do the privileged steps.
+[[component]]
+name = "identity-cli"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-identity-host"]
+bins = ["tilo-identity"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-identity", to = "/usr/bin/tilo-identity", mode = "0755" },
+]
+
 [[component]]
 name = "crypto"
 kind = "userspace"

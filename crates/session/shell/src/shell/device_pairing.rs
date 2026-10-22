@@ -32,11 +32,15 @@ use std::time::Duration;
 
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
+#[cfg(test)]
+use tilo_identity_host::device_admin::CONTROL_HELPER;
+pub(crate) use tilo_identity_host::device_admin::{
+    Approval, PairRole, PersonPaths as IdentityPaths, command_error, node_id,
+};
+use tilo_identity_host::device_admin::{Candidate, ENROLL, approval_args};
 use tilo_lock::MutexRecover as _;
 
-const ENROLL: &str = "/usr/bin/tilo-enroll";
 const PKEXEC: &str = "/usr/bin/pkexec";
-const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
 /// How long `tilo-enroll` listens for an announcing device.
 const LISTEN_SECONDS: &str = "15";
@@ -171,68 +175,6 @@ pub(crate) enum Started {
     Later(Pending<Answer>),
 }
 
-/// The kind of device a pairing admits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PairRole {
-    /// Another of the person's own devices.
-    PersonalDevice,
-    /// An always-on home server that keeps the person's workspaces.
-    HomePeer,
-}
-
-impl PairRole {
-    /// The role `text` names: `personal-device` or `home-peer`.
-    pub(crate) fn parse(text: &str) -> Result<Self, String> {
-        match text.trim() {
-            "personal-device" => Ok(Self::PersonalDevice),
-            "home-peer" => Ok(Self::HomePeer),
-            _ => Err("role must be personal-device or home-peer".into()),
-        }
-    }
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::PersonalDevice => "personal-device",
-            Self::HomePeer => "home-peer",
-        }
-    }
-
-    const fn discover_command(self) -> &'static str {
-        match self {
-            Self::PersonalDevice => "discover-device",
-            Self::HomePeer => "discover",
-        }
-    }
-
-    const fn approve_command(self) -> &'static str {
-        match self {
-            Self::PersonalDevice => "approve-device",
-            Self::HomePeer => "approve-enrollment",
-        }
-    }
-}
-
-/// A device found nearby, as `tilo-enroll discover` reports it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-struct Candidate {
-    device_node_id: String,
-    relay_service_node_id: String,
-    label: String,
-    verification_code: String,
-}
-
-impl Candidate {
-    fn answer(&self, role: PairRole) -> serde_json::Value {
-        serde_json::json!({
-            "role": role.as_str(),
-            "device": self.device_node_id,
-            "service": self.relay_service_node_id,
-            "label": self.label,
-            "verification_code": self.verification_code,
-        })
-    }
-}
-
 /// One program the host runs for a pairing step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HostCommand {
@@ -253,61 +195,6 @@ pub(crate) struct Finished {
 /// up (and stopping the child) once `stop` is raised.
 pub(crate) type Runner =
     Arc<dyn Fn(&HostCommand, &AtomicBool) -> Result<Finished, String> + Send + Sync>;
-
-/// An approval of a device discovered here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Approval {
-    pub(crate) role: PairRole,
-    /// The device's key, in lowercase hex.
-    pub(crate) device: String,
-    /// The relay service node id it announced, in lowercase hex.
-    pub(crate) service: String,
-    /// For a home peer, the workspaces it keeps; `None` takes the relay
-    /// configuration's.
-    pub(crate) workspace_ids: Option<Vec<u64>>,
-}
-
-/// Where the identity an approved device joins lives.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct IdentityPaths {
-    /// The device root (`/var/lib/tilo` on an installed system).
-    pub(crate) root: PathBuf,
-    /// The person's identity directory.
-    pub(crate) dir: PathBuf,
-}
-
-impl IdentityPaths {
-    /// The identity this session runs as: `$TILO_IDENTITY_ROOT`, else the
-    /// system device root when it exists, else the person's data directory;
-    /// and the person's identity directory.
-    pub(crate) fn from_env() -> Result<Self, String> {
-        let root = std::env::var_os("TILO_IDENTITY_ROOT").map_or_else(
-            || {
-                if Path::new("/var/lib/tilo/device").is_dir() {
-                    PathBuf::from("/var/lib/tilo")
-                } else {
-                    tilo_paths::data_dir()
-                        .unwrap_or_else(|| PathBuf::from(".local/share"))
-                        .join("tilo")
-                }
-            },
-            PathBuf::from,
-        );
-        let dir = runtime_identity::identity_dir_from_env()
-            .map_err(|error| format!("could not find your identity: {error}"))?;
-        Ok(Self { root, dir })
-    }
-}
-
-/// A device key or relay service node id: 32 bytes as hex, lowercased.
-pub(crate) fn node_id(text: &str, what: &str) -> Result<String, String> {
-    let text = text.trim();
-    if text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Ok(text.to_ascii_lowercase())
-    } else {
-        Err(format!("{what} must be 64 hexadecimal characters"))
-    }
-}
 
 #[derive(Default)]
 struct Flights {
@@ -553,27 +440,9 @@ pub(crate) fn approval_command(
     paths: &IdentityPaths,
     workspace_ids: &[u64],
 ) -> HostCommand {
-    let mut args: Vec<OsString> = [CONTROL_HELPER, approval.role.approve_command()]
-        .into_iter()
-        .map(OsString::from)
-        .collect();
-    args.push("--identity-root".into());
-    args.push(paths.root.clone().into_os_string());
-    args.push("--identity-dir".into());
-    args.push(paths.dir.clone().into_os_string());
-    args.push("--expected-device".into());
-    args.push(approval.device.clone().into());
-    args.push("--expected-service".into());
-    args.push(approval.service.clone().into());
-    if approval.role == PairRole::HomePeer {
-        for id in workspace_ids {
-            args.push("--workspace-id".into());
-            args.push(id.to_string().into());
-        }
-    }
     HostCommand {
         program: PathBuf::from(PKEXEC),
-        args,
+        args: approval_args(approval, paths, workspace_ids),
         timeout: APPROVAL_TIMEOUT,
     }
 }
@@ -588,39 +457,11 @@ fn relay_workspaces(path: &Path) -> Vec<u64> {
 
 /// The device a finished discovery reports.
 fn discovered(finished: &Finished) -> Result<Candidate, String> {
-    if !finished.success {
-        return Err(command_error(
-            &finished.stderr,
-            "no new device was found nearby",
-        ));
-    }
-    let candidate: Candidate = serde_json::from_slice(&finished.stdout)
-        .map_err(|_| "nearby discovery returned an invalid identity".to_string())?;
-    Ok(Candidate {
-        device_node_id: node_id(&candidate.device_node_id, "the discovered device")?,
-        relay_service_node_id: node_id(
-            &candidate.relay_service_node_id,
-            "the discovered relay service",
-        )?,
-        ..candidate
-    })
-}
-
-/// A child's diagnostic, safe to show a person, or `fallback` when it said
-/// nothing.
-pub(crate) fn command_error(stderr: &[u8], fallback: &str) -> String {
-    let detail = String::from_utf8_lossy(stderr);
-    let detail: String = detail
-        .trim()
-        .chars()
-        .filter(|character| !character.is_control() || *character == ' ')
-        .take(512)
-        .collect();
-    if detail.is_empty() {
-        fallback.to_owned()
-    } else {
-        detail
-    }
+    tilo_identity_host::device_admin::discovered(
+        finished.success,
+        &finished.stdout,
+        &finished.stderr,
+    )
 }
 
 /// Run `command` under the bounded-command policy, polling for `stop`;
@@ -988,33 +829,13 @@ mod tests {
     }
 
     #[test]
-    fn keys_and_roles_are_checked_before_anything_runs() {
-        assert_eq!(PairRole::parse("home-peer"), Ok(PairRole::HomePeer));
-        assert_eq!(
-            PairRole::parse(" personal-device "),
-            Ok(PairRole::PersonalDevice)
-        );
-        assert!(PairRole::parse("server").is_err());
-        assert_eq!(
-            node_id(&DEVICE.to_ascii_uppercase(), "device"),
-            Ok(DEVICE.into())
-        );
-        assert!(node_id("abc", "device").is_err());
-        assert!(node_id(&"g".repeat(64), "device").is_err());
+    fn a_failed_discovery_says_why_and_a_missing_relay_configuration_keeps_nothing() {
         let refused = discovered(&Finished {
             success: false,
             stdout: Vec::new(),
-            stderr: b"\x1b[31mno matching device\n".to_vec(),
+            stderr: b"no matching device\n".to_vec(),
         });
-        assert_eq!(refused, Err("[31mno matching device".into()));
-        assert!(
-            discovered(&Finished {
-                success: true,
-                stdout: b"{\"device_node_id\":\"x\"}".to_vec(),
-                stderr: Vec::new(),
-            })
-            .is_err()
-        );
+        assert_eq!(refused, Err("no matching device".into()));
         assert!(relay_workspaces(Path::new("/nonexistent/relay.toml")).is_empty());
     }
 }

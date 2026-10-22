@@ -2,6 +2,7 @@ use super::*;
 use crate::shell::search::action_api::ArgValue;
 use std::sync::Mutex;
 use std::sync::mpsc;
+use tilo_actions::remote::identity_admin::FleetDevice;
 
 /// An identity store provisioned the way first boot does, in files, with
 /// the identity its workspace selects.
