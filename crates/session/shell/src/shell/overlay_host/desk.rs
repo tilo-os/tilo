@@ -621,7 +621,7 @@ impl ShellOverlayHost {
     /// show it at rest.
     #[cfg(feature = "hosted-test-control")]
     pub fn desk_settling_for_shots(&self) -> bool {
-        self.desk_animating(Instant::now())
+        self.desk_animating(ui::time::now())
     }
 
     /// Lay the desk out at `now` with every widget already where it is
@@ -735,7 +735,7 @@ impl ShellOverlayHost {
                 } else if self.desk.board.form(press.id) == Form::Glance {
                     self.desk.board.open(press.id);
                 }
-                self.update_desk(Instant::now());
+                self.update_desk(ui::time::now());
                 self.bump_chrome();
                 true
             }
@@ -842,7 +842,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Vec<Rect> {
-        let now = Instant::now();
+        let now = ui::time::now();
         self.desk.motion = theme.motion();
         let mut painted = Vec::new();
         let team_showing = self.desk.board.form(WidgetId::Team) != Form::Away
