@@ -2105,6 +2105,7 @@ impl ShellDriver {
             "notifications" => self.scene_notifications(),
             "notifications-one" => self.scene_notifications_one(),
             "notifications-dnd" => self.scene_notifications_dnd(),
+            "notifications-graphics" => self.scene_notifications_graphics(),
             "multi-group" => self.scene_multi_group(),
             "maximized" => return self.scene_maximized(),
             "two-groups-focus" => self.scene_two_groups_focus(),
@@ -3576,6 +3577,21 @@ impl ShellDriver {
         });
     }
 
+    /// The notice a desktop shows once it gave a dead GPU up for software, as the
+    /// renderer posts it.
+    fn scene_notifications_graphics(&mut self) {
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        shell::shell::graphics_notice::gpu_given_up();
+        let notices = shell::shell::graphics_notice::drain();
+        self.with_chrome(|st| {
+            for notice in notices {
+                st.push_notification_full(notice.with_shown_at(settled_at));
+            }
+        });
+    }
+
     fn scene_notifications_dnd(&mut self) {
         use tilo_desktop::notifications::{Notification, NotificationSeverity};
         let settled_at = Instant::now()
@@ -3893,6 +3909,7 @@ impl ShellDriver {
         "notifications",
         "notifications-one",
         "notifications-dnd",
+        "notifications-graphics",
         "room-activity",
         "room-activity-all",
         "room-activity-named",

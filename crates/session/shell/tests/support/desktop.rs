@@ -193,6 +193,15 @@ impl Drop for Client {
 impl Desktop {
     /// Boot a headless compositor over `tree` and wait until it serves.
     pub fn start(size: (i32, i32), tree: &shell::shell::state::WorkspaceTree) -> Self {
+        Self::start_with_env(size, tree, &[])
+    }
+
+    /// [`Self::start`], with `env` added to the compositor's environment.
+    pub fn start_with_env(
+        size: (i32, i32),
+        tree: &shell::shell::state::WorkspaceTree,
+        env: &[(&str, &str)],
+    ) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path near 108 bytes, so the runtime dir is short.
         let runtime_dir = PathBuf::from(format!(
@@ -229,6 +238,7 @@ impl Desktop {
             .env("TILO_PAINT_STATS", "1")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
+            .envs(env.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
