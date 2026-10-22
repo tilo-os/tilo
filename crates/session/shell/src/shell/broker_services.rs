@@ -565,12 +565,16 @@ pub(super) fn with_session_blobs<T>(
 }
 
 /// Decide every change this session's rooms receive by its claim against
-/// the app surface its op names, read from the session's content store in
-/// the record's room and app; name, in the changes the session signs for an
-/// app it hosts, the surface that app was started with.
+/// the app surface its op names: the one the installed app ships, or one
+/// read from the session's content store in the record's room and app; name,
+/// in the changes the session signs for an app it hosts, the surface that
+/// app was started with.
 pub fn decide_receipt_against_surfaces() {
     use runtime_fs::blobs::ReadOutcome;
     tilo_action_broker::decide_receipt_against_surfaces(|record, hash| {
+        if let Some(bytes) = crate::shell::app_versions::installed_surface(record.app, hash) {
+            return Some(bytes);
+        }
         match with_session_blobs(|client| {
             client
                 .scope(record.room, record.app)

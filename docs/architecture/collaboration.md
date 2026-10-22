@@ -272,6 +272,23 @@ decided again. The shell's own hold for app surfaces does the same: a room
 whose held inputs were let go is replayed once a surface is named. A device
 that restarts subscribes afresh, and its host replays everything anyway.
 
+A write that names an app surface this device has no copy of was made with
+a newer build of the app, so the device needs that app's update. The shell
+holds the write and runs that app's update (`app_versions::surface_named`).
+This is the same `app update` an app that is behind takes before it starts.
+Once the update is in, the shell decides the held writes again, against the
+surface the updated package ships (`app_versions::installed_surface`, signed
+by the package's publisher like the surface the app runs with). An app the
+device does not have installed is not installed for it; its writes wait.
+
+A room's sync arrives as a burst of relay inputs. Inputs of one session
+queued back to back are admitted together
+(`NativeWorkspaceOwner::receive_batch`, at most `native_admission::MAX_BATCH`
+at a time). Each one is authorized alone, in order, exactly as a single
+input is. The batch is published once, as one atomic state-file replacement.
+A crash before that publish loses nothing: the uncommitted inputs are still
+retained by the host, and the next subscription replays them.
+
 ### Write authority on a room's governance
 
 The governance writer is pinned from local, authenticated knowledge, never
