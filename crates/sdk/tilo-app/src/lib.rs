@@ -165,6 +165,11 @@ pub fn register_built_in_surface(app_id: &str, bytes: Option<&'static [u8]>) {
 /// `#[derive(Model)]` expansions resolve through `use ui::prelude::*`.
 pub use tilo_resource;
 
+/// References to what apps keep ([`tilo_reference::ResourceRef`]), which
+/// [`framework::ViewCx::reference`] shows and opens, re-exported so an app
+/// names them without a dependency of its own.
+pub use tilo_reference;
+
 /// The package registry's vocabulary (entries, artifacts, moderation cases)
 /// that the SDK's moderation and package APIs speak, re-exported so an app
 /// names those types without a dependency of its own.

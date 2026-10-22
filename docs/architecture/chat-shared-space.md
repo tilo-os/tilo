@@ -407,16 +407,18 @@ New `share-resource` messages can include `sourceProvider`, the existing typed
 `record:<app>:<record>` provider. The message keeps that provenance beside its
 resource address; it does not carry a host URL, bytes or access grant. Older
 messages remain readable but cannot mint a browser link without provenance.
-`read-message` exports the provider. A message carrying a resource shows
-"Copy link" and "Open resource in browser" controls in shared Buttons. Both
-invoke `share-link` on the referenced resource through the action door, so the
-resource's own app (which knows its views) asks its room's host for a fresh
-locator and renders the link grammar under the host's web entry; Chat builds no
-link itself. Agents and automations call that same `share-link` directly. Open
-hands the link to the browser, since Chat cannot show another app's view in
-place. One request runs at a time with a 30-second limit, and its outcome is
-checked against the message still carrying the same reference and provider. A
-host without a web entry refuses with its reason, which the control shows.
+`read-message` exports the provider. A message carrying a resource shows it
+as a reference chip and a "Copy link" control. The chip opens the resource
+where it lives, through the one action that opens any reference: its `open`
+in the app and record the provider names ([resources.md](resources.md) §3.5).
+"Copy link" invokes `share-link` on the referenced resource through the action
+door, so the resource's own app (which knows its views) asks its room's host
+for a fresh locator and renders the link grammar under the host's web entry;
+Chat builds no link itself. Agents and automations call that same
+`share-link` directly. One request runs at a time with a 30-second limit, and
+its outcome is checked against the message still carrying the same reference
+and provider. A host without a web entry refuses with its reason, which the
+control shows.
 
 Settings' device-local `publish-browser-identity` effect takes a canonical HTTPS
 host origin and reads the process's bound public identity. It invokes the typed

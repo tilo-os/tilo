@@ -172,17 +172,6 @@ try {
   assert.match(new URL(copied).hash, /\/so\.tilo\.chat\/-\/chat\.messages\.messages\/.+\?chars=6-7$/,
     'the link names the shared message and its exact range');
   stage('native-copy-to-real-browser-clipboard');
-  await pressWhenShown('Open resource in browser');
-  let opened;
-  for (let attempt=0; attempt<50; attempt++) {
-    const targets = await browser.send('Target.getTargets');
-    opened = targets.result.targetInfos.find(target => target.targetId !== tab.targetId && target.url === copied);
-    if (opened) break;
-    await new Promise(done => setTimeout(done, 100));
-  }
-  assert.ok(opened, 'native Open must create the exact browser resource destination');
-  await browser.send('Target.closeTarget', {targetId:opened.targetId});
-  stage('native-open-browser-destination');
   if (fixture.disconnectRetry) {
     const before = await tab.evaluate('({peer:peer.getSnapshot(), frames:mount.state().frames})');
     assert.equal(before.peer.health.transport.authenticated, true);

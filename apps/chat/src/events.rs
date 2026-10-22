@@ -915,8 +915,8 @@ impl ChatApp {
                 // The same device-local handler the public effect reaches.
                 let _ = self.answer_effect(crate::effects::ChatEffect::StopSharingLiveContext);
             }
-            Hit::CopyResourceLink(message) => self.begin_resource_navigation(&message, false),
-            Hit::OpenResourceLink(message) => self.begin_resource_navigation(&message, true),
+            Hit::CopyResourceLink(message) => self.begin_resource_navigation(&message),
+            Hit::OpenResource(message) => self.open_shared_resource(&message),
             Hit::CloseThread => {
                 self.close_thread();
             }

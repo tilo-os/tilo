@@ -40,6 +40,13 @@ pub fn reference(number: u64) -> String {
     format!("#{number}")
 }
 
+/// The number a reference as it reads (`#12`) names, the inverse of
+/// [`reference`].
+#[must_use]
+pub fn number(reference: &str) -> Option<u64> {
+    reference.trim().strip_prefix('#')?.parse().ok()
+}
+
 fn status_name(status: crate::model::Status) -> &'static str {
     match status {
         crate::model::Status::Backlog => "Backlog",

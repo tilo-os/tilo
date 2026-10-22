@@ -855,3 +855,6 @@ text-menu-underline = Underline
 text-menu-strikethrough = Strikethrough
 text-menu-bulleted-list = Bulleted list
 text-menu-numbered-list = Numbered list
+
+# A reference to something another app keeps, shown as a chip; $label is its name.
+reference-open = Open { $label }

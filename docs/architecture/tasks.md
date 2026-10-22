@@ -44,6 +44,17 @@ hit, a reference and an agent all open it through the issue's `open` view
 action. A link to any other resource is a `Link` (app, kind, resource,
 label), the same address a `tilo_reference::ResourceRef` carries.
 
+Any app opens a reference the same way, with one action: the resource's
+`open` in the app that keeps it (`ResourceRef::open_target`, see
+[resources.md](resources.md) §3.5). An issue is `open` on
+`tasks.tracker/issues/<id>` in `so.tilo.tasks`, admitted as the person under
+their grants; the host launches Tasks when no window shows the tracker. `#12`
+is the tracker's to resolve, never the shell's: the tracker's `open` takes it
+as its anchor and shows the issue numbered 12 (`Tracker::by_number`), so an
+agent or another app that holds only the text asks Tasks. The issue page shows
+its links as reference chips (`ViewCx::reference`) that open each where it
+lives.
+
 ## Views
 
 One window, three views over the same resource: a list that nests sub-issues

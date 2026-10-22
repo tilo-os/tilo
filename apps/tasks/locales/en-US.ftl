@@ -28,6 +28,7 @@ tasks-issue-description = Description
 tasks-issue-gone-title = This issue was deleted
 tasks-issue-gone-message = Undo brings it back.
 tasks-sub-issues = Sub-issues
+tasks-links = Links
 
 tasks-run = Agent
 tasks-run-agent = { $agent }: { $phase }

@@ -407,6 +407,22 @@ view at that item (§4). The index follows the same change deltas, so a large
 collection is not re-indexed per keystroke. `#[resource(search = path)]`
 replaces or extends the default.
 
+### 3.5 Opening a reference
+
+A reference to what another app keeps (a `tilo_reference::ResourceRef`
+beside the app and record that keep it) opens with one action: the
+resource's `open` in that app, `ResourceRef::open_target`, an application
+target naming the workspace, the app and the record. The host delivers it
+to the window showing that record or launches the app on it, and admits it
+as the person who asked, under their grants, as it admits any action; an app
+showing a reference needs no `[actions] invoke` of its own, since opening
+grants nothing. `ViewCx::reference` shows a reference as a chip that does
+this on a click, Enter or assistive technology's activate, and tells a
+refusal like any refused action. Text that names a resource the way its
+app reads it (`#12`) is that app's to resolve, through its root `open` with
+the text as the anchor. Copying a link (`share-link`) is for leaving Tilo;
+opening never needs one.
+
 ## 4. Actions happen in views, visibly
 
 Nothing is drawn if no one is looking, but no action is performed out of

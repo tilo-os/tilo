@@ -106,6 +106,7 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                             ))
                             .push(body)
                             .push(sub_issues(cx, id, nav))
+                            .push(links(cx, id))
                             .push(run(cx, id))
                             .push(thread(cx, id)),
                     )),
@@ -316,6 +317,45 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                 "tasks-sub-issue-new",
             )),
     )
+}
+
+/// What the issue links to, each a reference chip that opens it in the app
+/// that keeps it. Nothing shows while it links to nothing.
+fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let links = cx.value({
+        let id = id.clone();
+        move |tracker: &Tracker| {
+            tracker
+                .issues
+                .get(&id)
+                .map(|issue| issue.links.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        }
+    });
+    cx.switch(&links, |cx, links| {
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Related);
+        if links.is_empty() {
+            return Box::new(column) as Element;
+        }
+        let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
+        for link in links {
+            let reference = ui::tilo_reference::ResourceRef::whole(
+                link.kind.clone(),
+                link.resource.clone(),
+                link.label.clone(),
+            );
+            row = row.push(Box::new(cx.reference(&link.app, None, &reference)));
+        }
+        column = column
+            .push(Box::new(
+                Text::new("tasks-links").with_role(TextRole::Heading),
+            ))
+            .push(Box::new(row));
+        Box::new(column) as Element
+    })
 }
 
 fn status_badge(status: Status) -> Badge {

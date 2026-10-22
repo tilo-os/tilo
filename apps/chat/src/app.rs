@@ -389,7 +389,7 @@ pub(crate) enum Hit {
     StartCall,
     StopSharingLiveContext,
     CopyResourceLink(Id),
-    OpenResourceLink(Id),
+    OpenResource(Id),
     CloseThread,
     /// Grab the floating call overlay to drag it (records the press point).
     CallDragHandle,
@@ -454,7 +454,7 @@ impl Hit {
             Self::StartCall => "chat.start-call".into(),
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
             Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
-            Self::OpenResourceLink(id) => format!("chat.open-resource-link:{id}"),
+            Self::OpenResource(id) => format!("chat.open-resource:{id}"),
             Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
             Self::OpenThread(id) => format!("chat.open-thread:{id}"),
@@ -3952,12 +3952,18 @@ impl ChatApp {
                         (crate::i18n::t("chat-context-stop"), Role::Button, false)
                     }
                     Hit::CopyResourceLink(message) => (
-                        self.resource_navigation.label(message, false, true),
+                        self.resource_navigation.label(message, true),
                         Role::Button,
                         false,
                     ),
-                    Hit::OpenResourceLink(message) => (
-                        self.resource_navigation.label(message, true, true),
+                    Hit::OpenResource(message) => (
+                        self.resource_navigation.open_label(
+                            message,
+                            &self
+                                .message(message)
+                                .and_then(|m| m.reference.as_ref().map(|r| r.label.clone()))
+                                .unwrap_or_default(),
+                        ),
                         Role::Button,
                         false,
                     ),
