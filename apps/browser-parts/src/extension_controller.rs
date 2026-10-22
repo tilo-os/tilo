@@ -26,8 +26,12 @@ use crate::extension_toolbar::{self as toolbar, Installed};
 use crate::extensions::{self, ExtensionInfo, StagedPackage};
 use crate::web_store;
 
-/// Width and height of an extension popup, in logical pixels.
-const POPUP_SIZE: (f32, f32) = (360.0, 560.0);
+/// An extension popup's size before its page says how big it is, in
+/// logical pixels: as wide as a panel, and short, because a page reports at
+/// least the view it is laid out in, so a popup can only grow to its page.
+const POPUP_SIZE: (f32, f32) = (360.0, 120.0);
+/// The largest popup, as in Chrome.
+const POPUP_MAX: (f32, f32) = (800.0, 600.0);
 
 const ADD_BUTTON: &str = "browser.extension.add";
 const MENU_BUTTON: &str = "browser.extensions.menu";
@@ -65,7 +69,12 @@ enum Outcome {
 enum Panel {
     Offer(Box<StagedPackage>),
     Message(String),
-    Popup { id: String, engine: SharedEngine },
+    Popup {
+        id: String,
+        engine: SharedEngine,
+        /// The size its page asked for, once it said.
+        size: Option<(f32, f32)>,
+    },
 }
 
 pub struct ExtensionController {
@@ -189,11 +198,44 @@ impl ExtensionController {
             .collect();
         self.host.probe(&pinned, now);
         self.host.flush(engine);
-        if let Some(Panel::Popup { engine: popup, .. }) = &self.panel {
+        if let Some(Panel::Popup {
+            engine: popup,
+            size,
+            ..
+        }) = &mut self.panel
+        {
             // The popup is a tab of its own: its page events are not the
             // window's, but they must not pile up.
-            let _ = popup.drain_events();
-            let _ = popup.take_new_tab_requests();
+            let mut closed = false;
+            for event in popup.drain_events() {
+                match event {
+                    // Its page closed it (a password filled, a choice made).
+                    ui::webview::WebViewEvent::TabClosed => closed = true,
+                    // As big as its page, as Chrome sizes a popup.
+                    ui::webview::WebViewEvent::DocumentSize { width, height, .. } => {
+                        let page = (
+                            ui::num::f32_of_f64(width).clamp(POPUP_SIZE.0, POPUP_MAX.0),
+                            ui::num::f32_of_f64(height).clamp(25.0, POPUP_MAX.1),
+                        );
+                        if *size != Some(page) {
+                            *size = Some(page);
+                            changed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // What it opens (its dashboard, a help page) opens beside the
+            // window, as Chrome opens it in a tab.
+            for (url, background) in popup.take_new_tab_requests() {
+                if url.starts_with("https://") || url.starts_with("http://") {
+                    ui::shell_tabs::open_beside(Some(url), background);
+                }
+            }
+            if closed {
+                self.panel = None;
+                changed = true;
+            }
         }
         changed
     }
@@ -345,10 +387,12 @@ impl ExtensionController {
         }
         match engine.create_tab() {
             Ok(popup) => {
+                popup.send(WebViewCommand::ReportDocumentSize(true));
                 popup.send(WebViewCommand::Navigate(url));
                 self.panel = Some(Panel::Popup {
                     id: id.to_owned(),
                     engine: popup,
+                    size: None,
                 });
             }
             Err(error) => self.panel = Some(Panel::Message(error)),
@@ -494,7 +538,7 @@ impl ExtensionController {
 
     /// The anchored panel: what to show, and the controls to open beside,
     /// nearest first.
-    pub fn panel(&self, width: f32) -> Option<(Element, Vec<String>)> {
+    pub fn panel(&self, width: f32, max_height: f32) -> Option<(Element, Vec<String>)> {
         let panel = self.panel.as_ref()?;
         let text = |line: &str| -> Element {
             Box::new(Text::new(line).with_role(ui::tokens::TextRole::Body))
@@ -544,10 +588,11 @@ impl ExtensionController {
                 ),
                 vec![ADD_BUTTON.to_owned(), MENU_BUTTON.to_owned()],
             ),
-            Panel::Popup { id, engine } => {
+            Panel::Popup { id, engine, size } => {
                 let view = ui::widget::WebView::new(engine.clone())
                     .with_test_id("browser.extension.popup");
-                let size = (POPUP_SIZE.0.min(width), POPUP_SIZE.1);
+                let page = size.unwrap_or(POPUP_SIZE);
+                let size = (page.0.min(width), page.1.min(max_height));
                 (
                     Box::new(
                         Container::new()
@@ -747,5 +792,42 @@ mod tests {
         let private = ExtensionController::new(false);
         assert_eq!(private.bar_offer(), None);
         assert!(private.bar_items().is_empty());
+    }
+
+    #[test]
+    fn a_popup_is_as_big_as_its_page_and_closes_when_its_page_closes_it() {
+        let window: SharedEngine = ui::webview::test_engine::TestEngine::new();
+        let page = ui::webview::test_engine::TestEngine::new();
+        let mut controller = ExtensionController::new(true);
+        controller.refresh = false;
+        controller.panel = Some(Panel::Popup {
+            id: "abc".into(),
+            engine: page.clone(),
+            size: None,
+        });
+        let shown = |controller: &ExtensionController| match &controller.panel {
+            Some(Panel::Popup { size, .. }) => *size,
+            _ => None,
+        };
+        // A popup wider than a panel, as tall as its list.
+        page.push_event(ui::webview::WebViewEvent::DocumentSize {
+            width: 380.0,
+            height: 430.0,
+            scroll_y: 0.0,
+        });
+        assert!(controller.sync(&window, ""));
+        assert_eq!(shown(&controller), Some((380.0, 430.0)));
+        // Never past Chrome's largest popup.
+        page.push_event(ui::webview::WebViewEvent::DocumentSize {
+            width: 2000.0,
+            height: 2000.0,
+            scroll_y: 0.0,
+        });
+        controller.sync(&window, "");
+        assert_eq!(shown(&controller), Some(POPUP_MAX));
+        // Its page called window.close(): the panel goes.
+        page.push_event(ui::webview::WebViewEvent::TabClosed);
+        assert!(controller.sync(&window, ""));
+        assert!(controller.panel.is_none());
     }
 }
