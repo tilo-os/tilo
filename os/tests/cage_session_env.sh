@@ -24,6 +24,7 @@ for name in WLR_RENDERER WLR_DRM_NO_ATOMIC WLR_NO_HARDWARE_CURSORS TILO_STARTUP_
   eval "value=\${$name-unset}"
   printf '%s=%s\n' "$name" "$value"
 done
+exit "${CAGE_EXIT:-0}"
 EOF
 # Report x86_64 so the ARM-only CPU shim branch stays out of this check.
 cat >"$work/bin/uname" <<'EOF'
@@ -143,6 +144,54 @@ journaled bash "$wrapper" /usr/bin/tilo-installer >/dev/null 2>&1
 grep -q -- '--identifier=tilo-installer ' "$work/journal.args" \
   && ok 'the installer logs under its own name' \
   || bad "the installer is not journaled as tilo-installer: $(cat "$work/journal.args")"
+# --- a greeter that cannot start leaves a text sign-in ---------------------
+# A greeter that exited without starting a session (on the laptop this was
+# reported on, its window was wider than any texture) made greetd exit;
+# systemd restarted it into its start limit and the person was left at a
+# console with no way to sign in. Now the same VT offers greetd's text
+# greeter, starting the session the graphical one would.
+cat >"$work/bin/agreety" <<'EOF'
+#!/bin/sh
+printf 'agreety=%s\n' "$*"
+EOF
+chmod +x "$work/bin/agreety"
+mkdir -p "$work/run-greeter"
+session_entry="$repo/os/usr/share/wayland-sessions/shell.desktop"
+fallback() {
+  : >"$work/tty"
+  run TILO_TEXT_GREETER="$work/bin/agreety" TILO_GREETER_TTY="$work/tty" \
+    TILO_SESSION_ENTRY="$session_entry" "$@" 2>"$work/fallback.err"
+}
+out="$(fallback CAGE_EXIT=1)"
+status=$?
+session_exec="$(sed -n 's/^Exec=//p' "$session_entry")"
+[ "$status" -eq 0 ] \
+  && grep -qx "agreety=--cmd env XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=tilo XDG_CURRENT_DESKTOP=tilo $session_exec" "$work/tty" \
+  && ok 'a greeter that cannot start leaves the text sign-in for the same session' \
+  || bad "no text sign-in after the greeter failed (status $status): $(cat "$work/tty" "$work/fallback.err")"
+grep -q 'could not start, so you can sign in here instead' "$work/tty" \
+  && ok 'the text sign-in says why the screen looks different' \
+  || bad "the text sign-in has no explanation: $(cat "$work/tty")"
+grep -q 'exited with status 1' "$work/fallback.err" \
+  && ok "the greeter's failure is logged" || bad "the failure was not logged: $(cat "$work/fallback.err")"
+out="$(fallback CAGE_EXIT=0)"
+status=$?
+[ "$status" -eq 0 ] && [ ! -s "$work/tty" ] \
+  && ok 'a greeter that started the session leaves nothing behind' \
+  || bad "the text sign-in ran after a successful sign-in (status $status): $(cat "$work/tty")"
+: >"$work/tty"
+out="$(program=/usr/bin/tilo-installer run_program CAGE_EXIT=3 \
+  TILO_TEXT_GREETER="$work/bin/agreety" TILO_GREETER_TTY="$work/tty" 2>/dev/null)"
+status=$?
+[ "$status" -eq 3 ] && [ ! -s "$work/tty" ] \
+  && ok 'the installer keeps its own exit status, with no text sign-in' \
+  || bad "the installer fell back to a sign-in (status $status): $(cat "$work/tty")"
+out="$(run CAGE_EXIT=1 TILO_TEXT_GREETER="$work/bin/agreety" TILO_GREETER_TTY="$work/no-such-dir/tty" 2>/dev/null)"
+status=$?
+[ "$status" -eq 1 ] \
+  && ok 'without a terminal the failure reaches greetd, whose recovery page takes over' \
+  || bad "a greeter failure without a terminal exited $status"
+
 grep -Fq 'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"' "$repo/os/etc/greetd/config.toml" \
   && ok 'greetd starts the greeter through tilo-cage-session' \
   || bad 'greetd starts the greeter without tilo-cage-session, so its output reaches the console'
