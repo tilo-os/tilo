@@ -135,8 +135,7 @@ fi
 
 attestation_consumers=(
   "$repo/.forgejo/workflows/build-image.yml"
-  "$repo/.forgejo/workflows/build-kernel.yml"
-  "$repo/.forgejo/workflows/build-rpms.yml"
+  "$repo/os/dev/resolve-rpm-snapshot.sh"
   "$repo/os/dev/build-image.sh"
 )
 attestation_shape_safe=1
@@ -145,6 +144,10 @@ for consumer in "${attestation_consumers[@]}"; do
     || attestation_shape_safe=0
   grep -Fq '[.[].payload' "$consumer" && attestation_shape_safe=0
 done
+# The kernel's provenance (os/dev/verify-kernel-provenance.sh, which kernel.sh runs before
+# publishing) is read in Python: one envelope or an array of them.
+grep -Fq 'yield from value if isinstance(value, list) else (value,)' \
+  "$repo/os/dev/kernel-build-environment.py" || attestation_shape_safe=0
 encoded_predicate="$(printf '%s' '{"predicate":{"shapeSafe":true}}' | base64 -w0)"
 for envelope in \
   "{\"payload\":\"$encoded_predicate\"}" \

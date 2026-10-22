@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The frozen RPM snapshot's SLSA provenance predicate (build-rpms.yml's frozen-rpm-index/v1, as
+# The frozen RPM snapshot's SLSA provenance predicate (frozen-rpm-index/v1, as
 # os/dev/resolve-rpm-snapshot.sh and os/dev/build-image.sh verify it) for the index in
 # DIR/index, written to DIR/index/provenance.json, and the package-set fingerprint its tag
 # names (`set-<fingerprint>`, and `set-<fingerprint>-<arch>` for each image) to the fingerprint

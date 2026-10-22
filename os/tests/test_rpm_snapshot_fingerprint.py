@@ -9,9 +9,12 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools/ci"))
+import t_matrix  # noqa: E402
 spec = importlib.util.spec_from_file_location(
     "fingerprint", ROOT / "os/dev/rpm-snapshot-fingerprint.py"
 )
@@ -134,18 +137,31 @@ class Fingerprint(unittest.TestCase):
 
     def test_image_builds_resolve_standalone_signed_snapshot(self) -> None:
         build = (ROOT / ".forgejo/workflows/build-image.yml").read_text(encoding="utf-8")
-        relay = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(encoding="utf-8")
-        snapshot = (ROOT / ".forgejo/workflows/build-rpms.yml").read_text(encoding="utf-8")
-        for consumer in (build, relay):
-            self.assertIn("Resolve the exact signed RPM snapshot fingerprint", consumer)
-            self.assertIn("./os/dev/resolve-rpm-snapshot.sh", consumer)
-            self.assertIn("rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}", consumer)
-            self.assertNotIn("uses: ./.forgejo/workflows/build-rpms.yml", consumer)
-            self.assertNotIn("os/rpms-snapshot.env", consumer)
+        self.assertIn("Resolve the exact signed RPM snapshot fingerprint", build)
+        self.assertIn("./os/dev/resolve-rpm-snapshot.sh", build)
+        self.assertIn("rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}", build)
+        self.assertNotIn("os/rpms-snapshot.env", build)
         self.assertIn("needs.ensure-rpms.result == 'success'", build)
-        self.assertIn("--tag \"$FINGERPRINT_TAG\"", snapshot)
-        self.assertNotIn("open-snapshot-pr.py", snapshot)
-        self.assertNotIn("reconcile-snapshot-pins.py", snapshot)
+        # The relay and the env-runtime install from the snapshot t's rpm-snapshot check
+        # resolves and verifies, never from a pin file.
+        checks = {check["name"]: check for check in t_matrix.checks(ROOT)}
+        self.assertEqual(checks["rpm-snapshot"]["run"],
+                         "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot")
+        resolver = (ROOT / "tools/ci/publish/rpm-snapshot-ref.sh").read_text(encoding="utf-8")
+        self.assertIn('ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh")', resolver)
+        self.assertNotIn("rpms-snapshot.env", resolver)
+        for consumer in ("image-relay", "image-env-runtime-tree-x86_64", "image-env-runtime-tree-aarch64"):
+            with self.subTest(consumer=consumer):
+                self.assertIn("rpm-snapshot", checks[consumer]["needs"])
+                self.assertIn("/target/publish/rpm-snapshot", checks[consumer]["run"])
+        # The snapshot is published once per package-set fingerprint, never proposed as a pin.
+        self.assertIn("'once:set-{fingerprint}'", checks["publish-rpms"]["run"])
+        for name in ("image-rpms-x86_64", "provenance-rpms", "sign-rpms", "publish-rpms"):
+            self.assertNotIn("open-snapshot-pr.py", checks[name]["run"])
+        for script in ("rpms-build.sh", "rpms-provenance.sh"):
+            text = (ROOT / "tools/ci/publish" / script).read_text(encoding="utf-8")
+            self.assertNotIn("open-snapshot-pr.py", text)
+            self.assertNotIn("reconcile-snapshot-pins.py", text)
 
 
 if __name__ == "__main__":

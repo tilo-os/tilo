@@ -115,7 +115,7 @@ third-party = [
 # - install-profile-model is also built by the isolated tools/imager-profile
 #   workspace, which must not resolve the application workspace.
 # - tilo-advisory-lock is the builder image's sccache canary, compiled cold into
-#   an empty namespace (build-ci-builder.yml); it must stay small.
+#   an empty namespace (tools/ci/publish/ci-builder-canary.sh); it must stay small.
 workspace-members = [
     # tilo-desktop-model and its member dependencies
     "collab-types",

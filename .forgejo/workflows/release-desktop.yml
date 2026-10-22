@@ -274,9 +274,9 @@ jobs:
           path: release
       - name: Publish immutable desktop payloads and advance their channels
         env:
-          # The CI account's package token writes the immutable payload (as
-          # build-kernel.yml does); the repository-scoped release token
-          # advances the payload channel variables. The Authorized Integration
+          # The CI account's package token writes the immutable payload; the
+          # repository-scoped release token advances the payload channel
+          # variables. The Authorized Integration
           # this used before was rejected ("authGroup.Verify") and Forgejo has
           # no API to repair it.
           PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}

@@ -187,9 +187,7 @@ class AuditTests(unittest.TestCase):
             root = Path(directory)
             (root / "tools/policy").mkdir(parents=True)
             (root / "tools/security-boundary-invariants.txt").write_text("\n")
-            for name in ("tools/policy/run.sh", ".forgejo/workflows/check.yml", ".forgejo/workflows/lint.yml"):
-                (root / name).parent.mkdir(parents=True, exist_ok=True)
-                (root / name).write_text("\n")
+            (root / "tools/policy/run.sh").write_text("\n")
             (root / "tools/policy/steps.toml").write_text(
                 '[[step]]\nname = "a"\nlabel = "A"\nrun = "python3 os/tests/ran.py"\n'
                 'inputs = ["os/tests/listed.py"]\n')

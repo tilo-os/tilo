@@ -522,10 +522,8 @@ jobs:
   ensure-rpms:
     needs: plan
     if: needs.plan.outputs.skip != 'true'
-    # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
-    # build-rpms.yml owns all signing as a standalone main workflow. Resolve
-    # only its exact content fingerprint here, waiting while a build-rpms.yml
-    # main run builds it; never fall back to a stale tag.
+    # t's publish-rpms signs and publishes the frozen RPM snapshot. Resolve
+    # only its exact content fingerprint here; never fall back to a stale tag.
     runs-on: runner-quality
     timeout-minutes: 180
     container:
@@ -556,8 +554,8 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
-          ./os/dev/await-rpm-snapshot.sh || {
-            echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (build-rpms.yml)"
+          ./os/dev/resolve-rpm-snapshot.sh || {
+            echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (t's publish-rpms)"
             exit 1
           }
 
@@ -1026,7 +1024,7 @@ jobs:
 
       # The env-runtime environment image the system app store ships, resolved
       # by the fingerprint of os/Containerfile.env-runtime and Cosign-verified.
-      # Until build-env-runtime.yml has published that definition the image
+      # Until release-env-runtime has published that definition the image
       # ships no runtime and environments fetch one on first use.
       - name: Resolve ENV_RUNTIME_REF (env-runtime image)
         run: |
@@ -3431,7 +3429,7 @@ jobs:
           BASE_CHILD_DIGEST: ${{ steps.dev-image.outputs.digest }}
           CHANNEL: ${{ steps.release-mode.outputs.dev-channel }}
           # Dev disks are development artifacts, never release-signed; the CI
-          # account's package token (as build-kernel.yml uses) writes them.
+          # account's package token writes them.
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |

@@ -84,10 +84,10 @@ inputs = [".forgejo/**", ".config/visual-goldens-image", "dist/ci/install-sccach
 name = "workflow-package-paths"
 label = "Path-filtered package dependency triggers"
 run = """python3 tools/policy/check_workflow_package_paths.py \
-  --check tilo-advisory-lock .forgejo/workflows/build-ci-builder.yml \
+  --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-cold-x86_64' \
+  --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-warm-x86_64' \
   --check tilo-crypto 't.toml#development-signing-context-x86_64' \
   --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
-  --check tilo-relay .forgejo/workflows/release-relay.yml \
   --check tilo-relay 't.toml#image-relay' \
   --check registry-server 't.toml#image-registry-server' \
   --check tilo-runtime 't.toml#runtime-macos' \
@@ -394,8 +394,8 @@ name = "builder-candidate-workflow"
 label = "Builder candidate workflow tests"
 run = "python3 os/tests/test_builder_candidate_workflow.py"
 tests = true
-inputs = [".forgejo/workflows/**", "os/dev/**", "os/Containerfile.builder", "tools/ci/**", "dist/ci/install-build-deps.sh",
-          "crates/agent/agent-participant/tests/host_agents.rs"]
+inputs = ["t.toml", ".forgejo/workflows/**", "os/dev/**", "os/Containerfile.builder", "tools/ci/**",
+          "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs"]
 
 [[step]]
 name = "signed-development-board"

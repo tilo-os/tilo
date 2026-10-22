@@ -49,18 +49,12 @@ class BuildPushTests(unittest.TestCase):
                               if all(part in line for part in UNIQUE)]
                     self.assertTrue(unique, f"no run- and attempt-unique tag in: {value}")
                     checked += 1
-        self.assertGreaterEqual(checked, 5)
+        self.assertGreaterEqual(checked, 1)
 
 
 class ShellPushTests(unittest.TestCase):
     def read(self, name: str) -> str:
         return (WORKFLOWS / name).read_text()
-
-    def test_kernel_retry_pushes_the_unique_tag(self):
-        text = self.read("build-kernel.yml")
-        self.assertIn("UNIQUE_TAG: registry.tilo.so/tilo/tilo-kernel:native-${{ github.sha }}-"
-                      "${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}", text)
-        self.assertIn('done <<< "$UNIQUE_TAG', text)
 
     def test_os_candidates_and_integration_children_are_unique(self):
         text = self.read("build-image.yml")

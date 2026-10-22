@@ -2,7 +2,7 @@
 # The kernel buildroot (os/Containerfile.kernel-buildroot): the only build allowed to resolve
 # kernel build dependencies and the Fedora kernel SRPM from Fedora. Each architecture is built
 # natively; stable signs and publishes both, and main pins them in
-# os/kernel-buildroot-snapshot.env, which build-kernel.yml and the OS image build FROM.
+# os/kernel-buildroot-snapshot.env, which the kernel build (kernel.sh) and the OS image build FROM.
 #
 #   kernel-buildroot.sh build ARCH OUT       build and audit OUT/image.oci.tar (buildah image)
 #   kernel-buildroot.sh pins OUT...          after publish-kernel-buildroot published each OUT,

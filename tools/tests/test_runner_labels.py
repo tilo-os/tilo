@@ -49,8 +49,7 @@ class RunnerLabels(unittest.TestCase):
                 self.assertEqual(runner_labels.LABELS[label].arch, arch)
 
     def test_ci_helpers_take_labels_from_the_module(self):
-        for relative in ('tools/apps/app_release.py',
-                         'tools/ci/resolve_promoted_builder.py'):
+        for relative in ('tools/apps/app_release.py',):
             source = (ROOT / relative).read_text()
             with self.subTest(helper=relative):
                 self.assertIn('runner_labels', source)

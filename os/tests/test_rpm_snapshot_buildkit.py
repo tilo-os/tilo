@@ -147,12 +147,10 @@ class SnapshotManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no regular package manifest"):
             self.check(files={"../" + VERIFY.MANIFEST_PATH: "example-package\n"})
 
-    def test_workflows_verify_before_building(self):
-        for name in ("build-image.yml", "release-relay.yml"):
-            workflow = (SCRIPT.parents[2] / ".forgejo/workflows" / name).read_text()
-            with self.subTest(workflow=name):
-                self.assertIn('run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"\n', workflow)
-                self.assertNotIn('verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"', workflow)
+    def test_the_os_build_verifies_before_building(self):
+        workflow = (SCRIPT.parents[2] / ".forgejo/workflows/build-image.yml").read_text()
+        self.assertIn('run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"\n', workflow)
+        self.assertNotIn('verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"', workflow)
 
 
 if __name__ == "__main__":

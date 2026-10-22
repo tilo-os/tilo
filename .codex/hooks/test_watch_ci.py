@@ -75,12 +75,12 @@ class WatchCiTests(unittest.TestCase):
             sha="abcdef0123456789",
             branch="topic",
             runs=[
-                {"workflow_id": "lint.yml", "index_in_repo": 42, "status": "success"},
-                {"workflow_id": "check.yml", "index_in_repo": 43, "status": "success"},
+                {"workflow_id": "build-image.yml", "index_in_repo": 42, "status": "success"},
+                {"workflow_id": "release-apps.yml", "index_in_repo": 43, "status": "success"},
             ],
         )
         self.assertIn("is green", message)
-        self.assertIn("lint.yml #42: success", message)
+        self.assertIn("build-image.yml #42: success", message)
         self.assertNotIn("log-failed", message)
 
     def test_failure_message_names_only_terminal_summary_and_inspection_command(
@@ -91,7 +91,7 @@ class WatchCiTests(unittest.TestCase):
             sha="abcdef0123456789",
             branch="main",
             runs=[
-                {"workflow_id": "lint.yml", "index_in_repo": 44, "status": "failure"}
+                {"workflow_id": "build-image.yml", "index_in_repo": 44, "status": "failure"}
             ],
         )
         self.assertIn("finished with failures", message)
@@ -111,7 +111,7 @@ class WatchCiTests(unittest.TestCase):
                 },
                 *[
                     {
-                        "workflow_id": "lint.yml",
+                        "workflow_id": "build-image.yml",
                         "index_in_repo": index,
                         "status": "failure",
                     }
@@ -175,7 +175,7 @@ class WatchCiTests(unittest.TestCase):
             )
 
     def test_watcher_retries_a_transient_fgj_failure(self) -> None:
-        run = {"workflow_id": "lint.yml", "index_in_repo": 3, "status": "success"}
+        run = {"workflow_id": "build-image.yml", "index_in_repo": 3, "status": "success"}
         with (
             patch.object(
                 watch_ci,
@@ -196,7 +196,7 @@ class WatchCiTests(unittest.TestCase):
         self.assertEqual(runs, [run])
 
     def test_terminal_settle_window_starts_after_status_transition(self) -> None:
-        running = {"workflow_id": "lint.yml", "index_in_repo": 3, "status": "running"}
+        running = {"workflow_id": "build-image.yml", "index_in_repo": 3, "status": "running"}
         success = {**running, "status": "success"}
         with (
             patch.object(watch_ci, "recent_runs", side_effect=[[running], [success], [success]]),
