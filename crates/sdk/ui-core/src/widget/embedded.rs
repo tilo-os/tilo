@@ -367,6 +367,53 @@ impl<W: Widget + 'static> Embedded<W> {
         std::mem::take(&mut self.focus_request)
     }
 
+    /// The child's accessibility tree in the owner's space, for a canvas
+    /// that draws the child to include among its own nodes: assistive
+    /// technology then reads and edits the child as it would anywhere else.
+    /// The child's own node is given its rectangle, since it has no widget
+    /// of the owner's tree to take one from.
+    pub fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        fn map(node: &mut crate::a11y::AccessNode, transform: Affine) {
+            if let Some(bounds) = node.bounds {
+                node.bounds = Some(transform.transform_rect_bbox(bounds.to_rect()).into());
+            }
+            for child in &mut node.children {
+                map(child, transform);
+            }
+        }
+        let mut node = self.widget.accessibility()?;
+        node.bounds
+            .get_or_insert_with(|| self.widget.get_rect().into());
+        map(&mut node, self.transform);
+        Some(node)
+    }
+
+    /// An assistive technology operates a node of [`Self::accessibility`]:
+    /// `key_path` is relative to the child's own node
+    /// ([`Widget::perform_action`]).
+    pub fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        edits: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.widget.perform_action(action, key_path, edits, path)
+    }
+
+    /// An assistive technology operates a node of [`Self::accessibility`]
+    /// that names its target ([`Widget::perform_semantic_action`]).
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        edits: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.widget
+            .perform_semantic_action(target, action, edits, path)
+    }
+
     /// Bring the widget up to date with the document.
     pub fn sync(&mut self, state: &AutoCommit, path: &ObjId) {
         self.widget.sync(state, path);

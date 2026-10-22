@@ -16,6 +16,9 @@ use super::{
 /// body's path. It is laid out while the box is only selected, so the press
 /// that opens the box lands in its words; it draws and takes the keyboard
 /// only while the person edits them.
+/// The key of the words' node under their box's ([`SlidesApp::words_access_node`]).
+pub(super) const WORDS_ACCESS_KEY: &str = "slides.words";
+
 pub(super) struct TextBoxEditor {
     pub(super) slide_id: String,
     pub(super) element_id: String,
@@ -417,6 +420,23 @@ impl SlidesApp {
             }
         }
         frame
+    }
+
+    /// The words of box `element` while they are edited, as the shared
+    /// editor describes them to assistive technology, in the canvas's space:
+    /// the box's node holds them, keyed [`WORDS_ACCESS_KEY`].
+    pub(super) fn words_access_node(&self, element: &str) -> Option<ui::a11y::AccessNode> {
+        let editor = self
+            .text_editor
+            .as_ref()
+            .filter(|editor| editor.focused && editor.element_id == element)?;
+        self.editing_text_box()?;
+        Some(
+            editor
+                .host
+                .accessibility()?
+                .with_hashed_key(WORDS_ACCESS_KEY),
+        )
     }
 
     /// Whether a finger landing at `p` grabs something on the canvas: an

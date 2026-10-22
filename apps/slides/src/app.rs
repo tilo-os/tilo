@@ -3077,6 +3077,7 @@ impl Widget for SlidesApp {
                             .focusable(true)
                             .selected(self.sel.as_deref() == Some(element.id.as_str())),
                     )
+                    .with_children(self.words_access_node(&element.id).into_iter().collect())
                 })
                 .collect()
         });
@@ -3108,13 +3109,42 @@ impl Widget for SlidesApp {
         )
     }
 
+    /// An assistive technology operates the words being edited, through
+    /// the node [`Self::words_access_node`] gave them.
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        let words = ui::a11y::hash_key(&WORDS_ACCESS_KEY);
+        let Some(at) = key_path.iter().position(|&key| key == words) else {
+            return false;
+        };
+        let Some(editor) = self.editing_words() else {
+            return false;
+        };
+        let rest = key_path.get(at + 1..).unwrap_or_default();
+        editor.host.perform_action(action, rest, state, path)
+    }
+
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
+        // The words being edited name their own parts.
+        if !target.starts_with("slides.")
+            && let Some(editor) = self.editing_words()
+            && editor
+                .host
+                .perform_semantic_action(target, action, state, path)
+        {
+            return true;
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -4731,7 +4761,7 @@ impl SlidesApp {
 mod editor_chrome;
 mod text_box;
 use editor_chrome::{ButtonKind, Chrome, ChromeMetrics};
-use text_box::{TextBoxEditor, listed, mark_covers};
+use text_box::{TextBoxEditor, WORDS_ACCESS_KEY, listed, mark_covers};
 
 impl SlidesApp {
     fn open_layout_picker(&mut self) {
