@@ -38,9 +38,11 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+mod agent;
 mod cleanup;
 mod desktop;
 mod health;
+mod nouns;
 mod os;
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -56,7 +58,7 @@ fn helper() -> String {
 #[derive(Parser)]
 #[command(
     name = "tilo",
-    about = "Use apps and actions, and look after this device",
+    about = "Use apps and actions, and look after your devices",
     long_about = None
 )]
 struct Cli {
@@ -67,13 +69,24 @@ struct Cli {
 /// `tilo device` under its own names: `device`, `tilo-device`, and the
 /// old `system`.
 #[derive(Parser)]
-#[command(
-    name = "device",
-    about = "This device: update it, see what runs, go back, repair it"
-)]
+#[command(name = "device", about = DEVICE_ABOUT)]
 struct DeviceCli {
     #[command(subcommand)]
     cmd: DeviceCmd,
+}
+
+const DEVICE_ABOUT: &str = "Your devices: update them, go back, repair them, develop on them";
+const PACKAGE_ABOUT: &str = "Make and sign packages";
+
+/// `tilo agent` under its own names: `agent` and `tilo-agent`.
+#[derive(Parser)]
+#[command(
+    name = "agent",
+    about = "Connect agents to this desktop, and choose their models"
+)]
+struct AgentCli {
+    #[command(subcommand)]
+    cmd: agent::AgentCmd,
 }
 
 /// The standalone `action` command: `tilo action` under its own name.
@@ -88,10 +101,19 @@ struct ActionCli {
     cmd: desktop::ActionCmd,
 }
 
+/// The nouns are listed; the shortcuts (`open`, `do`, `update`, `status`,
+/// `rollback`) work and show in the examples.
 #[derive(Subcommand)]
 enum Cmd {
+    /// Find, get, update and remove apps.
+    #[command(disable_help_flag = true)]
+    App {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
     /// Open an app, or files and links in it.
     #[command(
+        hide = true,
         after_help = "Examples:\n  tilo open calculator\n  tilo open notes ~/Documents/plan.md\n  tilo open browser https://tilo.so\n\n\
                       An app this computer doesn't have yet is downloaded first."
     )]
@@ -111,6 +133,7 @@ enum Cmd {
     },
     /// Do one thing this desktop can do.
     #[command(
+        hide = true,
         after_help = "Examples:\n  tilo do new-terminal-window\n  tilo do rename-note title=Groceries\n  tilo do set-volume 40\n\n\
                       `tilo actions` lists what there is. Options are written name=value; a single\n\
                       value goes to the one the action needs."
@@ -128,40 +151,44 @@ enum Cmd {
         /// Words to look for.
         filter: Vec<String>,
     },
-    /// Find, get, update and remove apps.
-    #[command(disable_help_flag = true)]
-    App {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<OsString>,
-    },
     /// The same as `tilo app`.
     #[command(hide = true, disable_help_flag = true)]
     Store {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
-    /// This device: update it, see what runs, go back, repair it.
-    #[command(
-        aliases = ["system", "os"],
-        after_help = "Examples:\n  tilo device update           Move onto the newest system for this device\n  tilo device update --check   Say which system that is, change nothing\n  tilo device status           What runs now, and what this device can go back to\n  tilo device rollback         Start the previous system from now on\n  tilo device clean            Remove downloads and caches nothing uses"
-    )]
+    /// Your devices: update them, go back, repair them, develop on them.
+    #[command(aliases = ["system", "os"])]
     Device {
         #[command(subcommand)]
         cmd: DeviceCmd,
     },
+    /// Connect agents to this desktop, and choose their models.
+    Agent {
+        #[command(subcommand)]
+        cmd: agent::AgentCmd,
+    },
+    /// Make and sign packages.
+    // Its verbs are the packaging programs' own (see `nouns::PACKAGE`);
+    // `dispatch` runs them before this is ever built.
+    #[command(subcommand_required = true, arg_required_else_help = true)]
+    Package,
     /// Update apps and this device.
+    #[command(hide = true)]
     Update {
         /// Don't ask before changing anything.
         #[arg(long, short = 'y')]
         yes: bool,
     },
     /// What runs on this device now, and what it can go back to.
+    #[command(hide = true)]
     Status {
         /// The system's own record, as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Start the previous system version from now on.
+    #[command(hide = true)]
     Rollback {
         /// Don't ask first.
         #[arg(long, short = 'y')]
@@ -262,7 +289,7 @@ enum DeviceCmd {
 }
 
 /// What this computer offers, which decides what `tilo --help` lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 struct Here {
     /// A desktop session serves this process: open, action, do.
     desktop: bool,
@@ -271,6 +298,9 @@ struct Here {
     /// This is Tilo OS: device, status, rollback, and the system half of
     /// update.
     system: bool,
+    /// Whether this computer has a program another noun's verbs run:
+    /// [`nouns::present`], or a stand-in in a test.
+    has: fn(&str) -> bool,
 }
 
 impl Here {
@@ -279,6 +309,7 @@ impl Here {
             desktop: desktop::available(),
             apps: app_available(),
             system: system_available(),
+            has: nouns::present,
         }
     }
 }
@@ -288,17 +319,90 @@ impl Here {
 fn command_here(here: Here) -> clap::Command {
     // Changed in place, so help keeps the order the commands are declared in.
     Cli::command()
+        .mut_subcommand("device", |device| device_here(device, here))
+        .mut_subcommand("agent", |agent| agent_here(agent, here))
+        .mut_subcommand("package", |package| {
+            nouns::with_verbs(package, nouns::PACKAGE, here.has)
+        })
         .mut_subcommands(|sub| {
             let absent = match sub.get_name() {
                 "open" | "action" | "do" => !here.desktop,
                 "app" => !here.apps,
-                "device" | "status" | "rollback" => !here.system,
+                "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
+                "status" | "rollback" => !here.system,
                 "update" => !(here.apps || here.system),
+                "agent" => !((here.has)(agent::DOOR) || (here.has)(agent::MODELS)),
+                "package" => !nouns::any_present(nouns::PACKAGE, here.has),
                 _ => return sub,
             };
             if absent { sub.hide(true) } else { sub }
         })
         .after_help(examples(here))
+}
+
+/// The tree completion offers: every noun and verb, the shortcuts too.
+fn completing(here: Here) -> clap::Command {
+    command_here(here).mut_subcommands(|sub| match sub.get_name() {
+        "open" | "do" | "actions" | "update" | "status" | "rollback" => sub.hide(false),
+        _ => sub,
+    })
+}
+
+/// `device` with the verbs that work here: the system's own on Tilo OS,
+/// and those whose program this computer has.
+fn device_here(device: clap::Command, here: Here) -> clap::Command {
+    let device = device.mut_subcommands(|sub| {
+        let absent = match sub.get_name() {
+            "status" | "rollback" | "update" | "boot" | "repair" => !here.system,
+            _ => return sub,
+        };
+        if absent { sub.hide(true) } else { sub }
+    });
+    nouns::with_verbs(device, nouns::DEVICE, here.has).after_help(device_examples(here))
+}
+
+fn device_examples(here: Here) -> String {
+    let mut lines: Vec<(&str, &str)> = Vec::new();
+    if here.system {
+        lines.extend([
+            (
+                "tilo device update",
+                "Move onto the newest system for this device",
+            ),
+            (
+                "tilo device update --check",
+                "Say which system that is, change nothing",
+            ),
+            (
+                "tilo device status",
+                "What runs now, and what this device can go back to",
+            ),
+            (
+                "tilo device rollback",
+                "Start the previous system from now on",
+            ),
+        ]);
+    }
+    lines.push((
+        "tilo device clean",
+        "Remove downloads and caches nothing uses",
+    ));
+    if (here.has)("tilo-vm") {
+        lines.extend([
+            (
+                "tilo device swap shell",
+                "Put this checkout's shell onto your slot",
+            ),
+            ("tilo device shot", "Save a picture of your slot's screen"),
+        ]);
+    }
+    render_examples(&lines)
+}
+
+fn agent_here(agent: clap::Command, here: Here) -> clap::Command {
+    agent
+        .mut_subcommand("connect", |sub| sub.hide(!(here.has)(agent::DOOR)))
+        .mut_subcommand("models", |sub| sub.hide(!(here.has)(agent::MODELS)))
 }
 
 /// The examples under `tilo --help`: real commands, only ones that work here.
@@ -327,6 +431,20 @@ fn examples(here: Here) -> String {
     if here.apps || here.system {
         lines.push(("tilo update", "Update apps and this device"));
     }
+    if (here.has)(agent::DOOR) {
+        lines.push((
+            "tilo agent connect claude",
+            "Let Claude Code act on this desktop",
+        ));
+    }
+    if nouns::any_present(nouns::PACKAGE, here.has) {
+        lines.push(("tilo package pack", "Make a package of your app"));
+    }
+    render_examples(&lines)
+}
+
+/// `lines` as an `Examples:` block, commands aligned; nothing for none.
+fn render_examples(lines: &[(&str, &str)]) -> String {
     if lines.is_empty() {
         return String::new();
     }
@@ -336,7 +454,7 @@ fn examples(here: Here) -> String {
         .max()
         .unwrap_or(0);
     lines
-        .into_iter()
+        .iter()
         .fold(String::from("Examples:"), |mut text, (command, what)| {
             use std::fmt::Write as _;
             let _ = write!(text, "\n  {command:<width$}  {what}");
@@ -347,6 +465,41 @@ fn examples(here: Here) -> String {
 fn parse_with<T: clap::FromArgMatches>(command: clap::Command, args: Vec<OsString>) -> T {
     let matches = command.get_matches_from(args);
     T::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+/// `device`'s, `package`'s or `tilo`'s matches: a verb another program
+/// owns runs it; everything else is `T`'s.
+///
+/// `own` is the verbs another program owns at the top of `command` itself:
+/// `device`'s for `device`, none for `tilo`, whose nouns hold theirs.
+fn dispatch<T: clap::FromArgMatches>(
+    command: clap::Command,
+    args: Vec<OsString>,
+    own: &[nouns::Verb],
+    run: impl FnOnce(T) -> Result<ExitCode>,
+) -> Result<ExitCode> {
+    let matches = command.get_matches_from(args);
+    let handed_on = match matches.subcommand() {
+        Some(("device", device)) => nouns::picked(device, nouns::DEVICE),
+        Some(("package", package)) => nouns::picked(package, nouns::PACKAGE),
+        _ => nouns::picked(&matches, own),
+    };
+    if let Some((verb, args)) = handed_on {
+        return nouns::run(verb, &args);
+    }
+    run(T::from_arg_matches(&matches).unwrap_or_else(|error| error.exit()))
+}
+
+/// `package` under its own names.
+fn package_command(here: Here) -> clap::Command {
+    nouns::with_verbs(
+        clap::Command::new("package")
+            .about(PACKAGE_ABOUT)
+            .subcommand_required(true)
+            .arg_required_else_help(true),
+        nouns::PACKAGE,
+        here.has,
+    )
 }
 
 /// The noun an argv[0] names: `device` (also the old `system`), `action`,
@@ -370,10 +523,30 @@ fn main() -> ExitCode {
             || "tilo".to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
+    let here = Here::now();
     let result = match noun_of(&args).as_deref() {
-        Some("device" | "system" | "os") => {
-            let cli: DeviceCli = parse_with(DeviceCli::command().bin_name(&invoked), args);
-            run_system_command(cli.cmd)
+        Some("device" | "system" | "os") => dispatch(
+            device_here(DeviceCli::command(), here).bin_name(&invoked),
+            args,
+            nouns::DEVICE,
+            |cli: DeviceCli| run_system_command(cli.cmd),
+        ),
+        Some("package") => {
+            let matches = package_command(here)
+                .bin_name(&invoked)
+                .get_matches_from(args);
+            match nouns::picked(&matches, nouns::PACKAGE) {
+                Some((verb, args)) => nouns::run(verb, &args),
+                // A verb is required, so clap has answered already.
+                None => Ok(ExitCode::FAILURE),
+            }
+        }
+        Some("agent") => {
+            let cli: AgentCli = parse_with(
+                agent_here(AgentCli::command(), here).bin_name(&invoked),
+                args,
+            );
+            agent::run(cli.cmd)
         }
         Some("action") => {
             let cli: ActionCli = parse_with(ActionCli::command().bin_name(&invoked), args);
@@ -382,7 +555,7 @@ fn main() -> ExitCode {
                 &tilo_control::front::Spelling::standalone(),
             ))
         }
-        _ => run(parse_with(command_here(Here::now()), args)),
+        _ => dispatch(command_here(here), args, &[], run),
     };
     match result {
         Ok(code) => code,
@@ -443,10 +616,21 @@ fn run(cli: Cli) -> Result<ExitCode> {
         )),
         Cmd::Completions { shell } => {
             let mut output = Vec::new();
-            clap_complete::generate(shell, &mut Cli::command(), "tilo", &mut output);
+            let everything = Here {
+                desktop: true,
+                apps: true,
+                system: true,
+                has: |_| true,
+            };
+            clap_complete::generate(shell, &mut completing(everything), "tilo", &mut output);
             for name in ["device", "system"] {
-                clap_complete::generate(shell, &mut DeviceCli::command(), name, &mut output);
+                let mut device = device_here(DeviceCli::command(), everything);
+                clap_complete::generate(shell, &mut device, name, &mut output);
             }
+            let mut package = package_command(everything);
+            clap_complete::generate(shell, &mut package, "package", &mut output);
+            let mut agent = AgentCli::command();
+            clap_complete::generate(shell, &mut agent, "agent", &mut output);
             clap_complete::generate(shell, &mut ActionCli::command(), "action", &mut output);
             append_app_completions(shell, &mut output)?;
             output.extend_from_slice(desktop::dynamic_completions(shell).as_bytes());
@@ -454,7 +638,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 // One file answers every name this program goes by.
                 output.splice(
                     ..b"#compdef tilo\n".len(),
-                    b"#compdef tilo device system action\n".iter().copied(),
+                    b"#compdef tilo device system action package agent\n"
+                        .iter()
+                        .copied(),
                 );
             }
             if let Err(error) = std::io::stdout().write_all(&output)
@@ -465,6 +651,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Device { cmd } => run_system_command(cmd),
+        Cmd::Agent { cmd } => agent::run(cmd),
+        Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),
         Cmd::App { args } if args.first().is_some_and(|verb| verb == "open") => {
             app_open(args.get(1..).unwrap_or_default(), &spelling)
         }
@@ -1394,6 +1582,7 @@ mod tests {
         desktop: true,
         apps: true,
         system: true,
+        has: |_| true,
     };
 
     fn listed(here: Here) -> Vec<String> {
@@ -1411,28 +1600,23 @@ mod tests {
     fn help_on_a_tilo_desktop_lists_what_works_there_verbatim() {
         assert_eq!(
             listed(EVERYWHERE),
-            [
-                "open", "action", "do", "app", "device", "update", "status", "rollback"
-            ]
+            ["app", "action", "device", "agent", "package"]
         );
         let help = command_here(EVERYWHERE).render_help().to_string();
         assert_eq!(
             help,
             concat!(
-                "Use apps and actions, and look after this device\n",
+                "Use apps and actions, and look after your devices\n",
                 "\n",
                 "Usage: tilo <COMMAND>\n",
                 "\n",
                 "Commands:\n",
-                "  open      Open an app, or files and links in it\n",
-                "  action    See what this desktop can do, and do it\n",
-                "  do        Do one thing this desktop can do\n",
-                "  app       Find, get, update and remove apps\n",
-                "  device    This device: update it, see what runs, go back, repair it\n",
-                "  update    Update apps and this device\n",
-                "  status    What runs on this device now, and what it can go back to\n",
-                "  rollback  Start the previous system version from now on\n",
-                "  help      Print this message or the help of the given subcommand(s)\n",
+                "  app      Find, get, update and remove apps\n",
+                "  action   See what this desktop can do, and do it\n",
+                "  device   Your devices: update them, go back, repair them, develop on them\n",
+                "  agent    Connect agents to this desktop, and choose their models\n",
+                "  package  Make and sign packages\n",
+                "  help     Print this message or the help of the given subcommand(s)\n",
                 "\n",
                 "Options:\n",
                 "  -h, --help  Print help\n",
@@ -1447,6 +1631,8 @@ mod tests {
                 "  tilo status                  What runs on this device\n",
                 "  tilo device update           Move onto the newest system\n",
                 "  tilo update                  Update apps and this device\n",
+                "  tilo agent connect claude    Let Claude Code act on this desktop\n",
+                "  tilo package pack            Make a package of your app\n",
             )
         );
     }
@@ -1460,8 +1646,9 @@ mod tests {
             desktop: false,
             apps: true,
             system: false,
+            has: |_| false,
         };
-        assert_eq!(listed(elsewhere), ["app", "update"]);
+        assert_eq!(listed(elsewhere), ["app"]);
         let help = command_here(elsewhere).render_help().to_string();
         for absent in [
             "tilo open",
@@ -1476,6 +1663,7 @@ mod tests {
             desktop: false,
             apps: false,
             system: false,
+            has: |_| false,
         };
         assert!(listed(nothing).is_empty(), "{:?}", listed(nothing));
         assert!(
@@ -1502,7 +1690,7 @@ mod tests {
                     "distribution",
                     "PATH",
                     "bootc",
-                    "image",
+                    "OS image",
                     "Tilo OS-only",
                 ] {
                     assert!(!text.contains(word), "{word} in:\n{text}");
@@ -1549,6 +1737,8 @@ mod tests {
             ("tilo-action", Some("action")),
             ("/usr/bin/system", Some("system")),
             ("tilo-device", Some("device")),
+            ("tilo-package", Some("package")),
+            ("/usr/bin/agent", Some("agent")),
             ("device", Some("device")),
             ("/usr/bin/tilo", None),
         ] {
@@ -1557,6 +1747,62 @@ mod tests {
                 noun,
                 "{argv0}"
             );
+        }
+    }
+
+    /// `device` and `package` verbs another program owns parse with every
+    /// argument kept for it, `--help` included, and leave help where the
+    /// program is missing.
+    #[test]
+    fn handed_on_verbs_keep_their_arguments_and_show_only_where_they_work() {
+        let matches = command_here(EVERYWHERE)
+            .try_get_matches_from(["tilo", "package", "inspect", "x.tapp", "--help"])
+            .expect("package inspect parses");
+        let (_, package) = matches.subcommand().expect("a noun");
+        let (verb, args) = nouns::picked(package, nouns::PACKAGE).expect("a handed-on verb");
+        assert_eq!(
+            (verb.program, verb.prefix),
+            ("tilo-app-package", &["inspect"][..])
+        );
+        assert_eq!(args, ["x.tapp", "--help"]);
+        let matches = command_here(EVERYWHERE)
+            .try_get_matches_from(["tilo", "device", "swap", "shell", "--target", "lab"])
+            .expect("device swap parses");
+        let (_, device) = matches.subcommand().expect("a noun");
+        let (verb, args) = nouns::picked(device, nouns::DEVICE).expect("a handed-on verb");
+        assert_eq!((verb.program, verb.prefix), ("tilo-vm", &["swap"][..]));
+        assert_eq!(args, ["shell", "--target", "lab"]);
+        // The system's own verbs stay `tilo`'s.
+        let matches = command_here(EVERYWHERE)
+            .try_get_matches_from(["tilo", "device", "status"])
+            .expect("device status parses");
+        let (_, device) = matches.subcommand().expect("a noun");
+        assert!(nouns::picked(device, nouns::DEVICE).is_none());
+
+        let bare = Here {
+            desktop: false,
+            apps: false,
+            system: false,
+            has: |_| false,
+        };
+        let device = device_here(DeviceCli::command(), bare);
+        let shown: Vec<&str> = device
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .map(clap::Command::get_name)
+            .collect();
+        assert_eq!(shown, ["clean", "health"]);
+        assert!(!device_examples(bare).contains("swap"));
+        let agent = agent_here(AgentCli::command(), bare);
+        assert!(agent.get_subcommands().all(clap::Command::is_hide_set));
+        // Completion still offers everything, shortcuts included.
+        let all: Vec<String> = completing(EVERYWHERE)
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .map(|sub| sub.get_name().to_owned())
+            .collect();
+        for name in ["open", "do", "app", "device", "agent", "package", "update"] {
+            assert!(all.iter().any(|listed| listed == name), "{name} in {all:?}");
         }
     }
 
