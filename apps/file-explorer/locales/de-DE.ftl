@@ -394,9 +394,6 @@ files-place-music = Musik
 files-place-videos = Videos
 
 ## Liste, Leer-/Fehlerstatus und Barrierefreiheit
-files-column-name = Name
-files-column-size = Größe
-files-column-modified = Geändert
 files-try-again = Erneut versuchen
 files-loading = Wird geladen…
 files-loading-folder = { $path } wird geladen
