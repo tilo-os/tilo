@@ -43,7 +43,7 @@ struct HostAppsSnapshot {
 }
 
 #[cfg(test)]
-struct HostAppsTestSource {
+pub(crate) struct HostAppsTestSource {
     generation: std::sync::atomic::AtomicU64,
     state: Mutex<(Vec<HostApp>, Vec<crate::shell::launcher::InstalledApp>)>,
     materializations: std::sync::atomic::AtomicUsize,
@@ -51,7 +51,10 @@ struct HostAppsTestSource {
 
 #[cfg(test)]
 impl HostAppsTestSource {
-    fn new(apps: Vec<HostApp>, installed: Vec<crate::shell::launcher::InstalledApp>) -> Arc<Self> {
+    pub(crate) fn new(
+        apps: Vec<HostApp>,
+        installed: Vec<crate::shell::launcher::InstalledApp>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             generation: std::sync::atomic::AtomicU64::new(1),
             state: Mutex::new((apps, installed)),
@@ -88,7 +91,7 @@ impl HostApplicationsProvider {
     }
 
     #[cfg(test)]
-    fn with_test_source(source: Arc<HostAppsTestSource>) -> Self {
+    pub(crate) fn with_test_source(source: Arc<HostAppsTestSource>) -> Self {
         Self {
             source: Some(source),
             ..Self::new()

@@ -125,6 +125,40 @@ impl ResourceKind {
     }
 }
 
+/// How far a hit is from the person: what they have, an app Tilo opens at
+/// once, or an app they would first have to install. A property of the hit,
+/// set by the provider that knows it, and read by the merge
+/// ([`order_hits`]): what the person has, and the Tilo apps that just open,
+/// rank by match quality; a third-party app the person does not have (a
+/// Flathub app's Store page) ranks after all of them, however well its name
+/// matches, ordered among its kind by match quality and still listed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Availability {
+    /// On this device or the person's own: an installed app, a file, a
+    /// message, an action, a setting.
+    #[default]
+    OnDevice,
+    /// A Tilo app from the catalogue, its documents and actions: not on this
+    /// device, but Enter downloads and opens it, with no install step.
+    TiloCatalogue,
+    /// An app from a third-party catalogue (Flathub) the person does not
+    /// have: Enter shows its Store page, where they decide to install it.
+    ThirdPartyCatalogue,
+}
+
+impl Availability {
+    /// The band the merge orders the hit in, before match quality: every
+    /// hit the person can open now leads every app they would have to
+    /// install first.
+    #[must_use]
+    pub const fn band(self) -> u8 {
+        match self {
+            Self::OnDevice | Self::TiloCatalogue => 0,
+            Self::ThirdPartyCatalogue => 1,
+        }
+    }
+}
+
 /// Hard ceilings for one provider page.  These are deliberately expressed in
 /// the protocol rather than as palette constants: the same limits protect the
 /// visual palette, headless agents, and a future remote directory source.
@@ -234,6 +268,10 @@ pub trait SearchRow {
     fn subtitle(&self) -> Option<&str>;
     fn shortcut(&self) -> Option<&str> {
         None
+    }
+    /// How far the hit is from the person; see [`Availability`].
+    fn availability(&self) -> Availability {
+        Availability::OnDevice
     }
 }
 /// One contiguous run of same-kind results, as [`group_by_kind`] arranges
@@ -550,20 +588,34 @@ pub fn merged_strength(
 /// the word. The sort is stable: equally strong hits keep their provider's
 /// own order rather than being re-alphabetised by title.
 pub fn order_by_kind<T>(merged: &mut [(T, f32)], kind: impl Fn(&T) -> &ResourceKind) {
-    let mut best: HashMap<(u8, String), f32> = HashMap::new();
+    order_hits(merged, |hit| (kind(hit), Availability::OnDevice));
+}
+
+/// [`order_by_kind`] within each [`Availability::band`]: every hit the
+/// person can open now, ordered as [`order_by_kind`] orders them, then the
+/// apps they would have to install first, ordered the same way among
+/// themselves. Hits of one kind in different bands are separate groups.
+pub fn order_hits<T>(merged: &mut [(T, f32)], class: impl Fn(&T) -> (&ResourceKind, Availability)) {
+    let key = |hit: &T| {
+        let (kind, availability) = class(hit);
+        (availability.band(), kind.sort_key())
+    };
+    let mut best: HashMap<(u8, (u8, String)), f32> = HashMap::new();
     for (hit, strength) in merged.iter() {
-        let slot = best.entry(kind(hit).sort_key()).or_insert(f32::MIN);
+        let slot = best.entry(key(hit)).or_insert(f32::MIN);
         *slot = slot.max(*strength);
     }
     merged.compact_sort_by(|(a, a_strength), (b, b_strength)| {
-        let (a_key, b_key) = (kind(a).sort_key(), kind(b).sort_key());
+        let (a_key, b_key) = (key(a), key(b));
         let a_group = best.get(&a_key).copied().unwrap_or(f32::MIN);
         let b_group = best.get(&b_key).copied().unwrap_or(f32::MIN);
-        b_group
-            .partial_cmp(&a_group)
-            .unwrap_or(Ordering::Equal)
+        // What the person has leads what they would have to install.
+        a_key
+            .0
+            .cmp(&b_key.0)
+            .then_with(|| b_group.partial_cmp(&a_group).unwrap_or(Ordering::Equal))
             // Equally strong groups fall back to the fixed kind order.
-            .then_with(|| a_key.cmp(&b_key))
+            .then_with(|| a_key.1.cmp(&b_key.1))
             .then_with(|| {
                 b_strength
                     .partial_cmp(a_strength)
@@ -591,7 +643,7 @@ pub fn rank<Row: SearchRow>(rows: Vec<(Row, i32)>) -> Vec<Row> {
             (row, strength)
         })
         .collect();
-    order_by_kind(&mut merged, SearchRow::kind);
+    order_hits(&mut merged, |row| (row.kind(), row.availability()));
     merged.into_iter().map(|(r, _)| r).collect()
 }
 

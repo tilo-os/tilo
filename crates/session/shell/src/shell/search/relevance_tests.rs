@@ -17,16 +17,24 @@ use std::time::Duration;
 use automerge::AutoCommit;
 use ui::search::system::SearchScope;
 
+use crate::shell::catalogue::{CatalogueApp, SharedCatalogue};
 use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::host_apps::HostApp;
 use crate::shell::launcher::InstalledApp;
 use crate::shell::quick_settings::actions::{QsActionAvailability, UnavailableQsActions};
 use crate::shell::search::providers::actions::SharedQsDispatcher;
 use crate::shell::search::providers::applications::ApplicationsTestSource;
+use crate::shell::search::providers::host_applications::HostAppsTestSource;
+use crate::shell::search::providers::store_catalogue::{
+    StoreCatalogueTestSource, StoreCatalogueTestState,
+};
 use crate::shell::search::providers::{
     ActionsProvider, ApplicationsProvider, FilesProvider, SessionActionPolicy,
     SessionActionsProvider, SettingsPagesProvider, SystemSettingsProvider, WebProvider,
 };
-use crate::shell::search::{QueryArgs, SearchRegistry, SearchResult};
+use crate::shell::search::providers::{HostApplicationsProvider, StoreCatalogueProvider};
+use crate::shell::search::{Availability, QueryArgs, SearchRegistry, SearchResult};
+use std::sync::Arc;
 
 /// Every language's words of `search/*.ftl`, as the packer joins them.
 fn tilo_app_package_keywords(dir: &Path) -> Vec<String> {
@@ -140,15 +148,19 @@ impl Palette {
             applications,
             pages,
         };
-        // The apps index builds off the keystroke; wait for it as a person
-        // would, by it being there when they type.
-        tilo_test_env::wait_until("the application index to settle", || {
-            palette.with_args("", |args| {
-                palette.registry.refresh_indexes(args);
-                !palette.registry.indexes_settling(args)
+        palette.settled()
+    }
+
+    /// The palette once every index has built: an index builds off the
+    /// keystroke, and a person meets it there when they type.
+    fn settled(self) -> Self {
+        tilo_test_env::wait_until("the search indexes to settle", || {
+            self.with_args("", |args| {
+                self.registry.refresh_indexes(args);
+                !self.registry.indexes_settling(args)
             })
         });
-        palette
+        self
     }
 
     fn with_args<T>(&self, needle: &str, run: impl FnOnce(&QueryArgs<'_>) -> T) -> T {
@@ -203,6 +215,57 @@ impl Palette {
         self.registry
             .register(Rc::new(WebProvider::with_installed(|_| None)));
         self
+    }
+
+    /// The palette on a device that also has these host (Flatpak) apps
+    /// installed, and the catalogue offering these Tilo apps and Flathub's
+    /// apps from `appstream` (a Flathub `AppStream` document).
+    fn with_catalogue(
+        mut self,
+        host: Vec<HostApp>,
+        tilo: &[(&str, &str)],
+        appstream: &str,
+    ) -> Self {
+        let installed: Vec<String> = installed_apps()
+            .into_iter()
+            .map(|app| app.package_id)
+            .chain(host.iter().map(|app| app.desktop_id.clone()))
+            .collect();
+        self.registry
+            .register(Rc::new(HostApplicationsProvider::with_test_source(
+                HostAppsTestSource::new(host, installed_apps()),
+            )));
+        let source = app_catalogue::appstream::AppstreamSource {
+            remote: "flathub".into(),
+            installation: app_catalogue::Installation::System,
+            file: "/var/lib/flatpak/appstream/flathub/x86_64/active/appstream.xml".into(),
+            icons: "/var/lib/flatpak/appstream/flathub/x86_64/active/icons".into(),
+        };
+        let flathub = app_catalogue::appstream::parse(appstream.as_bytes(), &source, "en")
+            .expect("the Flathub catalogue parses");
+        let state = StoreCatalogueTestState {
+            installed,
+            tilo: tilo
+                .iter()
+                .map(|(package_id, display_name)| CatalogueApp {
+                    package_id: (*package_id).into(),
+                    display_name: (*display_name).into(),
+                    version: "1.0.0".into(),
+                    registry: "Tilo".into(),
+                    trust: "publisher-signed".into(),
+                    ..CatalogueApp::default()
+                })
+                .collect(),
+            shared: SharedCatalogue {
+                flathub: Arc::new(flathub),
+                blocks: Arc::new(app_catalogue::BlockList::empty()),
+            },
+        };
+        self.registry
+            .register(Rc::new(StoreCatalogueProvider::with_test_source(
+                StoreCatalogueTestSource::new(state),
+            )));
+        self.settled()
     }
 
     /// The palette on a home holding these `~/…` files, every one changed
@@ -784,4 +847,125 @@ fn finder_and_explorer_lead_with_files_ahead_of_files_named_like_them() {
             .any(|row| row.provider_id == "files"),
         "the files named like it are still found"
     );
+}
+
+/// A Flathub `AppStream` document: the apps whose names, summaries or keywords
+/// say "music", as Flathub really lists them, GNOME's own "Music" among them.
+const FLATHUB_MUSIC: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<components version="0.16" origin="flathub">
+  <component type="desktop-application"><id>org.gnome.Music</id><name>Music</name><summary>Play and organize your music collection</summary><keywords><keyword>music</keyword></keywords><bundle type="flatpak">app/org.gnome.Music/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>com.spotify.Client</id><name>Spotify</name><summary>Online music streaming service</summary><keywords><keyword>music</keyword></keywords><bundle type="flatpak">app/com.spotify.Client/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>org.musicbrainz.Picard</id><name>MusicBrainz Picard</name><summary>Tag your music files</summary><bundle type="flatpak">app/org.musicbrainz.Picard/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>org.strawberrymusicplayer.strawberry</id><name>Strawberry Music Player</name><summary>Play and organize your music collection</summary><bundle type="flatpak">app/org.strawberrymusicplayer.strawberry/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>com.github.taiko2k.tauonmb</id><name>Tauon Music Box</name><summary>A modern streamlined music player</summary><bundle type="flatpak">app/com.github.taiko2k.tauonmb/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>app.ytmdesktop.ytmdesktop</id><name>YouTube Music Desktop App</name><summary>A desktop app for YouTube Music</summary><bundle type="flatpak">app/app.ytmdesktop.ytmdesktop/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>org.gnome.Lollypop</id><name>Lollypop</name><summary>Play and organize your music collection</summary><keywords><keyword>music</keyword></keywords><bundle type="flatpak">app/org.gnome.Lollypop/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>io.bassi.Amberol</id><name>Amberol</name><summary>Plays music, and nothing else</summary><keywords><keyword>music</keyword></keywords><bundle type="flatpak">app/io.bassi.Amberol/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>org.musescore.MuseScore</id><name>MuseScore</name><summary>Create, play and print sheet music</summary><keywords><keyword>music</keyword></keywords><bundle type="flatpak">app/org.musescore.MuseScore/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>org.feichtmeier.Musicpod</id><name>Musicpod</name><summary>Music, radio and podcast player</summary><bundle type="flatpak">app/org.feichtmeier.Musicpod/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>org.nickvision.tubeconverter</id><name>Parabolic</name><summary>Download web video and music</summary><keywords><keyword>music</keyword></keywords><bundle type="flatpak">app/org.nickvision.tubeconverter/x86_64/stable</bundle></component>
+  <component type="desktop-application"><id>com.rafaelmardojai.Blanket</id><name>Blanket</name><summary>Listen to ambient sounds</summary><bundle type="flatpak">app/com.rafaelmardojai.Blanket/x86_64/stable</bundle></component>
+</components>"#;
+
+/// The device of the music tests: Tilo's apps installed, the Musicpod Flatpak
+/// installed (so Flathub no longer offers it), Tilo's "Sheet Music" in the
+/// catalogue, Flathub's other music apps offered, and a home with music in
+/// its file names.
+fn music_palette() -> Palette {
+    let musicpod = HostApp {
+        desktop_id: "org.feichtmeier.Musicpod".into(),
+        name: "Musicpod".into(),
+        source_label: "Flatpak",
+        categories: vec!["Audio".into()],
+        keywords: vec!["music".into()],
+        mime_types: Vec::new(),
+        terminal: false,
+        icon: None,
+        window_identities: vec!["org.feichtmeier.Musicpod".into()],
+    };
+    Palette::new()
+        .with_files(&[
+            "~/Documents/music theory notes.md",
+            "~/Documents/Music lessons.pdf",
+            "~/Downloads/music-festival-tickets.pdf",
+        ])
+        .with_catalogue(
+            vec![musicpod],
+            &[("so.tilo.sheet-music", "Sheet Music")],
+            FLATHUB_MUSIC,
+        )
+}
+
+// USER REQUIREMENT (2026-10-22): "flatpak App pages should not always show up
+// first. your installed + tilo apps sure, but not every single flatpak app,
+// they should be further down I think"
+#[test]
+fn installed_and_tilo_apps_lead_then_own_content_then_flatpak_store_pages() {
+    let palette = music_palette();
+    // A Store page of a Flathub app the person does not have.
+    let uninstalled_flatpak = |row: &SearchResult| {
+        palette.registry.availability(row) == Availability::ThirdPartyCatalogue
+    };
+    for rows in [palette.ask("music"), palette.shown("music")] {
+        let at = |provider: &str, id: &str| {
+            rows.iter()
+                .position(|row| row.provider_id == provider && row.id == id)
+                .unwrap_or_else(|| panic!("{provider}:{id} in {:?}", titles(&rows)))
+        };
+        assert_eq!(
+            at(APP, "so.tilo.music"),
+            0,
+            "the installed Music leads, however exactly GNOME's Music matches: {:?}",
+            titles(&rows)
+        );
+        let musicpod = at("host-applications", "org.feichtmeier.Musicpod");
+        let sheet_music = at("store-catalogue", "app:so.tilo.sheet-music");
+        let first_file = rows
+            .iter()
+            .position(|row| row.provider_id == "files")
+            .expect("the person's music files are found");
+        let first_flatpak = rows
+            .iter()
+            .position(&uninstalled_flatpak)
+            .expect("Flathub's music apps are still listed");
+        assert!(
+            musicpod < first_file && sheet_music < first_file,
+            "the installed Flatpak and the Tilo app lead the person's files: {:?}",
+            titles(&rows)
+        );
+        assert!(
+            rows.iter().skip(first_flatpak).all(&uninstalled_flatpak),
+            "every Store page of an uninstalled Flatpak follows everything the person \
+             has, their files among it: {:?}",
+            titles(&rows)
+        );
+        assert_eq!(
+            rows.get(first_flatpak).map(|row| row.id.as_str()),
+            Some("flathub:org.gnome.Music"),
+            "among themselves, Store pages rank by match: {:?}",
+            titles(&rows)
+        );
+    }
+    assert_eq!(
+        palette
+            .ask("music")
+            .iter()
+            .filter(|row| uninstalled_flatpak(row))
+            .count(),
+        10,
+        "every Flathub app that matches and is not installed is still found"
+    );
+}
+
+#[test]
+fn a_query_only_a_flatpak_matches_still_finds_its_store_page() {
+    let palette = music_palette();
+    for rows in [palette.ask("picard"), palette.shown("picard")] {
+        assert_eq!(
+            rows.first().map(|row| row.id.as_str()),
+            Some("flathub:org.musicbrainz.Picard"),
+            "{:?}",
+            titles(&rows)
+        );
+    }
 }
