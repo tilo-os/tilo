@@ -99,3 +99,7 @@ upstream = "Tilo's own, not posted; mainline v7.3 has no mssecapp client"
 [[patch]]
 file = "0017-tpm-add-a-driver-for-the-TPM-behind-Qualcomm-mssecapp.patch"
 upstream = "Tilo's own, not posted; mainline v7.3 has no driver for it"
+
+[[patch]]
+file = "0018-drm-msm-a6xx-Fix-secondary-rail-vote-in-ARC-votes.patch"
+upstream = "msm fix, in mainline for v7.4 (commit 128a0edde50780ed9eb93ab5d2e18ca24c1f1c43), no release yet"
