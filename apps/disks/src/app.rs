@@ -10,6 +10,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, LiveRow, RunMode};
 use ui::presence::PresenceCtx;
@@ -186,12 +187,16 @@ impl StatusTone {
 /// What the shell currently shows, so it is rebuilt only when it changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ViewKey {
+    loading: bool,
     topology: u64,
     names: u64,
     selected: usize,
     partition: Option<usize>,
     tab: Tab,
 }
+
+/// A reading of this machine's storage, or why it could not be read.
+type Probed = Result<Topology, String>;
 
 /// Where a [`DisksApp`]'s devices come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +215,11 @@ pub struct DisksApp {
     topo: Topology,
     /// Why the last probe found nothing, when it could not read the machine.
     unreadable: Option<String>,
+    /// No reading of this machine has arrived yet: the window shows the
+    /// page the drives will fill.
+    loading: bool,
+    /// The reading taken when the window opened, on a worker.
+    opening: Option<mpsc::Receiver<Probed>>,
     /// Bumped whenever `topo` is replaced.
     topo_rev: u64,
     /// Where the topology comes from and where operations run.
@@ -265,6 +275,8 @@ impl DisksApp {
             intents,
             topo,
             unreadable: None,
+            loading: false,
+            opening: None,
             topo_rev: 0,
             backend,
             names: BTreeMap::new(),
@@ -283,17 +295,20 @@ impl DisksApp {
     }
 
     /// Hosted: edits and effects go through `dispatcher`. Only a live window
-    /// probes this machine; a capture shows `fixture` (or the sample
-    /// machine) and a past version shows no devices.
+    /// reads this machine, on a worker that wakes the window with the
+    /// result; a capture shows `fixture` (or the sample machine) and a past
+    /// version shows no devices.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: Dispatcher<Disks>,
         mode: RunMode,
         fixture: Option<Topology>,
+        waker: ui::WakeHandle,
     ) {
         self.dispatcher = Some(dispatcher);
         match mode {
-            RunMode::Live => self.reprobe(),
+            RunMode::Live if self.backend == Backend::System => self.start_reading(waker),
+            RunMode::Live => {}
             RunMode::Capture => {
                 self.backend = Backend::Sample;
                 self.replace_topology(fixture.unwrap_or_else(Topology::sample));
@@ -378,6 +393,7 @@ impl DisksApp {
     /// Rebuild the sidebar and the content when what they show changed.
     fn refresh_view(&mut self) {
         let key = ViewKey {
+            loading: self.loading,
             topology: self.topo_rev,
             names: self.names_rev,
             selected: self.selected,
@@ -388,7 +404,10 @@ impl DisksApp {
             return;
         }
         let listed_before = self.built.is_some_and(|b| {
-            b.topology == key.topology && b.names == key.names && b.selected == key.selected
+            b.loading == key.loading
+                && b.topology == key.topology
+                && b.names == key.names
+                && b.selected == key.selected
         });
         self.built = Some(key);
         if !listed_before {
@@ -406,8 +425,11 @@ impl DisksApp {
         }
         let Some(drive) = self.topo.drives.get(self.selected) else {
             self.shell.set_content_title("");
-            self.shell
-                .set_content(view::empty_state(self.unreadable.as_deref(), &self.intents));
+            self.shell.set_content(if self.loading {
+                view::loading(self.tab, &self.intents, &self.scroll)
+            } else {
+                view::empty_state(self.unreadable.as_deref(), &self.intents)
+            });
             return;
         };
         let model = DetailModel {
@@ -593,6 +615,10 @@ impl DisksApp {
                 self.set_tab(Tab::Partitions);
                 self.select_part(Some(3));
             }
+            // The window as it opens, before this machine's storage is read.
+            Some("loading") => {
+                self.loading = true;
+            }
             Some("toast") => self.report("Mounted /dev/sdc1".into(), StatusTone::Success),
             Some("toast-error") => {
                 self.report(
@@ -616,10 +642,7 @@ impl DisksApp {
         cx: &mut EffectCx<Disks, Self>,
     ) -> EffectAnswer {
         let operation = match effect {
-            DisksEffect::Rescan => {
-                self.rescan();
-                return Ok(Effected::value(&self.status));
-            }
+            DisksEffect::Rescan => return Ok(self.read_again(cx)),
             DisksEffect::Select { device } => {
                 self.select_device(&device)?;
                 return Ok(Effected::done());
@@ -680,11 +703,16 @@ impl DisksApp {
         self.running = Some(kind);
         self.report(format!("{} {dev}…", kind.gerund()), StatusTone::Info);
         Ok(cx.thread(
-            move |_| ops::run(kind.op(), &device, fstype.as_deref()),
-            move |app: &mut Self, result: Result<String, String>, _| {
+            move |_| {
+                let result = ops::run(kind.op(), &device, fstype.as_deref());
+                // What changed is read again here, on the worker.
+                let probed = kind.changes_topology().then(crate::probe::probe);
+                (result, probed)
+            },
+            move |app: &mut Self, (result, probed): (Result<String, String>, Option<Probed>), _| {
                 app.running = None;
-                if kind.changes_topology() {
-                    app.reprobe();
+                if let Some(probed) = probed {
+                    app.show_reading(probed);
                 }
                 match result {
                     Ok(message) => {
@@ -703,19 +731,77 @@ impl DisksApp {
         ))
     }
 
-    /// Probe this machine again, keeping the selection where it still
-    /// exists. The sample machine stays as it is.
-    fn reprobe(&mut self) {
-        if self.backend == Backend::System {
-            let probed = crate::probe::probe();
-            self.unreadable = probed.as_ref().err().cloned();
-            self.replace_topology(probed.unwrap_or_default());
+    /// Read this machine's storage on a worker, which wakes the window
+    /// with the result; until it arrives the window shows the page the
+    /// drives will fill.
+    fn start_reading(&mut self, waker: ui::WakeHandle) {
+        let (sender, receiver) = mpsc::channel();
+        drop(ui::rt::app().spawn_blocking(move || {
+            let _ = sender.send(crate::probe::probe());
+            waker.wake();
+        }));
+        self.opening = Some(receiver);
+        self.loading = true;
+        self.dirty = true;
+    }
+
+    /// Show the opening reading, if it arrived.
+    fn take_opening_reading(&mut self) {
+        let Some(receiver) = &self.opening else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(probed) => {
+                self.opening = None;
+                self.show_reading(probed);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.opening = None;
+                self.show_reading(Err("Storage could not be read.".into()));
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
         }
     }
 
-    /// Rescan storage devices: the Rescan button, `r`, and the effect.
+    /// Show a reading of this machine, keeping the selection where it still
+    /// exists. It is newer than one still being taken at opening, which is
+    /// dropped.
+    fn show_reading(&mut self, probed: Probed) {
+        self.opening = None;
+        self.loading = false;
+        self.unreadable = probed.as_ref().err().cloned();
+        self.replace_topology(probed.unwrap_or_default());
+    }
+
+    /// Rescan storage devices: the Rescan button, `r`, and the bar. This
+    /// machine is read again through the Rescan effect, on a worker; the
+    /// sample machine has nothing to read again.
     fn rescan(&mut self) {
-        self.reprobe();
+        match (&self.dispatcher, self.backend) {
+            (Some(dispatcher), Backend::System) => dispatcher.effect(&DisksEffect::Rescan),
+            _ => self.report_scan(),
+        }
+    }
+
+    /// The Rescan effect: read this machine again on a worker, then show
+    /// and report what it found.
+    fn read_again(&mut self, cx: &mut EffectCx<Disks, Self>) -> Effected {
+        if self.backend != Backend::System {
+            self.report_scan();
+            return Effected::value(&self.status);
+        }
+        cx.thread(
+            |_| crate::probe::probe(),
+            |app: &mut Self, probed: Probed, _| {
+                app.show_reading(probed);
+                app.report_scan();
+                Ok(Effected::value(&app.status))
+            },
+        )
+    }
+
+    /// Report what the last reading found.
+    fn report_scan(&mut self) {
         match self.unreadable.clone() {
             Some(reason) => self.report(reason, StatusTone::Danger),
             None => self.report(found_message(self.topo.drives.len()), StatusTone::Success),
@@ -815,6 +901,7 @@ impl ui::widget::Decorator for DisksApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.take_opening_reading();
         self.take_window_toolbar_events();
         self.drain_intents();
         self.refresh_view();
@@ -823,6 +910,7 @@ impl ui::widget::Decorator for DisksApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.take_opening_reading();
         let bar = self.take_window_toolbar_events();
         self.drain_intents();
         self.refresh_view();
@@ -1105,6 +1193,33 @@ mod tests {
     }
 
     /// Choosing a drive or a tab from the window's controls repoints the detail.
+    /// The window opens before this machine's storage is read (that reading
+    /// is a worker's), on the detail page's own layout, and nothing moves
+    /// when the drives arrive.
+    #[test]
+    fn the_opening_page_is_the_layout_the_drives_fill() {
+        let mut opening = DisksApp::new();
+        opening.loading = true;
+        let mut app = framed(opening, 1280.0, 800.0);
+        Framed::harness_mut(&mut app).poll_frame().unwrap();
+        let tabs = target(&app, "disks-tabs");
+        assert!(
+            Framed::harness_mut(&mut app)
+                .inspection_json()
+                .unwrap()
+                .contains("Reading drives…"),
+            "the opening page says the drives are being read"
+        );
+        app.show_reading(Ok(Topology::sample()));
+        Framed::harness_mut(&mut app).poll_frame().unwrap();
+        assert!(app.drive().is_some(), "the reading fills the page");
+        assert_eq!(
+            target(&app, "disks-tabs"),
+            tabs,
+            "the tabs stay where the opening page put them"
+        );
+    }
+
     #[test]
     fn pointer_controls_repoint_the_detail() {
         // --- phase: choosing_a_drive_selects_it_and_resets_the_partition ---
