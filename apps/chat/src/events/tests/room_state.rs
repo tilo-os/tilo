@@ -766,3 +766,42 @@ fn reading_position_drives_unread_state_and_the_return_to_latest_control() {
         assert!(app.timeline_at_end);
     }
 }
+
+/// A category with no channel in it is no heading to a member: the
+/// channels read as one list. Whoever keeps the layout still sees it, to
+/// add its first channel there.
+#[test]
+fn an_empty_category_is_listed_only_to_whoever_keeps_the_layout() {
+    let (mut app, mut doc) = app_with_doc();
+    crate::testing::insert_category(&mut doc, "k_empty", "chat");
+    app.reload(&doc);
+    let listed = |app: &mut ChatApp, category: &str| {
+        render_frame(app, 1280.0, 720.0);
+        app.hits
+            .iter()
+            .any(|(_, hit)| matches!(hit, Hit::CategoryToggle(id) if id == category))
+    };
+    assert!(app.keeps_layout());
+    assert!(
+        listed(&mut app, "k_empty"),
+        "a moderator sees where to add a channel"
+    );
+    app.perms = crate::permissions::ChatPermissions::from_context(
+        ui::permissions::PermissionContext::member("guest", ui::permissions::Role::Viewer),
+    );
+    assert!(!app.keeps_layout());
+    assert!(
+        !listed(&mut app, "k_empty"),
+        "a member sees no empty heading"
+    );
+    let filled = app
+        .categories
+        .iter()
+        .find(|category| !app.category_channels(&category.id).is_empty())
+        .map(|category| category.id.clone())
+        .expect("the fixture files a channel under a category");
+    assert!(
+        listed(&mut app, &filled),
+        "a category with channels stays listed"
+    );
+}

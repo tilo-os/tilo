@@ -2883,6 +2883,18 @@ impl ChatApp {
         v
     }
 
+    /// The categories the sidebar lists: each one with a channel in it.
+    /// Someone who keeps the room's layout sees the empty ones too, since
+    /// that is where they add a category's first channel; to everyone else
+    /// an empty heading is only noise between the channels.
+    pub(crate) fn sidebar_categories(&self) -> Vec<&crate::model::Category> {
+        let keeps_layout = self.keeps_layout();
+        self.ws_categories()
+            .into_iter()
+            .filter(|category| keeps_layout || !self.category_channels(&category.id).is_empty())
+            .collect()
+    }
+
     pub(crate) fn category(&self, id: &str) -> Option<&crate::model::Category> {
         self.categories.iter().find(|c| c.id == id)
     }

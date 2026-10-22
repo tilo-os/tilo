@@ -600,7 +600,7 @@ impl ChatApp {
             hits,
         );
         let mut first = y <= side.y0;
-        let categories: Vec<_> = self.ws_categories().into_iter().cloned().collect();
+        let categories: Vec<_> = self.sidebar_categories().into_iter().cloned().collect();
         for cat in categories {
             if y > side.y1 {
                 break;
