@@ -1,0 +1,43 @@
+[package]
+name = "tilo-documents"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "The files a person chose for an app in the system file chooser, served into that app's sandbox and nothing else."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilo_documents"
+path = "src/lib.rs"
+
+# The table and the paths are portable: the launcher only needs the paths.
+# `mount` serves the table as a filesystem (Linux, FUSE), for the session
+# shell that owns it; this crate's own tests always build it.
+[features]
+mount = ["dep:fuser"]
+
+[dependencies]
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "process", "std"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+fuser.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
