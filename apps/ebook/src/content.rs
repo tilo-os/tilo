@@ -260,6 +260,7 @@ pub fn handed_book_entry(handed: &HandedBook) -> LibraryEntry {
             .as_deref()
             .and_then(|hash| LibraryEntry::stored(hash, handed.size))
             .unwrap_or_default(),
+        index: ui::tilo_resource::Bytes::Empty,
     }
 }
 
@@ -292,6 +293,7 @@ pub fn prepare_imported_book(path: &Path, mut book: Book) -> (Book, LibraryEntry
         subject: book.subject.clone(),
         added: unix_now_ms(),
         content: ui::tilo_resource::Bytes::Empty,
+        index: ui::tilo_resource::Bytes::Empty,
     };
     (book, entry)
 }

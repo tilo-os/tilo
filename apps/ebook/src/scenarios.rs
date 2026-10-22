@@ -66,6 +66,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "spread-select",
     "search",
     "search-in-book",
+    "search-elsewhere",
 ];
 
 /// The books a capture shows, and where each would live on a reader's
@@ -100,6 +101,60 @@ impl SampleShelf {
 /// The sample shelf every capture reads its books from.
 pub(crate) fn fixture(fixture: &mut Fixture<Ebook>) {
     fixture.provide(SampleShelf::new());
+    if fixture.scenario() == Some("search-elsewhere") {
+        // Another device indexed it; the index reached this one.
+        let _ = fixture.content().put(&elsewhere_segment());
+    }
+}
+
+/// What stands for the bytes of [`elsewhere_book`]: its id and its row's
+/// content hash are theirs.
+const ELSEWHERE_TEXT: &[u8] = b"The Glassmaker's Apprentice";
+
+/// The book of "search-elsewhere" whose text is on another device: on the
+/// shelf, its index here, its text not.
+fn elsewhere_book() -> Book {
+    use crate::model::{Block, Chapter, Span};
+    let chapter = |title: &str, paragraphs: &[&str]| Chapter {
+        title: title.to_owned(),
+        blocks: paragraphs
+            .iter()
+            .map(|text| Block::Paragraph {
+                spans: vec![Span::plain(*text)],
+            })
+            .collect(),
+    };
+    Book {
+        id: crate::epub::content_id(ELSEWHERE_TEXT),
+        title: "The Glassmaker's Apprentice".into(),
+        author: "Mara Quill".into(),
+        chapters: vec![
+            chapter(
+                "I. The Furnace",
+                &[
+                    "The furnace never slept, and neither, it seemed, did old Tamsin.",
+                    "She turned the pipe and the glass swelled like a held breath.",
+                ],
+            ),
+            chapter(
+                "II. Sand and Ash",
+                &[
+                    "Every pane in the town had passed through her hands.",
+                    "He learned that glass remembers every hurry and every doubt.",
+                ],
+            ),
+            chapter(
+                "III. The Lens",
+                &["The lens she ground that winter brought the far hills near."],
+            ),
+        ],
+        ..Book::default()
+    }
+}
+
+/// The index of [`elsewhere_book`], as the device holding its text built it.
+fn elsewhere_segment() -> Vec<u8> {
+    crate::library_index::Segment::build(&elsewhere_book()).encode()
 }
 
 /// When the scenes were written: a fixed time, so every capture is the same.
@@ -148,6 +203,7 @@ pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Ebook>> {
                     subject: book.subject.clone(),
                     added: STAGED_AT + index as u64,
                     content: ui::tilo_resource::Bytes::Empty,
+                    index: ui::tilo_resource::Bytes::Empty,
                 },
             )
         })
@@ -199,10 +255,43 @@ pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Ebook>> {
             .enumerate()
             .map(|(at, mark)| paths.annotations.insert_as(&mark.key(), at, mark)),
     );
-    edits
+    let mut invokes: Vec<Invoke<Ebook>> = edits
         .iter()
         .filter_map(|edit| Invoke::edit(edit).ok())
-        .collect()
+        .collect();
+    if scenario == "search-elsewhere" {
+        invokes.extend(elsewhere_shelved());
+    }
+    invokes
+}
+
+/// [`elsewhere_book`] joining the shelf with its index; its text, kept in
+/// a content store, is not in this one.
+fn elsewhere_shelved() -> Vec<Invoke<Ebook>> {
+    use crate::resource::StoredContent;
+    let book = elsewhere_book();
+    let segment = elsewhere_segment();
+    let text = tilo_content::hash_bytes(ELSEWHERE_TEXT);
+    let entry = LibraryEntry {
+        id: book.id.clone(),
+        shared: false,
+        title: book.title.clone(),
+        author: book.author.clone(),
+        subject: String::new(),
+        added: STAGED_AT,
+        content: LibraryEntry::stored(&text, ELSEWHERE_TEXT.len() as u64).unwrap_or_default(),
+        index: ui::tilo_resource::Bytes::Empty,
+    };
+    vec![
+        crate::resource::shelve(&entry),
+        crate::resource::index_book(
+            &book.id,
+            StoredContent {
+                hash: tilo_content::hash_bytes(&segment),
+                size: u64::try_from(segment.len()).unwrap_or(u64::MAX),
+            },
+        ),
+    ]
 }
 
 /// Adding the colour scheme `scheme` after the built-in ones.

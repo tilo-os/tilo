@@ -41,7 +41,7 @@ fn facet_label(key: &str) -> &'static str {
     }
 }
 
-fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
+pub(crate) fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
     if chapter.title.trim().is_empty() {
         format!("Chapter {}", index + 1)
     } else {
@@ -527,7 +527,7 @@ impl BookSearch {
         }
     }
 
-    fn location_anchor(book_id: &str, chapter: usize, block: usize) -> String {
+    pub(crate) fn location_anchor(book_id: &str, chapter: usize, block: usize) -> String {
         format!("ebook.location:{book_id}:{chapter}:{block}")
     }
 
@@ -604,6 +604,7 @@ impl BookSearch {
                         title: candidate.title.clone(),
                         author: candidate.author.clone(),
                         subject: candidate.subject.clone(),
+                        index: ui::tilo_resource::Bytes::Empty,
                         ..LibraryEntry::default()
                     })
             })?;
@@ -941,6 +942,7 @@ mod tests {
                 shared: true,
                 added: 1,
                 content: ui::tilo_resource::Bytes::Empty,
+                index: ui::tilo_resource::Bytes::Empty,
             };
             let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
             let hit = provider.search("mira").pop().expect("metadata");

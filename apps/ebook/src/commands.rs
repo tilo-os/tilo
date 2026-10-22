@@ -6,6 +6,11 @@
 //!   sixty books), and, typed at a person's pace against Project Gutenberg,
 //!   how long the store's first rows take (p50 and p95), each keystroke's
 //!   query cancelling the one before.
+//! - `--bench-index [BOOKS]` measures the library's index on a fresh device:
+//!   real books from Project Gutenberg indexed as the device that adds them
+//!   does, their segments' sizes, a library of `BOOKS` (500 when not given)
+//!   whose text is all elsewhere read back from its segments, and how long
+//!   its results take after each keystroke.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,10 +20,33 @@ use ui::framework::Command;
 use ui::framework::views::{Item, QueryEngine, QuerySpec, RemoteSource, RemoteState};
 
 /// The commands [`crate::EbookShell`] declares.
-pub const COMMANDS: &[Command] = &[Command {
-    option: "--bench-search",
-    run: bench_search,
-}];
+pub const COMMANDS: &[Command] = &[
+    Command {
+        option: "--bench-search",
+        run: bench_search,
+    },
+    Command {
+        option: "--bench-index",
+        run: bench_index,
+    },
+];
+
+/// The books the index bench fetches: long and short, prose and verse.
+const INDEX_BENCH_BOOKS: &[u64] = &[1342, 2701, 1661, 2600, 84, 98, 11, 1400, 1080, 345];
+
+/// What the index bench types: phrases from the middle of its books.
+const INDEX_BENCH_QUERIES: &[&str] = &[
+    "universally acknowledged",
+    "the whiteness of the whale",
+    "speckled band",
+    "prince andrew looked",
+    "prince andrew",
+    "it was the best of times",
+    "curiouser and curiouser",
+];
+
+/// The library the index bench reads back when not told its size.
+const INDEX_BENCH_LIBRARY: usize = 500;
 
 /// What the bench types when given nothing: words of the sample shelf and
 /// of well-known books in the store.
@@ -196,4 +224,120 @@ fn bench_store(queries: &[&str]) {
     }
     report("store first rows per keystroke", &mut first);
     println!("keystrokes without rows before the next one: {superseded}; unreachable: {failed}");
+}
+
+/// The index bench's books, fetched and indexed as the device adding them
+/// does, each its title, author and segment; what each costs is printed.
+fn index_bench_segments() -> Result<Vec<(String, String, Vec<u8>)>, String> {
+    use crate::library_index::Segment;
+    let mut segments = Vec::new();
+    for id in INDEX_BENCH_BOOKS {
+        let bytes = match crate::store::fetch(
+            &crate::store::book_url(*id),
+            &[],
+            crate::store::MAX_BOOK_BYTES,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                println!("book {id}: not fetched ({error})");
+                continue;
+            }
+        };
+        let book = crate::epub::parse_epub(&bytes, 0, "")
+            .map_err(|error| format!("book {id}: {error}"))?;
+        let text: usize = book
+            .chapters
+            .iter()
+            .flat_map(|chapter| &chapter.blocks)
+            .map(|block| block.plain_text().len())
+            .sum();
+        let started = ui::time::now();
+        let segment = Segment::build(&book);
+        let built = millis(started);
+        let encoded = segment.encode();
+        let size = |n: usize| ui::format::size(u64::try_from(n).unwrap_or(u64::MAX));
+        println!(
+            "{:<40} text {:>8}  epub {:>8}  segment {:>8} ({:>8} read back)  built in {built:.0}ms",
+            book.title.chars().take(40).collect::<String>(),
+            size(text),
+            size(bytes.len()),
+            size(encoded.len()),
+            size(segment.heap_bytes()),
+        );
+        segments.push((book.title.clone(), book.author.clone(), encoded));
+    }
+    Ok(segments)
+}
+
+fn bench_index(value: &str) -> Result<(), String> {
+    use crate::library_index::Segment;
+    let size = if value.trim().is_empty() {
+        INDEX_BENCH_LIBRARY
+    } else {
+        value
+            .trim()
+            .parse()
+            .map_err(|_| format!("--bench-index: not a number of books: {value:?}"))?
+    };
+    let segments = index_bench_segments()?;
+    if segments.is_empty() {
+        return Err("--bench-index: no book could be fetched".into());
+    }
+    // A fresh device: every row's segment arrives and is read back; none of
+    // the books' text is here.
+    let started = ui::time::now();
+    let mut entries = Vec::new();
+    let mut read_back = Vec::new();
+    let (mut stored, mut held) = (0_usize, 0_usize);
+    for at in 0..size {
+        let Some((title, author, encoded)) = segments.get(at % segments.len()) else {
+            continue;
+        };
+        let segment =
+            Segment::decode(encoded).ok_or("--bench-index: a segment did not read back")?;
+        stored += encoded.len();
+        held += segment.heap_bytes();
+        entries.push((
+            format!("book:bench-{at}"),
+            format!("{title} ({at})"),
+            author.clone(),
+        ));
+        read_back.push(segment);
+    }
+    println!(
+        "{size} books elsewhere: segments {} stored, {} held, read back in {:.0}ms (off the UI thread)",
+        ui::format::size(u64::try_from(stored).unwrap_or(u64::MAX)),
+        ui::format::size(u64::try_from(held).unwrap_or(u64::MAX)),
+        millis(started)
+    );
+    let source = crate::library_index::elsewhere_books(
+        entries
+            .into_iter()
+            .zip(read_back)
+            .map(|((id, title, author), segment)| (id, title, author, Arc::new(segment))),
+    );
+    let mut engine = QueryEngine::new(crate::app::query_kinds());
+    engine.sync_local(Vec::new());
+    engine.set_local_source(Some(source));
+    let mut samples = Vec::new();
+    for query in INDEX_BENCH_QUERIES {
+        for prefix in prefixes(query) {
+            engine.set_query(QuerySpec::text(prefix));
+            if let Some(local) = engine.timings().local {
+                samples.push(local.as_secs_f64() * 1000.0);
+            }
+        }
+        let passages: usize = engine
+            .results()
+            .local
+            .iter()
+            .map(|group| group.items.len())
+            .sum();
+        println!("  {query:?}: {passages} passages");
+    }
+    report(
+        &format!("local first results, {size} books elsewhere"),
+        &mut samples,
+    );
+    Ok(())
 }

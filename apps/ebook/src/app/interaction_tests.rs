@@ -3805,6 +3805,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
                 subject: String::new(),
                 added: 1,
                 content: ui::tilo_resource::Bytes::Empty,
+                index: ui::tilo_resource::Bytes::Empty,
             },
         );
         let payload =
