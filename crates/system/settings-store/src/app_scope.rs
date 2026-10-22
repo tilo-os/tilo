@@ -13,8 +13,8 @@ use std::io::{Error, ErrorKind};
 
 use serde_json::{Map, Value};
 
-use crate::SettingsSource;
 use crate::continuity::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERSONAL_VALUE_BYTES};
+use crate::{ChangeOrigin, SettingsSource};
 
 /// Sections every app reads and only their owners write: the person's
 /// region, spelling and accessibility preferences and the desktop's look,
@@ -76,8 +76,9 @@ pub fn view_at(document: &Map<String, Value>, app_id: &str, reach: Reach) -> Map
     }
 }
 
-/// [`update_for_app`] at `reach`: the system's settings app writes any
+/// [`update_for_app_by`] at `reach`: the system's settings app writes any
 /// section, merged into what it holds, as the session's own writers do.
+/// `origin` is recorded with each leaf the write changes.
 ///
 /// # Errors
 ///
@@ -89,10 +90,11 @@ pub fn update_at(
     reach: Reach,
     section: &str,
     values: Map<String, Value>,
+    origin: &ChangeOrigin,
 ) -> std::io::Result<()> {
     match reach {
-        Reach::App => update_for_app(source, app_id, section, values),
-        Reach::System => source.update_section(section, values),
+        Reach::App => update_for_app_by(source, app_id, section, values, origin),
+        Reach::System => source.update_section_by(section, values, origin),
     }
 }
 
@@ -136,11 +138,26 @@ pub fn update_for_app(
     section: &str,
     values: Map<String, Value>,
 ) -> std::io::Result<()> {
+    update_for_app_by(source, app_id, section, values, &ChangeOrigin::default())
+}
+
+/// [`update_for_app`], recording `origin` with each leaf the write changes.
+///
+/// # Errors
+///
+/// As [`update_for_app`].
+pub fn update_for_app_by(
+    source: &dyn SettingsSource,
+    app_id: &str,
+    section: &str,
+    values: Map<String, Value>,
+    origin: &ChangeOrigin,
+) -> std::io::Result<()> {
     if let Some((_, _, owned)) = OWNED_SHARED_KEYS
         .iter()
         .find(|(owner, shared, _)| *owner == app_id && *shared == section)
     {
-        return update_owned_keys(source, app_id, section, owned, values);
+        return update_owned_keys(source, app_id, section, owned, values, origin);
     }
     let limit = match section {
         APP_PERSONAL_SECTION => MAX_PERSONAL_VALUE_BYTES,
@@ -189,7 +206,7 @@ pub fn update_for_app(
     }
     let mut entry = Map::new();
     entry.insert(app_id.to_owned(), Value::Object(stored));
-    source.update_section(section, entry)
+    source.update_section_by(section, entry, origin)
 }
 
 /// Merge `values` into the shared `section` for the app that owns the keys
@@ -200,6 +217,7 @@ fn update_owned_keys(
     section: &str,
     owned: &[&str],
     values: Map<String, Value>,
+    origin: &ChangeOrigin,
 ) -> std::io::Result<()> {
     if let Some(key) = values.keys().find(|key| !owned.contains(&key.as_str())) {
         return Err(Error::new(
@@ -216,7 +234,7 @@ fn update_owned_keys(
             ),
         ));
     }
-    source.update_section(section, values)
+    source.update_section_by(section, values, origin)
 }
 
 #[cfg(test)]
@@ -254,6 +272,7 @@ mod tests {
             Reach::System,
             "appearance",
             object(json!({"text_scale": 1.3})),
+            &ChangeOrigin::default(),
         )
         .unwrap();
         update_at(
@@ -262,6 +281,7 @@ mod tests {
             Reach::System,
             "input",
             object(json!({"keyboard_layout": "de"})),
+            &ChangeOrigin::default(),
         )
         .unwrap();
         let document = session.load();
@@ -277,6 +297,7 @@ mod tests {
                 Reach::App,
                 "appearance",
                 object(json!({"text_scale": 2.0})),
+                &ChangeOrigin::default(),
             )
             .unwrap_err()
             .kind(),
