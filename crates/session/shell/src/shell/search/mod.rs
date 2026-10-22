@@ -1734,8 +1734,38 @@ impl SearchRegistry {
         {
             return jump_back_in(self, args);
         }
-        system::group(self.query(args), row_budget)
+        let store = in_the_store();
+        let ranked: Vec<(ResourceKind, SearchResult)> = self
+            .query(args)
+            .into_iter()
+            .map(|row| {
+                // A third-party app's Store page is not something the person
+                // has: its own heading, after their content (the merge puts
+                // every one of them last), never a second "Applications".
+                let heading = if self.availability(&row) == Availability::ThirdPartyCatalogue {
+                    store.clone()
+                } else {
+                    row.kind.clone()
+                };
+                (heading, row)
+            })
+            .collect();
+        system::group_by_kind(ranked, |(heading, _)| heading, row_budget)
+            .into_iter()
+            .map(|group| KindGroup {
+                kind: group.kind,
+                total: group.total,
+                results: group.results.into_iter().map(|(_, row)| row).collect(),
+            })
+            .collect()
     }
+}
+
+/// The heading third-party apps' Store pages are listed under, apart from
+/// the apps the person has and the Tilo apps that open at once.
+#[must_use]
+pub fn in_the_store() -> ResourceKind {
+    ResourceKind::Custom(t("search-group-in-the-store"))
 }
 
 /// How much nearer the person a row is in Workspace scope: from the focused
