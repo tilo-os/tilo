@@ -106,11 +106,16 @@ impl Widget for ShellOverlayHost {
             self.person_quick_composer.pump(person_source)
         };
         let (doc, path) = ui::doc::document_ref(doc, path);
+        self.import_room_tasks();
+        let tracker = self
+            .tracker
+            .as_deref()
+            .map(|tracker| tracker as &dyn agent_actions::RunSource);
         let action_dirty = self
             .agent_actions
             .values_mut()
             .fold(false, |changed, actions| {
-                actions.pump(&mut self.agent_quick_composer) | changed
+                actions.pump(&mut self.agent_quick_composer, tracker) | changed
             });
         let action_dirty = action_dirty
             | self.reveal_requested_draft()

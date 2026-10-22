@@ -3,9 +3,9 @@
 //! tracker's own actions.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use tasks::model::{ConfirmationState, Issue, MessageKind, Tracker, issue_resource};
+use tasks::model::{ConfirmationState, Issue, MessageKind, RunPhase, Tracker, issue_resource};
 use tilo_action_broker::services::{
     NativeTaskActionRequirement, TRACKER_APP, TrackerAnswer, TrackerDirection, TrackerQuestion,
     TrackerRun, TrackerRuns,
@@ -20,14 +20,89 @@ const TRACKER_RECORD: &str = "";
 /// The largest tracker the broker reads.
 const MAX_TRACKER_BYTES: usize = 16 * 1024 * 1024;
 
-/// The revision a room's tracker was read at, and the runs read from it.
-type ReadRuns = ([u8; 32], Vec<TrackerRun>);
+/// A room's tracker as read at one revision.
+type Read = ([u8; 32], Arc<TrackerView>);
 
-/// The room's tracker, read through its owner, and the runs last read from
-/// each room's revision.
+/// What the shell reads of a room's tracker: its runs, as the broker and as
+/// the composer read them, and the room tasks it imported.
+#[derive(Debug, Default)]
+pub(crate) struct TrackerView {
+    pub runs: Vec<TrackerRun>,
+    pub followed: Vec<FollowedRun>,
+    pub imported: std::collections::BTreeSet<String>,
+}
+
+impl TrackerView {
+    fn of(tracker: &Tracker) -> Self {
+        Self {
+            runs: runs_of(tracker),
+            followed: followed_runs(tracker),
+            imported: tracker.imported.iter().cloned().collect(),
+        }
+    }
+}
+
+/// The room's tracker, read through its owner, as last read at each room's
+/// revision.
 pub(crate) struct NativeTrackerRuns {
     pub(crate) owner: NativeOwnerCommitService,
-    read: Mutex<HashMap<String, ReadRuns>>,
+    read: Mutex<HashMap<String, Read>>,
+}
+
+/// A run of an issue as whoever follows it sees it: the composer that asked
+/// for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FollowedRun {
+    /// The issue's address (`tasks.tracker/issues/<id>`).
+    pub issue: String,
+    pub title: String,
+    /// The agent, as the door names it (`agent:<id>`).
+    pub agent: String,
+    pub starter: String,
+    pub epoch: u64,
+    pub phase: RunPhase,
+    /// The messages sent to the run, and how many of them its agent took in.
+    pub messages: u64,
+    pub incorporated: u64,
+    /// What its agent said last in the run.
+    pub said: Option<String>,
+}
+
+/// Every issue's latest run in `tracker`, as it is followed.
+#[must_use]
+fn followed_runs(tracker: &Tracker) -> Vec<FollowedRun> {
+    tracker
+        .issues
+        .iter()
+        .filter_map(|(id, issue)| {
+            let run = issue.run.as_ref()?;
+            let of_run = |kind| {
+                issue
+                    .comments
+                    .iter()
+                    .map(|(_, message)| message)
+                    .filter(move |message| message.kind == kind && message.run == run.epoch)
+            };
+            let count = |messages: usize| u64::try_from(messages).unwrap_or(u64::MAX);
+            Some(FollowedRun {
+                issue: issue_resource(id),
+                title: issue.title.clone(),
+                agent: run.agent.0.clone(),
+                starter: run.starter.clone(),
+                epoch: run.epoch,
+                phase: run.phase,
+                messages: count(of_run(MessageKind::ToRun).count()),
+                incorporated: count(
+                    of_run(MessageKind::ToRun)
+                        .filter(|message| message.incorporated)
+                        .count(),
+                ),
+                said: of_run(MessageKind::FromRun)
+                    .next_back()
+                    .map(|message| message.text.clone()),
+            })
+        })
+        .collect()
 }
 
 impl NativeTrackerRuns {
@@ -35,6 +110,80 @@ impl NativeTrackerRuns {
         Self {
             owner,
             read: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The tasks `room`'s document kept before the tracker that the tracker
+    /// has not imported yet.
+    pub(crate) fn unimported(&self, room: &str) -> Result<Vec<tasks::model::Imported>, String> {
+        let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
+        let owner = &self.owner.opened_owner("tracker owner unavailable")?;
+        let kept = owner.with_current(room_id, |view| {
+            Ok(view
+                .peer()
+                .admitted_room()
+                .map(super::super::room_task_import::room_tasks)
+                .unwrap_or_default())
+        })?;
+        if kept.is_empty() {
+            return Ok(kept);
+        }
+        let Some(tracker) = self.tracker(room)? else {
+            return Ok(kept);
+        };
+        Ok(kept
+            .into_iter()
+            .filter(|task| !tracker.imported.contains(&task.task))
+            .collect())
+    }
+
+    /// The room's tracker as committed now; `None` in a room with none yet.
+    pub(crate) fn tracker(&self, room: &str) -> Result<Option<Arc<TrackerView>>, String> {
+        use super::super::native_workspace_owner::DocumentRead;
+        let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
+        let known = self
+            .read
+            .lock_recover()
+            .get(room)
+            .map(|(revision, _)| *revision);
+        let owner = &self.owner.opened_owner("tracker owner unavailable")?;
+        let read = owner.with_current(room_id, |view| {
+            view.read_document_with_history(
+                view.device().device_public_key,
+                (TRACKER_APP, TRACKER_RECORD),
+                known,
+                MAX_TRACKER_BYTES,
+                std::time::SystemTime::now(),
+                &mut |envelope| {
+                    self.owner
+                        .history_keys
+                        .as_ref()
+                        .and_then(tilo_action_broker::channel_encryption::ChannelKeyProvider::get)
+                        .ok_or("tracker history keys unavailable")?
+                        .open_history_write(room_id, envelope)
+                },
+            )
+        });
+        let mut held = self.read.lock_recover();
+        match read {
+            Ok(DocumentRead::Captured(document)) => {
+                let doc = automerge::AutoCommit::load(&document.bytes)
+                    .map_err(|error| format!("the tracker does not load: {error}"))?;
+                let tracker = Arc::new(TrackerView::of(
+                    Reader::<Tracker>::read(&doc)
+                        .map_err(|error| format!("the tracker does not read: {error}"))?
+                        .state(),
+                ));
+                held.insert(room.to_owned(), (document.revision, tracker.clone()));
+                Ok(Some(tracker))
+            }
+            Ok(DocumentRead::Unchanged(_)) => {
+                Ok(held.get(room).map(|(_, tracker)| tracker.clone()))
+            }
+            // A room with no tracker yet holds no runs.
+            Ok(DocumentRead::CheckpointPending) | Err(_) if known.is_none() => Ok(None),
+            Ok(DocumentRead::CheckpointPending) => Err("the tracker is between checkpoints".into()),
+            Err(error) => Err(error),
         }
     }
 }
@@ -117,51 +266,10 @@ impl TrackerRuns for NativeTrackerRuns {
     }
 
     fn runs(&self, room: &str) -> Result<Vec<TrackerRun>, String> {
-        use super::super::native_workspace_owner::DocumentRead;
-        let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
-        let known = self
-            .read
-            .lock_recover()
-            .get(room)
-            .map(|(revision, _)| *revision);
-        let owner = &self.owner.opened_owner("tracker owner unavailable")?;
-        let read = owner.with_current(room_id, |view| {
-            view.read_document_with_history(
-                view.device().device_public_key,
-                (TRACKER_APP, TRACKER_RECORD),
-                known,
-                MAX_TRACKER_BYTES,
-                std::time::SystemTime::now(),
-                &mut |envelope| {
-                    self.owner
-                        .history_keys
-                        .as_ref()
-                        .and_then(tilo_action_broker::channel_encryption::ChannelKeyProvider::get)
-                        .ok_or("tracker history keys unavailable")?
-                        .open_history_write(room_id, envelope)
-                },
-            )
-        });
-        let mut held = self.read.lock_recover();
-        match read {
-            Ok(DocumentRead::Captured(document)) => {
-                let doc = automerge::AutoCommit::load(&document.bytes)
-                    .map_err(|error| format!("the tracker does not load: {error}"))?;
-                let tracker = Reader::<Tracker>::read(&doc)
-                    .map_err(|error| format!("the tracker does not read: {error}"))?;
-                let runs = runs_of(tracker.state());
-                held.insert(room.to_owned(), (document.revision, runs.clone()));
-                Ok(runs)
-            }
-            Ok(DocumentRead::Unchanged(_)) => Ok(held
-                .get(room)
-                .map(|(_, runs)| runs.clone())
-                .unwrap_or_default()),
-            // A room with no tracker yet holds no runs.
-            Ok(DocumentRead::CheckpointPending) | Err(_) if known.is_none() => Ok(Vec::new()),
-            Ok(DocumentRead::CheckpointPending) => Err("the tracker is between checkpoints".into()),
-            Err(error) => Err(error),
-        }
+        Ok(self
+            .tracker(room)?
+            .map(|tracker| tracker.runs.clone())
+            .unwrap_or_default())
     }
 
     fn authorize_action(
