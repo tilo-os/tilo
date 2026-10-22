@@ -114,6 +114,9 @@ pub struct WebView {
     preseeded: bool,
     focused: bool,
     last_mouse: Point,
+    /// The buttons pressed on the page and not yet released: the page keeps
+    /// the pointer until they are, wherever it goes, as a drag does.
+    held: Vec<MouseButton>,
     /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
     /// The engine scale last sent with it.
@@ -145,6 +148,7 @@ impl WebView {
             preseeded: false,
             focused: false,
             last_mouse: Point::ZERO,
+            held: Vec::new(),
             last_sent_size: (0, 0),
             last_sent_scale: 0.0,
             stale_resize_retry: None,
@@ -399,6 +403,7 @@ impl crate::widget::NativeViewLifecycle for WebView {
 
     fn unmount_native_view(&mut self) {
         self.host_scaled = false;
+        self.held.clear();
         self.text_input.invalidate(&self.engine);
         if self.focused {
             self.engine.send(WebViewCommand::SetFocused(false));
@@ -677,7 +682,9 @@ impl Widget for WebView {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical = ctx.logical(position);
                 self.last_mouse = logical;
-                if self.rect.contains(logical) {
+                // A drag that began on the page goes on outside it: a text
+                // selection or a slider follows, and the page scrolls.
+                if self.rect.contains(logical) || !self.held.is_empty() {
                     let (x, y) = self.to_engine(logical);
                     self.engine.send(WebViewCommand::MouseMove { x, y });
                 }
@@ -687,20 +694,35 @@ impl Widget for WebView {
                 button,
                 ..
             } => {
-                if !self.rect.contains(self.last_mouse) {
+                let down = *element_state == ElementState::Pressed;
+                let mapped = match button {
+                    winit::event::MouseButton::Left => Some(MouseButton::Left),
+                    winit::event::MouseButton::Middle => Some(MouseButton::Middle),
+                    winit::event::MouseButton::Right => Some(MouseButton::Right),
+                    _ => None,
+                };
+                // A button pressed on the page is released to it wherever
+                // the release lands; otherwise the page still holds it down.
+                let releases_held =
+                    !down && mapped.is_some_and(|mapped| self.held.contains(&mapped));
+                if !self.rect.contains(self.last_mouse) && !releases_held {
                     return;
                 }
-                let down = *element_state == ElementState::Pressed;
                 let (x, y) = self.to_engine(self.last_mouse);
                 match button {
                     winit::event::MouseButton::Left
                     | winit::event::MouseButton::Middle
                     | winit::event::MouseButton::Right => {
-                        let mapped = match button {
-                            winit::event::MouseButton::Left => MouseButton::Left,
-                            winit::event::MouseButton::Middle => MouseButton::Middle,
-                            _ => MouseButton::Right,
+                        let Some(mapped) = mapped else {
+                            return;
                         };
+                        if down {
+                            if !self.held.contains(&mapped) {
+                                self.held.push(mapped);
+                            }
+                        } else {
+                            self.held.retain(|held| *held != mapped);
+                        }
                         if down && mapped == MouseButton::Left {
                             *ctx.focus_target = Some(ctx.node_id);
                         }
@@ -801,6 +823,10 @@ impl Widget for WebView {
 
     fn name(&self) -> &'static str {
         "WebView"
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        !self.held.is_empty()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -2092,6 +2118,46 @@ mod tests {
                     .all(|c| matches!(c, WebViewCommand::Resize { .. })),
                 "only the layout resize may reach the engine",
             );
+        }
+
+        // Case `a_drag_off_the_page_follows_and_releases_there`: a selection
+        // dragged out over the toolbar, let go there. The page must hear the
+        // release, or it holds the button down until the next click.
+        {
+            let engine = TestEngine::new();
+            let (mut w, tree, node) = laid_out(engine.clone());
+            let device = winit::event::DeviceId::dummy();
+            let to = |x: f64, y: f64| WindowEvent::CursorMoved {
+                device_id: device,
+                position: (x, y).into(),
+            };
+            let button = |state| WindowEvent::MouseInput {
+                device_id: device,
+                state,
+                button: winit::event::MouseButton::Left,
+            };
+            dispatch(&mut w, &tree, node, &to(50.0, 60.0));
+            dispatch(&mut w, &tree, node, &button(ElementState::Pressed));
+            assert!(w.wants_pointer_capture(), "the page keeps the drag");
+            dispatch(&mut w, &tree, node, &to(50.0, -20.0));
+            dispatch(&mut w, &tree, node, &button(ElementState::Released));
+            let commands = engine.commands();
+            assert!(commands.contains(&WebViewCommand::MouseMove { x: 50.0, y: -20.0 }));
+            assert_eq!(
+                commands.last(),
+                Some(&WebViewCommand::MouseButton {
+                    button: MouseButton::Left,
+                    down: false,
+                    x: 50.0,
+                    y: -20.0,
+                })
+            );
+            assert!(!w.wants_pointer_capture());
+            // Released, the page hears nothing more from outside it.
+            let count = engine.commands().len();
+            dispatch(&mut w, &tree, node, &to(50.0, -40.0));
+            dispatch(&mut w, &tree, node, &button(ElementState::Released));
+            assert_eq!(engine.commands().len(), count);
         }
 
         // Case `back_side_button_navigates_history`.

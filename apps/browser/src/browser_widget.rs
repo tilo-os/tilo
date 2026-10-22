@@ -4683,6 +4683,14 @@ impl Widget for BrowserWidget {
                 .is_some_and(Widget::needs_animation_frame)
     }
 
+    /// The page holding a button pressed on it keeps the pointer: the
+    /// window hands it the drag's moves and its release, wherever they land.
+    fn wants_pointer_capture(&self) -> bool {
+        self.composed
+            .element()
+            .is_some_and(Widget::wants_pointer_capture)
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         // Toggling the settings pane swaps the content widget → rebuild.
         let own = std::mem::take(&mut self.structure_dirty);
@@ -8104,6 +8112,56 @@ mod tests {
 
     fn layout_with_theme(widget: &mut BrowserWidget, width: f32, height: f32, theme: &Theme) {
         layout_keeping_tree(widget, width, height, theme);
+    }
+
+    #[test]
+    fn a_selection_dragged_off_the_page_is_released_on_it() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        let (tree, node) = layout_keeping_tree(&mut widget, 1000.0, 700.0, &Theme::dark());
+        let page = widget.find_rect("browser.surface").unwrap();
+        let device = winit::event::DeviceId::dummy();
+        let send = |widget: &mut BrowserWidget, event: WindowEvent| {
+            ui::testing::Dispatch::new()
+                .layout(&tree, node)
+                .send(widget, &event);
+        };
+        let left = |state| WindowEvent::MouseInput {
+            device_id: device,
+            state,
+            button: MouseButton::Left,
+        };
+        send(
+            &mut widget,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (page.x0 + 40.0, page.y0 + 40.0).into(),
+            },
+        );
+        send(&mut widget, left(ElementState::Pressed));
+        assert!(widget.wants_pointer_capture());
+        // Up over the toolbar, and let go there.
+        send(
+            &mut widget,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (page.x0 + 40.0, page.y0 - 10.0).into(),
+            },
+        );
+        send(&mut widget, left(ElementState::Released));
+        assert!(
+            engine.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::MouseButton {
+                    button: ui::webview::MouseButton::Left,
+                    down: false,
+                    ..
+                }
+            )),
+            "the page hears the release: {:?}",
+            engine.commands()
+        );
+        assert!(!widget.wants_pointer_capture());
     }
 
     #[test]
