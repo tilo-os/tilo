@@ -110,7 +110,7 @@
 "crates/sdk/ui-core/src/widget/button.rs" = 4000
 "crates/sdk/ui-core/src/widget/capture_studio.rs" = 3500
 "crates/sdk/ui-core/src/widget/cartesian_plot.rs" = 4000
-"crates/sdk/ui-core/src/widget/command_palette.rs" = 5500
+"crates/sdk/ui-core/src/widget/command_palette.rs" = 4500
 "crates/sdk/ui-core/src/widget/context_menu.rs" = 3500
 "crates/sdk/ui-core/src/widget/data_table.rs" = 8000
 "crates/sdk/ui-core/src/widget/dropdown.rs" = 4000

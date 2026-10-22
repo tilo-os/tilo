@@ -453,7 +453,7 @@ pub mod autocorrect {
 }
 pub use widget::ModelView;
 pub use widget::command_palette::{
-    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
+    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, RowFace, SearchScope,
 };
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};

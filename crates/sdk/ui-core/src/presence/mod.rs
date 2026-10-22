@@ -91,6 +91,13 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     identity_rgb(crate::tokens::PresenceHue::of_identity(user_id))
 }
 
+/// [`user_color`] as a colour: what a face of `user_id` wears when the room
+/// has not given them one ([`Face::colour`]).
+pub fn identity_colour(user_id: &str) -> vello::peniko::Color {
+    let (red, green, blue) = user_color(user_id);
+    vello::peniko::Color::from_rgb8(red, green, blue)
+}
+
 /// A presence hue as the identity colour it travels as.
 pub fn identity_rgb(hue: crate::tokens::PresenceHue) -> (u8, u8, u8) {
     PEER_PALETTE.get(hue.slot()).copied().unwrap_or_default()
