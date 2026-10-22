@@ -8037,11 +8037,11 @@ mod tests {
         // The row as the palette lists it for its name, and as an exact
         // address finds it.
         let listed = |id: &str| {
-            let name = Action::ALL
+            let action = Action::ALL
                 .iter()
                 .find(|action| action.id == id)
-                .map(|action| t(action.label))
                 .unwrap_or_else(|| panic!("{id} is a table action"));
+            let name = t(action.label);
             let state = chrome.borrow();
             provider
                 .query(SearchContext {
