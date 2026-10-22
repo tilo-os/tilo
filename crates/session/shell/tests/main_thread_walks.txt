@@ -6,7 +6,6 @@
 <app_state::fs_store::FsStore as durable_store::DurableStore>::read
 <file_explorer::files_app::FileExplorerWidget>::current_place
 <inotify::watches::Watches>::add
-<package_store::registry::Registry>::load
 <settings_store::hardware::DisplayHardwareSnapshot>::load
 <shell::shell::network::personal_device_peers::FileStamp>::of
 <tilo_identity_host::device_fleet::DeviceFleetStore>::load
@@ -16,7 +15,6 @@ app_state::fs_store::open_owner
 app_state::open_directory
 app_state::same_file
 file_explorer::templates::list_templates
-package_store::interfaces::read_interfaces
 rustix::backend::arch::asm::syscall4_readonly
 settings_store::watch::watch_settings_at
 shell::shell::test_control_socket::bind_private

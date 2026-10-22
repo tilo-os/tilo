@@ -17,11 +17,11 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use smithay::reexports::calloop::LoopHandle;
+use smithay::reexports::calloop::{self, LoopHandle};
 use smithay::wayland::socket::ListeningSocketSource;
 
 use settings_store::hardware::InputMethodEngine;
@@ -485,6 +485,92 @@ fn session_catalog(
     cache.get_or_insert(current)
 }
 
+/// What the input methods need installed: the on-screen keyboard package
+/// and the composer's engines.
+#[derive(Clone, Debug, Default)]
+struct Installed {
+    osk: Option<crate::shell::launcher::InstalledApp>,
+    /// The engines installed with the composer itself.
+    engines: Vec<InputMethodEngine>,
+}
+
+impl Installed {
+    /// Read the package registries, the keyboard's manifest and the
+    /// composer's files: a wait on the disk, never on the compositor thread.
+    fn read(cache: &mut Option<package_store::Catalog>) -> Self {
+        let osk = match package_store::Catalog::from_env() {
+            Ok(current) => installed_osk(session_catalog(cache, current)),
+            Err(error) => {
+                *cache = None;
+                Err(error.to_string())
+            }
+        };
+        let osk = osk
+            .inspect_err(|error| {
+                tracing::debug!(target: "tilo::input_method", %error, "on-screen keyboard unavailable");
+            })
+            .ok();
+        let engines = InputMethodEngine::ALL
+            .into_iter()
+            .filter(|engine| super::input_method::engine_installed(*engine))
+            .collect();
+        Self { osk, engines }
+    }
+}
+
+/// Reads [`Installed`] on a thread of its own when asked, and wakes the
+/// compositor loop with each answer.
+struct InstalledReader {
+    /// Each ask carries the install epoch it was made at; its answer
+    /// returns it.
+    ask: Option<mpsc::Sender<u64>>,
+    answers: mpsc::Receiver<(u64, Installed)>,
+    asked: bool,
+}
+
+impl InstalledReader {
+    fn start(wake: Option<calloop::ping::Ping>) -> Self {
+        let (ask, asks) = mpsc::channel::<u64>();
+        let (answer, answers) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("input-method-installed".into())
+            .spawn(move || {
+                let mut cache = None;
+                for epoch in asks {
+                    if answer.send((epoch, Installed::read(&mut cache))).is_err() {
+                        return;
+                    }
+                    if let Some(wake) = &wake {
+                        wake.ping();
+                    }
+                }
+            });
+        if let Err(error) = &spawned {
+            tracing::warn!(target: "tilo::input_method", %error, "cannot read installed input methods");
+        }
+        Self {
+            ask: spawned.is_ok().then_some(ask),
+            answers,
+            asked: false,
+        }
+    }
+
+    /// Ask for a read at install `epoch`, unless one is on its way.
+    fn ask(&mut self, epoch: u64) {
+        if self.asked {
+            return;
+        }
+        self.asked = self.ask.as_ref().is_some_and(|ask| ask.send(epoch).is_ok());
+    }
+
+    /// The newest answer, without waiting.
+    fn answer(&mut self) -> Option<(u64, Installed)> {
+        let answer = self.answers.try_iter().last()?;
+        self.asked = false;
+        Some(answer)
+    }
+}
+
 /// The installed on-screen keyboard package, if it is a graphical service in
 /// its signed manifest.
 fn installed_osk(
@@ -535,10 +621,10 @@ pub struct InputMethodServices {
     osk_installed: bool,
     /// The input hardware facts, followed by [`Self::follow_input`].
     osk_input: OskInput,
-    /// The image's installed rows are immutable for this session. Reuse
-    /// their checked catalogue while reading the user's registry afresh on
-    /// every invalidation, including an on-screen keyboard update.
-    installed_catalog: Option<package_store::Catalog>,
+    /// What is installed, as last read off the loop.
+    installed: Installed,
+    reader: InstalledReader,
+    /// The install epoch the last read began at.
     installed_epoch: u64,
     installed_checked: Instant,
 }
@@ -594,7 +680,8 @@ impl InputMethodServices {
             osk_preference: OnScreenKeyboard::default(),
             osk_installed: false,
             osk_input: OskInput::default(),
-            installed_catalog: None,
+            installed: Installed::default(),
+            reader: InstalledReader::start(installed_wake(handle)),
             installed_epoch: crate::shell::launcher::installed_apps_epoch(),
             installed_checked: Instant::now(),
         }
@@ -624,7 +711,7 @@ impl InputMethodServices {
             .map_or_else(|| "us".to_string(), |source| source.id.clone());
         self.engine = input.active_input_method();
         self.osk_preference = osk_preference(settings);
-        self.refresh_installed(state);
+        self.ask_installed();
         self.apply(state);
     }
 
@@ -662,7 +749,7 @@ impl InputMethodServices {
         let owner = super::input_method::arbitrate(
             self.engine,
             self.engine
-                .is_some_and(super::input_method::engine_installed)
+                .is_some_and(|engine| self.installed.engines.contains(&engine))
                 && self.has(TrustedInputMethod::Composer),
             self.osk_service_wanted(),
         );
@@ -675,22 +762,20 @@ impl InputMethodServices {
         }
     }
 
-    fn refresh_installed(&mut self, state: &mut State) {
-        let read_epoch = crate::shell::launcher::installed_apps_epoch();
-        let installed = match package_store::Catalog::from_env() {
-            Ok(current) => installed_osk(session_catalog(&mut self.installed_catalog, current)),
-            Err(error) => {
-                self.installed_catalog = None;
-                Err(error.to_string())
-            }
-        };
-        let installed = match installed {
-            Ok(app) => Some(app),
-            Err(error) => {
-                tracing::debug!(target: "tilo::input_method", %error, "on-screen keyboard unavailable");
-                None
-            }
-        };
+    /// Ask the reader thread what is installed now. Its answer is adopted
+    /// by a later [`Self::tick`].
+    fn ask_installed(&mut self) {
+        // If a registry change races this read, its epoch remains pending
+        // for the next tick rather than being hidden by the fallback interval.
+        self.reader
+            .ask(crate::shell::launcher::installed_apps_epoch());
+        self.installed_checked = Instant::now();
+    }
+
+    fn adopt_installed(&mut self, state: &mut State, read_epoch: u64, installed: Installed) {
+        self.installed_epoch = read_epoch;
+        self.installed = installed;
+        let installed = self.installed.osk.clone();
         self.osk_installed = installed.is_some() && self.has(TrustedInputMethod::OnScreenKeyboard);
         for service in &mut self.services {
             if service.set_installed(installed.clone())
@@ -702,10 +787,6 @@ impl InputMethodServices {
                 state.set_input_method_owner(None);
             }
         }
-        // If a registry change raced this read, its epoch remains pending for
-        // the next tick rather than being hidden by the fallback interval.
-        self.installed_epoch = read_epoch;
-        self.installed_checked = Instant::now();
     }
 
     pub fn tick(&mut self, state: &mut State) {
@@ -719,7 +800,10 @@ impl InputMethodServices {
         if self.installed_epoch != crate::shell::launcher::installed_apps_epoch()
             || self.installed_checked.elapsed() >= INSTALL_REFRESH
         {
-            self.refresh_installed(state);
+            self.ask_installed();
+        }
+        if let Some((read_epoch, installed)) = self.reader.answer() {
+            self.adopt_installed(state, read_epoch, installed);
             step("input-method-refresh");
             self.apply(state);
             step("input-method-apply");
@@ -747,6 +831,25 @@ impl InputMethodServices {
     fn has(&self, kind: TrustedInputMethod) -> bool {
         self.services.iter().any(|service| service.kind() == kind)
     }
+}
+
+/// Wakes the loop when [`InstalledReader`] answers, so the answer is adopted
+/// on the next tick rather than whenever something else wakes it. `None`:
+/// answers wait for a tick that runs for another reason.
+fn installed_wake(handle: &LoopHandle<'static, State>) -> Option<calloop::ping::Ping> {
+    let registered = calloop::ping::make_ping()
+        .map_err(|error| error.to_string())
+        .and_then(|(ping, source)| {
+            handle
+                .insert_source(source, |(), (), _| {})
+                .map(|_| ping)
+                .map_err(|error| error.to_string())
+        });
+    registered
+        .inspect_err(|error| {
+            tracing::warn!(target: "tilo::input_method", %error, "input-method install wake unavailable");
+        })
+        .ok()
 }
 
 /// Bind a private display used only by a compositor-launched input method.
