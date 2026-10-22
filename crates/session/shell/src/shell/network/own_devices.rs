@@ -2,50 +2,27 @@
 //! proves a certificate the person's root signed is kept as theirs, and a
 //! revocation the root signed drops one (see `docs/device-mesh.md`).
 
-use std::sync::Arc;
-
 use super::{ShellNetwork, personal_device_peer_path, personal_device_peers};
 
-/// Where `person`'s own devices are recorded, read now: the enrolment file
-/// and the person's fleet in `fleet`, loaded here. Waits for the disk, so
-/// the compositor's loop never calls it.
-pub(super) fn read_own_device_sources(
+/// Where `person`'s own devices are recorded: the enrolment file and the
+/// person's fleet in `fleet`.
+pub(super) fn own_device_sources(
     person: Option<[u8; 32]>,
     fleet: Option<&crate::device_fleet::DeviceFleetStore>,
 ) -> personal_device_peers::Sources {
     personal_device_peers::Sources {
         peers: personal_device_peer_path(),
-        person,
-        fleet: person
-            .zip(fleet)
-            .and_then(|(person, store)| personal_device_peers::load_fleet(&person, store)),
+        fleet: person.zip(fleet.cloned()),
     }
 }
 
 impl ShellNetwork {
-    /// Where this session finds the person's own devices: the enrolment file,
-    /// and the fleet as the home-peer reader last loaded it off the loop.
+    /// Where this session finds the person's own devices.
     pub(super) fn own_device_sources(&self) -> personal_device_peers::Sources {
-        personal_device_peers::Sources {
-            peers: personal_device_peer_path(),
-            person: self.personal_continuity_user,
-            fleet: self
-                .own_device_fleet_loaded
-                .lock()
-                .ok()
-                .and_then(|fleet| fleet.clone()),
-        }
-    }
-
-    /// Keep the fleet the home-peer reader loaded for the next re-validation
-    /// of the person's devices.
-    pub(super) fn note_own_device_fleet(
-        &self,
-        fleet: Option<Arc<crate::device_fleet::DeviceFleet>>,
-    ) {
-        if let Ok(mut loaded) = self.own_device_fleet_loaded.lock() {
-            *loaded = fleet;
-        }
+        own_device_sources(
+            self.personal_continuity_user,
+            self.own_device_fleet.as_ref(),
+        )
     }
 
     /// Apply the revocations of this person's devices a peer carried: the
@@ -127,12 +104,12 @@ impl ShellNetwork {
         }
     }
 
-    /// Re-validate the enrolment file on the next query, as a due recheck
-    /// would: for tests that rewrite it mid-session.
+    /// Read the person's devices again now, as the worker would after a
+    /// change: for tests that rewrite them mid-session.
     #[cfg(test)]
     pub(super) fn recheck_personal_device_peers(&self) {
-        if let Ok(mut peers) = self.personal_device_peers.lock() {
-            peers.expire();
+        if let Ok(peers) = self.personal_device_peers.lock() {
+            peers.reread();
         }
     }
 

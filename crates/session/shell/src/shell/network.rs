@@ -808,31 +808,24 @@ struct HomePeerInputs {
     /// Rooms an enrollment delivered (`personal-rooms.json`).
     enrolled_rooms: Vec<RoomId>,
     registrations: Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String>,
-    /// The person's fleet, when this device has a person and a fleet store.
-    own_fleet: Option<Arc<crate::device_fleet::DeviceFleet>>,
 }
 
 impl HomePeerInputs {
-    /// Read the files, and the fleet of `fleet`'s person. Waits for the disk:
-    /// the compositor's loop never calls this, its reader thread does.
-    fn read(fleet: Option<&([u8; 32], crate::device_fleet::DeviceFleetStore)>) -> Self {
+    /// Read the files. Waits for the disk: the compositor's loop never calls
+    /// this, its reader thread does.
+    fn read() -> Self {
         let peers = personal_device_peer_path();
         Self {
             enrolled_rooms: personal_room_ids(&peers.with_file_name("personal-rooms.json")),
             registrations: read_home_peer_registry(),
-            own_fleet: fleet
-                .and_then(|(person, store)| personal_device_peers::load_fleet(person, store)),
         }
     }
 
     /// [`Self::read`] after the state writer has written what this process
-    /// queued, so the refresh sees the rooms export it just made (and the
-    /// fleet the devices this session met were kept in).
-    fn read_after_pending_writes(
-        fleet: Option<&([u8; 32], crate::device_fleet::DeviceFleetStore)>,
-    ) -> Self {
+    /// queued, so the refresh sees the rooms export it just made.
+    fn read_after_pending_writes() -> Self {
         crate::shell::durable_writer::global().flush();
-        Self::read(fleet)
+        Self::read()
     }
 }
 
@@ -1500,9 +1493,9 @@ pub struct ShellNetwork {
     /// Certified device keys eligible to decrypt personal secrets. Routing
     /// uses the deliberately distinct relay service ids above.
     registered_home_device_ids: Mutex<std::collections::HashSet<[u8; 32]>>,
-    /// `personal-device-peers.json` and the certified recipients derived from
-    /// it, re-validated at most once per recheck interval instead of read per
-    /// outgoing message. `registered_home_device_ids` may be locked while
+    /// The person's own devices and the certified recipients derived from
+    /// them, read on a worker when their files change instead of per outgoing
+    /// message. `registered_home_device_ids` may be locked while
     /// holding this, never the reverse.
     personal_device_peers: Arc<Mutex<personal_device_peers::PersonalDevicePeers>>,
     /// Where this person's fleet is kept: the devices of theirs met here and
@@ -1512,9 +1505,6 @@ pub struct ShellNetwork {
     /// Private LAN discovery of the person's devices, when this session runs
     /// it: asked again for each of them this session has not reached.
     lan_discovery: Option<tilo_lan_discovery::LanDiscovery>,
-    /// The person's fleet as the home-peer reader last loaded it, off the
-    /// compositor's loop; what the own-device set is re-validated against.
-    own_device_fleet_loaded: Mutex<Option<Arc<crate::device_fleet::DeviceFleet>>>,
     /// Last bounded scan of the enrollment registry. A paired home peer may
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
@@ -2090,9 +2080,6 @@ impl ShellNetwork {
             runtime.handle().clone(),
             Some(rest_after),
         );
-        let personal_device_peers = Arc::new(Mutex::new(
-            personal_device_peers::PersonalDevicePeers::default(),
-        ));
         let own_device_fleet = crate::device_fleet::DeviceFleetStore::from_env().ok();
         tracing::info!(
             local_peer_id = %local_peer_id,
@@ -2115,6 +2102,13 @@ impl ShellNetwork {
             .ok()
         });
         tree.write().local_person = personal_continuity_user;
+        // Read here, off the loop, and on a worker after each change.
+        let personal_device_peers = Arc::new(Mutex::new(
+            personal_device_peers::PersonalDevicePeers::watching(own_devices::own_device_sources(
+                personal_continuity_user,
+                own_device_fleet.as_ref(),
+            )),
+        ));
         let personal_workspaces = host_identity.as_ref().map(|identity| {
             Mutex::new(
                 crate::shell::personal_workspaces::PersonalWorkspaces::open(
@@ -2279,13 +2273,11 @@ impl ShellNetwork {
             live_room_peers: Mutex::new(std::collections::HashSet::new()),
             registered_home_device_ids: Mutex::new(home_device_ids),
             personal_device_peers,
-            home_peer_reader: home_peer_reader::HomePeerReader::spawn({
-                let fleet = personal_continuity_user.zip(own_device_fleet.clone());
-                move || HomePeerInputs::read_after_pending_writes(fleet.as_ref())
-            }),
+            home_peer_reader: home_peer_reader::HomePeerReader::spawn(
+                HomePeerInputs::read_after_pending_writes,
+            ),
             own_device_fleet,
             lan_discovery,
-            own_device_fleet_loaded: Mutex::new(None),
             last_home_peer_refresh: Mutex::new(None),
             session_reach_checked: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
@@ -4597,10 +4589,7 @@ impl ShellNetwork {
     /// and waiting for the disk. The compositor's loop does not call this: its
     /// refresh reads them on a worker ([`Self::refresh_home_peer_hosts_periodically`]).
     pub fn refresh_home_peer_hosts(&self) -> bool {
-        let fleet = self
-            .personal_continuity_user
-            .zip(self.own_device_fleet.clone());
-        self.apply_home_peer_inputs(&HomePeerInputs::read(fleet.as_ref()))
+        self.apply_home_peer_inputs(&HomePeerInputs::read())
     }
 
     /// Apply what the reader published, if it published anything. Reads and
@@ -4613,7 +4602,6 @@ impl ShellNetwork {
     }
 
     fn apply_home_peer_inputs(&self, inputs: &HomePeerInputs) -> bool {
-        self.note_own_device_fleet(inputs.own_fleet.clone());
         // An enrollment can deliver rooms after this session started. Adopt
         // them and join their topics, or a request sent to this device on
         // such a room never arrives.
@@ -6550,9 +6538,9 @@ impl ShellNetwork {
     /// devices: who may receive personal secrets and fabric actions.
     ///
     /// Consulted per outgoing message, so it is served from
-    /// [`Self::personal_device_peers`]: the enrolment file is re-validated at
-    /// most once per recheck interval, and the set is rebuilt only when that
-    /// file or the registered home-device ids change.
+    /// [`Self::personal_device_peers`]: the person's devices are read on a
+    /// worker when their files change, and the set is rebuilt only when they
+    /// or the registered home-device ids change.
     fn certified_secret_recipients(
         &self,
     ) -> Arc<std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>> {
@@ -6576,20 +6564,15 @@ impl ShellNetwork {
             // Fail closed for secrets: nobody but this device.
             return Arc::new(local.cloned().into_iter().collect());
         };
-        peers.recipients_at(
-            || self.own_device_sources(),
-            std::time::Instant::now(),
-            local,
-            build,
-        )
+        peers.recipients_at(|| self.own_device_sources(), local, build)
     }
 
     /// The person's own device endpoints other than `local_device`, from the
-    /// bounded-staleness cache of the enrolment file and the fleet.
+    /// enrolment file and the fleet as the worker last read them.
     fn enrolled_personal_devices(&self, local_device: Option<[u8; 32]>) -> Vec<iroh::EndpointAddr> {
         let devices = self.personal_device_peers.lock().map_or_else(
             |_| Arc::from([]),
-            |mut peers| peers.devices_at(|| self.own_device_sources(), std::time::Instant::now()),
+            |mut peers| peers.devices_at(|| self.own_device_sources()),
         );
         enrolled_endpoints(&devices, local_device)
     }
@@ -8959,12 +8942,11 @@ pub(crate) fn shell_network_for_test(
         personal_device_peers: Arc::default(),
         own_device_fleet: None,
         lan_discovery: None,
-        own_device_fleet_loaded: Mutex::new(None),
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
-        home_peer_reader: home_peer_reader::HomePeerReader::spawn(|| {
-            HomePeerInputs::read_after_pending_writes(None)
-        }),
+        home_peer_reader: home_peer_reader::HomePeerReader::spawn(
+            HomePeerInputs::read_after_pending_writes,
+        ),
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -9403,22 +9385,15 @@ mod tests {
         );
 
         write_personal_device_peers(dir.path(), &[kept_key]);
-        net.recheck_personal_device_peers();
-        let recipients = net.certified_secret_recipients();
-        assert!(recipients.contains(&kept) && !recipients.contains(&removed));
-        assert_eq!(reads(), 2);
-        net.recheck_personal_device_peers();
-        assert!(!net.certified_secret_recipients().contains(&removed));
-        assert_eq!(
-            reads(),
-            2,
-            "a recheck of an unchanged file does not read it"
-        );
+        tilo_test_env::wait_until("the removal to be read off the sending thread", || {
+            !net.certified_secret_recipients().contains(&removed)
+        });
+        assert!(net.certified_secret_recipients().contains(&kept));
     }
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn removed_device_is_refused_within_recheck_window() {
+    fn a_removed_device_is_refused_once_its_removal_is_read() {
         let dir = tempfile::tempdir().expect("temp");
         let peers = dir.path().join("home-peers.json");
         std::fs::write(&peers, b"[]").unwrap();
@@ -9435,12 +9410,15 @@ mod tests {
         while commands.try_recv().is_ok() {}
 
         write_personal_device_peers(dir.path(), &[kept]);
-        // Real time, no test hook: revocation must land by the recheck bound.
-        std::thread::sleep(personal_device_peers::RECHECK);
-        assert!(matches!(
-            net.try_send_personal_fabric_action(&removed, remote_audio_frame()),
-            Err(PersonalFabricSendError::Rejected(_))
-        ));
+        // No test hook: the worker reads the removal on its own. Frames sent
+        // before it did still went out.
+        tilo_test_env::wait_until("the removed device to be refused", || {
+            while commands.try_recv().is_ok() {}
+            matches!(
+                net.try_send_personal_fabric_action(&removed, remote_audio_frame()),
+                Err(PersonalFabricSendError::Rejected(_))
+            )
+        });
         assert!(
             commands.try_recv().is_err(),
             "nothing reaches the transport for a removed device"

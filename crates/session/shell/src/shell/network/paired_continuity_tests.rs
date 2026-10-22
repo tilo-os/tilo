@@ -563,7 +563,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         .unwrap(),
     )
     .unwrap();
-    // Enrolled mid-session: take effect now rather than at the next recheck.
+    // Enrolled mid-session: take effect now rather than once the worker reads it.
     left.network.recheck_personal_device_peers();
     right.network.recheck_personal_device_peers();
     let registry = crate::shell::personal_continuity_registry::global_registry();

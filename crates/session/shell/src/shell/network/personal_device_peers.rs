@@ -6,80 +6,92 @@
 //! keeps each device of the person met since ([`PersonalDevicePeers::remember`]),
 //! so the person's devices trust and dial each other whichever joined first.
 //!
-//! Other processes write both files, so the shell cannot be told when they
-//! change. Every outgoing personal-fabric message — each 20 ms remote-audio
-//! frame, each forwarded input event — and the per-frame owner-view pump
-//! consult the set, so reading and parsing the files per call put disk I/O on
-//! the compositor thread. Instead the set is re-validated at most once per
-//! [`RECHECK`] against the enrolment file's `stat`, re-read only when it
-//! changed, and against the fleet the caller last loaded: the compositor's
-//! fleet is loaded by the home-peer reader's thread, never on its loop.
-//! Removing a device therefore stops sends to it within [`RECHECK`] (the
-//! fleet within one home-peer refresh more); a
-//! revocation this session learns ([`PersonalDevicePeers::revoke`]) applies at
-//! once, and route revocation stays independent and immediate.
+//! Other processes write both files. Every outgoing personal-fabric message
+//! (each 20 ms remote-audio frame, each forwarded input event) and the
+//! per-frame owner-view pump consult the set, many of them on the
+//! compositor's loop, which must never wait on the disk: not to read the
+//! files, and not to `stat` them to see whether they changed. So they are
+//! kept as a [`Watched`] value: read when the network starts (off the loop),
+//! and again on a worker whenever their directories change. Removing a
+//! device stops sends to it as soon as the worker has read the change; a
+//! revocation this session learns ([`PersonalDevicePeers::revoke`]) applies
+//! at once, and route revocation stays independent and immediate.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use tilo_files::native::Watched;
 
 use crate::device_fleet::{DeviceFleet, DeviceFleetStore};
 use crate::shell::personal_continuity::DeviceId;
 
-/// How long a check of the enrolment file stays fresh. Mirrors the
-/// continuity-policy store poll, so revocation lands within about a second.
-pub(super) const RECHECK: Duration = Duration::from_millis(750);
-
-/// What identifies one version of the file without reading it. The identity
-/// host writes atomically (a fresh inode), and length and mtime catch an
-/// in-place rewrite.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileStamp {
-    modified: Option<SystemTime>,
-    len: u64,
-    inode: u64,
-}
-
-impl FileStamp {
-    fn of(path: &Path) -> Option<Self> {
-        use std::os::unix::fs::MetadataExt as _;
-        let metadata = std::fs::metadata(path).ok()?;
-        Some(Self {
-            modified: metadata.modified().ok(),
-            len: metadata.len(),
-            inode: metadata.ino(),
-        })
-    }
-}
-
-/// This person's own devices as recorded: the enrolment file, and the fleet
-/// already loaded. The fleet is loaded by whoever builds this, off the
-/// compositor's loop (see `ShellNetwork::own_device_sources`).
+/// Where this person's own devices are recorded.
 pub(super) struct Sources {
     /// The enrolment file.
     pub(super) peers: PathBuf,
-    /// The person; `None` on a device without one.
-    pub(super) person: Option<[u8; 32]>,
-    /// The person's fleet as last loaded, if it was.
-    pub(super) fleet: Option<Arc<DeviceFleet>>,
+    /// The person and the store keeping their fleet; `None` on a device
+    /// without a person.
+    pub(super) fleet: Option<([u8; 32], DeviceFleetStore)>,
 }
 
 impl Sources {
     /// Just the enrolment file at `peers`.
     #[cfg(test)]
     pub(super) fn peers(peers: PathBuf) -> Self {
-        Self {
-            peers,
-            person: None,
-            fleet: None,
+        Self { peers, fleet: None }
+    }
+
+    /// The directories the files live in.
+    fn directories(&self) -> Vec<PathBuf> {
+        let mut files = vec![self.peers.clone()];
+        if let Some((person, store)) = &self.fleet {
+            files.extend(store.backing_files(&hex::encode(person)));
         }
+        let mut directories: Vec<PathBuf> = Vec::new();
+        for directory in files.iter().map(|file| {
+            file.parent()
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+        }) {
+            if !directories.contains(&directory) {
+                directories.push(directory);
+            }
+        }
+        directories
+    }
+
+    /// Read both, on the worker. `reads` counts the reads of the enrolment
+    /// file, for tests.
+    fn read(&self, reads: &AtomicU64) -> Read {
+        let enrolled = if self.peers.exists() {
+            reads.fetch_add(1, Ordering::AcqRel);
+            super::read_personal_device_peers(&self.peers)
+        } else {
+            Vec::new()
+        };
+        let fleet = self.fleet.as_ref().and_then(|(person, store)| {
+            store
+                .load_cached(&hex::encode(person))
+                .ok()
+                .map(|fleet| (*person, fleet))
+        });
+        Read { enrolled, fleet }
     }
 }
 
-/// `person`'s fleet kept by `store`, read now: waits for the disk.
-pub(super) fn load_fleet(person: &[u8; 32], store: &DeviceFleetStore) -> Option<Arc<DeviceFleet>> {
-    store.load_cached(&hex::encode(person)).ok()
+/// One reading of the sources.
+struct Read {
+    /// The valid endpoint keys in the enrolment file.
+    enrolled: Vec<[u8; 32]>,
+    /// The person and their fleet.
+    fleet: Option<([u8; 32], Arc<DeviceFleet>)>,
+}
+
+impl Read {
+    fn fleet(&self) -> Option<&DeviceFleet> {
+        self.fleet.as_ref().map(|(_, fleet)| &**fleet)
+    }
 }
 
 /// The certified recipient set, valid for one local device and one version
@@ -89,19 +101,13 @@ struct Recipients {
     set: Arc<BTreeSet<DeviceId>>,
 }
 
-/// Bounded-staleness cache of this person's own devices and of the certified
+/// This person's own devices, kept current off the loop, and the certified
 /// secret recipients derived from them. Lives on `ShellNetwork`.
 #[derive(Default)]
 pub(super) struct PersonalDevicePeers {
-    path: Option<PathBuf>,
-    stamp: Option<FileStamp>,
-    checked_at: Option<Instant>,
-    /// The valid endpoint keys in the enrolment file.
-    enrolled: Vec<[u8; 32]>,
-    /// The fleet the set was last derived from.
-    fleet: Option<Arc<DeviceFleet>>,
-    /// The person the fleet belongs to.
-    person: Option<[u8; 32]>,
+    watched: Option<Watched<Read>>,
+    /// The reading the set was last derived from.
+    derived_from: Option<Arc<Read>>,
     /// Devices of the person met this session, until the fleet keeps them.
     met: BTreeSet<[u8; 32]>,
     /// Devices revoked by a revocation this session learned.
@@ -111,18 +117,54 @@ pub(super) struct PersonalDevicePeers {
     devices: Arc<[[u8; 32]]>,
     recipients: Option<Recipients>,
     /// How many times the enrolment file was read. Observed by tests only.
-    reads: u64,
+    reads: Arc<AtomicU64>,
 }
 
 impl PersonalDevicePeers {
-    /// The own device keys, re-validated against `sources` if the last check
-    /// is older than [`RECHECK`]. `sources` is resolved only then.
-    pub(super) fn devices_at(
-        &mut self,
-        sources: impl FnOnce() -> Sources,
-        now: Instant,
-    ) -> Arc<[[u8; 32]]> {
-        self.refresh(sources, now);
+    /// Watch `sources` from now on: read them on this thread (the network's
+    /// start, off the loop), then on a worker after each change.
+    pub(super) fn watching(sources: Sources) -> Self {
+        let mut peers = Self::default();
+        peers.watch(sources);
+        peers
+    }
+
+    fn watch(&mut self, sources: Sources) {
+        let reads = Arc::clone(&self.reads);
+        let directories = sources.directories();
+        match Watched::start("own-devices", directories, move || sources.read(&reads)) {
+            Ok(watched) => self.watched = Some(watched),
+            Err(error) => {
+                // Unwatched, only devices met this session count: personal
+                // secrets and fabric actions fail closed to them.
+                tracing::warn!(%error, "cannot watch this person's devices");
+            }
+        }
+    }
+
+    /// The reading the worker last made, the set derived again if it is a
+    /// new one. `sources` is asked for only by a network that did not watch
+    /// them from its start (a test's).
+    fn current(&mut self, sources: impl FnOnce() -> Sources) {
+        if self.watched.is_none() {
+            self.watch(sources());
+        }
+        let Some(read) = self.watched.as_ref().map(Watched::get) else {
+            return;
+        };
+        if self
+            .derived_from
+            .as_ref()
+            .is_none_or(|derived| !Arc::ptr_eq(derived, &read))
+        {
+            self.derived_from = Some(read);
+            self.derive();
+        }
+    }
+
+    /// The own device keys, as the worker last read their sources.
+    pub(super) fn devices_at(&mut self, sources: impl FnOnce() -> Sources) -> Arc<[[u8; 32]]> {
+        self.current(sources);
         Arc::clone(&self.devices)
     }
 
@@ -132,11 +174,10 @@ impl PersonalDevicePeers {
     pub(super) fn recipients_at(
         &mut self,
         sources: impl FnOnce() -> Sources,
-        now: Instant,
         local: Option<&DeviceId>,
         build: impl FnOnce(&[[u8; 32]]) -> BTreeSet<DeviceId>,
     ) -> Arc<BTreeSet<DeviceId>> {
-        self.refresh(sources, now);
+        self.current(sources);
         if let Some(recipients) = &self.recipients
             && recipients.local.as_ref() == local
         {
@@ -150,18 +191,23 @@ impl PersonalDevicePeers {
         set
     }
 
-    /// Whether the fleet the set was derived from already keeps `cert`.
-    pub(super) fn keeps(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
-        self.fleet
-            .as_ref()
-            .is_some_and(|fleet| fleet.certificates.contains(cert))
+    /// The fleet as the worker last read it.
+    fn fleet(&self) -> Option<Arc<Read>> {
+        self.watched.as_ref().map(Watched::get)
     }
 
-    /// Whether the fleet the set was derived from already revoked `device`.
+    /// Whether the fleet already keeps `cert`.
+    pub(super) fn keeps(&self, cert: &tilo_user_identity::DeviceCert) -> bool {
+        self.fleet().is_some_and(|read| {
+            read.fleet()
+                .is_some_and(|fleet| fleet.certificates.contains(cert))
+        })
+    }
+
+    /// Whether the fleet already revoked `device`.
     pub(super) fn fleet_revoked(&self, device: &[u8; 32]) -> bool {
-        self.fleet
-            .as_ref()
-            .is_some_and(|fleet| fleet.is_revoked(device))
+        self.fleet()
+            .is_some_and(|read| read.fleet().is_some_and(|fleet| fleet.is_revoked(device)))
     }
 
     /// Whether `device` is revoked, by the fleet or a revocation this
@@ -172,7 +218,7 @@ impl PersonalDevicePeers {
 
     /// Count `device`, a device of the person that proved its certificate,
     /// as one of theirs from now on: the caller has it kept in the fleet,
-    /// which the set reads from the next write on.
+    /// which the worker reads once it is written.
     pub(super) fn remember(&mut self, device: [u8; 32]) {
         if !self.revoked.contains(&device) && self.met.insert(device) {
             self.derive();
@@ -194,72 +240,37 @@ impl PersonalDevicePeers {
         self.recipients = None;
     }
 
-    /// Make the next query re-validate the files regardless of [`RECHECK`].
+    /// Read the sources again now, on this thread: for tests that rewrite
+    /// them mid-session and must not wait for the worker.
     #[cfg(test)]
-    pub(super) fn expire(&mut self) {
-        self.checked_at = None;
+    pub(super) fn reread(&self) {
+        if let Some(watched) = &self.watched {
+            watched.refresh();
+        }
     }
 
     #[cfg(test)]
     pub(super) fn reads(&self) -> u64 {
-        self.reads
-    }
-
-    fn refresh(&mut self, sources: impl FnOnce() -> Sources, now: Instant) {
-        if self
-            .checked_at
-            .is_some_and(|checked| now.saturating_duration_since(checked) < RECHECK)
-        {
-            return;
-        }
-        self.checked_at = Some(now);
-        let sources = sources();
-        let mut changed = false;
-        let stamp = FileStamp::of(&sources.peers);
-        if self.path.as_ref() != Some(&sources.peers) || stamp != self.stamp {
-            self.enrolled = if stamp.is_some() {
-                self.reads = self.reads.saturating_add(1);
-                super::read_personal_device_peers(&sources.peers)
-            } else {
-                Vec::new()
-            };
-            self.path = Some(sources.peers.clone());
-            self.stamp = stamp;
-            changed = true;
-        }
-        let Sources { person, fleet, .. } = sources;
-        let same_fleet = match (&fleet, &self.fleet) {
-            (Some(new), Some(old)) => Arc::ptr_eq(new, old),
-            (None, None) => true,
-            _ => false,
-        };
-        if !same_fleet || person != self.person {
-            self.fleet = fleet;
-            self.person = person;
-            changed = true;
-        }
-        if changed {
-            self.derive();
-        }
+        self.reads.load(Ordering::Acquire)
     }
 
     /// Rebuild the device set: enrolled, certified by the fleet or met, less
     /// what the fleet or this session revoked.
     fn derive(&mut self) {
         let now_ns = tilo_clock::unix_now_ns();
-        let certified = match (&self.fleet, &self.person) {
-            (Some(fleet), Some(person)) => fleet.personal_devices(person, now_ns),
-            _ => Vec::new(),
-        };
+        let read = self.derived_from.clone();
+        let enrolled = read.as_ref().map_or(&[][..], |read| &read.enrolled[..]);
+        let certified = read
+            .as_ref()
+            .and_then(|read| read.fleet.as_ref())
+            .map(|(person, fleet)| fleet.personal_devices(person, now_ns))
+            .unwrap_or_default();
+        let fleet = read.as_ref().and_then(|read| read.fleet());
         let mut devices: Vec<[u8; 32]> = Vec::new();
-        for device in self
-            .enrolled
-            .iter()
-            .chain(&certified)
-            .chain(&self.met)
-            .copied()
-        {
-            if !devices.contains(&device) && !self.is_revoked(&device) {
+        for device in enrolled.iter().chain(&certified).chain(&self.met).copied() {
+            let revoked = self.revoked.contains(&device)
+                || fleet.is_some_and(|fleet| fleet.is_revoked(&device));
+            if !devices.contains(&device) && !revoked {
                 devices.push(device);
             }
         }
@@ -286,71 +297,25 @@ mod tests {
     }
 
     #[test]
-    fn devices_are_reread_only_when_the_file_changes() {
+    fn devices_are_read_off_the_asking_thread_when_the_file_changes() {
         let dir = tempfile::tempdir().expect("temp");
         let path = dir.path().join("personal-device-peers.json");
         let (a, b) = (endpoint(), endpoint());
         write(&path, &[a, b]);
-        let mut cache = PersonalDevicePeers::default();
-        let start = Instant::now();
+        let mut cache = PersonalDevicePeers::watching(Sources::peers(path.clone()));
         for _ in 0..1_000 {
-            assert_eq!(
-                &*cache.devices_at(|| Sources::peers(path.clone()), start),
-                &[a, b]
-            );
+            assert_eq!(&*cache.devices_at(|| unreachable!("watched")), &[a, b]);
         }
-        assert_eq!(cache.reads(), 1);
-        // A due recheck of an unchanged file stats it but does not read it.
-        assert_eq!(
-            &*cache.devices_at(|| Sources::peers(path.clone()), start + RECHECK),
-            &[a, b]
-        );
-        assert_eq!(cache.reads(), 1);
+        assert_eq!(cache.reads(), 1, "asking never reads the file");
 
         write(&path, &[a]);
-        assert_eq!(
-            &*cache.devices_at(|| Sources::peers(path.clone()), start + RECHECK),
-            &[a, b],
-            "within the recheck window the last check stands"
-        );
-        assert_eq!(
-            &*cache.devices_at(|| Sources::peers(path.clone()), start + RECHECK * 2),
-            &[a]
-        );
-        assert_eq!(cache.reads(), 2);
-
+        tilo_test_env::wait_until("the worker to read the change", || {
+            *cache.devices_at(|| unreachable!("watched")) == [a]
+        });
         std::fs::remove_file(&path).unwrap();
-        assert!(
-            cache
-                .devices_at(|| Sources::peers(path.clone()), start + RECHECK * 3)
-                .is_empty()
-        );
-        assert_eq!(cache.reads(), 2, "a missing file is not read");
-    }
-
-    #[test]
-    fn the_path_is_resolved_only_when_a_recheck_is_due() {
-        let dir = tempfile::tempdir().expect("temp");
-        let first = dir.path().join("first.json");
-        let second = dir.path().join("second.json");
-        let (a, b) = (endpoint(), endpoint());
-        write(&first, &[a]);
-        write(&second, &[b]);
-        let mut cache = PersonalDevicePeers::default();
-        let now = Instant::now();
-        assert_eq!(
-            &*cache.devices_at(|| Sources::peers(first.clone()), now),
-            &[a]
-        );
-        assert_eq!(
-            &*cache.devices_at(|| unreachable!("fresh check"), now),
-            &[a]
-        );
-        assert_eq!(
-            &*cache.devices_at(|| Sources::peers(second.clone()), now + RECHECK),
-            &[b],
-            "a moved file is followed at the next recheck"
-        );
+        tilo_test_env::wait_until("the worker to see the file go", || {
+            cache.devices_at(|| unreachable!("watched")).is_empty()
+        });
     }
 
     #[test]
@@ -362,12 +327,10 @@ mod tests {
         let id = |key: &[u8; 32]| DeviceId::new(hex::encode(key)).unwrap();
         let local = DeviceId::new("local").unwrap();
         let mut builds = 0;
-        let mut cache = PersonalDevicePeers::default();
-        let start = Instant::now();
-        let mut query = |cache: &mut PersonalDevicePeers, now, local: Option<&DeviceId>| {
+        let mut cache = PersonalDevicePeers::watching(Sources::peers(path.clone()));
+        let mut query = |cache: &mut PersonalDevicePeers, local: Option<&DeviceId>| {
             cache.recipients_at(
-                || Sources::peers(path.clone()),
-                now,
+                || unreachable!("watched"),
                 local,
                 |devices| {
                     builds += 1;
@@ -380,13 +343,14 @@ mod tests {
             )
         };
         for _ in 0..100 {
-            assert!(query(&mut cache, start, Some(&local)).contains(&id(&b)));
+            assert!(query(&mut cache, Some(&local)).contains(&id(&b)));
         }
-        assert!(query(&mut cache, start, None).contains(&id(&a)));
+        assert!(query(&mut cache, None).contains(&id(&a)));
         cache.invalidate_recipients();
-        let set = query(&mut cache, start, None);
+        let set = query(&mut cache, None);
         write(&path, &[a]);
-        let after = query(&mut cache, start + RECHECK, None);
+        cache.reread();
+        let after = query(&mut cache, None);
         assert!(set.contains(&id(&b)) && !after.contains(&id(&b)));
         assert_eq!(builds, 4, "built once per change, not per query");
     }
