@@ -355,7 +355,7 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
-        let desk_dirty = self.update_desk(Instant::now());
+        let desk_dirty = self.update_desk(ui::time::now());
         // A window bar's tooltip whose dwell ran out shows on this tick: its
         // deadline woke the loop, and a deadline alone paints nothing.
         let tooltip_dirty = self.bar_tooltip.tick(ui::time::now());
@@ -1085,11 +1085,11 @@ impl Widget for ShellOverlayHost {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.needs_animation_frame_at(Instant::now())
+        self.needs_animation_frame_at(ui::time::now())
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.wake_deadline_sources(Instant::now())
+        self.wake_deadline_sources(ui::time::now())
             .into_iter()
             .filter_map(|(_, deadline)| deadline)
             .chain(self.agent_markers.deadline())

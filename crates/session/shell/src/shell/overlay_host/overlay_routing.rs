@@ -14,7 +14,7 @@ impl ShellOverlayHost {
         // A pointer that left the window is nowhere a peer can be shown. Only
         // the shared desk forgets it: `last_cursor` still hit-tests.
         if matches!(event, WindowEvent::CursorLeft { .. }) {
-            self.desk_pointer_left(Instant::now());
+            self.desk_pointer_left(ui::time::now());
             self.strip_switcher_pointer_left();
             if let Some(desk) = &self.shared_desk {
                 desk.set_pointer(None);
@@ -60,7 +60,7 @@ impl ShellOverlayHost {
             if let Some(desk) = &self.shared_desk {
                 desk.set_pointer(Some((p.x, p.y)));
             }
-            self.desk_pointer(p, Instant::now());
+            self.desk_pointer(p, ui::time::now());
             self.focus_display_at(p);
             // A ribbon or rail segment thickens under the pointer to say
             // it's clickable, and the labels read its path.
