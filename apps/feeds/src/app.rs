@@ -576,7 +576,7 @@ impl Core {
     pub(crate) fn toggle_star(&mut self, id: &Id, doc: &mut ui::widget::Edits<'_>) {
         if let Some(starred) = self.store.article(id).map(|article| !article.starred) {
             self.perform(doc, Library::paths().articles.item(id).starred.set(starred));
-            self.set_toast(if starred {
+            self.say_when_kept(if starred {
                 "Article starred"
             } else {
                 "Star removed"
@@ -589,7 +589,7 @@ impl Core {
             && let Some(now_read) = self.store.article(&id).map(|article| !article.read)
         {
             self.perform(doc, read_edit(&id, now_read));
-            self.set_toast(if now_read {
+            self.say_when_kept(if now_read {
                 "Marked as read"
             } else {
                 "Marked as unread"
@@ -624,10 +624,39 @@ impl Core {
                 }
             }
         }
-        self.set_toast(format!(
+        self.say_when_kept(format!(
             "Marked {} as read",
             plural(ids.len(), "article", "articles")
         ));
+    }
+
+    /// Say `text` of a library change just submitted once it is kept: at
+    /// once in a library nobody else decides, once the room accepts it in a
+    /// shared one, and never when the room refuses it
+    /// ([`Self::announce_answers`]).
+    pub(crate) fn say_when_kept(&mut self, text: impl Into<String>) {
+        match &self.dispatcher {
+            Some(dispatcher) => dispatcher.say_when_kept(text),
+            None => self.set_toast(text),
+        }
+    }
+
+    /// Show what the room answered of this window's changes: one it kept
+    /// is said done ("Article starred"), and one it refused, which the
+    /// record withdrew, says why instead.
+    pub(crate) fn announce_answers(&mut self) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        let (said, refused) = (dispatcher.said(), dispatcher.refused());
+        if let Some(text) = said.with(Clone::clone) {
+            said.set(None);
+            self.set_toast(text);
+        }
+        if let Some(refusal) = refused.with(Clone::clone) {
+            refused.set(None);
+            self.set_toast(format!("The library was not changed: {}", refusal.reason));
+        }
     }
 
     // --- action model -----------------------------------------------------
@@ -1986,6 +2015,7 @@ impl FeedsApp {
     /// asked for to the front, and keep the column titles current.
     /// Hand the core's latest notice to the shell, which shows and expires it.
     fn take_toast(&mut self) {
+        self.core.borrow_mut().announce_answers();
         match self.core.borrow_mut().toast.take() {
             Some(ToastChange::Show(message)) => self.shell.toast(message, ToastKind::Info),
             Some(ToastChange::Dismiss) => self.shell.dismiss_toast(),
