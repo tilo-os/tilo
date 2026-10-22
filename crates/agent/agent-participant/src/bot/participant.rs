@@ -420,6 +420,18 @@ impl super::door::DoorParticipant for BotParticipant {
             app.read_history(|doc| super::item_json::outbox_entries(doc, &doc.get_heads(), field))
         })
     }
+
+    fn queued_in_history(
+        &self,
+        route: &DocumentRoute,
+        step: &super::door::RunStep,
+        actor: &str,
+        field: &str,
+    ) -> Vec<String> {
+        self.replicas.get(route).map_or_else(Vec::new, |app| {
+            app.read_history(|doc| super::door::queued_by_step(doc, step, actor, field))
+        })
+    }
 }
 
 fn bounded(activity: &str) -> String {

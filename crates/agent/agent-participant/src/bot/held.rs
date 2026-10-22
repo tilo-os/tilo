@@ -297,4 +297,16 @@ impl DoorParticipant for HeldRecords {
             replica.read_history(|doc| outbox_entries(doc, &doc.get_heads(), field))
         })
     }
+
+    fn queued_in_history(
+        &self,
+        route: &DocumentRoute,
+        step: &RunStep,
+        actor: &str,
+        field: &str,
+    ) -> Vec<String> {
+        self.replicas.get(route).map_or_else(Vec::new, |replica| {
+            replica.read_history(|doc| super::door::queued_by_step(doc, step, actor, field))
+        })
+    }
 }
