@@ -65,8 +65,12 @@ impl Device for ThisDevice {
         os_actions::set_timezone(zone)
     }
 
+    /// The zone of the installed tzdata's city nearest `location`.
     fn nearest_zone(&self, location: Location) -> Option<String> {
-        settings_store::clock::nearest_zone(location)
+        settings_store::clock::ZONE_TABLES
+            .iter()
+            .find_map(|table| std::fs::read_to_string(table).ok())
+            .and_then(|table| settings_store::clock::nearest_zone_in(location, &table))
     }
 }
 
