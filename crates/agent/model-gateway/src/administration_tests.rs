@@ -103,6 +103,7 @@ async fn configure(
     let config = ProviderConfig {
         profiles: vec![profile.clone()],
         default_profile: Some(profile.id.clone()),
+        ..Default::default()
     };
     let first = admin
         .set_config(empty.revision.clone(), config.clone())
@@ -336,6 +337,7 @@ async fn signed_metadata_stays_owned_by_provisioner(admin: &dyn ProviderAdmin) {
     let installed = ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
+        ..Default::default()
     };
     installed.save().unwrap();
     let snapshot = admin.get_config().await.unwrap();
@@ -388,6 +390,7 @@ async fn mutation_stop_waits_for_commit() {
     let config = ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
+        ..Default::default()
     };
     send(
         &mut client,

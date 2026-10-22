@@ -49,6 +49,14 @@ pub fn default_selection() -> Option<ProviderSelection> {
     ProviderSelection::from_config(&ProviderConfig::load())
 }
 
+/// Load the model Settings chose for `agent`, else the default, for a *new*
+/// task.
+pub fn agent_selection(agent: &str) -> Option<ProviderSelection> {
+    let config = ProviderConfig::load();
+    let (profile, model) = config.selection_for(agent)?;
+    Some(ProviderSelection::from_profile(profile, model.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +75,7 @@ mod tests {
             let config = ProviderConfig {
                 default_profile: Some(profile.id.clone()),
                 profiles: vec![profile],
+                ..Default::default()
             };
             let selected = ProviderSelection::from_config(&config).expect("configured provider");
             assert_eq!(selected.model.id, "claude-test");
@@ -81,6 +90,7 @@ mod tests {
             let config = ProviderConfig {
                 default_profile: Some(profile.id.clone()),
                 profiles: vec![profile],
+                ..Default::default()
             };
             assert!(ProviderSelection::from_config(&config).is_none());
         }

@@ -108,6 +108,14 @@ provider credentials never enter their sandbox. Existing host-side
 OpenAI-compatible planners can opt in to [request presets](agent-model-presets.md);
 these provider hints do not change credentials, context selection or authority.
 
+Each agent plans with a model of its person's providers: the one chosen for it
+in the agent's workspace settings (Model, above its apps' answers), else
+Settings' default. The choice is the person's, kept with their provider
+settings by agent id (`ProviderConfig::agent_models`), and is listed in
+Settings' providers with the way back to the default; it grants nothing. The
+desktop hands the agent its model when it starts it, as the nonsecret
+profile/model/protocol selection, so a change applies from its next start.
+
 The native launcher authenticates a caller through its capability transport.
 The light HTTP adapter authenticates host-issued, expiring, revocable sessions;
 it needs no relay/node runtime and never trusts a caller ID in request JSON.

@@ -500,3 +500,47 @@ fn mounted_ack_preserves_a_newer_private_key_draft() {
     assert_private(&mut app);
     assert!(!format!("{:?}", app.history()).contains("new-private-key-draft"));
 }
+
+#[test]
+fn mounted_agent_models_are_chosen_and_sent_back_to_the_default() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut profile = ProviderProfile::google_vertex("project-a", "global", "gemini-2.5-pro");
+    profile
+        .models
+        .push(agent_provider_config::ModelDescriptor::new("gemini-2.5-flash"));
+    let provider = profile.id.clone();
+    backend.state.lock_recover().config.upsert(profile);
+    let mut app = mount(backend.clone());
+    app.harness().resize((1800, 6000)).unwrap();
+    app.settle();
+    let use_default = format!("agent-model-default-{}", hex::encode("writer"));
+    assert_eq!(rendered_enabled(app.harness().root_widget(), &use_default), None);
+    assert!(
+        app.effect(&ProviderEffect::SetAgentModel {
+            agent: "writer".into(),
+            provider: Some(provider.clone()),
+            model: Some("not-offered".into()),
+        })
+        .is_err()
+    );
+    app.effect(&ProviderEffect::SetAgentModel {
+        agent: "writer".into(),
+        provider: Some(provider.clone()),
+        model: Some("gemini-2.5-flash".into()),
+    })
+    .unwrap();
+    app.settle();
+    let chosen = backend.state.lock_recover().config.agent_models["writer"].clone();
+    assert_eq!(
+        (chosen.profile.as_str(), chosen.model.as_str()),
+        (provider.as_str(), "gemini-2.5-flash")
+    );
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &use_default),
+        Some(true)
+    );
+    app.harness().click_named(&use_default).unwrap();
+    app.settle();
+    assert!(backend.state.lock_recover().config.agent_models.is_empty());
+    assert!(config(&mut app).agent_models.is_empty());
+}

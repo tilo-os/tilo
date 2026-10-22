@@ -489,6 +489,7 @@ mod tests {
         ProviderConfig {
             profiles: vec![profile],
             default_profile: Some("local-profile".into()),
+            ..Default::default()
         }
     }
 

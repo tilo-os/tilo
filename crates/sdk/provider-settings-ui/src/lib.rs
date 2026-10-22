@@ -7,8 +7,8 @@ use crate::widgets::{
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{
-    EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig, ProviderProfile,
-    ProviderProtocol,
+    AgentModel, EndpointLocation, ModelDescriptor, ModelRequestLimits, ProviderConfig,
+    ProviderProfile, ProviderProtocol,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -140,6 +140,17 @@ pub enum ProviderEffect {
     SetDefaultProvider {
         #[param("The provider's id")]
         provider: String,
+    },
+    /// Choose the model one agent plans with; omit both to let it use the
+    /// default again.
+    #[effect(job, device_only, idempotent)]
+    SetAgentModel {
+        #[param("The agent's id")]
+        agent: String,
+        #[param("The provider's id")]
+        provider: Option<String>,
+        #[param("The model's id, one the provider offers")]
+        model: Option<String>,
     },
     /// Remove a provider and its stored API key.
     #[effect(job, device_only, row, destructive, label = "Remove provider")]
@@ -463,6 +474,9 @@ impl<H: PanelBindings> ProviderPanel<H> {
             sections.push(section(&t("agent-service-title"), rows(vec![note(notice)])));
         }
         sections.push(self.hosted_profiles_with_sign_in(include_sign_in));
+        if let Some(agents) = self.agent_models_card() {
+            sections.push(agents);
+        }
         // Limits are per model: with no model yet the section would be a
         // paragraph about nothing.
         if self
@@ -663,6 +677,20 @@ impl<H: PanelBindings> ProviderPanel<H> {
                 if config.remove(&provider).is_none() {
                     return Err(t("agent-provider-gone"));
                 }
+            }
+            ProviderEffect::SetAgentModel {
+                agent,
+                provider,
+                model,
+            } => {
+                let chosen = match (provider, model) {
+                    (Some(profile), Some(model)) => Some(AgentModel { profile, model }),
+                    (None, None) => None,
+                    _ => return Err(t("agent-model-choice-incomplete")),
+                };
+                config
+                    .set_agent_model(&agent, chosen)
+                    .map_err(|_| t("agent-model-gone"))?;
             }
             _ => return Err("not a provider effect".into()),
         }
@@ -1085,6 +1113,43 @@ impl<H: PanelBindings> ProviderPanel<H> {
             .clone();
         drop(buffers);
         fields
+    }
+
+    /// The agents that plan with a model other than the default, each with
+    /// the way back to the default. `None` while every agent uses it.
+    pub fn agent_models_card(&self) -> Option<SettingsSection> {
+        let config = self.provider_config();
+        if config.agent_models.is_empty() {
+            return None;
+        }
+        let mut body = vec![note(&t("agent-models-agents-caption"))];
+        for agent in config.agent_models.keys() {
+            let model = config.selection_for(agent).map_or_else(
+                || t("agent-model-unavailable"),
+                |(profile, model)| {
+                    t_args(
+                        "agent-model-of-provider",
+                        &[
+                            ("model", model.display_label().into()),
+                            ("provider", profile.display_label().into()),
+                        ],
+                    )
+                },
+            );
+            body.push(value_row(agent, &model));
+            body.push(row(Box::new(self.bind_invocation(
+                Button::new(
+                    &format!("agent-model-default-{}", hex::encode(agent)),
+                    &t("agent-model-use-default"),
+                ),
+                ProviderEffect::SetAgentModel {
+                    agent: agent.clone(),
+                    provider: None,
+                    model: None,
+                },
+            ))));
+        }
+        Some(section(&t("agent-models-agents-title"), rows(body)))
     }
 
     pub fn request_limits_card(&self) -> SettingsSection {

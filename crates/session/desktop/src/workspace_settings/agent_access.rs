@@ -198,6 +198,27 @@ fn humanize(id: &str) -> String {
     })
 }
 
+/// A model of the person's providers that an agent may plan with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentModelOption {
+    pub profile: String,
+    pub model: String,
+    /// The model's and its provider's names, as Settings shows them.
+    pub label: String,
+}
+
+/// The models the person may choose for one agent, from their Settings,
+/// and the one it plans with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentModels {
+    /// The default's label; `None` while Settings names no default.
+    pub default: Option<String>,
+    /// The model chosen for this agent; `None` follows the default.
+    pub chosen: Option<AgentModelOption>,
+    /// Every model of the person's switched-on providers.
+    pub offered: Vec<AgentModelOption>,
+}
+
 /// Something in the agent access view a person can press.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccessTarget {
@@ -209,6 +230,10 @@ pub enum AccessTarget {
     Reset(AnswerScope),
     /// Stop always allowing an action.
     RemoveException(AnswerScope, ActionKind),
+    /// Open (or close) the models the agent may plan with.
+    ExpandModels,
+    /// Plan with this model, or with `None` the default.
+    Model(Option<AgentModelOption>),
 }
 
 /// One keyboard stop in the agent access view. An Allow / Ask first /
@@ -220,6 +245,8 @@ pub enum AccessFocus {
     Answers(AnswerScope, ActionKind),
     Reset(AnswerScope),
     RemoveException(AnswerScope, ActionKind),
+    ExpandModels,
+    Model(Option<AgentModelOption>),
 }
 
 /// The view's geometry: what was painted where.
@@ -284,6 +311,9 @@ pub struct AgentAccessView<'a> {
     pub editable: bool,
     pub scroll: f64,
     pub focus: Option<&'a AccessFocus>,
+    /// The models the agent may plan with, when the person has any.
+    pub models: Option<&'a AgentModels>,
+    pub models_open: bool,
 }
 
 const HEADER_HEIGHT: f64 = 44.0;
@@ -643,6 +673,181 @@ fn draw_kind_line(
     }
 }
 
+/// What the agent plans with, in one line.
+fn models_summary(models: &AgentModels) -> String {
+    match (&models.chosen, &models.default) {
+        (Some(chosen), _) => chosen.label.clone(),
+        (None, Some(default)) => t_args(
+            "workspace-settings-agent-model-default",
+            &[("model", default.as_str().into())],
+        ),
+        (None, None) => t("workspace-settings-agent-model-none"),
+    }
+}
+
+/// Paint the agent's model: collapsed, what it plans with; open, the
+/// default and every model offered, the one in use marked, each other
+/// with Use. Returns its height.
+fn draw_models(
+    ctx: &mut PaintCtx<'_>,
+    (left, right, y): (f64, f64, f64),
+    models: &AgentModels,
+    view: &AgentAccessView<'_>,
+    layout: &mut AgentAccessLayout,
+) -> f64 {
+    let theme = ctx.theme;
+    let colors = &theme.tokens.colors;
+    let caption = theme.tokens.typography.style(TextRole::Caption);
+    let line_h = f64::from(caption.line_height_px());
+    let mut choices = vec![(
+        None,
+        t_args(
+            "workspace-settings-agent-model-default",
+            &[(
+                "model",
+                models
+                    .default
+                    .clone()
+                    .unwrap_or_else(|| t("workspace-settings-agent-model-none"))
+                    .into(),
+            )],
+        ),
+    )];
+    choices.extend(
+        models
+            .offered
+            .iter()
+            .map(|option| (Some(option.clone()), option.label.clone())),
+    );
+    #[allow(clippy::cast_precision_loss, reason = "a person's handful of models")]
+    let lines = choices.len() as f64;
+    let height = if view.models_open {
+        ACCESS_ROW_HEIGHT + KIND_LINE_HEIGHT * lines + 8.0
+    } else {
+        ACCESS_ROW_HEIGHT
+    };
+    draw_row_card(
+        ctx.scene,
+        ctx.transform,
+        Rect::new(left, y, right, y + height),
+        theme,
+    );
+    let head = Rect::new(left, y, right, y + ACCESS_ROW_HEIGHT);
+    layout.targets.push((AccessTarget::ExpandModels, head));
+    push_stop(ctx, (AccessFocus::ExpandModels, head), view.focus, layout);
+    let chevron = Rect::new(
+        head.x0 + 12.0,
+        head.center().y - 8.0,
+        head.x0 + 28.0,
+        head.center().y + 8.0,
+    );
+    ui::icons::draw_icon(
+        ctx.scene,
+        ctx.transform,
+        chevron,
+        if view.models_open {
+            ui::icons::Icon::ChevronDown
+        } else {
+            ui::icons::Icon::ChevronRight
+        },
+        colors.text_dim,
+        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+    let text_x = chevron.x1 + 10.0;
+    let text_max = head.x1 - 12.0 - text_x;
+    let top = head.y0 + (ACCESS_ROW_HEIGHT - (line_h * 2.0 + 2.0)) / 2.0;
+    for (text, colour, line_y) in [
+        (
+            t("workspace-settings-agent-model"),
+            colors.text_primary,
+            top,
+        ),
+        (models_summary(models), colors.text_dim, top + line_h + 2.0),
+    ] {
+        let text = elide(&text, &caption, text_max, ctx.text);
+        ctx.text.draw_style(
+            ctx.scene,
+            &text,
+            colour,
+            at(ctx.transform, text_x, line_y),
+            None,
+            &caption,
+        );
+    }
+    if view.models_open {
+        draw_model_choices(
+            ctx,
+            (text_x, right, head.y1),
+            (models, choices),
+            view,
+            layout,
+        );
+    }
+    height
+}
+
+/// Paint the open model card's lines from `top`: each choice's name and,
+/// but for the one in use, its Use.
+fn draw_model_choices(
+    ctx: &mut PaintCtx<'_>,
+    (text_x, right, top): (f64, f64, f64),
+    (models, choices): (&AgentModels, Vec<(Option<AgentModelOption>, String)>),
+    view: &AgentAccessView<'_>,
+    layout: &mut AgentAccessLayout,
+) {
+    let theme = ctx.theme;
+    let colors = &theme.tokens.colors;
+    let caption = theme.tokens.typography.style(TextRole::Caption);
+    let line_h = f64::from(caption.line_height_px());
+    let use_label = t("workspace-settings-agent-model-use");
+    let use_width = ButtonFace::new(Rect::ZERO, &use_label).intrinsic_width(ctx.text, theme);
+    for (index, (choice, label)) in choices.into_iter().enumerate() {
+        #[allow(clippy::cast_precision_loss, reason = "a person's handful of models")]
+        let centre = top + KIND_LINE_HEIGHT * (index as f64 + 0.5);
+        let button = Rect::new(
+            right - 12.0 - use_width,
+            centre - REVOKE_HEIGHT / 2.0,
+            right - 12.0,
+            centre + REVOKE_HEIGHT / 2.0,
+        );
+        let label = elide(&label, &caption, button.x0 - 12.0 - text_x, ctx.text);
+        ctx.text.draw_style(
+            ctx.scene,
+            &label,
+            colors.text_primary,
+            at(ctx.transform, text_x, centre - line_h / 2.0),
+            None,
+            &caption,
+        );
+        if choice == models.chosen {
+            draw_pill(
+                ctx.scene,
+                ctx.transform,
+                Point::new(right - 12.0, centre),
+                &t("workspace-settings-agent-model-in-use"),
+                ChipStyle::Tinted(ui::widget::Tone::Info),
+                ctx.text,
+                theme,
+            );
+            continue;
+        }
+        let stop = AccessFocus::Model(choice.clone());
+        Button::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &ButtonFace::new(button, &use_label)
+                .disabled(!view.editable)
+                .focused(view.editable && view.focus == Some(&stop)),
+        );
+        if view.editable {
+            layout.targets.push((AccessTarget::Model(choice), button));
+            layout.stops.push((stop, button));
+        }
+    }
+}
+
 /// Paint the actions always allowed without asking first, from `y`.
 fn draw_exceptions(
     ctx: &mut PaintCtx<'_>,
@@ -799,6 +1004,9 @@ pub fn draw_agent_access(
         );
         y += line_h + ROW_GAP;
     }
+    if let Some(models) = view.models {
+        y += draw_models(ctx, (left, right, y), models, view, &mut layout) + ROW_GAP;
+    }
     for row in &rows {
         y += draw_app(ctx, (left, right, y), row, view, &mut layout) + ROW_GAP;
     }
@@ -876,6 +1084,8 @@ mod tests {
                 editable: true,
                 scroll,
                 focus,
+                models: None,
+                models_open: false,
             },
         )
     }
@@ -941,6 +1151,8 @@ mod tests {
                 editable: true,
                 scroll: 0.0,
                 focus: None,
+                models: None,
+                models_open: false,
             },
         );
         let stops: Vec<_> = layout.stops.iter().map(|(stop, _)| stop.clone()).collect();

@@ -143,6 +143,14 @@ pub enum EventOutcome {
     CloseAgentReview,
     /// Opens or closes one app's answers in the agent view.
     ToggleAgentApp(tilo_action_policy::agent_answers::AnswerScope),
+    /// Opens or closes the models the reviewed agent may plan with.
+    ToggleAgentModels,
+    /// Has the agent plan with this model of the person's, or with `None`
+    /// the default.
+    SetAgentModel {
+        agent: String,
+        model: Option<super::agent_access::AgentModelOption>,
+    },
     /// Sets (or, with `None`, returns to the admission's) the agent's
     /// answers, each for a kind at a scope.
     SetAgentAnswers {
@@ -265,6 +273,10 @@ pub struct WorkspaceSettingsOverlay {
         Option<tilo_action_policy::agent_answers::AnswerScope>,
     )>,
     agent_access: super::agent_access::AgentAccessLayout,
+    /// The models the person may choose for the reviewed agent, as the
+    /// host read them from Settings, and whether they are shown.
+    agent_models: Option<super::agent_access::AgentModels>,
+    agent_models_open: bool,
     /// How far the agent view's app list is scrolled.
     agent_access_scroll: f64,
     /// The agent view's control with the keyboard, once keys have moved it.
@@ -312,6 +324,8 @@ impl Default for WorkspaceSettingsOverlay {
             bot_remove_rects: Vec::new(),
             agent_review: None,
             agent_access: super::agent_access::AgentAccessLayout::default(),
+            agent_models: None,
+            agent_models_open: false,
             agent_access_scroll: 0.0,
             agent_access_focus: None,
             member_sheet: None,
@@ -862,19 +876,38 @@ impl WorkspaceSettingsOverlay {
                 .map(|kind| (scope.clone(), kind, None))
                 .collect()),
             AccessTarget::RemoveException(scope, kind) => set(vec![(scope, kind, None)]),
+            AccessTarget::ExpandModels => EventOutcome::ToggleAgentModels,
+            AccessTarget::Model(model) => EventOutcome::SetAgentModel {
+                agent: agent.clone(),
+                model,
+            },
         })
     }
 
     /// Show `agent`'s answers in the Agents tab instead of the roster.
     pub fn open_agent_review(&mut self, agent: String) {
         self.agent_review = Some((agent, None));
+        self.agent_models_open = false;
         self.agent_access_scroll = 0.0;
         self.agent_access_focus = None;
+    }
+
+    /// The models the person may choose for the reviewed agent; `None`
+    /// while they have no model provider.
+    pub fn set_agent_models(&mut self, models: Option<super::agent_access::AgentModels>) {
+        self.agent_models = models;
+    }
+
+    /// Show or hide the models the reviewed agent may plan with.
+    pub fn toggle_agent_models(&mut self) {
+        self.agent_models_open = !self.agent_models_open;
     }
 
     /// Back to the roster.
     pub fn close_agent_review(&mut self) {
         self.agent_review = None;
+        self.agent_models = None;
+        self.agent_models_open = false;
         self.agent_access = super::agent_access::AgentAccessLayout::default();
         self.agent_access_scroll = 0.0;
         self.agent_access_focus = None;
@@ -950,6 +983,11 @@ impl WorkspaceSettingsOverlay {
                     .map(|kind| (scope.clone(), kind, None))
                     .collect())),
                 AccessFocus::RemoveException(scope, kind) => Some(set(vec![(scope, kind, None)])),
+                AccessFocus::ExpandModels => Some(EventOutcome::ToggleAgentModels),
+                AccessFocus::Model(model) => Some(EventOutcome::SetAgentModel {
+                    agent: agent.clone(),
+                    model,
+                }),
             },
         }
     }
@@ -2036,6 +2074,8 @@ impl WorkspaceSettingsOverlay {
                     editable: is_owner,
                     scroll: self.agent_access_scroll,
                     focus: self.agent_access_focus.as_ref(),
+                    models: self.agent_models.as_ref(),
+                    models_open: self.agent_models_open,
                 },
             );
             // Rows can close or answers go away between frames: keep the

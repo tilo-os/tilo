@@ -2863,6 +2863,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![profile.clone()],
             default_profile: Some(profile.id.clone()),
+            ..Default::default()
         };
         config.save_at(&settings).unwrap();
         let store = ServiceCredentials::open_in(root.path());

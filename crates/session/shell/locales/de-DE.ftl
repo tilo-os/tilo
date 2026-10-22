@@ -1442,6 +1442,7 @@ search-action-bot-add-subtitle = Sein Host lässt hier einen Bot aus dem Verzeic
 search-action-bot-remove = Einen Bot aus diesem Arbeitsbereich entfernen…
 search-action-bot-remove-subtitle = Sein Host hält den Bot an und entfernt ihn
 bots-add-failed = Der Bot wurde nicht hinzugefügt
+workspace-settings-agent-model-option = { $model } von { $provider }
 bots-remove-failed = Der Bot wurde nicht entfernt
 search-action-pair-device = Neues Gerät koppeln
 search-action-pair-device-subtitle = Dein Telefon, einen Browser oder einen anderen Computer zu einem deiner Geräte machen

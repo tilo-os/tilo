@@ -222,6 +222,7 @@ fn save_profile(enabled: bool) {
     ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();
@@ -427,6 +428,7 @@ fn child_mints_from_custody() {
     ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
+        ..Default::default()
     }
     .save()
     .unwrap();

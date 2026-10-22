@@ -8,7 +8,7 @@
 //! boundary here makes the same profile safe to render in Settings, sync as
 //! non-secret device intent, or hand to a sandboxed agent.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -602,9 +602,10 @@ pub struct HostedProfiles {
 
 settings_store::read_through_json_value!(HostedProfiles);
 
-/// A portable profile list and the user's deliberate default. Kept separate
-/// from a task: tasks capture a chosen model at start so changing this default
-/// does not change work already in progress.
+/// A portable profile list, the user's deliberate default and the models
+/// they chose for particular agents. Kept separate from a task: tasks capture
+/// a chosen model at start so changing these does not change work already in
+/// progress.
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
@@ -612,9 +613,25 @@ pub struct ProviderConfig {
     pub profiles: Vec<ProviderProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
+    /// The model an agent plans with in place of the default, by agent id.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_models: BTreeMap<String, AgentModel>,
 }
 
 settings_store::read_through_json_value!(ProviderConfig);
+
+/// A model of one profile, chosen for an agent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", default)]
+pub struct AgentModel {
+    pub profile: String,
+    pub model: String,
+}
+
+settings_store::read_through_json_value!(AgentModel);
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(AgentModel);
 
 impl ProviderConfig {
     pub fn load() -> Self {
@@ -657,6 +674,7 @@ impl ProviderConfig {
             Self {
                 profiles: local,
                 default_profile: self.default_profile,
+                agent_models: self.agent_models,
             },
             HostedProfiles { profiles: hosted },
         )
@@ -675,6 +693,7 @@ impl ProviderConfig {
         Self {
             profiles,
             default_profile: local.default_profile,
+            agent_models: local.agent_models,
         }
     }
 
@@ -833,6 +852,19 @@ impl ProviderConfig {
                 ));
             }
         }
+        for (agent, chosen) in &self.agent_models {
+            if agent.trim().is_empty()
+                || !self.profiles.iter().any(|profile| {
+                    profile.id == chosen.profile
+                        && profile.models.iter().any(|m| m.id == chosen.model)
+                })
+            {
+                issues.push(ProfileIssue::new(
+                    &chosen.profile,
+                    "An agent's model is not offered by its provider.",
+                ));
+            }
+        }
         if self
             .default_profile
             .as_ref()
@@ -844,6 +876,50 @@ impl ProviderConfig {
             ));
         }
         issues
+    }
+
+    /// The profile and model `agent` plans with: the one chosen for it, else
+    /// the default profile's default model. `None` while the choice names a
+    /// provider that is switched off, or nothing is chosen at all: a caller
+    /// asks rather than guessing another model.
+    pub fn selection_for(&self, agent: &str) -> Option<(&ProviderProfile, &ModelDescriptor)> {
+        let (profile, model) = if let Some(chosen) = self.agent_models.get(agent) {
+            let profile = self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == chosen.profile && profile.enabled)?;
+            (profile, &chosen.model)
+        } else {
+            let profile = self.active_profile()?;
+            (profile, profile.default_model.as_ref()?)
+        };
+        Some((profile, profile.models.iter().find(|m| &m.id == model)?))
+    }
+
+    /// Choose `model` of `profile` for `agent`, or with `None` let it follow
+    /// the default again.
+    ///
+    /// # Errors
+    /// When `agent` is empty or `profile` does not offer `model`.
+    pub fn set_agent_model(
+        &mut self,
+        agent: &str,
+        chosen: Option<AgentModel>,
+    ) -> Result<(), &'static str> {
+        let Some(chosen) = chosen else {
+            self.agent_models.remove(agent);
+            return Ok(());
+        };
+        if agent.trim().is_empty() {
+            return Err("Name the agent.");
+        }
+        if !self.profiles.iter().any(|profile| {
+            profile.id == chosen.profile && profile.models.iter().any(|m| m.id == chosen.model)
+        }) {
+            return Err("That provider does not offer this model.");
+        }
+        self.agent_models.insert(agent.to_owned(), chosen);
+        Ok(())
     }
 
     pub fn active_profile(&self) -> Option<&ProviderProfile> {
@@ -872,11 +948,13 @@ impl ProviderConfig {
         if self.default_profile.as_deref() == Some(id) {
             self.default_profile = None;
         }
+        self.agent_models.retain(|_, chosen| chosen.profile != id);
         Some(removed)
     }
 
     /// The configuration as it is stored and read: profiles without an id,
-    /// models without an id and defaults naming no model are dropped.
+    /// models without an id, and defaults and agents' models naming no model
+    /// are dropped.
     #[must_use]
     pub fn sanitised(mut self) -> Self {
         // Do not turn unknown/malformed input into a usable provider.
@@ -892,6 +970,12 @@ impl ProviderConfig {
                 profile.default_model = None;
             }
         }
+        let profiles = &self.profiles;
+        self.agent_models.retain(|_, chosen| {
+            profiles.iter().any(|profile| {
+                profile.id == chosen.profile && profile.models.iter().any(|m| m.id == chosen.model)
+            })
+        });
         self
     }
 }
@@ -957,6 +1041,72 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_agent_plans_with_its_own_model_and_otherwise_the_default() {
+        let mut first = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        first.models = vec![ModelDescriptor::new("large"), ModelDescriptor::new("small")];
+        first.default_model = Some("large".into());
+        let mut second = ProviderProfile::local_vllm();
+        second.models = vec![ModelDescriptor::new("local")];
+        let mut config = ProviderConfig {
+            default_profile: Some(first.id.clone()),
+            profiles: vec![first.clone(), second.clone()],
+            ..Default::default()
+        };
+        let chosen = |config: &ProviderConfig, agent| {
+            config
+                .selection_for(agent)
+                .map(|(profile, model)| (profile.id.clone(), model.id.clone()))
+        };
+        assert_eq!(
+            chosen(&config, "writer"),
+            Some((first.id.clone(), "large".into()))
+        );
+
+        let local = AgentModel {
+            profile: second.id.clone(),
+            model: "local".into(),
+        };
+        config
+            .set_agent_model("writer", Some(local.clone()))
+            .unwrap();
+        assert_eq!(
+            chosen(&config, "writer"),
+            Some((second.id.clone(), "local".into()))
+        );
+        assert_eq!(
+            chosen(&config, "other"),
+            Some((first.id.clone(), "large".into()))
+        );
+        let unknown = AgentModel {
+            profile: second.id.clone(),
+            model: "large".into(),
+        };
+        assert!(config.set_agent_model("writer", Some(unknown)).is_err());
+
+        // The choice stays on this device with the default, and reads back.
+        let (stored, hosted) = config.clone().stored();
+        assert_eq!(stored.agent_models["writer"], local);
+        assert_eq!(
+            ProviderConfig::from_stored(stored, hosted).agent_models,
+            config.agent_models
+        );
+
+        // A switched-off provider is not swapped for another one.
+        config.profiles[1].enabled = false;
+        assert_eq!(chosen(&config, "writer"), None);
+        config.profiles[1].enabled = true;
+
+        // A model the provider no longer offers is forgotten, as is every
+        // choice of a removed provider; the agent follows the default again.
+        config.profiles[1].models.clear();
+        assert!(config.clone().sanitised().agent_models.is_empty());
+        config.remove(&second.id);
+        assert!(config.agent_models.is_empty());
+        config.set_agent_model("writer", None).unwrap();
+        assert_eq!(chosen(&config, "writer"), Some((first.id, "large".into())));
+    }
+
+    #[test]
     fn model_request_limits_preserve_legacy_and_validate_runtime_room() {
         let legacy = ModelDescriptor::new("m");
         assert!(
@@ -970,6 +1120,7 @@ mod tests {
         let mut config = ProviderConfig {
             profiles: vec![profile],
             default_profile: None,
+            ..Default::default()
         };
         for (output, context, source, valid) in [
             (512, Some(4096), Some(262_144), true),
@@ -1047,6 +1198,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![profile.clone()],
             default_profile: None,
+            ..Default::default()
         };
         assert!(config.validation_errors().is_empty());
         let encoded = serde_json::to_value(&config).unwrap();
@@ -1066,6 +1218,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![invalid],
             default_profile: None,
+            ..Default::default()
         };
         assert_eq!(config.validation_errors().len(), 1);
         let mut omitted = profile.clone();
@@ -1076,6 +1229,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![omitted],
             default_profile: None,
+            ..Default::default()
         };
         assert!(config.validation_errors().is_empty());
 
@@ -1085,6 +1239,7 @@ mod tests {
             let config = ProviderConfig {
                 profiles: vec![invalid],
                 default_profile: None,
+                ..Default::default()
             };
             assert_eq!(config.validation_errors().len(), 1, "{bad:?}");
         }
@@ -1093,6 +1248,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![cerebras],
             default_profile: None,
+            ..Default::default()
         };
         assert!(config.validation_errors().is_empty());
 
@@ -1102,6 +1258,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![plain],
             default_profile: None,
+            ..Default::default()
         };
         assert!(!config.validation_errors().is_empty());
         // Absent fields keep older settings documents byte-compatible.
@@ -1155,6 +1312,7 @@ mod tests {
             let config = ProviderConfig {
                 default_profile: Some("gone".into()),
                 profiles: vec![ProviderProfile::local_vllm()],
+                ..Default::default()
             };
             assert!(config.active_profile().is_none());
             assert!(
@@ -1197,6 +1355,7 @@ mod tests {
         let config = ProviderConfig {
             profiles: vec![vertex.clone()],
             default_profile: Some(vertex.id.clone()),
+            ..Default::default()
         };
         assert!(config.validation_errors().is_empty());
         let written = serde_json::to_value(&config).unwrap();
@@ -1223,6 +1382,7 @@ mod tests {
             let config = ProviderConfig {
                 profiles: vec![invalid],
                 default_profile: None,
+                ..Default::default()
             };
             assert_eq!(config.validation_errors().len(), 1, "{issuer} {project}");
         }
@@ -1289,6 +1449,7 @@ mod tests {
         let config = ProviderConfig {
             default_profile: Some(profile.id.clone()),
             profiles: vec![profile],
+            ..Default::default()
         };
         config.save_at(&path).unwrap();
         assert_eq!(ProviderConfig::load_at(&path), config);
@@ -1308,6 +1469,7 @@ mod tests {
         let config = ProviderConfig {
             default_profile: Some(local.id.clone()),
             profiles: vec![local.clone(), hosted.clone()],
+            ..Default::default()
         };
         config.save_at(&path).unwrap();
         assert_eq!(ProviderConfig::load_at(&path), config);
