@@ -91,6 +91,9 @@ tilo-secrets.workspace = true
 tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
+# Settings' sections, which the session keeps as the person's records
+# whether or not Settings is open.
+settings-core = { path = "../../../apps/settings-core" }
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 notify.workspace = true
 tilo-paths.workspace = true

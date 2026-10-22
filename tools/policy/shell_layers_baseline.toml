@@ -232,6 +232,7 @@ grandfathered = [
 ]
 
 [shell_dependencies.added]
+"settings-core" = "Settings' sections as resource models: the session keeps them as the person's records and serves their field edits and verbs to the palette, agents and scripts whether or not Settings is open; the Settings window is one view of them"
 "tasks" = "Runs of issues assigned to an agent (broker_services::tracker_runs) come from the tracker record, read with the Tasks app's own model as the shell already reads Notes, Code and Word records; it brings only tilo-document, tilo-rich-text and tilo-app, which the shell already depends on"
 "tilo-documents" = "The files a person chooses for an app in the shell's chooser, served into that app's sandbox: the shell mounts the store and gives into it; the table, the beneath-only host access and the FUSE adapter live in this crate, which the launcher shares for the paths"
 "tilo-lan-discovery" = "Replaces iroh-mdns-address-lookup, which the shell dropped: finding the person's own devices on the local network is an address lookup the shell's endpoint registers; the probe protocol, its freshness and the socket live in this crate"

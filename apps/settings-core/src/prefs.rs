@@ -300,6 +300,21 @@ impl InputPrefs {
         self.key_repeat_rate_hz = None;
         Ok(())
     }
+
+    /// Type with a keyboard layout, adding it to the layouts when it is not
+    /// one of them yet.
+    #[action(id = "choose-layout")]
+    pub fn choose_layout(
+        &mut self,
+        #[param("An XKB layout or layout:variant (de, us:intl)")] layout: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let next =
+            settings_store::keyboard_sources::plan_active_source(&self.rich_input(), &layout)
+                .map_err(ui::tilo_resource::Refusal::new)?;
+        self.keyboard_layouts = next.keyboard_layouts;
+        self.keyboard_layout = next.keyboard_layout;
+        Ok(())
+    }
 }
 
 impl InputPrefs {

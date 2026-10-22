@@ -1395,14 +1395,16 @@ fn persist_appearance(
     Ok(())
 }
 
-/// Dark or light mode, keeping whichever theme the person chose for it.
-/// Choosing a mode leaves high contrast.
-pub(super) fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result<(), ActionError> {
-    use settings_store::appearance::{HIGH_CONTRAST, MODE};
-    let write = settings_store::SectionWrite::new()
-        .set(&MODE, &Some(mode.to_string()))
-        .set(&HIGH_CONTRAST, &false);
-    persist_appearance(st, action, write)
+/// Dark, light or automatic mode, keeping whichever theme the person chose
+/// for it, changed through the appearance section's field edits. Choosing a
+/// mode leaves high contrast.
+pub(super) fn set_mode(st: &mut ChromeState, mode: &str) -> Result<(), ActionError> {
+    use crate::shell::settings_records::{address, change, set_field};
+    let edit = address("settings.appearance", "field-edit");
+    change(&edit, &set_field("mode", &mode.into()), false)?;
+    change(&edit, &set_field("high_contrast", &false.into()), false)?;
+    st.note_appearance_change();
+    Ok(())
 }
 
 /// A boolean setting offered as a switch row. Activating the row (a click,
@@ -2856,13 +2858,13 @@ impl Action {
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
-            |st, _| set_mode(st, "appearance.theme.dark", "dark"),
+            |st, _| set_mode(st, "dark"),
         ),
         chrome(
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
-            |st, _| set_mode(st, "appearance.theme.light", "light"),
+            |st, _| set_mode(st, "light"),
         ),
         chrome(
             "appearance.high-contrast",

@@ -40,6 +40,9 @@ pub enum ActionError {
     /// As [`ActionError::Refused`], with a catalogue sentence for people
     /// that names the outcome and the next step.
     Explained(String),
+    /// The change these arguments make asks the person first, and they
+    /// have not confirmed it (`confirm`); nothing ran.
+    ConfirmationRequired,
 }
 
 impl ActionError {
@@ -48,6 +51,7 @@ impl ActionError {
         match self {
             ActionError::Arguments(_) => "invalid_arguments",
             ActionError::Refused(_) | ActionError::Explained(_) => "action_failed",
+            ActionError::ConfirmationRequired => "confirmation_required",
         }
     }
 
@@ -57,6 +61,7 @@ impl ActionError {
             ActionError::Explained(message) => message.clone(),
             ActionError::Arguments(_) => crate::shell::i18n::t("host-action-check-values"),
             ActionError::Refused(_) => crate::shell::i18n::t("host-action-try-again"),
+            ActionError::ConfirmationRequired => crate::shell::i18n::t("host-action-confirm"),
         }
     }
 }
@@ -66,6 +71,7 @@ impl std::fmt::Display for ActionError {
         match self {
             ActionError::Arguments(e) => write!(f, "{e}"),
             ActionError::Refused(why) | ActionError::Explained(why) => write!(f, "{why}"),
+            ActionError::ConfirmationRequired => write!(f, "explicit confirmation is required"),
         }
     }
 }

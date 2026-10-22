@@ -528,6 +528,22 @@ impl ShellOverlayHost {
                         (result.on_open)(doc, root, &chrome, &bound)
                     }
                 });
+        // A change the values chosen make less safe asks one more step: the
+        // person's confirmation, with what they chose kept.
+        if matches!(
+            outcome,
+            Err(crate::shell::search::action_api::ActionError::ConfirmationRequired)
+        ) && let Some(confirm) = result
+            .params
+            .iter()
+            .position(|param| param.name == "confirm")
+            .filter(|_| !flow.values.contains_key("confirm"))
+        {
+            flow.pending = vec![confirm];
+            self.param_flow = Some(flow);
+            self.show_param_step();
+            return;
+        }
         if let Err(error) = outcome {
             // Told once, where the person is: on the step that starts over.
             tracing::info!(

@@ -102,6 +102,35 @@ impl SearchProvider for StepsFixture {
                 99,
             ),
         ];
+        let mut lock = self.action(
+            "lock",
+            "Zqfixture lock",
+            vec![
+                ActionParam::required("minutes", ParamType::Integer, "Minutes")
+                    .with_choices(["1", "10"]),
+                ActionParam::optional("confirm", ParamType::Boolean, "Confirm")
+                    .with_labelled_choices([("true", "Make it less safe")]),
+            ],
+            97,
+        );
+        let runs = self.runs.clone();
+        lock.on_open = Rc::new(
+            move |_: &mut ui::widget::Edits<'_>,
+                  _: &ObjId,
+                  _: &crate::shell::chrome_state::Chrome,
+                  args: &ActionArgs|
+                  -> Result<(), ActionError> {
+                let minutes = args.integer("minutes").unwrap_or_default();
+                let confirmed = args.boolean("confirm") == Some(true);
+                if minutes > 1 && !confirmed {
+                    return Err(ActionError::ConfirmationRequired);
+                }
+                runs.borrow_mut()
+                    .push(format!("lock={minutes} {confirmed}"));
+                Ok(())
+            },
+        );
+        rows.push(lock);
         let runs = self.runs.clone();
         rows.push(SearchResult::nullary(
             ResourceKind::Application,
@@ -215,6 +244,35 @@ fn a_parameter_with_values_is_a_list_to_pick_from_never_json() {
         !h.host.palette_visible(),
         "a completed action closes search"
     );
+}
+
+#[test]
+fn a_value_that_makes_it_less_safe_asks_one_more_step_to_confirm() {
+    let (mut h, runs) = steps_harness(QUERY);
+    select(&mut h, "Zqfixture lock");
+    assert!(press(&mut h, NamedKey::Enter));
+    assert_eq!(labels(&h), vec!["1", "10"]);
+    assert!(press(&mut h, NamedKey::Enter));
+    assert_eq!(
+        runs.borrow().as_slice(),
+        ["lock=1 false"],
+        "a safer value runs at once"
+    );
+
+    let (mut h, runs) = steps_harness(QUERY);
+    select(&mut h, "Zqfixture lock");
+    assert!(press(&mut h, NamedKey::Enter));
+    assert!(press(&mut h, NamedKey::ArrowDown));
+    assert!(press(&mut h, NamedKey::Enter));
+    assert!(h.host.palette_visible(), "nothing ran yet");
+    assert_eq!(labels(&h), vec!["Make it less safe"], "the confirmation");
+    assert!(runs.borrow().is_empty());
+    assert!(press(&mut h, NamedKey::Enter));
+    assert_eq!(
+        runs.borrow().last().map(String::as_str),
+        Some("lock=10 true")
+    );
+    assert!(!h.host.palette_visible());
 }
 
 #[test]

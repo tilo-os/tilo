@@ -14826,6 +14826,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "settings-core",
  "settings-store",
  "sha2 0.11.0",
  "signal-hook-registry",

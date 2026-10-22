@@ -7,7 +7,7 @@
 //! is a value every other one understands. `0` minutes is the persisted
 //! spelling of "Never".
 
-use crate::{Key, SectionWrite};
+use crate::Key;
 
 /// The section holding every power preference.
 pub const SECTION: &str = "power";
@@ -183,36 +183,6 @@ pub fn check_minutes(what: &str, choices: &[u32], minutes: u32) -> Result<u32, S
     ))
 }
 
-/// The write that sets idle-suspend to `minutes` for `profile`, or for every
-/// profile and power source (and the legacy value older readers fall back
-/// to) when it is `None`. A profile's own value outranks the shared one, so a write that
-/// left the profile values alone would not change what the compositor does.
-///
-/// # Errors
-///
-/// `profile` is not one of [`PROFILES`], or `minutes` is not offered.
-pub fn suspend_write(profile: Option<&str>, minutes: u32) -> Result<SectionWrite, String> {
-    let minutes = check_minutes("suspend timeout", SUSPEND_CHOICES, minutes)?;
-    let write = SectionWrite::new();
-    Ok(match profile {
-        None => write
-            .set(&SUSPEND_MINUTES, &minutes)
-            .set(&BATTERY_SUSPEND_MINUTES, &Some(minutes))
-            .set(&SAVER_SUSPEND_MINUTES, &minutes)
-            .set(&BALANCED_SUSPEND_MINUTES, &minutes)
-            .set(&PERFORMANCE_SUSPEND_MINUTES, &minutes),
-        Some("saver") => write.set(&SAVER_SUSPEND_MINUTES, &minutes),
-        Some("balanced") => write.set(&BALANCED_SUSPEND_MINUTES, &minutes),
-        Some("performance") => write.set(&PERFORMANCE_SUSPEND_MINUTES, &minutes),
-        Some(other) => {
-            return Err(format!(
-                "{other:?} is not a power profile: {}",
-                PROFILES.join(", ")
-            ));
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,9 +192,6 @@ mod tests {
     fn only_offered_minutes_are_accepted_and_never_is_a_stored_value() {
         assert_eq!(check_minutes("lock timeout", LOCK_CHOICES, 0), Ok(0));
         assert!(check_minutes("lock timeout", LOCK_CHOICES, 7).is_err());
-        assert!(suspend_write(Some("turbo"), 30).is_err());
-        assert!(suspend_write(Some("saver"), 7).is_err());
-        assert!(suspend_write(None, 30).is_ok());
         let never = json!({"lock_minutes": 0});
         assert_eq!(LOCK_MINUTES.from_section(never.as_object().unwrap()), 0);
         assert_eq!(
