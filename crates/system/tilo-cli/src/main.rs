@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 mod agent;
+mod aliases;
 mod cleanup;
 mod desktop;
 mod health;
@@ -503,7 +504,8 @@ fn package_command(here: Here) -> clap::Command {
 }
 
 /// The noun an argv[0] names: `device` (also the old `system`), `action`,
-/// each also as `tilo-<noun>`. `None` for `tilo` itself.
+/// `package`, `agent`, each also as `tilo-<noun>` (and `tilo-app`, `app`
+/// being its own program). `None` for `tilo` itself.
 fn noun_of(args: &[OsString]) -> Option<String> {
     let stem = args
         .first()
@@ -516,6 +518,15 @@ fn noun_of(args: &[OsString]) -> Option<String> {
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
+    if let Some(name) = aliases::moved(&args) {
+        return match aliases::exec(name, &args) {
+            Ok(never) => match never {},
+            Err(error) => {
+                eprintln!("{name}: {error:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let invoked = args
         .first()
         .and_then(|arg| std::path::Path::new(arg).file_name())
@@ -548,6 +559,7 @@ fn main() -> ExitCode {
             );
             agent::run(cli.cmd)
         }
+        Some("app") => run_app(args.get(1..).unwrap_or_default(), &invoked),
         Some("action") => {
             let cli: ActionCli = parse_with(ActionCli::command().bin_name(&invoked), args);
             Ok(desktop::run_action(

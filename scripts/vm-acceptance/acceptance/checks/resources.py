@@ -1481,7 +1481,7 @@ home_peer_bundle = "$d/home-peer.toml"
 iroh_listen = "127.0.0.1:__PORT__"
 TOML
 systemd-run --user --quiet --collect --unit=__UNIT__ --service-type=notify -p TimeoutStartSec=60 \
-  /usr/bin/tilo-relay --config "$d/relay.toml" run
+  /usr/libexec/tilo/tilo-relay --config "$d/relay.toml" run
 echo "HOME-RELAY started"
 """
 

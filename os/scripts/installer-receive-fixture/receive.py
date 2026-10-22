@@ -89,7 +89,7 @@ def verify_roles(candidate):
     finally:
         os.close(descriptor)
     bindings = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
-                'control': '/usr/bin/tilo-control',
+                'control': '/usr/libexec/tilo/tilo-control',
                 'credential_helper': '/usr/libexec/tilo-account-credential',
                 'prepared_helper': '/usr/libexec/tilo-prepared-setup',
                 'home_seeds': '/usr/libexec/tilo-firstboot-home-seeds',

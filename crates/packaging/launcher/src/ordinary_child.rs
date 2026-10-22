@@ -34,7 +34,7 @@ fn denied() -> io::Error {
 }
 fn digest(command: &ConsumerCommand) -> io::Result<[u8; 32]> {
     command.validate()?;
-    if command.program != "/usr/bin/tilo-launcher"
+    if command.program != "/usr/libexec/tilo/tilo-launcher"
         || command.env.iter().any(|(key, _)| key == WAIT_ENV)
     {
         return Err(denied());
@@ -205,7 +205,7 @@ fn target_environment(peer: &ExecutingPeer) -> io::Result<Vec<(String, String)>>
     Ok(result)
 }
 fn protected_launcher() -> io::Result<File> {
-    for path in ["/", "/usr", "/usr/bin"] {
+    for path in ["/", "/usr", "/usr/libexec", "/usr/libexec/tilo"] {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
@@ -218,7 +218,7 @@ fn protected_launcher() -> io::Result<File> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
-        .open("/usr/bin/tilo-launcher")?;
+        .open("/usr/libexec/tilo/tilo-launcher")?;
     let facts = file.metadata()?;
     if !facts.is_file()
         || facts.uid() != 0
@@ -1805,7 +1805,7 @@ mod command_tests {
     use super::*;
     fn command() -> ConsumerCommand {
         ConsumerCommand {
-            program: "/usr/bin/tilo-launcher".into(),
+            program: "/usr/libexec/tilo/tilo-launcher".into(),
             args: vec!["run".into()],
             env: Vec::new(),
         }

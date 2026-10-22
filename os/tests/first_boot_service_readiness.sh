@@ -66,7 +66,7 @@ if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+2750[[:space:
    && exactly_once "$device_key_unit" 'RestrictNamespaces=yes' \
    && exactly_once "$device_key_unit" 'MemoryDenyWriteExecute=yes' \
    && exactly_once "$device_key_unit" 'CapabilityBoundingSet=' \
-   && containerfile_installs_output "$containerfile" tilo-device-key-init /usr/bin/tilo-device-key-init \
+   && containerfile_installs_output "$containerfile" tilo-device-key-init /usr/libexec/tilo/tilo-device-key-init \
    && grep -Fq 'systemctl enable tilo-device-key-init.service' "$containerfile"; then
   ok 'device private key is provisioned before login only when creation or migration is needed'
 else

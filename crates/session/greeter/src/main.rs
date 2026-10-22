@@ -4,7 +4,7 @@
 // Modes:
 //   * default — build a `GreeterApp`, hand it to `ui::App`, run the live
 //     winit event loop. Launched at the greetd VT under `cage`:
-//         cage -s -- /usr/bin/tilo-greeter
+//         cage -s -- /usr/libexec/tilo/tilo-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
 //   * `--shots <PATH> [--scenario <name>] [--direction split|poster]

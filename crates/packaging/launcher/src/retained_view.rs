@@ -1528,10 +1528,10 @@ impl ConsumerLaunchBinding {
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn verify_peer_program(&self, peer: &ExecutingPeer) -> io::Result<()> {
         self.matches_peer(peer)?;
-        if self.command.program != "/usr/bin/tilo-launcher" {
+        if self.command.program != "/usr/libexec/tilo/tilo-launcher" {
             return Err(refused("retained command is not fixed installed launcher"));
         }
-        check_executing_image(peer, &protected_program("/usr/bin/tilo-launcher")?)?;
+        check_executing_image(peer, &protected_program("/usr/libexec/tilo/tilo-launcher")?)?;
         let mut actual = Vec::new();
         File::open(format!("/proc/{}/cmdline", peer.pid()))?
             .take((LIMIT + 1) as u64)
@@ -1868,7 +1868,7 @@ mod tests {
             package_sha256: "22".repeat(32),
             publisher_hex: "33".repeat(32),
             command: ConsumerCommand {
-                program: "/usr/bin/tilo-launcher".into(),
+                program: "/usr/libexec/tilo/tilo-launcher".into(),
                 args: vec!["run".into()],
                 env: vec![],
             },

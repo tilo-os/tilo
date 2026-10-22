@@ -210,7 +210,7 @@ pub trait Host {
 
     /// The signature checker.
     fn tilo_crypto(&self) -> PathBuf {
-        PathBuf::from("/usr/bin/tilo-crypto")
+        PathBuf::from("/usr/libexec/tilo/tilo-crypto")
     }
 
     /// `NetworkManager`'s cached connectivity state (no probe is sent). An

@@ -111,18 +111,23 @@ RUN case "${TILO_GENERATION}" in \
 ARG TILO_WITH_BROWSER
 ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,target=/run/tilo-collaborative-files-image-contract.sh,ro \
-    for f in /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll \
+    for f in /usr/libexec/tilo/tilo-relay /usr/libexec/tilo/tilo-relay-admin /usr/libexec/tilo/tilo-enroll \
         /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-state-migrate \
         /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
-        /usr/bin/shell /usr/bin/fs /usr/bin/tilo-greeter \
-        /usr/bin/tilo-installer /usr/bin/tilo-launcher /usr/bin/tilo-runtime-bundle \
-        /usr/bin/tilo-install /usr/bin/tilo-app-package /usr/libexec/tilo-cli-shim \
+        /usr/bin/shell /usr/bin/fs /usr/libexec/tilo/tilo-greeter \
+        /usr/libexec/tilo/tilo-installer /usr/libexec/tilo/tilo-launcher /usr/libexec/tilo/tilo-runtime-bundle \
+        /usr/libexec/tilo/tilo-install /usr/libexec/tilo/tilo-app-package /usr/libexec/tilo-cli-shim \
         /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
         /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
         /usr/libexec/tilo-doubletake-test-receiver \
         /usr/libexec/tilo-account-credential /usr/libexec/tilo-prepared-setup; do \
       test -e "$f" || { echo "$f is not in the image" >&2; exit 1; }; \
       [ "$(stat -c %a "$f")" = 755 ] || chmod 0755 "$f"; \
+    done \
+    && for name in device action package agent system tilo-app tilo-action tilo-device tilo-package tilo-agent; do \
+      if rpm --quiet -qf "/usr/bin/$name"; then \
+        echo "/usr/bin/$name is tilo's noun and also $(rpm -qf "/usr/bin/$name")'s command" >&2; exit 1; \
+      fi; \
     done \
     && missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite | awk '/not found/ { print $1 }')" \
     && { if [ -n "$missing" ]; then \
@@ -133,7 +138,7 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
     && { if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          test -x "$engine/tilo-chromium-host" \
          && test -s "$engine/libcef.so" \
-         && /usr/bin/tilo-runtime-bundle verify \
+         && /usr/libexec/tilo/tilo-runtime-bundle verify \
               "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}" \
               --require-publisher "$(cat /usr/share/tilo/browser-runtime-publisher.hex)"; \
        fi; } \

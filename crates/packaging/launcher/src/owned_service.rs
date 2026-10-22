@@ -366,7 +366,7 @@ fn configure_service_options(
     // This API is called in-process by the shell, whose executable deliberately
     // refuses shim mode. Use the OS-owned launcher, never current_exe or a
     // caller-selected replacement that could skip mandatory confinement.
-    options.sandbox_shim_bin = Some("/usr/bin/tilo-launcher".into());
+    options.sandbox_shim_bin = Some("/usr/libexec/tilo/tilo-launcher".into());
     if let Some(capture) = capture {
         // Refuse unguarded original readers before workspace creation/spawn.
         // Builder admission remains usable before the private context attaches.

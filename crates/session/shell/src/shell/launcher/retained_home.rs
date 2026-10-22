@@ -1047,7 +1047,7 @@ mod tests {
             room,
         };
         let mut command = LaunchCommand {
-            program: "/usr/bin/tilo-launcher".into(),
+            program: "/usr/libexec/tilo/tilo-launcher".into(),
             args: vec![],
             env: vec![],
             service_identity: None,

@@ -20,7 +20,7 @@ class Overlay(unittest.TestCase):
    self.assertEqual((out/'rootfs/usr/libexec/tilo-install').read_text(),'helper:usr/libexec/tilo-install')
    self.assertEqual((out/'rootfs/usr/libexec/tilo-verified-boot-install-preflight').read_text(),'helper:usr/libexec/tilo-verified-boot-install-preflight')
    self.assertIn('helpers:usr/libexec/tilo-verified-boot-install-preflight',proof)
-   self.assertFalse((out/'rootfs/usr/bin/tilo-installer').exists())
+   self.assertFalse((out/'rootfs/usr/libexec/tilo/tilo-installer').exists())
    self.assertIn('helpers:Containerfile.installer',proof)
    self.assertIn('source:usr/libexec/tilo-security-audit',proof)
   restart_fixture(self)

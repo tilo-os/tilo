@@ -223,7 +223,10 @@ fn preparation_directory() -> std::io::Result<PathBuf> {
 fn trusted_helper() -> Option<PathBuf> {
     let current = std::env::current_exe().ok()?.canonicalize().ok()?;
     let sibling = current.parent()?.join("tilo-enroll");
-    trusted_helper_from(&current, [sibling, PathBuf::from("/usr/bin/tilo-enroll")])
+    trusted_helper_from(
+        &current,
+        [sibling, PathBuf::from("/usr/libexec/tilo/tilo-enroll")],
+    )
 }
 
 fn trusted_helper_from(

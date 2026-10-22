@@ -50,7 +50,7 @@ class Control:
     def command(self, arguments, value=None):
         # Secret parameters are bounded anonymous stdin, never argv/logs.
         encoded = None if value is None else json.dumps(value, separators=(',', ':')).encode()
-        output = bounded_command(['/usr/bin/tilo-control', '--socket', str(self.socket), *arguments],
+        output = bounded_command(['/usr/libexec/tilo/tilo-control', '--socket', str(self.socket), *arguments],
                                  min(self.deadline, time.monotonic() + 35), self.private_log, encoded)
         result = json.loads(output)
         if not isinstance(result, dict):

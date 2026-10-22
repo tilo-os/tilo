@@ -19,7 +19,7 @@ pub(super) struct PrimaryArgs {
     #[arg(long)]
     dry_run: bool,
     /// The production identity and Files permission check.
-    #[arg(long, default_value = "/usr/bin/tilo-relay-admin")]
+    #[arg(long, default_value = "/usr/libexec/tilo/tilo-relay-admin")]
     admin_binary: PathBuf,
 }
 

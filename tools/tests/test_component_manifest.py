@@ -220,7 +220,7 @@ class InstallerTests(unittest.TestCase):
                     notice = layer / "desktop-binaries/usr/share/licenses/tilo-speech-worker/LICENSE"
                     self.assertEqual(notice.read_bytes(), (REPO / license_source).read_bytes())
                     self.assertEqual(notice.stat().st_mode & 0o777, 0o644)
-                    self.assertTrue((layer / "desktop-binaries/usr/bin/tilo-speech-worker").is_file())
+                    self.assertTrue((layer / "desktop-binaries/usr/libexec/tilo/tilo-speech-worker").is_file())
 
     def test_shell_layer_requires_and_installs_its_exact_startup_wrapper(self):
         copies = [pair
@@ -396,11 +396,13 @@ class InstallerTests(unittest.TestCase):
                 status = self.run_installer("--from", str(out), "--dest", str(image),
                                             "vm-cli")
                 self.assertEqual(status, 0)
-                binary = image / "usr/bin/tilo-vm"
+                binary = image / "usr/libexec/tilo/tilo-vm"
                 self.assertEqual(binary.read_bytes(), b"\x7fELFtilo-vm")
                 self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
                 self.assertEqual({p.relative_to(image).as_posix() for p in image.rglob("*")
-                                  if p.is_file()}, {"usr/bin/tilo-vm"})
+                                  if p.is_file()}, {"usr/libexec/tilo/tilo-vm"})
+                # `tilo device` drives it; the old name is a link to tilo.
+                self.assertEqual(os.readlink(image / "usr/bin/tilo-vm"), "tilo")
         with self.subTest(phase='dev cargo plan adds dev features'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)

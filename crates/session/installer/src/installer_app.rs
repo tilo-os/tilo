@@ -315,7 +315,7 @@ fn has_tpm2() -> bool {
     }
     *PROBE.get_or_init(|| {
         bounded_command::run(
-            "/usr/bin/tilo-rollback",
+            "/usr/libexec/tilo/tilo-rollback",
             &["tpm-status", "--json"],
             None,
             64 * 1024,

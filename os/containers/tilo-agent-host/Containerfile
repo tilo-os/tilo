@@ -170,9 +170,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         -print -quit | /usr/bin/busybox grep -q .
 
 COPY --from=builder /out/tilo-runtime /usr/bin/tilo-runtime
-COPY --from=builder /out/tilo-enroll /usr/bin/tilo-enroll
+COPY --from=builder /out/tilo-enroll /usr/libexec/tilo/tilo-enroll
 COPY os/containers/tilo-agent-host/tilo-agent-mcp /usr/bin/tilo-agent-mcp
-RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-agent-mcp
+RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-agent-mcp \
+    && /usr/bin/busybox ln -s ../libexec/tilo/tilo-enroll /usr/bin/tilo-enroll
 
 # Runtime profile (identity, sockets, joined rooms) and MCP token dir.
 VOLUME ["/var/lib/tilo-runtime", "/run/tilo"]

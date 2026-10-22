@@ -67,7 +67,7 @@ pub(crate) fn imported_daemon_command(
         .ok_or_else(|| invalid("configured daemon has no executable"))? = path
         .join("layers")
         .join(layer)
-        .join("usr/libexec/tilo-vmd")
+        .join("usr/libexec/tilo/tilo-vmd")
         .to_string_lossy()
         .into_owned();
     let mut command = Vec::new();
@@ -673,7 +673,7 @@ mod tests {
     fn imported_daemon_command_preserves_rpc_policy_and_refuses_untrusted_paths() {
         let hash = "ab".repeat(32);
         let command = imported_daemon_command(
-            Some("sudo -n /usr/libexec/tilo-vmd rpc --root /old --expect-domain greetd_t"),
+            Some("sudo -n /usr/libexec/tilo/tilo-vmd rpc --root /old --expect-domain greetd_t"),
             "/var/lib/tilo-vm",
             &hash,
         )
@@ -683,7 +683,7 @@ mod tests {
             [
                 "sudo".to_owned(),
                 "-n".into(),
-                format!("/var/lib/tilo-vm/layers/{hash}/usr/libexec/tilo-vmd"),
+                format!("/var/lib/tilo-vm/layers/{hash}/usr/libexec/tilo/tilo-vmd"),
                 "rpc".into(),
                 "--expect-domain".into(),
                 "greetd_t".into(),
@@ -711,7 +711,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
         let hash = "ab".repeat(32);
-        let binary = root.join("layers").join(&hash).join("usr/libexec/tilo-vmd");
+        let binary = root
+            .join("layers")
+            .join(&hash)
+            .join("usr/libexec/tilo/tilo-vmd");
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         let script = r"#!/usr/bin/env python3
 import json,os,sys

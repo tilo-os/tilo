@@ -51,7 +51,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DeviceMeshArea> {
 const DEFAULT_CONFIG: &str = "/etc/tilo/relay.toml";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
-const RELAY_ADMIN: &str = "/usr/bin/tilo-relay-admin";
+const RELAY_ADMIN: &str = "/usr/libexec/tilo/tilo-relay-admin";
 
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);

@@ -245,8 +245,8 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
        tilo-vm-reconcile-image.service \
        tilo-device-admin.service \
-    && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
-    && /usr/bin/tilo-vmd --version && /usr/bin/tilo-device-admin --version \
+    && test -x /usr/libexec/tilo/tilo-control && test -x /usr/libexec/tilo/tilo-vmd \
+    && /usr/libexec/tilo/tilo-vmd --version && /usr/libexec/tilo/tilo-device-admin --version \
     && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \

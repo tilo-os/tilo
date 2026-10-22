@@ -24,7 +24,7 @@ fi
 
 if [ -s "$AUTH_FILE" ]; then
   log "lockout authorisation already recorded; reporting current state"
-  exec tilo-rollback tpm-status
+  exec /usr/libexec/tilo/tilo-rollback tpm-status
 fi
 
 DEV="$(rollback_luks_device)"
@@ -33,7 +33,7 @@ if [ -z "$DEV" ]; then
   # the authorisation. Setting it anyway would mean a TPM whose lockout can never
   # be reset.
   log "root is not on LUKS — leaving the lockout authorisation alone"
-  exec tilo-rollback tpm-status
+  exec /usr/libexec/tilo/tilo-rollback tpm-status
 fi
 
 # SAFETY-CRITICAL gate. Once the reset authorisation is set, a forgotten PIN plus
@@ -47,4 +47,4 @@ if ! rollback_has_independent_keyslot "$DEV"; then
 fi
 
 log "hardening the TPM lockout (an independent keyslot exists on $DEV)"
-exec tilo-rollback harden --auth-file "$AUTH_FILE" --i-have-a-recovery-key
+exec /usr/libexec/tilo/tilo-rollback harden --auth-file "$AUTH_FILE" --i-have-a-recovery-key

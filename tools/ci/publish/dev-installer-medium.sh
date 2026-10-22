@@ -62,7 +62,7 @@ actual_digest=$(podman image inspect --format '{{.Digest}}' "$id")
 
 # Refuse a base that cannot become this medium before spending the disk build on it.
 podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -ec '
-  test -x /usr/bin/tilo-installer
+  test -x /usr/libexec/tilo/tilo-installer
   test -x /usr/libexec/tilo-session-select
   test -x /usr/libexec/tilo-uki-cmdline
   set -- /boot/EFI/Linux/*.efi

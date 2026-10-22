@@ -53,7 +53,7 @@ rollback_has_independent_keyslot() {
           | grep -cE '^  [0-9]+:')"
   [ -n "$slots" ] && [ "$slots" -gt 0 ] 2>/dev/null || return 1
   # `enrolled_generations` is a JSON array of numbers; count its elements.
-  enrolled="$(tilo-rollback status --device "$dev" --json 2>/dev/null \
+  enrolled="$(/usr/libexec/tilo/tilo-rollback status --device "$dev" --json 2>/dev/null \
              | sed -n 's/.*"enrolled_generations":\[\([^]]*\)\].*/\1/p' \
              | tr ',' '\n' | grep -c '[0-9]')"
   [ -n "$enrolled" ] || enrolled=0

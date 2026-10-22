@@ -1463,9 +1463,9 @@ mod tests {
         let request = Request {
             app_id: "so.tilo.notes".into(),
             kind: AppKind::Tilo,
-            program: "/usr/bin/tilo-launcher".into(),
+            program: "/usr/libexec/tilo/tilo-launcher".into(),
             args: vec![
-                "/usr/bin/tilo-launcher".into(),
+                "/usr/libexec/tilo/tilo-launcher".into(),
                 "run".into(),
                 String::new().into(),
             ],
@@ -1479,7 +1479,10 @@ mod tests {
         let launch = Launch::parse(&decoded).expect("parses");
         assert_eq!(launch.app_id, "so.tilo.notes");
         assert_eq!(launch.kind, AppKind::Tilo);
-        assert_eq!(launch.program.as_bytes(), b"/usr/bin/tilo-launcher");
+        assert_eq!(
+            launch.program.as_bytes(),
+            b"/usr/libexec/tilo/tilo-launcher"
+        );
         assert_eq!(launch.cwd.as_bytes(), b"/");
         // An empty argument survives; it is not an empty environment entry.
         assert_eq!(
@@ -1488,7 +1491,7 @@ mod tests {
                 .iter()
                 .map(CString::as_bytes)
                 .collect::<Vec<_>>(),
-            [b"/usr/bin/tilo-launcher".as_slice(), b"run", b""]
+            [b"/usr/libexec/tilo/tilo-launcher".as_slice(), b"run", b""]
         );
         assert_eq!(
             launch.env.iter().map(CString::as_bytes).collect::<Vec<_>>(),
@@ -1527,7 +1530,7 @@ mod tests {
 
     #[test]
     fn a_request_is_what_the_command_would_have_run() {
-        let mut command = Command::new("/usr/bin/tilo-launcher");
+        let mut command = Command::new("/usr/libexec/tilo/tilo-launcher");
         command
             .args(["run", "--app-id", "so.tilo.notes"])
             .env("TILO_SPAWNER_TEST_SET", "1")
@@ -1536,9 +1539,14 @@ mod tests {
         let request = Request::from_command(&command, "so.tilo.notes", AppKind::Tilo).unwrap();
         assert_eq!(
             request.args,
-            ["/usr/bin/tilo-launcher", "run", "--app-id", "so.tilo.notes"]
-                .map(OsString::from)
-                .to_vec()
+            [
+                "/usr/libexec/tilo/tilo-launcher",
+                "run",
+                "--app-id",
+                "so.tilo.notes"
+            ]
+            .map(OsString::from)
+            .to_vec()
         );
         let has = |key: &str| request.env.iter().any(|(k, _)| k == key);
         assert!(has("TILO_SPAWNER_TEST_SET"));

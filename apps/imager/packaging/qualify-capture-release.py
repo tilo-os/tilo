@@ -99,11 +99,11 @@ BINDINGS = {'shell': '/usr/bin/shell', 'fs': '/usr/bin/fs',
             'handoff_copy': '/usr/libexec/tilo-install-handoff-copy',
             'firstboot_files': '/usr/libexec/tilo-firstboot-files',
             'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract',
-            'prepared_helper': '/usr/libexec/tilo-prepared-setup', 'control': '/usr/bin/tilo-control',
-            'launcher': '/usr/bin/tilo-launcher',
-            'app_package': '/usr/bin/tilo-app-package',
-            'runtime_bundle': '/usr/bin/tilo-runtime-bundle', 'install': '/usr/bin/tilo-install',
-            'installer': '/usr/bin/tilo-installer'}
+            'prepared_helper': '/usr/libexec/tilo-prepared-setup', 'control': '/usr/libexec/tilo/tilo-control',
+            'launcher': '/usr/libexec/tilo/tilo-launcher',
+            'app_package': '/usr/libexec/tilo/tilo-app-package',
+            'runtime_bundle': '/usr/libexec/tilo/tilo-runtime-bundle', 'install': '/usr/libexec/tilo/tilo-install',
+            'installer': '/usr/libexec/tilo/tilo-installer'}
 
 
 def require(value, message):

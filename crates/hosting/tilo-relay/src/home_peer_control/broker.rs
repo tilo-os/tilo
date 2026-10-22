@@ -536,7 +536,7 @@ fn approve_enrollment(
     let uid = invoking_uid()?;
     let account = account_for_uid(uid)?;
     let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
-    let mut command = Command::new("/usr/bin/tilo-enroll");
+    let mut command = Command::new("/usr/libexec/tilo/tilo-enroll");
     command
         .args(["approve", "--timeout", "60", "--identity-root"])
         .arg(&identity_root);
@@ -638,7 +638,7 @@ fn approve_personal_device(
     let account = account_for_uid(uid)?;
     let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
     let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
-    let mut command = Command::new("/usr/bin/tilo-enroll");
+    let mut command = Command::new("/usr/libexec/tilo/tilo-enroll");
     command
         .arg("approve-device")
         .arg("--identity-root")

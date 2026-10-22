@@ -175,7 +175,7 @@ as_root vm_c "set -eu
   if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
     firewall-cmd --add-port=3340/tcp >/dev/null
   fi
-  systemd-run --unit=tilo-reach-relay /usr/bin/tilo-device-admin relay --listen 0.0.0.0:3340 >/dev/null" \
+  systemd-run --unit=tilo-reach-relay /usr/libexec/tilo/tilo-device-admin relay --listen 0.0.0.0:3340 >/dev/null" \
   || die "VM C could not start the relay"
 for each in vm_a vm_b; do
   for attempt in $(seq 1 60); do

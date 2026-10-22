@@ -438,7 +438,7 @@ fn old_backend_independent_unit_and_process_checks() {
     fs::create_dir(&process).unwrap();
     fs::write(
         process.join("cmdline"),
-        b"/usr/bin/tilo-installer\0--fullscreen\0",
+        b"/usr/libexec/tilo/tilo-installer\0--fullscreen\0",
     )
     .unwrap();
     fs::create_dir(fixture.proc_root.join("self")).unwrap();

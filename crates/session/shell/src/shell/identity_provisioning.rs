@@ -519,7 +519,7 @@ fn host_files_environment(
         ("TILO_FS_STORAGE_DIR", storage),
         (
             "TILO_FS_AUTHORITY_PUBLISHER",
-            PathBuf::from("/usr/bin/tilo-relay-admin"),
+            PathBuf::from("/usr/libexec/tilo/tilo-relay-admin"),
         ),
     ])
 }

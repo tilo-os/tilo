@@ -333,7 +333,7 @@ else
 vt = 1
 
 [default_session]
-command = \"/usr/bin/timeout 12 /usr/libexec/tilo-cage-session /usr/bin/tilo-greeter\"
+command = \"/usr/bin/timeout 12 /usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-greeter\"
 user = \"greetd\"
 EOF
 cat > $DROPIN <<EOF

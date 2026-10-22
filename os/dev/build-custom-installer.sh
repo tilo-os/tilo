@@ -99,7 +99,7 @@ podman image exists "$TILO_IMAGE" \
   || die "$TILO_IMAGE not in rootless podman storage — run ./os/dev/build-image.sh first"
 
 if [ "$REUSE_IMAGE_INSTALLER" = 1 ]; then
-  msg "1/3 inheriting /usr/bin/tilo-installer from the selected base (no Cargo build)"
+  msg "1/3 inheriting /usr/libexec/tilo/tilo-installer from the selected base (no Cargo build)"
 elif [ "$STUB_UI" = 1 ]; then
   msg "1/3 writing stub tilo-installer (--stub-ui: OS-plumbing test, no UI)"
   cat > "$TILO_OS_DIR/tilo-installer" <<'STUB'
@@ -177,10 +177,10 @@ if [ "${TILO_UNVERIFIED_VM_INSTALL:-0}" = 1 ]; then
 fi
 if [ "$REUSE_IMAGE_INSTALLER" = 0 ]; then
   install -Dm0755 "$TILO_OS_DIR/tilo-installer" \
-    "$INSTALLER_CONTEXT/rootfs/usr/bin/tilo-installer"
+    "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo/tilo-installer"
 else
   # Do not let a stale overlay copy replace the selected base binary.
-  rm -f "$INSTALLER_CONTEXT/rootfs/usr/bin/tilo-installer"
+  rm -f "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo/tilo-installer"
 fi
 install -Dm0644 "$TILO_OS_DIR/etc/greetd/config.toml" \
   "$INSTALLER_CONTEXT/rootfs/usr/share/tilo/greetd-config.toml"

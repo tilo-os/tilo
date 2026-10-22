@@ -45,7 +45,7 @@ fn install(root: &Path, id: &str, files: &[(&str, &[u8])]) -> InstalledApp {
 fn launch(app: &InstalledApp) {
     let _ = build_launch_command(
         app,
-        Path::new("/usr/bin/tilo-launcher"),
+        Path::new("/usr/libexec/tilo/tilo-launcher"),
         Path::new("/run/user/1000/wayland-3"),
         RoomId::new(),
         None,

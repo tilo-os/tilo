@@ -26,7 +26,7 @@ kind = "userspace"
 scope = "session"
 packages = ["launcher"]
 bins = ["tilo-launcher"]
-files = [{ from = "tilo-launcher", to = "/usr/bin/tilo-launcher", mode = "0755" }]
+files = [{ from = "tilo-launcher", to = "/usr/libexec/tilo/tilo-launcher", mode = "0755" }]
 "#,
     )
     .unwrap();
@@ -52,7 +52,7 @@ files = [{ from = "tilo-launcher", to = "/usr/bin/tilo-launcher", mode = "0755" 
 
 #[test]
 fn qualified_local_bytes_are_frozen_before_transport() {
-    let (_dir, request) = fixture(&[("usr/bin/tilo-launcher", 0o755)]);
+    let (_dir, request) = fixture(&[("usr/libexec/tilo/tilo-launcher", 0o755)]);
     let expected = std::fs::read(&request.archive).unwrap();
     let mut prepared = prepare(&request).unwrap();
     std::fs::write(&request.archive, b"replaced after validation").unwrap();
@@ -66,7 +66,7 @@ fn qualified_local_bytes_are_frozen_before_transport() {
 
 #[test]
 fn changed_producer_bytes_are_refused() {
-    let (_dir, request) = fixture(&[("usr/bin/tilo-launcher", 0o755)]);
+    let (_dir, request) = fixture(&[("usr/libexec/tilo/tilo-launcher", 0o755)]);
     std::fs::write(&request.archive, b"not the qualified archive").unwrap();
     let error = prepare(&request).err().unwrap().to_string();
     assert!(error.contains("producer SHA-256"), "{error}");
@@ -76,14 +76,14 @@ fn changed_producer_bytes_are_refused() {
 fn extra_duplicate_privileged_and_missing_files_are_refused() {
     for entries in [
         vec![
-            ("usr/bin/tilo-launcher", 0o755),
+            ("usr/libexec/tilo/tilo-launcher", 0o755),
             ("usr/bin/unrelated", 0o755),
         ],
         vec![
-            ("usr/bin/tilo-launcher", 0o755),
-            ("usr/bin/tilo-launcher", 0o755),
+            ("usr/libexec/tilo/tilo-launcher", 0o755),
+            ("usr/libexec/tilo/tilo-launcher", 0o755),
         ],
-        vec![("usr/bin/tilo-launcher", 0o4755)],
+        vec![("usr/libexec/tilo/tilo-launcher", 0o4755)],
         vec![("usr/bin/unrelated", 0o755)],
     ] {
         let (_dir, request) = fixture(&entries);
@@ -97,7 +97,7 @@ fn extra_duplicate_privileged_and_missing_files_are_refused() {
 #[test]
 fn local_inputs_cannot_claim_ci_or_another_component() {
     for (authority, component) in [("ci", "launcher"), ("local", "shell")] {
-        let (_dir, request) = fixture(&[("usr/bin/tilo-launcher", 0o755)]);
+        let (_dir, request) = fixture(&[("usr/libexec/tilo/tilo-launcher", 0o755)]);
         let mut provenance: Provenance =
             serde_json::from_slice(&std::fs::read(&request.provenance).unwrap()).unwrap();
         provenance.authority = authority.into();
@@ -113,7 +113,7 @@ fn local_inputs_cannot_claim_ci_or_another_component() {
 
 #[test]
 fn signed_image_cohorts_are_not_imported_as_local_components() {
-    let (_dir, mut request) = fixture(&[("usr/bin/tilo-launcher", 0o755)]);
+    let (_dir, mut request) = fixture(&[("usr/libexec/tilo/tilo-launcher", 0o755)]);
     request.component = "apps+runtime".into();
     std::fs::write(
         &request.manifest,

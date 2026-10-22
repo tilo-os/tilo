@@ -9,7 +9,7 @@ ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/tilo-device-key-init
+ExecStart=/usr/libexec/tilo/tilo-device-key-init
 RemainAfterExit=yes
 UMask=0027
 LimitCORE=0

@@ -70,7 +70,7 @@ podman() { printf '%s\\n' "$@"; }
                      'crypto', temporary], capture_output=True, text=True, check=True)
                 self.assertEqual(accepted.stdout.splitlines(), [
                     'run', '--rm', '-v', f'{temporary}:/work:ro,Z',
-                    '--entrypoint', '/usr/bin/tilo-crypto', 'candidate',
+                    '--entrypoint', '/usr/libexec/tilo/tilo-crypto', 'candidate',
                     'verify-rsa-sha256', '/work/public.pem', '/work/layer/boot/x.sig'])
                 outside = subprocess.run(
                     ['bash', '-c', setup + function + 'image_crypto certificate-sha256 /etc/passwd',

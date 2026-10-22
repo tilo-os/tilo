@@ -7,7 +7,7 @@ import sys
 # These generic VM additions are not maintenance routes for a physical board.
 # Remove only these image-owned files, never persisted device credentials/data.
 VM_ONLY_PATHS = (
-    'usr/libexec/tilo-device-admin', 'usr/libexec/tilo-vmd',
+    'usr/libexec/tilo/tilo-device-admin', 'usr/libexec/tilo/tilo-vmd',
     'usr/lib/systemd/system/tilo-device-admin.service',
     'etc/systemd/system/multi-user.target.wants/tilo-device-admin.service',
     'usr/lib/systemd/system/tilo-vm-restore.service',

@@ -2627,12 +2627,23 @@ fn launcher_bin_candidates_from(
     if let Some(dir) = current_exe.and_then(Path::parent) {
         out.push(dir.join("tilo-launcher"));
     }
+    out.push(PathBuf::from("/usr/libexec/tilo/tilo-launcher"));
     out.push(PathBuf::from("/usr/libexec/tilo-launcher"));
-    out.push(PathBuf::from("/usr/bin/tilo-launcher"));
     out
 }
 
-/// First candidate that exists, else the list we searched.
+/// Whether `path` is a link to a program of another name: on Tilo OS
+/// `/usr/bin/tilo-launcher` is the old name, a link to `tilo`, which would
+/// only run the real launcher in `/usr/libexec/tilo` with one more exec.
+fn names_another_program(path: &Path) -> bool {
+    path.is_symlink()
+        && std::fs::canonicalize(path)
+            .ok()
+            .is_some_and(|target| target.file_name() != path.file_name())
+}
+
+/// First candidate that exists (and is the launcher, not a link to another
+/// program), else the list we searched.
 ///
 /// # Errors
 ///
@@ -2641,7 +2652,7 @@ fn launcher_bin_candidates_from(
 pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
     let candidates = launcher_bin_candidates();
     for candidate in &candidates {
-        if candidate.exists() {
+        if candidate.exists() && !names_another_program(candidate) {
             return Ok(candidate.clone());
         }
     }
@@ -7642,8 +7653,8 @@ mod tests {
                 got,
                 vec![
                     PathBuf::from("/usr/bin/tilo-launcher"),
+                    PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
                     PathBuf::from("/usr/libexec/tilo-launcher"),
-                    PathBuf::from("/usr/bin/tilo-launcher"),
                 ],
             );
         }
@@ -7653,8 +7664,8 @@ mod tests {
             assert_eq!(
                 got,
                 vec![
+                    PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
                     PathBuf::from("/usr/libexec/tilo-launcher"),
-                    PathBuf::from("/usr/bin/tilo-launcher"),
                 ],
             );
         }
@@ -7672,7 +7683,7 @@ mod tests {
             }
             let command = build_launch_command(
                 &test_app("so.tilo.settings"),
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
                 None,
@@ -7701,7 +7712,7 @@ mod tests {
 
         fn a_release_compositor_strips_developer_overrides_from_the_launcher() {
             let env = vec![("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string())];
-            let mut command = std::process::Command::new("/usr/bin/tilo-launcher");
+            let mut command = std::process::Command::new("/usr/libexec/tilo/tilo-launcher");
             apply_launch_env_with(&mut command, &env, false);
             for name in launcher::dev_env::DEV_OVERRIDE_VARS {
                 assert_eq!(
@@ -7733,7 +7744,7 @@ mod tests {
                 "TILO_RUNTIME_BUNDLE_DIR".to_string(),
                 "/dev/runtime".to_string(),
             )];
-            let mut command = std::process::Command::new("/usr/bin/tilo-launcher");
+            let mut command = std::process::Command::new("/usr/libexec/tilo/tilo-launcher");
             apply_launch_env_with(&mut command, &env, true);
             assert_eq!(
                 launcher_env_entry(&command, "TILO_RUNTIME_BUNDLE_DIR"),
@@ -8071,7 +8082,7 @@ mod tests {
             };
             let cmd = build_launch_command(
                 &app,
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
                 None,
@@ -8079,7 +8090,7 @@ mod tests {
                 Some(Path::new("/dev/dri/renderD128")),
                 None,
             );
-            assert_eq!(cmd.program, Path::new("/usr/bin/tilo-launcher"));
+            assert_eq!(cmd.program, Path::new("/usr/libexec/tilo/tilo-launcher"));
             assert_eq!(cmd.args[0], "run");
             let pos = |flag: &str| {
                 cmd.args
@@ -8122,7 +8133,7 @@ mod tests {
             };
             let cmd = build_launch_command(
                 &app,
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
                 None,
@@ -8140,7 +8151,7 @@ mod tests {
         fn launch_command_names_the_app_id_and_omits_capabilities_when_none_are_granted() {
             let cmd = build_launch_command(
                 &test_app("so.tilo.books"),
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
                 None,
@@ -8165,7 +8176,7 @@ mod tests {
         fn launch_command_names_the_capability_file_when_one_was_written() {
             let cmd = build_launch_command(
                 &test_app("so.tilo.books"),
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
                 Some(Path::new(
@@ -8189,7 +8200,7 @@ mod tests {
         fn launch_command_names_the_workspace_selected_identity() {
             let cmd = build_launch_command(
                 &test_app("so.tilo.books"),
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
                 None,
@@ -8228,7 +8239,7 @@ mod tests {
             let room = RoomId::new();
             let command = build_workspace_agent_command(
                 &app,
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 room,
                 Some(Path::new("/run/user/1000/tilo/identity.json")),
                 "studio-agent",
@@ -8295,7 +8306,7 @@ mod tests {
             let room = RoomId::new();
             let command = build_agent_companion_command(
                 &app,
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 room,
                 Some(Path::new("/run/user/1000/tilo/identity.json")),
             );
@@ -9841,7 +9852,7 @@ mod tests {
             let files = test_app(FILES_PACKAGE_ID);
             let mut command = build_launch_command(
                 &files,
-                Path::new("/usr/bin/tilo-launcher"),
+                Path::new("/usr/libexec/tilo/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 room,
                 None,

@@ -240,7 +240,7 @@ pub const PACKAGE: &[Verb] = &[
 /// Where `name` is: Tilo's own program directory, beside this program (a
 /// development build), or on `PATH`.
 pub fn program(name: &str) -> Option<PathBuf> {
-    let libexec = PathBuf::from("/usr/libexec/tilo").join(name);
+    let libexec = crate::aliases::libexec().join(name);
     if crate::executable_file(&libexec) {
         return Some(libexec);
     }

@@ -352,7 +352,7 @@ fn relayed(client: &str, pid: u32) -> ClientFacts {
         client: client.into(),
         version: None,
         pid,
-        exe: Some(PathBuf::from("/usr/bin/tilo-runtime-mcp")),
+        exe: Some(PathBuf::from("/usr/libexec/tilo/tilo-runtime-mcp")),
         host_app: None,
     }
 }

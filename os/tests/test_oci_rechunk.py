@@ -477,7 +477,7 @@ class Rechunk(unittest.TestCase):
         # The main run keeps the RPMs' files and leaves every tree to its own run.
         self.assertEqual(main, (96, {
             "/sysroot/", f"/{native}", "/usr/share/fonts/tilo", "/usr/lib/tilo-runtime/2026.10.9-chromium",
-            "/boot/EFI/Linux", "/usr/bin/shell", "/usr/bin/tilo", "/usr/bin/tilo-control", "/usr/bin/tilo-greeter",
+            "/boot/EFI/Linux", "/usr/bin/shell", "/usr/bin/tilo", "/usr/libexec/tilo/tilo-control", "/usr/libexec/tilo/tilo-greeter",
             "/usr/libexec/tilo", "/usr/libexec/tilo-ush", "/usr/lib/tilo", "/usr/share/tilo"}))
         # Whole, directory included: the runtime's directory is named by a
         # digest, and its entry in the main run renewed one of its layers at
@@ -505,7 +505,7 @@ class Rechunk(unittest.TestCase):
         self.assertTrue({"/usr/bin/bash", "/usr/bin/fsck", "/usr/libexec/sssd", "/usr/lib/tilo/windows-runners",
                          "/usr/share/tilo/font-catalogs", "/usr/share/tilo/app-publisher.hex",
                          "/usr/lib/tilo-runtime", "/usr/share/fonts", "/etc", "/sysroot"} <= tilo[1])
-        self.assertFalse({"/usr/bin/shell", "/usr/bin/tilo-greeter", "/usr/bin/tilo-control", "/usr/libexec/tilo",
+        self.assertFalse({"/usr/bin/shell", "/usr/libexec/tilo/tilo-greeter", "/usr/libexec/tilo/tilo-control", "/usr/libexec/tilo",
                           "/usr/libexec/tilo-ush", "/usr/lib/tilo", "/usr/lib/tilo/helper", "/usr/share/tilo",
                           "/usr/share/tilo/catalog.toml", "/boot", "/boot/EFI/Linux"} & tilo[1])
         self.assertEqual(signatures[0], 1)

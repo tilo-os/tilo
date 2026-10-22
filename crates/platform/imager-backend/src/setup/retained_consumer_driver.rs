@@ -473,7 +473,7 @@ mod tests {
                 "b".repeat(64),
                 room,
                 "retained-home",
-                "/usr/bin/tilo-launcher",
+                "/usr/libexec/tilo/tilo-launcher",
                 vec!["run"],
                 Vec::<(String, String)>::new(),
             ))
@@ -496,7 +496,7 @@ mod tests {
     fn canonical_shell_context_cannot_change_selected_app_scope_or_digest() {
         let (bytes, binding) = context();
         let decoded = challenge(&bytes, &binding, [1; 32]).unwrap();
-        assert_eq!(decoded.command.program, "/usr/bin/tilo-launcher");
+        assert_eq!(decoded.command.program, "/usr/libexec/tilo/tilo-launcher");
         assert_eq!(decoded.command.args, ["run"]);
         for field in ["operation", "app", "package", "room", "resource", "digest"] {
             let mut changed = binding.clone();

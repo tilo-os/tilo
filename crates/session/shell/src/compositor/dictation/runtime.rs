@@ -116,7 +116,7 @@ impl Runtime {
         Self::spawn_for_field(Self::image_command(), language, vocabulary, multiline)
     }
     fn image_command() -> Command {
-        let mut command = Command::new("/usr/bin/tilo-speech-worker");
+        let mut command = Command::new("/usr/libexec/tilo/tilo-speech-worker");
         command.env_clear();
         // These select the same per-user store as the model manager; trust
         // keys and catalogue remain fixed image paths inside the worker.

@@ -19,12 +19,12 @@ bad() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 
 grep -Fxq 'Name=org.freedesktop.secrets' "$bus_file" \
   && grep -Fxq 'SystemdService=tilo-secret-service.service' "$bus_file" \
-  && grep -Fq 'Exec=/usr/bin/tilo-secret-service serve' "$bus_file" \
+  && grep -Fq 'Exec=/usr/libexec/tilo/tilo-secret-service serve' "$bus_file" \
   && ok 'D-Bus activation of org.freedesktop.secrets starts tilo-secret-service' \
   || bad 'org.freedesktop.secrets is not activated by tilo-secret-service'
 
 grep -Fxq 'BusName=org.freedesktop.secrets' "$unit" \
-  && grep -Fxq 'ExecStart=/usr/bin/tilo-secret-service serve' "$unit" \
+  && grep -Fxq 'ExecStart=/usr/libexec/tilo/tilo-secret-service serve' "$unit" \
   && ok 'the user unit owns the bus name' \
   || bad 'the user unit does not own org.freedesktop.secrets'
 

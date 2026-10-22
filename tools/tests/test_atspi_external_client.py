@@ -207,7 +207,7 @@ class LaunchpadCardTests(unittest.TestCase):
                 mock.patch.object(CLIENT, "wait_for_shell_node", return_value=({}, "/card")) as node, \
                 mock.patch.object(CLIENT, "wait_for_new_app", return_value=(":1.9", 99)) as new_app, \
                 mock.patch.object(CLIENT.AtspiClient, "property", return_value=f"(<'{opened_root}'>,)"), \
-                mock.patch.object(CLIENT, "process_command", return_value="/usr/bin/tilo-launcher"), \
+                mock.patch.object(CLIENT, "process_command", return_value="/usr/libexec/tilo/tilo-launcher"), \
                 mock.patch.object(CLIENT, "close_app"):
             opened = CLIENT.open_from_launchpad_card("unix:path=/bus", "Notes", "Notes")
         node.assert_called_once_with(shell, "Notes")
@@ -233,7 +233,7 @@ class LaunchpadCardTests(unittest.TestCase):
                 mock.patch.object(CLIENT, "wait_for_new_app", return_value=(":1.9", 99)), \
                 mock.patch.object(CLIENT.AtspiClient, "property", return_value="(<'calendar'>,)"), \
                 mock.patch.object(CLIENT.AtspiClient, "tree", return_value=app_tree), \
-                mock.patch.object(CLIENT, "process_command", return_value="/usr/bin/tilo-launcher"), \
+                mock.patch.object(CLIENT, "process_command", return_value="/usr/libexec/tilo/tilo-launcher"), \
                 mock.patch.object(CLIENT, "START_TIMEOUT_SECONDS", 0.05), \
                 mock.patch.object(CLIENT, "POLL_SECONDS", 0.01), \
                 mock.patch.object(CLIENT, "close_app", side_effect=closed.append):

@@ -519,7 +519,7 @@ exit {BUILD_INTERCEPTED}
                 self.write(path, "fixture only\n")
             # Both stale binary sources must be ignored in image reuse mode.
             self.write("os/tilo-installer", "stale host binary\n")
-            self.write("os/usr/bin/tilo-installer", "stale overlay binary\n")
+            self.write("os/usr/libexec/tilo/tilo-installer", "stale overlay binary\n")
             self.write("os/usr/share/tilo/preserved", "overlay fixture\n")
             self.write("os/dev/disk-image.sh", "#!/bin/sh\nexit 97\n", executable=True)
             self.write("bin/podman", """\
@@ -531,7 +531,7 @@ if [ "$1" = rm ]; then exit 0; fi
 [ "$1" = build ] || exit 72
 printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 context="${@: -1}"
-[ ! -e "$context/rootfs/usr/bin/tilo-installer" ] || exit 74
+[ ! -e "$context/rootfs/usr/libexec/tilo/tilo-installer" ] || exit 74
 [ -f "$context/rootfs/usr/share/tilo/preserved" ] || exit 75
 exit 0
 """, executable=True)

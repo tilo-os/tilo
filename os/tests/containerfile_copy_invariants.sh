@@ -78,7 +78,7 @@ containerfile="$repo/os/Containerfile"
 # ReadWritePaths=, which must exist before the unit can start.
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
-# The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# The native runtime host at /usr/libexec/tilo/tilo-runtime-mcp is a deliberate addition.
 # /usr/bin/bootc from bootc-builder, the base's release patched to find this
 # system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
@@ -104,7 +104,7 @@ containerfile="$repo/os/Containerfile"
 # app store and its Chromium engine a signed runtime bundle under
 # /usr/lib/tilo-runtime, both already copied.
 # NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
-# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
+# The sibling-unlock client (/usr/libexec/tilo/tilo-sibling-unlock, through
 # components.toml) and its dracut module ship in the rollback-files overlay
 # beside tilo-rollback, which the initramfs carries the same way.
 # The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
@@ -227,7 +227,7 @@ containerfile="$repo/os/Containerfile"
 # from the base image instead of the installer's overlay of os/usr.
 # The VM install proof emitter is compiled too (one more install-helpers row).
 # The gateway's HTTP adapter is installed alongside the socket daemon at
-# /usr/bin/tilo-model-http (one new model-gateway component row).
+# /usr/libexec/tilo/tilo-model-http (one new model-gateway component row).
 # The desktop's wallpapers and their credits arrive from the os-wallpapers
 # stage, which fetches the files the tilo-wallpapers catalog pins: two
 # intentional payload rows, /usr/share/backgrounds/tilo and
@@ -283,10 +283,14 @@ containerfile="$repo/os/Containerfile"
 # The time-zone polkit rule (49-tilo-time-zone.rules) is a deliberate
 # addition beside the other rules, and tilo-identity, the identity command for
 # headless devices, is installed by its identity-cli component at
-# /usr/bin/tilo-identity: one payload row each.
+# /usr/libexec/tilo/tilo-identity: one payload row each.
 # `tilo device` and `tilo action` are the tilo binary under their own names
-# (/usr/bin/device, /usr/bin/action), with completions linked the same way.
-expected_contract=c1c384af02fedf986866b0e2a864c14d73b184b679830f60e44748dfd237496f
+# (/usr/bin/device, /usr/bin/action), with completions linked the same way;
+# `tilo package` and `tilo agent` are linked the same way, and so is each noun's
+# tilo-<noun> name. The programs those nouns drive live in /usr/libexec/tilo/,
+# off PATH; each old /usr/bin name is a link to tilo, which runs the program
+# under that name: two rows per moved program.
+expected_contract=e4a56eb52b675806104e271656dc05bd90e8d6b08485436a7a4eae109dacc1f3
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -415,7 +419,7 @@ for path in \
 done
 python3 "$repo/os/scripts/install-components.py" relay --dry-run --format json |
   python3 -c 'import json,sys
-rows = [row for row in json.load(sys.stdin) if row["from"].startswith("@manifest/")]
+rows = [row for row in json.load(sys.stdin) if (row["from"] or "").startswith("@manifest/")]
 assert len(rows) == 6, rows
 for row in rows:
     assert row["from"] == "@manifest" + row["to"], row

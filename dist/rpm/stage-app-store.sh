@@ -96,7 +96,7 @@ mkdir -p "$store"
 export TILO_APPS_DATA_DIR="$store"
 export TILO_RUNTIME_BUNDLE_DIR="$stage/usr/lib/tilo-runtime"
 export TILO_CLI_SHIM_PATH="$bin_dir/tilo-cli-shim"
-export TILO_LAUNCHER_PATH=/usr/bin/tilo-launcher
+export TILO_LAUNCHER_PATH=/usr/libexec/tilo/tilo-launcher
 for package in "$work"/tapp/*.tapp; do
     "$bin_dir/tilo-install" install "$package" --allow-self-signed >/dev/null
 done

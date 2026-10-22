@@ -45,13 +45,13 @@ run_program() {
     PATH="$work/bin:$PATH" TILO_DRM_SYSFS="$work/drm" TILO_CAGE="$work/bin/cage" \
     TILO_GREETER_RECORD_DIR="$work/run-greeter" "$@" bash "$wrapper" "$program"
 }
-run() { program=/usr/bin/tilo-greeter run_program "$@"; }
+run() { program=/usr/libexec/tilo/tilo-greeter run_program "$@"; }
 
 # --- a physical GPU ------------------------------------------------------
 rm -rf "$work/drm"
 card card1 msm_dpu ''
 out="$(run)"
-grep -qx 'args=-s -- /usr/bin/tilo-greeter' <<<"$out" \
+grep -qx 'args=-s -- /usr/libexec/tilo/tilo-greeter' <<<"$out" \
   && ok 'the greeter runs in cage, which exits with it' || bad "unexpected cage arguments: $out"
 grep -qx 'WLR_NO_HARDWARE_CURSORS=unset' <<<"$out" \
   && ok 'a physical GPU keeps the hardware cursor' || bad "physical GPU forced a software cursor: $out"
@@ -101,7 +101,7 @@ out="$(umask 0077; run)"
 grep -qx 'umask=0022' <<<"$out" \
   && ok "the record stays readable to the health check under a strict session umask" \
   || bad "the greeter's record would be private to it: $out"
-out="$(program=/usr/bin/tilo-installer run_program)"
+out="$(program=/usr/libexec/tilo/tilo-installer run_program)"
 grep -qx 'TILO_STARTUP_METRICS_PATH=unset' <<<"$out" \
   && ok "the installer does not write the greeter's record" || bad "the installer was given the greeter's record: $out"
 rmdir "$work/run-greeter"
@@ -129,18 +129,18 @@ journaled() {
     JOURNAL_OUT="$work/journal.out" "$@"
 }
 : >"$work/journal.out"
-console="$(journaled bash "$wrapper" /usr/bin/tilo-greeter 2>&1)"
+console="$(journaled bash "$wrapper" /usr/libexec/tilo/tilo-greeter 2>&1)"
 [ -z "$console" ] \
   && ok 'nothing the greeter session prints reaches the console' \
   || bad "the greeter session printed onto the console: $console"
-grep -q -- '^systemd-cat=--identifier=tilo-greeter --stderr-priority=warning -- .*bash '"$wrapper"' /usr/bin/tilo-greeter$' "$work/journal.args" \
+grep -q -- '^systemd-cat=--identifier=tilo-greeter --stderr-priority=warning -- .*bash '"$wrapper"' /usr/libexec/tilo/tilo-greeter$' "$work/journal.args" \
   && ok 'the greeter session logs under tilo-greeter, stderr at warning' \
   || bad "unexpected journal routing: $(cat "$work/journal.args")"
-grep -qx 'args=-s -- /usr/bin/tilo-greeter' "$work/journal.out" \
+grep -qx 'args=-s -- /usr/libexec/tilo/tilo-greeter' "$work/journal.out" \
   && grep -qx 'TILO_CAGE_SESSION_KEEP_OUTPUT=unset' "$work/journal.out" \
   && ok 'cage and the greeter run once, with their output in the journal' \
   || bad "cage did not run under the journal stream: $(cat "$work/journal.out")"
-journaled bash "$wrapper" /usr/bin/tilo-installer >/dev/null 2>&1
+journaled bash "$wrapper" /usr/libexec/tilo/tilo-installer >/dev/null 2>&1
 grep -q -- '--identifier=tilo-installer ' "$work/journal.args" \
   && ok 'the installer logs under its own name' \
   || bad "the installer is not journaled as tilo-installer: $(cat "$work/journal.args")"
@@ -180,7 +180,7 @@ status=$?
   && ok 'a greeter that started the session leaves nothing behind' \
   || bad "the text sign-in ran after a successful sign-in (status $status): $(cat "$work/tty")"
 : >"$work/tty"
-out="$(program=/usr/bin/tilo-installer run_program CAGE_EXIT=3 \
+out="$(program=/usr/libexec/tilo/tilo-installer run_program CAGE_EXIT=3 \
   TILO_TEXT_GREETER="$work/bin/agreety" TILO_GREETER_TTY="$work/tty" 2>/dev/null)"
 status=$?
 [ "$status" -eq 3 ] && [ ! -s "$work/tty" ] \
@@ -192,7 +192,7 @@ status=$?
   && ok 'without a terminal the failure reaches greetd, whose recovery page takes over' \
   || bad "a greeter failure without a terminal exited $status"
 
-grep -Fq 'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"' "$repo/os/etc/greetd/config.toml" \
+grep -Fq 'command = "/usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-greeter"' "$repo/os/etc/greetd/config.toml" \
   && ok 'greetd starts the greeter through tilo-cage-session' \
   || bad 'greetd starts the greeter without tilo-cage-session, so its output reaches the console'
 

@@ -56,7 +56,7 @@ const SYSEXT_SEARCH_DIRS: &[&str] = &["/etc/extensions", "/run/extensions", SYSE
 const USER_REGISTRY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
 /// Not in production images; the dev image installs it.
-const TILO_CONTROL: &str = "/usr/bin/tilo-control";
+const TILO_CONTROL: &str = "/usr/libexec/tilo/tilo-control";
 /// The groups `tilo-firstboot-user` gives a login, less `wheel`: `tilo-identity`
 /// reads the machine's device key, which provisioning an identity needs, and
 /// `video` opens `/dev/dri`.
@@ -1389,7 +1389,7 @@ fn cohort_account_command(
         "--property=NoNewPrivileges=yes",
         "--property=RuntimeMaxSec=300",
         "--",
-        "/usr/bin/tilo-install",
+        "/usr/libexec/tilo/tilo-install",
     ]);
     command
 }
@@ -1407,7 +1407,7 @@ fn selected_app_install_command(
     preserve_held: bool,
 ) -> Command {
     let mut arguments = vec![
-        "/usr/bin/tilo-install".into(),
+        "/usr/libexec/tilo/tilo-install".into(),
         "install".into(),
         "--allow-self-signed".into(),
         "--force".into(),
@@ -1761,7 +1761,7 @@ mod tests {
         assert_eq!(
             &args[args.len() - 5..],
             [
-                "/usr/bin/tilo-install",
+                "/usr/libexec/tilo/tilo-install",
                 "install",
                 "--allow-self-signed",
                 "--force",
@@ -1789,7 +1789,7 @@ mod tests {
         assert_eq!(
             &selected[selected.len() - 6..],
             [
-                "/usr/bin/tilo-install",
+                "/usr/libexec/tilo/tilo-install",
                 "install",
                 "--allow-self-signed",
                 "--force",
@@ -2204,7 +2204,7 @@ mod userspace_tests {
             "--property=BindReadOnlyPaths=/verified/view/usr:/usr /verified/view/opt:/opt",
             "--property=NoNewPrivileges=yes",
             "--preserve-held",
-            "/usr/bin/tilo-install",
+            "/usr/libexec/tilo/tilo-install",
             "/staged/app.tapp",
         ] {
             assert!(args.iter().any(|arg| arg == required), "{args:?}");

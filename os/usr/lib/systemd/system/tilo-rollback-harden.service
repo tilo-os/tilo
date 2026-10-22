@@ -2,7 +2,7 @@
 Description=Set the TPM dictionary-attack reset authorisation and tighten its parameters
 Documentation=man:tilo-rollback(8)
 After=local-fs.target
-ConditionPathExists=/usr/bin/tilo-rollback
+ConditionPathExists=/usr/libexec/tilo/tilo-rollback
 # TPM character devices are alternatives. Mark both as trigger conditions so
 # systemd skips this oneshot cleanly unless at least one exists; the helper
 # keeps the same check as defense in depth for device-removal races.

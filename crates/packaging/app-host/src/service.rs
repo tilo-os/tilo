@@ -186,7 +186,7 @@ fn path_or_default(
     )
 }
 
-/// Names the `tilo-launcher` binary instead of `/usr/bin/tilo-launcher`.
+/// Names the `tilo-launcher` binary instead of `/usr/libexec/tilo/tilo-launcher`.
 const LAUNCHER_BIN_ENV: &str = "TILO_LAUNCHER_BIN";
 /// Names the `app` binary instead of `/usr/bin/app`.
 const APP_BIN_ENV: &str = "TILO_APP_BIN";
@@ -196,7 +196,7 @@ const APP_BIN_ENV: &str = "TILO_APP_BIN";
 fn launcher_bin() -> std::path::PathBuf {
     path_or_default(
         package_store::dev_env::dev_override(LAUNCHER_BIN_ENV),
-        "/usr/bin/tilo-launcher",
+        "/usr/libexec/tilo/tilo-launcher",
     )
 }
 
@@ -2199,7 +2199,7 @@ mod dev_override_tests {
 
     #[test]
     fn a_release_build_keeps_the_image_launcher() {
-        let default = "/usr/bin/tilo-launcher";
+        let default = "/usr/libexec/tilo/tilo-launcher";
         let gated = dev_override_from(false, LAUNCHER_BIN_ENV, Some("/tmp/attacker".into()));
         assert_eq!(path_or_default(gated, default), PathBuf::from(default));
         let honoured = dev_override_from(true, LAUNCHER_BIN_ENV, Some("/dev/overlay".into()));

@@ -128,7 +128,7 @@ pub(crate) fn answer(
 
 /// Tilo's Secret Service, which keeps the saved passwords and keys of every
 /// application and records which applications used it.
-const SECRET_SERVICE: &str = "/usr/bin/tilo-secret-service";
+const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
 
 /// Run `tilo-secret-service args…` off the UI thread, then read the store
 /// again (off the UI thread too) so the pane shows what it took.

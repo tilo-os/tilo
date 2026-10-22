@@ -18,7 +18,7 @@ use tilo_user_identity::{IdentityPaths, RevocationReason};
 use crate::device_fleet::DeviceFleetStore;
 
 /// The enrollment program the image installs.
-pub const ENROLL: &str = "/usr/bin/tilo-enroll";
+pub const ENROLL: &str = "/usr/libexec/tilo/tilo-enroll";
 /// The privileged helper that admits a discovered device.
 pub const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 

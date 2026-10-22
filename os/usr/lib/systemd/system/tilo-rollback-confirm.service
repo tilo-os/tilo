@@ -6,7 +6,7 @@ After=multi-user.target greetd.service fs.service
 # Never block or delay the boot: this is deliberately late and deliberately
 # optional. A machine that never reaches it simply keeps its fallback, which is
 # the safe direction.
-ConditionPathExists=/usr/bin/tilo-rollback
+ConditionPathExists=/usr/libexec/tilo/tilo-rollback
 
 [Service]
 Type=oneshot

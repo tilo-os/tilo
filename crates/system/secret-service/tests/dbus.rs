@@ -77,7 +77,7 @@ impl World {
             Box::new(device.clone()),
         ));
         let managers = Managers {
-            settings: vec![app("binary:/usr/bin/tilo-secret-service")],
+            settings: vec![app("binary:/usr/libexec/tilo/tilo-secret-service")],
             portal: vec![app("binary:/usr/bin/shell")],
         };
         Self {
@@ -468,7 +468,9 @@ async fn applications_are_attributed_isolated_and_revocable() {
     let chromium = world.client("binary:/usr/bin/chromium").await;
     let other = world.client("binary:/usr/bin/1password").await;
     let tool = world.client("local-process:/home/me/tool").await;
-    let settings = world.client("binary:/usr/bin/tilo-secret-service").await;
+    let settings = world
+        .client("binary:/usr/libexec/tilo/tilo-secret-service")
+        .await;
 
     let (session, key) = dh_session(&chromium).await;
     let item = store_password(
@@ -606,7 +608,9 @@ async fn applications_are_attributed_isolated_and_revocable() {
 async fn the_portal_host_gets_sandbox_secrets_from_the_same_store() {
     let world = World::new(true);
     let shell = world.client("binary:/usr/bin/shell").await;
-    let settings = world.client("binary:/usr/bin/tilo-secret-service").await;
+    let settings = world
+        .client("binary:/usr/libexec/tilo/tilo-secret-service")
+        .await;
     let intruder = world.client("local-process:/home/me/tool").await;
 
     let portal = proxy(&shell, MANAGEMENT_PATH, "so.tilo.Secrets1").await;

@@ -2114,3 +2114,11 @@ suites = ["tools/ci/test_rystic_ci.py"]
 [[unrequired]]
 suite = "tools/ci/run-rystic-ci.sh"
 reason = "metered integration runner; t's cloud-rystic, weekly-cloud-rystic and cloud-rystic-contracts checks execute it with native build artifacts and a trusted RYSTIC_CI_TOKEN secret"
+
+[[cargo]]
+package = "tilo-cli"
+# Every program moved off PATH must be installed in /usr/libexec/tilo with its
+# old command name linked to tilo; the alias table is checked against the
+# image's component manifest.
+inputs = ["os/components.toml"]
+readers = ["crates/system/tilo-cli/src/aliases.rs"]

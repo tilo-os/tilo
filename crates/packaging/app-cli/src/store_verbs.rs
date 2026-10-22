@@ -174,12 +174,17 @@ pub fn runtime(cmd: RuntimeStoreCmd) -> ExitCode {
 }
 
 /// The launcher, which knows what runs: beside this program in a
-/// development build, else on `PATH`.
+/// development build, Tilo OS's own, else the one on `PATH`.
 fn launcher_bin() -> std::path::PathBuf {
+    const INSTALLED: &str = "/usr/libexec/tilo/tilo-launcher";
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("tilo-launcher")))
         .filter(|sibling| sibling.is_file())
+        .or_else(|| {
+            let installed = std::path::PathBuf::from(INSTALLED);
+            installed.is_file().then_some(installed)
+        })
         .unwrap_or_else(|| "tilo-launcher".into())
 }
 
