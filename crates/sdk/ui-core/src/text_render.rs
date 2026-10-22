@@ -1700,84 +1700,6 @@ struct GlyphBatch<'a> {
 struct ShapedText {
     runs: Arc<Vec<GlyphRun>>,
     size: (f32, f32),
-    /// For text shaped on one line ([`TextRenderer::ltr_advances`]).
-    advances: Option<Arc<LineAdvances>>,
-}
-
-/// Each glyph of a left-to-right line with the bytes it covers and its
-/// advance ([`TextRenderer::ltr_advances`]).
-struct LineAdvances {
-    glyphs: Vec<(u32, u32, f32)>,
-    /// The whole line's width, as measuring it gives.
-    line: f32,
-}
-
-/// The advances of `buffer` when it holds one line read left to right.
-fn line_advances(buffer: &Buffer) -> Option<Arc<LineAdvances>> {
-    let mut runs = buffer.layout_runs();
-    let run = runs.next()?;
-    if run.rtl || runs.next().is_some() {
-        return None;
-    }
-    run.glyphs
-        .iter()
-        .map(|glyph| {
-            let start = u32::try_from(glyph.start).ok()?;
-            let end = u32::try_from(glyph.end).ok()?;
-            (!glyph.level.is_rtl()).then_some((start, end, glyph.w))
-        })
-        .collect::<Option<Vec<_>>>()
-        .map(|glyphs| {
-            Arc::new(LineAdvances {
-                glyphs,
-                line: run.line_w,
-            })
-        })
-}
-
-/// What a shaped text's advances add to its cache entry.
-fn advance_bytes(advances: Option<&Arc<LineAdvances>>) -> usize {
-    advances.map_or(0, |advances| {
-        advances
-            .glyphs
-            .capacity()
-            .saturating_mul(std::mem::size_of::<(u32, u32, f32)>())
-    })
-}
-
-/// Whitespace a wrapped line drops at its ends.
-fn collapsible_edge(character: char) -> bool {
-    matches!(character, ' ' | '\t' | '\n' | '\r')
-}
-
-/// Byte offsets where an elision may cut `text`: the start of every grapheme
-/// cluster after the first, so a combining sequence or a flag is never split.
-fn elision_cuts(text: &str) -> Vec<usize> {
-    crate::text_break::grapheme_indices(text)
-        .map(|(start, _)| start)
-        .filter(|&start| start > 0)
-        .collect()
-}
-
-/// `text` cut at `end`, without the whitespace before the ellipsis.
-fn elided(text: &str, end: usize) -> String {
-    let mut kept = text.get(..end).unwrap_or_default().trim_end().to_string();
-    kept.push(ELLIPSIS);
-    kept
-}
-
-impl LineAdvances {
-    /// The advances of the glyphs wholly inside bytes `start..end`.
-    fn width(&self, start: usize, end: usize) -> f32 {
-        self.glyphs
-            .iter()
-            .filter(|&&(from, to, _)| {
-                usize::try_from(from).is_ok_and(|from| from >= start)
-                    && usize::try_from(to).is_ok_and(|to| to <= end)
-            })
-            .map(|&(_, _, advance)| advance)
-            .sum()
-    }
 }
 
 struct PreparedBuffer {
@@ -2003,11 +1925,6 @@ pub struct TextRenderer {
     /// Successfully installed optional assets. Candidate fallback fonts are
     /// requested one at a time so one glyph never downloads unused families.
     browser_font_assets: HashSet<String>,
-    /// The catalog files each family, italic and bold combination needs,
-    /// keyed by their hash: every text measure asks, and reading them from
-    /// the catalog compares every product face's names, which made laying
-    /// out a long list of cards on a page most of its main thread's work.
-    browser_font_files: Vec<(u64, Vec<&'static str>)>,
 }
 
 impl Default for TextRenderer {
@@ -2106,7 +2023,6 @@ impl TextRenderer {
             ink_bounds_entries: 0,
             browser_font_demands: None,
             browser_font_assets: HashSet::new(),
-            browser_font_files: Vec::new(),
         }
     }
 
@@ -2378,7 +2294,6 @@ impl TextRenderer {
     ) -> (f32, f32) {
         let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
-        self.note_browser_explicit_family(style);
         let max_width = self.collapse_unused_max_width(input, max_width, style, warm_shape);
         self.measure_style_cached(input, max_width, style, warm_shape)
     }
@@ -2563,77 +2478,31 @@ impl TextRenderer {
         if self.measure_style_cold(text, None, style).0 <= max_width {
             return text.to_string();
         }
-        match self.ltr_advances(text, style) {
-            Some(advances) => self.elide_on_advances(text, 0, max_width, style, &advances),
-            None => self.elide_measuring(text, max_width, style, None),
-        }
-    }
-
-    /// Elide `text[from..]`, which does not fit `max_width`, searching its
-    /// cuts on `advances` (of all of `text`) and confirming the cut found
-    /// with a measure of its own: shaping every probed prefix was most of
-    /// laying out a page of titles. A cut the estimate let overrun hands the
-    /// cuts before it to [`Self::elide_measuring`].
-    fn elide_on_advances(
-        &mut self,
-        text: &str,
-        from: usize,
-        max_width: f32,
-        style: &TextStyle,
-        advances: &LineAdvances,
-    ) -> String {
-        let slice = text.get(from..).unwrap_or_default();
-        let cuts = elision_cuts(slice);
-        let ellipsis = self
-            .measure_style_cold(ELLIPSIS.encode_utf8(&mut [0; 4]), None, style)
-            .0;
-        let estimate = |end: usize| {
-            let kept = slice.get(..end).unwrap_or_default().trim_end().len();
-            advances.width(from, from.saturating_add(kept)) + ellipsis
+        // Byte offsets where a cut may fall: the start of every grapheme
+        // cluster after the first. Cutting at index `i` keeps `text[..cuts[i]]`.
+        let cuts: Vec<usize> = crate::text_break::grapheme_indices(text)
+            .map(|(start, _)| start)
+            .filter(|&start| start > 0)
+            .collect();
+        let candidate = |end: usize| {
+            let mut kept = text.get(..end).unwrap_or_default().trim_end().to_string();
+            kept.push(ELLIPSIS);
+            kept
         };
-        let (mut low, mut high) = (0usize, cuts.len());
-        while low < high {
-            let mid = low.midpoint(high);
-            if estimate(cuts.get(mid).copied().unwrap_or_default()) <= max_width {
-                low = mid.saturating_add(1);
-            } else {
-                high = mid;
-            }
-        }
-        let Some(&end) = low.checked_sub(1).and_then(|i| cuts.get(i)) else {
-            return ELLIPSIS.to_string();
-        };
-        let kept = elided(slice, end);
-        if self.measure_style_cold(&kept, None, style).0 <= max_width {
-            return kept;
-        }
-        self.elide_measuring(slice, max_width, style, Some(low.saturating_sub(1)))
-    }
-
-    /// Elide `text` by measuring each probed cut, below cut index `below`
-    /// when given (every cut from it on is known not to fit).
-    fn elide_measuring(
-        &mut self,
-        text: &str,
-        max_width: f32,
-        style: &TextStyle,
-        below: Option<usize>,
-    ) -> String {
-        let cuts = elision_cuts(text);
         // Invariant: every cut below `lo` fits, every cut at or past `hi`
         // does not.
-        let (mut lo, mut hi) = (0usize, below.unwrap_or(cuts.len()).min(cuts.len()));
+        let (mut lo, mut hi) = (0usize, cuts.len());
         while lo < hi {
             let mid = lo.midpoint(hi);
             let end = cuts.get(mid).copied().unwrap_or_default();
-            if self.measure_style_cold(&elided(text, end), None, style).0 <= max_width {
+            if self.measure_style_cold(&candidate(end), None, style).0 <= max_width {
                 lo = mid.saturating_add(1);
             } else {
                 hi = mid;
             }
         }
         match lo.checked_sub(1).and_then(|i| cuts.get(i)) {
-            Some(&end) => elided(text, end),
+            Some(&end) => candidate(end),
             None => ELLIPSIS.to_string(),
         }
     }
@@ -2668,146 +2537,41 @@ impl TextRenderer {
         if max_lines == 1 {
             return vec![self.elide_to_width_style(text, max_width, style)];
         }
-        self.clamp_on_lines(text, max_width, max_lines, style)
-    }
-
-    /// How many lines [`Self::clamp_to_lines_style`] cuts `text` into, for
-    /// sizing a block before it is drawn. Up to two lines this needs only
-    /// the width of the whole text, the same at every width asked: it is one
-    /// line when it fits or cannot break, and otherwise fills both.
-    pub fn clamped_line_count(
-        &mut self,
-        text: &str,
-        max_width: f32,
-        max_lines: usize,
-        style: &TextStyle,
-    ) -> usize {
-        let trimmed = text.trim_matches(collapsible_edge);
-        if max_lines == 0 || trimmed.is_empty() || max_width <= 0.0 {
-            return self
-                .clamp_to_lines_style(text, max_width, max_lines, style)
-                .len();
-        }
-        if max_lines == 1 {
-            return 1;
-        }
-        let breaks: Vec<_> = line_break_opportunities(trimmed)
-            .filter(|&(end, _)| end < trimmed.len())
-            .collect();
-        if max_lines > 2
-            || breaks
-                .iter()
-                .any(|&(_, kind)| kind == LineBreakKind::Mandatory)
-        {
-            return self
-                .clamp_to_lines_style(text, max_width, max_lines, style)
-                .len();
-        }
-        if breaks.is_empty() {
-            return 1;
-        }
-        let width = match self.ltr_advances(trimmed, style) {
-            Some(advances) => advances.line,
-            None => self.measure_style(trimmed, None, style).0,
-        };
-        if width <= max_width { 1 } else { 2 }
-    }
-
-    fn clamp_on_lines(
-        &mut self,
-        text: &str,
-        max_width: f32,
-        max_lines: usize,
-        style: &TextStyle,
-    ) -> Vec<String> {
-        let advances = self.ltr_advances(text, style);
-        // Only as many lines as are kept are wrapped: the rest is elided
-        // from where the last kept line starts.
-        let (wrapped, more) =
-            self.wrap_from(text, style, max_width, max_lines, advances.as_deref());
-        if !more {
+        let wrapped = self.wrap_lines(text, style, max_width);
+        if wrapped.len() <= max_lines {
             return wrapped
                 .into_iter()
-                .map(|(_, line)| self.elide_to_width_style(&line, max_width, style))
+                .map(|line| self.elide_to_width_style(&line, max_width, style))
                 .collect();
         }
-        let last = wrapped
-            .get(max_lines.saturating_sub(1))
-            .map_or(0, |(start, _)| *start);
-        let mut kept: Vec<String> = wrapped
+        // Keep the first `max_lines - 1` whole lines, then merge the rest
+        // onto the final line and elide it as the truncation marker.
+        let (head, tail) = wrapped
+            .split_at_checked(max_lines.saturating_sub(1))
+            .unwrap_or((&wrapped, &[]));
+        let mut kept: Vec<String> = head
             .iter()
-            .take(max_lines.saturating_sub(1))
-            .map(|(_, line)| self.elide_to_width_style(line, max_width, style))
+            .map(|line| self.elide_to_width_style(line, max_width, style))
             .collect();
-        let rest = text
-            .get(last..)
-            .unwrap_or_default()
-            .trim_end_matches(collapsible_edge);
-        kept.push(match &advances {
-            Some(advances) => {
-                let line_end = last.saturating_add(rest.len());
-                let whole = text.get(..line_end).unwrap_or_default();
-                self.elide_on_advances(whole, last, max_width, style, advances)
-            }
-            None => self.elide_to_width_style(rest, max_width, style),
-        });
+        let remainder: String = tail.join(" ");
+        kept.push(self.elide_to_width_style(&remainder, max_width, style));
         kept
-    }
-
-    /// The advance of every glyph of `text` set on one line, by the bytes it
-    /// covers, when the line reads left to right throughout: the width of a
-    /// slice of it is then the sum of the advances inside that slice, short
-    /// only of kerning across its ends. `None` for text with right-to-left
-    /// glyphs or more than one line, whose slices are measured one by one.
-    /// Kept per text and style, so clamping it at another width does not
-    /// shape it again.
-    fn ltr_advances(&mut self, text: &str, style: &TextStyle) -> Option<Arc<LineAdvances>> {
-        self.sync_distinct_letters();
-        let input = CacheQuery::new(text, style);
-        let key = input.key(None, self.generation, self.text_scale);
-        if let Some(shaped) = self.shape_cache.get(&key).or_else(|| key.uncached_shape()) {
-            return shaped.advances.clone();
-        }
-        let scaled = self.scaled_style(style);
-        let prepared = self.shape_buffer(text, None, &scaled);
-        let size = Self::buffer_metrics(&prepared, scaled.line_height_px());
-        let advances = line_advances(&prepared.buffer);
-        self.store_shaped(key, &prepared, &scaled, size);
-        advances
     }
 
     /// Greedy UAX #14 wrap of `text` at `max_width`. This handles scripts that
     /// do not use ASCII spaces, keeps non-breaking spaces intact, and honors
     /// explicit mandatory breaks. An unbreakable segment wider than the budget
     /// stays on its own line; [`Self::clamp_to_lines`] elides it if necessary.
-    #[cfg(test)]
     pub(crate) fn wrap_lines(
         &mut self,
         text: &str,
         style: &TextStyle,
         max_width: f32,
     ) -> Vec<String> {
-        let advances = self.ltr_advances(text, style);
-        self.wrap_from(text, style, max_width, usize::MAX, advances.as_deref())
-            .0
-            .into_iter()
-            .map(|(_, line)| line)
-            .collect()
-    }
+        fn collapsible_edge(character: char) -> bool {
+            matches!(character, ' ' | '\t' | '\n' | '\r')
+        }
 
-    /// At most `limit` lines of the greedy UAX #14 wrap of `text` at
-    /// `max_width`, each with the byte it starts at, and whether text follows
-    /// the last of them. With `advances` each break is found on them and
-    /// confirmed by measuring its line, instead of shaping every prefix up to
-    /// it.
-    fn wrap_from(
-        &mut self,
-        text: &str,
-        style: &TextStyle,
-        max_width: f32,
-        limit: usize,
-        advances: Option<&LineAdvances>,
-    ) -> (Vec<(usize, String)>, bool) {
         let opportunities: Vec<_> = line_break_opportunities(text).collect();
         let mut lines = Vec::new();
         let mut start = 0usize;
@@ -2821,26 +2585,18 @@ impl TextRenderer {
             if start == text.len() {
                 break;
             }
-            if lines.len() >= limit {
-                return (lines, true);
-            }
 
             let mut first = None;
-            let mut fitting = Vec::new();
+            let mut best = None;
             for &(end, kind) in opportunities.iter().filter(|(end, _)| *end > start) {
                 first.get_or_insert(end);
                 let candidate = text
                     .get(start..end)
                     .unwrap_or_default()
                     .trim_end_matches(collapsible_edge);
-                let fits = match advances {
-                    Some(advances) => {
-                        advances.width(start, start.saturating_add(candidate.len())) <= max_width
-                    }
-                    None => self.measure_style(candidate, None, style).0 <= max_width,
-                };
+                let fits = self.measure_style(candidate, None, style).0 <= max_width;
                 if fits {
-                    fitting.push(end);
+                    best = Some(end);
                     if kind == LineBreakKind::Mandatory {
                         break;
                     }
@@ -2848,29 +2604,17 @@ impl TextRenderer {
                     break;
                 }
             }
-            if advances.is_some() {
-                while let Some(&end) = fitting.last() {
-                    let candidate = text
-                        .get(start..end)
-                        .unwrap_or_default()
-                        .trim_end_matches(collapsible_edge);
-                    if self.measure_style(candidate, None, style).0 <= max_width {
-                        break;
-                    }
-                    fitting.pop();
-                }
-            }
-            let end = fitting.last().copied().or(first).unwrap_or(text.len());
+            let end = best.or(first).unwrap_or(text.len());
             let line = text
                 .get(start..end)
                 .unwrap_or_default()
                 .trim_end_matches(collapsible_edge);
             if !line.is_empty() {
-                lines.push((start, line.to_string()));
+                lines.push(line.to_string());
             }
             start = end;
         }
-        (lines, false)
+        lines
     }
 
     pub fn draw_text(
@@ -3060,6 +2804,11 @@ impl TextRenderer {
         max_width: Option<f32>,
         style: &TextStyle,
     ) -> PreparedBuffer {
+        // The faces text needs are noted where it is shaped, not on every
+        // measure: a cached measure or shape was noted when this generation
+        // shaped it, and a font installed or failed starts a new one. Asking
+        // the catalog on every measure was a third of laying out a page of
+        // cards.
         self.note_browser_explicit_family(style);
         let line_height = style.line_height_px();
         let metrics = Metrics::new(style.size, line_height);
@@ -3172,36 +2921,14 @@ impl TextRenderer {
             families.push(name);
         }
         let bold = weight > 500;
-        let key = {
-            use std::hash::{Hash as _, Hasher as _};
-            let mut hasher = rustc_hash::FxHasher::default();
-            families.hash(&mut hasher);
-            style.italic.hash(&mut hasher);
-            bold.hash(&mut hasher);
-            hasher.finish()
-        };
-        let index = self
-            .browser_font_files
-            .iter()
-            .position(|(seen, _)| *seen == key)
-            .unwrap_or_else(|| {
-                // A face without a bold sets bold text in its regular.
-                let mut files =
-                    crate::font_catalog::product_files_for(&families, style.italic, bold);
-                if files.is_empty() && bold {
-                    files = crate::font_catalog::product_files_for(&families, style.italic, false);
-                }
-                self.browser_font_files.push((key, files));
-                self.browser_font_files.len().saturating_sub(1)
-            });
-        let files = self
-            .browser_font_files
-            .get(index)
-            .map(|(_, files)| files.as_slice())
-            .unwrap_or_default();
+        // A face without a bold sets bold text in its regular.
+        let mut files = crate::font_catalog::product_files_for(&families, style.italic, bold);
+        if files.is_empty() && bold {
+            files = crate::font_catalog::product_files_for(&families, style.italic, false);
+        }
         for file in files {
-            if !self.browser_font_assets.contains(*file) {
-                demands.insert((*file).to_owned());
+            if !self.browser_font_assets.contains(file) {
+                demands.insert(file.to_owned());
             }
         }
     }
@@ -3312,25 +3039,16 @@ impl TextRenderer {
         // Count measure-time warms as shape misses so paint-side stats still
         // see the cosmic-text work that filled the entry.
         self.shape_misses = self.shape_misses.saturating_add(1);
-        let advances = key
-            .is_unwrapped()
-            .then(|| line_advances(&prepared.buffer))
-            .flatten();
-        let bytes = glyph_run_bytes(&runs).saturating_add(advance_bytes(advances.as_ref()));
+        let bytes = glyph_run_bytes(&runs);
         if !self.shape_cache.insert(
             key,
             ShapedText {
                 runs: runs.clone(),
                 size,
-                advances: advances.clone(),
             },
             bytes,
         ) {
-            key.remember_uncached_shape(ShapedText {
-                runs,
-                size,
-                advances,
-            });
+            key.remember_uncached_shape(ShapedText { runs, size });
         }
     }
 
@@ -3343,7 +3061,6 @@ impl TextRenderer {
         style: &TextStyle,
     ) -> Arc<Vec<GlyphRun>> {
         let text = input.text;
-        self.note_browser_explicit_family(style);
         let key = input.key(max_width, self.generation, self.text_scale);
         if let Some(shaped) = self.shape_cache.get(&key).or_else(|| key.uncached_shape()) {
             self.shape_hits = self.shape_hits.saturating_add(1);
@@ -3363,19 +3080,13 @@ impl TextRenderer {
         let runs = Arc::new(self.flatten_glyph_runs(&prepared.buffer, style));
         self.shape_ns = self.shape_ns.saturating_add(t0.elapsed().as_nanos());
 
-        let advances = key
-            .is_unwrapped()
-            .then(|| line_advances(&prepared.buffer))
-            .flatten();
-        let bytes = glyph_run_bytes(&runs).saturating_add(advance_bytes(advances.as_ref()));
         self.shape_cache.insert(
             key,
             ShapedText {
                 runs: runs.clone(),
                 size,
-                advances,
             },
-            bytes,
+            glyph_run_bytes(&runs),
         );
         let measure_key = key;
         if !self.measure_cache.contains_key(&measure_key) {

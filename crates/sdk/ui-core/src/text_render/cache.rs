@@ -254,11 +254,6 @@ pub(super) struct CacheKey<'a> {
 }
 
 impl CacheKey<'_> {
-    /// Whether this key is for text shaped without a wrap width.
-    pub fn is_unwrapped(&self) -> bool {
-        self.bucket.width.is_none()
-    }
-
     pub fn uncached_shape(&self) -> Option<&super::ShapedText> {
         self.input
             .uncached_shape
