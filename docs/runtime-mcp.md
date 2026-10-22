@@ -455,7 +455,8 @@ arguments, the action the app tagged `read:document`
 (`ActionSpec::reads_document`) and answers `{resource, action, value}`, the
 value being that action's output. That is the Word Processor's `read-text`
 (Markdown with block ids, up to 64 blocks, and its `nextCursor`), a sheet's
-`read-cells` (its used range, as `rows`, `formulas` and `bold`) and the
+`read-cells` (its used range, as `rows`, `formulas` and `bold`, plus
+`formula_errors` naming each formula that does not parse and why) and the
 deck's `read` outline. The File Explorer's `open` itself answers the folder's
 `entries` in `opened`. A value over 6 KiB is cut to fit (text at a line,
 arrays by whole elements) and says `"truncated": true`; its cursor is

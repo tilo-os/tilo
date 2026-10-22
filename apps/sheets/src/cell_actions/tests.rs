@@ -493,3 +493,38 @@ fn an_import_into_a_blank_workbook_replaces_its_empty_sheet() {
     import(&mut used);
     assert_eq!(names(&used), ["Data", "sales"]);
 }
+
+/// A formula that does not parse is kept and shows its error, as in any
+/// spreadsheet, and the edit answers which cell and why, so the writer can
+/// fix it; the cells beside it are written as usual.
+#[test]
+fn a_formula_that_does_not_parse_is_kept_and_answered() {
+    let mut book = workbook(&[&["Item", "Price"], &["x", "4"]]);
+    let invoke = set_cells(
+        &book,
+        "A4",
+        json!([["Total", "=INDEX(A1:A5, MATCH(\"x\", B1:B5, 0)", "=B2*2"]]),
+    );
+    let set = answer(&mut book, "set-cells", invoke);
+    assert_eq!(
+        set["rows"],
+        json!([["Total", "#ERROR!", 8.0]]),
+        "the broken formula is stored and shows its error"
+    );
+    assert_eq!(
+        set["formula_errors"],
+        json!([{"cell": "B4", "shows": "#ERROR!",
+            "message": "`INDEX(` is never closed: add `)`"}])
+    );
+    assert_eq!(
+        read_back(&book, Some("A4:C4"))["formula_errors"],
+        set["formula_errors"],
+        "reading the cells reports it too"
+    );
+    assert!(
+        read_back(&book, Some("A1:B2"))
+            .get("formula_errors")
+            .is_none(),
+        "a range without broken formulas has no formula_errors"
+    );
+}
