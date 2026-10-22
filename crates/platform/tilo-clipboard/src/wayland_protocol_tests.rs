@@ -1409,6 +1409,45 @@ fn a_secret_copy_pastes_as_plain_text_and_carries_the_history_markers() {
     assert_eq!(harness.selection_mimes(), ["image/png"]);
 }
 
+/// An app's image copy (a photo, a region of a PDF page) replaces what the
+/// app copied before. Text left beside the image would be what every app
+/// that prefers text pastes, so the person would get the old text instead.
+#[test]
+fn an_image_copy_replaces_the_text_copied_before_it() {
+    let harness = Harness::new();
+    harness.enter(0, 0);
+    harness.fence();
+
+    assert!(
+        harness
+            .backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "copied before")
+    );
+    assert!(harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));
+    assert_eq!(
+        harness.selection_mimes(),
+        ["image/png"],
+        "the image copy offers the image and nothing copied before it"
+    );
+    let png = harness.selection_bytes("image/png");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+    // And a text copy after it replaces the image in turn.
+    assert!(
+        harness
+            .backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "copied after")
+    );
+    assert!(
+        !harness
+            .selection_mimes()
+            .iter()
+            .any(|mime| mime == "image/png"),
+        "the text copy replaced the image"
+    );
+    assert_eq!(harness.selection_bytes("text/plain"), b"copied after");
+}
+
 /// Tilo's compositor answers a new selection with work of its own (it mirrors
 /// the selection, takes it over, repaints) in the iteration that confirms it.
 /// A copy whose confirmation comes back after the copy's budget was still

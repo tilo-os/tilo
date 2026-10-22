@@ -851,14 +851,12 @@ mod image_worker_impl {
         }
 
         fn store_image(&mut self, contents: Vec<u8>) {
-            // An image keeps an earlier caption, but never a secret: the
-            // image would ride along under the secret's markers, and the
-            // secret would stay offered after the person copied something
-            // else.
-            if self.text_secret {
-                self.text_contents = None;
-                self.text_secret = false;
-            }
+            // A copy replaces what was copied before, as a text copy does.
+            // Text kept beside the image would be what every app that
+            // prefers text pastes, and a secret would ride along under its
+            // markers.
+            self.text_contents = None;
+            self.text_secret = false;
             self.pending_image = Some(Arc::from(contents));
         }
 
