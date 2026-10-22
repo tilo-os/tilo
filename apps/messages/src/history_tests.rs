@@ -545,7 +545,6 @@ fn sending_text_is_secret_and_history_is_device_bound_read_only() {
         text: PRIVATE.into(),
     };
     assert!(!format!("{private:?}").contains(PRIVATE));
-    assert!(history.device_only);
     assert_eq!(history.action_kind, ui::tilo_actions::ActionKind::Read);
 }
 

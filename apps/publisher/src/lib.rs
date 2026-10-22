@@ -145,7 +145,7 @@ struct Pane {
 /// for every caller: the buttons, the palette, scripts and agents. Creating
 /// or revealing the key needs an owner and a confirmation.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.publisher.key", device_only)]
+#[effect(operation = "so.tilo.publisher.key")]
 pub enum KeyEffect {
     /// Create publisher key.
     #[effect(privileged)]
@@ -153,7 +153,7 @@ pub enum KeyEffect {
     /// Copy namespace proof.
     CopyProof,
     /// Copy key for CI.
-    #[effect(privileged)]
+    #[effect(attended, privileged)]
     CopySecret,
     /// Apply for namespaces.
     #[effect(job)]

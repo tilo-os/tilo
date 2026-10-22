@@ -549,21 +549,26 @@ mod tests {
         );
     }
 
-    /// Work on the repository reaches this machine's disk, so only the
-    /// person at it may ask for it; the diff preferences are the person's
-    /// settings and reach nothing of the machine.
+    /// Work on the repository reaches outside the record, so the person's
+    /// answers decide it like any outside effect; the diff preferences only
+    /// read; choosing the repository opens a chooser for the person.
     #[test]
-    fn only_repository_work_is_device_only() {
+    fn repository_work_is_an_outside_effect_and_choosing_is_attended() {
         use ui::tilo_resource::Effect as _;
-        let device_only = |id: &str| {
+        let declaration = |id: &str| {
             GitClientEffect::declarations()
                 .into_iter()
                 .find(|decl| decl.id == id)
                 .unwrap_or_else(|| panic!("{id} is declared"))
-                .device_only
         };
         for id in ["commit", "stage-all", "fetch", "discard-file"] {
-            assert!(device_only(id), "{id}");
+            let work = declaration(id);
+            assert_eq!(
+                work.action_kind,
+                ui::tilo_actions::ActionKind::Outside,
+                "{id}"
+            );
+            assert!(!work.attended, "{id}");
         }
         for id in [
             "diff-layout",
@@ -571,8 +576,13 @@ mod tests {
             "show-whitespace",
             "wrap-lines",
         ] {
-            assert!(!device_only(id), "{id}");
+            assert_eq!(
+                declaration(id).action_kind,
+                ui::tilo_actions::ActionKind::Read,
+                "{id}"
+            );
         }
+        assert!(declaration("choose-repository").attended);
     }
 
     #[test]
@@ -581,7 +591,6 @@ mod tests {
             .into_iter()
             .find(|declaration| declaration.id == "run-approved-check")
             .expect("approved project check is on the actual repository effect surface");
-        assert!(!declaration.device_only);
         assert_eq!(
             declaration.answers,
             ui::tilo_resource::effect::Answers::Later {

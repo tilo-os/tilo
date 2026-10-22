@@ -13,7 +13,7 @@ use super::{Draft, PAGE_SIZE, Pane, open_existing, read_field, verbatim};
 
 /// Package actions share the private owner-only operator surface.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.registry-review.packages", device_only)]
+#[effect(operation = "so.tilo.registry-review.packages")]
 pub enum PackageReview {
     /// List addressable pending package summaries without downloading packages.
     #[effect(job, returns)]

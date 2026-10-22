@@ -142,7 +142,7 @@ impl Workspace {
 /// else rides the catalog entry, result or history entry it acts on, which it
 /// names by id and resolves again when invoked. None carries a password.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "db_client.effects", device_only)]
+#[effect(operation = "db_client.effects")]
 pub enum DbEffect {
     /// Run SQL
     ///
@@ -184,7 +184,7 @@ pub enum DbEffect {
     #[effect(view, row)]
     ShowResult { connection: Uuid, generation: usize },
     /// Export CSV
-    #[effect(row, job)]
+    #[effect(attended, row, job)]
     ExportCsv { connection: Uuid, generation: usize },
     /// Begin transaction
     #[effect(row, job)]

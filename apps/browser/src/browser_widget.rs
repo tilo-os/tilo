@@ -10456,14 +10456,6 @@ mod tests {
                 clear_history.locus,
                 ui::tilo_actions::ExecutionLocus::ClientLocal
             );
-            assert!(
-                clear_history
-                    .contract
-                    .tags
-                    .iter()
-                    .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY),
-                "only the person at this device clears its history"
-            );
             assert_eq!(
                 clear_history.contract.confirmation,
                 ui::tilo_actions::ConfirmationPolicy::Confirm
@@ -10536,13 +10528,6 @@ mod tests {
                 .unwrap();
             assert_eq!(toggle.kind, OperationKind::Effect);
             assert_eq!(toggle.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
-            assert!(
-                toggle
-                    .contract
-                    .tags
-                    .iter()
-                    .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
-            );
             assert!(toggle.contract.validate_declaration().is_empty());
 
             let started = w

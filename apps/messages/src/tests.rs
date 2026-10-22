@@ -5,7 +5,7 @@ use ui::tilo_resource::Id;
 
 #[test]
 fn private_group_action_contracts_preserve_read_and_outside_grants() {
-    use ui::tilo_actions::{ActionKind, LOCAL_DEVICE_ONLY, OperationKind};
+    use ui::tilo_actions::{ActionKind, OperationKind};
 
     let specs = <MessagesEffect as ui::framework::Effect>::specs();
     for (id, kind) in [
@@ -23,13 +23,6 @@ fn private_group_action_contracts_preserve_read_and_outside_grants() {
             .expect("every private group action must be exported");
         assert_eq!(spec.contract.kind, kind, "grant kind for {id}");
         assert_eq!(spec.kind, OperationKind::Effect, "effect kind for {id}");
-        assert!(
-            spec.contract
-                .tags
-                .iter()
-                .any(|tag| tag == LOCAL_DEVICE_ONLY),
-            "private group action {id} must remain on the original device"
-        );
     }
 }
 

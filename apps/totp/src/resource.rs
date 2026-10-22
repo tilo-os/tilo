@@ -123,7 +123,7 @@ pub(crate) fn safe_identity_field<'a>(value: &'a str, secret: &str) -> &'a str {
 /// What the Authenticator does with what only this device holds: the add
 /// form, an account's codes and its secret.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "totp.effect", device_only)]
+#[effect(operation = "totp.effect")]
 pub enum TotpEffect {
     /// Add account.
     ///
@@ -138,7 +138,7 @@ pub enum TotpEffect {
         account: String,
     },
     /// Copy current code.
-    #[effect(privileged, kind = "read")]
+    #[effect(attended, privileged, kind = "read")]
     CopyCode {
         #[param("Id of the account")]
         account: String,

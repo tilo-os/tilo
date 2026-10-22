@@ -616,7 +616,7 @@ fn captured_provider_stream_keeps_the_real_invoker_and_model_attribution() {
 }
 
 #[test]
-fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() {
+fn model_capabilities_are_mount_local() {
     use crate::ChatShell;
     use ui::framework::testing::TestApp;
     let first = backend("First mount");
@@ -683,14 +683,4 @@ fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() 
     assert!(second.requests.borrow().is_empty());
     let mut b = b;
     assert!(crate::testing::mounted_rows(&mut b, "c_chat").is_empty());
-    assert!(
-        a.call_by(
-            ui::tilo_actions::ActionInvoker::actor("remote-agent"),
-            &channel,
-            "model-control",
-            serde_json::json!({"command": "ask"}),
-        )
-        .is_err(),
-        "a collaborator cannot adopt the device's model capability"
-    );
 }

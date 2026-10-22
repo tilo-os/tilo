@@ -157,7 +157,7 @@ impl FeedbackDraft {
 impl FeedbackDraft {}
 
 #[derive(Clone, Debug, Effect)]
-#[effect(operation = "feedback.compose", device_only)]
+#[effect(operation = "feedback.compose")]
 pub enum FeedbackEffect {
     /// Inspect exactly what will leave this device.
     Review,
