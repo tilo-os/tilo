@@ -90,6 +90,17 @@ pub(super) struct Said {
     pub dirty: bool,
 }
 
+/// How far a loaded document is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    /// The page before it is still shown.
+    Loading,
+    /// It replaced the page before it.
+    Committed,
+    /// It finished loading.
+    Finished,
+}
+
 pub(super) struct HtmlBody {
     engine: Option<SharedEngine>,
     /// True only for a real isolated renderer; the deterministic test
@@ -100,9 +111,13 @@ pub(super) struct HtmlBody {
     prepared: Option<(Setting, Prepared)>,
     /// What is loaded in the engine.
     loaded: Option<Setting>,
-    /// The loaded document has replaced the one before it: the sizes the
-    /// engine reports are of it.
-    committed: bool,
+    /// How far the loaded document is: the sizes the engine reports are
+    /// of it once it replaced the one before, and of its content once it
+    /// finished loading.
+    stage: Stage,
+    /// The last size the engine reported for the loaded document before it
+    /// finished loading, in CSS pixels (width, height, scroll).
+    early_size: Option<(f64, f64, f64)>,
     measured: Option<Measured>,
     /// The view width the body is being measured at: it is laid out a
     /// sliver tall, and not drawn, until its engine says how tall it is.
@@ -134,7 +149,8 @@ impl HtmlBody {
             view: None,
             prepared: None,
             loaded: None,
-            committed: false,
+            stage: Stage::Loading,
+            early_size: None,
             measured: None,
             measuring: None,
             zoom: 1.0,
@@ -269,9 +285,13 @@ impl HtmlBody {
         else {
             return false;
         };
-        let Some(engine) = self.view().map(|view| view.engine().clone()) else {
+        let Some(view) = self.view() else {
             return false;
         };
+        // What the view shows until this mail paints is never the mail
+        // before it.
+        view.forget_frame();
+        let engine = view.engine().clone();
         engine.send(WebViewCommand::SetNativeFilterRules {
             rules: std::sync::Arc::new(crate::html_mail::filter_rules(setting.remote)),
             enabled: Some(true),
@@ -287,7 +307,8 @@ impl HtmlBody {
         if !same_message {
             self.measured = None;
         }
-        self.committed = false;
+        self.stage = Stage::Loading;
+        self.early_size = None;
         self.loaded = Some(setting);
         self.hovered.clear();
         self.finding = None;
@@ -400,8 +421,12 @@ impl HtmlBody {
         }
         for event in engine.drain_events() {
             match event {
+                // Before its content is laid out a page has no size; that is
+                // not a measurement.
+                WebViewEvent::DocumentSize { width, height, .. }
+                    if width <= 0.0 || height <= 0.0 => {}
                 WebViewEvent::UriChanged(uri) if uri.starts_with("data:") => {
-                    self.committed = true;
+                    self.stage = self.stage.max(Stage::Committed);
                 }
                 WebViewEvent::UriChanged(uri) if !uri.is_empty() && uri != "about:blank" => {
                     // An engine that cannot seal its page left the mail:
@@ -409,12 +434,29 @@ impl HtmlBody {
                     self.loaded = None;
                     said.dirty = true;
                 }
+                WebViewEvent::LoadFinishedAt { .. } | WebViewEvent::LoadFinished
+                    if self.stage == Stage::Committed =>
+                {
+                    self.stage = Stage::Finished;
+                    if let Some((width, height, scroll_y)) = self.early_size.take() {
+                        said.dirty |= self.document_size(width, height, scroll_y);
+                    }
+                }
                 WebViewEvent::DocumentSize {
                     width,
                     height,
                     scroll_y,
-                } if self.committed => {
+                } if self.stage == Stage::Finished => {
                     said.dirty |= self.document_size(width, height, scroll_y);
+                }
+                WebViewEvent::DocumentSize {
+                    width,
+                    height,
+                    scroll_y,
+                } if self.stage == Stage::Committed => {
+                    // Measured before its content is laid out, a page is as
+                    // tall as the sliver it is shown in.
+                    self.early_size = Some((width, height, scroll_y));
                 }
                 WebViewEvent::LinkHovered(url) => {
                     if url != self.hovered {
@@ -634,7 +676,11 @@ impl HtmlBody {
 
     /// The loaded document is not on screen yet.
     pub fn pending(&self) -> bool {
-        self.live && self.loaded.is_some() && (self.measuring.is_some() || !self.committed)
+        self.live
+            && self.loaded.is_some()
+            && (self.measuring.is_some()
+                || self.stage != Stage::Finished
+                || !self.view.as_ref().is_some_and(WebView::has_fitting_frame))
     }
 
     pub fn mark_drawn(&mut self) {

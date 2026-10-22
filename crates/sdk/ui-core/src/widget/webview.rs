@@ -248,6 +248,37 @@ impl WebView {
         self.send_resize_if_needed();
     }
 
+    /// Whether the engine's latest frame fits the view as placed: drawn,
+    /// it shows the page rather than a placeholder waiting for a resize.
+    #[must_use]
+    pub fn has_fitting_frame(&self) -> bool {
+        let expected = (
+            round_to_u32_px(self.rect.width() * f64::from(self.scale_factor)),
+            round_to_u32_px(self.rect.height() * f64::from(self.scale_factor)),
+        );
+        let slack = frame_quantization_slack(self.scale_factor);
+        let slot = self.engine.frames();
+        let guard = slot.lock();
+        guard.ok().as_deref().is_some_and(|frame| {
+            frame.as_ref().is_some_and(|frame| {
+                frame.width.abs_diff(expected.0) <= slack
+                    && frame.height.abs_diff(expected.1) <= slack
+            })
+        })
+    }
+
+    /// Forget the page's last frame, for a host loading another document
+    /// into the view: until the new page paints, the view shows its
+    /// placeholder, never the document before it.
+    pub fn forget_frame(&mut self) {
+        if let Ok(mut slot) = self.engine.frames().lock() {
+            *slot = None;
+        }
+        self.cached_image = None;
+        self.cached_trace_id = None;
+        self.cached_key = (0, 0, 0);
+    }
+
     /// The device scale the page is rendered at.
     #[must_use]
     pub fn device_scale(&self) -> f32 {
