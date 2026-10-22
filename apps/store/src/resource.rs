@@ -965,6 +965,21 @@ mod tests {
         })
     }
 
+    /// Search opens a Flatpak's page through this link
+    /// (`tilo-store:app/<id>`): the launch shows that app's details and
+    /// installs nothing; installing stays the person's choice on the page.
+    #[test]
+    fn a_store_link_opens_the_app_page_and_installs_nothing() {
+        let arguments = vec!["tilo-store:app/com.spotify.Client".to_owned()];
+        let invokes = StoreShell::launch(&LaunchInput::new(&arguments, None), false);
+        let expected = Invoke::<Reports>::effect(&StoreEffect::ShowDetails {
+            app: "com.spotify.Client".into(),
+        });
+        assert_eq!(invokes.len(), 1, "one step: {invokes:?}");
+        assert_eq!(invokes[0].id, expected.id);
+        assert_eq!(invokes[0].arguments, expected.arguments);
+    }
+
     /// The links a launch may name: an app's identity and nothing else.
     #[test]
     fn store_links_name_only_a_stable_app_identity() {
