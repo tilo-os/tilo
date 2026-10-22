@@ -250,6 +250,7 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.clone() {
             let (tree, records) = {
                 let st = chrome.borrow();
+                self.room_activity.set_session_user(&st.local_user_id);
                 (st.tree_handle(), st.records().clone())
             };
             if self.room_activity.take_persisted_reads() {
@@ -382,6 +383,7 @@ impl ShellOverlayHost {
         let workspace = {
             let (tree, records) = {
                 let st = chrome.borrow();
+                self.room_activity.set_session_user(&st.local_user_id);
                 (st.tree_handle(), st.records().clone())
             };
             let local = self.room_records.borrow();

@@ -153,7 +153,14 @@ pub(crate) struct NativeActivityHost {
     morning: Option<Rc<super::morning_sources::NativeMorningSources>>,
     /// Agent task runs being undone, and how each ended.
     undos: super::task_undo::TaskUndos,
+    /// The session's identity, as chrome holds it ([`RoomActivityPane::set_session_user`]).
+    session_user: SessionUser,
 }
+
+/// The session's identity as chrome holds it, shared by the pane and every
+/// host it is given: the pane asks for it on every refresh, which runs while
+/// a frame is painted, so it is never read from the disk there.
+type SessionUser = Rc<std::cell::RefCell<Option<String>>>;
 
 /// A document's revision when a waiting run last looked at it: the heads of
 /// a document open here, or the persisted witness of one on disk.
@@ -1069,7 +1076,12 @@ impl ActivityHost for NativeActivityHost {
     }
 
     fn local_user(&self) -> String {
-        crate::shell::state::local_user_id()
+        // Only a pane chrome never told who the session is (a bare test
+        // pane) reads the identity file.
+        self.session_user
+            .borrow()
+            .clone()
+            .unwrap_or_else(crate::shell::state::local_user_id)
     }
     fn local_author(&self, authors: &mut ui::AuthorDirectory, actor: &str) -> Option<String> {
         #[cfg(test)]
@@ -1222,6 +1234,7 @@ pub struct RoomActivityPane(
     Option<crate::shell::collab_broker::AppActionBroker>,
     ShortcutRunRecorder,
     ColdRecordReads,
+    SessionUser,
 );
 
 impl std::ops::Deref for RoomActivityPane {
@@ -1268,6 +1281,15 @@ impl RoomActivityPane {
     /// refresh asked for is handed to the worker, and
     /// [`Self::take_persisted_reads`] says when Activity must refresh
     /// again because a read came in.
+    /// Tell the pane who the session is, as chrome holds it: the identity
+    /// the pane reads as the reader's own.
+    pub(crate) fn set_session_user(&self, user: &str) {
+        let mut held = self.4.borrow_mut();
+        if held.as_deref() != Some(user) {
+            *held = Some(user.to_owned());
+        }
+    }
+
     pub(crate) fn refresh_observed_local(
         &mut self,
         tree: &WorkspaceTreeHandle,
@@ -1294,12 +1316,17 @@ impl RoomActivityPane {
 
     pub fn new() -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::new();
-        pane.set_host(Rc::new(NativeActivityHost::default()));
+        let session_user = SessionUser::default();
+        pane.set_host(Rc::new(NativeActivityHost {
+            session_user: Rc::clone(&session_user),
+            ..NativeActivityHost::default()
+        }));
         Self(
             pane,
             None,
             ShortcutRunRecorder::default(),
             ColdRecordReads::default(),
+            session_user,
         )
     }
     /// The production pane: the device's private seen frontiers and
@@ -1311,18 +1338,24 @@ impl RoomActivityPane {
     }
     pub(crate) fn with_local_user(user: String) -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::with_local_user(user);
-        pane.set_host(Rc::new(NativeActivityHost::default()));
+        let session_user = SessionUser::default();
+        pane.set_host(Rc::new(NativeActivityHost {
+            session_user: Rc::clone(&session_user),
+            ..NativeActivityHost::default()
+        }));
         Self(
             pane,
             None,
             ShortcutRunRecorder::default(),
             ColdRecordReads::default(),
+            session_user,
         )
     }
     /// Attach the live broker after the session binds. Without it, agent
     /// tasks remain visible but cannot be launched into an offline queue.
     pub fn attach_task_broker(&mut self, broker: crate::shell::collab_broker::AppActionBroker) {
         self.1 = Some(broker.clone());
+        let session_user = Rc::clone(&self.4);
         self.set_host(Rc::new(NativeActivityHost {
             morning: Some(Rc::new(super::morning_sources::NativeMorningSources::new(
                 broker.clone(),
@@ -1330,10 +1363,12 @@ impl RoomActivityPane {
             broker: Some(broker),
             review: None,
             undos: super::task_undo::TaskUndos::default(),
+            session_user,
         }));
     }
     pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
         let broker = self.1.clone();
+        let session_user = Rc::clone(&self.4);
         self.set_host(Rc::new(NativeActivityHost {
             morning: broker
                 .clone()
@@ -1341,6 +1376,7 @@ impl RoomActivityPane {
             broker,
             review: Some(review),
             undos: super::task_undo::TaskUndos::default(),
+            session_user,
         }));
     }
     /// Whether a finished shortcut run waits to be recorded. Cheap: the

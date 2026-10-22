@@ -639,6 +639,9 @@ pub fn run() -> std::process::ExitCode {
         tracing::error!(%error, "cannot safely open session settings; repair the settings copy or its lock before starting the session");
         return std::process::ExitCode::FAILURE;
     }
+    // Who sits here is read now, before the loop runs, and kept current by
+    // workers: the loop asks on every frame and must never wait on the disk.
+    shell::watched_identity::install();
 
     if firstboot_requested
         && compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop

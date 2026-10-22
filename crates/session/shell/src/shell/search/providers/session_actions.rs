@@ -449,12 +449,10 @@ fn retirement_admin(chrome: &crate::shell::chrome_state::ChromeState) -> bool {
     if chrome.session_locked() {
         return false;
     }
-    let Ok(store) = crate::shell::identity_provisioning::DiskIdentityStore::from_env() else {
-        return false;
-    };
-    store.path().parent().is_some_and(|path| {
-        crate::compositor::admin_control::authentication_session_decision(path).is_ok()
-    })
+    // Listing the actions runs on the compositor's loop: the session keeps
+    // the answer current on a worker.
+    crate::watched_identity::device_admin()
+        .unwrap_or_else(crate::watched_identity::read_device_admin)
 }
 #[cfg(target_os = "linux")]
 fn retirement_result() -> SearchResult {
