@@ -32,6 +32,7 @@
 
 pub mod actions;
 pub mod app;
+mod commands;
 mod comment_overlay;
 pub mod component;
 pub mod content;
@@ -50,6 +51,7 @@ pub mod resource;
 mod scenarios;
 pub mod search_provider;
 mod shelf_controls;
+mod store;
 #[cfg(test)]
 mod test_epub;
 pub mod xhtml;
