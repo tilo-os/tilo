@@ -234,9 +234,105 @@ where
     std::thread::Builder::new().name(name.into()).spawn(body)
 }
 
+/// How far below an ordinary thread [`spawn_background_thread`] runs, as a
+/// Linux nice value.
+pub const BACKGROUND_NICE: i32 = 10;
+
+/// [`spawn_thread`] for work a person does not wait on frame by frame —
+/// rasterising pages ahead of a scroll, decoding, indexing — that must never
+/// take a CPU from the thread drawing the window. On Linux the thread runs
+/// [`BACKGROUND_NICE`] steps below its spawner, so on a machine with one or
+/// two slow cores the UI thread is scheduled first and the work fills the
+/// time it leaves; elsewhere it is an ordinary thread.
+///
+/// # Errors
+///
+/// As [`spawn_thread`].
+pub fn spawn_background_thread<T, F>(
+    name: impl Into<String>,
+    body: F,
+) -> std::io::Result<std::thread::JoinHandle<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    spawn_thread(name, move || {
+        lower_current_thread_priority();
+        body()
+    })
+}
+
+/// Lower the calling thread (only it: Linux keeps a nice value per thread)
+/// to [`BACKGROUND_NICE`]. Failure leaves it as it was, which is only slower.
+pub fn lower_current_thread_priority() {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `gettid` takes nothing and returns this thread's id.
+        let Ok(tid) = libc::id_t::try_from(unsafe { libc::gettid() }) else {
+            return;
+        };
+        // SAFETY: `getpriority`/`setpriority` take and return plain integers;
+        // PRIO_PROCESS with a thread id changes that thread alone on Linux.
+        unsafe {
+            let current = libc::getpriority(libc::PRIO_PROCESS, tid);
+            libc::setpriority(
+                libc::PRIO_PROCESS,
+                tid,
+                current.saturating_add(BACKGROUND_NICE).min(19),
+            );
+        }
+    }
+}
+
+/// CPU time the calling thread has used, where the platform keeps it: what
+/// a frame cost its thread, apart from time spent preempted or waiting.
+#[must_use]
+pub fn thread_cpu_time() -> Option<std::time::Duration> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut now = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `now` is a valid, writable timespec for the call.
+        let status = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut now) };
+        if status != 0 {
+            return None;
+        }
+        Some(std::time::Duration::new(
+            u64::try_from(now.tv_sec).ok()?,
+            u32::try_from(now.tv_nsec).ok()?,
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_thread_runs_below_its_spawner() {
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: plain integer syscalls on this process's own threads.
+            let nice = || unsafe {
+                libc::getpriority(
+                    libc::PRIO_PROCESS,
+                    libc::id_t::try_from(libc::gettid()).unwrap(),
+                )
+            };
+            let spawner = nice();
+            let background = spawn_background_thread("nice-test", nice)
+                .unwrap()
+                .join()
+                .unwrap();
+            assert_eq!(background, (spawner + BACKGROUND_NICE).min(19));
+        }
+    }
 
     #[test]
     fn block_on_drives_timers_but_refuses_runtime_and_ui_threads() {

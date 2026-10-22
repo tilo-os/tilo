@@ -32,6 +32,10 @@ tracing.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
+# Background threads lower their own scheduling priority.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 # In a browser the app runtime is the page's microtask queue.
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasm-bindgen-futures = "=0.4.58"
