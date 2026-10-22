@@ -45,7 +45,7 @@ pub use actions::{
 };
 pub use chips::{FacetMenu, FacetOffer, FacetValue, OpenFacet, facet_bar, facet_offers};
 pub use engine::{
-    Cancel, FRESH, GROUP_LIMIT, QueryEngine, QueryResults, QueryTimings, RemoteError,
+    Cancel, FRESH, GROUP_LIMIT, LocalSource, QueryEngine, QueryResults, QueryTimings, RemoteError,
     RemoteSection, RemoteSource, RemoteState, ResultGroup, THROTTLE, excerpt,
 };
 pub use kept::{KeptView, KeptViews};

@@ -909,3 +909,93 @@ fn prose_is_indexed_again_only_when_the_bodies_change() {
         .collect();
     assert_eq!(ids, ["moby#1"]);
 }
+
+/// A synced index of books whose text this device does not hold: each hit
+/// a passage of a book, found by any word of it.
+struct Elsewhere(Vec<(&'static str, &'static str, &'static str)>);
+
+impl super::LocalSource for Elsewhere {
+    fn search(&self, query: &QuerySpec, limit: usize) -> Vec<Item> {
+        let word = tilo_search::fold(query.text.trim());
+        self.0
+            .iter()
+            .filter(|(_, _, text)| tilo_search::fold(text).contains(&word))
+            .take(limit)
+            .map(|(id, book, _)| {
+                Item::new(PASSAGE, *id)
+                    .with("title", "Chapter 3")
+                    .with("where", *book)
+                    .with("book", *book)
+            })
+            .collect()
+    }
+}
+
+// USER REQUIREMENT (2026-10-22): searching the library finds passages in
+// books whose content is not on this device yet, from the local index, at
+// once.
+#[test]
+fn an_index_of_the_apps_own_answers_with_the_local_items_at_once() {
+    let mut engine = QueryEngine::new(book_kinds());
+    engine.sync_local(shelf());
+    engine.set_local_source(Some(Arc::new(Elsewhere(vec![(
+        "typee#3",
+        "Typee",
+        "the wharves of Nukuheva",
+    )]))));
+    engine.set_query(QuerySpec::text("wharves"));
+    let passages: Vec<String> = engine
+        .results()
+        .local
+        .iter()
+        .filter(|group| group.kind == PASSAGE)
+        .flat_map(|group| group.items.iter().map(|item| item.id.clone()))
+        .collect();
+    assert!(
+        passages.contains(&"typee#3".to_owned()),
+        "the index's passage is among the local results: {passages:?}"
+    );
+    assert!(engine.timings().local.is_some(), "with the local answer");
+    // Its hits narrow like the items do.
+    engine.set_query(QuerySpec::text("wharves").toggled(&Chip::value("book", "Moby-Dick")));
+    assert!(
+        engine
+            .results()
+            .local
+            .iter()
+            .flat_map(|group| &group.items)
+            .all(|item| item.value("book") == Some("Moby-Dick")),
+        "a chip narrows the index's hits too"
+    );
+}
+
+#[test]
+fn an_index_arriving_later_adds_its_hits_after_the_rows_shown() {
+    let mut engine = QueryEngine::new(book_kinds());
+    engine.sync_local(shelf());
+    engine.set_query(QuerySpec::text("moby"));
+    let before: Vec<String> = engine
+        .results()
+        .local
+        .iter()
+        .flat_map(|group| group.items.iter().map(|item| item.id.clone()))
+        .collect();
+    assert!(!before.is_empty());
+    engine.set_local_source(Some(Arc::new(Elsewhere(vec![(
+        "omoo#1",
+        "Omoo",
+        "a moby of a whale",
+    )]))));
+    let after: Vec<String> = engine
+        .results()
+        .local
+        .iter()
+        .flat_map(|group| group.items.iter().map(|item| item.id.clone()))
+        .collect();
+    assert_eq!(
+        after.get(..before.len()),
+        Some(before.as_slice()),
+        "rows shown stay"
+    );
+    assert!(after.contains(&"omoo#1".to_owned()));
+}
