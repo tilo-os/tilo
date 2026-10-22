@@ -98,6 +98,10 @@ const RECORD_VERSION: u32 = 2;
 /// Governance publications kept after the last full checkpoint before the
 /// room's publication is compacted into a fresh one.
 const MAX_PUBLICATION_TAIL: usize = 256;
+/// How long members' writes the governor took in may wait to be written
+/// through to the room file. A hard stop loses at most these; replaying
+/// what the relay retains brings them back.
+const KEEP_FOLLOWED: Duration = Duration::from_secs(1);
 /// Record writes the room authority has yet to look at, per room.
 const RECORD_NOTICES: usize = 256;
 
@@ -176,6 +180,16 @@ fn stewardship(
     })
 }
 
+/// What taking a member's write into the governor's copy did.
+#[derive(Clone, Copy, Debug, Default)]
+struct Followed {
+    /// The copy changed.
+    changed: bool,
+    /// A write the copy let go earlier waited for something that has landed
+    /// since: replaying what the relay retains brings it in.
+    replay_wanted: bool,
+}
+
 /// A room this relay governs.
 struct GovernedRoom {
     record: RoomRecord,
@@ -204,6 +218,10 @@ struct GovernedRoom {
     desktop: Option<crate::desktop_guard::DesktopGuard>,
     /// The segments of members' larger desktop writes, until each is whole.
     desktop_segments: collab_types::DocumentReassembler,
+    /// Members' writes the governor took in that the room file lacks.
+    unkept: bool,
+    /// Whether writing them through is due already ([`Rooms::keep_soon`]).
+    keeping: bool,
 }
 
 impl RoomRecord {
@@ -303,6 +321,8 @@ impl GovernedRoom {
             compaction_wait: 0,
             desktop: None,
             desktop_segments: collab_types::DocumentReassembler::default(),
+            unkept: false,
+            keeping: false,
         };
         this.persist()?;
         Ok(this)
@@ -354,6 +374,8 @@ impl GovernedRoom {
             compaction_wait: 0,
             desktop: None,
             desktop_segments: collab_types::DocumentReassembler::default(),
+            unkept: false,
+            keeping: false,
         })
     }
 
@@ -420,25 +442,49 @@ impl GovernedRoom {
         (publications, Ok(()))
     }
 
-    /// Take a member's write to a record the governor has into its copy.
-    /// Not persisted: the relay retains the write, and opening the room
-    /// replays it.
-    fn follow(&mut self, author: [u8; 32], message: neighbour_wire::NeighbourMsg) {
+    /// Take a member's write to a record the governor has into its copy,
+    /// in memory: [`Self::keep_followed`] writes it through.
+    fn follow(&mut self, author: [u8; 32], message: neighbour_wire::NeighbourMsg) -> Followed {
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id, record_id, ..
         } = &message
         else {
-            return;
+            return Followed::default();
         };
         if !self.peer.holds_document(app_id, record_id) {
-            return;
+            return Followed::default();
         }
-        if let Err(error) = self.peer.receive_from(
+        match self.peer.receive_from(
             tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
             message,
             SystemTime::now(),
         ) {
-            tracing::debug!(room = %self.record.room, %error, "governor did not take in a record write");
+            Ok(outcome) => Followed {
+                changed: outcome.changed || outcome.metadata_changed,
+                replay_wanted: outcome.replay_wanted,
+            },
+            Err(error) => {
+                tracing::debug!(room = %self.record.room, %error, "governor did not take in a record write");
+                Followed::default()
+            }
+        }
+    }
+
+    /// Write the governor's copy, as following members' writes changed it,
+    /// through to the room file. A start replays what the relay retains,
+    /// but that replay alone does not bring a write back: the app surfaces
+    /// it is decided against are still on their way then, so it holds the
+    /// write and may let it go. A write the governor took in and lost that
+    /// way left its record with a gap, once a later write that builds on it
+    /// was committed, and the room no longer opened.
+    fn keep_followed(&mut self) {
+        self.unkept = false;
+        let kept = self.parts.stage(&self.peer).and_then(|parts| {
+            let prior = std::mem::replace(&mut self.record.peer, parts);
+            self.persist().inspect_err(|_| self.record.peer = prior)
+        });
+        if let Err(error) = kept {
+            tracing::warn!(room = %self.record.room, %error, "the governor's copy of members' writes was not kept");
         }
     }
 
@@ -1311,8 +1357,8 @@ impl Rooms {
     /// Take in the record write `body` of `author`. A record the room lacks
     /// is created from it, if `author` is a device of an editor: records are
     /// born only from a governor checkpoint. A write to a record the room has
-    /// updates the governor's copy only in memory; opening the room replays
-    /// what the relay retains ([`Self::recall`]).
+    /// updates the governor's copy, written through to the room file soon
+    /// after ([`Self::keep_soon`]).
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed, published and answered"
@@ -1619,7 +1665,29 @@ impl Rooms {
         (app, record): (String, String),
     ) {
         let following = crate::timing::start();
-        room.follow(author, message);
+        let followed = room.follow(author, message);
+        if followed.changed {
+            self.keep_soon(room);
+        }
+        if followed.replay_wanted {
+            // Not under this write's own delivery: recalling waits for the
+            // writes the relay is still retaining.
+            let rooms = Arc::downgrade(&self.inner);
+            let id = room.room().to_owned();
+            tokio::spawn(async move {
+                let Some(inner) = rooms.upgrade() else {
+                    return;
+                };
+                let rooms = Self { inner };
+                let Ok(room) = rooms.room(&id).await else {
+                    return;
+                };
+                let mut room = room.lock().await;
+                if let Err(error) = rooms.recall(&mut room).await {
+                    tracing::warn!(room = %id, %error, "governed room did not replay what its members wrote");
+                }
+            });
+        }
         crate::timing::window("room.follow", following);
         #[cfg(any(feature = "agents", feature = "web"))]
         {
@@ -1633,6 +1701,32 @@ impl Rooms {
             room: room.room().to_owned(),
             app,
             record,
+        });
+    }
+
+    /// Write the members' writes `room` took in through to its room file
+    /// within [`KEEP_FOLLOWED`], once for all of them: a write each made a
+    /// busy chat queue behind its own room file.
+    fn keep_soon(&self, room: &mut GovernedRoom) {
+        room.unkept = true;
+        if std::mem::replace(&mut room.keeping, true) {
+            return;
+        }
+        let rooms = Arc::downgrade(&self.inner);
+        let id = room.room().to_owned();
+        tokio::spawn(async move {
+            tokio::time::sleep(KEEP_FOLLOWED).await;
+            let Some(inner) = rooms.upgrade() else {
+                return;
+            };
+            let Ok(room) = (Self { inner }).room(&id).await else {
+                return;
+            };
+            let mut room = room.lock().await;
+            room.keeping = false;
+            if room.unkept {
+                room.keep_followed();
+            }
         });
     }
 
@@ -1658,7 +1752,9 @@ impl Rooms {
     }
 
     /// Replay every record write the relay retains for `room` into the
-    /// governor's copy.
+    /// governor's copy, and keep what it took in. A write held for an app
+    /// surface not here yet is let go; it is replayed again once something
+    /// it waited for lands ([`Followed::replay_wanted`]).
     async fn recall(&self, room: &mut GovernedRoom) -> Result<(), String> {
         let retained = self
             .inner
@@ -1666,6 +1762,7 @@ impl Rooms {
             .records
             .retained(room.workspace_id())
             .await?;
+        let mut changed = false;
         for retained in retained {
             if retained.author == self.inner.host.cert.device_public_key {
                 continue;
@@ -1673,8 +1770,11 @@ impl Rooms {
             if let Ok(message) = postcard::from_bytes(&retained.body)
                 && self.recalls(room, retained.author, &message)
             {
-                room.follow(retained.author, message);
+                changed |= room.follow(retained.author, message).changed;
             }
+        }
+        if changed {
+            room.keep_followed();
         }
         Ok(())
     }

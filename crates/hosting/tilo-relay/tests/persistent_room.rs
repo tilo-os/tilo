@@ -94,6 +94,12 @@ impl Room {
         self.tell(&OperatorCommand::Shutdown {});
         let _ = self.child.wait();
     }
+
+    /// Stop the room as `podman rm -f` does: killed, nothing flushed.
+    fn kill(mut self) {
+        self.child.kill().unwrap();
+        let _ = self.child.wait();
+    }
 }
 
 #[test]
@@ -639,6 +645,83 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
 
         other.close();
         writer.close();
+        watcher.close();
+    });
+    room.stop();
+}
+
+/// A room service stops its room hard (`podman rm -f`): killed after it
+/// decided things and wrote them, and killed again while it starts. Each
+/// next start opens the same room, settles its chat and lets a watching
+/// page read it.
+#[test]
+fn a_persistent_room_reopens_after_hard_stops() {
+    const CHAT: &str = "so.tilo.chat";
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let web_plain = plain.to_string();
+    let extra = [
+        "--chat-channel",
+        "general",
+        "--chat-channel",
+        "show-and-tell",
+        "--web-plain",
+        web_plain.as_str(),
+    ];
+    let started = |room: &Room| match room.next(|e| matches!(e, RoomEvent::Started { .. })) {
+        RoomEvent::Started { room: Some(id), .. } => id,
+        other => panic!("no governed room announced: {other:?}"),
+    };
+
+    let mut room = start_with(&state, &root_file, &secrets, &extra).unwrap();
+    let id = started(&room);
+    room.tell(&OperatorCommand::PreAdmit {
+        user_public_key: "22".repeat(32),
+        token_sha256: "33".repeat(32),
+        label: "Brave Otter".into(),
+        role: RoomRole::Editor,
+    });
+    assert!(matches!(
+        room.next(|e| matches!(
+            e,
+            RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
+        )),
+        RoomEvent::PreAdmitted { .. }
+    ));
+    let _ = spectate(&mut room);
+    room.kill();
+
+    // Killed again before it says it started.
+    let starting = start_with(&state, &root_file, &secrets, &extra).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    starting.kill();
+
+    let mut room = start_with(&state, &root_file, &secrets, &extra).unwrap();
+    assert_eq!(started(&room), id, "the same room opens");
+    let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
+    let (key, cert) = spectate(&mut room);
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let host_cert = tilo_browser_peer::host_info(&Plain(plain))
+            .await
+            .unwrap()
+            .host_cert;
+        let catalogue = tilo_agent_participant::AppCatalogue::native();
+        let route = tilo_browser_peer::DocumentRoute {
+            app_id: CHAT.into(),
+            cluster_id: id.clone(),
+            record: tilo_relay::room_bots::room_record(&catalogue, CHAT),
+        };
+        let watcher = page(plain, key, cert, &host_cert, true);
+        watcher.join(workspace_id).unwrap();
+        watcher.open_route(route.clone()).unwrap();
+        assert_page_reads_the_chat(&watcher, workspace_id, &route).await;
         watcher.close();
     });
     room.stop();
