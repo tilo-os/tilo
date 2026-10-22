@@ -3204,19 +3204,6 @@ impl Widget for WindowGroup {
         }
     }
 
-    /// Maximized, the bar and its search are drawn but are not children
-    /// (`children`): the window answers for their tooltips itself.
-    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-        if !self.maximized {
-            return None;
-        }
-        self.bar_tooltip_at(point).or_else(|| {
-            self.navigation_bar_visible()
-                .then(|| self.search.tooltip_target_at(point))
-                .flatten()
-        })
-    }
-
     fn native_view_frame_start(&mut self) {
         self.bar.native_view_frame_start();
         for child in self
@@ -3230,7 +3217,10 @@ impl Widget for WindowGroup {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::new();
-        if !self.maximized && self.navigation_bar_visible() {
+        // Maximized or not, the bar and its search are the window's
+        // children: laid out, drawn and reached (accessibility, tooltips,
+        // redraw) the same way.
+        if self.navigation_bar_visible() {
             children.push(&self.bar);
             children.push(&self.search);
         }
@@ -3252,20 +3242,16 @@ impl Widget for WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        for child in self.children_mut() {
+        // Children run bar, search, app: reversed, the app's layer goes first.
+        for child in self.children_mut().into_iter().rev() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
-        // Maximized, the bar is not among the children, yet it still shows.
-        if self.maximized && self.navigation_bar_visible() {
-            self.bar
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let active = self.bar.active_id();
         let mut children: Vec<&mut dyn Widget> = Vec::new();
-        if !self.maximized && self.navigation_bar_visible() {
+        if self.navigation_bar_visible() {
             children.push(&mut self.bar);
             children.push(&mut self.search);
         }
@@ -6467,23 +6453,23 @@ mod window_bar_tests {
     /// the bar revealed and its Restore hovered, and a Tilo app with its
     /// header in the bar at rest and revealed, plus one with a permanent
     /// header and the controls merged into its row.
-    /// Maximized, the bar and its search are no children for a host's
-    /// tooltip walk to reach: the window answers for them.
+    /// Maximized, the bar and its search stay the window's children, so a
+    /// host's walks (tooltips, accessibility, redraw) reach them as when
+    /// restored.
     #[test]
-    fn maximized_the_window_answers_for_its_magnifiers_tooltip() {
+    fn maximized_the_bar_and_search_stay_children() {
         let theme = Theme::dark();
         let mut g = page_group();
         lay_out(&mut g, &theme);
-        let at = g.search.anchor().center();
-        let offered = g.search.tooltip_target_at(at);
-        assert!(offered.is_some(), "the magnifier says what it searches");
-        assert_eq!(g.tooltip_target_at(at), offered);
-        g.maximized = false;
-        assert_eq!(
-            g.tooltip_target_at(at),
-            None,
-            "restored, the bar is a child that answers for itself"
-        );
+        assert!(g.maximized, "the fixture is maximized");
+        let children = g.children();
+        let is = |w: &dyn Widget| {
+            children
+                .iter()
+                .any(|c| std::ptr::addr_eq(*c as *const dyn Widget, w as *const dyn Widget))
+        };
+        assert!(is(&g.bar), "the bar is a child");
+        assert!(is(&g.search), "the search is a child");
     }
 
     #[test]

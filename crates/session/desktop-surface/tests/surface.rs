@@ -1929,6 +1929,61 @@ fn a_click_in_a_window_partly_off_screen_brings_it_into_view() {
     );
 }
 
+/// Every accessible name under the first node of `widget`, synthetic
+/// children included.
+fn names_under(root: &ui::headless::InspectionNode, widget: &str) -> Vec<String> {
+    fn semantic(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        out.extend(node.name.clone());
+        for child in &node.children {
+            semantic(child, out);
+        }
+    }
+    fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+        if let Some(semantics) = &node.semantics {
+            semantic(semantics, out);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(node) = find(root, widget) {
+        walk(node, &mut out);
+    }
+    out
+}
+
+/// A maximized window keeps its bar, so a reader is told of it as of a
+/// restored one: its title and controls, and its search.
+#[test]
+fn a_maximized_windows_bar_and_search_are_in_the_accessibility_tree() {
+    let (mut driver, handle, _) = mount_apps(&["A"]);
+    let route = handle.snapshot("g", vec![]).entries[0].route.clone();
+    settle_still(&mut driver);
+    let restored = driver.inspection();
+    let search = names_under(&restored.root, "WindowSearch");
+    assert!(!search.is_empty(), "a restored window's search is read");
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"maximize","generation":"g","route":route,"maximized":true}),
+    );
+    settle_still(&mut driver);
+    let inspection = driver.inspection();
+    let bar = names_under(&inspection.root, "TabBar");
+    for name in ["A", "Close A", "Restore", "Close"] {
+        assert!(
+            bar.iter().any(|read| read == name),
+            "the maximized window's bar reads {name:?}: {bar:?}"
+        );
+    }
+    assert_eq!(
+        names_under(&inspection.root, "WindowSearch"),
+        search,
+        "the maximized window's search is read as when restored"
+    );
+}
+
 #[test]
 fn a_window_restored_from_maximized_is_in_view() {
     let (mut driver, handle) = mount_wide();
