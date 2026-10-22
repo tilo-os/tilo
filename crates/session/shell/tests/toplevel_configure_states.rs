@@ -370,12 +370,6 @@ impl Harness {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "the content is shifted left and clipped. The
-// tab strip, the back button and the bookmarks-bar text are cut off at the left
-// edge" and "a black band appears along the right edge and another along the
-// bottom, inside the window frame" (a LibreWolf window). The window geometry's
-// corner is the tile's corner, the page subsurface Firefox places there is
-// drawn there, and nothing outside the geometry shows.
 #[test]
 fn a_page_subsurface_at_the_window_geometry_fills_the_tile_exactly() {
     let mut h = Harness::new();
@@ -739,12 +733,6 @@ fn stub_tab(id: u64, title: &str) -> shell::shell::state::Tab {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): whenever the person launches something
-// while they are in a full-screen window, they are taken to it: the
-// full-screen window leaves full screen and the newly opened window is the
-// focused one. That holds wherever the new window opens, beside them in
-// the same strip or on another strip, and for a client's own full screen
-// as for Super+F.
 #[test]
 #[allow(
     clippy::too_many_lines,

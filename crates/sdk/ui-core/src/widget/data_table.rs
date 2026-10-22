@@ -7719,9 +7719,6 @@ mod content_edge_tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): several selected rows can be dragged
-    // together (results onto a playlist): pressing one of them to drag keeps
-    // the selection, and a press that drags nowhere is a plain click.
     #[test]
     fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
         let drags = Rc::new(Cell::new(0));

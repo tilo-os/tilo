@@ -1048,7 +1048,6 @@ mod tests {
         accept_hello(&hello, user, &policy, &RevocationList::new(), 1000).ok()
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn devices_on_another_peer_version_are_told_which_and_read_nothing_else() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);

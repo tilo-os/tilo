@@ -1562,10 +1562,6 @@ mod tests {
         })
     }
 
-    // USER REQUIREMENT (2026-10-21): Sliders work with touch. A finger that
-    // taps a slider sets it there, and a finger dragging it moves it, on or
-    // off the track, exactly as the pointer held down does; the drag is the
-    // slider's and never scrolls what is beneath it.
     #[test]
     fn a_finger_taps_and_drags_a_slider_like_the_pointer() {
         use winit::event::TouchPhase;

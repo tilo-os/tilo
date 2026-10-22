@@ -235,7 +235,6 @@ mod tests {
         steps: &[add_tail, add_tail],
     };
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_older_file_comes_up_to_date_and_the_old_one_is_kept() {
         let dir = tempfile::tempdir().unwrap();

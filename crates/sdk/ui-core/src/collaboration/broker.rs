@@ -3218,7 +3218,6 @@ fn native_launch_refusal(error: &runtime_portal::NotAvailable) -> crate::launch:
 
 #[cfg(all(test, feature = "native"))]
 mod native_launch_refusal_tests {
-    // USER REQUIREMENT (2026-10-19): "An app never exits because no identity is selected."
     #[test]
     fn a_workspace_without_an_identity_asks_for_one_and_other_failures_say_why() {
         let no_identity = runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(

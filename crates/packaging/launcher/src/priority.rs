@@ -931,10 +931,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
-    // crashing or blocking login is a bug to fix, never normal". When the
-    // kernel must choose, background apps go first, the focused app is
-    // protected, and the shell and compositor are never chosen.
     #[test]
     fn the_oom_killer_prefers_the_background_and_never_chooses_the_session() {
         use crate::app_cgroup::Leaf;

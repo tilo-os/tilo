@@ -365,9 +365,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "proper three finger gestures for
-    // navigating between windows left and right and strips": three fingers
-    // up or down move the strip deck with the hand, to the release.
     #[test]
     fn three_fingers_up_and_down_stream_the_strip_deck_with_the_hand() {
         // Phase `vertical_three_finger_motion_streams_total_travel_and_reverses`.

@@ -1642,7 +1642,6 @@ mod tests {
         assert_eq!(WallpaperScope::parse(None), WallpaperScope::Workspace);
     }
 
-    // USER REQUIREMENT (2026-10-21): "Wallpaper: \"Use for\" and \"Show on\" apply immediately to the current wallpaper, as visible results, not only to the next picture."
     #[test]
     fn show_on_and_use_for_apply_to_the_wallpaper_the_person_has() {
         let dir = tempfile::tempdir().unwrap();

@@ -293,7 +293,6 @@ fn bursts_of_pre_admissions_share_the_rooms_writes() {
     room.stop();
 }
 
-// USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
 /// The room process settles the apps it is told to let members write
 /// through at every start, and remembers which it let, so an app taken out
 /// of its list on a later start is withdrawn (the room's side of it is

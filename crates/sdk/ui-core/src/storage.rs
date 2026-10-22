@@ -1110,10 +1110,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): no code path overwrites a person's
-    // setting with a default. Changing one field stores that field: a field
-    // the person never set is not written as their choice, so another
-    // writer's value for it, or a default that later changes, still holds.
     #[test]
     fn changing_one_field_never_stores_the_others_defaults() {
         let dir = tempfile::tempdir().unwrap();

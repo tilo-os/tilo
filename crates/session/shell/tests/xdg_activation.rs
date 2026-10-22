@@ -294,12 +294,6 @@ fn show_a_frame(h: &mut Harness, shm: &wl_shm::WlShm, surface: &wl_surface::WlSu
     h.pump();
 }
 
-// USER REQUIREMENT (2026-10-21): when an app the person is using opens or
-// activates another app with a valid activation token, the person is taken
-// to that app's window: it becomes the focused window, the view goes to
-// its strip, and a full-screen window they were in leaves full screen. An
-// activation request without a token minted from the person's input (a
-// background process asking for focus) moves nothing and ends nothing.
 #[test]
 #[allow(
     clippy::too_many_lines,

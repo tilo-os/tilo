@@ -262,10 +262,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-    // currently have open, it just pushes the apps next to it further away, it
-    // does not need to resize them. i can resize as i want, it doesnt change
-    // the actual size of any other app."
     #[test]
     fn the_seam_belongs_to_the_window_you_are_in_else_half_to_each() {
         // Phase `unfocused_seam_is_split_down_the_middle`.
@@ -314,10 +310,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-    // currently have open, it just pushes the apps next to it further away, it
-    // does not need to resize them. i can resize as i want, it doesnt change
-    // the actual size of any other app."
     #[test]
     fn a_plain_drag_resizes_only_the_grabbed_window_and_holds_its_opposite_edge() {
         // Phase `trailing_edge_follows_the_pointer_and_the_leading_edge_stays`.
@@ -355,9 +347,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): Shift+drag is zero-sum between the two
-    // windows at the seam: "i can resize as i want, it doesnt change the actual
-    // size of any other app" unless asked to.
     #[test]
     fn shift_drag_trades_width_between_the_two_windows_at_the_seam_only() {
         // Phase `trailing_edge_with_shift`.

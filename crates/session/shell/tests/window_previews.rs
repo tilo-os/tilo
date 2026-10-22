@@ -183,7 +183,6 @@ fn press_super_tab(fb: &mut FrameBuilder) {
     }
 }
 
-// USER REQUIREMENT (2026-10-18): "win+tab only loads the windows after its already open/takes way too long, unacceptable"
 #[test]
 fn the_first_overview_frame_after_super_tab_already_shows_every_window() {
     let clients = [

@@ -819,10 +819,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
-    // crashing or blocking login is a bug to fix, never normal". A Tilo app
-    // that runs out of memory ends whole; an independent job it started ends
-    // alone; a host app keeps one victim.
     #[test]
     fn a_tilo_app_is_one_oom_group_and_each_job_is_its_own() {
         assert!(oom_group(AppKind::Tilo, Leaf::Main));

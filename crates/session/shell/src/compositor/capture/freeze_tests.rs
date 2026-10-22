@@ -375,9 +375,6 @@ fn intent(
     }
 }
 
-// USER REQUIREMENT (2026-10-22): "a screenshot freezes the state of all
-// windows when it opens"
-//
 // A client that commits a new buffer after the screenshot opened shows
 // its old frame on screen, whatever target is chosen, and every capture
 // (the window, the strip, a selection, the screen) holds the old frame.
@@ -482,9 +479,6 @@ fn a_screenshot_freezes_every_window_it_opens_on_for_every_target() {
     }
 }
 
-// USER REQUIREMENT (2026-10-22): "a screenshot freezes the state of all
-// windows when it opens"
-//
 // The hold ends with the screenshot: closed, or taken, the windows show
 // what their clients committed meanwhile, and the frames only the hold
 // kept go back.
@@ -572,9 +566,6 @@ fn the_held_windows_are_released_when_the_screenshot_closes_or_is_taken() {
     crate::shell::gpu_frames::forget_surface(GPU);
 }
 
-// USER REQUIREMENT (2026-10-22): "a screenshot freezes the state of all
-// windows when it opens"
-//
 // Frozen windows still move: moving focus to the window beside scrolls
 // the strip to it as usual, and it comes into view as it was when the
 // screenshot opened.

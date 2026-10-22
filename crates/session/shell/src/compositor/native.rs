@@ -15341,12 +15341,6 @@ mod lock_focus_tests {
     use crate::compositor::lock_screen::LockLayout;
     use crate::compositor::lock_screen::lock_outputs;
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — the lock screen's password field and
-    // caret are on the display the person was working on, artwork on the
-    // others.
     #[test]
     fn the_lock_screen_puts_the_password_field_on_the_focused_display() {
         let outputs = output_fixture("laptop-beside-1080p").expect("fixture");
@@ -15372,10 +15366,6 @@ mod lock_focus_tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "one lock surface per display. The
-    // password card sits on the display with focus (the built-in one by
-    // default) at that display's scale; the other displays show the clock
-    // and wallpaper only."
     #[test]
     fn without_focus_the_built_in_panel_carries_the_password_at_its_own_scale() {
         let mut outputs = output_fixture("laptop-beside-1080p").expect("fixture");

@@ -2853,7 +2853,6 @@ mod handshake_probe_tests {
         sig_over_client_nonce: Vec<u8>,
     }
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn a_probe_tells_a_host_from_before_versions_from_one_that_refused_this_device() {
         let ours = crate::auth::PEER_PROTOCOL_VERSION;

@@ -301,10 +301,6 @@ fn place_search(bar: &TabBar, search: &mut WindowSearch) {
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-21): "The screenshot harness runs apps
-    // outside a session, so the window bar never shows. Make the harness
-    // render the system window bar for app shots, so this is visible and
-    // testable."
     #[test]
     fn a_window_bar_capture_hosts_the_apps_slots_above_its_frame() {
         let _hosted = HostedReset;

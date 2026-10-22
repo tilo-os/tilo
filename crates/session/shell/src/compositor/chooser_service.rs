@@ -1212,8 +1212,6 @@ mod tests {
         })
     }
 
-    // USER REQUIREMENT (2026-10-19): "Once an identity is selected, the app
-    // connects and shows its content without a restart."
     #[test]
     fn an_app_waiting_for_its_workspaces_identity_hears_the_moment_one_is_chosen() {
         let session = session_with_save_hint(false);
@@ -1248,8 +1246,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "The button invokes the shell's identity
-    // chooser action".
     #[test]
     fn an_app_asks_for_the_identity_chooser_of_its_own_workspace() {
         let session = session_with_save_hint(false);
@@ -2248,8 +2244,6 @@ type = "gui"
         }
     }
 
-    // USER REQUIREMENT (2026-10-22): "choosing a file in the picker gives the
-    // app that file"
     #[test]
     #[serial_test::serial(process_env)]
     fn choosing_a_file_in_the_picker_gives_the_app_that_file() {

@@ -7027,10 +7027,6 @@ mod tests {
     /// person is told, whether the process then exited cleanly (an app
     /// whose drawing surface died used to) or with an error after its
     /// window was up (which is otherwise an ordinary ending).
-    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
-    // crashing or blocking login is a bug to fix, never normal". When memory
-    // ends an app the person reads which and why ("Mail ran out of memory and
-    // was closed"); when it ends only a job, the app is named as still open.
     #[test]
     fn memory_endings_name_the_app_or_its_job_and_why() {
         use ::launcher::memory_pressure::Cause;

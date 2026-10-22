@@ -20,10 +20,6 @@ fn banded(kind: ContentKind) -> (NavShell, SharedRc<Cell<usize>>) {
     (shell, presses)
 }
 
-// USER REQUIREMENT (2026-10-22): "Playback is window-wide state, so the
-// transport spans the window. Make the bottom band a NavShell part that any
-// app can use ..., with the sidebar, drawer and inspector stopping above
-// it."
 /// The band spans the window's whole width at its foot, as tall as what it
 /// holds; the docked sidebar and the content stand over it, and a press on
 /// it reaches what it holds.

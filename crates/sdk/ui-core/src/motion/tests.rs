@@ -426,7 +426,6 @@ fn routine_specs() -> [MotionSpec; 10] {
     ]
 }
 
-// USER REQUIREMENT (2026-10-19): "we need a proper library of our standard animations instead of hand rolling it every time. overlays, windows, apps, UI components – everything should be composed from these"
 #[test]
 fn the_standard_motions_are_one_library_every_surface_composes_from() {
     let now = crate::time::now();
@@ -445,7 +444,6 @@ fn the_standard_motions_are_one_library_every_surface_composes_from() {
     }
 }
 
-// USER REQUIREMENT (2026-10-19): "many things either have no animations even if they should have or have bad hand rolled ones. dont make tilo annoying to use though"
 #[test]
 fn standard_motion_never_makes_tilo_annoying() {
     let now = crate::time::now();

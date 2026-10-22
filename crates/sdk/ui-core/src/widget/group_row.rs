@@ -9866,10 +9866,6 @@ mod tests {
         frame.iter().map(|r| r.width()).collect()
     }
 
-    // USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-    // currently have open, it just pushes the apps next to it further away, it
-    // does not need to resize them. i can resize as i want, it doesnt change
-    // the actual size of any other app."
     #[test]
     fn the_seam_belongs_to_the_focused_window_and_hovering_shows_whose_edge_it_is() {
         // Phase `with_no_window_in_use_each_half_is_its_windows_edge`.
@@ -9966,10 +9962,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-    // currently have open, it just pushes the apps next to it further away, it
-    // does not need to resize them. i can resize as i want, it doesnt change
-    // the actual size of any other app."
     #[test]
     fn a_plain_drag_resizes_only_the_grabbed_window_and_holds_its_opposite_edge() {
         // Phase `left_edge_grows_left_and_pushes_the_window_before_it`:
@@ -10042,9 +10034,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): Shift+drag is zero-sum between the two
-    // windows at the seam; without it "i can resize as i want, it doesnt
-    // change the actual size of any other app."
     #[test]
     fn shift_drag_trades_width_between_the_two_windows_at_the_seam_only() {
         let (row, taffy, root) = edge_strip(Some(1), None);
@@ -10067,10 +10056,6 @@ mod tests {
         assert_eq!(row.groups[2].take_pending_width_change(), None);
     }
 
-    // USER REQUIREMENT (2026-10-18): "no that is BS. i dont even know what
-    // that means" (about the strip easing back after a resize drag was
-    // released, to frame the windows because all of them fit on screen).
-    // After releasing a resize, no window moves.
     #[test]
     fn after_releasing_a_resize_no_window_moves() {
         // Narrow enough that the strip can pan while all three windows fit.
@@ -11172,9 +11157,6 @@ mod tests {
             .expect("group laid out")
     }
 
-    // USER REQUIREMENT (2026-10-21): "Strip two is a full other screen" and
-    // "nice animation when switching between screens": on every display the
-    // strip slides as one, and a slide is a move, never a new layout.
     #[test]
     fn a_strip_across_displays_slides_on_every_display_without_a_new_layout() {
         let row = partitioned_row();

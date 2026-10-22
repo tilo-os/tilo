@@ -3026,10 +3026,6 @@ mod tests {
         assert!(overlay.enabled_layouts().is_empty());
     }
 
-    // USER REQUIREMENT (2026-10-21): "Super+P display sheet: only show
-    // what's possible. With nothing connected, it says so and offers what's
-    // available (e.g. casting targets found nearby), with no disabled
-    // layouts."
     #[test]
     fn with_nothing_connected_the_sheet_says_so_and_offers_only_what_is_reachable() {
         // No projection service: choosing a receiver must not reach one.
@@ -3082,8 +3078,6 @@ mod tests {
         assert_eq!(overlay.shown_layouts(), [DisplayLayoutMode::Mirror]);
     }
 
-    // USER REQUIREMENT (2026-10-21): "Raw "os error" text never reaches the
-    // person: map errors to plain outcomes."
     #[test]
     fn a_missing_projection_service_is_a_plain_outcome_never_os_error_text() {
         use crate::shell::projection::{

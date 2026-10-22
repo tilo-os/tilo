@@ -299,7 +299,6 @@ mod tests {
     use super::super::{MemberViewers, RoomHosts};
     use super::{desired_legacy_shares, hosts_viewed_window, remote_extents};
 
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
     /// A host window (a terminal) streams to each member of its room who
     /// views it, read only, while the room shares its layout: not while
     /// nobody views it, not to a viewer in another room, and not at all in a

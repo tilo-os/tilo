@@ -178,11 +178,6 @@ mod tests {
         srgb_eotf(f32::from(code) / f32::from(u16::MAX))
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — a display without a brightness control
-    // is dimmed in linear light, smoothly, never below a readable floor.
     #[test]
     fn the_crtc_lut_scales_linear_light_monotonically_at_full_precision() {
         let lut = gamma_lut(1024, 0.5, Transfer::Srgb);

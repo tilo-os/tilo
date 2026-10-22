@@ -685,8 +685,6 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
     assert_eq!(calls.get(), 2, "a click runs the same action");
 }
 
-// USER REQUIREMENT (2026-10-22): the words a search matched are marked in
-// a result's text with the find bar's highlight.
 #[test]
 fn the_words_a_search_found_are_marked_at_word_starts_whatever_their_case() {
     let line = "The glass rattled; Glassworks and fibreglass.";

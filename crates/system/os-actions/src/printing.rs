@@ -714,8 +714,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "nearby printers that are already added
-    // don't appear under "Add"; adding the same printer twice is impossible."
     #[test]
     fn a_printer_already_added_is_not_offered_again_whichever_address_it_was_added_by() {
         let devices = parse_device_uris(

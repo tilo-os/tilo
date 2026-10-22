@@ -506,9 +506,6 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
                 .expect("fixture workspace")
                 .room(),
         );
-        // USER REQUIREMENT (2026-10-22): "drop the disabled Remove (it's not
-        // an action you can take)". The owner's own row offers neither a
-        // role change nor Remove; everyone else's row offers both.
         for (user, role_rect, remove_rect) in rows {
             assert!(roster.iter().any(|(u, _)| u == user), "{user} is a member");
             if *user == owner {

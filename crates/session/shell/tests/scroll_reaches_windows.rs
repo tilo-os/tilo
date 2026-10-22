@@ -292,8 +292,6 @@ fn scrolled(heard: &[Heard]) -> bool {
     heard.contains(&Heard::Scroll(wl_pointer::Axis::VerticalScroll))
 }
 
-// USER REQUIREMENT (2026-10-21): "btw I can no longer scroll in any of my
-// terminal windows (alacritty or tilo native terminal) here"
 #[test]
 fn scrolling_over_a_terminal_window_scrolls_it_even_after_a_release_went_missing() {
     let mut h = Harness::with_window();

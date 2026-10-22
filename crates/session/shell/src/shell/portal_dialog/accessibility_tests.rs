@@ -351,8 +351,6 @@ fn the_drive_sheet_offers_its_remember_row_as_a_checkbox() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): "Drive consent sheet: two real buttons, a
-// primary and a secondary, built from design-system components."
 #[test]
 fn the_drive_sheet_answers_with_two_buttons_and_no_choice_rows() {
     use crate::shell::portal_dialog::{DriveConsentDecision, DriveConsentRequest};

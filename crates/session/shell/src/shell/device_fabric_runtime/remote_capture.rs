@@ -349,8 +349,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "The camera permission prompt moves to
-    // the standard consent sheet, not inline in QS."
     #[test]
     fn a_camera_request_is_asked_on_the_consent_sheet_and_answered_from_it() {
         use crate::shell::portal_dialog::{DialogView, PortalDialogController};

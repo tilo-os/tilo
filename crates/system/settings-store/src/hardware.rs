@@ -2826,10 +2826,6 @@ impl ShortcutConfig {
 
 #[cfg(test)]
 mod tests {
-    // USER REQUIREMENT (2026-10-21): the arrangement, scale and rotation
-    // apply immediately; only a resolution or refresh change that could
-    // leave the person without a picture asks to be kept, and reverts by
-    // itself after 15 seconds.
     #[test]
     fn only_changes_that_can_blank_a_screen_need_confirming() {
         let mut before = DisplayConfig::default();

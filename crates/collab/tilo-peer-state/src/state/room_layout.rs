@@ -153,7 +153,6 @@ mod tests {
             .collect())
     }
 
-    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
     /// The governor makes a room personal: the windows it committed of a
     /// member before go (its own namespace registry stays), and from then
     /// on the room admits no member's window.

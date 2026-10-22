@@ -92,10 +92,6 @@ where
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-21): app warnings and errors reach the
-    // session journal, with the app's id and its window, so a lost write can
-    // never be invisible again. The app's log is what the launcher carries
-    // into the journal: a warning is written there by default, naming both.
     #[test]
     fn an_apps_warning_reaches_its_log_with_its_id_and_window() {
         #[derive(Clone, Default)]

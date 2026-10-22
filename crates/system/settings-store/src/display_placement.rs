@@ -384,10 +384,6 @@ mod tests {
 
     const PANEL: Placement = Placement::new(0, 0, 1920, 1080);
 
-    // USER REQUIREMENT (2026-10-22): the arrangement canvas is the one
-    // place a display's position is set, so it works from the keyboard too:
-    // an arrow key moves the selected display to the next place that way,
-    // touching and clear of the others, staying in line where it can.
     #[test]
     fn an_arrow_moves_a_display_to_the_next_place_that_way() {
         let right = Placement::new(1920, 0, 2560, 1440);
@@ -501,9 +497,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): edges and centres snap magnetically
-    // within a small threshold, and an alignment guide shows each line a
-    // dragged display lines up with.
     #[test]
     fn centres_snap_too_and_each_shared_line_has_a_guide() {
         // A 1280-wide monitor dropped under the panel, its centre 10 px off
@@ -531,9 +524,6 @@ mod tests {
         assert!(far.guides.is_empty(), "nothing lined up, no guide");
     }
 
-    // USER REQUIREMENT (2026-10-21): displays can never overlap or float
-    // detached; a released display rests at the nearest place where it
-    // touches another and covers none.
     #[test]
     fn every_drop_settles_touching_and_clear_of_every_display() {
         // A row of three and a fourth display dropped all over the desk:

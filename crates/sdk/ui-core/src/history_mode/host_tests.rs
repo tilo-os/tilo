@@ -357,9 +357,6 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
                 .contains("Notebook: first")
         );
         let targets = driver.targets();
-        // USER REQUIREMENT (2026-10-19): History is "a right-side panel per
-        // window or active tab"; selecting an entry "previews that state in
-        // place".
         assert!(
             targets["history-preview"].x1 <= targets["activity_timeline"].x0,
             "wide activity is a panel at the trailing side, the preview in place beside it"
@@ -1842,9 +1839,6 @@ fn root_text(doc: &automerge::AutoCommit, key: &str) -> Option<String> {
         .and_then(|(value, _)| value.as_str().map(str::to_owned))
 }
 
-// USER REQUIREMENT (2026-10-19): "A right-side panel per window or active tab
-// ... Selecting an entry previews that state in place (read-only), with
-// Restore or Restore just this change."
 #[test]
 fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_own() {
     let mut state = State::new();
@@ -1914,7 +1908,6 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
     );
 }
 
-// USER REQUIREMENT (2026-10-19): "grouping of actions in named groups".
 #[test]
 fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
     let (mut driver, target, _) = versioned_driver((900, 650));

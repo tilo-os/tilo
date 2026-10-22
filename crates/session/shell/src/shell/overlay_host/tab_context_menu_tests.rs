@@ -1008,8 +1008,6 @@ fn an_apps_search_request_opens_the_palette_scoped_to_its_tab() {
 /// that app: only the app's own sources answer. The system's actions and
 /// settings, the desktop's windows and other apps answer once the person
 /// clears the scope token.
-// USER REQUIREMENT (2026-10-21): a search scoped to an app returns no system
-// actions or other apps' results; clearing the scope brings them back.
 #[test]
 #[serial_test::serial(process_env)]
 fn a_search_scoped_to_an_app_shows_only_that_app_until_the_scope_is_cleared() {
@@ -1627,8 +1625,6 @@ fn open_menu_labels(h: &Harness) -> Vec<String> {
         .collect()
 }
 
-// USER REQUIREMENT (2026-10-21): "Same menu from right-click, long-press
-// and the keyboard."
 #[test]
 fn the_same_window_menu_opens_from_right_click_long_press_and_the_keyboard() {
     use winit::keyboard::ModifiersState;
@@ -1686,8 +1682,6 @@ fn the_same_window_menu_opens_from_right_click_long_press_and_the_keyboard() {
     assert_eq!(open_menu_labels(&h), SINGLE_LABELS, "keyboard");
 }
 
-// USER REQUIREMENT (2026-10-21): "full screen, maximize, move to strip,
-// move to workspace" from the window menu act on that window.
 #[test]
 fn window_menu_rows_act_on_the_window_they_were_opened_for() {
     // Motion reads at its end: this test checks the resting frame.

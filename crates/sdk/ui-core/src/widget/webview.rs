@@ -1637,13 +1637,6 @@ mod tests {
             );
     }
 
-    // USER REQUIREMENT (2026-10-21): "When the pointer hovers over the Browser
-    // window (only then), the web content flickers violently between its
-    // normal look and a state that looks like a very high zoom factor." The
-    // page renders at its surface's device scale and nothing but a new surface
-    // scale changes that: no pointer move, focus or redraw, whatever scale the
-    // event's surface has or however the draw is cached or animated. A window
-    // moved to a display of another density re-renders the page once.
     #[test]
     fn a_page_keeps_its_surface_scale_through_hover_and_rescales_once_per_display() {
         let engine = TestEngine::new();
@@ -1718,11 +1711,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "The Browser's text and content look less
-    // crisp than Alacritty or the native Tilo apps next to it, as if rendered
-    // at another resolution and scaled." A page drawn through a container's
-    // cache renders at the scale the cache lands on screen with, so its frame
-    // has one pixel per physical pixel, at integer and fractional scales.
     #[test]
     fn a_page_drawn_through_a_cache_renders_at_the_scale_it_lands_on_screen_with() {
         for (scale, physical) in [(2.0, (800, 600)), (1.5, (600, 450)), (1.75, (700, 525))] {

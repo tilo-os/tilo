@@ -14,7 +14,6 @@
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-// USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_relay_stream_has_one_alpn_and_no_older_ones() {
     let user = TestUser::fresh("Relay");

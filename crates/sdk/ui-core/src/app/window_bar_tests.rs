@@ -173,11 +173,6 @@ fn last_offer(shell: &mut ShellEnd, app: &mut App) -> Option<WindowOffer> {
         .next_back()
 }
 
-// USER REQUIREMENT (2026-10-19): "search right next to the title (clicking it
-// expands into an in-place search field)", "In place: it acts on this window
-// or app. Lists filter, documents highlight with "n of m"." and "History: A
-// right-side panel per window or active tab" -- for an app that runs as its
-// own window, as every app on a device does.
 #[test]
 fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_bar() {
     let (app_side, shell_side) = UnixStream::pair().unwrap();
@@ -319,9 +314,6 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
     );
 }
 
-// USER REQUIREMENT (2026-10-19): "Local LLM / LLM-backend based automatic
-// descriptions of actions" -- generated on a member's device, shared with
-// the workspace, for an app that holds no model.
 #[test]
 fn an_apps_history_has_the_shell_describe_its_changes_and_keeps_the_answer_in_the_document() {
     use crate::floating_surface::HistoryChangeDescription;
@@ -629,8 +621,6 @@ fn type_address(
     assert_eq!(omnibox(app).typed, text, "the app hears what is typed");
 }
 
-// USER REQUIREMENT (2026-10-21): "Enter navigates to the typed URL, or searches
-// if it isn't one; clicking or tapping a suggestion opens it."
 #[test]
 fn enter_in_the_bars_address_opens_what_was_typed_in_an_app_in_its_own_process() {
     let (mut app, mut shell, mut frame) = omnibox_window();
@@ -650,8 +640,6 @@ fn enter_in_the_bars_address_opens_what_was_typed_in_an_app_in_its_own_process()
     assert!(!frame.root::<WindowGroup>().editing_location());
 }
 
-// USER REQUIREMENT (2026-10-21): "Enter navigates to the typed URL, or searches
-// if it isn't one; clicking or tapping a suggestion opens it."
 #[test]
 fn a_click_or_tap_on_a_bar_suggestion_opens_it_in_an_app_in_its_own_process() {
     for tap in [false, true] {

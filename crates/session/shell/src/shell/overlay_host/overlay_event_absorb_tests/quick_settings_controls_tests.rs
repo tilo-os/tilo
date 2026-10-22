@@ -331,10 +331,6 @@ fn quick_settings_keeps_natural_tiles_and_scrolls_in_a_640_by_400_window() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): The Quick Settings brightness and volume
-// sliders work with touch. A finger tapping a slider sets it there, a finger
-// dragging it moves it (on or off the track) and lifting commits the level,
-// exactly as the pointer held down does; the drag never scrolls the panel.
 #[test]
 fn a_finger_taps_and_drags_the_quick_settings_sliders() {
     use winit::event::TouchPhase;

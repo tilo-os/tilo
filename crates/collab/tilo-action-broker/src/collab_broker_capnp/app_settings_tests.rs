@@ -368,12 +368,6 @@ fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
     assert!(load_at(&records.paths().copy).is_empty());
 }
 
-// USER REQUIREMENT (2026-10-21): the Settings app writes through the shell's
-// settings service like every other app: one settings document, one write
-// path. Over the real channel capability, the device's settings app (granted
-// every section) writes the appearance section and the write lands in the
-// session's records and the document every host reads; the same write from
-// another app is refused, and the session keeps its value.
 #[test]
 fn the_settings_apps_write_over_its_channel_lands_in_the_sessions_settings() {
     use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};

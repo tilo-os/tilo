@@ -314,9 +314,6 @@ fn a_screenshot_is_saved_into_screenshots_and_offered_on_the_clipboard() {
 /// Puts an earlier copy on the clipboard before a screenshot.
 type Arrange = fn(&crate::compositor::selection::SharedSelection);
 
-// USER REQUIREMENT (2026-10-22): every screenshot is copied to the
-// clipboard.
-//
 // Every target (a selection, several selections, a window, the strip, a
 // screen, Print and its instant variants) ends in this one step: the
 // pixels are written to the file and then copied. Whatever the clipboard
@@ -786,7 +783,6 @@ fn spatial_capture_geometry_frames_regions_without_desktop_gaps() {
 )]
 fn app_capture_follows_its_live_surface_and_never_fakes_success() {
     // Phase `full_app_capture_paints_a_wholly_offscreen_live_group`.
-    // USER REQUIREMENT (2026-10-21): "what's screenshotted is obviously the entire app"
     fn full_app_capture_paints_a_wholly_offscreen_live_group() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let (strip_id, target_group, target_tab) = {
@@ -1015,7 +1011,6 @@ fn app_capture_follows_its_live_surface_and_never_fakes_success() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "if I select a window to PiP, I expect to always just have that window PiP … regardless of where I scroll/am"
 #[test]
 fn a_pip_of_a_window_keeps_showing_that_window_after_scrolling_and_switching_strips() {
     let mut tree = WorkspaceTree::bootstrap_demo();

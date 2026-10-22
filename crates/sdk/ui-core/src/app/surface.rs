@@ -1827,10 +1827,6 @@ mod tests {
         ))
     }
 
-    // USER REQUIREMENT (2026-10-21): Ctrl+Plus raises the content scale and
-    // Ctrl+0 resets it, in a native app. The zoom changes the window's
-    // content scale (text, images and layout reflow at the new size) and
-    // composes with the system text size setting.
     #[test]
     fn ctrl_plus_raises_the_content_scale_and_ctrl_0_resets_it() {
         let (mut app, _) = clicks_app();

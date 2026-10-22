@@ -903,7 +903,6 @@ mod tests {
         assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_app_whose_newest_build_is_behind_waits_for_its_developer() {
         let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);

@@ -408,7 +408,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "An app never exits because no identity is selected."
     #[test]
     fn a_workspace_without_an_identity_is_told_apart_from_every_other_refusal() {
         let (stream, _) = channel(&[wire::Response::Denied(

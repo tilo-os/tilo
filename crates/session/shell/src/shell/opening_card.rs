@@ -433,7 +433,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_app_behind_says_it_is_updating_where_it_will_open() {
         let package = "so.tilo.test.opening-card-update";

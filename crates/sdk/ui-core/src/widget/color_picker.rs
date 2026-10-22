@@ -1440,9 +1440,6 @@ mod tests {
         })
     }
 
-    // USER REQUIREMENT (2026-10-21): Sliders work with touch. The colour
-    // picker's channel sliders follow a finger from where it lands to where
-    // it lifts, as they follow the pointer held down.
     #[test]
     fn a_finger_drags_the_colour_pickers_channel_sliders() {
         use winit::event::TouchPhase;

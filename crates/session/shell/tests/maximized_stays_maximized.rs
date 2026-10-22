@@ -1,11 +1,10 @@
 //! A maximized window stays maximized until the person restores it.
 //!
-//! USER REQUIREMENT (2026-10-22): "for some reason my window is constantly
-//! being restored out of maximized mode, idk why". A terminal running an
-//! agent retitles itself many times a second, resizes its buffer, asks to be
-//! activated, and the programs inside it open short-lived windows of their
-//! own (`wl-copy` maps a one-pixel window to own the clipboard, then destroys
-//! it). None of that is the person restoring the window, so none of it may.
+//! A terminal running an agent retitles itself many times a second, resizes
+//! its buffer, asks to be activated, and the programs inside it open
+//! short-lived windows of their own (`wl-copy` maps a one-pixel window to own
+//! the clipboard, then destroys it). None of that is the person restoring the
+//! window, so none of it may.
 //!
 //! Real Wayland clients drive the production compositor state, and the
 //! production frame builder lays out and paints every frame, as the native

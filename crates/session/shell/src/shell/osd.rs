@@ -1054,11 +1054,6 @@ mod tests {
         expiry_reports_whether_it_changed_anything();
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — feedback on the display in use, and a
-    // pill never jumps displays while it is up.
     #[test]
     fn a_readout_stays_on_the_display_it_opened_on_until_the_next_press() {
         let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);

@@ -2259,8 +2259,6 @@ async fn titles_shared(rooms: &Rooms, room: &str) -> Vec<String> {
         .collect()
 }
 
-// USER REQUIREMENT (2026-10-20): "Public rooms never share layout or windows."
-// USER REQUIREMENT (2026-10-20): "The relay refuses (does not commit) member window and layout writes for public rooms."
 /// Two strangers in a public room: A opens two terminals, and B is never
 /// given them, their app or their titles. The door refuses A's change, and
 /// the governor, should it reach it anyway, commits nothing of it.
@@ -2326,7 +2324,6 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
     relay.shutdown().await;
 }
 
-// USER REQUIREMENT (2026-10-20): "Private, invite-only workspaces keep shared layout as today."
 /// In a private room the same change is let through and committed, as
 /// before.
 #[allow(
@@ -2358,7 +2355,6 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     relay.shutdown().await;
 }
 
-// USER REQUIREMENT (2026-10-20): "windows should stay private by default"
 /// A room listed in the directory (open admission) whose governor chose no
 /// layout scope becomes personal when the relay opens it: the windows the
 /// governor committed of a member while it shared them are removed, its
@@ -2432,7 +2428,6 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
     relay.shutdown().await;
 }
 
-// USER REQUIREMENT (2026-10-20): "windows should stay private by default"
 /// The governor decides the layout scope, and the room holds to its word
 /// across a restart: made personal, what the room committed of a member's
 /// windows goes at once; made shared again, members' windows are taken in

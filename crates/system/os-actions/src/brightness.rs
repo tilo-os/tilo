@@ -1352,11 +1352,6 @@ mod tests {
         tilo_test_env::recv("the brightness service to go idle", &told);
     }
 
-    // USER REQUIREMENT (2026-10-21): With a laptop panel and one external
-    // monitor there are exactly two brightness controls, one per display the
-    // session shows. A connector the kernel calls connected that shows
-    // nothing of the session (a development VM's virtual card) gets none,
-    // and a display nobody can dim gets none either.
     #[test]
     fn only_the_displays_the_session_shows_get_a_brightness_control() {
         let panel = MonitorBrightness {

@@ -676,10 +676,6 @@ mod tests {
         assert!((track.height() - thumb).abs() < 1e-9);
     }
 
-    // USER REQUIREMENT (2026-10-21): in a surface with rounded corners a
-    // scroll bar stops short of each corner by the corner radius, at the
-    // top and the bottom (and at both ends of a horizontal bar); in a
-    // square surface it runs to the edge.
     #[test]
     fn a_track_keeps_out_of_rounded_corners_and_reaches_square_ones() {
         use crate::theme::SurfaceShape;

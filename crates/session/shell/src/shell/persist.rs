@@ -1108,7 +1108,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
     }
 
-    // USER REQUIREMENT (2026-10-19): "if i create a workspace I want it to be empty, remove this crap"
     /// A state file from when every workspace got a Lounge comes up without
     /// the Lounges nobody used: a workspace keeps only the strips its person
     /// made or used, and focus on a dropped Lounge goes to the first strip

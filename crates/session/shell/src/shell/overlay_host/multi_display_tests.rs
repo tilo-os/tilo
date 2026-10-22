@@ -191,10 +191,6 @@ fn the_fixture_puts_the_desktop_centre_on_no_panel_row() {
 }
 
 /// Volume and brightness keys: the readout comes up on the display in use.
-// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-// brightness etc. should in general be raised on the correct (?) screen(s)…
-// in consistent positions… also how to handle brightness controls on
-// multiple screens"
 #[test]
 fn hardware_key_readouts_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -213,10 +209,6 @@ fn hardware_key_readouts_open_on_the_focused_display() {
 
 /// Flyouts and panels: the power menu, Quick Settings, the window switcher
 /// and the tab menu.
-// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-// brightness etc. should in general be raised on the correct (?) screen(s)…
-// in consistent positions… also how to handle brightness controls on
-// multiple screens"
 #[test]
 fn menus_and_panels_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -257,10 +249,6 @@ fn menus_and_panels_open_on_the_focused_display() {
 }
 
 /// Search, the workspace sheet and the strip indicators.
-// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-// brightness etc. should in general be raised on the correct (?) screen(s)…
-// in consistent positions… also how to handle brightness controls on
-// multiple screens"
 #[test]
 fn search_and_sheets_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
@@ -717,12 +705,6 @@ impl Desk {
     }
 }
 
-// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-// brightness etc. should in general be raised on the correct (?) screen(s)…
-// in consistent positions… also how to handle brightness controls on
-// multiple screens" — a feedback pill
-// never jumps displays while it is up: it fades where it is, and the next
-// press shows it on the display the person moved to.
 #[test]
 fn a_readout_never_jumps_displays_while_it_is_up() {
     use crate::shell::osd::Osd;
@@ -795,11 +777,6 @@ fn dimmable() -> Vec<crate::shell::chrome_state::DisplayBrightness> {
     ]
 }
 
-// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-// brightness etc. should in general be raised on the correct (?) screen(s)…
-// in consistent positions… also how to handle brightness controls on
-// multiple screens" — the brightness keys adjust the display the person
-// works on, not the one under the pointer, and the readout there names it.
 #[test]
 fn brightness_keys_adjust_the_focused_display() {
     use crate::shell::media_keys::{BrightnessKeys, Context, DispatcherAudio, MediaKey, Response};
@@ -856,11 +833,6 @@ fn brightness_keys_adjust_the_focused_display() {
     }
 }
 
-// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-// brightness etc. should in general be raised on the correct (?) screen(s)…
-// in consistent positions… also how to handle brightness controls on
-// multiple screens" — Quick Settings shows one slider per dimmable display,
-// the display in use first.
 #[test]
 fn quick_settings_lists_the_focused_display_first() {
     use crate::shell::quick_settings::refresh::FieldReading;
@@ -889,12 +861,6 @@ fn quick_settings_lists_the_focused_display_first() {
     }
 }
 
-// USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-// brightness etc. should in general be raised on the correct (?) screen(s)…
-// in consistent positions… also how to handle brightness controls on
-// multiple screens" — the state of the whole machine is on every display:
-// a critical banner repeats on the display not in use, and a ringing call
-// keeps its card on the display in use and edges the other.
 #[test]
 fn machine_wide_banners_show_on_every_display_and_a_call_edges_the_others() {
     use tilo_desktop::notifications::{Addressed, Notification};

@@ -59,8 +59,6 @@ fn library() -> Vec<Item> {
 
 // ---- queries and chips --------------------------------------------------
 
-// USER REQUIREMENT (2026-10-21): typed tokens such as artist:ada map onto the
-// same chips a person picks under the field.
 #[test]
 fn typed_tokens_are_the_same_chips_as_picked_ones() {
     let kinds = kinds();
@@ -124,9 +122,6 @@ enum TestView {
     Search(String),
 }
 
-// USER REQUIREMENT (2026-10-21): Escape or Back from a search returns to the
-// view before it exactly, at the same scroll position with the same
-// selection; Back and Forward always work.
 #[test]
 fn back_returns_to_the_view_before_as_it_was_left() {
     let mut stack = ViewStack::new(TestView::Library);
@@ -320,9 +315,6 @@ fn remote_ids(results: &QueryResults) -> Vec<String> {
         .collect()
 }
 
-// USER REQUIREMENT (2026-10-21): remote results stream into their own section
-// below the local ones, and a remote row that repeats a local one is not
-// shown twice.
 #[test]
 fn remote_rows_come_in_their_own_section_below_the_local_ones() {
     let (mut engine, source, pumped) = remote_engine();
@@ -352,9 +344,6 @@ fn remote_rows_come_in_their_own_section_below_the_local_ones() {
     assert!(engine.timings().remote_first[0].is_some());
 }
 
-// USER REQUIREMENT (2026-10-21): queries go out per keystroke, at most a
-// moment apart, and the query before is cancelled; its late answer never
-// shows under the newer query.
 #[test]
 fn a_newer_query_cancels_the_one_before_and_its_answer_never_shows() {
     let (mut engine, source, pumped) = remote_engine();
@@ -384,9 +373,6 @@ fn a_newer_query_cancels_the_one_before_and_its_answer_never_shows() {
     assert_eq!(remote_ids(engine.results()), ["r-aur"]);
 }
 
-// USER REQUIREMENT (2026-10-21): remote pages are cached by query and refining
-// a query reuses them: what the earlier answer found that still matches shows
-// at once, before the refined query's own answer arrives.
 #[test]
 fn a_refined_query_shows_what_the_earlier_answer_still_matches_at_once() {
     let (mut engine, source, pumped) = remote_engine();
@@ -416,9 +402,6 @@ fn a_refined_query_shows_what_the_earlier_answer_still_matches_at_once() {
     assert_eq!(engine.timings().remote_first[0], Some(Duration::ZERO));
 }
 
-// USER REQUIREMENT (2026-10-21): no row moves under the pointer or the keyboard
-// focus while remote results stream in: what is shown stays where it is and
-// arrivals only go on at the end.
 #[test]
 fn no_row_moves_under_the_pointer_while_remote_results_stream() {
     let (mut engine, source, pumped) = remote_engine();
@@ -473,9 +456,6 @@ fn no_row_moves_under_the_pointer_while_remote_results_stream() {
     assert!(!laid_out.iter().any(|(_, id)| id == "ra"));
 }
 
-// USER REQUIREMENT (2026-10-21): a remote result is the same resource as in
-// the library: acting on it (liking a catalogue song) changes it in place, and
-// it does not jump from the remote section into the library's group.
 #[test]
 fn a_remote_row_that_joins_the_library_stays_where_it_is() {
     let (mut engine, source, pumped) = remote_engine();
@@ -514,8 +494,6 @@ fn an_unreachable_source_says_so_in_its_section() {
     assert!(!engine.results().pending());
 }
 
-// USER REQUIREMENT (2026-10-21): focusing the field warms the remote
-// connection before the first character is typed.
 #[test]
 fn focusing_the_field_warms_the_remote_sources_once() {
     let (mut engine, source, pumped) = remote_engine();
@@ -541,10 +519,6 @@ fn a_query_a_source_does_not_answer_leaves_its_section_idle() {
 
 // ---- chips offered -------------------------------------------------------
 
-// USER REQUIREMENT (2026-10-21): one chip per filterable field, not one per
-// value: Artist and Year list their values with how many results share each,
-// any number of them chosen, and the chip reads its choice with a way to
-// clear it; Liked and In library are on or off.
 #[test]
 fn one_chip_per_facet_reading_its_choice() {
     let mut engine = QueryEngine::new(kinds());
@@ -804,8 +778,6 @@ fn an_entry_is_an_item_of_the_type_its_group_names() {
     );
 }
 
-// USER REQUIREMENT (2026-10-21): a full-text match in a book is a hit at its
-// passage, showing the words around the match.
 #[test]
 fn a_match_in_prose_is_a_hit_at_its_passage() {
     let pumped = Pumped::new();
@@ -870,8 +842,6 @@ fn an_excerpt_shows_the_words_around_the_match_cut_at_words() {
     let words = shown.trim_matches('\u{2026}');
     assert!(passage.contains(words), "cut at word boundaries: {shown}");
     assert_eq!(excerpt("Short.", "short"), "Short.");
-    // USER REQUIREMENT (2026-10-22): an excerpt is centred on the first
-    // match.
     let shown = excerpt(passage, "foolishness");
     let at = shown.find("foolishness").expect("the match is shown");
     let after = shown.len() - at - "foolishness".len();
@@ -931,9 +901,6 @@ impl super::LocalSource for Elsewhere {
     }
 }
 
-// USER REQUIREMENT (2026-10-22): searching the library finds passages in
-// books whose content is not on this device yet, from the local index, at
-// once.
 #[test]
 fn an_index_of_the_apps_own_answers_with_the_local_items_at_once() {
     let mut engine = QueryEngine::new(book_kinds());

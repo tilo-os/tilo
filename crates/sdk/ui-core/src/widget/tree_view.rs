@@ -5474,9 +5474,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-19): "Typing in a focused list jumps to
-    // matches." Letters typed into a focused list move to the first row whose
-    // name begins with them; the same letter again steps to the next one.
     #[test]
     fn typing_in_a_focused_list_jumps_to_the_row_it_names() {
         let names = ["Apple", "apricot", "Banana", "berry", "Cherry"];

@@ -2711,8 +2711,6 @@ mod tests {
         ))
     }
 
-    // USER REQUIREMENT (2026-10-19): "An app never exits because no identity
-    // is selected." and "It shows the app's window with an EmptyState".
     #[test]
     #[cfg(feature = "native")]
     fn a_launch_with_no_identity_selected_keeps_its_window_open_on_choosing_one() {

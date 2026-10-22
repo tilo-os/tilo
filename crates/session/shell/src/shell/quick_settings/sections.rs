@@ -1176,8 +1176,6 @@ mod tests {
         assert!(laid.height >= laid.items.last().unwrap().rect.y1);
     }
 
-    // USER REQUIREMENT (2026-10-21): "Power mode lives in one place: the
-    // tile, with the Battery section linking to it."
     #[test]
     fn the_power_mode_is_chosen_under_its_tile_and_the_battery_section_links_to_it() {
         let mut state = QuickSettingsState::fixture();

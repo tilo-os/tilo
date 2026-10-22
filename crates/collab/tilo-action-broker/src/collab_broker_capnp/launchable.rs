@@ -809,10 +809,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): a window an agent opens never takes the
-    // person's view. An agent with no view of its own yet opens aside, beside
-    // where the person is looking without taking their focus, never where a
-    // person's own invocation opens.
     #[test]
     fn an_agents_first_view_opens_aside_without_taking_the_persons_focus() {
         use crate::test_support::{Grants as _, KindSet, Subject};
@@ -865,12 +861,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): when the person clicks a link in Chat
-    // that opens the Browser (or a file in Files that opens Writer), the new
-    // window comes forward: an app's launch the person's own press is behind
-    // opens where the person is. Without that press it opens beside the
-    // asking app, and an agent's opens aside: neither takes the person's
-    // view.
     #[test]
     fn an_apps_launch_takes_the_person_there_only_when_their_press_is_behind_it() {
         let workspace = workspace();

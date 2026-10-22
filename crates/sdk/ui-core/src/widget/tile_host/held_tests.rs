@@ -127,9 +127,6 @@ fn draw(host: &mut TileHost, tr: &mut TextRenderer, theme: &Theme) -> Scene {
     scene
 }
 
-// USER REQUIREMENT (2026-10-22): "a screenshot freezes the state of all
-// windows when it opens"
-//
 // A window of an app the shell runs itself (the terminal, Files, Notes)
 // that repaints while the screenshot is open still shows, and is
 // captured as, what it showed when the screenshot opened, also once it

@@ -537,10 +537,6 @@ fn strip_rects(
     (rows, deck)
 }
 
-// USER REQUIREMENT (2026-10-21): "the strip rendering doesn't work, it
-// somehow auto tiles instead of having strips be full-height below each
-// other" and "Strip two is a full other screen, not just halving the
-// vertical space".
 #[test]
 fn every_strip_is_a_full_height_screen_and_one_fills_the_work_area() {
     let _settled = ui::motion::testing::settled();
@@ -577,8 +573,6 @@ fn every_strip_is_a_full_height_screen_and_one_fills_the_work_area() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "each strip can have a different
-// left-right scroll position, these are independent".
 #[test]
 fn each_strip_keeps_its_own_scroll_position_across_strip_switches() {
     let _settled = ui::motion::testing::settled();

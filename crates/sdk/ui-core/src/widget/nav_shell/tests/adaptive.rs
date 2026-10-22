@@ -113,11 +113,6 @@ fn release(h: &mut FrameHarness) {
     settle(h, W, H);
 }
 
-// USER REQUIREMENT (2026-10-22): "Narrow by default: a rail, icon with a
-// small label below it." / "Wider: when the person drags the sidebar's
-// edge out, it becomes a list with the icon and the label beside it." /
-// "Width-driven: the switch happens at a width threshold, so dragging
-// feels continuous: no jump in the pointer's relation to the edge."
 /// A short, flat set of places opens as a rail at the rail's width, never
 /// as rail tiles in a wide sidebar. Dragging the edge out, the edge stays
 /// under the pointer at every step, the width only grows, and the rows turn
@@ -223,10 +218,6 @@ fn a_list_with_headings_opens_as_a_list_and_narrows_into_a_rail() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "once a window has shown its sidebar,
-// the rule never re-runs during that window's life. Only the person's drag
-// changes it." / "a sidebar whose items arrive after first layout doesn't
-// change mode."
 /// The rail-or-list rule runs once, when the window first shows its
 /// sidebar. Places that load afterwards (and would on their own have made
 /// a rail) leave the width and the form alone; the person's drag still
@@ -286,8 +277,6 @@ impl Drop for Remembering {
     }
 }
 
-// USER REQUIREMENT (2026-10-22): "Remembered: the chosen width persists per
-// app like other window state."
 /// The width the person drags to is kept in the app's settings on this
 /// device when the drag ends, and a window of the app opened later starts
 /// at it, rail or list as that width reads.
@@ -334,8 +323,6 @@ fn finger(h: &mut FrameHarness, phase: winit::event::TouchPhase, x: f64, y: f64)
     }))
 }
 
-// USER REQUIREMENT (2026-10-22): "Touch parity: dragging the edge with a
-// finger works."
 /// A finger landing near the edge takes it (it is the shell's, not a
 /// scroll of what is beside it), the width follows the finger one to one
 /// and switches the rows at the same threshold, and lifting it ends the
@@ -385,8 +372,6 @@ fn a_finger_drags_the_edge_like_the_pointer() {
     );
 }
 
-// USER REQUIREMENT (2026-10-22): "Keyboard: the resize separator is
-// accessible."
 /// The arrow keys on the focused separator step the width as a drag does,
 /// across the threshold: the rail becomes a list.
 #[test]

@@ -1675,11 +1675,6 @@ fn an_explicitly_chosen_window_is_revealed_after_the_strip_was_panned_away() {
     assert!(!first_visible(&mut host), "the reveal happens once");
 }
 
-// USER REQUIREMENT (2026-10-21): when a window the person opened lands on
-// another strip, the view goes there with the full-height strip slide and
-// the new window is the focused one. That holds when the window arrives
-// after their input has passed (an app that took a while to start, another
-// app handing it focus): the view slides there, it never jumps.
 #[test]
 fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
     let theme = Theme::dark();

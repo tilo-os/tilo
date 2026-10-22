@@ -439,10 +439,6 @@ mod tests {
         rows.iter().filter_map(WindowMenuRow::label).collect()
     }
 
-    // USER REQUIREMENT (2026-10-21): "complete it per the window-bar spec:
-    // full screen, maximize, move to strip, move to workspace, new tab, close
-    // tab and close window, with the keyboard shortcuts shown in the
-    // standard menu style."
     #[test]
     fn the_window_menu_offers_every_window_action_with_its_shortcut() {
         let _us = ui::keycaps::scoped(ui::Keycaps::US);
@@ -502,7 +498,6 @@ mod tests {
         assert!(shown.contains(&("Close tab", true)));
     }
 
-    // USER REQUIREMENT (2026-10-21): "move to strip, move to workspace"
     #[test]
     fn move_to_strip_and_workspace_list_the_real_places_and_round_trip() {
         let rows = window_menu_rows(&facts(1), &ShortcutConfig::default());

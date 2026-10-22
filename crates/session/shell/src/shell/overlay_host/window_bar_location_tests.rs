@@ -175,8 +175,6 @@ impl Desk {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "Enter navigates to the typed URL, or searches
-// if it isn't one; clicking or tapping a suggestion opens it."
 #[test]
 #[expect(
     clippy::significant_drop_tightening,
@@ -205,8 +203,6 @@ fn enter_in_a_windows_bar_address_commits_what_was_typed() {
     assert!(!desk.fb.host().window_location_editing());
 }
 
-// USER REQUIREMENT (2026-10-21): "Enter navigates to the typed URL, or searches
-// if it isn't one; clicking or tapping a suggestion opens it."
 #[test]
 #[expect(
     clippy::significant_drop_tightening,
@@ -235,8 +231,6 @@ fn a_click_or_tap_on_a_windows_bar_suggestion_commits_it() {
     }
 }
 
-// USER REQUIREMENT (2026-10-21): "Keyboard (up/down/enter/escape), pointer and
-// touch all work."
 #[test]
 #[expect(
     clippy::significant_drop_tightening,

@@ -1877,8 +1877,6 @@ mod tests {
         long_tokens_are_elided_without_changing_short_ones();
     }
 
-    // USER REQUIREMENT (2026-10-22): "the invite sheet is built from the
-    // shared sheet, field, segmented control and buttons"
     #[test]
     fn the_invite_sheet_is_built_from_the_shared_sheet_field_segmented_control_and_buttons() {
         let mut invite = PeerSyncOverlay::default();
@@ -1974,9 +1972,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-21): "one clear flow: who (a person or a
-    // link), their access (a standard segmented role control, not pills),
-    // and one primary "Invite" button"
     #[test]
     fn the_invite_sheet_is_who_then_access_then_one_primary_invite() {
         let mut invite = PeerSyncOverlay::default();
@@ -2080,7 +2075,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-21): "aligned placeholder"
     #[test]
     fn the_name_placeholder_and_caret_share_one_line_centred_in_the_field() {
         let theme = Theme::dark();

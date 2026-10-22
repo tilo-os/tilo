@@ -737,11 +737,6 @@ mod door_tests {
         relay.shutdown().await;
     }
 
-    // USER REQUIREMENT (2026-10-19): "you just set a default role for people,
-    // all of this has been solved hundreds of times by hundreds of
-    // applications" — the owner makes the workspace public with a default
-    // role, and everyone who joins from the directory gets exactly that role,
-    // with nobody deciding each join.
     #[tokio::test]
     #[cfg_attr(
         feature = "agents",
@@ -841,8 +836,6 @@ mod door_tests {
             .app_authors(CHAT, &tilo_action_policy::Context::at_time(now))
     }
 
-    // USER REQUIREMENT (2026-10-19): "In a public community lounge, a person who joined must be able to write in #chat."
-    // USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
     #[tokio::test]
     #[cfg_attr(
         feature = "agents",

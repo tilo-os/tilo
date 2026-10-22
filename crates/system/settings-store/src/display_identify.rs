@@ -233,9 +233,6 @@ mod tests {
         assert_eq!(display_numbers(&outputs), vec![3, 2, 1]);
     }
 
-    // USER REQUIREMENT (2026-10-22): a display is named by its model, never
-    // by its port or card; only when two connected displays share a model
-    // does each name gain the number Identify shows on that display.
     #[test]
     fn displays_are_named_by_model_and_numbered_only_when_two_share_one() {
         let monitor = |connector: &str, model: &str| {

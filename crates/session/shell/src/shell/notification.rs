@@ -887,11 +887,6 @@ mod tests {
     use crate::portal::PortalCaller;
     use crate::shell::state::WorkspaceId;
 
-    // USER REQUIREMENT (2026-10-21): clicking an app's notification takes
-    // the person to that app. The compositor mints an activation token for
-    // the click and the app hears it as `ActivationToken` before
-    // `ActionInvoked` (notification specification 1.2), so its window comes
-    // forward; the notification closes after.
     #[test]
     fn clicking_an_apps_notification_hands_it_an_activation_token_before_the_action() {
         let chrome = new_chrome();

@@ -91,7 +91,6 @@ async fn the_hosts_person_grants_app_authorship_through_the_hosts_action() {
     relay.shutdown().await;
 }
 
-// USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
 /// The persistent room's host settles its apps' authorship at every start
 /// (`--author-app`): what it settled survives a restart, settling the same
 /// again changes nothing, and an app the host takes out of its list stops

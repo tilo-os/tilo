@@ -1,12 +1,11 @@
 //! A finger on a shell overlay works the overlay, exactly as the pointer
 //! does, and never the window behind it.
 //!
-//! USER REQUIREMENT (2026-10-22): "touch on any overlay interacts with the
-//! overlay only, never the window behind". Quick Settings, the capture
-//! tool's selection, mode controls and shutter, and the screenshot editor
-//! answer a tap, a drag and a hold the way they answer the pointer; a touch
-//! outside a dismissable overlay closes it as a click there does; a touch
-//! sequence stays with the surface it started on until it ends.
+//! Quick Settings, the capture tool's selection, mode controls and shutter,
+//! and the screenshot editor answer a tap, a drag and a hold the way they
+//! answer the pointer; a touch outside a dismissable overlay closes it as a
+//! click there does; a touch sequence stays with the surface it started on
+//! until it ends.
 //!
 //! Every test drives the real seat through test control's touchscreen,
 //! which uses the DRM backend's contact ownership and the compositor's one

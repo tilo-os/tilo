@@ -680,9 +680,6 @@ mod tests {
         deck
     }
 
-    // USER REQUIREMENT (2026-10-21): "Strip two is a full other screen":
-    // with only one strip on screen, a tab is carried onto another strip by
-    // resting the drag at the deck's edge.
     #[test]
     fn a_drag_resting_at_the_bottom_edge_slides_to_the_strip_below() {
         let _settled = crate::motion::testing::settled();
@@ -730,9 +727,6 @@ mod tests {
         assert_eq!(deck.shown(), 1);
     }
 
-    // USER REQUIREMENT (2026-10-21): "proper three finger gestures for
-    // navigating between windows left and right and strips": the deck
-    // follows the fingers, then settles with their momentum.
     #[test]
     fn the_deck_follows_the_fingers_and_settles_with_their_momentum() {
         let mut deck = deck_of(3);
