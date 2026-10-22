@@ -20,6 +20,8 @@ desktop="$workflows/release-desktop.yml"
 apps="$workflows/release-apps.yml"
 apps_publish="$repo/tools/apps/publish-collections.sh"
 os="$workflows/build-image.yml"
+# The image's binaries are compiled outside the image build, by this script.
+compile="$repo/os/image/compile.sh"
 imager="$workflows/release-imager.yml"
 
 if grep -Fq 'resolve-rpm-snapshot.sh' "$os" \
@@ -324,7 +326,7 @@ grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq "if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'" "$desktop" \
   && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
   && grep -Fq 'TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}' "$os" \
-  && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
+  && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$compile" \
   && ok 'OS composition reuses the install-tested native desktop payload' \
   || bad 'OS releases still rebuild the desktop component'
 
@@ -339,7 +341,7 @@ grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 
   && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 9 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
-  && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
+  && grep -Fq 'find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$compile" \
   && grep -Fq 'CONTINUOUS_RELEASE: "0"' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
@@ -476,7 +478,7 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'auth="Bearer $jwt"' "$os" \
   && grep -Fq 'TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'TAPP_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
-  && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \
+  && grep -Fq 'cp -a os/app-runtime/tilo-runtime "$out/prebuilt-runtime/"' "$compile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
   && grep -Fq -- '-C codegen-units=1' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
   && ! grep -Fq -- '--icf=all' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
@@ -488,8 +490,8 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
 
 grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile" \
-  && grep -Fq 'sccache backend unavailable; compiling normally' "$repo/os/Containerfile" \
-  && grep -Fq 'export RUSTC_WRAPPER=' "$repo/os/Containerfile" \
+  && grep -Fq 'sccache did not start; compiling without it' "$compile" \
+  && grep -Fq 'export RUSTC_WRAPPER=' "$compile" \
   && grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile.builder" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile.builder" \
   && grep -Fq 'ripgrep time yt-dlp' "$repo/os/Containerfile.builder" \
