@@ -58,8 +58,32 @@ pub(super) enum Sealed {
 pub(super) enum Unopened {
     /// No key for it yet: hold and retry when keys change.
     Later,
-    /// It never will (wrong channel, tampered, downgrade).
-    Never,
+    /// It never will.
+    Never(Never),
+}
+
+/// Why an inbound envelope never opens on this route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Never {
+    /// Sealed for another channel than this route's.
+    WrongChannel,
+    /// Its ciphertext is malformed, or the route's keys reject it.
+    Undecryptable,
+    /// Cleartext, live, on a route that is encrypted.
+    Downgrade,
+    /// Sealed, on a route that is cleartext.
+    SealedOnPlain,
+}
+
+impl std::fmt::Display for Never {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::WrongChannel => "sealed for another channel",
+            Self::Undecryptable => "ciphertext the route's keys reject",
+            Self::Downgrade => "cleartext on an encrypted route",
+            Self::SealedOnPlain => "sealed on a cleartext route",
+        })
+    }
 }
 
 /// A frame waiting for keys, with the claims its op will carry.
@@ -240,23 +264,24 @@ impl RouteKeys {
         let Some(metadata) = envelope.encryption else {
             return match &self.keys {
                 Keys::Plain => Ok(None),
-                _ if live => Err(Unopened::Never),
+                _ if live => Err(Unopened::Never(Never::Downgrade)),
                 _ => Ok(None),
             };
         };
-        let ciphertext = collab_types::sealed_ciphertext(envelope).map_err(|_| Unopened::Never)?;
+        let ciphertext = collab_types::sealed_ciphertext(envelope)
+            .map_err(|_| Unopened::Never(Never::Undecryptable))?;
         let opened = match &mut self.keys {
-            Keys::Plain => return Err(Unopened::Never),
+            Keys::Plain => return Err(Unopened::Never(Never::SealedOnPlain)),
             Keys::Pending(_) => return Err(Unopened::Later),
             Keys::Group(group) => {
                 if group.channel_id() != metadata.channel {
-                    return Err(Unopened::Never);
+                    return Err(Unopened::Never(Never::WrongChannel));
                 }
                 group.open_content(envelope.artifact, &metadata, &ciphertext)
             }
             Keys::Content { keys, .. } => {
                 if keys.channel_id() != metadata.channel {
-                    return Err(Unopened::Never);
+                    return Err(Unopened::Never(Never::WrongChannel));
                 }
                 if !keys.holds_epoch(metadata.epoch) {
                     return Err(Unopened::Later);
@@ -267,7 +292,7 @@ impl RouteKeys {
         match opened {
             Ok(plaintext) => Ok(Some(plaintext)),
             Err(channel_crypto::Error::MissingContentKey(_)) => Err(Unopened::Later),
-            Err(_) => Err(Unopened::Never),
+            Err(_) => Err(Unopened::Never(Never::Undecryptable)),
         }
     }
 
@@ -451,7 +476,7 @@ mod tests {
         compaction.payload.push(0);
         assert!(matches!(
             route.open(&compaction, true),
-            Err(Unopened::Never)
+            Err(Unopened::Never(_))
         ));
     }
 
@@ -462,7 +487,10 @@ mod tests {
         let mut route = RouteKeys::requested();
         route.update(Wire::Ready, 1, Some(&encoded));
         let old = envelope(b"from before encryption".to_vec(), None);
-        assert!(matches!(route.open(&old, true), Err(Unopened::Never)));
+        assert!(matches!(
+            route.open(&old, true),
+            Err(Unopened::Never(Never::Downgrade))
+        ));
         assert!(matches!(route.open(&old, false), Ok(None)));
         let other = keys(ChannelId::new()).0;
         let (metadata, sealed) = other
@@ -470,7 +498,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             route.open(&envelope(sealed, Some(metadata)), true),
-            Err(Unopened::Never)
+            Err(Unopened::Never(Never::WrongChannel))
         ));
     }
 

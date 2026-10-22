@@ -5306,6 +5306,7 @@ async fn ensure_sdk_route(
             if !committed {
                 spawn_op_stream(
                     &channel,
+                    RouteLabel::of(spec),
                     inbound_tx,
                     std::sync::Arc::clone(&encryption),
                     encrypted.then(|| (channel_id.clone(), key_signals.clone())),
@@ -5406,6 +5407,25 @@ async fn spawn_content_stream(
     });
 }
 
+/// Which route an inbound op arrived on, as its refusal names it.
+struct RouteLabel {
+    app: String,
+    workspace: String,
+    record: String,
+    channel: String,
+}
+
+impl RouteLabel {
+    fn of(spec: &RouteSpec) -> Self {
+        Self {
+            app: spec.app_id.clone(),
+            workspace: spec.cluster_id.to_string(),
+            record: spec.record.clone().unwrap_or_default(),
+            channel: spec.channel_id(),
+        }
+    }
+}
+
 /// Bridge `channel`'s doc/incremental op stream into [`CollabEvent`]s on
 /// `inbound_tx`, spawned as a `LocalSet` task so it doesn't block the
 /// caller's route setup.
@@ -5415,6 +5435,7 @@ async fn spawn_content_stream(
 )]
 async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
+    label: RouteLabel,
     inbound_tx: &InboundBridge,
     encryption: SharedRouteKeys,
     key_signals: Option<(String, tokio_mpsc::UnboundedSender<KeySignal>)>,
@@ -5425,6 +5446,7 @@ async fn spawn_op_stream(
             while let Ok(event) = stream.read().await {
                 let translated = match postcard::from_bytes::<SignedOp>(&event.op) {
                     Ok(envelope) => {
+                        let (author, seq) = (envelope.author, envelope.seq);
                         match signed_document_event(envelope, event.from_user_id, &encryption) {
                             Ok(event) => event,
                             Err(UndeliveredDocument::Held) => {
@@ -5442,7 +5464,13 @@ async fn spawn_op_stream(
                             Err(error) => {
                                 tracing::warn!(
                                     %error,
-                                    "collab: signed op has no typed document payload; dropping"
+                                    app = %label.app,
+                                    workspace = %label.workspace,
+                                    record = %label.record,
+                                    route = %label.channel,
+                                    author = %hex::encode(author.as_bytes()),
+                                    seq,
+                                    "collab: refused a live document op"
                                 );
                                 continue;
                             }
@@ -7824,8 +7852,8 @@ type SharedRouteKeys = std::sync::Arc<std::sync::Mutex<super::route_keys::RouteK
 enum UndeliveredDocument {
     /// No key for it yet; it was held for when keys arrive.
     Held,
-    /// Refused: downgrade, wrong channel, tampering, or a malformed frame.
-    Refused(collab_types::DocumentMutationError),
+    /// Refused, and why.
+    Refused(Refusal),
 }
 
 impl std::fmt::Display for UndeliveredDocument {
@@ -7862,7 +7890,34 @@ fn signed_document_event(
 
 enum DecryptFailure {
     Later,
-    Refused(collab_types::DocumentMutationError),
+    Refused(Refusal),
+}
+
+/// Why an inbound document envelope is refused on its route.
+#[derive(Debug)]
+enum Refusal {
+    /// The route's keys were poisoned by a panic while held.
+    KeysPoisoned,
+    /// The clear storage class it was retained under does not describe
+    /// what it contains.
+    RetentionMismatch,
+    /// The route can never open it.
+    Unopened(super::route_keys::Never),
+    /// Its document frame does not decode.
+    Malformed(collab_types::DocumentMutationError),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::KeysPoisoned => f.write_str("the route's keys are poisoned"),
+            Self::RetentionMismatch => {
+                f.write_str("retained under a storage class that does not describe it")
+            }
+            Self::Unopened(never) => never.fmt(f),
+            Self::Malformed(error) => write!(f, "malformed document frame: {error}"),
+        }
+    }
 }
 
 /// Open an envelope's typed payload. `live` envelopes on an encrypted
@@ -7873,15 +7928,16 @@ fn decrypt_document_payload(
     encryption: &SharedRouteKeys,
     live: bool,
 ) -> Result<Option<Vec<u8>>, DecryptFailure> {
-    let refused = |error| DecryptFailure::Refused(error);
+    let refused = DecryptFailure::Refused;
+    let malformed = |error| DecryptFailure::Refused(Refusal::Malformed(error));
     let opened = encryption
         .lock()
-        .map_err(|_| refused(collab_types::DocumentMutationError::RouteMismatch))?
+        .map_err(|_| refused(Refusal::KeysPoisoned))?
         .open(envelope, live);
     match opened {
         Ok(Some(plaintext)) => {
             let plaintext = plaintext.to_vec();
-            collab_types::DocumentFrame::decode(&plaintext).map_err(refused)?;
+            collab_types::DocumentFrame::decode(&plaintext).map_err(malformed)?;
             // The clear storage class hosts retained the op under must
             // describe what it actually contains.
             if envelope
@@ -7891,18 +7947,16 @@ fn decrypt_document_payload(
                     retention != collab_types::ContentRetention::of_frame(&plaintext)
                 })
             {
-                return Err(refused(collab_types::DocumentMutationError::RouteMismatch));
+                return Err(refused(Refusal::RetentionMismatch));
             }
             Ok(Some(plaintext))
         }
         Ok(None) => {
-            collab_types::DocumentFrame::decode(&envelope.payload).map_err(refused)?;
+            collab_types::DocumentFrame::decode(&envelope.payload).map_err(malformed)?;
             Ok(None)
         }
         Err(super::route_keys::Unopened::Later) => Err(DecryptFailure::Later),
-        Err(super::route_keys::Unopened::Never) => {
-            Err(refused(collab_types::DocumentMutationError::RouteMismatch))
-        }
+        Err(super::route_keys::Unopened::Never(never)) => Err(refused(Refusal::Unopened(never))),
     }
 }
 
@@ -13169,21 +13223,28 @@ mod tests {
                 crate::time::SystemTime::UNIX_EPOCH,
                 2,
             );
+            let refusal = |op| match signed_document_event(op, "alice".into(), &endpoint) {
+                Err(UndeliveredDocument::Refused(refusal)) => refusal,
+                _ => panic!("refused"),
+            };
+            let downgrade = refusal(plaintext_downgrade);
             assert!(
-                signed_document_event(plaintext_downgrade, "alice".into(), &endpoint).is_err(),
-                "a provisioned MLS route must reject plaintext downgrade"
+                matches!(
+                    downgrade,
+                    Refusal::Unopened(crate::collaboration::route_keys::Never::Downgrade)
+                ),
+                "a provisioned MLS route must reject plaintext downgrade, and say so"
             );
+            assert_eq!(downgrade.to_string(), "cleartext on an encrypted route");
             assert!(
-                signed_document_event(
-                    build(
+                matches!(
+                    refusal(build(
                         ciphertext.clone(),
                         collab_types::ArtifactId::new(),
                         metadata
-                    ),
-                    "alice".into(),
-                    &endpoint
-                )
-                .is_err(),
+                    )),
+                    Refusal::Unopened(crate::collaboration::route_keys::Never::Undecryptable)
+                ),
                 "content is bound to its artifact"
             );
             let mislabeled = collab_types::EncryptionMetadata::content_key(
@@ -13192,12 +13253,10 @@ mod tests {
                 collab_types::ContentRetention::Checkpoint,
             );
             assert!(
-                signed_document_event(
-                    build(ciphertext, artifact, mislabeled),
-                    "alice".into(),
-                    &endpoint
-                )
-                .is_err(),
+                matches!(
+                    refusal(build(ciphertext, artifact, mislabeled)),
+                    Refusal::RetentionMismatch
+                ),
                 "the clear storage class must match the content"
             );
 
