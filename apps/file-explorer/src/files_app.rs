@@ -3683,19 +3683,17 @@ impl FileExplorerWidget {
         self.next_metadata_refresh = None;
         self.last_directory_read = ui::time::now();
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
-            match crate::archive::cached(&archive_path) {
-                Some(entries) => crate::archive::children_of(&entries, &prefix)
-                    .map(|rows| archive_rows(&archive_path, rows))
-                    .map_err(|error| error.to_string()),
-                None => {
-                    // A compressed tar is decoded front to back to list it,
-                    // which can take minutes: the window keeps running and
-                    // shows the folder once it is read.
-                    self.archive_listing.start(&archive_path);
-                    self.current_path = path;
-                    return;
-                }
-            }
+            let Some(entries) = crate::archive::cached(&archive_path) else {
+                // A compressed tar is decoded front to back to list it,
+                // which can take minutes: the window keeps running and
+                // shows the folder once it is read.
+                self.archive_listing.start(&archive_path);
+                self.current_path = path;
+                return;
+            };
+            crate::archive::children_of(&entries, &prefix)
+                .map(|rows| archive_rows(&archive_path, rows))
+                .map_err(|error| error.to_string())
         } else {
             self.archive_listing.stop();
             self.read_directory(&path)

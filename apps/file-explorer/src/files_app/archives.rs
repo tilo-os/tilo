@@ -60,9 +60,13 @@ fn archive_member_path(archive: &Path, member: &Path) -> std::io::Result<PathBuf
 }
 
 /// Reading files out of archives to open them, off the window's thread.
+/// A file read out of an archive: its path as shown, and its copy or why
+/// it could not be read.
+type MemberRead = (PathBuf, std::io::Result<PathBuf>);
+
 pub(super) struct ArchiveMembers {
     wake: Arc<dyn Fn() + Send + Sync>,
-    done: Arc<std::sync::Mutex<Vec<(PathBuf, std::io::Result<PathBuf>)>>>,
+    done: Arc<std::sync::Mutex<Vec<MemberRead>>>,
 }
 
 impl ArchiveMembers {
@@ -92,7 +96,7 @@ impl ArchiveMembers {
 
     /// The reads finished since last asked: the member's path as shown, and
     /// its copy or why it could not be read.
-    pub(super) fn take(&self) -> Vec<(PathBuf, std::io::Result<PathBuf>)> {
+    pub(super) fn take(&self) -> Vec<MemberRead> {
         std::mem::take(&mut *self.done.lock_recover())
     }
 }
@@ -214,7 +218,7 @@ impl FileExplorerWidget {
             ui::portal::PortalOutcome::Failed(error) => {
                 self.notify_failure(t("files-archive-extract-failed-title"), &error, None);
             }
-            _ => {}
+            ui::portal::PortalOutcome::Cancelled => {}
         }
         self.structure_dirty = true;
         true

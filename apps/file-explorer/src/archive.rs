@@ -113,8 +113,11 @@ struct ListingJob {
     stop: Arc<std::sync::atomic::AtomicBool>,
     read: Arc<std::sync::atomic::AtomicU64>,
     size: u64,
-    done: Arc<Mutex<Option<io::Result<Arc<Vec<Entry>>>>>>,
+    done: Arc<Mutex<Option<EntriesRead>>>,
 }
+
+/// A finished read of an archive's entries.
+type EntriesRead = io::Result<Arc<Vec<Entry>>>;
 
 impl std::fmt::Debug for Listing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -210,7 +213,7 @@ impl Listing {
 
     /// The finished read: the archive and its entries or why they could not
     /// be read.
-    pub fn take(&mut self) -> Option<(PathBuf, io::Result<Arc<Vec<Entry>>>)> {
+    pub fn take(&mut self) -> Option<(PathBuf, EntriesRead)> {
         let read = self.job.as_ref()?.done.lock_recover().take()?;
         let job = self.job.take()?;
         Some((job.archive, read))
@@ -233,12 +236,20 @@ pub fn children_of(entries: &[Entry], prefix: &Path) -> io::Result<Vec<Entry>> {
 }
 
 /// The direct children of `prefix` in `archive`, read on this thread.
+///
+/// # Errors
+///
+/// As [`index`] and [`children_of`].
 #[cfg(test)]
 pub fn list_directory(archive: &Path, prefix: &Path) -> io::Result<Vec<Entry>> {
     children_of(&index(archive, &())?, prefix)
 }
 
 /// Whether `member` of `archive` is a folder, named or implied.
+///
+/// # Errors
+///
+/// As [`index`].
 #[cfg(test)]
 pub fn is_directory(archive: &Path, member: &Path) -> io::Result<bool> {
     let entries = index(archive, &())?;
@@ -246,6 +257,10 @@ pub fn is_directory(archive: &Path, member: &Path) -> io::Result<bool> {
 }
 
 /// Every entry of `archive`, read on this thread.
+///
+/// # Errors
+///
+/// As [`index`].
 #[cfg(test)]
 pub fn list(archive: &Path) -> io::Result<Vec<Entry>> {
     Ok(index(archive, &())?.as_ref().clone())

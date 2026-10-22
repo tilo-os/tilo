@@ -1257,6 +1257,7 @@ mod command_path_tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_file_put_in_a_folder_appears_in_files_without_reopening_the_folder() {
+        const SIZE: u64 = 5 << 30;
         let mut env = tilo_test_env::ScopedEnv::new();
         let _identities = quiet_refresh_sources(&mut env);
         let root = tempfile::tempdir().unwrap();
@@ -1277,7 +1278,6 @@ mod command_path_tests {
         let _ = widget.refresh_metadata_if_due(ui::time::now());
 
         let name = "factorio-space-age_linux-arm64_2.1.23.tar.xz";
-        const SIZE: u64 = 5 << 30;
         let status = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(r#"truncate -s "$3" "$1/$4" && mv "$1/$4" "$2/$4""#)
