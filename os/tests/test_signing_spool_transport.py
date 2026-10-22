@@ -171,11 +171,20 @@ class TransportTests(unittest.TestCase):
                 transfer.bounded_process([sys.executable, '-c', script], output, 1024, timeout=HANG_BOUND)
             child = int(output.getvalue())
             status = Path(f'/proc/{child}/stat')
+
+            def gone_or_zombie():
+                # The descendant can be reaped between looking for its stat
+                # and reading it: reading a vanished process's stat raises.
+                try:
+                    return status.read_text().split()[2] == 'Z'
+                except (FileNotFoundError, ProcessLookupError):
+                    return True
+
             try:
                 deadline = time.monotonic() + HANG_BOUND
-                while status.exists() and status.read_text().split()[2] != 'Z' and time.monotonic() < deadline:
+                while not gone_or_zombie() and time.monotonic() < deadline:
                     time.sleep(0.01)
-                self.assertTrue(not status.exists() or status.read_text().split()[2] == 'Z')
+                self.assertTrue(gone_or_zombie(), 'the deadline killed the descendant')
             finally:
                 try:
                     os.kill(child, 9)
