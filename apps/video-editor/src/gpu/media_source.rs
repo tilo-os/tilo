@@ -121,6 +121,21 @@ pub struct MediaFrameSource {
 /// source does not, and takes a real seek.
 const ROLL_AHEAD_MS: u64 = 2_000;
 
+/// The whole millisecond to ask a decoder for when the picture starting at
+/// `seconds` is wanted, rounded up rather than down.
+///
+/// Frames rarely start on a whole millisecond: at 30 fps the 62nd begins at
+/// 2066.67 ms, and 2066 still falls inside the picture before it. A seek
+/// there is answered, correctly, with that earlier picture, stamped with the
+/// segment start of 2066 because the decoder clips it to where the seek
+/// landed — so nothing downstream can tell it apart from the frame asked
+/// for, and an export repeats a frame and drops the next. Rounding up stays
+/// within the frame that starts at `seconds`, which lasts far longer than
+/// the millisecond added.
+fn source_ms(seconds: f64) -> u64 {
+    (seconds.max(0.0) * 1000.0).ceil() as u64
+}
+
 impl MediaFrameSource {
     /// Index `project`'s decodable media and open nothing yet — sessions are
     /// created on first use and pruned when they go idle.
@@ -203,8 +218,7 @@ impl MediaFrameSource {
             let fps = if item.fps > 1.0 { item.fps } else { 30.0 };
             // A clip trimmed to run past its source's end holds the last
             // frame there: that is the picture, so it is what is asked for.
-            let last_frame_ms = (item.duration > 0.0)
-                .then(|| ((item.duration - 1.0 / fps).max(0.0) * 1000.0) as u64);
+            let last_frame_ms = (item.duration > 0.0).then(|| source_ms(item.duration - 1.0 / fps));
             sources.insert(
                 item.id,
                 (
@@ -442,7 +456,7 @@ impl FrameSource for MediaFrameSource {
             self.missing.push((media, source_time));
             return None;
         }
-        let target_ms = (source_time.max(0.0) * 1000.0) as u64;
+        let target_ms = source_ms(source_time);
         let target_ms = last_frame_ms.map_or(target_ms, |last| target_ms.min(last));
         self.attempts += 1;
         let fetch = self.fetch;
@@ -560,6 +574,25 @@ impl FrameSource for MediaFrameSource {
                 self.slot += 1;
             }
             texture
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_ms;
+
+    #[test]
+    fn a_frame_is_asked_for_inside_itself_not_inside_the_one_before() {
+        for fps in [24.0, 25.0, 29.97, 30.0, 60.0] {
+            for n in 0..600u32 {
+                let start = f64::from(n) / fps;
+                let ms = source_ms(start) as f64 / 1000.0;
+                assert!(
+                    ms >= start - 1e-9 && ms < start + 1.0 / fps,
+                    "frame {n} at {fps} fps starts at {start}s but is asked for at {ms}s"
+                );
+            }
         }
     }
 }
