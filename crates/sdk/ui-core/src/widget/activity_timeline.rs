@@ -37,6 +37,7 @@ use crate::widget::Widget;
 use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time,
 };
+use crate::widget::history_face::{EntryFace, HistoryEntryPresenter};
 use crate::widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, group_entries,
 };
@@ -340,6 +341,10 @@ pub struct ActivityTimeline {
     /// What changes did, as members' devices described them; a change
     /// without one reads as its own summary.
     descriptions: std::collections::HashMap<HistoryEntryId, String>,
+    /// The app's presentation of its changes ([`Self::set_entry_presenter`]).
+    presenter: Option<std::rc::Rc<dyn HistoryEntryPresenter>>,
+    /// The faces it gave the listed changes, asked once per list.
+    faces: HashMap<HistoryEntryId, EntryFace>,
     grouping: GroupingConfig,
     /// The forest, over the **unfiltered** entry list.
     groups: Vec<HistoryGroup>,
@@ -374,6 +379,8 @@ pub struct ActivityTimeline {
     last_cursor: Point,
     on_revert: Option<RevertCallback>,
     on_activate_entry: Option<EntryActivateCallback>,
+    /// Choosing a change whose face opens it in the app.
+    on_open_entry: Option<EntryActivateCallback>,
     on_undo_band: Option<UndoBandCallback>,
     on_name_group: Option<NameGroupCallback>,
     /// "Now" for the relative-timestamp paint. Tests + headless callers pin
@@ -425,6 +432,8 @@ impl ActivityTimeline {
             entries: Vec::new(),
             named: Vec::new(),
             descriptions: std::collections::HashMap::new(),
+            presenter: None,
+            faces: HashMap::new(),
             grouping: GroupingConfig::default(),
             groups: Vec::new(),
             group_order: Vec::new(),
@@ -448,6 +457,7 @@ impl ActivityTimeline {
             last_cursor: Point::ZERO,
             on_revert: None,
             on_activate_entry: None,
+            on_open_entry: None,
             on_undo_band: None,
             on_name_group: None,
             now_override: None,
@@ -500,6 +510,7 @@ impl ActivityTimeline {
             .map(|selected| selected.iter().map(|entry| entry.id).collect())
             .unwrap_or_default();
         self.entries = entries;
+        self.refresh_faces();
         self.selection = if selected_ids.is_empty() {
             None
         } else {
@@ -533,12 +544,68 @@ impl ActivityTimeline {
         }
     }
 
-    /// What `entry` did, in words: its description when a member's device
-    /// wrote one, otherwise its own summary.
+    /// What `entry` did, in words: what the app's face for it says, else its
+    /// description when a member's device wrote one, otherwise its own
+    /// summary.
     pub fn summary_of<'a>(&'a self, entry: &'a HistoryEntry) -> &'a str {
+        if let Some(face) = self.faces.get(&entry.id) {
+            return face.spoken.as_str();
+        }
         self.descriptions
             .get(&entry.id)
             .map_or(entry.summary.as_str(), String::as_str)
+    }
+
+    /// Present the changes the way the app does: each change it gives a face
+    /// draws that face, copies what it copies and, when the face opens it,
+    /// is taken up by the app when chosen ([`Self::on_open_entry`]). `None`
+    /// reads every change as its sentence.
+    pub fn set_entry_presenter(
+        &mut self,
+        presenter: Option<std::rc::Rc<dyn HistoryEntryPresenter>>,
+    ) {
+        let same = match (&self.presenter, &presenter) {
+            (None, None) => true,
+            (Some(was), Some(now)) => std::rc::Rc::ptr_eq(was, now),
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.presenter = presenter;
+        self.refresh_faces();
+        self.rebuild_rows();
+    }
+
+    /// The face the app gave `entry`, if it gave one.
+    pub fn face_of(&self, entry: &HistoryEntryId) -> Option<&EntryFace> {
+        self.faces.get(entry)
+    }
+
+    fn refresh_faces(&mut self) {
+        self.faces = match &self.presenter {
+            Some(presenter) => self
+                .entries
+                .iter()
+                .filter_map(|entry| presenter.face(entry).map(|face| (entry.id, face)))
+                .collect(),
+            None => HashMap::new(),
+        };
+    }
+
+    /// The face of the change on line `i`, when it has one.
+    fn row_face(&self, i: usize) -> Option<&EntryFace> {
+        self.faces.get(&self.row_entry(i)?.id)
+    }
+
+    /// Put what the face of the change on line `i` copies on the
+    /// clipboard. Returns whether it had anything to copy.
+    pub fn copy_row(&self, i: usize) -> bool {
+        let Some(text) = self.row_face(i).and_then(|face| face.copy.as_deref()) else {
+            return false;
+        };
+        crate::text_selection::clipboard_copy(text);
+        true
     }
 
     /// The widget has no document; the host reads names
@@ -595,6 +662,37 @@ impl ActivityTimeline {
     pub fn on_revert<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_revert = Some(Box::new(f));
         self
+    }
+
+    /// Called with a change whose face opens it ([`EntryFace::opens`]) when a
+    /// person chooses it, by click, Enter or assistive technology, instead
+    /// of selecting it.
+    #[must_use]
+    pub fn on_open_entry<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
+        self.on_open_entry = Some(Box::new(f));
+        self
+    }
+
+    /// [`Self::on_open_entry`] for a timeline already built.
+    pub fn set_on_open_entry<F: FnMut(&HistoryEntryId) + 'static>(&mut self, f: F) {
+        self.on_open_entry = Some(Box::new(f));
+    }
+
+    /// Open the change on line `i` in the app, when its face opens it and
+    /// the host listens. Returns whether it did.
+    fn open_row(&mut self, i: usize) -> bool {
+        let Some(id) = self
+            .row_face(i)
+            .filter(|face| face.opens)
+            .and(self.row_entry(i).map(|entry| entry.id))
+        else {
+            return false;
+        };
+        let Some(open) = self.on_open_entry.as_mut() else {
+            return false;
+        };
+        open(&id);
+        true
     }
 
     /// Observe explicit activation of an individual activity entry. Selection
@@ -960,6 +1058,7 @@ impl ActivityTimeline {
         let _ = self.focus_row(row);
         match visual {
             VisualRow::Group(_) => self.toggle_group_at_row(row),
+            VisualRow::Entry(..) if self.open_row(row) => true,
             VisualRow::Entry(entry, _) => {
                 self.selection = Some((entry, entry));
                 self.selection_anchor = Some(entry);
@@ -1143,7 +1242,12 @@ impl ActivityTimeline {
     fn row_height(&self, i: usize) -> f64 {
         match self.rows.get(i) {
             Some(VisualRow::Group(_)) => GROUP_ROW_HEIGHT,
-            _ => ROW_HEIGHT,
+            Some(VisualRow::Entry(entry, _)) => self
+                .entries
+                .get(*entry)
+                .and_then(|entry| self.faces.get(&entry.id))
+                .map_or(ROW_HEIGHT, |face| face.height(ROW_HEIGHT)),
+            None => ROW_HEIGHT,
         }
     }
 
@@ -1299,6 +1403,44 @@ impl ActivityTimeline {
             return None;
         }
         Some(rect)
+    }
+
+    /// The trailing chip of an entry row: where Revert, or Copy, is drawn.
+    fn trailing_chip_rect(row: Rect, width: f64) -> Rect {
+        let chip_h = ROW_HEIGHT - 16.0;
+        let cy = f64::midpoint(row.y0, row.y1);
+        Rect::new(
+            row.x1 - width - 6.0,
+            cy - chip_h / 2.0,
+            row.x1 - 6.0,
+            cy + chip_h / 2.0,
+        )
+    }
+
+    /// Where the Copy chip is painted on `row`: the trailing chip, or just
+    /// before Revert when that is offered too.
+    fn copy_chip_painted(&self, row: Rect, beside_revert: bool) -> Rect {
+        let width = self.revert_chip_w();
+        let chip = Self::trailing_chip_rect(row, width);
+        if beside_revert {
+            chip - vello::kurbo::Vec2::new(width + 6.0, 0.0)
+        } else {
+            chip
+        }
+    }
+
+    /// The Copy chip of line `i`: shown while the pointer is over a change
+    /// whose face copies something.
+    pub fn copy_chip_rect(&self, i: usize) -> Option<Rect> {
+        if self.hover_row != Some(i) {
+            return None;
+        }
+        self.row_face(i)?.copy.as_ref()?;
+        let beside_revert = self.revert_chip_rect(i).is_some();
+        let row = self.row_rect(i)?;
+        let depth = self.row_depth(i);
+        let row = RowSlot { rect: row, depth }.indented();
+        Some(self.hit_rect_within(self.copy_chip_painted(row, beside_revert), row))
     }
 
     /// `None` when the host cannot revert, the line is off-screen, is a group
@@ -1907,7 +2049,10 @@ struct EntryRowLayout {
     author_slot_w: f64,
     /// The pointer is over a revertible entry and a host handles reverts.
     offers_revert: bool,
-    /// Summary width given up to the revert chip; zero unless `offers_revert`.
+    /// The pointer is over a change whose face copies something.
+    offers_copy: bool,
+    /// Summary width given up to the revert or copy chip; zero unless one
+    /// is offered.
     chip_reserve: f64,
 }
 
@@ -2066,6 +2211,11 @@ impl ActivityTimeline {
         // Reserved only when hovered — reserving it on every row cost the
         // summary a third of its width for something not on screen.
         let offers_revert = emphasis.hovered && self.on_revert.is_some() && entry.is_revertible();
+        let offers_copy = emphasis.hovered
+            && self
+                .faces
+                .get(&entry.id)
+                .is_some_and(|face| face.copy.is_some());
         let layout = EntryRowLayout {
             row,
             cy,
@@ -2074,11 +2224,9 @@ impl ActivityTimeline {
             // the summary is what the reader is here for.
             author_slot_w: (self.author_slot_w() - f64_of_usize(slot.depth) * INDENT).max(72.0),
             offers_revert,
-            chip_reserve: if offers_revert {
-                self.revert_chip_w() + 6.0
-            } else {
-                0.0
-            },
+            offers_copy,
+            chip_reserve: (self.revert_chip_w() + 6.0)
+                * f64::from(u8::from(offers_revert) + u8::from(offers_copy)),
         };
         if !entry.is_genesis() {
             self.draw_row_author(ctx, &layout, entry, dot_x);
@@ -2303,6 +2451,32 @@ impl ActivityTimeline {
             ..
         } = layout;
         let glyph_x = row.x0 + author_slot_w;
+        // A change the app presents itself draws as the app draws it, in the
+        // slot the kind icon and the sentence share. A redacted one never
+        // does: its strike-through says it was taken back.
+        if entry.redaction.is_none()
+            && let Some(body) = self.faces.get(&entry.id).and_then(|face| face.body.clone())
+        {
+            let slot = Rect::new(
+                glyph_x,
+                row.y0,
+                (row.x1 - self.time_slot_w() - chip_reserve - TRAILING_INSET).max(glyph_x),
+                row.y1,
+            );
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &slot,
+            );
+            body.paint(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                slot,
+            );
+            scene.pop_layer();
+            return;
+        }
         // What kind of change it was, as an icon of the set.
         let icon_side = f64::from(theme.tokens.metrics.icon_sm);
         crate::icons::draw_icon(
@@ -2405,9 +2579,21 @@ impl ActivityTimeline {
             cy,
             ref text_style,
             offers_revert,
+            offers_copy,
             chip_reserve,
             ..
         } = layout;
+        if offers_copy {
+            draw_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.copy_chip_painted(row, offers_revert),
+                &crate::i18n!("history-entry-copy"),
+                false,
+            );
+        }
         let rel = fit_text(
             text_renderer,
             &row_time(entry, now),
@@ -3243,6 +3429,25 @@ impl Widget for ActivityTimeline {
             {
                 self.handle_naming_key(event, *ctx.modifiers, ctx.handled);
             }
+            // Copy copies what the focused change's face copies (a
+            // calculation's result); with nothing to copy it is the host's.
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
+                && c.eq_ignore_ascii_case("c")
+                && self
+                    .focused_row()
+                    .and_then(|row| self.row_face(row))
+                    .is_some_and(|face| face.copy.is_some()) =>
+            {
+                *ctx.handled = self.focused_row().is_some_and(|row| self.copy_row(row));
+            }
             // Author typeahead. Chorded keys are left alone so the host's
             // own shortcuts still work while the pane has the keyboard.
             WindowEvent::KeyboardInput {
@@ -4001,6 +4206,20 @@ impl ActivityTimeline {
         handled: &mut bool,
         modifiers: winit::event::Modifiers,
     ) {
+        if self
+            .copy_chip_rect(i)
+            .is_some_and(|chip| chip.contains(self.last_cursor))
+        {
+            let _ = self.copy_row(i);
+            *handled = true;
+            return;
+        }
+        // A change the app takes up opens there; shift-click still extends
+        // a range over it.
+        if !modifiers.state().shift_key() && self.open_row(i) {
+            *handled = true;
+            return;
+        }
         if let Some(chip) = self.revert_chip_rect(i)
             && chip.contains(self.last_cursor)
         {
@@ -4383,6 +4602,73 @@ mod tests {
         timeline_at(rect, entries)
             .on_revert(|_| {})
             .on_name_group(|_| {})
+    }
+
+    /// An app's presenter decides how its changes read: a face's words name
+    /// the row, its body sets the row's height, choosing a change it opens
+    /// hands it to the app instead of selecting it, and Copy copies what the
+    /// face copies. Changes without a face keep their sentence.
+    #[test]
+    fn a_presented_change_reads_opens_and_copies_as_the_app_says() {
+        struct Tall;
+        impl crate::widget::EntryBody for Tall {
+            fn height(&self) -> f64 {
+                ROW_HEIGHT * 2.0
+            }
+            fn paint(&self, _: &mut PaintCtx<'_>, _: Rect) {}
+        }
+        struct Calculations;
+        impl HistoryEntryPresenter for Calculations {
+            fn face(&self, entry: &HistoryEntry) -> Option<EntryFace> {
+                (entry.id.0[0] == 1).then(|| {
+                    EntryFace::new("1+2 = 3")
+                        .with_body(Rc::new(Tall))
+                        .copying("3")
+                        .opening()
+                })
+            }
+        }
+        let _host = crate::host::enter(&crate::host::HostServices::null());
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&opened);
+        let presented = entry(EntryKind::Details, "Alice", 10, 1);
+        let plain = entry(EntryKind::Details, "Alice", 20, 2);
+        let (presented_id, plain_summary) = (presented.id, plain.summary.clone());
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), vec![presented, plain])
+            .on_open_entry(move |id| seen.borrow_mut().push(*id));
+        timeline.set_entry_presenter(Some(Rc::new(Calculations)));
+        let row = (0..timeline.row_count())
+            .find(|row| {
+                timeline
+                    .row_entry(*row)
+                    .is_some_and(|entry| entry.id == presented_id)
+            })
+            .expect("the change is listed");
+        let names: Vec<String> = Widget::accessibility(&timeline)
+            .expect("timeline semantics")
+            .children
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|name| name.ends_with("1+2 = 3")),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name.ends_with(&plain_summary)),
+            "{names:?}"
+        );
+        assert!((timeline.row_height(row) - ROW_HEIGHT * 2.0).abs() < 1e-9);
+
+        assert!(timeline.copy_row(row), "the face copies its result");
+        assert_eq!(
+            crate::text_selection::clipboard_paste().as_deref(),
+            Some("3")
+        );
+
+        assert!(timeline.activate_row(row));
+        assert_eq!(*opened.borrow(), vec![presented_id], "the app takes it up");
+        assert!(timeline.selection.is_none(), "opening is not selecting");
     }
 
     #[test]

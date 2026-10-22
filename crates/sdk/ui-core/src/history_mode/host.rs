@@ -43,6 +43,9 @@ enum Command {
     PreviousPage,
     NextPage,
     Scope(usize),
+    /// A person chose a change the app takes up ([`crate::widget::EntryFace::opens`]):
+    /// return to the live app and hand it the change.
+    Open(crate::HistoryEntryId),
     /// Open the foot's name field for the selected changes.
     Name,
     Review(review::ReviewCommand),
@@ -126,6 +129,9 @@ pub struct HistoryHost {
     open_requested: Rc<Cell<bool>>,
     /// The change to select once History next refreshes open.
     requested_entry: Option<crate::HistoryEntryId>,
+    /// A change a person chose to open in the app, handed to the live app
+    /// once History has returned to it ([`Self::deliver_opened_entry`]).
+    opened: Option<crate::widget::HistoryEntry>,
     open: bool,
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
@@ -341,6 +347,7 @@ impl HistoryHost {
             _ => "history-mode-content-unavailable",
         });
         let request = Rc::new(Cell::new(false));
+        let commands = Rc::new(RefCell::new(VecDeque::new()));
         let toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
@@ -373,12 +380,18 @@ impl HistoryHost {
             timeline: {
                 // History is read by who did what: its strip filters by person
                 // and agent.
-                let mut timeline = ActivityTimeline::new().with_preview_selection();
+                let opens = Rc::clone(&commands);
+                let mut timeline = ActivityTimeline::new()
+                    .with_preview_selection()
+                    .on_open_entry(move |entry| {
+                        opens.borrow_mut().push_back(Command::Open(*entry));
+                    });
                 timeline.set_filters_people(true);
                 timeline
             },
             open_requested: request,
             requested_entry: None,
+            opened: None,
             open: false,
             open_button: true,
             fallback_bar: true,
@@ -399,7 +412,7 @@ impl HistoryHost {
             panel_rect: Rect::ZERO,
             panel_motion: crate::motion::Presence::closed(),
             motion: crate::tokens::EffectiveMotion::default(),
-            commands: Rc::new(RefCell::new(VecDeque::new())),
+            commands,
             selected: vec![],
             name_draft: crate::LocalState::new(String::new()),
             name_draft_for: None,
@@ -1173,6 +1186,49 @@ impl HistoryHost {
     pub(crate) fn returning_live(&self) -> bool {
         self.returning_live
     }
+
+    /// Close History back to the live app, as its Done does.
+    fn return_to_live(&mut self) {
+        self.close_files_presentation();
+        self.review = None;
+        self.review_request = None;
+        self.assets.cancel();
+        self.selected.clear();
+        self.timeline.set_selection(None);
+        self.before.preview = None;
+        self.after.preview = None;
+        self.open = false;
+        self.activity_page = false;
+        self.returning_live = true;
+        if let Some(controller) = &mut self.controller {
+            controller.back_to_live();
+        }
+    }
+
+    /// Present the listed changes as the live app `live` says they look
+    /// ([`super::capability::PresentsHistoryEntries`]). Asked only while
+    /// History is open or opening: the walk costs nothing to a closed one.
+    pub(crate) fn present_entries_of(&mut self, live: &dyn Widget) {
+        if self.captures_input() {
+            self.timeline
+                .set_entry_presenter(super::capability::history_entry_presenter(live));
+        }
+    }
+
+    /// Hand the change a person chose to open to the live app `live`, once
+    /// History has returned to it. Runners call this after
+    /// [`Self::finish_return_to_live`], when the app's own controls run
+    /// again, so what the app does with it goes through its doors as any
+    /// gesture of the person does.
+    pub(crate) fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool {
+        if self.captures_input() {
+            return false;
+        }
+        self.opened
+            .take()
+            .is_some_and(|entry| super::capability::open_history_entry(live, &entry))
+    }
+
     fn owned_layout_roots(&self) -> [Option<NodeId>; 7] {
         [
             self.toolbar_node,
@@ -1433,20 +1489,16 @@ impl HistoryHost {
                         files.load();
                     }
                 }
-                Command::Live => {
-                    self.close_files_presentation();
-                    self.review = None;
-                    self.review_request = None;
-                    self.assets.cancel();
-                    self.selected.clear();
-                    self.timeline.set_selection(None);
-                    self.before.preview = None;
-                    self.after.preview = None;
-                    self.open = false;
-                    self.activity_page = false;
-                    self.returning_live = true;
-                    if let Some(controller) = &mut self.controller {
-                        controller.back_to_live();
+                Command::Live => self.return_to_live(),
+                Command::Open(entry) => {
+                    self.opened = self
+                        .timeline
+                        .entries()
+                        .iter()
+                        .find(|listed| listed.id == entry)
+                        .cloned();
+                    if self.opened.is_some() {
+                        self.return_to_live();
                     }
                 }
                 Command::Now => {

@@ -204,6 +204,7 @@ impl App {
                 history.invalidate_owner();
             } else {
                 history.set_width(width);
+                history.present_entries_of(self.root_widget.as_ref());
                 history.refresh(&self.state.doc);
             }
         }
@@ -229,6 +230,9 @@ impl App {
             if let Some(history) = &mut self.history {
                 history.finish_return_to_live();
                 history.flush_pending_toolbar();
+                if history.deliver_opened_entry(self.root_widget.as_mut()) {
+                    self.needs_sync = true;
+                }
             }
             if let Some(palette) = self.actions.action_palette.as_mut() {
                 palette.resume_after_history();
