@@ -75,6 +75,27 @@ impl Connect {
             ))
         })
     }
+    /// The renewal of the certificate the room's record holds, when this
+    /// device's custody holds one: the device proves its membership with it
+    /// ([`crate::enroll::renew_membership`]) before its sessions dial again,
+    /// as [`Self::material`] refuses custody that differs from the record.
+    ///
+    /// # Errors
+    /// The room is not held here or custody cannot be read.
+    pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
+        self.owner.with_current(self.room, |view| {
+            if view.governed_here() {
+                return Ok(None);
+            }
+            let (cert, _) = identity.current_native_material(view.workspace())?;
+            Ok(crate::renewal::renews(&cert, view.device()).then_some(cert))
+        })
+    }
+    /// The owner of the room's record.
+    #[must_use]
+    pub fn owner(&self) -> &NativeWorkspaceOwner {
+        &self.owner
+    }
 }
 /// A live session's pin; closed when the session ends.
 ///

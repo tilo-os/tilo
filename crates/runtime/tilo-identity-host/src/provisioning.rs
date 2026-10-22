@@ -181,16 +181,115 @@ impl DeviceClass {
         }
     }
 
-    /// A foreign device never keeps a native certificate it finds on disk.
-    /// Native provisioning keeps whatever verified certificate exists.
-    fn must_reissue(self, cert: &DeviceCert) -> bool {
-        match self {
+    /// A foreign device never keeps a native certificate it finds on disk,
+    /// and a throwaway never one that does not expire. Any certificate that
+    /// expires is reissued once it is due for renewal ([`renewal_due_at`]):
+    /// an expiring certificate is never how a device loses its rooms.
+    fn must_reissue(self, cert: &DeviceCert, now_ns: u64) -> bool {
+        let due = renewal_due_at(cert).is_some_and(|due| now_ns >= due);
+        due || match self {
             Self::Foreign => !cert.capabilities.foreign,
             Self::Native => false,
             #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
             Self::Throwaway => cert.expires_at_ns.is_none(),
         }
     }
+
+    /// The class of the identity in `identity_dir` provisioned as `class`:
+    /// a throwaway test identity stays one whoever provisions it again, so
+    /// its renewed certificate expires as the first did.
+    fn of(identity_dir: &Path, class: Self) -> Self {
+        #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+        if class == Self::Native && is_throwaway_test_identity(identity_dir) {
+            return Self::Throwaway;
+        }
+        let _ = identity_dir;
+        class
+    }
+}
+
+/// How long a failed renewal waits before it is tried again: short beside
+/// the half of its lifetime a certificate due for renewal still has.
+pub const RENEWAL_RETRY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// The time a renewal loop runs by ([`keep_device_certificates_renewed`]).
+pub trait RenewalClock {
+    /// Now, in nanoseconds since the Unix epoch.
+    fn now_ns(&self) -> u64;
+    /// Wait `duration`. Answers whether to go on.
+    fn wait(&self, duration: std::time::Duration) -> bool;
+}
+
+/// Keep this device's expiring certificates for the identity in
+/// `identity_dir` renewed while the device runs: wait until the next is due
+/// ([`next_device_certificate_renewal`]), renew it through `renew` (the
+/// provisioning the session started with, which reissues what is due), and
+/// wait for the next. Returns once none of them expires, or when `clock`
+/// says to stop. A failed renewal is tried again after [`RENEWAL_RETRY`].
+pub fn keep_device_certificates_renewed(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    clock: &dyn RenewalClock,
+    mut renew: impl FnMut() -> io::Result<()>,
+) {
+    loop {
+        let Some(due) = next_device_certificate_renewal(identity_dir, paths) else {
+            return;
+        };
+        let now = clock.now_ns();
+        let go_on = if due > now {
+            clock.wait(std::time::Duration::from_nanos(due.saturating_sub(now)))
+        } else {
+            match renew() {
+                Ok(())
+                    if next_device_certificate_renewal(identity_dir, paths)
+                        .is_some_and(|next| next <= now) =>
+                {
+                    tracing::warn!("a renewed device certificate is due again at once");
+                    clock.wait(RENEWAL_RETRY)
+                }
+                Ok(()) => {
+                    tracing::info!("renewed this device's certificate before it expires");
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not renew this device's certificate; trying again");
+                    clock.wait(RENEWAL_RETRY)
+                }
+            }
+        };
+        if !go_on {
+            return;
+        }
+    }
+}
+
+/// When `cert` is due for renewal: halfway through its lifetime. `None` for
+/// a certificate that never expires.
+#[must_use]
+pub fn renewal_due_at(cert: &DeviceCert) -> Option<u64> {
+    let expires = cert.expires_at_ns?;
+    let lifetime = expires.saturating_sub(cert.issued_at_ns);
+    Some(cert.issued_at_ns.saturating_add(lifetime / 2))
+}
+
+/// When the next of this device's certificates for the identity in
+/// `identity_dir` is due for renewal ([`renewal_due_at`]): the device's own
+/// certificate and the one keyed by the identity's root. `None` when none
+/// of them expires, or none can be read.
+#[must_use]
+pub fn next_device_certificate_renewal(identity_dir: &Path, paths: &IdentityPaths) -> Option<u64> {
+    let mut certificates = vec![paths.device_cert.clone()];
+    if let Some(record) = runtime_identity::resolve_active_identity(identity_dir)
+        && let Ok(identity) = runtime_identity::load_from_path(record)
+    {
+        certificates.push(paths.device_cert_for_user(&identity.group_public_key()));
+    }
+    certificates
+        .iter()
+        .filter_map(|path| persist::read_device_cert(path).ok())
+        .filter_map(|cert| renewal_due_at(&cert))
+        .min()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1026,6 +1125,7 @@ fn ensure_collaboration_identity_in_context(
     approved_label: Option<&str>,
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
+    let class = DeviceClass::of(identity_dir, class);
 
     match persist::joined_device_is_ready(paths, tilo_clock::unix_now_ns()) {
         Ok(true) => return Ok(ProvisionOutcome::Existing),
@@ -1088,7 +1188,7 @@ fn ensure_collaboration_identity_in_context(
             ));
         }
         device_label.clone_from(&cert.device_label);
-        if class.must_reissue(&cert) {
+        if class.must_reissue(&cert, tilo_clock::unix_now_ns()) {
             let cert = issue_device_certificate(
                 &signer,
                 cert.device_public_key,
@@ -1311,7 +1411,7 @@ fn ensure_device_certificate_for_identity(
                 "identity-specific device certificate does not match its keys",
             ));
         }
-        if !class.must_reissue(&cert) {
+        if !class.must_reissue(&cert, tilo_clock::unix_now_ns()) {
             return Ok(cert_path);
         }
         cert.device_label
@@ -1331,7 +1431,22 @@ fn issue_device_certificate(
     device_label: &str,
     class: DeviceClass,
 ) -> Result<DeviceCert, io::Error> {
-    let issued_at_ns = tilo_clock::unix_now_ns();
+    issue_device_certificate_at(
+        identity,
+        device_public_key,
+        device_label,
+        class,
+        tilo_clock::unix_now_ns(),
+    )
+}
+
+fn issue_device_certificate_at(
+    identity: &runtime_identity::SigningIdentity,
+    device_public_key: [u8; 32],
+    device_label: &str,
+    class: DeviceClass,
+    issued_at_ns: u64,
+) -> Result<DeviceCert, io::Error> {
     let expires_at_ns = match class {
         DeviceClass::Native | DeviceClass::Foreign => None,
         #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
@@ -1509,6 +1624,9 @@ fn protect_identity_record_at(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod renewal_tests;
 
 #[cfg(test)]
 mod tests {

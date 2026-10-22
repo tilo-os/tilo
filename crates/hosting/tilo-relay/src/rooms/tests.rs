@@ -2688,3 +2688,96 @@ async fn a_room_moved_here_keeps_its_identity() {
     assert_ne!(fresh.room, room);
     relay.shutdown().await;
 }
+
+/// A member whose person's root renewed its device certificate proves its
+/// membership with the renewal: the relay holds the renewal in place of the
+/// certificate it replaces, answers the device as the same member with its
+/// role, and refuses the older certificate from then on.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JoinTransportRequest, JoinTransportResponse, MembershipChallengeRequest,
+        MembershipCompleteRequest, sign_membership_proof,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Lounge").await.unwrap();
+    let root = SigningKey::from_bytes(&[71; 32]);
+    let laptop = SigningKey::from_bytes(&[72; 32]);
+    let certify = |issued_at_ns: u64, expires_at_ns: Option<u64>| {
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: laptop.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns,
+            expires_at_ns,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        cert
+    };
+    let held = certify(1, None);
+    let (_, first) = door_join(rooms, &cert, &created.room, (&laptop, &held), 21).await;
+    let JoinTransportResponse::Complete(delivered) = first else {
+        panic!("the join is admitted: {first:?}");
+    };
+    let now = tilo_clock::unix_now_ns();
+    let renewed = certify(
+        now.saturating_sub(1_000_000_000),
+        Some(now.saturating_add(3_600_000_000_000)),
+    );
+
+    let service = rooms.join_service();
+    let endpoint = laptop.verifying_key().to_bytes();
+    let challenge = |device_cert: DeviceCert, seed: u8| {
+        service.handle(
+            endpoint,
+            JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
+                room: created.room.clone(),
+                workspace_id: created.workspace_id,
+                device_cert,
+                request_id: [seed; 32],
+            }),
+        )
+    };
+    let JoinTransportResponse::MembershipChallenge(answer) = challenge(renewed.clone(), 22).await
+    else {
+        panic!("the renewal is challenged as the device it renews");
+    };
+    let proof = sign_membership_proof(answer.challenge, &laptop).unwrap();
+    let JoinTransportResponse::MembershipComplete(current) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::MembershipComplete(MembershipCompleteRequest { proof }),
+        )
+        .await
+    else {
+        panic!("the renewed member is answered");
+    };
+    assert_eq!(current.device_cert, renewed);
+    assert_eq!(
+        current.role, delivered.role,
+        "the same member, with its role"
+    );
+    assert!(current.certified_roster.contains(&renewed));
+    assert!(!current.certified_roster.contains(&held));
+    assert!(
+        matches!(
+            challenge(held, 23).await,
+            JoinTransportResponse::Error { .. }
+        ),
+        "the older certificate is refused after the renewal"
+    );
+    relay.shutdown().await;
+}

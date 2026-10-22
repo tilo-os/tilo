@@ -286,6 +286,17 @@ impl NativeWorkspaceOwner {
                 })
             }
             JoinTransportRequest::MembershipComplete(request) => {
+                let renewal = ledger.membership_renewal(
+                    &governed(&candidate, &messages),
+                    remote_endpoint,
+                    &request,
+                    now,
+                )?;
+                let candidate = match renewal {
+                    Some(renewed) => self.renew_member(room, candidate, &renewed, key, at)?,
+                    None => candidate,
+                };
+                let messages = RoomGovernance(&candidate.peer);
                 JoinTransportResponse::MembershipComplete(ledger.membership_complete(
                     &governed(&candidate, &messages),
                     remote_endpoint,
@@ -294,6 +305,32 @@ impl NativeWorkspaceOwner {
                 )?)
             }
         })
+    }
+
+    /// Hold `renewed` in place of the certificate the room governed here
+    /// holds for its device, published before the member hears its answer.
+    fn renew_member(
+        &self,
+        room: RoomId,
+        mut candidate: NativeCommittedView,
+        renewed: &tilo_user_identity::DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NativeCommittedView, JoinError> {
+        candidate
+            .peer
+            .governance_mut()
+            .renew_member_certificate(renewed, key, now)?;
+        candidate.record.peer = candidate.peer.durable().map_err(JoinError::new)?;
+        candidate.record.generation = candidate
+            .record
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| JoinError::new("native owner generation exhausted"))?;
+        let published = candidate.clone();
+        self.publish_room(room, candidate, None)
+            .map_err(JoinError::new)?;
+        Ok(published)
     }
 
     /// Admit the verified `joins` into `candidate`, the room governed here,
