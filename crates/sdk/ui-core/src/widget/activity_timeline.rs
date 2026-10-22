@@ -55,7 +55,11 @@ const PADDING: f64 = 8.0;
 const AVATAR_DIAM: f64 = 16.0;
 const REVERT_CHIP_W: f64 = 64.0;
 const TIME_SLOT_W: f64 = 80.0;
-const AUTHOR_SLOT_W: f64 = 160.0;
+/// The author cluster of a row: the author's face and the gap after it.
+/// A row is told apart by who made it at a glance, by face and colour; the
+/// name is the face's tooltip and the row's accessible name, never a
+/// column of names cut to fit.
+const AUTHOR_SLOT_W: f64 = 8.0 + AVATAR_DIAM + 10.0;
 const INDENT: f64 = 20.0;
 /// Right-hand gutter shared by every trailing element — a row's relative
 /// time and a band header's — so the time column lines up down the pane.
@@ -1178,15 +1182,59 @@ impl ActivityTimeline {
 
     // ---------- geometry ----------
 
-    /// Proportional to the pane with a floor so a name is never squeezed to
-    /// nothing.
+    /// The author cluster's width: the face alone, whatever the pane.
     fn author_slot_w(&self) -> f64 {
-        if self.filters_people {
-            // One document's History names people by first name and agents
-            // by their own: the summary takes the room.
-            return 96.0;
+        AUTHOR_SLOT_W
+    }
+
+    /// The name an entry's author goes by in this History: an agent by its
+    /// own name where History filters by person, else the author's.
+    fn author_label<'a>(&self, entry: &'a HistoryEntry) -> &'a str {
+        match &entry.author.attribution {
+            // An agent's own name; its row's place in the History says for whom.
+            Some(who) if self.filters_people => who.actor_name.as_str(),
+            _ => entry.author.name.as_str(),
         }
-        (self.rect.width() * 0.32).clamp(84.0, AUTHOR_SLOT_W)
+    }
+
+    /// The bot chip a bot's change carries after its face, and its width.
+    fn bot_chip(
+        entry: &HistoryEntry,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<(String, f64)> {
+        is_bot_author(&entry.author).then(|| {
+            let label = crate::i18n::widget_format("author-bot-chip", &[]);
+            let width = crate::widget::ChipFace::intrinsic_width(
+                &label,
+                crate::widget::ChipLead::None,
+                false,
+                text_renderer,
+                theme,
+            );
+            (label, width)
+        })
+    }
+
+    /// The face of the author of line `i`, where it is drawn.
+    fn avatar_rect(&self, i: usize) -> Option<Rect> {
+        let entry = self.row_entry(i)?;
+        if entry.is_genesis() {
+            return None;
+        }
+        let row = RowSlot {
+            rect: self.row_rect(i)?,
+            depth: self.row_depth(i),
+        }
+        .indented();
+        let cy = f64::midpoint(row.y0, row.y1);
+        let x = row.x0 + 8.0;
+        Some(Rect::new(
+            x,
+            cy - AVATAR_DIAM / 2.0,
+            x + AVATAR_DIAM,
+            cy + AVATAR_DIAM / 2.0,
+        ))
     }
 
     fn time_slot_w(&self) -> f64 {
@@ -1846,7 +1894,14 @@ impl ActivityTimeline {
         let total_count = g.len();
         let restorable =
             (g.start..g.end).any(|i| self.entries.get(i).is_some_and(HistoryEntry::is_revertible));
-        let mut facts = g.subtitle_facts(&self.entries);
+        // The app may say what the band amounts to (its calculations, its
+        // functions) where counting characters would mean nothing.
+        let summary = self.presenter.as_ref().and_then(|presenter| {
+            self.entries
+                .get(g.start..g.end)
+                .and_then(|members| presenter.group_summary(members))
+        });
+        let mut facts = g.subtitle_facts_summarised(&self.entries, summary);
         if visible_count < total_count {
             // Saying "12 changes" over three visible rows would be a lie the
             // reader cannot catch.
@@ -2216,13 +2271,18 @@ impl ActivityTimeline {
                 .faces
                 .get(&entry.id)
                 .is_some_and(|face| face.copy.is_some());
+        // A bot's change carries its chip after the face, and the summary
+        // starts after the chip.
+        let bot_w = if entry.is_genesis() {
+            0.0
+        } else {
+            Self::bot_chip(entry, ctx.text, ctx.theme).map_or(0.0, |(_, width)| width + 6.0)
+        };
         let layout = EntryRowLayout {
             row,
             cy,
             text_style: ctx.theme.text(TextRole::Caption),
-            // The indent comes out of the author cluster, not the summary —
-            // the summary is what the reader is here for.
-            author_slot_w: (self.author_slot_w() - f64_of_usize(slot.depth) * INDENT).max(72.0),
+            author_slot_w: self.author_slot_w() + bot_w,
             offers_revert,
             offers_copy,
             chip_reserve: (self.revert_chip_w() + 6.0)
@@ -2344,8 +2404,8 @@ impl ActivityTimeline {
         }
     }
 
-    /// The author's name. Their identity is the dot's colour and, in full,
-    /// the provenance detail; a row is read by the name.
+    /// A bot's chip after its face. The author's name is not drawn: it is
+    /// the face's tooltip and the row's accessible name.
     fn draw_row_author(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2362,69 +2422,22 @@ impl ActivityTimeline {
         let &EntryRowLayout {
             row,
             cy,
-            ref text_style,
             author_slot_w,
             ..
         } = layout;
-        let x = dot_x + AVATAR_DIAM / 2.0 + 8.0;
+        let Some((label, width)) = Self::bot_chip(entry, text_renderer, theme) else {
+            return;
+        };
         let slot_end = row.x0 + author_slot_w - 6.0;
-        // A bot's change carries the bot chip after its name, as its
-        // messages do; the chip keeps its width and the name gives way.
-        let bot_chip = is_bot_author(&entry.author).then(|| {
-            let label = crate::i18n::widget_format("author-bot-chip", &[]);
-            let width = crate::widget::ChipFace::intrinsic_width(
-                &label,
-                crate::widget::ChipLead::None,
-                false,
-                text_renderer,
-                theme,
-            );
-            (label, width)
-        });
-        let chip_reserve = bot_chip.as_ref().map_or(0.0, |(_, width)| width + 6.0);
-        let shown = match &entry.author.attribution {
-            // An agent's own name; its row's place in the History says for whom.
-            Some(who) if self.filters_people => who.actor_name.as_str(),
-            _ => entry.author.name.as_str(),
-        };
-        let name = fit_text(
-            text_renderer,
-            shown,
-            text_style,
-            (slot_end - x - chip_reserve).max(24.0),
+        let chip_x = dot_x + AVATAR_DIAM / 2.0 + 6.0;
+        let height = crate::widget::ChipFace::height(theme).min(row.height());
+        let chip = Rect::new(
+            chip_x,
+            cy - height / 2.0,
+            (chip_x + width).min(slot_end),
+            cy + height / 2.0,
         );
-        let name_top = text_top(text_renderer, text_style, cy);
-        // The reader's own changes read quieter than other people's.
-        let colour = if entry.author.relation == crate::widget::history::AuthorRelation::Reader {
-            theme.tokens.colors.text_dim
-        } else {
-            theme.tokens.colors.text_primary
-        };
-        text_renderer.draw_style(
-            scene,
-            &name,
-            colour,
-            transform.pre_translate((x, name_top).into()),
-            None,
-            text_style,
-        );
-        if let Some((label, width)) = bot_chip {
-            let (name_width, _) = text_renderer.measure_style(&name, None, text_style);
-            let chip_x = x + f64::from(name_width) + 6.0;
-            let height = crate::widget::ChipFace::height(theme).min(row.height());
-            let chip = Rect::new(
-                chip_x,
-                cy - height / 2.0,
-                (chip_x + width).min(slot_end),
-                cy + height / 2.0,
-            );
-            crate::widget::ChipFace::new(chip, &label).paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-            );
-        }
+        crate::widget::ChipFace::new(chip, &label).paint(scene, transform, text_renderer, theme);
     }
 
     /// The op-class glyph and the summary column, including the redaction
@@ -3361,6 +3374,17 @@ impl ActivityTimeline {
 }
 
 impl Widget for ActivityTimeline {
+    /// Over an author's face, their name.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if !self.rect.contains(point) {
+            return None;
+        }
+        (0..self.row_count()).find_map(|i| {
+            let face = self.avatar_rect(i).filter(|face| face.contains(point))?;
+            Some((face, self.author_label(self.row_entry(i)?).to_owned()))
+        })
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

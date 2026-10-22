@@ -239,8 +239,8 @@ fn edit_at(
             Scalar::from_json(value)
         }
         // A text written whole (a formula, a title) is what it reads now:
-        // a reader names it without the document, cut to a scalar's length.
-        EditOp::Replace { text } => Some(Scalar::text(text)),
+        // a reader names it without the document, and elides it to fit.
+        EditOp::Replace { text } => Some(Scalar::whole_text(text)),
         EditOp::Add { by } => old
             .as_ref()
             .and_then(|old| crate::__private::json_via_bytes(old).ok())
