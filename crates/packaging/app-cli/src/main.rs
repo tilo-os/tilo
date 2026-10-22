@@ -12,6 +12,11 @@ use app_cli::{
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::Shell;
 
+mod local_tapp;
+mod store_verbs;
+
+use local_tapp::FileTrust;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "app",
@@ -57,21 +62,28 @@ enum Cmd {
     /// Search the app store.
     #[command(visible_aliases = ["s", "find"])]
     Search { query: String },
-    /// Install an app by name, slug, or package id.
-    #[command(visible_aliases = ["i", "add"])]
+    /// Install an app by name, slug or package id, or from a package file
+    /// or link. A file from a publisher you don't trust asks first.
+    #[command(
+        visible_aliases = ["i", "add"],
+        after_help = "Examples:\n  app install browser\n  app install ./notes-1.2.0.tapp\n  app install https://example.org/notes.tapp --yes"
+    )]
     Install {
+        /// The app, or a .tapp file or https:// link.
         app: String,
         /// Install this version instead of the newest.
         #[arg(long)]
         version: Option<String>,
+        #[command(flatten)]
+        trust: FileTrust,
         /// Report the download on standard error as `progress downloading
         /// <received> <total>` lines (`-` for an unknown total), then
         /// `progress installing`, for a program showing its own progress.
         #[arg(long)]
         progress_lines: bool,
     },
-    /// Install an exact signed runtime (an app's engine), without installing or
-    /// replacing the app that uses it.
+    /// Install, list and remove the runtimes apps run on (an app's engine)
+    /// and the environment images environments are stacked from.
     Runtime {
         #[command(subcommand)]
         cmd: RuntimeCmd,
@@ -80,6 +92,12 @@ enum Cmd {
     #[command(visible_aliases = ["u", "upgrade"])]
     Update {
         app: Option<String>,
+        /// Update the app from this package file or link instead of its
+        /// repository.
+        #[arg(long, requires = "app", value_name = "TAPP")]
+        from: Option<String>,
+        #[command(flatten)]
+        trust: FileTrust,
         /// As `install --progress-lines`, for one app; `progress up-to-date`
         /// when the store has no newer build of it this system can run.
         #[arg(long, requires = "app")]
@@ -97,6 +115,33 @@ enum Cmd {
     /// Remove an installed app while keeping its saved state.
     #[command(visible_aliases = ["rm", "uninstall"])]
     Remove { app: String },
+    /// Keep an app installed when space runs short: a pinned app is never
+    /// evicted to make room.
+    Pin { app: String },
+    /// Let an app be evicted to make room again.
+    Unpin { app: String },
+    /// Check installed apps' files against their signed manifests: every
+    /// app, or the one named.
+    Verify { app: Option<String> },
+    /// Show an installed app's manifest and how it was installed.
+    Inspect { app: String },
+    /// List the apps running now, with their memory, CPU time and tier.
+    Running {
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove app versions and runtime builds nothing uses any more.
+    Gc {
+        /// List what would be removed, removing nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Choose whose packages install without asking, and refuse publishers.
+    Trust {
+        #[command(subcommand)]
+        cmd: store_verbs::TrustCmd,
+    },
     /// Add, remove, or inspect app repositories.
     #[command(visible_alias = "registry")]
     Repo {
@@ -117,6 +162,8 @@ enum RuntimeCmd {
         #[arg(long)]
         repo: Option<String>,
     },
+    #[command(flatten)]
+    Store(store_verbs::RuntimeStoreCmd),
 }
 
 #[derive(Debug, Subcommand)]
@@ -179,27 +226,50 @@ fn main() -> ExitCode {
         Cmd::Install {
             app,
             version,
+            trust,
             progress_lines,
         } => {
             PROGRESS_LINES.store(progress_lines, Ordering::Relaxed);
-            match version {
-                None => change_one(&app, false),
-                Some(version) => install_version(&app, &version),
-            }
+            install(&app, version.as_deref(), &trust)
         }
         Cmd::Rollback { app, to } => rollback(&app, to.as_deref()),
         Cmd::Update {
             app,
+            from,
+            trust,
             progress_lines,
         } => {
             PROGRESS_LINES.store(progress_lines, Ordering::Relaxed);
-            update(app.as_deref())
+            match (app, from) {
+                (Some(app), Some(from)) => update_from(&app, &from, &trust),
+                (app, None) => match trust.file_only_flag() {
+                    Some(flag) => {
+                        eprintln!("app: {flag} goes with --from <file>");
+                        ExitCode::FAILURE
+                    }
+                    None => update(app.as_deref()),
+                },
+                (None, Some(_)) => {
+                    eprintln!("app: --from needs the app it updates");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Cmd::Remove { app } => remove(&app),
+        Cmd::Pin { app } => store_verbs::on_installed("pin", &app),
+        Cmd::Unpin { app } => store_verbs::on_installed("unpin", &app),
+        Cmd::Verify { app } => store_verbs::verify(app.as_deref()),
+        Cmd::Inspect { app } => store_verbs::on_installed("inspect", &app),
+        Cmd::Running { json } => store_verbs::running(json),
+        Cmd::Gc { dry_run } => store_verbs::gc(dry_run),
+        Cmd::Trust { cmd } => store_verbs::trust(cmd),
         Cmd::Repo { cmd } => repo(cmd),
         Cmd::Runtime {
             cmd: RuntimeCmd::Install { runtime, repo },
         } => install_runtime(&runtime, repo.as_deref()),
+        Cmd::Runtime {
+            cmd: RuntimeCmd::Store(cmd),
+        } => store_verbs::runtime(cmd),
     }
 }
 
@@ -903,6 +973,39 @@ fn resolve_installed(query: &str) -> Result<String, String> {
     }
 }
 
+/// `app install`: from a package file or link, or from the repositories.
+fn install(app: &str, version: Option<&str>, trust: &FileTrust) -> ExitCode {
+    if local_tapp::is_package_source(app) {
+        if version.is_some() {
+            eprintln!("app: --version picks from a repository; a package file is its own version");
+            return ExitCode::FAILURE;
+        }
+        let mut progress = progress_reporter();
+        return local_tapp::apply(app, &local_tapp::Change::Install, trust, &mut progress);
+    }
+    if let Some(flag) = trust.file_only_flag() {
+        eprintln!("app: {flag} is for a package file or link; '{app}' comes from a repository");
+        return ExitCode::FAILURE;
+    }
+    match version {
+        None => change_one(app, false),
+        Some(version) => install_version(app, version),
+    }
+}
+
+/// `app update <app> --from <file>`.
+fn update_from(query: &str, from: &str, trust: &FileTrust) -> ExitCode {
+    let id = match resolve_installed(query) {
+        Ok(id) => id,
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut progress = progress_reporter();
+    local_tapp::apply(from, &local_tapp::Change::Update(&id), trust, &mut progress)
+}
+
 fn update(query: Option<&str>) -> ExitCode {
     if let Some(query) = query {
         return change_one(query, true);
@@ -1038,22 +1141,7 @@ fn remove(query: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match Command::new(app_cli::install::tilo_install_bin())
-        .args(["uninstall", &id, "--keep-state"])
-        .status()
-    {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => ExitCode::from(
-            status
-                .code()
-                .and_then(|code| u8::try_from(code).ok())
-                .unwrap_or(1),
-        ),
-        Err(error) => {
-            eprintln!("app: could not run tilo-install: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    store_verbs::installer(["uninstall", &id, "--keep-state"])
 }
 
 fn report_unreachable(items: &[app_cli::UnreachableRegistry]) {

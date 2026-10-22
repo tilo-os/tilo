@@ -18,7 +18,10 @@
 //! This crate never decides whether bytes are safe to extract:
 //! [`install::install`] downloads to a staging file and hands the
 //! path to `tilo-install`, which checks the publisher signature
-//! fail-closed before extracting anything; `--allow-self-signed` is never passed.
+//! fail-closed before extracting anything; for a repository's package
+//! `--allow-self-signed` is never passed. Only a package file or link the
+//! person installs by hand (`app install <file>`) may come from an
+//! unverified publisher, and only once they have said yes to it.
 
 #![cfg_attr(
     test,

@@ -15,12 +15,13 @@ use std::process::Command;
 use clap::{Args, Parser, Subcommand};
 
 mod language_pack;
+mod trust_cmd;
 use install::shim;
 use language_pack::install_language_pack;
 use package_store::{Admission, InstalledPackage, PackageStore, StoreError};
 use tilo_app_package::trust::{
-    AttestorScope, RevocationList, RevokedKey, TrustFile, TrustedAttestor, TrustedAttestors,
-    default_revoked_keys_path, default_trusted_attestors_path,
+    RevocationList, TrustFile, TrustedAttestors, default_revoked_keys_path,
+    default_trusted_attestors_path,
 };
 use tilo_app_package::{
     BlobFetcher, DiscardBlobs, PackageId, PackageMeta, Verification, verify_with_trust,
@@ -197,7 +198,19 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RevokedCmd,
     },
+    /// Verify a .tapp as `install` would, store nothing, and print who
+    /// signed it as JSON (`verdict`: `trusted` or `unverified`). Asked by
+    /// `app install <file>` before it decides whether to ask the person.
+    #[command(hide = true)]
+    Check {
+        /// Path to the .tapp file.
+        tapp: PathBuf,
+        #[command(flatten)]
+        trust: TrustFlags,
+    },
     /// Print the PATH-shim directory and a shell-rc snippet to prepend it.
+    /// Internal: the session already puts the directory on PATH.
+    #[command(hide = true)]
     Path,
     /// Reclaim disk nothing needs: apps past the store's size cap, payload
     /// trees no package names and runtime builds no installed package runs
@@ -594,12 +607,20 @@ fn validate_registry_constraints(
     Ok(vec![required])
 }
 
+/// What [`verify_and_gate`] admitted.
+struct Gated {
+    manifest: tilo_app_package::Manifest,
+    publisher_key_hex: String,
+    /// The trusted attestor that signed for the publisher; empty if none.
+    attested_by: String,
+    /// A publisher this person trusts signed it, directly or through an
+    /// attestor; false for a valid self-signed or unknown publisher.
+    verified: bool,
+}
+
 /// Verify `pkg_id` against trust config under the caller's `TrustFlags`
-/// policy; returns the manifest and attestor id (empty if self-signed).
-fn verify_and_gate(
-    meta: &PackageMeta,
-    trust: &TrustFlags,
-) -> Result<(tilo_app_package::Manifest, String, String), Error> {
+/// policy.
+fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Error> {
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
     let required_publishers = validate_registry_constraints(meta.id, meta, trust)?;
@@ -619,8 +640,12 @@ fn verify_and_gate(
                     found: attestor,
                 });
             }
-            let pub_key_hex = hex::encode(meta.publisher());
-            Ok((manifest, pub_key_hex, attestor))
+            Ok(Gated {
+                manifest,
+                publisher_key_hex: hex::encode(meta.publisher()),
+                attested_by: attestor,
+                verified: true,
+            })
         }
         Verification::UntrustedPublisher { identity, manifest } => {
             // --require-attestor set: refuse unless --allow-self-signed rescues it.
@@ -642,7 +667,12 @@ fn verify_and_gate(
                     hex::encode(identity)
                 );
             }
-            Ok((manifest, hex::encode(identity), String::new()))
+            Ok(Gated {
+                manifest,
+                publisher_key_hex: hex::encode(identity),
+                attested_by: String::new(),
+                verified: false,
+            })
         }
         Verification::Revoked { reason, pubkey, .. } => {
             eprintln!(
@@ -652,7 +682,6 @@ fn verify_and_gate(
             Err(Error::Revoked { reason })
         }
         Verification::Trusted { manifest } => {
-            let pub_key_hex = hex::encode(meta.publisher());
             if let Some(required) = &trust.require_attestor {
                 // Trusted-key path bypasses the attestor chain; --require-attestor is
                 // strict, so refuse here regardless.
@@ -661,7 +690,12 @@ fn verify_and_gate(
                     found: "trusted-key".into(),
                 });
             }
-            Ok((manifest, pub_key_hex, String::new()))
+            Ok(Gated {
+                manifest,
+                publisher_key_hex: hex::encode(meta.publisher()),
+                attested_by: String::new(),
+                verified: true,
+            })
         }
         other => Err(Error::Verify(format!("{other:?}"))),
     }
@@ -697,6 +731,7 @@ struct Checked {
     manifest: tilo_app_package::Manifest,
     publisher_key_hex: String,
     attested_by: String,
+    verified: bool,
 }
 
 impl Checked {
@@ -735,7 +770,12 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
         )));
     }
     let meta = tapp.meta;
-    let (manifest, publisher_key_hex, attested_by) = verify_and_gate(&meta, trust)?;
+    let Gated {
+        manifest,
+        publisher_key_hex,
+        attested_by,
+        verified,
+    } = verify_and_gate(&meta, trust)?;
 
     let len = candidate.len()?;
     tilo_app_package::desktop::validate_native_host(&manifest)
@@ -753,6 +793,7 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
         manifest,
         publisher_key_hex,
         attested_by,
+        verified,
     })
 }
 
@@ -2344,85 +2385,6 @@ fn print_path() -> Result<(), Error> {
     Ok(())
 }
 
-fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
-    // Validate scope + pubkey hex up-front, before touching the file.
-    let scope_parsed = AttestorScope::parse(scope).map_err(|e| Error::Trust(e.to_string()))?;
-    let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
-    let mut attestors = load_trusted_attestors()?;
-    attestors.attestor.retain(|a| a.id != id);
-    attestors.attestor.push(TrustedAttestor {
-        id: id.into(),
-        pubkey_hex: pubkey_hex.into(),
-        scope: scope_parsed,
-    });
-    let path = trusted_attestors_path()?;
-    attestors
-        .save(&path)
-        .map_err(|e| Error::Trust(e.to_string()))?;
-    println!("trust: added {id} (scope: {scope})");
-    println!("  file: {}", path.display());
-    Ok(())
-}
-
-fn trust_list() -> Result<(), Error> {
-    let attestors = load_trusted_attestors()?;
-    if attestors.attestor.is_empty() {
-        println!("(no trusted attestors)");
-        return Ok(());
-    }
-    println!("{:<24}  {:<12}  pubkey", "id", "scope");
-    for a in &attestors.attestor {
-        println!("{:<24}  {:<12}  {}", a.id, a.scope.render(), a.pubkey_hex);
-    }
-    Ok(())
-}
-
-fn trust_remove(id: &str) -> Result<(), Error> {
-    let mut attestors = load_trusted_attestors()?;
-    let before = attestors.attestor.len();
-    attestors.attestor.retain(|a| a.id != id);
-    if attestors.attestor.len() == before {
-        return Err(Error::Trust(format!("no trusted attestor with id {id:?}")));
-    }
-    let path = trusted_attestors_path()?;
-    attestors
-        .save(&path)
-        .map_err(|e| Error::Trust(e.to_string()))?;
-    println!("trust: removed {id}");
-    Ok(())
-}
-
-fn revoke(pubkey_hex: &str, reason: &str) -> Result<(), Error> {
-    let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
-    let mut list = load_revocation_list()?;
-    list.revoked.retain(|k| k.pubkey_hex != pubkey_hex);
-    list.revoked.push(RevokedKey {
-        pubkey_hex: pubkey_hex.into(),
-        reason: reason.into(),
-    });
-    let path = revoked_keys_path()?;
-    list.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
-    println!("revoked: ed25519:{pubkey_hex}");
-    if !reason.is_empty() {
-        println!("  reason: {reason}");
-    }
-    println!("  file: {}", path.display());
-    Ok(())
-}
-
-fn revoked_list() -> Result<(), Error> {
-    let list = load_revocation_list()?;
-    if list.revoked.is_empty() {
-        println!("(no revoked keys)");
-        return Ok(());
-    }
-    println!("{:<66}  reason", "pubkey");
-    for k in &list.revoked {
-        println!("{:<66}  {}", k.pubkey_hex, k.reason);
-    }
-    Ok(())
-}
-
 fn runtime_install(
     version: &str,
     from_host: bool,
@@ -2790,14 +2752,15 @@ fn dispatch(cmd: Cmd) -> Result<(), Error> {
         ),
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
         Cmd::Trust { cmd } => match cmd {
-            TrustCmd::Add { id, pubkey, scope } => trust_add(&id, &pubkey, &scope),
-            TrustCmd::List => trust_list(),
-            TrustCmd::Remove { id } => trust_remove(&id),
+            TrustCmd::Add { id, pubkey, scope } => trust_cmd::trust_add(&id, &pubkey, &scope),
+            TrustCmd::List => trust_cmd::trust_list(),
+            TrustCmd::Remove { id } => trust_cmd::trust_remove(&id),
         },
-        Cmd::Revoke { pubkey_hex, reason } => revoke(&pubkey_hex, &reason),
+        Cmd::Revoke { pubkey_hex, reason } => trust_cmd::revoke(&pubkey_hex, &reason),
         Cmd::Revoked { cmd } => match cmd {
-            RevokedCmd::List => revoked_list(),
+            RevokedCmd::List => trust_cmd::revoked_list(),
         },
+        Cmd::Check { tapp, trust } => trust_cmd::check_verdict(&tapp, &trust),
         Cmd::Path => print_path(),
         Cmd::Gc {
             dry_run,
