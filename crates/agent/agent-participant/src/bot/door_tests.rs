@@ -25,6 +25,8 @@ struct FakeParticipant {
     invoked: Invoked,
     outbox: Arc<Mutex<Vec<OutboxRow>>>,
     history: Arc<Mutex<Vec<(DocumentRoute, ActionContext)>>>,
+    /// The entries the step in history queued, as its change shows.
+    queued_in_history: Arc<Mutex<Vec<String>>>,
 }
 
 fn route(app: &str, record: &str) -> DocumentRoute {
@@ -100,6 +102,16 @@ impl DoorParticipant for FakeParticipant {
 
     fn outbox(&self, _route: &DocumentRoute, _field: &str) -> Vec<OutboxRow> {
         self.outbox.lock().unwrap().clone()
+    }
+
+    fn queued_in_history(
+        &self,
+        _route: &DocumentRoute,
+        _step: &RunStep,
+        _actor: &str,
+        _field: &str,
+    ) -> Vec<String> {
+        self.queued_in_history.lock().unwrap().clone()
     }
 }
 
@@ -307,6 +319,7 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
     let fake = FakeParticipant::default();
     let outbox = fake.outbox.clone();
     let history = fake.history.clone();
+    let queued_in_history = fake.queued_in_history.clone();
     let invoked = fake.invoked.clone();
     let door = door(
         fake,
@@ -319,15 +332,12 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
         block(door.invoke(&bot(), send())),
         Err(ActionHostError::Unavailable { .. })
     ));
-    let mut queued = step_context().with_invoker(ActionInvoker::actor("bot:b1"));
-    queued.item = Some(tilo_actions::ActionItem {
-        id: "q1".into(),
-        label: String::new(),
-    });
-    history
-        .lock()
-        .unwrap()
-        .push((route("so.tilo.discord", "rec-2"), queued));
+    // A send names no item: the entry is found by what its change queued.
+    history.lock().unwrap().push((
+        route("so.tilo.discord", "rec-2"),
+        step_context().with_invoker(ActionInvoker::actor("bot:b1")),
+    ));
+    queued_in_history.lock().unwrap().push("q1".into());
     let receipt = block(door.invoke(&bot(), send())).unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!("{receipt:?}")

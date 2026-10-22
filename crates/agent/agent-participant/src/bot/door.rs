@@ -69,6 +69,57 @@ pub trait DoorParticipant: Send {
     ) -> Option<(DocumentRoute, ActionContext)>;
     /// The outbox stored at `field` of the record at `route`, in order.
     fn outbox(&self, route: &DocumentRoute, field: &str) -> Vec<OutboxRow>;
+    /// The ids of the entries the change `actor` recorded for step `step`
+    /// put into the outbox at `field` of the record at `route`.
+    fn queued_in_history(
+        &self,
+        route: &DocumentRoute,
+        step: &RunStep,
+        actor: &str,
+        field: &str,
+    ) -> Vec<String>;
+}
+
+/// The context of the latest change in `doc` that `actor` recorded for step
+/// `step`, with the change.
+pub(crate) fn step_change(
+    doc: &automerge::Automerge,
+    step: &RunStep,
+    actor: &str,
+) -> Option<(automerge::Change, ActionContext)> {
+    doc.get_changes(&[]).into_iter().rev().find_map(|change| {
+        let context = ActionContext::from_change_message(change.message()?)?;
+        let by = context
+            .invoker
+            .as_ref()
+            .map(|invoker| invoker.actor.as_str());
+        (RunStep::of(&context).as_ref() == Some(step) && by == Some(actor))
+            .then(|| (change.clone(), context))
+    })
+}
+
+/// The ids of the entries the change `actor` recorded for step `step` in
+/// `doc` put into the outbox at `field`: those there after it and not
+/// before it.
+pub(crate) fn queued_by_step(
+    doc: &automerge::Automerge,
+    step: &RunStep,
+    actor: &str,
+    field: &str,
+) -> Vec<String> {
+    let Some((change, _)) = step_change(doc, step, actor) else {
+        return Vec::new();
+    };
+    let before: std::collections::BTreeSet<String> =
+        super::item_json::outbox_entries(doc, change.deps(), field)
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+    super::item_json::outbox_entries(doc, &[change.hash()], field)
+        .into_iter()
+        .map(|row| row.id)
+        .filter(|id| !before.contains(id))
+        .collect()
 }
 
 /// Which step of which run a change was: the run's group and the step
@@ -227,26 +278,16 @@ impl<P: DoorParticipant> BotDoor<P> {
             .filter(|route| participant.holds(route))
             .ok_or(ActionHostError::UnknownAction)?;
         let step = request.context.as_ref().and_then(RunStep::of);
-        if let Some((route, done)) = step
-            .as_ref()
-            .and_then(|step| participant.find_in_history(step, &self.actor()))
+        if let Some(step) = step.as_ref()
+            && let Some((route, done)) = participant.find_in_history(step, &self.actor())
         {
-            // A step whose entry the connector could not take yet (a file
-            // whose bytes had not arrived) queued it all the same: the
-            // retried run hands it over now instead of answering nothing.
-            if let Some((spec, row)) = self.unsettled_from_history(&*participant, &route, &done) {
-                drop(participant);
-                return self.perform(
-                    &route,
-                    &request.target.address,
-                    spec,
-                    vec![row],
-                    ActionOutput::default(),
-                );
-            }
-            return Ok(ReceiptStatus::Completed {
-                output: self.output_from_history(&*participant, &route, &done),
-            });
+            return self.answer_from_history(
+                participant,
+                &route,
+                &request.target.address,
+                step,
+                &done,
+            );
         }
         let arguments = match &request.argument {
             InvokeArgument::Json(map) => map.clone(),
@@ -371,52 +412,61 @@ impl<P: DoorParticipant> BotDoor<P> {
             })
     }
 
-    /// The entry a step taken before queued that is not settled yet, with
-    /// the outbox it is in.
-    fn unsettled_from_history(
-        &self,
-        participant: &P,
-        route: &DocumentRoute,
-        done: &ActionContext,
-    ) -> Option<(&OutboxSpec, OutboxRow)> {
-        let spec = self
-            .outboxes
-            .iter()
-            .find(|spec| spec.app_id == route.app_id)?;
-        let item = done.item.as_ref()?;
-        let row = participant
-            .outbox(route, &spec.field)
-            .into_iter()
-            .find(|row| row.id == item.id && row.settled.is_none())?;
-        Some((spec, row))
-    }
-
     /// What a step taken before answers: the settled results of the
-    /// entries its change queued, else nothing beyond its item.
-    fn output_from_history(
+    /// entries its change queued, else nothing beyond its item. An entry it
+    /// queued that the connector could not take yet (a file whose bytes had
+    /// not reached the host) is handed over now, so the retried run reads
+    /// what the service answered rather than nothing.
+    fn answer_from_history(
         &self,
-        participant: &P,
+        participant: std::sync::MutexGuard<'_, P>,
         route: &DocumentRoute,
+        address: &ActionAddress,
+        step: &RunStep,
         done: &ActionContext,
-    ) -> ActionOutput {
-        let value = self
+    ) -> Result<ReceiptStatus, ActionHostError> {
+        let Some(spec) = self
             .outboxes
             .iter()
             .find(|spec| spec.app_id == route.app_id)
-            .and_then(|spec| {
-                let item = done.item.as_ref()?;
-                participant
-                    .outbox(route, &spec.field)
-                    .into_iter()
-                    .find(|row| row.id == item.id)?
-                    .settled?
-                    .get("result")
-                    .cloned()
+        else {
+            return Ok(ReceiptStatus::Completed {
+                output: ActionOutput::default(),
             });
-        ActionOutput {
-            value,
-            resources: Vec::new(),
+        };
+        let mut queued = participant.queued_in_history(route, step, &self.actor(), &spec.field);
+        if let Some(item) = &done.item {
+            queued.push(item.id.clone());
         }
+        let rows: Vec<OutboxRow> = participant
+            .outbox(route, &spec.field)
+            .into_iter()
+            .filter(|row| queued.contains(&row.id))
+            .collect();
+        drop(participant);
+        let unsettled: Vec<OutboxRow> = rows
+            .iter()
+            .filter(|row| row.settled.is_none())
+            .cloned()
+            .collect();
+        if !unsettled.is_empty() {
+            return self.perform(route, address, spec, unsettled, ActionOutput::default());
+        }
+        let mut results: Vec<Value> = rows
+            .into_iter()
+            .filter_map(|row| row.settled?.get("result").cloned())
+            .collect();
+        let value = match results.len() {
+            0 => None,
+            1 => results.pop(),
+            _ => Some(Value::Array(results)),
+        };
+        Ok(ReceiptStatus::Completed {
+            output: ActionOutput {
+                value,
+                resources: Vec::new(),
+            },
+        })
     }
 }
 
