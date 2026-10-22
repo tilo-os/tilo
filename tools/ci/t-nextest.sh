@@ -51,6 +51,13 @@ fi
 # Only the NTFS helper's own tests read the native images, which take minutes to build.
 if tests tilo-ntfs-helper; then export TILO_TEST_NTFS_FIXTURES=1; else export TILO_TEST_NTFS_FIXTURES=0; fi
 
+# Where the node's kernel can enforce Landlock, the PDF tests require the helper's sandbox instead
+# of letting an unconfined helper stand down (tools/ci/require-pdf-sandbox.sh).
+if tests tilo-pdf pdf-viewer tilo-thumbnail; then
+    pdf_sandbox=$(bash "$root/tools/ci/require-pdf-sandbox.sh")
+    export TILO_REQUIRE_PDF_SANDBOX=$pdf_sandbox
+fi
+
 # The imager's native syscall tests need a cache on a qualified filesystem
 # (ext4, XFS or Btrfs), never an overlay or tmpfs: the build directory where it
 # is one, else the job's scratch TMPDIR (t mounts the build directory as an
