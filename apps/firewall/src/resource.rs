@@ -160,7 +160,7 @@ impl Firewall {
 
 /// What the firewall does outside the document, for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "firewall.effect", device_only)]
+#[effect(operation = "firewall.effect")]
 pub enum FirewallEffect {
     /// Apply firewall configuration.
     #[effect(job)]

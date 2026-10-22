@@ -202,22 +202,21 @@ pub enum ImagerEffect {
         drive: String,
     },
     /// Choose a mounted folder on the verified installer medium for prepared setup.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ChoosePreparedFilesystem,
     /// Retry automatic delivery to the verified installer's EFI filesystem.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     RetryPreparedDelivery,
     /// Return to the preserved guided preparation and renew changed home contents.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     ReviewChangedPreparedFiles,
     /// Deliver authenticated prepared setup to the exact verified medium.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     DeliverPreparedSetup {
         #[param(secret, "Granted mounted root of the verified installer medium")]
         mounted_root: String,
     },
     /// Cancel prepared setup delivery and wait for cleanup.
-    #[effect(device_only)]
     CancelPreparedDelivery,
 }
 

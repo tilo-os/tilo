@@ -294,7 +294,6 @@ fn native_replacement_preserves_private_effect_contract() {
         .into_iter()
         .find(|declaration| declaration.id == effect.id())
         .unwrap();
-    assert!(declaration.device_only);
     let text = declaration
         .params
         .iter()

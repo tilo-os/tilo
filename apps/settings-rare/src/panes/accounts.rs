@@ -92,13 +92,13 @@ mod signin_tests;
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
     /// Forget one selected website account through the browser, including its local lease.
-    #[effect(row, job, returns, device_only, destructive)]
+    #[effect(row, job, returns, destructive)]
     RemoveBrowserServiceSession { session_id: String },
     /// Discover only ordinary account metadata from a granted prefs.js path.
-    #[effect(job, returns, device_only, kind = "read")]
+    #[effect(job, returns, kind = "read")]
     DiscoverThunderbirdAccounts { prefs: String },
     /// Choose ordinary Thunderbird prefs through the existing file portal.
-    #[effect(job, returns, device_only, kind = "read")]
+    #[effect(attended, job, returns, kind = "read")]
     ChooseThunderbirdMetadata,
     /// Read the current metadata review and its exact revision; no secrets.
     #[effect(returns, kind = "read")]
@@ -112,19 +112,19 @@ pub enum AccountsEffect {
         revision: u64,
     },
     /// Import only selected configuration as pending sign-in metadata.
-    #[effect(job, returns, device_only, idempotent)]
+    #[effect(job, returns, idempotent)]
     CommitThunderbirdImport { revision: u64 },
     /// Discard the metadata review and fence unfinished discovery callbacks.
     #[effect(view)]
     CancelThunderbirdImport,
     /// Show or hide public metadata in the browser identity picker.
-    #[effect(row, device_only, idempotent)]
+    #[effect(row, idempotent)]
     SetBrowserIdentityEnabled { account: String, enabled: bool },
     /// Remove browser picker metadata; this does not revoke sign-in or access.
-    #[effect(row, device_only, destructive)]
+    #[effect(row, destructive)]
     RemoveBrowserIdentity { account: String },
     /// Publish the signed-in Tilo identity's public browser connection metadata.
-    #[effect(device_only, idempotent)]
+    #[effect(idempotent)]
     PublishBrowserIdentity {
         #[param("Canonical HTTPS origin of the existing Tilo host")]
         origin: String,
@@ -152,7 +152,7 @@ pub enum AccountsEffect {
     #[effect(label = "Save account")]
     SaveAccountForm,
     /// Choose calendars on an existing Nextcloud account, reusing its sign-in.
-    #[effect(row, device_only, label = "Connect calendars")]
+    #[effect(row, label = "Connect calendars")]
     ConnectNextcloudCalendars { account: String },
     /// Read the discovered, secret-free calendar choices for the current form.
     #[effect(returns, kind = "read")]
@@ -194,25 +194,25 @@ pub enum AccountsEffect {
     },
     /// Sync a mounted file account now; one that could not start is tried
     /// again.
-    #[effect(row, job, device_only, idempotent, label = "Sync now")]
+    #[effect(row, job, idempotent, label = "Sync now")]
     SyncNow {
         #[param("The account's id")]
         account: String,
     },
     /// Pause a mounted file account's background sync and uploads.
-    #[effect(row, job, device_only, idempotent, label = "Pause sync")]
+    #[effect(row, job, idempotent, label = "Pause sync")]
     PauseSync {
         #[param("The account's id")]
         account: String,
     },
     /// Resume a paused file account's sync.
-    #[effect(row, job, device_only, idempotent, label = "Resume sync")]
+    #[effect(row, job, idempotent, label = "Resume sync")]
     ResumeSync {
         #[param("The account's id")]
         account: String,
     },
     /// Recover an interrupted Files mode change after closing the connection form.
-    #[effect(row, job, device_only, idempotent, label = "Recover mode change")]
+    #[effect(row, job, idempotent, label = "Recover mode change")]
     RecoverCloudMode { account: String },
     /// Link your account with a service this room is connected to (a
     /// Discord server it bridges): the room's host makes the code to send

@@ -488,12 +488,12 @@ pub enum TerminalEffect {
     /// Inspect editable field
     ///
     /// Participant-private native editor metadata; never the surrounding buffer.
-    #[effect(returns, device_only, kind = "read")]
+    #[effect(returns, kind = "read")]
     InspectEditor,
     /// Replace editor selection
     ///
     /// Literally replace the original qualified editor selection without execution.
-    #[effect(job, device_only, destructive)]
+    #[effect(job, destructive)]
     ReplaceEditorSelection {
         #[param("Original local terminal session")]
         session: String,

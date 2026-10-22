@@ -18,19 +18,19 @@ use crate::model::{ConnId, ConnStatus, Connection};
 
 /// The VPN client's effects.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "vpn.effects", device_only)]
+#[effect(operation = "vpn.effects")]
 pub enum VpnEffect {
     /// Import `WireGuard` profile.
     ///
     /// Pick a `.conf` file; `NetworkManager` keeps its keys and only the
     /// profile's name joins the shared fleet.
-    #[effect(label = "Import WireGuard profile", job, cancellable)]
+    #[effect(attended, label = "Import WireGuard profile", job, cancellable)]
     ImportWireguard,
     /// Import `OpenVPN` profile.
     ///
     /// Pick a `.ovpn` file; `NetworkManager` keeps its credentials and only
     /// the profile's name joins the shared fleet.
-    #[effect(label = "Import OpenVPN profile", job, cancellable)]
+    #[effect(attended, label = "Import OpenVPN profile", job, cancellable)]
     ImportOpenvpn,
     /// Set up on this device.
     ///

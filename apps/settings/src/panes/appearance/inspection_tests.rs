@@ -78,13 +78,6 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
         .find(|action| action.address.action == "inspect-appearance")
         .unwrap();
     assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
-    assert!(
-        action
-            .contract
-            .tags
-            .iter()
-            .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
-    );
     let refused = app.call_by(
         ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
         &action.address.resource,

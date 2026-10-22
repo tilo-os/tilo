@@ -26,14 +26,14 @@ pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 /// window shows; their ids are stable catalog identities, never paths or
 /// display labels, so search and agents can target a concrete item.
 #[derive(Clone, Debug, PartialEq, Eq, ui::framework::Effect)]
-#[effect(operation = "backups.operation", device_only)]
+#[effect(operation = "backups.operation")]
 pub enum BackupsEffect {
     /// Create one new checksummed local snapshot, then keep only what the
     /// retention policy keeps.
     #[effect(job, label = "Run backup now")]
     BackupNow,
     /// Choose a local source and a destination outside it.
-    #[effect(job, label = "Set up backups")]
+    #[effect(attended, job, label = "Set up backups")]
     Setup,
     /// Read every file in this stored snapshot and verify its checksum.
     #[effect(job, kind = "read", label = "Verify snapshot")]
@@ -43,7 +43,7 @@ pub enum BackupsEffect {
     },
     /// Choose a new or empty local folder, then restore and verify the whole
     /// snapshot.
-    #[effect(job, label = "Restore snapshot into a new or empty folder…")]
+    #[effect(attended, job, label = "Restore snapshot into a new or empty folder…")]
     RestoreSnapshot {
         #[param("Id of the stored snapshot")]
         snapshot_id: String,

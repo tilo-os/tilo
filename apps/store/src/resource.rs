@@ -59,7 +59,7 @@ impl ReportProjection {
 /// talking to a registry about a report. A package job runs on the Store's
 /// worker and answers when it finished.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "store.effect", device_only)]
+#[effect(operation = "store.effect")]
 pub enum StoreEffect {
     /// Review a missing optional runtime. Fetches signed metadata, never payload.
     #[effect(job, kind = "read")]

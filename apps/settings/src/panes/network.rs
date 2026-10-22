@@ -112,13 +112,7 @@ const DEFAULT_HOTSPOT_NAME: &str = "Tilo Hotspot";
 #[effect(operation = "settings.effect")]
 pub enum NetworkEffect {
     /// Read the adopted network state, pending work and labels this pane shows.
-    #[effect(
-        view,
-        returns,
-        device_only,
-        kind = "read",
-        label = "Inspect network state"
-    )]
+    #[effect(view, returns, kind = "read", label = "Inspect network state")]
     InspectNetworkState,
     /// Scan for Wi-Fi networks and read this device's connections again.
     #[effect(job, idempotent, label = "Refresh networks")]
@@ -4242,18 +4236,6 @@ mod tests {
             app.call("refresh-networks", serde_json::json!({})).is_err(),
             "Read does not grant scan/write authority"
         );
-        for actor in ["person:foreign", "agent:foreign"] {
-            assert!(
-                app.call_by(
-                    ui::tilo_actions::ActionInvoker::actor(actor),
-                    "settings.root",
-                    "inspect-network-state",
-                    serde_json::json!({})
-                )
-                .is_err(),
-                "device-only inspection refuses unrelated callers"
-            );
-        }
         assert!(
             app.call("inspect-network-state", serde_json::json!({"on":false}))
                 .is_err(),

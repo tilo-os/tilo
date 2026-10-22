@@ -42,7 +42,7 @@ impl RecentFolders {
 /// What the analyzer does that changes no document: scanning a folder and
 /// moving between the views.
 #[derive(Clone, Debug, PartialEq, ui::framework::Effect)]
-#[effect(operation = "disk-usage.effects", device_only)]
+#[effect(operation = "disk-usage.effects")]
 pub enum DiskUsageEffect {
     /// Analyze a folder.
     ///
@@ -55,7 +55,7 @@ pub enum DiskUsageEffect {
     /// Choose folder.
     ///
     /// Asks for a folder, then analyzes it.
-    #[effect(job)]
+    #[effect(attended, job)]
     Choose,
     /// Go back.
     ///
