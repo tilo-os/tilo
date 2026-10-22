@@ -1562,7 +1562,7 @@ impl Daemon {
                     .map(|cohort| cohort.ids().collect())
                     .unwrap_or_default();
                 self.check_cohort_users(&record, &from, &to, &reselected)?;
-                self.check_interfaces(&to)?;
+                self.check_interfaces(&record, &to)?;
                 self.transition(&mut record, &from, &to)?
             }
             None => unchanged(record),
@@ -1607,23 +1607,77 @@ impl Daemon {
         self.transition(&mut record, &from, &to)
     }
 
-    /// Refuse generation `to` when a component of the matched session set,
-    /// its own layer's or the image's, was built for another system-interface
-    /// declaration than the one `to` leaves the slot reading
+    /// Refuse generation `to` of slot `record` when a component of the
+    /// matched session set, its own layer's or the image's, was built for
+    /// another system-interface declaration than the one `to` leaves the slot
+    /// reading, or a VM-wide runtime service (fs) serves another runtime
+    /// version. For the `vm` slot, refuse when its runtime services would
+    /// leave any slot reading another runtime version
     /// ([`crate::interfaces`]). Checked before anything is activated.
     ///
     /// # Errors
     /// [`DaemonError::InvalidParams`] naming what to swap together; a
     /// missing layer.
-    pub(crate) fn check_interfaces(&self, to: &Generation) -> Result<(), DaemonError> {
+    pub(crate) fn check_interfaces(
+        &self,
+        record: &SlotRecord,
+        to: &Generation,
+    ) -> Result<(), DaemonError> {
+        let image = image::recorded_declaration(&self.root);
+        let conflict = if record.name == VM_SLOT {
+            // Only a change of a runtime service is judged against the
+            // slots: a vmd or greeter swap never waits on fs.
+            let current = (record.current != 0)
+                .then(|| self.slots.generation(VM_SLOT, record.current))
+                .transpose()?;
+            let changed = crate::interfaces::VM_RUNTIME_SERVICES
+                .iter()
+                .any(|service| {
+                    to.components.get(*service)
+                        != current.as_ref().and_then(|c| c.components.get(*service))
+                });
+            if !changed {
+                return Ok(());
+            }
+            let vm_services = self.interface_members(to)?;
+            let mut slots = Vec::new();
+            for slot in self.slots.list()? {
+                if slot.name == VM_SLOT || slot.current == 0 {
+                    continue;
+                }
+                let current = self.slots.generation(&slot.name, slot.current)?;
+                slots.push((slot.name.clone(), self.interface_members(&current)?));
+            }
+            crate::interfaces::vm_conflict(image.as_ref(), &slots, &vm_services)
+        } else {
+            let vm_services = match self.slots.load(VM_SLOT) {
+                Ok(vm) if vm.current != 0 => {
+                    self.interface_members(&self.slots.generation(VM_SLOT, vm.current)?)?
+                }
+                _ => Vec::new(),
+            };
+            crate::interfaces::conflict(image.as_ref(), &self.interface_members(to)?, &vm_services)
+        };
+        match conflict {
+            None => Ok(()),
+            Some(conflict) => Err(DaemonError::InvalidParams(format!(
+                "generation {} is not activated: {conflict}",
+                to.number
+            ))),
+        }
+    }
+
+    /// Each component of `generation` as the interface check sees it.
+    fn interface_members(
+        &self,
+        generation: &Generation,
+    ) -> Result<Vec<crate::interfaces::Member>, DaemonError> {
+        let relative = tilo_vm_protocol::SYSTEM_INTERFACES
+            .strip_prefix('/')
+            .unwrap_or(tilo_vm_protocol::SYSTEM_INTERFACES);
         let mut members = Vec::new();
-        for (component, entry) in &to.components {
-            let path = self.layers.require(&entry.layer)?;
-            let declaration = path.join(
-                tilo_vm_protocol::SYSTEM_INTERFACES
-                    .strip_prefix('/')
-                    .unwrap_or(tilo_vm_protocol::SYSTEM_INTERFACES),
-            );
+        for (component, entry) in &generation.components {
+            let declaration = self.layers.require(&entry.layer)?.join(relative);
             members.push(crate::interfaces::Member {
                 component: component.clone(),
                 layer: entry.layer.clone(),
@@ -1633,14 +1687,7 @@ impl Daemon {
                     .then(|| tilo_vm_protocol::Declaration::read(&declaration)),
             });
         }
-        let image = image::recorded_declaration(&self.root);
-        match crate::interfaces::conflict(image.as_ref(), &members) {
-            None => Ok(()),
-            Some(conflict) => Err(DaemonError::InvalidParams(format!(
-                "generation {} is not activated: {conflict}",
-                to.number
-            ))),
-        }
+        Ok(members)
     }
 
     /// Refuse a transition that takes away a native toolkit the slot user's
@@ -2589,6 +2636,93 @@ mod tests {
             before,
             "the device keeps the generation it ran"
         );
+    }
+
+    /// tilo-fs is a runtime service apps reach, swapped VM-wide: an fs
+    /// layer serving another runtime version than the declaration the
+    /// device reads is refused before anything restarts, and one from the
+    /// same tree goes in.
+    #[test]
+    fn an_fs_swap_serving_another_runtime_version_than_the_device_reads_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::with_login("quickuser")),
+            None,
+            BaseInfo::default(),
+        );
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
+        daemon.slots.save(&device).unwrap();
+        let declared = "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n";
+        fs::write(
+            root.path().join("image.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "image": "composefs:1c9ab8",
+                "recorded_at": "2026-10-22T08:00:00Z",
+                "interfaces": tilo_vm_protocol::Declaration::parse(declared),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // The device slot runs a shell from the image's tree, so it reads
+        // runtime 2 whatever happens VM-wide.
+        let shell = "5e".repeat(32);
+        let layer = root.path().join("layers").join(&shell);
+        fs::create_dir_all(layer.join("usr/bin")).unwrap();
+        let mut provenance = Provenance::local("shell");
+        provenance.interfaces = tilo_vm_protocol::system_interfaces(declared);
+        fs::write(
+            layer.join("provenance.json"),
+            serde_json::to_vec(&provenance).unwrap(),
+        )
+        .unwrap();
+        daemon
+            .handle(Request::Swap(tilo_vm_protocol::Swap {
+                slot: DEVICE_SLOT.into(),
+                component: "shell".into(),
+                layer: shell,
+                info: Some(ComponentInfo::new(Scope::Session, Vec::new())),
+            }))
+            .unwrap();
+        let fs_layer = |n: u8, runtime: u32| {
+            let hash = format!("{n:02x}").repeat(32);
+            let layer = root.path().join("layers").join(&hash);
+            fs::create_dir_all(layer.join("usr/bin")).unwrap();
+            let mut provenance = Provenance::local("fs");
+            provenance.interfaces = tilo_vm_protocol::system_interfaces(&format!(
+                "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = {runtime}\n"
+            ));
+            fs::write(
+                layer.join("provenance.json"),
+                serde_json::to_vec(&provenance).unwrap(),
+            )
+            .unwrap();
+            hash
+        };
+        let swap_fs = |daemon: &mut Daemon, layer: String| {
+            daemon.handle(Request::Swap(tilo_vm_protocol::Swap {
+                slot: VM_SLOT.into(),
+                component: "fs".into(),
+                layer,
+                info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
+            }))
+        };
+        let vm_before = daemon.load_slot(VM_SLOT).unwrap().current;
+
+        let refused = swap_fs(&mut daemon, fs_layer(0xf3, 3))
+            .unwrap_err()
+            .to_string();
+
+        assert!(refused.contains("slot 'device'"), "{refused}");
+        assert!(refused.contains("runtime 3"), "{refused}");
+        assert_eq!(daemon.load_slot(VM_SLOT).unwrap().current, vm_before);
+        swap_fs(&mut daemon, fs_layer(0xf2, 2)).expect("fs from the same tree goes in");
     }
 
     #[test]
