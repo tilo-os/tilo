@@ -625,13 +625,51 @@ impl ShellOverlayHost {
                 1 => from.checked_add(1).filter(|to| *to < strips.len())?,
                 _ => return None,
             };
-            let source_groups = &strips.get(from)?.window_groups;
+            let destination = strips.get(to)?.id;
+            drop(tree);
+            drop(st);
+            Some((group, destination))
+        })();
+        let Some((group, destination)) = planned else {
+            return false;
+        };
+        self.move_group_to_strip(group, destination)
+    }
+
+    /// Carry `group`, whole, into `destination`, another strip of its
+    /// workspace, landing after that strip's focused group; focus follows
+    /// it, and the strip it left focuses its neighbour. What the
+    /// move-to-strip shortcuts and the window menu's Move to strip do.
+    pub(crate) fn move_group_to_strip(&mut self, group: GroupId, destination: StripId) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let planned = (|| {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let workspace = tree.desktop.workspaces.iter().find(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .any(|strip| strip.window_groups.iter().any(|g| g.id == group))
+            })?;
+            let source_strip = workspace
+                .strips
+                .iter()
+                .find(|strip| strip.window_groups.iter().any(|g| g.id == group))?;
+            if source_strip.id == destination {
+                return None;
+            }
+            let destination = workspace
+                .strips
+                .iter()
+                .find(|strip| strip.id == destination)?;
+            let source_groups = &source_strip.window_groups;
             let at = source_groups.iter().position(|g| g.id == group)?;
             let heir = source_groups
                 .get(at.saturating_add(1))
                 .or_else(|| at.checked_sub(1).and_then(|left| source_groups.get(left)))
                 .map(|g| g.id);
-            let destination = strips.get(to)?;
             let anchor = tree
                 .desktop
                 .active_group_for(destination.id)
@@ -639,12 +677,12 @@ impl ShellOverlayHost {
             let before = anchor
                 .and_then(|i| destination.window_groups.get(i.saturating_add(1)))
                 .map(|g| g.id);
-            let plan = (source, heir, destination.id, group, before);
+            let plan = (source_strip.id, heir, destination.id, before);
             drop(tree);
             drop(st);
             Some(plan)
         })();
-        let Some((source, heir, destination, group, before)) = planned else {
+        let Some((source, heir, destination, before)) = planned else {
             return false;
         };
         let carry = tilo_desktop::intents::SessionIntent::MoveGroup {

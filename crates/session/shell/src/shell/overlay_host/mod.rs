@@ -124,7 +124,6 @@ use ui::widget::{
 };
 use ui::{CommandEntry, CommandPalette};
 
-use crate::shell::TabMenuAction;
 #[cfg(test)]
 use crate::shell::capture_surface::CaptureSurfaceKind;
 use crate::shell::capture_surface::{
@@ -153,6 +152,7 @@ use crate::shell::quick_settings::root::{
 };
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
+use crate::shell::window_menu::WindowMenuAction;
 pub use peer_sync_dispatch::{PeerSyncCall, PeerSyncJob, PeerSyncRunner, PeerSyncWorker};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};

@@ -346,6 +346,8 @@ icons! {
     AlignCenterHorizontal => "align-center-horizontal",
     AlignStartHorizontal => "align-start-horizontal",
     Command => "command",
+    /// A frame around a smaller screen: covering the whole display.
+    Fullscreen => "fullscreen",
 }
 
 impl Icon {
@@ -1106,6 +1108,13 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M16 12h1"),
             path_from_d("M21 12v.01"),
             path_from_d("M12 21v-1"),
+        ],
+        Icon::Fullscreen => vec![
+            path_from_d("M3 7V5a2 2 0 0 1 2-2h2"),
+            path_from_d("M17 3h2a2 2 0 0 1 2 2v2"),
+            path_from_d("M21 17v2a2 2 0 0 1-2 2h-2"),
+            path_from_d("M7 21H5a2 2 0 0 1-2-2v-2"),
+            rect_path(7.0, 8.0, 10.0, 8.0, 1.0),
         ],
         Icon::ScanLine => vec![
             path_from_d("M3 7V5a2 2 0 0 1 2-2h2"),

@@ -2980,6 +2980,26 @@ impl TabBar {
     pub fn take_context_menu(&mut self) -> Option<(u64, Point)> {
         self.pending_context_menu.take()
     }
+
+    /// The tab a right-click (or a long press, which arrives as one) at
+    /// `p` opens the window menu for: the pill under it, or anywhere else
+    /// in the bar's row (the title, the empty middle, the window's
+    /// controls) the active tab, since the menu is the window's. The active
+    /// tab's own slots (a location field, app actions) keep their own
+    /// gestures.
+    fn context_menu_target(&self, p: Point) -> Option<(u64, Point)> {
+        if let Some(idx) = self
+            .tab_rects
+            .iter()
+            .position(|r| r.area() > 0.0 && r.contains(p))
+            && let Some(t) = self.tabs.get(idx)
+        {
+            return Some((t.id, p));
+        }
+        let in_row = self.tab_row().contains(p);
+        (in_row && !self.toolbar_hit(p) && self.tabs.iter().any(|t| t.id == self.active_id))
+            .then_some((self.active_id, p))
+    }
     pub fn take_max(&mut self) -> Option<u64> {
         self.pending_max.take()
     }
@@ -4129,14 +4149,8 @@ impl Widget for TabBar {
             } => {
                 // Works without first hovering to reveal the × — hosts actions
                 // with no keyboard chord.
-                let p = self.last_cursor;
-                if let Some(idx) = self
-                    .tab_rects
-                    .iter()
-                    .position(|r| r.area() > 0.0 && r.contains(p))
-                    && let Some(t) = self.tabs.get(idx)
-                {
-                    self.pending_context_menu = Some((t.id, p));
+                if let Some(request) = self.context_menu_target(self.last_cursor) {
+                    self.pending_context_menu = Some(request);
                     *ctx.handled = true;
                 }
             }

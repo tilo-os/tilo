@@ -197,6 +197,7 @@ pub mod trusted_ui;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_appearance;
+pub mod window_menu;
 pub mod window_previews;
 pub mod window_transfer;
 #[cfg(target_os = "linux")]
@@ -207,158 +208,15 @@ pub mod workspace_governance;
 pub mod workspace_history;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
-use ui::widget::context_menu::MenuItem;
 use ui::widget::{
     AppKind as UiKind, GroupRow, TabDescriptor, TileContent as UiTile, Widget,
-    WindowGroup as UiGroup, context_menu::ContextMenu,
+    WindowGroup as UiGroup,
 };
 
 pub use tilo_desktop::launchpad::{
     EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
     EMPTY_WORKSPACE_NOTES, EMPTY_WORKSPACE_TASKS,
 };
-
-/// One action a tab's right-click menu offers. The
-/// [`overlay_host::ShellOverlayHost`] builds its menu from
-/// [`tab_context_menu_items`], and every action here is reachable by pointer, keyboard (arrows + Enter in
-/// the open menu) and by its [`Self::semantic_key`] through accessibility,
-/// scripts and the bench — a menu row is not a capability on its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TabMenuAction {
-    /// Close this tab through the same durable lifecycle the `✕` and the
-    /// keyboard chord use (`ShellOverlayHost::close_tab_in_group`).
-    CloseTab,
-    /// Detach the tab into a new window group immediately to the right of
-    /// its current group — the drag-out gesture, without the drag.
-    SplitRight,
-    /// Detach the tab into a new window group at the end of the strip.
-    MoveToNewGroup,
-}
-
-impl TabMenuAction {
-    /// User-facing label, from the shell's catalogue.
-    pub fn label(self) -> String {
-        use crate::shell::i18n::t;
-        match self {
-            Self::CloseTab => t("shell-tab-menu-close"),
-            Self::SplitRight => t("shell-tab-menu-split-right"),
-            Self::MoveToNewGroup => t("shell-tab-menu-new-group"),
-        }
-    }
-
-    /// The glyph leading the row, so the menu reads at a glance like every
-    /// other menu with icons (HIG 9.3): close, a second column, a window of
-    /// its own.
-    pub fn icon(self) -> ui::icons::Icon {
-        match self {
-            Self::CloseTab => ui::icons::Icon::X,
-            Self::SplitRight => ui::icons::Icon::Columns2,
-            Self::MoveToNewGroup => ui::icons::Icon::AppWindow,
-        }
-    }
-
-    /// Stable semantic address of the menu row (`tabmenu:<slug>`): the
-    /// `semantic:` target a script or the bench names, and the
-    /// `perform_semantic_action` target an assistive technology activates.
-    pub fn semantic_key(self) -> &'static str {
-        match self {
-            Self::CloseTab => "tabmenu:close",
-            Self::SplitRight => "tabmenu:split-right",
-            Self::MoveToNewGroup => "tabmenu:new-group",
-        }
-    }
-
-    /// The action a semantic target names, if it is one of ours.
-    pub fn from_semantic_key(key: &str) -> Option<Self> {
-        [Self::CloseTab, Self::SplitRight, Self::MoveToNewGroup]
-            .into_iter()
-            .find(|action| action.semantic_key() == key)
-    }
-}
-
-/// The tab menu's rows in order; `None` is a separator. A group with a
-/// single tab is not offered the two split actions — detaching its only
-/// tab would dissolve the group and re-create it one slot over, a no-op
-/// that reads as a glitch.
-pub fn tab_context_menu_items(tab_count: usize) -> Vec<Option<TabMenuAction>> {
-    let mut items = vec![Some(TabMenuAction::CloseTab)];
-    if tab_count >= 2 {
-        items.push(None);
-        items.push(Some(TabMenuAction::SplitRight));
-        items.push(Some(TabMenuAction::MoveToNewGroup));
-    }
-    items
-}
-
-/// A closed [`ContextMenu`] holding [`tab_context_menu_items`] for a group
-/// of `tab_count` tabs, plus the index-aligned action list the host reads a
-/// selection back through (`ContextMenu::take_selection` yields the row
-/// index; the `Arc<dyn Fn()>` callbacks are deliberately inert because the
-/// host has to mutate itself and the persisted tree).
-pub fn build_tab_context_menu(tab_count: usize) -> (ContextMenu, Vec<Option<TabMenuAction>>) {
-    let items = tab_context_menu_items(tab_count);
-    let mut menu = ContextMenu::new();
-    for item in &items {
-        match item {
-            Some(action) => {
-                menu.push(MenuItem::icon_action(action.icon(), action.label(), || {}));
-            }
-            None => menu.push(MenuItem::separator()),
-        }
-    }
-    (menu, items)
-}
-
-#[cfg(test)]
-mod tab_menu_item_tests {
-    use super::*;
-
-    #[test]
-    fn tab_menu_items_depend_on_group_size_and_keys_round_trip() {
-        fn a_single_tab_group_is_offered_only_close() {
-            let items = tab_context_menu_items(1);
-            assert_eq!(items, vec![Some(TabMenuAction::CloseTab)]);
-            let (menu, _) = build_tab_context_menu(1);
-            assert_eq!(menu.items().len(), 1);
-        }
-
-        fn a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator() {
-            let items = tab_context_menu_items(3);
-            assert_eq!(
-                items,
-                vec![
-                    Some(TabMenuAction::CloseTab),
-                    None,
-                    Some(TabMenuAction::SplitRight),
-                    Some(TabMenuAction::MoveToNewGroup),
-                ]
-            );
-            let (menu, actions) = build_tab_context_menu(3);
-            assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
-            let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
-            assert_eq!(labels, ["Close tab", "Split right", "Move to new group"]);
-        }
-
-        fn semantic_keys_round_trip_and_are_unique() {
-            for action in [
-                TabMenuAction::CloseTab,
-                TabMenuAction::SplitRight,
-                TabMenuAction::MoveToNewGroup,
-            ] {
-                assert_eq!(
-                    TabMenuAction::from_semantic_key(action.semantic_key()),
-                    Some(action)
-                );
-                assert!(action.semantic_key().starts_with("tabmenu:"));
-            }
-            assert_eq!(TabMenuAction::from_semantic_key("tabmenu:nope"), None);
-        }
-
-        a_single_tab_group_is_offered_only_close();
-        a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator();
-        semantic_keys_round_trip_and_are_unique();
-    }
-}
 
 fn to_ui_kind(k: &ShellKind) -> UiKind {
     // `ui::AppKind` has only five variants; the shell's own `AppKind` still

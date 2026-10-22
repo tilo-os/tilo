@@ -1,4 +1,5 @@
-//! The tab right-click menu as a shell layer.
+//! The window menu (a right-click or long press on a window's bar, or the
+//! window-menu shortcut) as a shell layer.
 //!
 //! It lives in the overlay stack rather than the tab bar because it paints
 //! above every window (the bar is clipped to its group), and because its
@@ -18,7 +19,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
 use crate::shell::i18n::t_args;
 use crate::shell::state::{GroupId, StripId};
-use crate::shell::{TabMenuAction, build_tab_context_menu};
+use crate::shell::window_menu::{WindowMenuAction, WindowMenuRow, build_window_menu};
 
 /// Which tab a right-click asked about, resolved when the request is
 /// harvested so a later selection acts on that tab even if focus moved.
@@ -32,11 +33,9 @@ pub(crate) struct TabMenuTarget {
 #[derive(Default)]
 pub(crate) struct TabMenuLayer {
     menu: ContextMenu,
-    /// Row index → action; `None` is a separator. Index-aligned with
-    /// `menu.items()` by [`build_tab_context_menu`]. (A `MenuItem` id on
-    /// the shared widget would replace this parallel list — recorded for
-    /// F4.)
-    items: Vec<Option<TabMenuAction>>,
+    /// The menu's rows, index-aligned with `menu.items()` by
+    /// [`build_window_menu`].
+    items: Vec<WindowMenuRow>,
     target: Option<TabMenuTarget>,
     /// Title of the tab the menu is for, for the accessible name.
     title: String,
@@ -52,16 +51,18 @@ impl TabMenuLayer {
         self.menu.painted_bounds(theme)
     }
 
-    /// Open for `target`, a tab in a group of `tab_count`, at the pointer.
+    /// Open `rows` for `target` at `at` (the pointer, or the tab's corner
+    /// for the keyboard).
     pub(crate) fn open(
         &mut self,
         target: TabMenuTarget,
-        tab_count: usize,
+        rows: Vec<WindowMenuRow>,
         at: Point,
         title: String,
         viewport: Rect,
     ) {
-        let (menu, items) = build_tab_context_menu(tab_count);
+        let menu = build_window_menu(&rows);
+        let items = rows;
         *self = Self {
             menu,
             items,
@@ -121,7 +122,7 @@ impl TabMenuLayer {
     pub(crate) fn settle(
         &mut self,
         target: TabMenuTarget,
-        action: TabMenuAction,
+        action: WindowMenuAction,
         performed: bool,
         viewport: Rect,
     ) {
@@ -141,24 +142,31 @@ impl TabMenuLayer {
         }
     }
 
-    /// The `i`-th action row's item index (separators are not actions and
-    /// publish no semantic node).
+    /// The `i`-th named row's item index (separators publish no semantic
+    /// node).
     fn item_index_of_action(&self, ordinal: usize) -> Option<usize> {
         self.items
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.is_some())
+            .filter(|(_, item)| !matches!(item, WindowMenuRow::Separator))
             .nth(ordinal)
             .map(|(index, _)| index)
     }
 
-    fn item_index_of(&self, action: TabMenuAction) -> Option<usize> {
-        self.items.iter().position(|item| *item == Some(action))
+    /// The row offering `action`, itself or in its nested menu.
+    fn item_index_of(&self, action: WindowMenuAction) -> Option<usize> {
+        self.items
+            .iter()
+            .position(|item| item.actions().contains(&action))
     }
 
     fn take_selected_intent(&mut self) -> Option<LayerIntent> {
-        let index = self.menu.take_selection()?;
-        let action = (*self.items.get(index)?)?;
+        let action = if let Some(index) = self.menu.take_selection() {
+            self.items.get(index)?.action()?
+        } else {
+            let (row, nested) = self.menu.take_submenu_selection()?;
+            *self.items.get(row)?.actions().get(nested)?
+        };
         let target = self.target?;
         Some(LayerIntent::TabMenu { target, action })
     }
@@ -268,34 +276,67 @@ impl ShellLayer for TabMenuLayer {
     /// The menu as an assistive technology reads it: a `Menu` whose
     /// `MenuItem` children carry the shared widget's row bounds, the armed
     /// row as focused, and `tabmenu:*` targets that
-    /// [`ShellLayer::semantic_intent`] resolves.
+    /// [`ShellLayer::semantic_intent`] resolves. A row opening a nested
+    /// menu (Move to strip) carries the places as its own children.
     fn accessibility(&self, _geometry: LayerGeometry<'_>) -> Option<AccessNode> {
         use ui::a11y::{AccessState, Role};
         if !self.is_open() {
             return None;
         }
         let hovered = self.menu.hovered();
-        let actions: Vec<(usize, TabMenuAction)> = self
+        let rows: Vec<(usize, &WindowMenuRow)> = self
             .items
             .iter()
             .enumerate()
-            .filter_map(|(index, item)| item.map(|action| (index, action)))
+            .filter(|(_, item)| !matches!(item, WindowMenuRow::Separator))
             .collect();
-        let count = actions.len();
-        let children = actions
+        let count = rows.len();
+        let children = rows
             .iter()
             .enumerate()
-            .map(|(ordinal, &(index, action))| {
-                let node = AccessNode::new(Role::MenuItem)
-                    .with_name(action.label())
-                    .with_semantic_key(action.semantic_key())
-                    .with_action_target(action.semantic_key())
-                    .with_position(ordinal.saturating_add(1), count)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: hovered == Some(index),
-                        ..AccessState::default()
-                    });
+            .map(|(ordinal, &(index, row))| {
+                let mut node = AccessNode::new(Role::MenuItem)
+                    .with_name(row.label().unwrap_or_default().to_owned())
+                    .with_position(ordinal.saturating_add(1), count);
+                let mut state = AccessState {
+                    focusable: true,
+                    focused: hovered == Some(index),
+                    ..AccessState::default()
+                };
+                match row {
+                    WindowMenuRow::Entry(entry) => {
+                        let key = entry.action.semantic_key();
+                        node = node.with_semantic_key(key.clone()).with_action_target(key);
+                    }
+                    WindowMenuRow::Submenu { key, entries, .. } => {
+                        state.expanded = Some(false);
+                        state.disabled = entries.is_empty();
+                        let places = entries.len();
+                        // A place is reached through its row, which opens
+                        // the nested menu: that row is where it stands.
+                        let row_rect = self.menu.item_rect(index);
+                        node = node.with_semantic_key(*key).with_children(
+                            entries
+                                .iter()
+                                .enumerate()
+                                .map(|(i, entry)| {
+                                    let key = entry.action.semantic_key();
+                                    let place = AccessNode::new(Role::MenuItem)
+                                        .with_name(entry.label.clone())
+                                        .with_semantic_key(key.clone())
+                                        .with_action_target(key)
+                                        .with_position(i.saturating_add(1), places);
+                                    match row_rect {
+                                        Some(rect) => place.with_bounds(rect),
+                                        None => place,
+                                    }
+                                })
+                                .collect(),
+                        );
+                    }
+                    WindowMenuRow::Separator => {}
+                }
+                let node = node.with_state(state);
                 match self.menu.item_rect(index) {
                     Some(rect) => node.with_bounds(rect),
                     None => node,
@@ -321,7 +362,7 @@ impl ShellLayer for TabMenuLayer {
     fn accessibility_rect(&self, _geometry: LayerGeometry<'_>, path: &[usize]) -> Option<Rect> {
         match path {
             [] => Some(self.menu.get_rect()),
-            [ordinal] => self
+            [ordinal] | [ordinal, _] => self
                 .item_index_of_action(*ordinal)
                 .and_then(|index| self.menu.item_rect(index)),
             _ => None,
@@ -338,9 +379,9 @@ impl ShellLayer for TabMenuLayer {
     }
 
     /// Only a row the open menu actually offers may fire — a single-tab
-    /// group has no split.
+    /// group has no split, and only the strips and workspaces listed.
     fn semantic_intent(&self, target: &str) -> Option<LayerIntent> {
-        let action = TabMenuAction::from_semantic_key(target)?;
+        let action = WindowMenuAction::from_semantic_key(target)?;
         self.item_index_of(action)?;
         Some(LayerIntent::TabMenu {
             target: self.target?,
