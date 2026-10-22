@@ -922,3 +922,156 @@ fn moving_and_resizing_a_text_box_reshapes_nothing_and_idles_after() {
     assert_idle(&mut bench, "once the hand stops resizing, no frame runs");
 }
 
+/// The secondary button going down or up where the pointer is.
+fn secondary(bench: &mut Bench, state: ElementState) {
+    bench.send(&WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state,
+        button: MouseButton::Right,
+    });
+}
+
+/// Where byte `byte` of the words being edited stands on the canvas: just
+/// right of the caret placed there.
+fn point_at_byte(bench: &mut Bench, byte: usize) -> Point {
+    named(bench, ModifiersState::CONTROL, NamedKey::Home);
+    for _ in 0..byte {
+        named(bench, ModifiersState::empty(), NamedKey::ArrowRight);
+    }
+    let caret = bench.read(|app| app.ime_cursor_rect().expect("the caret is shown"));
+    Point::new(caret.x1 + 3.0, caret.center().y)
+}
+
+/// The rows of the words' open menu, each with where it stands on the
+/// canvas, and the menu's own size there and in the editor's space.
+fn words_menu(bench: &mut Bench) -> (Vec<(String, Rect)>, Rect, Rect) {
+    bench.read(|app| {
+        let host = &app.text_editor.as_ref().expect("an editor").host;
+        let menu = words_editor(app)
+            .text_menu()
+            .expect("the words' menu is open");
+        let own = Widget::modal_capture(menu).expect("an open menu has a box");
+        let shown = host
+            .modal_capture()
+            .expect("the editor reports its open menu");
+        let offset = shown.origin() - own.origin();
+        let rows = menu
+            .items()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                Some((item.label()?.to_owned(), menu.item_rect(index)? + offset))
+            })
+            .collect();
+        (rows, shown, own)
+    })
+}
+
+fn row(rows: &[(String, Rect)], label: &str) -> Point {
+    rows.iter()
+        .find(|(text, _)| text == label)
+        .unwrap_or_else(|| panic!("the menu has {label}: {rows:?}"))
+        .1
+        .center()
+}
+
+// USER REQUIREMENT (2026-10-22): "Text context menu (cut, copy, paste,
+// formatting) on right-click or long-press inside text, in the shared
+// editor."
+#[test]
+fn right_click_or_a_held_finger_opens_the_words_menu() {
+    // Case `right_click_selects_the_word_and_formats_it`.
+    {
+        let (mut bench, id) = editing("Hello world");
+        let at = point_at_byte(&mut bench, 8);
+        bench.move_to(at);
+        secondary(&mut bench, ElementState::Pressed);
+        secondary(&mut bench, ElementState::Released);
+        bench.read(|app| {
+            assert!(app.words_menu_open(), "the words' menu opens");
+            assert!(!app.ctx_menu.is_open(), "not the box's menu");
+            assert!(app.editing_text, "the words stay open");
+        });
+        assert_eq!(
+            bench.read(selection),
+            "world",
+            "the word clicked is selected"
+        );
+        let (rows, shown, own) = words_menu(&mut bench);
+        let labels: Vec<&str> = rows.iter().map(|(text, _)| text.as_str()).collect();
+        for expected in [
+            "Cut",
+            "Copy",
+            "Paste",
+            "Select all",
+            "Bold",
+            "Italic",
+            "Bulleted list",
+        ] {
+            assert!(labels.contains(&expected), "{expected} in {labels:?}");
+        }
+        assert!(
+            (shown.width() - own.width()).abs() < 1e-6
+                && (shown.height() - own.height()).abs() < 1e-6,
+            "the menu is shown at the window's scale, not the slide's: {shown:?} for {own:?}"
+        );
+        assert!(
+            (shown.x0 - at.x).abs() < 1.0 || shown.x1 <= at.x + 1.0,
+            "the menu opens where the click was: {shown:?} at {at:?}"
+        );
+        bench.click(row(&rows, "Bold"));
+        bench.read(|app| assert!(!app.words_menu_open(), "choosing closes the menu"));
+        let words = element(&bench, &id);
+        let bold = words
+            .rich_blocks()
+            .first()
+            .expect("a paragraph")
+            .marks
+            .iter()
+            .any(|span| span.mark == ui::widget::marks::Mark::Bold && span.range == (6..11));
+        assert!(bold, "the clicked word is bold: {:?}", words.rich_blocks());
+    }
+    // Case `the_menu_cuts_the_selection_through_the_clipboard`.
+    {
+        let (mut bench, id) = editing("Hello world");
+        let at = point_at_byte(&mut bench, 2);
+        bench.move_to(at);
+        secondary(&mut bench, ElementState::Pressed);
+        secondary(&mut bench, ElementState::Released);
+        let (rows, _, _) = words_menu(&mut bench);
+        bench.click(row(&rows, "Cut"));
+        assert_eq!(
+            element(&bench, &id).text,
+            " world",
+            "cut takes the word away"
+        );
+        assert_eq!(
+            ui::text_selection::clipboard_paste().as_deref(),
+            Some("Hello"),
+            "and onto the clipboard"
+        );
+    }
+    // Case `a_held_finger_opens_it_and_a_tap_chooses`.
+    {
+        let (mut bench, id) = editing("Hello world");
+        let at = point_at_byte(&mut bench, 8);
+        bench.app.harness().touch_hold_at(at.x, at.y);
+        bench.read(|app| {
+            assert!(app.words_menu_open(), "a held finger opens the words' menu");
+            assert!(!app.ctx_menu.is_open(), "not the box's menu");
+        });
+        let (rows, _, _) = words_menu(&mut bench);
+        let italic = row(&rows, "Italic");
+        bench.app.harness().tap_at(italic.x, italic.y);
+        bench.read(|app| assert!(!app.words_menu_open(), "the tap chose"));
+        let words = element(&bench, &id);
+        let italic = words
+            .rich_blocks()
+            .first()
+            .expect("a paragraph")
+            .marks
+            .iter()
+            .any(|span| span.mark == ui::widget::marks::Mark::Italic && span.range == (6..11));
+        assert!(italic, "the held word is italic: {:?}", words.rich_blocks());
+    }
+}
