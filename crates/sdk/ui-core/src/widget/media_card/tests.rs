@@ -75,6 +75,55 @@ fn text_blocks_line_up_across_a_row() {
 }
 
 #[test]
+fn a_long_grid_measures_only_the_titles_near_the_viewport() {
+    let cards = (0..120)
+        .map(|i| {
+            MediaCard::new(format!("v{i}"), MediaSource::Placeholder)
+                .aspect(MediaAspect::Wide)
+                .title(format!("Video {i}"))
+                .meta("A channel")
+        })
+        .collect();
+    let mut harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(
+            crate::widget::Scrollable::new_vertical().with_child(Box::new(MediaGrid::new(cards))),
+        ),
+        (900, 600),
+        Theme::dark(),
+    );
+    let heights = |harness: &FrameHarness| -> Vec<f64> {
+        let root = harness.inspection().root;
+        root.children[0]
+            .children
+            .iter()
+            .map(|card| card.rect[3])
+            .collect()
+    };
+    let first = heights(&harness);
+    let (shown, far) = (first[0], first[first.len() - 1]);
+    assert!(
+        far > shown + 1.0,
+        "a card far below the viewport is as tall as its text can be, unmeasured: {shown} {far}"
+    );
+    for _ in 0..4 {
+        harness.with_widget_mut(|scroll: &mut crate::widget::Scrollable| {
+            scroll.set_offset_y(scroll.max_offset_y());
+        });
+        harness.relayout();
+    }
+    let scrolled = heights(&harness);
+    assert!(
+        (scrolled[scrolled.len() - 1] - shown).abs() < 0.5,
+        "scrolled to, its one-line title is measured: {shown} {scrolled:?}"
+    );
+    assert!(
+        (scrolled[0] - shown).abs() < 0.5,
+        "a measured card keeps its height"
+    );
+}
+
+#[test]
 fn columns_come_from_the_width_and_the_text_scale() {
     let theme = Theme::dark();
     let regular = MediaSize::Regular.extent(&theme);
