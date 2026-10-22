@@ -55,6 +55,10 @@ fn open_render_context() -> Option<(RenderContext, usize)> {
         }),
     );
     let found = context.device(None).block_on();
+    if ui::gpu::software_fallback().is_some() {
+        // The GPU was given up: the software adapter found is the one wanted.
+        return found.map(|id| (context, id));
+    }
     let found_hardware = found
         .and_then(|id| context.devices.get(id))
         .is_some_and(|handle| hardware(&handle.adapter));
@@ -117,7 +121,29 @@ impl VelloDrmBridge {
         );
 
         let device_errors = DeviceErrorLatch::install(device);
-        let mut target = RetainedGpuTarget::new(dev_handle, width, height)?;
+        let mut loss_watch = ui::gpu::LossWatch::new(dev_handle.loss_monitor());
+        let mut target = match RetainedGpuTarget::new(dev_handle, width, height) {
+            Ok(target) => target,
+            Err(error) => {
+                // A device that is lost, or whose GPU stopped, before it finished one frame.
+                let reason = match &error {
+                    BridgeError::DeviceLost(reason) => Some(reason.clone()),
+                    // A GPU's warm-up frames are bounded by `NOT_PROGRESSING_AFTER`.
+                    BridgeError::DeadlineExceeded | BridgeError::CompletionTimeout { .. }
+                        if adapter_info.device_type != wgpu::DeviceType::Cpu =>
+                    {
+                        loss_watch
+                            .stopped(dev_handle.queue.clone(), ui::gpu::NOT_PROGRESSING_AFTER);
+                        dev_handle.loss_monitor().reason()
+                    }
+                    _ => None,
+                };
+                if let Some(reason) = reason {
+                    super::gpu_lost(&adapter_info, false, &reason);
+                }
+                return Err(error);
+            }
+        };
         // Client buffers are imported where the scene is drawn, so their
         // frames reach the panel without crossing the CPU.
         target.present_generation = Some(crate::shell::gpu_frames::publish_present_device(
@@ -132,6 +158,9 @@ impl VelloDrmBridge {
             context,
             target,
             device_errors,
+            loss_watch,
+            adapter: adapter_info,
+            opened_in_software: ui::gpu::software_fallback().is_some(),
             bgra_blitter,
             dispatch_stage_observer: std::env::var_os("TILO_PROFILE_GPU_STAGES")
                 .is_some_and(|value| value == "1")
@@ -1154,6 +1183,7 @@ impl VelloDrmBridge {
     #[inline]
     pub(super) fn mark_retained_complete(&mut self, revision: Option<u64>) {
         self.target.retained_target_valid = true;
+        self.target.finished_frames = true;
         self.retained_staging_valid = true;
         self.staging_content = Some((self.target.geometry_generation, revision));
         self.target.last_successful_revision = revision;
@@ -1458,10 +1488,52 @@ impl VelloDrmBridge {
         Ok(())
     }
 
-    /// Why this bridge's device was lost, once it has been. Nothing recovers a lost device but
-    /// a new bridge.
-    pub fn device_lost(&self) -> Option<String> {
-        self.target.loss.reason()
+    /// Why this bridge's device was lost, once it has been: wgpu reported it, or work the GPU
+    /// was given stopped finishing (`ui::gpu::LossWatch`). Asked before every frame, so work
+    /// still in flight then is what the next ask finds finished or not; this never waits for
+    /// the GPU. Nothing recovers a lost device but a new bridge ([`super::retire_lost_bridge`]).
+    pub fn device_lost(&mut self) -> Option<String> {
+        #[cfg(target_os = "linux")]
+        self.apply_injected_fault();
+        let lost = self.loss_watch.lost(&self.target.device);
+        if lost.is_none() {
+            self.loss_watch.unfinished(&self.target.queue);
+        }
+        lost
+    }
+
+    /// Suffer the fault a development session's test control injected, if any
+    /// ([`super::InjectedGpuFault`]), on this bridge's own device.
+    #[cfg(target_os = "linux")]
+    fn apply_injected_fault(&self) {
+        let Some(fault) = super::injected_gpu_fault(self.opened_in_software) else {
+            return;
+        };
+        // SAFETY: the hal device is only flagged; no raw handle leaves this block.
+        let Some(hal) = (unsafe { self.target.device.as_hal::<wgpu::hal::api::Vulkan>() }) else {
+            tracing::warn!(?fault, "an injected GPU fault needs a Vulkan device");
+            return;
+        };
+        tracing::warn!(
+            ?fault,
+            "applying an injected GPU fault to the renderer's device"
+        );
+        match fault {
+            super::InjectedGpuFault::Reset | super::InjectedGpuFault::Dead => {
+                hal.simulate_device_loss();
+            }
+            super::InjectedGpuFault::Hang => hal.simulate_hang(),
+        }
+    }
+
+    /// Whether this bridge's device finished at least one frame.
+    pub fn finished_frames(&self) -> bool {
+        self.target.finished_frames
+    }
+
+    /// The adapter this bridge renders on.
+    pub fn adapter(&self) -> &wgpu::AdapterInfo {
+        &self.adapter
     }
 
     /// Current (width, height); useful in tests and for comparing against the connector's mode size before resizing.

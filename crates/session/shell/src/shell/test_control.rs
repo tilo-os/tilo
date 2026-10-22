@@ -151,6 +151,12 @@ pub enum Command {
     /// test transport of a development build only, and never: the reply is
     /// the compositor exiting.
     DeadlockMainLoop,
+    /// Have the presenting renderer's GPU fail under its next frame, as the
+    /// GPU of a laptop whose firmware died once did (`paint::InjectedGpuFault`).
+    /// Answered by the native test transport of a development build only.
+    GpuFault {
+        fault: crate::shell::render::paint::InjectedGpuFault,
+    },
     /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
@@ -991,6 +997,15 @@ pub fn deadlock_main_loop_refused() -> Response {
     }
 }
 
+/// What a build without development overrides answers to `gpu_fault`.
+#[must_use]
+pub fn gpu_fault_refused() -> Response {
+    Response::Err {
+        code: crate::compositor::dev_test_identity::DEV_IMAGE_ONLY.into(),
+        message: "a GPU fault is injected only by development builds".into(),
+    }
+}
+
 /// Dispatch a single command against the live compositor state.
 ///
 /// Returns `(response, actions)`: read-only commands return no actions; mutating commands return the [`PlannedAction`]s the transport must run before replying — keeps the dispatcher pure (no I/O, no `&mut` state).
@@ -1125,6 +1140,13 @@ pub fn dispatch_command<S: ControlState>(
                 code: "test_transport_required".to_string(),
                 message: "a main-loop deadlock is injected by the native test transport"
                     .to_string(),
+            },
+            Vec::new(),
+        ),
+        Command::GpuFault { .. } => (
+            Response::Err {
+                code: "test_transport_required".to_string(),
+                message: "a GPU fault is injected by the native test transport".to_string(),
             },
             Vec::new(),
         ),
