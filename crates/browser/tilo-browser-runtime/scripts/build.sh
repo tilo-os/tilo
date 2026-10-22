@@ -153,8 +153,12 @@ fi
 if [[ $bundle == desktop ]] && ! kept data/typst; then
   # The Typst editor's fonts, which only native builds embed; the editor asks
   # for them by name when it opens (crates/platform/tilo-typst-fonts).
-  typst_assets=$(cargo metadata --format-version 1 --locked --offline --filter-platform wasm32-unknown-unknown |
-    python3 -c 'import json,os,sys; print(next(os.path.dirname(p["manifest_path"]) for p in json.load(sys.stdin)["packages"] if p["name"]=="typst-assets"))')
+  # The sources the build above compiled typst-assets from, as its dep-info
+  # names them. Not `cargo metadata`: that reads every package the lockfile
+  # names, for every platform, so offline it fails on any the build never
+  # fetched.
+  typst_assets=$(python3 "$repo/tools/web/crate_source.py" typst-assets \
+    "$target_dir/wasm32-unknown-unknown/$artifact" "$repo/Cargo.lock")
   mkdir -p "$out/data/typst"
   cp "$typst_assets"/files/fonts/*.otf "$typst_assets"/files/fonts/*.ttf "$out/data/typst/"
   cp "$typst_assets/NOTICE" "$out/data/typst/NOTICE.txt"
