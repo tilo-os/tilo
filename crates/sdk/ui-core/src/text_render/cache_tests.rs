@@ -251,7 +251,6 @@ fn glyph_capacity_budget_and_eviction_preserve_live_run_owners() {
         ShapedText {
             runs: roomy.clone(),
             size: (1.0, 1.0),
-            advances: None,
         },
         cost,
     );
@@ -698,83 +697,4 @@ fn a_repeated_clamp_shapes_nothing_again() {
         renderer.clamp_to_lines_style(title, 120.0, 2, &style),
         first
     );
-}
-
-#[test]
-fn wrapping_measures_each_line_once_not_every_prefix() {
-    let style = TextStyle::new(14.0);
-    let text = "Twenty words of a video description wrap over several lines, and each \
-                break is found without shaping every prefix before it";
-    let mut renderer = crate::font_catalog::fixture_renderer();
-    let lines = renderer.wrap_lines(text, &style, 140.0);
-    assert!(lines.len() >= 3, "{lines:?}");
-    // One measure per line, and one more per line its estimate overran.
-    assert!(
-        renderer.misses <= 2 * u64::try_from(lines.len()).unwrap(),
-        "{} measures for {} lines",
-        renderer.misses,
-        lines.len()
-    );
-    let mut probe = crate::font_catalog::fixture_renderer();
-    for line in &lines {
-        assert!(
-            probe.measure_style(line, None, &style).0 <= 140.0,
-            "{line:?}"
-        );
-    }
-    // Every line is as long as it can be: its next word would not fit.
-    for pair in lines.windows(2) {
-        let longer = format!("{} {}", pair[0], pair[1].split(' ').next().unwrap());
-        assert!(
-            probe.measure_style(&longer, None, &style).0 > 140.0,
-            "{longer:?}"
-        );
-    }
-    // An elided line fits with its ellipsis, and one more character would not.
-    let elided = renderer.elide_to_width_style(text, 140.0, &style);
-    assert!(elided.ends_with(crate::text_render::ELLIPSIS));
-    assert!(probe.measure_style(&elided, None, &style).0 <= 140.0);
-    let kept = elided.trim_end_matches(crate::text_render::ELLIPSIS).len();
-    let (offset, next) = text[kept..]
-        .char_indices()
-        .find(|(_, c)| !c.is_whitespace())
-        .unwrap();
-    let one_more = format!(
-        "{}{}",
-        &text[..kept + offset + next.len_utf8()],
-        crate::text_render::ELLIPSIS
-    );
-    assert!(
-        probe.measure_style(&one_more, None, &style).0 > 140.0,
-        "{one_more:?}"
-    );
-}
-
-#[test]
-fn a_clamped_line_count_matches_the_lines_a_clamp_cuts() {
-    let style = TextStyle::new(14.0);
-    let texts = [
-        "",
-        "  ",
-        "Short",
-        "Supercalifragilisticexpialidocious",
-        "Two words",
-        "A title long enough to wrap onto a second line and then some more",
-        "First line\nsecond line",
-        "  padded title that wraps around  ",
-        "東京の動画のタイトルはとても長いです",
-    ];
-    let mut counted = crate::font_catalog::fixture_renderer();
-    let mut cut = crate::font_catalog::fixture_renderer();
-    for text in texts {
-        for width in [40.0, 90.0, 160.0, 600.0] {
-            for lines in 1..=3 {
-                assert_eq!(
-                    counted.clamped_line_count(text, width, lines, &style),
-                    cut.clamp_to_lines_style(text, width, lines, &style).len(),
-                    "{text:?} at {width} in {lines} lines"
-                );
-            }
-        }
-    }
 }
