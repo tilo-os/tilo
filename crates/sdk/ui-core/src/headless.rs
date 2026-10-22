@@ -6384,6 +6384,7 @@ impl FrameHarness {
         if !self.pans_without_drawing(event) {
             self.settle_replayed_draws();
         }
+        crate::widget::context_menu::note_input(event);
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows, as in the App.
         if let Some(moved) = self.pointer_replay.before(event) {

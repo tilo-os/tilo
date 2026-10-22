@@ -118,7 +118,6 @@ enum CtxAction {
     IgnoreInField(String),
     UndoAutocorrection,
     TextAction(usize),
-    AskAgent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4935,15 +4934,6 @@ impl TextInput {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
-        if can_share && crate::shared_selection::agent_host_available() {
-            menu.push(MenuItem::action(
-                crate::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
-                || {},
-            ));
-            actions.push(Some(CtxAction::AskAgent));
-            menu.push(MenuItem::separator());
-            actions.push(None);
-        }
         if can_share {
             if !self.read_only {
                 menu.push(MenuItem::action("Cut", || {}));
@@ -4962,7 +4952,11 @@ impl TextInput {
         }
         menu.push(MenuItem::action("Select All", || {}));
         actions.push(Some(CtxAction::SelectAll));
-
+        menu.set_about(
+            self.shareable_selection().map(|text| {
+                crate::shared_selection::SharedSelection::of_text(text).within(self.rect)
+            }),
+        );
         menu.open_at(pos);
         self.context_menu = menu;
         self.context_actions = actions;
@@ -5045,12 +5039,6 @@ impl TextInput {
                         range: (start, end),
                     });
                 }
-            }
-            CtxAction::AskAgent => {
-                crate::shared_selection::ask_agent(
-                    self.shareable_selection()
-                        .map(crate::shared_selection::SharedSelection::of_text),
-                );
             }
         }
         self.context_menu.close();

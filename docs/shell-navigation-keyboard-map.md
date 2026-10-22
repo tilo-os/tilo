@@ -53,7 +53,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Magnifier zoom in / out | Super+Alt+= / Super+Alt+- | Settings → Accessibility |
 | Next keyboard layout | Super+Alt+Space | Settings → Mouse & keyboard |
 | Insert an emoji into the focused text field | Super+. | — |
-| Ask an agent about the focused window's selection | Super+C | "Ask agent…" in a text field, list row or context menu |
+| Ask an agent about the focused window's selection | Super+C | "Tell an agent…" in every context menu, a window's tab menu included |
 
 Super+C (the chord Windows gives its assistant) opens the agent quick composer on
 what is selected in the focused window, set to queue a task about it. A Tilo

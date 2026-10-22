@@ -67,6 +67,7 @@ impl App {
         event: WindowEvent,
         synthesized_touch: bool,
     ) -> bool {
+        crate::widget::context_menu::note_input(&event);
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows.
         if let Some(moved) = self.input.pointer_replay.before(&event) {

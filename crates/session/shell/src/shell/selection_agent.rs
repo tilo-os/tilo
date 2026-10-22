@@ -1,6 +1,6 @@
 //! Asking an agent about what the person selected in the focused window.
 //!
-//! The desktop's ask-agent chord, and the "Ask agent…" entry a Tilo app's
+//! The desktop's ask-agent chord, and the "Tell an agent…" entry a Tilo app's
 //! menus offer, open the agent quick composer seeded with the selection: the
 //! person types what they want ("tighten this", "why does this fail?") and
 //! the composer queues a task about the selection (its subject, never a
@@ -261,7 +261,7 @@ impl SelectionRequests {
     }
 
     /// Whether `app_id` may open the composer with its answer: the app the
-    /// chord asked, or (an "Ask agent…" entry) the focused app itself. A
+    /// chord asked, or (an "Tell an agent…" entry) the focused app itself. A
     /// window in the background never opens one.
     pub(crate) fn accept(&mut self, app_id: &str, focused_app: Option<&str>) -> bool {
         if self

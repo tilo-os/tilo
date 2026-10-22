@@ -3025,7 +3025,7 @@ pub use primitives::{
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
-pub use context_menu_area::{ContextMenuArea, MenuEntry, ask_agent_entry};
+pub use context_menu_area::{ContextMenuArea, MenuEntry};
 pub(crate) mod block_editor_table;
 pub mod data_table;
 pub mod table {
