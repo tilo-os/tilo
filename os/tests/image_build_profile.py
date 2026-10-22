@@ -359,6 +359,26 @@ print(json.dumps({'signed_rootfs_id': identity}))
         self.assertIn(diagnostic, result.stderr)
         self.assertFalse(self.log.exists(), "invalid profile reached podman")
 
+    def test_layer_action_leaves_whole_tree_preflights_to_their_checks(self):
+        # A layer action is cached by what its own piece reads. The static
+        # pre-flights read every Containerfile, COPY source and app manifest,
+        # so a layer action that ran them could keep a failure past its fix.
+        for preflight in ("os/tests/containerfile_sources.sh", "os/tests/app_store.sh"):
+            self.write(preflight, "#!/bin/bash\necho \"$0 ran\" >&2\nexit 1\n", executable=True)
+        with self.subTest(phase="whole_build_stops_at_a_failing_preflight"):
+            result = self.run_builder()
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("containerfile_sources.sh ran", result.stderr)
+            self.assertFalse(self.log.exists(), "a failing preflight reached podman")
+        with self.subTest(phase="layer_action_builds_without_them"):
+            piece = self.write("scratch/piece.Containerfile", "FROM scratch AS system\n")
+            result = self.run_builder(TILO_LAYER_TARGET="system", TILO_CONTAINERFILE=str(piece))
+            self.assertEqual(result.returncode, BUILD_INTERCEPTED, result.stderr)
+            self.assertNotIn("containerfile_sources.sh ran", result.stderr)
+            self.assertNotIn("app_store.sh ran", result.stderr)
+            arguments = self.log.read_bytes().decode().split("\0")
+            self.assertIn("system", arguments)
+
     def test_windows_provider_pins(self):
         with self.subTest(phase="default_pins_and_generic_profile_reach_the_first_build"):
             arguments = self.build_arguments(self.run_builder())

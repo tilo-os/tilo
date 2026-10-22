@@ -354,6 +354,13 @@ fi
 fi # Production provenance; development inputs have independent pinned receipts.
 bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
   || die "the frozen RPM snapshot does not match the current Containerfiles"
+# The two static pre-flights below read the whole tree: every Containerfile, every
+# COPY source and the app store's manifests. One layer action (TILO_LAYER_TARGET) is
+# cached by what its own piece reads, not by that tree, so a result it kept would
+# vouch for a tree it never saw: a cached failure outlived the fix of the contract it
+# reported. t runs both as their own checks, keyed by what they read
+# (tools/ci/suites.toml), so a layer action leaves them to those.
+if [ -z "${TILO_LAYER_TARGET:-}" ]; then
 bash "$TILO_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
   || { bash "$TILO_OS_DIR/tests/containerfile_sources.sh"; die "a Containerfile COPY source is missing (see above)"; }
 # Pre-flight: the preinstalled app store can be built and will resolve at run
@@ -362,6 +369,7 @@ bash "$TILO_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
 # as an empty launcher rather than as a build error.
 bash "$TILO_OS_DIR/tests/app_store.sh" >/dev/null \
   || { bash "$TILO_OS_DIR/tests/app_store.sh"; die "the app store would not work (see above)"; }
+fi
 fi
 
 # Where the build unpacks layers. Two failure modes converge here, and neither
