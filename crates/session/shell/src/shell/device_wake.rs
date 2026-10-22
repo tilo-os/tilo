@@ -813,7 +813,7 @@ mod tests {
     use super::*;
     use crate::shell::device_fabric::{
         DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-        FabricCapabilities, FabricStamp,
+        FabricCapabilities, FabricStamp, OwnerSession,
     };
 
     fn id(value: &str) -> DeviceId {
@@ -847,6 +847,7 @@ mod tests {
                 online: true,
                 last_seen_unix_ms: 1,
                 wake_routes: routes,
+                session: OwnerSession::default(),
                 stamp: FabricStamp {
                     counter: 1,
                     device: owner,

@@ -9,7 +9,7 @@ use serde_json::json;
 use shell::shell::continuity_policy::ContinuityPolicySnapshot;
 use shell::shell::device_fabric::{
     DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-    FabricCapabilities, FabricStamp, PersonalFabricAction,
+    FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
 };
 use shell::shell::fabric_clock::{
     CLOCK_SYNC_DEADLINE, ClockSyncFailure, ClockSyncState, FabricClockCore,
@@ -99,6 +99,7 @@ impl Device {
                 online: true,
                 last_seen_unix_ms: self.counter,
                 wake_routes: Vec::new(),
+                session: OwnerSession::default(),
                 stamp: stamp(self.name, self.counter),
             },
             media: Vec::new(),

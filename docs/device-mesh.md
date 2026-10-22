@@ -372,6 +372,14 @@ authorization.
   measures every member with one microphone on any device and produces a
   before/after proposal; trims change only when it is applied, and one
   revert restores the previous ones.
+- **The lock follows the person.** Each device's presence carries whether it
+  is locked, when the person last locked or unlocked it themselves and when
+  they last used it (`shell::owner_session`). Locking a device locks the
+  person's other devices they have not used since; unlocking one unlocks,
+  on the same network, those that locked only because it did and were in use
+  then. A device does not lock for idleness while the person uses another of
+  their devices on its network. The idle timer's own lock neither spreads nor
+  is undone from elsewhere.
 - **Universal clipboard** is a content-addressed, de-duplicated 50-item
   history. Entries are explicitly classified as shareable and capped at
   256 KiB. Primary selection, secret fields, and Tilo's secret MIME type never

@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::shell::personal_continuity::DeviceId;
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 6;
+pub const FABRIC_SCHEMA_VERSION: u16 = 7;
 pub const MAX_DEVICES: usize = 64;
 /// More network interfaces than any one device wakes through.
 pub const MAX_WAKE_ROUTES: usize = 8;
@@ -190,8 +190,26 @@ pub struct DevicePresence {
     pub last_seen_unix_ms: u64,
     /// How siblings on the same LAN can wake this device.
     pub wake_routes: Vec<WakeRoute>,
+    /// The person's session here, which their other devices' locks follow.
+    pub session: OwnerSession,
     pub stamp: FabricStamp,
 }
+
+/// Whether the person's session on a device is locked, when they last locked
+/// or unlocked it themselves, and when they last used it
+/// (`crate::shell::owner_session`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerSession {
+    pub locked: bool,
+    /// The person's own lock or unlock; the idle timer's lock leaves it.
+    pub changed_unix_ms: u64,
+    /// Their last input, rounded down to [`OWNER_SESSION_ACTIVE_STEP_MS`] so
+    /// typing does not republish the presence.
+    pub active_unix_ms: u64,
+}
+
+/// How finely [`OwnerSession::active_unix_ms`] follows input.
+pub const OWNER_SESSION_ACTIVE_STEP_MS: u64 = 10_000;
 
 impl DevicePresence {
     fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
@@ -2768,6 +2786,7 @@ mod tests {
                 online: true,
                 last_seen_unix_ms: 10,
                 wake_routes: Vec::new(),
+                session: OwnerSession::default(),
                 stamp: stamp(device, counter),
             },
             media: Vec::new(),
@@ -3042,7 +3061,7 @@ mod tests {
         };
         // Fixed schema-6 Postcard bytes: owner, aggregate rect, scale, stamp.
         let previous = hex::decode("0470656572800f00800ad005e807010470656572").unwrap();
-        assert_eq!(FABRIC_SCHEMA_VERSION, 6);
+        assert_eq!(FABRIC_SCHEMA_VERSION, 7);
         assert_eq!(postcard::to_allocvec(&display).unwrap(), previous);
         let decoded: DisplayPlacement = postcard::from_bytes(&previous).unwrap();
         assert!(
