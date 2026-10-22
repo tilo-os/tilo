@@ -560,8 +560,10 @@ struct JobState {
     /// Frames written so far, and how many there are in total.
     done: AtomicU64,
     total: AtomicU64,
-    cancel: AtomicBool,
+    cancel: Arc<AtomicBool>,
     outcome: Mutex<Option<ExportStatus>>,
+    /// Told each frame written, and how many there are.
+    report: Option<Box<dyn Fn(u64, u64) + Send + Sync>>,
     /// How long one frame may go without every source's real picture before
     /// the export fails rather than write a stand-in.
     #[cfg_attr(
@@ -623,6 +625,45 @@ impl Drop for ExportJob {
     }
 }
 
+impl JobState {
+    /// `done` frames are written.
+    #[cfg_attr(
+        not(feature = "gst"),
+        allow(dead_code, reason = "only the GStreamer render writes frames")
+    )]
+    fn wrote(&self, done: u64) {
+        self.done.store(done, Ordering::Relaxed);
+        if let Some(report) = &self.report {
+            report(done, self.total.load(Ordering::Relaxed));
+        }
+    }
+}
+
+/// Render `project` to `destination` on the calling thread, for a caller
+/// that runs its own job: `report` is told each frame written and how many
+/// there are, and setting `cancel` stops the render as [`ExportJob::cancel`]
+/// does.
+///
+/// # Errors
+/// Why no file was written, as [`ExportStatus::Failed`] says it.
+pub fn render_to(
+    project: &Project,
+    settings: ExportSettings,
+    destination: &std::path::Path,
+    cancel: Arc<AtomicBool>,
+    report: impl Fn(u64, u64) + Send + Sync + 'static,
+) -> Result<String, String> {
+    let state = JobState {
+        done: AtomicU64::new(0),
+        total: AtomicU64::new(0),
+        cancel,
+        outcome: Mutex::new(None),
+        frame_patience: EXPORT_FRAME_PATIENCE,
+        report: Some(Box::new(report)),
+    };
+    render(project, settings, destination, &state)
+}
+
 /// The message a cancelled render reports.
 pub const CANCELLED: &str = "Export cancelled";
 
@@ -660,9 +701,10 @@ fn start_export_with_patience(
     let shared = Arc::new(JobState {
         done: AtomicU64::new(0),
         total: AtomicU64::new(0),
-        cancel: AtomicBool::new(false),
+        cancel: Arc::default(),
         outcome: Mutex::new(None),
         frame_patience,
+        report: None,
     });
     // The worker owns its own copy: the UI thread keeps editing the project
     // while the render runs, and a render must encode the timeline as it was
@@ -1078,7 +1120,7 @@ mod gst_pipeline {
                     return Err(format!("push export audio {i}: {e:?}"));
                 }
             }
-            state.done.store(i + 1, Ordering::Relaxed);
+            state.wrote(i + 1);
         }
         appsrc
             .end_of_stream()

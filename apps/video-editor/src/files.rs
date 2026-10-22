@@ -44,7 +44,6 @@ pub(crate) fn create_dir_all(path: &Path) {
     }
 }
 
-#[cfg(feature = "gst")]
 pub(crate) fn remove(path: &Path) {
     if let Ok((dir, name)) = at(path) {
         let _ = blocking::remove(&dir, &name);
