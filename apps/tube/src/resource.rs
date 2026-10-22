@@ -136,7 +136,8 @@ impl Library {
 
 /// The screenshot scenarios, each over the bundled sample catalogue: Home,
 /// its empty and loading states, device sync, a playing watch
-/// page, the narrow window with its rail summoned, and every screen.
+/// page, the narrow window with its rail summoned, the sidebar widened
+/// into a list, and every screen.
 pub(crate) const SCENARIOS: &[&str] = &[
     "home",
     "empty",
@@ -144,6 +145,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "device-sync",
     "play-demo",
     "narrow",
+    "sidebar-list",
     "trending",
     "subscriptions",
     "queue",
@@ -199,7 +201,7 @@ impl ResourceApp for TubeShell {
     /// which the navigation rail docks.
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         if scenario == Some("narrow") {
-            (560, 800)
+            (340, 800)
         } else {
             (1280, 800)
         }

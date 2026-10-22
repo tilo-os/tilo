@@ -1616,21 +1616,143 @@ impl RailExtent for NavList {
         if !self.tree.is_rail() {
             return None;
         }
-        fn labels<'a>(items: &'a [NavItem], out: &mut Vec<&'a str>) {
-            for item in items {
-                out.push(&item.label);
-                labels(&item.children, out);
-            }
-        }
-        let mut all = Vec::new();
-        for section in &self.sections {
-            labels(&section.items, &mut all);
-        }
+        let items = all_items(&self.sections);
         Some(crate::text_render::with_layout_renderer(
             theme.text_scale,
-            |text| crate::chrome::rail_width_fitting(theme, text, all.iter().copied()),
+            |text| {
+                crate::chrome::rail_width_fitting(
+                    theme,
+                    text,
+                    items.iter().map(|item| item.label.as_str()),
+                )
+            },
         ))
     }
+}
+
+/// The most destinations a sidebar shows as a rail by default. Past it the
+/// tiles stop reading as one short set of places at a glance.
+const RAIL_DEFAULT_MAX_DESTINATIONS: usize = 7;
+
+/// A navigation sidebar whose width decides how it reads: narrow, a rail
+/// of tiles (icon over a short caption); wide, a list (icon beside the
+/// label). The shell hosting it as its sidebar asks how wide each form
+/// needs to be, which one it starts as, and switches it as its width
+/// crosses the threshold.
+pub(crate) trait AdaptiveNav {
+    /// The width of the list as a rail: its longest word whole, up to the
+    /// rail's cap ([`crate::chrome::sidebar_rail_width_fitting`]).
+    fn rail_fit(&self, theme: &crate::Theme) -> f64;
+    /// The width at which every label stands whole beside its icon
+    /// ([`crate::chrome::nav_list_width_fitting`]): from here on it is a
+    /// list.
+    fn list_fit(&self, theme: &crate::Theme) -> f64;
+    /// Whether the sidebar starts as a rail: a short, flat set of places,
+    /// each with an icon and a label that stands whole in a tile. See
+    /// docs/design-language.md, "Windows and navigation".
+    fn rail_by_default(&self, theme: &crate::Theme) -> bool;
+    /// Paint the rows as a rail's tiles or as list rows. Returns whether
+    /// that changed.
+    fn set_rail(&mut self, rail: bool) -> bool;
+}
+
+/// Every destination of `sections`, nested ones included, in order.
+fn all_items(sections: &[NavSection]) -> Vec<&NavItem> {
+    fn walk<'a>(items: &'a [NavItem], out: &mut Vec<&'a NavItem>) {
+        for item in items {
+            out.push(item);
+            walk(&item.children, out);
+        }
+    }
+    let mut out = Vec::new();
+    for section in sections {
+        walk(&section.items, &mut out);
+    }
+    out
+}
+
+impl AdaptiveNav for NavList {
+    fn rail_fit(&self, theme: &crate::Theme) -> f64 {
+        let items = all_items(&self.sections);
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::chrome::sidebar_rail_width_fitting(
+                theme,
+                text,
+                items.iter().map(|item| item.label.as_str()),
+            )
+        })
+    }
+
+    fn list_fit(&self, theme: &crate::Theme) -> f64 {
+        let items = all_items(&self.sections);
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::chrome::nav_list_width_fitting(
+                theme,
+                text,
+                items.iter().map(|item| item.label.as_str()),
+            )
+        })
+    }
+
+    fn rail_by_default(&self, theme: &crate::Theme) -> bool {
+        // Headings, folding, a "New …" action and a filter are what a list
+        // of many or growing places needs; a rail shows none of them.
+        let flat_sections = self.sections.iter().all(|section| {
+            section.title.is_empty()
+                && !section.collapsible
+                && section.trailing_action.is_none()
+                && !section.filterable
+        });
+        let items = all_items(&self.sections);
+        // A tile is an icon over a caption: a row that says more than its
+        // label (a second line, a figure, a check, a status, a colour, the
+        // people in it) or that nests or renames needs the list.
+        let tile_shaped = items.iter().all(|item| {
+            item.icon.is_some()
+                && item.children.is_empty()
+                && !item.editable_label
+                && item.secondary.is_none()
+                && item.meta.is_none()
+                && item.status.is_none()
+                && item.status_label.is_none()
+                && item.badge.is_none()
+                && item.swatch.is_none()
+                && item.checked.is_none()
+                && item.level.is_none()
+                && item.presence.is_empty()
+        });
+        if !flat_sections
+            || !tile_shaped
+            || items.is_empty()
+            || items.len() > RAIL_DEFAULT_MAX_DESTINATIONS
+        {
+            return false;
+        }
+        let width = self.rail_fit(theme);
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            items
+                .iter()
+                .all(|item| crate::chrome::rail_caption_fits(theme, text, &item.label, width))
+        })
+    }
+
+    fn set_rail(&mut self, rail: bool) -> bool {
+        self.tree.set_nav_rail(rail)
+    }
+}
+
+/// The navigation sidebar `widget` is, when it is one ([`AdaptiveNav`]).
+/// Only the sidebar itself counts, never a list nested inside a composite
+/// sidebar: a rail can't hold the composite's other controls.
+pub(crate) fn adaptive(widget: &dyn crate::widget::Widget) -> Option<&(dyn AdaptiveNav + 'static)> {
+    crate::widget::capability::capability::<dyn AdaptiveNav>(widget)
+}
+
+/// As [`adaptive`], to switch it.
+pub(crate) fn adaptive_mut(
+    widget: &mut dyn crate::widget::Widget,
+) -> Option<&mut (dyn AdaptiveNav + 'static)> {
+    crate::widget::capability::capability_mut::<dyn AdaptiveNav>(widget)
 }
 
 /// The width of the first rail in `widget`'s subtree under `theme`
@@ -1691,6 +1813,10 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             request.provide::<dyn RailExtent>(self);
             return;
         }
+        if request.wants::<dyn AdaptiveNav>() {
+            request.provide::<dyn AdaptiveNav>(self);
+            return;
+        }
         crate::widget::Widget::provide(&self.tree, request);
     }
 
@@ -1701,6 +1827,10 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         }
         if request.wants::<dyn NavigationSource>() {
             request.provide::<dyn NavigationSource>(self);
+            return;
+        }
+        if request.wants::<dyn AdaptiveNav>() {
+            request.provide::<dyn AdaptiveNav>(self);
             return;
         }
         if request.wants::<dyn Filterable>()

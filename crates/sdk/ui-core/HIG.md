@@ -81,9 +81,16 @@ email client's accounts + folders.
   **never an `X`**, never a hamburger. One system shortcut toggles it in
   every app (`HostShortcut::Sidebar`, Ctrl+Shift+L / ⌘⇧L), and the toggle
   publishes "Show sidebar" / "Hide sidebar" to the palette and to agents.
-  Dragging the sidebar's trailing edge resizes it between
-  `sidebar_min_width` and `sidebar_max_width`; dragging it below the minimum
-  hides it. The person's choice is remembered per window size class.
+  Dragging the sidebar's trailing edge (pointer, finger, or the arrow keys
+  on its separator) resizes it up to `sidebar_max_width`; dragging it below
+  its narrowest hides it. A `NavList` sidebar reads by its width: a rail of
+  tiles while narrow, a list once every label fits beside its icon (never
+  past `sidebar_min_width`); a short flat set of places starts as its rail,
+  anything else at `sidebar_width` (docs/design-language.md, "Rail or
+  list"). Another sidebar's narrowest is `sidebar_min_width`. Apps never
+  call `NavList::rail` on a sidebar: the shell decides. The width is
+  remembered per app on this device; the show/hide choice per window size
+  class.
 - **At any width, the layout in which everything shown is usable.**
   Darkening content the person works with is never the automatic answer.
   - **Docked** while the sidebar fits beside the content's *real* minimum:

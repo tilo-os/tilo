@@ -488,7 +488,7 @@ fn pages_lay_out_without_overlap_at_every_size() {
         // the rail, and choosing a destination there must
         // show its page, via real clicks, not app.apply.
         let mut app = live_app();
-        app.harness().resize((420, 800)).unwrap();
+        app.harness().resize((340, 800)).unwrap();
         app.harness().relayout();
         let open = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
             app.with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
@@ -522,8 +522,18 @@ fn search_inputs_are_present_and_navigate() {
         app.harness()
             .set_theme(Theme::dark().with_text_scale(scale));
         if viewport.0 < 800 {
-            // A new narrow window opens on the rail, one screen at a time;
-            // the search belongs to the page a destination shows.
+            // At its first text size the window docks the rail beside the
+            // grid; the larger text leaves no room for both, so it shows one
+            // screen at a time and keeps the page it was on. Back goes to
+            // the rail; the search belongs to the page a destination shows.
+            let on_rail = app
+                .with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
+                .expect("the window shows Tube");
+            if !on_rail {
+                app.harness().click_named("nav-shell-back").unwrap();
+                app.settle();
+                app.harness().relayout();
+            }
             click(&mut app, "nav_home");
         }
         // The page a destination shows slides in, and the window bar's

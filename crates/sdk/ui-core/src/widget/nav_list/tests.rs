@@ -877,7 +877,7 @@ fn rail_captions_wrap_at_spaces_and_never_break_a_word() {
     );
     let mut text = crate::text_render::TextRenderer::new();
     text.set_text_scale(big.text_scale);
-    let caption = width - 2.0 * f64::from(big.tokens.spacing.s1);
+    let caption = width - 4.0 * f64::from(big.tokens.spacing.s1);
     assert_eq!(
         crate::chrome::rail_caption_lines(&big, &mut text, "Channels", caption),
         ["Channels"]
@@ -1289,4 +1289,69 @@ fn a_row_is_found_by_its_search_terms_and_says_which() {
         "a word start, not the middle of \"flight\""
     );
     assert!(super::narrow(&items, "zzz").is_empty());
+}
+
+/// Which form a navigation sidebar starts in follows its places: a short,
+/// flat set of places, each with an icon and a label that stands whole in a
+/// tile, starts as a rail; headings, a "New" action, nesting, second lines,
+/// many places or a label too long for a tile start it as a list. Switching
+/// the form keeps the selection.
+#[test]
+fn a_short_flat_set_of_places_starts_as_a_rail_and_anything_more_as_a_list() {
+    use super::AdaptiveNav as _;
+    let theme = Theme::dark();
+    let place = |id: &str, label: &str| NavItem::new(id, label).icon(Icon::Home);
+    let flat = |items: Vec<NavItem>| NavList::new(vec![NavSection::untitled("p", items)]);
+    let six: Vec<NavItem> = [
+        "Home",
+        "Trending",
+        "Subscriptions",
+        "Queue",
+        "History",
+        "Settings",
+    ]
+    .iter()
+    .map(|label| place(&label.to_lowercase(), label))
+    .collect();
+    assert!(
+        flat(six.clone()).rail_by_default(&theme),
+        "Tube's six places"
+    );
+
+    let many: Vec<NavItem> = (0..8).map(|i| place(&format!("p{i}"), "Place")).collect();
+    assert!(
+        !flat(many).rail_by_default(&theme),
+        "more than seven places"
+    );
+    let headed = NavList::new(vec![NavSection::new("p", "Library", six.clone())]);
+    assert!(!headed.rail_by_default(&theme), "a heading");
+    let mut iconless = six.clone();
+    iconless[0] = NavItem::new("home", "Home");
+    assert!(
+        !flat(iconless).rail_by_default(&theme),
+        "a place without an icon"
+    );
+    let mut nested = six.clone();
+    nested[0] = place("home", "Home").children(vec![place("a", "A")]);
+    assert!(!flat(nested).rail_by_default(&theme), "nesting");
+    let mut long = six.clone();
+    long[0] = place("long", "Keyboard shortcuts and input methods");
+    assert!(
+        !flat(long).rail_by_default(&theme),
+        "a label too long for a tile"
+    );
+    assert!(
+        !NavList::new(mailboxes()).rail_by_default(&theme),
+        "mailboxes"
+    );
+
+    // A list is wider than its rail, and the switch keeps what is chosen.
+    let mut list = flat(six).selected("queue");
+    assert!(list.list_fit(&theme) > list.rail_fit(&theme));
+    assert!(!list.tree().is_rail());
+    assert!(list.set_rail(true));
+    assert!(list.tree().is_rail() && !list.set_rail(true));
+    assert_eq!(list.selected_id().as_deref(), Some("queue"));
+    assert!(list.set_rail(false));
+    assert_eq!(list.selected_id().as_deref(), Some("queue"));
 }
