@@ -18,7 +18,7 @@ pub const IMPORT_ROW_ID: &str = "imager.import";
 /// ([`ImportProjection`]) as it stands afterwards; a job answers when its
 /// work settled.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "imager.import", device_only)]
+#[effect(operation = "imager.import")]
 pub enum ImportEffect {
     /// Read current import status.
     ///
@@ -32,10 +32,10 @@ pub enum ImportEffect {
     #[effect(view, returns, kind = "read")]
     OpenStore,
     /// Choose source folder.
-    #[effect(returns, kind = "read")]
+    #[effect(attended, returns, kind = "read")]
     ChooseSource,
     /// Choose destination folder.
-    #[effect(returns, kind = "read")]
+    #[effect(attended, returns, kind = "read")]
     ChooseDestination,
     /// Clear folder selection.
     #[effect(returns, kind = "read")]
@@ -95,7 +95,7 @@ pub enum ImportEffect {
         folder_id: String,
     },
     /// Choose another destination.
-    #[effect(job, cancellable)]
+    #[effect(attended, job, cancellable)]
     ChooseFolderDestination {
         #[param("Id of the saved folder choice")]
         folder_id: String,

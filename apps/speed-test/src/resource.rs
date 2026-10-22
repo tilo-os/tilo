@@ -89,7 +89,7 @@ impl SpeedTest {
 /// measures this device's own connection and shares nothing, so a guest in
 /// a public room runs it as its owner does.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.speed-test.run", device_only)]
+#[effect(operation = "so.tilo.speed-test.run")]
 pub enum SpeedEffect {
     /// Run speed test.
     #[effect(job, cancellable, own_device)]

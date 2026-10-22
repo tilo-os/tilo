@@ -106,7 +106,7 @@ use crate::resource::Imager;
 use model::{Destination, Identity, Journey, Page};
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "imager.installer-preview", device_only)]
+#[effect(operation = "imager.installer-preview")]
 pub enum InstallerPreviewEffect {
     /// Read the preview's choices, excluding secrets.
     #[effect(returns, kind = "read")]
@@ -115,7 +115,7 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     FindWindowsRoots,
     /// Select an exact folder through the platform picker.
-    #[effect(returns)]
+    #[effect(attended, returns)]
     ChooseWindowsRoot { role: String },
     /// Independently grant one exact Windows root, including redirected libraries.
     #[effect(returns)]
@@ -159,7 +159,7 @@ pub enum InstallerPreviewEffect {
         value: String,
     },
     /// Choose the mounted backup destination using the platform picker.
-    #[effect(returns)]
+    #[effect(attended, returns)]
     ChooseWindowsExport,
     /// Export verified local copies and encrypted suggestions to a granted directory.
     #[effect(returns)]
@@ -180,7 +180,7 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     RetryInstallerPreparation,
     /// Choose your avatar with the system file picker.
-    #[effect(returns)]
+    #[effect(attended, returns)]
     ChoosePreviewAvatar,
     /// Select an already granted local avatar file without opening a picker.
     #[effect(returns)]
@@ -189,7 +189,7 @@ pub enum InstallerPreviewEffect {
         source_file: String,
     },
     /// Choose the existing identity backup through the system file picker.
-    #[effect(returns)]
+    #[effect(attended, returns)]
     ChooseExistingIdentityBackup,
     /// Select an already granted backup file without opening a picker.
     #[effect(returns)]
@@ -235,7 +235,7 @@ pub enum InstallerPreviewEffect {
         architecture: String,
     },
     /// Choose the hardware report produced on the other computer.
-    #[effect(returns)]
+    #[effect(attended, returns)]
     ChooseTargetHardwareReport,
     /// Read a hardware report produced on the other computer from this exact file.
     #[effect(returns)]
@@ -379,7 +379,7 @@ pub enum InstallerPreviewEffect {
         target_home: String,
     },
     /// Begin a provider's consent flow; returns its public consent URL.
-    #[effect(returns)]
+    #[effect(attended, returns)]
     ConnectAccount {
         provider: String,
         candidate: Option<String>,
@@ -406,7 +406,7 @@ pub enum InstallerPreviewEffect {
         source: String,
     },
     /// Request a real platform grant for one discovered mounted Home location.
-    #[effect(returns)]
+    #[effect(attended, returns)]
     GrantMountedHomeLocation { location: String },
     /// Reattest all approved locations and retain original-source permission.
     #[effect(returns)]
@@ -472,7 +472,7 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     CheckBelongings,
     /// Choose a recovery directory using the ordinary folder picker for an exact Windows root.
-    #[effect(returns)]
+    #[effect(attended, returns)]
     ChooseRecoveryDestination { source_id: String },
     /// Select an exact recovery directory without opening a picker; creates a private durable receipt directory beside the output.
     #[effect(returns)]
@@ -532,7 +532,7 @@ pub enum InstallerPreviewEffect {
     PrepareBelongings,
     /// Review actual system capacity and bind the prepared selected Apps
     /// declaration without admitting or starting installation.
-    #[effect(device_only, returns)]
+    #[effect(returns)]
     ReviewPreparedBelongings { target_gib: u64 },
 
     /// Prepare the reviewed installation on this computer, without writing its disk.

@@ -419,7 +419,7 @@ impl InputSections {
 #[effect(operation = "settings.effect")]
 pub enum InputEffect {
     /// Read configured input sources and the mounted Add language selector.
-    #[effect(returns, idempotent, device_only, kind = "read")]
+    #[effect(returns, idempotent, kind = "read")]
     InspectInputSources {
         query: Option<String>,
         page: Option<u32>,
@@ -443,10 +443,10 @@ pub enum InputEffect {
         source: String,
     },
     /// Inspect this device's mounted keyboard map and current physical feedback.
-    #[effect(returns, idempotent, device_only, kind = "read")]
+    #[effect(returns, idempotent, kind = "read")]
     InspectKeyboardMap,
     /// Read discovered keyboard scopes and their ordered configured sources.
-    #[effect(returns, idempotent, device_only, kind = "read")]
+    #[effect(returns, idempotent, kind = "read")]
     InspectKeyboardSources,
     /// Choose the discovered keyboard assignment to inspect and edit.
     #[effect(idempotent)]
@@ -3002,7 +3002,7 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_map_read_is_published_device_scoped_and_never_changes_preferences() {
+    fn keyboard_map_read_is_published_as_a_read_and_never_changes_preferences() {
         use ui::tilo_resource::Effect as _;
         let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
         let effect = InputEffect::InspectKeyboardMap;
@@ -3012,13 +3012,6 @@ mod tests {
             .find(|action| action.address.action == effect.id())
             .unwrap();
         assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
-        assert!(
-            action
-                .contract
-                .tags
-                .iter()
-                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
-        );
         let address = action.address.clone();
         let before = app.settings::<InputPrefs>().get();
         let value = app
@@ -3027,16 +3020,6 @@ mod tests {
             .unwrap();
         assert_eq!(value["page_visible"], false);
         assert_eq!(value["pressed_physical_keys"], serde_json::json!([]));
-        assert_eq!(app.settings::<InputPrefs>().get(), before);
-        let denied = app.call_by(
-            ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
-            &address.resource,
-            &address.action,
-            serde_json::json!({}),
-        );
-        assert!(
-            matches!(denied, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only")
-        );
         assert_eq!(app.settings::<InputPrefs>().get(), before);
     }
 
@@ -3356,13 +3339,6 @@ mod input_inspection_tests {
             .find(|action| action.address.action.ends_with("inspect-input-sources"))
             .expect("the installed catalogue and active source must be readable through Settings' normal door");
         assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
-        assert!(
-            action
-                .contract
-                .tags
-                .iter()
-                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
-        );
         let before = app.settings::<InputPrefs>().get();
         let value = app
             .call_on(
@@ -3383,16 +3359,6 @@ mod input_inspection_tests {
         assert!(
             value["add_picker"].is_null(),
             "an off-page selector must not pretend to be mounted"
-        );
-        assert_eq!(app.settings::<InputPrefs>().get(), before);
-        let refusal = app.call_by(
-            ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
-            &action.address.resource,
-            &action.address.action,
-            serde_json::json!({}),
-        );
-        assert!(
-            matches!(refusal, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only")
         );
         assert_eq!(app.settings::<InputPrefs>().get(), before);
     }

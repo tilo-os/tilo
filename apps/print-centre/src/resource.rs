@@ -113,7 +113,7 @@ impl PrintDefaults {
 /// What Print Centre does on this machine: the pages it shows, and the work
 /// it asks of CUPS and SANE.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "print-centre.effects", device_only)]
+#[effect(operation = "print-centre.effects")]
 pub enum PrintCentreEffect {
     /// Refresh printers and documents.
     #[effect(kind = "read")]
@@ -267,12 +267,12 @@ pub enum PrintCentreEffect {
     /// Export scanned page.
     ///
     /// Asks where to save the page under review as an image.
-    #[effect(job)]
+    #[effect(attended, job)]
     SaveScannedPage,
     /// Save scanned document.
     ///
     /// Asks where to save every scanned page as one PDF with its text.
-    #[effect(job)]
+    #[effect(attended, job)]
     SaveScannedDocument,
 }
 

@@ -19,7 +19,7 @@ pub const SETUP_ROW_ID: &str = "imager.setup";
 /// Guided setup's effects. Each answers with the setup's path-free status
 /// ([`SetupProjection`]) as it stands afterwards.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "imager.setup", device_only)]
+#[effect(operation = "imager.setup")]
 pub enum SetupEffect {
     /// Read setup status.
     #[effect(returns, kind = "read")]
@@ -83,7 +83,7 @@ pub enum SetupEffect {
         suggestion: String,
     },
     /// Choose a folder.
-    #[effect(returns, kind = "read")]
+    #[effect(attended, returns, kind = "read")]
     ChooseFolder,
     /// Show or hide folder help.
     #[effect(returns, kind = "read")]

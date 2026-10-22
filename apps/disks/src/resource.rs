@@ -86,7 +86,7 @@ impl Disks {
 /// name their target by its kernel name (`sda`, `nvme0n1p2`) and are
 /// checked against the latest probe before anything runs.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "disks.device", device_only)]
+#[effect(operation = "disks.device")]
 pub enum DisksEffect {
     /// Rescan storage devices.
     #[effect(kind = "read")]

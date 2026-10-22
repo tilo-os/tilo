@@ -46,7 +46,7 @@ impl Monitor {}
 /// (its PID with its kernel start time), so a delayed invocation never
 /// reaches a process that reused the PID.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "monitor.effect", device_only)]
+#[effect(operation = "monitor.effect")]
 pub enum MonitorEffect {
     /// Refresh processes.
     #[effect(kind = "read")]

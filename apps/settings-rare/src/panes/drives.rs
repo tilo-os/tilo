@@ -62,18 +62,18 @@ const MAX_GRANT_BYTES: usize = 64;
 #[effect(operation = "settings.effect")]
 pub enum DrivesEffect {
     /// Read the remembered drives again.
-    #[effect(job, idempotent, device_only)]
+    #[effect(job, idempotent)]
     RefreshDrives,
     /// Forget a remembered drive: it is closed if open, and asked about
     /// again the next time.
-    #[effect(job, row, device_only, label = "Forget")]
+    #[effect(job, row, label = "Forget")]
     ForgetDrive {
         #[param("The remembered drive, as the drive list names it")]
         grant: String,
     },
     /// Open a drive inside this computer safely (a confined driver, a bit
     /// slower) or with the faster kernel driver, from its next opening on.
-    #[effect(job, row, idempotent, device_only)]
+    #[effect(job, row, idempotent)]
     SetDriveOpensSafely {
         #[param("The remembered drive, as the drive list names it")]
         grant: String,
@@ -803,15 +803,6 @@ mod tests {
             assert_eq!(rows.len(), 2);
         })
         .unwrap();
-        app.effect_by(
-            "remote-collaborator",
-            &SettingsEffect::from(DrivesEffect::SetDriveOpensSafely {
-                grant: "a1".into(),
-                safely: true,
-            }),
-        )
-        .expect_err("a remote collaborator changes no drive of this device");
-        assert_eq!(running.grants.load(UID).unwrap()[0].mode, Mode::Open);
         app.effect_on(
             "settings.drive:a1",
             &SettingsEffect::from(DrivesEffect::ForgetDrive { grant: "a1".into() }),

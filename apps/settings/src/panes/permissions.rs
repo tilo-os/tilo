@@ -57,12 +57,7 @@ pub enum PermissionsEffect {
     #[effect(job, label = "Open workspace privacy")]
     OpenWorkspacePrivacy,
     /// Let an application use the saved passwords and keys again, or stop it.
-    #[effect(
-        job,
-        idempotent,
-        device_only,
-        label = "Set an app's access to saved secrets"
-    )]
+    #[effect(job, idempotent, label = "Set an app's access to saved secrets")]
     SetSecretsAccess {
         #[param("The application identity the secret store recorded")]
         app: String,
@@ -70,13 +65,13 @@ pub enum PermissionsEffect {
         allowed: bool,
     },
     /// Remove an application's saved secrets and its record.
-    #[effect(job, device_only, label = "Forget an app's saved secrets")]
+    #[effect(job, label = "Forget an app's saved secrets")]
     ForgetSecrets {
         #[param("The application identity the secret store recorded")]
         app: String,
     },
     /// Stop a terminal tab controlling the desktop beyond its workspace.
-    #[effect(job, device_only, label = "Stop a tab controlling the desktop")]
+    #[effect(job, label = "Stop a tab controlling the desktop")]
     StopDesktopControl {
         #[param("The grant, as the desktop listed it")]
         grant: String,

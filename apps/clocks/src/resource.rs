@@ -17,7 +17,7 @@ use crate::schedule::OnThisDevice;
 /// What changes only this device: which clocks float above other windows
 /// on its screen.
 #[derive(Clone, Debug, Effect)]
-#[effect(operation = "clocks.effects", device_only)]
+#[effect(operation = "clocks.effects")]
 pub enum ClocksEffect {
     /// Open this alarm on this device.
     OpenAlarm {

@@ -37,10 +37,10 @@ use ui::widget::{Button, Row, Widget};
 #[effect(operation = "settings.effect")]
 pub enum DiskUnlockEffect {
     /// Read this device's enrolled volumes again.
-    #[effect(job, idempotent, device_only)]
+    #[effect(job, idempotent)]
     RefreshDiskUnlock,
     /// Choose the whole list of Wi-Fi connections a volume may use at boot.
-    #[effect(job, row, idempotent, device_only)]
+    #[effect(job, row, idempotent)]
     SetDiskUnlockNetworks {
         #[param("The enrolled volume's LUKS UUID")]
         volume: String,
@@ -1035,37 +1035,6 @@ mod tests {
             ),
             Err(t("settings-disk-unlock-bad-request"))
         );
-        assert!(authority.calls.lock().unwrap().is_empty());
-    }
-    #[test]
-    fn disk_unlock_effects_refuse_remote_callers_without_enrolling() {
-        let authority = FakeAuthority::new(Ok(vec![volume(Sealing::Tpm2, &["Home"])]));
-        let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
-        app.surface::<SettingsApp, _>(|app| {
-            assert!(
-                crate::panes::disk_unlock::area(app)
-                    .unwrap()
-                    .model
-                    .get()
-                    .is_none()
-            );
-            assert!(
-                crate::panes::disk_unlock::area(app)
-                    .unwrap()
-                    .rows()
-                    .is_empty()
-            );
-            let mut model = DiskUnlockModel::with_authority(app.host().clone(), authority.clone());
-            model.settle();
-            *crate::panes::disk_unlock::area(app)
-                .unwrap()
-                .model()
-                .borrow_mut() = model;
-        })
-        .unwrap();
-        let operation = SettingsEffect::from(DiskUnlockEffect::RefreshDiskUnlock);
-        app.effect_by("remote-collaborator", &operation)
-            .expect_err("device-only read must refuse a remote collaborator");
         assert!(authority.calls.lock().unwrap().is_empty());
     }
 }
