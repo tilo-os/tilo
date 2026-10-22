@@ -1897,17 +1897,6 @@ impl NavShell {
         self
     }
 
-    /// Put the header row in the window's bar: while the window is
-    /// maximized, the row hides with the window's controls and appears
-    /// with them over the top of the content when the person reaches for
-    /// the bar (`widget::top_edge_reveal`), as one bar. In a tiled window
-    /// the row stands above the content as usual.
-    #[must_use]
-    pub fn with_header_in_window_bar(self) -> Self {
-        self.inputs.borrow_mut().header_in_bar = true;
-        self
-    }
-
     /// Start with the sidebar hidden (where it docks).
     #[must_use]
     pub fn with_sidebar_hidden(self) -> Self {
