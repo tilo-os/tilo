@@ -125,6 +125,46 @@ impl SessionLifetime {
         Self { socket }
     }
 
+    /// The lifetime a supervisor handed over as a descriptor, once it is
+    /// checked to be a Unix stream socket.
+    ///
+    /// Its peer may have closed already (the guest ended at once): that is
+    /// the lifetime's answer, read like any other end of the session, so the
+    /// socket's own address and type are checked, never its peer's, which
+    /// macOS stops answering for once the peer is gone.
+    ///
+    /// # Errors
+    /// Refuses a descriptor that is not a Unix stream socket.
+    #[cfg(unix)]
+    pub fn adopt(descriptor: std::os::fd::OwnedFd) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let socket = std::os::unix::net::UnixStream::from(descriptor);
+        socket.local_addr()?;
+        let mut kind: libc::c_int = 0;
+        let mut size = libc::socklen_t::try_from(std::mem::size_of_val(&kind))
+            .map_err(std::io::Error::other)?;
+        // SAFETY: a live descriptor and an output buffer of the size passed.
+        if unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_TYPE,
+                (&raw mut kind).cast(),
+                &raw mut size,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        if kind == libc::SOCK_STREAM {
+            Ok(Self { socket })
+        } else {
+            Err(std::io::Error::other(
+                "a session lifetime is a stream socket",
+            ))
+        }
+    }
+
     /// Duplicate the connection for a reader that observes the peer's lifetime.
     /// The duplicate does not acquire responsibility for ending the session.
     ///

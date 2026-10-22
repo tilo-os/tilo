@@ -141,7 +141,7 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
         );
     }
 
-    // Case `pty_reader_retries_interrupts_and_linux_handoff_eio`.
+    // Case `pty_reader_retries_interrupts_and_the_handoff_without_a_slave`.
     {
         use crate::inner::{PtyReadDisposition, classify_pty_read};
 
@@ -168,7 +168,17 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
         );
         assert_eq!(
             classify_pty_read(&Ok(0), || true),
-            PtyReadDisposition::Closed
+            if cfg!(target_vendor = "apple") {
+                PtyReadDisposition::Retry
+            } else {
+                PtyReadDisposition::Closed
+            },
+            "macOS reports a master without a slave as the end of the file, Linux as EIO"
+        );
+        assert_eq!(
+            classify_pty_read(&Ok(0), || false),
+            PtyReadDisposition::Closed,
+            "once the session's lifetime socket closes, the end of the file is the guest's exit"
         );
         assert_eq!(
             classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF)), || {

@@ -218,6 +218,12 @@ fn an_invalid_session_reply_closes_both_received_rights() {
         assert_eq!(read_json(&mut reader)["op"], "open-session");
         let (mut master_peer, master) = UnixStream::pair().unwrap();
         let (mut lease_peer, lease) = UnixStream::pair().unwrap();
+        // Before the rights leave: macOS refuses to set a timeout on a
+        // socket whose peer has already closed.
+        for peer in [&master_peer, &lease_peer] {
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+        }
         runtime_portal::fd_transport::send_with_fds(
             &server,
             b"{\"result\":\"session\",\"protocol\":1}\n",
@@ -227,8 +233,6 @@ fn an_invalid_session_reply_closes_both_received_rights() {
         drop(master);
         drop(lease);
         for peer in [&mut master_peer, &mut lease_peer] {
-            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
-                .unwrap();
             assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
         }
     });
