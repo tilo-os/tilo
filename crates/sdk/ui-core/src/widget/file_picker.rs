@@ -73,6 +73,7 @@ use crate::widget::file_table::{
 use crate::widget::{Breadcrumb, SearchField, TextInput, Widget};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Token-derived sizes the picker lays out with. Resolved from the theme in
 /// `build_layout` and refreshed at paint, cached because
@@ -412,9 +413,27 @@ pub struct Requester {
 }
 
 /// The system search the host hands the picker: the paths matching a query
-/// among the places the person can reach. The picker shows only those its
-/// roots allow, and checks a chosen one again before answering.
-pub type PickerSearch = Rc<dyn Fn(&str) -> Vec<PathBuf>>;
+/// among the places the person can reach. The picker calls it on a worker
+/// thread, never on the UI thread, shows only what its roots allow, and
+/// checks a chosen one again before answering.
+pub type PickerSearch = Arc<dyn Fn(&str) -> Vec<PathBuf> + Send + Sync>;
+
+/// Paths looked up off the UI thread, each with what the filesystem says
+/// about it.
+type Found = Vec<(PathBuf, fs::Metadata)>;
+
+/// A lookup on its way: Recent's paths or a search, read on a worker
+/// thread, for the listing that asked.
+struct Lookup {
+    listing: Listing,
+    found: std::sync::mpsc::Receiver<Found>,
+}
+
+/// What a lookup reads: paths already known (Recent), or a search.
+enum Source {
+    Paths(Vec<PathBuf>),
+    Search(PickerSearch, String),
+}
 
 /// Most rows a search across places shows.
 pub const SEARCH_LIMIT: usize = 200;
@@ -583,6 +602,10 @@ pub struct FilePicker {
     recent: Vec<PathBuf>,
     /// The system search across the places the person can reach.
     search: Option<PickerSearch>,
+    /// Wakes the host when a lookup finishes, so it shows without waiting
+    /// for the next input.
+    waker: Option<std::task::Waker>,
+    lookup: Option<Lookup>,
 
     filters: Vec<FileFilter>,
     active_filter: usize,
@@ -721,6 +744,8 @@ impl FilePicker {
             accessible_roots: roots,
             recent: Vec::new(),
             search: None,
+            waker: None,
+            lookup: None,
             filters: vec![FileFilter::all()],
             active_filter: 0,
             // A file name is not prose: no spelling marks, and never an
@@ -789,6 +814,14 @@ impl FilePicker {
     #[must_use]
     pub fn with_search(mut self, search: Option<PickerSearch>) -> Self {
         self.search = search;
+        self
+    }
+
+    /// What wakes the host when Recent or a search has been read on its
+    /// worker thread; without one the result shows at the next frame.
+    #[must_use]
+    pub fn with_waker(mut self, waker: Option<std::task::Waker>) -> Self {
+        self.waker = waker;
         self
     }
 
@@ -1180,15 +1213,15 @@ impl FilePicker {
         }
     }
 
-    /// Entries for `paths` from elsewhere (Recent, a search): each only if
-    /// it still exists, the roots allow it and the mode and filter take it.
-    fn entries_for(&self, paths: impl IntoIterator<Item = PathBuf>) -> Vec<FilePickerEntry> {
+    /// Entries for paths looked up elsewhere (Recent, a search): each only
+    /// if it still exists, the roots allow it and the mode and filter take
+    /// it.
+    fn entries_from(&self, found: Found) -> Vec<FilePickerEntry> {
         let mut seen = std::collections::HashSet::new();
-        paths
+        found
             .into_iter()
-            .filter(|path| self.can_navigate_to(path) && seen.insert(path.clone()))
-            .filter_map(|path| {
-                let meta = fs::metadata(&path).ok()?;
+            .filter(|(path, _)| self.can_navigate_to(path) && seen.insert(path.clone()))
+            .filter_map(|(path, meta)| {
                 let is_dir = meta.is_dir();
                 self.listable(&path, is_dir)
                     .then(|| Self::entry_for(path, is_dir, Some(&meta)))
@@ -1197,9 +1230,68 @@ impl FilePicker {
             .collect()
     }
 
+    /// Read `source` on a worker thread for the listing in view; its rows
+    /// arrive through [`Self::poll_lookups`]. The filesystem and the search
+    /// index are never read on the UI thread.
+    fn look_up(&mut self, source: Source) {
+        // The answer wakes the window's wake scope, and the host's own
+        // waker when it gave one (a compositor has no scope).
+        let (send, found) = crate::wake::waking_channel();
+        let roots = self.accessible_roots.clone();
+        let waker = self.waker.clone();
+        let spawned =
+            crate::background::Background::current().spawn("tilo-file-picker-lookup", move || {
+                let paths = match source {
+                    Source::Paths(paths) => paths,
+                    Source::Search(search, query) => search(&query),
+                };
+                let found: Found = paths
+                    .into_iter()
+                    .filter(|path| roots.iter().any(|root| path.starts_with(root)))
+                    .take(SEARCH_LIMIT.saturating_mul(2))
+                    .filter_map(|path| fs::metadata(&path).ok().map(|meta| (path, meta)))
+                    .collect();
+                let _ = send.send(found);
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
+            });
+        self.lookup = spawned.is_ok().then(|| Lookup {
+            listing: self.listing.clone(),
+            found,
+        });
+    }
+
+    /// Whether Recent or a search is still being read.
+    fn looking_up(&self) -> bool {
+        self.lookup.is_some()
+    }
+
+    /// Show what a finished lookup found. Answers whether the listing
+    /// changed; the host calls it each frame it is woken.
+    pub fn poll_lookups(&mut self) -> bool {
+        let Some(lookup) = self.lookup.as_ref() else {
+            return false;
+        };
+        let found = match lookup.found.try_recv() {
+            Ok(found) => found,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Vec::new(),
+        };
+        let asked = self.lookup.take().map(|lookup| lookup.listing);
+        if asked.as_ref() != Some(&self.listing) {
+            return false;
+        }
+        let selected = self.selected_paths();
+        self.listed = self.entries_from(found);
+        self.show_listed();
+        self.reselect(&selected);
+        true
+    }
+
     /// Read the listing again: the folder in view, Recent or the search.
     pub fn refresh_entries(&mut self) {
-        self.listed = match &self.listing {
+        self.listed = match self.listing.clone() {
             Listing::Folder => {
                 let mut listed = Vec::new();
                 if let Ok(read) = std::fs::read_dir(&self.current_dir) {
@@ -1218,16 +1310,25 @@ impl FilePicker {
                 }
                 listed
             }
-            Listing::Recent => self.entries_for(self.recent.clone()),
+            Listing::Recent => {
+                self.look_up(Source::Paths(self.recent.clone()));
+                Vec::new()
+            }
             Listing::Search(query) => {
-                let found = self
-                    .search
-                    .as_ref()
-                    .map(|search| search(query))
-                    .unwrap_or_default();
-                self.entries_for(found)
+                if let Some(search) = self.search.clone() {
+                    self.look_up(Source::Search(search, query));
+                }
+                Vec::new()
             }
         };
+        if self.listing == Listing::Folder {
+            self.lookup = None;
+        }
+        self.show_listed();
+    }
+
+    /// Sort, narrow and label what is listed.
+    fn show_listed(&mut self) {
         self.sort_listed();
         self.narrow();
         self.rebuild_crumbs();
@@ -2610,6 +2711,7 @@ impl Widget for FilePicker {
         presence: &PresenceCtx,
     ) {
         self.adopt_theme(theme);
+        self.poll_lookups();
         self.apply_layout_helper();
         self.measure_text(text_renderer, theme);
         // The system sheet: the one floating card, on its opaque ground
@@ -3352,23 +3454,31 @@ impl FilePicker {
             .disabled(!self.can_go_up());
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &up);
 
-        // The path bar is a field-like well, so the trail reads as a place
-        // rather than as loose text.
+        // The path bar is a field in the same row as the search field, so
+        // it is the same raised well with no edge, and the trail reads as a
+        // place rather than as loose text. Forced colours and a refused
+        // path draw its outline.
         let bar = self.path_rect();
         let well = RoundedRect::from_rect(bar, f64::from(tokens.radii.control));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.base,
-            None,
-            &well,
-        );
-        let edge = if self.location_invalid {
-            tokens.colors.semantic.danger
-        } else {
-            crate::surface::edge_on(tokens.colors.surfaces.base)
-        };
-        scene.stroke(&Stroke::new(1.0), transform, edge, None, &well);
+        let fill = tokens.colors.surfaces.raised;
+        scene.fill(Fill::NonZero, transform, fill, None, &well);
+        if self.location_invalid {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                tokens.colors.semantic.danger,
+                None,
+                &well,
+            );
+        } else if theme.colors_are_forced() {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::surface::edge_on(fill),
+                None,
+                &well,
+            );
+        }
         if self.has_keyboard_focus && self.focus == Some(PickerFocus::Location) {
             scene.stroke(
                 &Stroke::new(2.0),
@@ -3499,7 +3609,7 @@ impl FilePicker {
         self.table
             .draw(scene, transform, text_renderer, theme, presence);
         let list = self.list_rect();
-        if self.entries.is_empty() {
+        if self.entries.is_empty() && !self.looking_up() {
             let key = match &self.listing {
                 Listing::Recent => "widget-filepicker-recent-empty",
                 Listing::Search(_) => "widget-filepicker-no-matches",
