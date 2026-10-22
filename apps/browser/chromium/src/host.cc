@@ -164,6 +164,11 @@ void DevToolsCall(CefRefPtr<CefDictionaryValue> d,int tab);
 bool closing=false;
 bool clear_on_exit=false;
 bool private_mode=false;
+// The host shows sealed documents (a mail): its pages never navigate. A
+// followed link becomes an open_tab request for the embedder; everything
+// else that would leave the document is refused.
+bool sealed_documents=false;
+bool SealedDocumentUrl(const std::string& url) { return url.rfind("data:",0)==0 || url=="about:blank"; }
 std::string service_session_id;
 bool service_session_consumed=false;
 // Extension management over Chromium's DevTools pipe (see devtools_bridge.h).
@@ -342,7 +347,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -378,14 +383,28 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     Event("closed");clients.erase(id_);PublishDownloadRuntime();
     if(closing && clients.empty())CefQuitMessageLoop();
   }
-  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool redirect) override {
+  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool user_gesture,bool redirect) override {
+    if(sealed_documents && !SealedDocumentUrl(request->GetURL().ToString())) {
+      // A link the person followed opens with the embedder; a refresh, a
+      // redirect or a frame goes nowhere.
+      if(frame->IsMain() && user_gesture && !redirect) OpenTab(request->GetURL(),false);
+      return true;
+    }
     if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
-  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
+  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
+    if(sealed_documents && !user_gesture) return true;
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
   void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || url==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(url.ToString()); } main_navigation_finished_=false;++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false); } }
   void OnTitleChange(CefRefPtr<CefBrowser>,const CefString& title) override { StringEvent("title","title",title); }
+  // The address under the pointer, for a sealed document's embedder to
+  // show before a link is followed.
+  void OnStatusMessage(CefRefPtr<CefBrowser>,const CefString& value) override {
+    if(!sealed_documents) return;
+    auto text=value.ToString();if(text.length()>8192) text.clear();
+    StringEvent("link_status","url",text);
+  }
   void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,const std::vector<CefString>& urls) override {
     if(urls.empty() || urls.front().ToString().size()>8192) return;
     browser->GetHost()->DownloadImage(urls.front(),true,64,false,new FaviconDownload(id_,favicon_generation_,browser->GetMainFrame()->GetURL()));
@@ -481,6 +500,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_RENDERER) return false;
+    if(message->GetName()=="tilo.selection_text") {
+      auto args=message->GetArgumentList();
+      if(args->GetSize()!=2 || args->GetType(0)!=VTYPE_INT || args->GetType(1)!=VTYPE_STRING) return true;
+      auto d=CefDictionaryValue::Create();d->SetInt("request_id",args->GetInt(0));d->SetString("text",args->GetString(1));Event("selection_text",d);return true;
+    }
     if(message->GetName()=="tilo.credential_result") {
       ReceiveCredentialResult(browser,frame,message->GetArgumentList());return true;
     }
@@ -696,6 +720,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
+    else if(op=="selection_text") {
+      // The renderer reads the selection; the embedder puts it on the
+      // system clipboard, which an offscreen engine cannot reach.
+      auto frame=browser_->GetFocusedFrame();if(!frame) frame=browser_->GetMainFrame();
+      auto message=CefProcessMessage::Create("tilo.selection");message->GetArgumentList()->SetInt(0,d->GetInt("request_id"));
+      frame->SendProcessMessage(PID_RENDERER,message);
+    }
     else if(op=="try_close_tab") {DetachVisible();}
     else if(op=="close_tab") {CloseNative();}
     else if(op=="navigate") {TraceGeometry("navigate-load-url",id_);frame->LoadURL(d->GetString("url"));}
@@ -1215,6 +1246,12 @@ void ApplyPrivacyDefaults(CefRefPtr<CefRequestContext> context) {
   set("profile.cookie_controls_mode",cookies);
   auto webrtc=CefValue::Create();webrtc->SetString("default_public_interface_only");
   set("webrtc.ip_handling_policy",webrtc);
+  if(sealed_documents) {
+    // chrome_browser_net::NETWORK_PREDICTION_NEVER: no DNS or preconnect
+    // for a sealed document's links.
+    auto prediction=CefValue::Create();prediction->SetInt(2);
+    set("net.network_prediction_options",prediction);
+  }
 }
 class App final : public CefApp,public CefBrowserProcessHandler {
  public:
@@ -1414,6 +1451,11 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(size_t i=0;i<styles->GetSize();++i)if(styles->GetType(i)!=VTYPE_STRING || styles->GetString(i).empty() || styles->GetString(i).length()>64)return false;
     return true;
   }
+  if(op=="selection_text") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
+    return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0;
+  }
   if(op=="document_size") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="enabled")return false;
@@ -1519,7 +1561,7 @@ void CloseHost() {
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
   std::string profile;
-  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg=="--tilo-audio-bridge") audio_bridge=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg=="--tilo-sealed-documents") sealed_documents=true;if(arg=="--tilo-audio-bridge") audio_bridge=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
   if(private_mode && !service_session_id.empty())return 2;
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
   std::filesystem::create_directories(profile);

@@ -130,6 +130,14 @@ pub trait Findable {
     fn content_revision(&self) -> u64 {
         0
     }
+
+    /// Where a view whose engine finds on its own (see [`Self::step`]) says
+    /// its matches are, when it said so since the last call: `(total,
+    /// current)`, `current` 0-based. The bar's counter follows on its next
+    /// [`FindBar::drive`].
+    fn take_engine_results(&mut self) -> Option<(usize, Option<usize>)> {
+        None
+    }
 }
 
 /// Paint one match highlight over `rect`, the span of the matched glyphs —
@@ -631,6 +639,9 @@ impl FindBar {
         }
         if let Some(step) = pending.step {
             self.session.step(target, step == Step::Next);
+        }
+        if let Some((total, current)) = target.take_engine_results() {
+            self.session.set_results(total, current);
         }
         self.update_count();
     }
@@ -1929,6 +1940,8 @@ mod host_driven_tests {
     struct Engine {
         steps: Vec<bool>,
         queries: Vec<String>,
+        /// What the engine said since the bar last asked.
+        reported: Option<(usize, Option<usize>)>,
     }
 
     impl Findable for Engine {
@@ -1940,6 +1953,9 @@ mod host_driven_tests {
         fn step(&mut self, forward: bool) -> bool {
             self.steps.push(forward);
             true
+        }
+        fn take_engine_results(&mut self) -> Option<(usize, Option<usize>)> {
+            self.reported.take()
         }
     }
 
@@ -2050,6 +2066,29 @@ mod host_driven_tests {
         );
         bar.set_results(7, Some(3));
         assert_eq!(bar.position(), Some((4, 7)));
+    }
+
+    #[test]
+    fn an_engine_says_where_it_landed_through_the_view() {
+        let mut page = Engine::default();
+        let mut bar = FindBar::new();
+        bar.set_query("tilo");
+        bar.drive(&mut page);
+        assert_eq!(bar.position(), None, "nothing known until the engine says");
+        page.reported = Some((4, Some(0)));
+        bar.drive(&mut page);
+        assert_eq!(bar.position(), Some((1, 4)));
+        bar.next();
+        page.reported = Some((4, Some(1)));
+        bar.drive(&mut page);
+        assert_eq!(page.steps, [true]);
+        assert_eq!(bar.position(), Some((2, 4)));
+        bar.drive(&mut page);
+        assert_eq!(
+            bar.position(),
+            Some((2, 4)),
+            "a quiet engine changes nothing"
+        );
     }
 
     #[test]

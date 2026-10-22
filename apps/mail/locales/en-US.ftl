@@ -71,3 +71,17 @@ mail-attach = Attached { $name } to the draft
 mail-mail-server = Recorded how a mail server took a change
 
 mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
+
+## Reader: an HTML message's remote content, links and format
+mail-remote-blocked = Remote images aren’t loaded
+mail-remote-load = Load images
+mail-remote-always = Always for this sender
+mail-remote-loaded = Remote images are loaded for this message
+mail-remote-sender-loads = Remote images from this sender always load
+mail-remote-stop = Stop loading them
+mail-link-open = Open link
+mail-link-copy = Copy link address
+mail-copy = Copy
+mail-select-all = Select all
+mail-show-plain = Show plain text
+mail-show-formatted = Show formatted

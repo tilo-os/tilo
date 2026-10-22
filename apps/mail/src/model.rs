@@ -197,6 +197,10 @@ pub struct Attachment {
     /// ([`crate::store`]), to be read when the attachment is opened or saved.
     #[serde(default)]
     pub kept: bool,
+    /// The `Content-ID` of a part the message's HTML shows in place
+    /// (`cid:`): an image of the message rather than a file attached to it.
+    #[serde(default)]
+    pub inline_id: Option<String>,
 }
 
 impl Attachment {
@@ -210,6 +214,7 @@ impl Attachment {
             content_id: None,
             content: Vec::new(),
             kept: false,
+            inline_id: None,
         }
     }
 
@@ -227,6 +232,7 @@ impl Attachment {
             content_id: None,
             content,
             kept: false,
+            inline_id: None,
         }
     }
 
@@ -342,7 +348,16 @@ impl Message {
     }
 
     pub fn has_attachments(&self) -> bool {
-        !self.attachments.is_empty()
+        self.shown_attachments().next().is_some()
+    }
+
+    /// The files attached to the message, with their indices: every
+    /// attachment but the images its HTML shows in place.
+    pub fn shown_attachments(&self) -> impl Iterator<Item = (usize, &Attachment)> {
+        self.attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| attachment.inline_id.is_none())
     }
 }
 

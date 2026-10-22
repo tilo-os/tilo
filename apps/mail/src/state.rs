@@ -121,6 +121,23 @@ impl CtxAction {
     }
 }
 
+/// What the reader's menu offers on the open message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReaderChoice {
+    /// Open the link under the pointer in the Browser.
+    OpenLink(String),
+    /// Put the link's address on the clipboard.
+    CopyLink(String),
+    /// Copy what is selected in the HTML body.
+    Copy,
+    /// Select the whole HTML body.
+    SelectAll,
+    /// Read an HTML message as its plain text.
+    ShowPlainText,
+    /// Read it as it was formatted again.
+    ShowFormatted,
+}
+
 /// A cross-pane effect a pane wants the app to perform after event routing.
 #[derive(Clone, Debug)]
 pub enum Intent {
@@ -148,6 +165,11 @@ pub enum Intent {
     OpenAttachment(MessageId, usize),
     /// Ask the app to post a request to the engine worker.
     Engine(EngineRequest),
+    /// Open a link of a message in the Browser: a web or mail address the
+    /// person followed.
+    OpenLink(String),
+    /// Open the reader's menu on a message at a point.
+    ReaderMenu(MessageId, Point, Vec<ReaderChoice>),
     /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
     /// selection remains local; no purge action is authored until confirmed.
     ConfirmBulkPurge,
@@ -222,6 +244,17 @@ pub struct MailState {
     /// The senders (lower-case addresses) whose remote images the person
     /// allowed. Part of the person's Mail preferences, so it follows them.
     pub remote_senders: std::collections::BTreeSet<String>,
+    /// The messages whose remote images the person loaded while this window
+    /// is open: one message's, not its sender's.
+    pub remote_messages: std::collections::HashSet<MessageId>,
+    /// The HTML messages the person reads as their plain text.
+    pub plain_text: std::collections::HashSet<MessageId>,
+    /// Where fetched mail is kept: the inline images of a message kept on
+    /// this device are read from it.
+    pub(crate) kept: crate::store::Store,
+    /// What the reader's menu asked of the open HTML body (copy, select
+    /// all), for the reader to carry out.
+    pub reader_requests: Vec<ReaderChoice>,
 
     /// The pictures beside senders: Contacts' and the person's own, never
     /// fetched from a picture service.
@@ -259,6 +292,73 @@ impl MailState {
     /// The bundled sample mailbox and accounts, editing the document it is
     /// handed.
     #[cfg(test)]
+    /// Whether remote images show in `message`: the person loaded them for
+    /// it, or allowed them for its sender.
+    pub fn remote_allowed(&self, message: &crate::model::Message) -> bool {
+        self.remote_messages.contains(&message.id)
+            || self
+                .remote_senders
+                .contains(&message.from.email.to_ascii_lowercase())
+    }
+
+    /// Load the remote images of message `id`, and only its.
+    pub fn load_remote(&mut self, id: MessageId) {
+        self.remote_messages.insert(id);
+        self.dirty = true;
+    }
+
+    /// Load remote images in every message from the sender of `id`.
+    pub fn always_load_remote(&mut self, id: MessageId) {
+        if let Some(sender) = self
+            .mailbox
+            .get(id)
+            .map(|message| message.from.email.to_ascii_lowercase())
+        {
+            self.remote_senders.insert(sender);
+            self.dirty = true;
+        }
+    }
+
+    /// Stop loading remote images from the sender of `id`, this message's
+    /// included.
+    pub fn stop_remote(&mut self, id: MessageId) {
+        if let Some(sender) = self
+            .mailbox
+            .get(id)
+            .map(|message| message.from.email.to_ascii_lowercase())
+        {
+            self.remote_senders.remove(&sender);
+        }
+        self.remote_messages.remove(&id);
+        self.dirty = true;
+    }
+
+    /// The images `message`'s HTML shows in place, from memory or as kept
+    /// on this device.
+    pub fn inline_parts(
+        &self,
+        message: &crate::model::Message,
+    ) -> Vec<crate::html_mail::InlinePart> {
+        message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| {
+                let id = attachment.inline_id.clone()?;
+                let bytes = if attachment.content.is_empty() && attachment.kept {
+                    self.kept.attachment(&message.account, message.id, index)?
+                } else {
+                    attachment.content.clone()
+                };
+                Some(crate::html_mail::InlinePart {
+                    id,
+                    mime: attachment.mime.clone(),
+                    bytes,
+                })
+            })
+            .collect()
+    }
+
     pub fn new_sample(avatars: crate::avatars::Avatars) -> Self {
         let mut state = Self::from_fixture(&crate::sample::MailFixture::bundled(), avatars);
         state.dispatcher = Some(ui::framework::testing::dispatcher("so.tilo.mail"));
@@ -310,6 +410,10 @@ impl MailState {
             bulk_selection: Vec::new(),
             bulk_selecting: false,
             remote_senders: std::collections::BTreeSet::new(),
+            remote_messages: std::collections::HashSet::new(),
+            plain_text: std::collections::HashSet::new(),
+            kept: crate::store::Store::default(),
+            reader_requests: Vec::new(),
             inspection: None,
             status: None,
             status_undo: false,

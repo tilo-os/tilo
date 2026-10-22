@@ -255,6 +255,13 @@ pub enum WebViewCommand {
     /// the view to its content asks (a mail reader scrolling as one page).
     /// An engine that cannot measure never reports.
     ReportDocumentSize(bool),
+    /// Read the page's selection as text, answered by one
+    /// [`WebViewEvent::SelectionText`] with the same id, for the embedder to
+    /// put on the system clipboard. An engine that cannot read it never
+    /// answers.
+    CopySelection {
+        request_id: u32,
+    },
     /// Viewport size in physical pixels plus the display scale factor.
     Resize {
         width: u32,
@@ -523,6 +530,15 @@ pub enum WebViewEvent {
         height: f64,
         scroll_y: f64,
     },
+    /// The page's selection as text, answering
+    /// [`WebViewCommand::CopySelection`]; empty when nothing is selected.
+    SelectionText {
+        request_id: u32,
+        text: String,
+    },
+    /// The address of the link under the pointer, or empty when it left
+    /// the link. Sent by an engine showing sealed documents.
+    LinkHovered(String),
     /// The raw layout snapshot (JSON), or `None` when the engine could not
     /// take one.
     PaintSnapshot {

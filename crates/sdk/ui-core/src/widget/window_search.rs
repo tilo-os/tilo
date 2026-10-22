@@ -226,6 +226,10 @@ impl SearchDriver {
                         session.step(target, forward);
                         touched = true;
                     }
+                    if let Some((total, current)) = target.take_engine_results() {
+                        session.set_results(total, current);
+                        touched = true;
+                    }
                 });
                 self.count = (!query.is_empty() && !finishing).then(|| {
                     let (current, total) = session.position().unwrap_or((0, session.matches()));

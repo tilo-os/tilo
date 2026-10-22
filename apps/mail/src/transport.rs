@@ -182,14 +182,39 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         .map(std::string::ToString::to_string)
         .or_else(|| parsed.in_reply_to().as_text().map(str::to_string));
 
+    let referenced = html_body
+        .as_deref()
+        .map(|html| html.to_ascii_lowercase())
+        .unwrap_or_default();
     let attachments: Vec<Attachment> = parsed
         .attachments()
         .map(|part| {
+            // A part the HTML shows in place (`cid:`) is an image of the
+            // message, not a file attached to it.
+            let inline_id = part
+                .content_id()
+                .map(|id| {
+                    id.trim()
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_owned()
+                })
+                .filter(|id| {
+                    !id.is_empty()
+                        && referenced.contains(&format!("cid:{}", id.to_ascii_lowercase()))
+                });
             let filename = part
                 .attachment_name()
                 .unwrap_or("attachment.bin")
                 .to_string();
-            let mime = mime_from_filename(&filename).to_string();
+            let declared = part.content_type().map(|kind| {
+                format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or_default())
+                    .to_ascii_lowercase()
+            });
+            let mime = match declared {
+                Some(declared) if inline_id.is_some() => declared,
+                _ => mime_from_filename(&filename).to_string(),
+            };
             // Keep the decoded bytes so the reader can save the real file.
             let content = part.contents().to_vec();
             Attachment {
@@ -200,6 +225,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
                 content_id: None,
                 content,
                 kept: false,
+                inline_id,
             }
         })
         .collect();

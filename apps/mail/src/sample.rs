@@ -53,6 +53,32 @@ impl MailFixture {
     }
 }
 
+/// Real-world HTML mail, as it arrives: a newsletter laid out in tables, a
+/// code-review notification, a receipt, a mail with a dark form, one with
+/// inline images, and a plain-text one with addresses in it.
+const GALLERY: &[&[u8]] = &[
+    include_bytes!("../tests/fixtures/html/newsletter.eml"),
+    include_bytes!("../tests/fixtures/html/github.eml"),
+    include_bytes!("../tests/fixtures/html/receipt.eml"),
+    include_bytes!("../tests/fixtures/html/dark.eml"),
+    include_bytes!("../tests/fixtures/html/inline.eml"),
+    include_bytes!("../tests/fixtures/html/plain.eml"),
+];
+
+impl MailFixture {
+    /// The bundled mailbox with the HTML gallery on top of its inbox.
+    pub fn html_gallery() -> Self {
+        let mut fixture = Self::bundled();
+        for (age, raw) in (0_i64..).zip(GALLERY) {
+            if let Some(mut message) = parse_eml(raw, SAMPLE_NOW_MIN - age, Folder::Inbox) {
+                message.read = true;
+                fixture.mailbox.insert(message);
+            }
+        }
+        fixture
+    }
+}
+
 /// Deterministic "now" for the sample corpus so relative timestamps render
 /// identically every run. 2026-06-30 14:05 UTC.
 pub const SAMPLE_NOW_MIN: i64 = {

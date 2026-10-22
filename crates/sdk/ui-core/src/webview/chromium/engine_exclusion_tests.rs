@@ -150,7 +150,7 @@ while True:
         &profile,
         &[],
         None,
-        Some("selected-slack-session"),
+        HostMode::ServiceSession("selected-slack-session"),
     )
     .unwrap();
     let _reap = ReapOnPanic(engine.clone());
@@ -190,7 +190,8 @@ while True:
         .create(&ordinary)
         .unwrap();
     let default =
-        ChromiumEngine::with_host_extensions(&helper, &ordinary, &[], None, None).unwrap();
+        ChromiumEngine::with_host_extensions(&helper, &ordinary, &[], None, HostMode::Browsing)
+            .unwrap();
     let default_reap = ReapOnPanic(default.clone());
     assert!(
         default

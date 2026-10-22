@@ -238,6 +238,16 @@ impl WebView {
         self.send_resize_if_needed();
     }
 
+    /// Place the view at an explicit logical rect, like
+    /// [`Self::set_viewport`], rendering the page at the scale it lands on
+    /// screen with: the display's, times any zoom of the content around it.
+    /// For a page drawn inside a host's own document (an HTML mail), so it
+    /// stays sharp on a dense display and when the reader zooms.
+    pub fn place(&mut self, rect: Rect) {
+        self.rect = rect;
+        self.send_resize_if_needed();
+    }
+
     /// The device scale the page is rendered at.
     #[must_use]
     pub fn device_scale(&self) -> f32 {
