@@ -48,7 +48,6 @@
 
 mod agent_conversation_surface;
 pub mod agent_stream;
-mod agent_tasks;
 pub mod app;
 pub mod body;
 pub mod call;

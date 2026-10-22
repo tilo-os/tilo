@@ -1479,34 +1479,6 @@ fn every_id_in_the_users_chat_survives_the_migration_and_its_messages_still_show
     }
 }
 
-/// The agent conversation the user had keeps its id: opening it again
-/// shows what was said there.
-#[test]
-fn an_agent_conversation_reopens_under_its_existing_id_with_its_history() {
-    use ui::tilo_resource::evolution;
-    let mut doc = users_chat(false);
-    evolution::migrate::<Chat>(&mut doc).unwrap();
-    let mut room = crate::demo::Room::of(doc);
-    room.say(ADA, OLD_AGENT_CHANNEL, "said to the agent")
-        .unwrap();
-    let mut app = crate::app::ChatApp::new_ephemeral();
-    app.attach_room(&room);
-    app.room_agents = vec!["scribe".into()];
-    app.reload(&room);
-    assert!(app.open_agent_conversation("scribe"));
-    assert_eq!(
-        app.active_channel, OLD_AGENT_CHANNEL,
-        "the conversation the chat holds, not a new id"
-    );
-    app.reload(&room);
-    assert!(
-        app.messages
-            .iter()
-            .any(|message| message.text == "said to the agent"),
-        "its history shows"
-    );
-}
-
 /// A category that does not read at all is kept as it is, held out of the
 /// chat for its repair, through the migration and every later write.
 #[test]

@@ -1019,19 +1019,6 @@ pub fn reply_id(summons: &Id, agent: &str) -> Id {
     Id::from_raw(format!("m_reply_{:016x}", hash.finish()))
 }
 
-/// Stable hidden conversation the room's replicas share with an
-/// authenticated Agent. The id is an address only; admission still comes
-/// from the live room roster.
-#[must_use]
-pub fn agent_conversation_channel_id(agent: &str) -> Id {
-    use std::hash::Hasher as _;
-    let mut hash = fnv::FnvHasher::default();
-    hash.write(b"room");
-    hash.write(&[0]);
-    hash.write(agent.as_bytes());
-    Id::from_raw(format!("c_agent_{:016x}", hash.finish()))
-}
-
 /// A new message's fields beyond its channel, author and time.
 #[derive(Default)]
 pub(crate) struct Posting {
