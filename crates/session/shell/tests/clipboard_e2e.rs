@@ -1941,7 +1941,9 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         assert_eq!((decoded.width, decoded.height), (2, 1));
     }
 
-    // Phase `app_wayland_clipboard_publishes_png_and_text_to_another_client`.
+    // Phase `app_wayland_clipboard_publishes_a_png_that_replaces_its_earlier_text`.
+    // An app's image copy (Photos, the PDF viewer) replaces what it copied
+    // before, as the shell's does: no app pastes the older text instead.
     {
         let compositor = Compositor::start();
         let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-clipboard");
@@ -1989,7 +1991,11 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
             decoded.rgba,
             [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
         );
-        assert_eq!(sink.read_clipboard(None), "app caption");
+        assert_eq!(
+            sink.state.clipboard_offer_mimes,
+            vec!["image/png".to_string()],
+            "the image copy replaced the app's earlier text"
+        );
     }
 }
 
