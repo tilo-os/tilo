@@ -1214,7 +1214,9 @@ cost = "minutes"
 [[check]]
 name = "chromium-host"
 requires = ["arch=x86_64"]
-requirement = { cores = 8, memory = "2GiB" }
+# Built cold (no compiler cache, empty target), the check peaks at 4.5 GiB: eight
+# compilers at once while the host builds; no one process passes 1.3 GiB.
+requirement = { cores = 8, memory = "6GiB" }
 # Chromium's renderers are confined in user namespaces of their own.
 nested_sandboxes = true
 run = """
