@@ -1704,6 +1704,21 @@ struct ShapedText {
     size: (f32, f32),
 }
 
+/// Each glyph of a left-to-right line with the bytes it covers and its
+/// advance ([`TextRenderer::ltr_advances`]).
+struct LineAdvances(Vec<(usize, usize, f32)>);
+
+impl LineAdvances {
+    /// The advances of the glyphs wholly inside bytes `start..end`.
+    fn width(&self, start: usize, end: usize) -> f32 {
+        self.0
+            .iter()
+            .filter(|&&(from, to, _)| from >= start && to <= end)
+            .map(|&(_, _, advance)| advance)
+            .sum()
+    }
+}
+
 struct PreparedBuffer {
     buffer: Buffer,
     hyphen_width: f32,
@@ -2509,6 +2524,38 @@ impl TextRenderer {
         // Invariant: every cut below `lo` fits, every cut at or past `hi`
         // does not.
         let (mut lo, mut hi) = (0usize, cuts.len());
+        if let Some(advances) = self.ltr_advances(text, style) {
+            // Search on the advances of one shape of the whole text, then
+            // confirm the cut found with a measure of its own: shaping every
+            // probed prefix was most of laying out a page of titles.
+            let ellipsis = self
+                .measure_style_cold(ELLIPSIS.encode_utf8(&mut [0; 4]), None, style)
+                .0;
+            let estimate = |end: usize| {
+                let kept = text.get(..end).unwrap_or_default().trim_end().len();
+                advances.width(0, kept) + ellipsis
+            };
+            let (mut low, mut high) = (0usize, cuts.len());
+            while low < high {
+                let mid = low.midpoint(high);
+                if estimate(cuts.get(mid).copied().unwrap_or_default()) <= max_width {
+                    low = mid.saturating_add(1);
+                } else {
+                    high = mid;
+                }
+            }
+            match low.checked_sub(1).and_then(|i| cuts.get(i)) {
+                None => return ELLIPSIS.to_string(),
+                Some(&end) => {
+                    let kept = candidate(end);
+                    if self.measure_style_cold(&kept, None, style).0 <= max_width {
+                        return kept;
+                    }
+                    // The estimate was short: search the cuts before it.
+                    hi = low.saturating_sub(1);
+                }
+            }
+        }
         while lo < hi {
             let mid = lo.midpoint(hi);
             let end = cuts.get(mid).copied().unwrap_or_default();
@@ -2600,6 +2647,26 @@ impl TextRenderer {
         kept
     }
 
+    /// The advance of every glyph of `text` set on one line, by the bytes it
+    /// covers, when the line reads left to right throughout: the width of a
+    /// slice of it is then the sum of the advances inside that slice, short
+    /// only of kerning across its ends. `None` for text with right-to-left
+    /// glyphs or more than one line, whose slices are measured one by one.
+    fn ltr_advances(&mut self, text: &str, style: &TextStyle) -> Option<LineAdvances> {
+        let scaled = self.scaled_style(style);
+        let prepared = self.shape_buffer(text, None, &scaled);
+        let mut runs = prepared.buffer.layout_runs();
+        let run = runs.next()?;
+        if run.rtl || runs.next().is_some() {
+            return None;
+        }
+        run.glyphs
+            .iter()
+            .map(|glyph| (!glyph.level.is_rtl()).then_some((glyph.start, glyph.end, glyph.w)))
+            .collect::<Option<Vec<_>>>()
+            .map(LineAdvances)
+    }
+
     /// Greedy UAX #14 wrap of `text` at `max_width`. This handles scripts that
     /// do not use ASCII spaces, keeps non-breaking spaces intact, and honors
     /// explicit mandatory breaks. An unbreakable segment wider than the budget
@@ -2615,6 +2682,10 @@ impl TextRenderer {
         }
 
         let opportunities: Vec<_> = line_break_opportunities(text).collect();
+        // Each break is found on the advances of one shape of the whole text
+        // and confirmed by measuring its line, instead of shaping every
+        // prefix up to it.
+        let advances = self.ltr_advances(text, style);
         let mut lines = Vec::new();
         let mut start = 0usize;
         while start < text.len() {
@@ -2629,16 +2700,21 @@ impl TextRenderer {
             }
 
             let mut first = None;
-            let mut best = None;
+            let mut fitting = Vec::new();
             for &(end, kind) in opportunities.iter().filter(|(end, _)| *end > start) {
                 first.get_or_insert(end);
                 let candidate = text
                     .get(start..end)
                     .unwrap_or_default()
                     .trim_end_matches(collapsible_edge);
-                let fits = self.measure_style(candidate, None, style).0 <= max_width;
+                let fits = match &advances {
+                    Some(advances) => {
+                        advances.width(start, start.saturating_add(candidate.len())) <= max_width
+                    }
+                    None => self.measure_style(candidate, None, style).0 <= max_width,
+                };
                 if fits {
-                    best = Some(end);
+                    fitting.push(end);
                     if kind == LineBreakKind::Mandatory {
                         break;
                     }
@@ -2646,7 +2722,19 @@ impl TextRenderer {
                     break;
                 }
             }
-            let end = best.or(first).unwrap_or(text.len());
+            if advances.is_some() {
+                while let Some(&end) = fitting.last() {
+                    let candidate = text
+                        .get(start..end)
+                        .unwrap_or_default()
+                        .trim_end_matches(collapsible_edge);
+                    if self.measure_style(candidate, None, style).0 <= max_width {
+                        break;
+                    }
+                    fitting.pop();
+                }
+            }
+            let end = fitting.last().copied().or(first).unwrap_or(text.len());
             let line = text
                 .get(start..end)
                 .unwrap_or_default()
