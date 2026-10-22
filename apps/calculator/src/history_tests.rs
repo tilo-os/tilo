@@ -67,14 +67,14 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
         }
     }
     let mut app = hosted();
-    click(&mut app, "calculator.mode:0");
+    press_bar(&mut app, "calculator.mode:0");
     calculate(&mut app, "1+2");
     calculate(&mut app, "3*4");
-    click(&mut app, "calculator.mode:1");
+    press_bar(&mut app, "calculator.mode:1");
     click(&mut app, "calculator.graph.field:2d:0");
     app.harness().type_text("x+1");
     app.settle();
-    click(&mut app, "calculator.mode:0");
+    press_bar(&mut app, "calculator.mode:0");
     app.harness().type_text("9");
     app.settle();
     app.flush().unwrap();
@@ -121,7 +121,13 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
         history_rows(&mut app).is_empty(),
         "choosing a calculation closes History"
     );
-    assert!(node(&mut app, "calculator.mode:0").state.selected);
+    assert_eq!(
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.views)
+            .map(|views| views.chosen),
+        Some("calculator.mode:0".to_owned()),
+        "back in calculator mode"
+    );
     assert_eq!(
         calculator(&mut app).1.value.as_deref(),
         Some("1+2"),
@@ -136,7 +142,7 @@ fn history_lists_calculations_and_choosing_one_recalls_it() {
 #[test]
 fn a_second_window_lists_the_first_windows_calculations() {
     let mut app = hosted();
-    click(&mut app, "calculator.mode:0");
+    press_bar(&mut app, "calculator.mode:0");
     calculate(&mut app, "6*7");
     app.harness().type_text("5");
     app.settle();
@@ -160,19 +166,25 @@ fn a_second_window_lists_the_first_windows_calculations() {
     );
 }
 
-/// The History button in the calculator's header row is the main way into
-/// History: a press on it opens the window's History, listing what was
-/// done.
+/// The window bar's History button is the main way into the calculator's
+/// past calculations: the window offers it, and a press on it opens the
+/// window's History, listing what was done.
 #[test]
 fn the_history_button_opens_history() {
     let mut app = hosted();
-    click(&mut app, "calculator.mode:0");
+    press_bar(&mut app, "calculator.mode:0");
     calculate(&mut app, "1+2");
     app.flush().unwrap();
 
+    app.harness().present_in_window_bar();
+    assert_eq!(
+        app.harness().window_history_control(),
+        Some(ui::widget::HistoryControl::of(false)),
+        "the window bar offers History"
+    );
     app.harness()
-        .click_named(ui::widget::HISTORY_CONTROL_ID)
-        .expect("the header row shows the History button");
+        .press_window_history()
+        .expect("the window bar's History button opens History");
     app.settle();
     let rows = history_rows(&mut app);
     assert!(
@@ -192,7 +204,7 @@ fn a_long_formula_reaches_history_whole() {
     let formula = ["x"; 60].join("+");
     assert!(formula.chars().count() > 100);
     let mut app = hosted();
-    click(&mut app, "calculator.mode:1");
+    press_bar(&mut app, "calculator.mode:1");
     click(&mut app, "calculator.graph.field:2d:0");
     app.harness().type_text(&formula);
     app.settle();

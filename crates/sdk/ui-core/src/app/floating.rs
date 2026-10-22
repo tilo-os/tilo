@@ -939,7 +939,7 @@ impl App {
                     // committed in the bar waited, unread, for whatever made
                     // the app sync next (Enter in the address opened nothing).
                     if self.apply_window_bar_event(event).is_none() {
-                        crate::window_toolbar::deliver(event.clone());
+                        self.deliver_app_slot_event(event.clone());
                         self.needs_sync = true;
                     }
                 }

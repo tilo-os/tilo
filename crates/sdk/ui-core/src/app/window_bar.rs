@@ -154,6 +154,37 @@ impl App {
         Some(offer)
     }
 
+    /// Hand the app an event about its own slots
+    /// ([`crate::window_toolbar::take_events`]). A press on a slot is a
+    /// press on the app: when nothing in the window holds the keyboard, the
+    /// app's keyboard entry ([`crate::widget::keyboard_entry_rank`]) takes
+    /// it, so what is typed next reaches the app, as in the frame harness
+    /// (`FrameHarness::press_window_slot`).
+    #[cfg(feature = "native")]
+    pub(crate) fn deliver_app_slot_event(&mut self, event: ToolbarEvent) {
+        let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
+        crate::window_toolbar::deliver(event);
+        if !hands_keyboard || self.focused_node.is_some() {
+            return;
+        }
+        let entry = self
+            .focusable_order
+            .iter()
+            .copied()
+            .filter_map(|node| {
+                let rank = self
+                    .inspect_node(node, crate::widget::keyboard_entry_rank)
+                    .ok()
+                    .flatten()?;
+                Some((rank, node))
+            })
+            .min_by_key(|(rank, _)| *rank)
+            .map(|(_, node)| node);
+        if entry.is_some() {
+            self.set_focused_node(entry);
+        }
+    }
+
     /// Run what the bar's search or History control asked of this app.
     /// `None` for an event about the app's slots, which the app reads
     /// itself ([`crate::window_toolbar::take_events`]); else whether

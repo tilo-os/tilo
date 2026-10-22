@@ -241,7 +241,7 @@ impl SlotBar {
                         let _ = app.invoke_window_history_control(control);
                     }
                 }
-                event => crate::window_toolbar::deliver(event),
+                event => app.deliver_app_slot_event(event),
             }
         }
         if acted {

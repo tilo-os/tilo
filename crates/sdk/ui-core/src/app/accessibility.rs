@@ -617,7 +617,7 @@ impl App {
         }
     }
 
-    fn set_focused_node(&mut self, new_id: Option<NodeId>) {
+    pub(super) fn set_focused_node(&mut self, new_id: Option<NodeId>) {
         self.mark_semantic_tree_stale();
         self.suspend_history_focus(new_id);
         if new_id.is_some_and(|node| self.is_history_node(node)) {

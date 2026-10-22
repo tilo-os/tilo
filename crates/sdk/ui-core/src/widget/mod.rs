@@ -147,6 +147,30 @@ pub fn semantic_action_bindings(
     bindings
 }
 
+/// How readily `widget` takes the keyboard when its app does without a
+/// control of its own choosing (brought forward on the desktop, or used
+/// from the window's bar): its default keyboard control first (`Some(0)`),
+/// else one that takes typing, a field, an editor or a terminal
+/// (`Some(1)`). Never a button merely for being first (`None`): Enter
+/// would press it.
+pub(crate) fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
+    if widget.is_default_keyboard_focus() {
+        return Some(0);
+    }
+    widget
+        .accessibility()
+        .is_some_and(|access| {
+            matches!(
+                access.role,
+                crate::a11y::Role::TextInput
+                    | crate::a11y::Role::MultilineTextInput
+                    | crate::a11y::Role::Document
+                    | crate::a11y::Role::Terminal
+            )
+        })
+        .then_some(1)
+}
+
 /// A laid-out box placed at `origin`, in absolute coordinates.
 pub fn placed(layout: &taffy::Layout, origin: vello::kurbo::Point) -> vello::kurbo::Rect {
     vello::kurbo::Rect::from_origin_size(
