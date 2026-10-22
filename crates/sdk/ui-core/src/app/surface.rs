@@ -167,6 +167,10 @@ impl App {
                 self.input.keyboard_layout.clone_from(layout)
             }
             WindowEvent::Focused(false) => self.input.keyboard_layout = None,
+            // A window that takes the keyboard hands it to the app's entry
+            // when nothing in it holds it: what is typed after it opens, or
+            // is brought forward, reaches the app.
+            WindowEvent::Focused(true) => self.hand_keyboard_to_app(),
             _ => {}
         }
         self.restore_physical_configuration();

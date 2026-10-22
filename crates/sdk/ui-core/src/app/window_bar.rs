@@ -156,15 +156,26 @@ impl App {
 
     /// Hand the app an event about its own slots
     /// ([`crate::window_toolbar::take_events`]). A press on a slot is a
-    /// press on the app: when nothing in the window holds the keyboard, the
-    /// app's keyboard entry ([`crate::widget::keyboard_entry_rank`]) takes
-    /// it, so what is typed next reaches the app, as in the frame harness
+    /// press on the app: it hands the app the keyboard
+    /// ([`Self::hand_keyboard_to_app`]), as in the frame harness
     /// (`FrameHarness::press_window_slot`).
     #[cfg(feature = "native")]
     pub(crate) fn deliver_app_slot_event(&mut self, event: ToolbarEvent) {
         let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
         crate::window_toolbar::deliver(event);
-        if !hands_keyboard || self.focused_node.is_some() {
+        if hands_keyboard {
+            self.hand_keyboard_to_app();
+        }
+    }
+
+    /// The window took the keyboard (it opened, was brought forward, or the
+    /// person pressed one of the app's slots in its bar): when nothing in it
+    /// holds the keyboard, the app's keyboard entry
+    /// ([`crate::widget::keyboard_entry_rank`]) takes it, so what is typed
+    /// next reaches the app. Never a button merely for being first.
+    #[cfg(feature = "native")]
+    pub(crate) fn hand_keyboard_to_app(&mut self) {
+        if self.focused_node.is_some() {
             return;
         }
         let entry = self
