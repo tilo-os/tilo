@@ -1,23 +1,21 @@
 //! Drawing + event handling for [`MusicApp`].
 //!
 //! Split out of `app.rs` to keep the data/state logic separate from the
-//! (large) rendering surface. Music paints its window itself, but every part
-//! of it is the toolkit's: the sidebar is a [`SidebarDrawer`] with
-//! [`chrome::paint_nav_row`] rows, controls are [`ButtonFace`]s and
-//! [`SliderFace`]s, covers are [`MediaCardFace`]s and every text names a
-//! [`TextRole`]. Clicks register `Hit`s for the event handler.
-//!
-//! [`SidebarDrawer`]: ui::widget::SidebarDrawer
+//! (large) rendering surface. Music paints its content column itself, but
+//! every part of it is the toolkit's: controls are [`ButtonFace`]s, covers
+//! are [`MediaCardFace`]s and every text names a [`TextRole`]. Clicks
+//! register `Hit`s for the event handler. The sidebar and the transport are
+//! the window shell's (`shell.rs`).
 
 use super::page_part::PagePart;
 
 mod accessible;
 mod query_view;
 use super::{
-    Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Drag, Fill, HashMap,
+    Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Fill, HashMap,
     HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId, PlaylistPage, Point,
-    PresenceCtx, Rect, RepeatMode, Scene, Size, Style, TaffyTree, TextRenderer, TextStyle, Theme,
-    View, Widget, elide, is_live_album_id, is_live_id, is_live_playlist_id, live_track_id, lyrics,
+    PresenceCtx, Rect, Scene, Size, Style, TaffyTree, TextRenderer, TextStyle, Theme, View, Widget,
+    elide, is_live_album_id, is_live_id, is_live_playlist_id, live_track_id, lyrics,
 };
 use accessible::{
     accessible_album, accessible_artist, accessible_download, accessible_playlist,
@@ -27,18 +25,15 @@ pub(super) use query_view::SearchView;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use ui::chrome::{self, NavCount, NavRowFace, NavSectionFace, SelectionState};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::surface;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
 use ui::widget::data_table::DataTableFace;
 use ui::widget::toast::ToastAnchor;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
-    MediaCardFace, MediaSize, SkeletonFace, SkeletonShape, Slider, SliderFace, TransportControl,
-    TransportFace,
+    MediaCardFace, MediaSize, SkeletonFace, SkeletonShape,
 };
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -51,7 +46,6 @@ struct TrackDisp {
     title: String,
     artist: String,
     album: String,
-    album_id: String,
     dur: u32,
     no: u32,
 }
@@ -78,10 +72,6 @@ struct PlaylistDisp {
     count: usize,
 }
 
-/// How far a now-playing-bar drag travels before it counts as a prev/next
-/// swipe rather than a tap: two pointer targets.
-const BAR_SWIPE_PX: f64 = 2.0 * ui::tokens::Metrics::BASE.min_pointer_target as f64;
-
 /// The painted frame's ink and spacing, resolved from the theme once per
 /// frame. Every gap is a step of the theme's spacing rhythm.
 #[derive(Clone, Copy)]
@@ -89,7 +79,6 @@ struct Look {
     text: Color,
     dim: Color,
     faint: Color,
-    danger: Color,
     /// The content gutter and the gap between groups of sections.
     gutter: f64,
     /// Between two sections of a page.
@@ -110,7 +99,6 @@ impl Look {
             text: theme.text_primary,
             dim: theme.text_dim,
             faint: theme.text_tertiary,
-            danger: theme.tokens.colors.semantic.danger,
             gutter: f64::from(rhythm.group),
             section: f64::from(rhythm.section),
             sibling: f64::from(rhythm.sibling),
@@ -139,22 +127,6 @@ pub(super) fn text_line(
     let shown = elide(ctx.text, text, style, max_w);
     ctx.text(&shown, style, color, origin, None);
     line_of(ctx, style)
-}
-
-/// Paint one line of `text` starting at `x`, elided to `max_w` and centred on
-/// its measured line box inside `band`.
-fn text_in_band(
-    ctx: &mut PaintCtx<'_>,
-    text: &str,
-    style: &TextStyle,
-    color: Color,
-    x: f64,
-    band: Rect,
-    max_w: f64,
-) {
-    let h = line_of(ctx, style);
-    let top = ui::text_metrics::centered_text_top(band.y0, band.height(), h);
-    text_line(ctx, text, style, color, Point::new(x, top), max_w);
 }
 
 /// Paint one line of `text` ending at `x1`, centred on its line box inside
@@ -336,56 +308,6 @@ struct SectionQueue<'a> {
     ids: &'a [String],
     next: usize,
 }
-
-/// A sidebar navigation row: its icon, label and the view it opens.
-struct NavDestination {
-    icon: Icon,
-    label: &'static str,
-    view: View,
-}
-
-const NAV_DESTINATIONS: [NavDestination; 8] = [
-    NavDestination {
-        icon: Icon::Home,
-        label: "Home",
-        view: View::Home,
-    },
-    NavDestination {
-        icon: Icon::LayoutGrid,
-        label: "Browse",
-        view: View::Browse,
-    },
-    NavDestination {
-        icon: Icon::Music,
-        label: "Songs",
-        view: View::Songs,
-    },
-    NavDestination {
-        icon: Icon::GalleryVerticalEnd,
-        label: "Albums",
-        view: View::Albums,
-    },
-    NavDestination {
-        icon: Icon::Users,
-        label: "Artists",
-        view: View::Artists,
-    },
-    NavDestination {
-        icon: Icon::Heart,
-        label: "Liked songs",
-        view: View::Liked,
-    },
-    NavDestination {
-        icon: Icon::Download,
-        label: "Downloads",
-        view: View::Downloads,
-    },
-    NavDestination {
-        icon: Icon::ListMusic,
-        label: "Queue",
-        view: View::Queue,
-    },
-];
 
 /// Which kind of entity a detail page shows, with the state of the toggle
 /// its header offers: "Save to library" for an album, "Follow" for an
@@ -569,6 +491,18 @@ impl Widget for MusicApp {
         dyn ui::widget::Queryable
     );
 
+    /// The name prompt and an open menu own the input over the whole window
+    /// while they are up: Escape closes them, never the shell's screen.
+    fn modal_capture(&self) -> Option<Rect> {
+        (self.name_prompt.is_some() || self.context.is_open()).then_some(self.rect)
+    }
+
+    /// A drag of songs keeps the pointer while it crosses into the shell's
+    /// sidebar, to be let go on a playlist there.
+    fn wants_pointer_capture(&self) -> bool {
+        self.search.drag.is_some()
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         // Reported once: an app that is not rebuilt right away (a tab behind
         // another) must not ask again on every frame.
@@ -666,6 +600,9 @@ impl Widget for MusicApp {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
+        // The songs being dragged follow the pointer over the whole window,
+        // onto the sidebar's playlists.
+        self.paint_track_drag(&mut PaintCtx::new(scene, transform, text_renderer, theme));
         if self.context.is_open() {
             self.context
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -693,6 +630,7 @@ impl Widget for MusicApp {
             self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
             self.playback_loaded = true;
         }
+        self.show_shell();
     }
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, _path: &ObjId) {
@@ -703,6 +641,7 @@ impl Widget for MusicApp {
         // same canonical actions as the palette, without waiting for another
         // pointer event.
         self.take_window_toolbar_events();
+        self.take_shell_events(state);
         if self.back_requested.replace(false) {
             self.on_back();
             self.dirty = true;
@@ -731,7 +670,6 @@ impl Widget for MusicApp {
         // framework-wide contract this one widget can't change — so a
         // `new_leaf` failure (which a freshly-created tree with one valid
         // leaf style cannot produce) has no propagation path here.
-        self.drawer.scale_for(theme);
         self.refresh_spotify_control_flags();
         let mut children = Vec::new();
         let mode = self.source_widget_mode();
@@ -804,13 +742,6 @@ impl Widget for MusicApp {
             return;
         }
 
-        // The sidebar's shortcut, and Escape or a press on the scrim for a
-        // floating sidebar; its toggle is the window bar's.
-        if self.drawer.handle_event(event, ctx) {
-            *ctx.handled = true;
-            self.dirty = true;
-            return;
-        }
         // The body's scrolling: wheel and touchpad over it, its bar, and
         // Page Up/Down, Home/End and the arrows.
         if let Some(theme) = self.frame_theme.take() {
@@ -858,86 +789,6 @@ impl Widget for MusicApp {
                 || "Nothing playing".to_string(),
                 |track| track.title.clone(),
             );
-        let controls = vec![
-            AccessNode::new(Role::Button)
-                .with_name("Previous track")
-                .with_description("Shortcut: left arrow")
-                .with_action_target("music.previous"),
-            AccessNode::new(Role::ToggleButton)
-                .with_name("Play or pause")
-                .with_description("Shortcut: space")
-                .with_action_target("music.toggle-play")
-                .with_state(AccessState::new().checked(self.pb.playing)),
-            AccessNode::new(Role::Button)
-                .with_name("Next track")
-                .with_description("Shortcut: right arrow")
-                .with_action_target("music.next"),
-            AccessNode::new(Role::ToggleButton)
-                .with_name("Shuffle")
-                .with_state(AccessState::new().checked(self.pb.shuffle))
-                .with_action_target("music.toggle-shuffle"),
-            AccessNode::new(Role::Button)
-                .with_name("Repeat mode")
-                .with_value(self.pb.repeat.as_str())
-                .with_action_target("music.cycle-repeat"),
-            AccessNode::new(Role::ToggleButton)
-                .with_name("Mute")
-                .with_description("Shortcut: M")
-                .with_action_target("music.toggle-mute")
-                .with_state(AccessState::new().checked(self.pb.volume == 0)),
-            AccessNode::new(Role::Slider)
-                .with_name("Playback position")
-                .with_value(ui::format::timecode((self.playhead_ms / 1000.0) as u64))
-                .with_description("Increment or decrement by five percent")
-                .with_action_target("music.seek"),
-            AccessNode::new(Role::Slider)
-                .with_name("Volume")
-                .with_value(format!("{}%", self.pb.volume))
-                .with_action_target("music.volume"),
-            AccessNode::new(Role::Button)
-                .with_name("Open queue")
-                .with_action_target("music.nav.queue"),
-            AccessNode::new(Role::Button)
-                .with_name("Open lyrics")
-                .with_action_target("music.nav.lyrics"),
-        ];
-        let controls = controls
-            .into_iter()
-            .map(|node| {
-                let rect = match node.action_target.as_deref() {
-                    Some("music.seek") => Some(self.scrubber_hit),
-                    Some("music.volume") => Some(if self.volume_btn_rect.area() > 0.0 {
-                        self.volume_btn_rect
-                    } else {
-                        self.volume_hit
-                    }),
-                    target => {
-                        let action = match target {
-                            Some("music.previous") => Some(Action::Prev),
-                            Some("music.toggle-play") => Some(Action::TogglePlay),
-                            Some("music.next") => Some(Action::Next),
-                            Some("music.toggle-shuffle") => Some(Action::ToggleShuffle),
-                            Some("music.cycle-repeat") => Some(Action::CycleRepeat),
-                            Some("music.toggle-mute") => Some(Action::ToggleMute),
-                            Some("music.nav.queue") => Some(Action::ToggleQueue),
-                            Some("music.nav.lyrics") => Some(Action::Nav(View::Lyrics)),
-                            _ => None,
-                        };
-                        action.and_then(|action| {
-                            self.hits
-                                .iter()
-                                .rev()
-                                .find(|hit| hit.action == action)
-                                .map(|hit| hit.rect)
-                        })
-                    }
-                };
-                match rect.filter(|rect| rect.area() > 0.0) {
-                    Some(rect) => node.with_bounds(rect),
-                    None => node,
-                }
-            })
-            .collect();
         let player_status = if let Some(error) = &self.playback_error {
             error.clone()
         } else if self.active_resolve_request.is_some() {
@@ -952,49 +803,7 @@ impl Widget for MusicApp {
             .with_name("Music player")
             .with_value(format!("{current}; volume {}%", self.pb.volume))
             .with_description(player_status)
-            .with_state(
-                AccessState::new()
-                    .focusable(true)
-                    .busy(self.active_resolve_request.is_some()),
-            )
-            .with_children(controls);
-        let selected_nav = |id: &str| {
-            matches!(
-                (&self.view, id),
-                (View::Home, "home")
-                    | (View::Recommendations, "recommendations")
-                    | (View::Songs, "songs")
-                    | (View::Albums, "albums")
-                    | (View::Artists, "artists")
-                    | (View::Playlists, "playlists")
-                    | (View::Downloads, "downloads")
-                    | (View::Liked, "liked")
-                    | (View::Browse, "browse")
-                    | (View::Queue, "queue")
-                    | (View::Lyrics, "lyrics")
-            )
-        };
-        let navigation = AccessNode::new(Role::List)
-            .with_hashed_key("navigation")
-            .with_name("Music navigation")
-            .with_children(
-                crate::actions::NAVIGATION_VIEWS
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (id, label))| {
-                        AccessNode::new(Role::ListItem)
-                            .with_name(*label)
-                            .with_position(index + 1, crate::actions::NAVIGATION_VIEWS.len())
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .selected(selected_nav(id)),
-                            )
-                            .with_action_target(format!("music.nav.{id}"))
-                    })
-                    .collect(),
-            );
-
+            .with_state(AccessState::new().busy(self.active_resolve_request.is_some()));
         let search = AccessNode::new(Role::Button)
             .with_hashed_key("search")
             .with_name("Search music")
@@ -1341,7 +1150,7 @@ impl Widget for MusicApp {
             .with_name(page_name)
             .with_children(page_content);
 
-        let mut children = vec![navigation, search, page, player];
+        let mut children = vec![search, page, player];
         children.extend(
             self.toast
                 .access_node()
@@ -1382,35 +1191,6 @@ impl Widget for MusicApp {
             self.dirty |= handled;
             return handled;
         }
-        if target == "sidebar-toggle" && matches!(action, ui::a11y::Action::Activate) {
-            self.dispatch(Action::ToggleSidebar, state);
-            return true;
-        }
-        if target == "music.seek" {
-            let delta = match action {
-                ui::a11y::Action::Increment => 0.05,
-                ui::a11y::Action::Decrement => -0.05,
-                _ => return false,
-            };
-            let duration = self.current_duration_ms() as f64;
-            let fraction = if duration > 0.0 {
-                (self.playhead_ms / duration + delta).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            self.dispatch(Action::SeekFrac(fraction), state);
-            return true;
-        }
-        if target == "music.volume" {
-            let delta = match action {
-                ui::a11y::Action::Increment => 0.05,
-                ui::a11y::Action::Decrement => -0.05,
-                _ => return false,
-            };
-            let fraction = (f64::from(self.pb.volume) / 100.0 + delta).clamp(0.0, 1.0);
-            self.dispatch(Action::VolumeFrac(fraction), state);
-            return true;
-        }
         if !matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -1418,12 +1198,6 @@ impl Widget for MusicApp {
             return false;
         }
         let action = match target {
-            "music.previous" => Action::Prev,
-            "music.toggle-play" => Action::TogglePlay,
-            "music.next" => Action::Next,
-            "music.toggle-shuffle" => Action::ToggleShuffle,
-            "music.cycle-repeat" => Action::CycleRepeat,
-            "music.toggle-mute" => Action::ToggleMute,
             "music.open-search" => Action::OpenSearch,
             "music.connect-source" => Action::SpotifyEffect(crate::actions::MusicEffect::Sources),
             "music.new-playlist" => Action::BeginNewPlaylist,
@@ -2027,16 +1801,16 @@ impl MusicApp {
         if self.search.drag.is_some() && self.drag_input(event, ctx) {
             return;
         }
-        if self.drag.is_none() && self.bar_press.is_none() && self.route_page_widgets(event, ctx) {
+        if self.route_page_widgets(event, ctx) {
             if let WindowEvent::CursorMoved { .. } = event {
-                self.on_cursor_moved(event, ctx.scale_factor, &mut ctx.state, ctx.handled);
+                self.on_cursor_moved(event, ctx.scale_factor);
             }
             self.dirty = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { .. } => {
-                self.on_cursor_moved(event, ctx.scale_factor, &mut ctx.state, ctx.handled);
+                self.on_cursor_moved(event, ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2044,13 +1818,6 @@ impl MusicApp {
                 ..
             } => {
                 self.on_left_press(&mut ctx.state, ctx.handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.on_left_release(&mut ctx.state, ctx.handled);
             }
             // A mouse's own Back and Forward buttons walk the view stack.
             WindowEvent::MouseInput {
@@ -2128,13 +1895,6 @@ impl MusicApp {
     /// deliberately return `None`; repeating their visible label would add
     /// noise rather than information.
     fn tooltip_at(&self, point: Point) -> Option<&str> {
-        if self.drawer.toggle_rect().contains(point) {
-            return Some(if self.drawer.is_open() {
-                "Hide sidebar"
-            } else {
-                "Show sidebar"
-            });
-        }
         if let Some(name) = &self.table_tooltip {
             return Some(name.as_str());
         }
@@ -2154,7 +1914,6 @@ impl MusicApp {
                 } else {
                     "Mute"
                 }),
-                Action::ToggleVolumePopover => Some("Volume"),
                 Action::OpenPlayerMenu(_) => Some("More controls"),
                 Action::ToggleLike(track) => Some(if self.lib.is_liked(track) {
                     "Unlike"
@@ -2170,7 +1929,6 @@ impl MusicApp {
                 }
                 Action::SetOffline { keep: false, .. } => Some("Cancel or remove offline download"),
                 Action::ToggleQueue => Some("Show or hide queue"),
-                Action::ToggleSidebar => Some("Show or hide navigation"),
                 Action::BeginNewPlaylist => Some("New playlist"),
                 Action::Nav(View::Lyrics) => Some("Lyrics"),
                 Action::MoveQueueItem { from, to } | Action::MovePlaylistItem { from, to, .. } => {
@@ -2229,107 +1987,20 @@ impl MusicApp {
         false
     }
 
-    /// Track the pointer and resolve an in-progress scrubber/volume drag.
-    fn on_cursor_moved(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        state: &mut ui::widget::Edits<'_>,
-        handled: &mut bool,
-    ) {
+    /// Track the pointer.
+    fn on_cursor_moved(&mut self, event: &WindowEvent, scale_factor: f64) {
         let WindowEvent::CursorMoved { position, .. } = event else {
             return;
         };
         self.mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.dirty = true;
-        if let Some(drag) = self.drag {
-            match drag {
-                Drag::Scrubber => {
-                    let f = SliderFace::new(self.scrubber_rect, 0.0).value_at(self.mouse);
-                    self.dispatch(Action::SeekFrac(f), state);
-                }
-                Drag::Volume => {
-                    let f = SliderFace::new(self.volume_rect, 0.0).value_at(self.mouse);
-                    self.dispatch(Action::VolumeFrac(f), state);
-                }
-            }
-            *handled = true;
-        } else if self.bar_press.is_some() {
-            // A now-playing-bar swipe is in progress; consume moves so
-            // the gesture is resolved on release.
-            *handled = true;
-        }
     }
 
-    /// Left press: search field / volume popover dismiss / hamburger / transport
-    /// drag start / now-playing swipe capture / topmost hit — in priority order.
+    /// Left press: the topmost hit under the pointer.
     fn on_left_press(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
-        // A press outside the open volume popover (and its button)
-        // dismisses it.
-        if self.volume_popover_open
-            && !self.volume_popover_rect.contains(self.mouse)
-            && !self.volume_btn_rect.contains(self.mouse)
-        {
-            self.volume_popover_open = false;
-            self.dirty = true;
-            *handled = true;
-            return;
-        }
-        // Transport bars get drag priority.
-        if self.scrubber_hit.contains(self.mouse) {
-            self.drag = Some(Drag::Scrubber);
-            let f = SliderFace::new(self.scrubber_rect, 0.0).value_at(self.mouse);
-            self.dispatch(Action::SeekFrac(f), state);
-            *handled = true;
-            return;
-        }
-        if self.volume_hit.contains(self.mouse) {
-            self.drag = Some(Drag::Volume);
-            let f = SliderFace::new(self.volume_rect, 0.0).value_at(self.mouse);
-            self.dispatch(Action::VolumeFrac(f), state);
-            *handled = true;
-            return;
-        }
-        // Now-playing bar swipe: a horizontal drag over the bar's empty
-        // area (or the artwork) is captured here and resolved on release
-        // — swipe left → next, right → previous. Transport buttons still
-        // click through (they aren't swipe-eligible).
-        let bar = self.nowplaying_rect();
-        if bar.contains(self.mouse) {
-            let hit = self.hit_test(self.mouse);
-            let swipeable = matches!(hit, None | Some(Action::Nav(View::Lyrics | View::Album(_))));
-            if swipeable {
-                self.bar_press = Some((self.mouse, hit));
-                *handled = true;
-                return;
-            }
-        }
         // Topmost matching hit wins (later-drawn = on top).
         if let Some(action) = self.hit_test(self.mouse) {
             self.dispatch(action, state);
-            *handled = true;
-        }
-    }
-
-    /// Left release: end a search-field drag, resolve a now-playing swipe, or
-    /// end a scrubber/volume drag.
-    fn on_left_release(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
-        // Resolve a now-playing-bar swipe: a large horizontal delta skips
-        // track; otherwise it was a tap on the captured target.
-        if let Some((start, tap)) = self.bar_press.take() {
-            let dx = self.mouse.x - start.x;
-            if dx <= -BAR_SWIPE_PX {
-                self.dispatch(Action::Next, state);
-            } else if dx >= BAR_SWIPE_PX {
-                self.dispatch(Action::Prev, state);
-            } else if let Some(a) = tap {
-                self.dispatch(a, state);
-            }
-            *handled = true;
-            return;
-        }
-        if self.drag.is_some() {
-            self.drag = None;
             *handled = true;
         }
     }
@@ -2403,13 +2074,6 @@ impl MusicApp {
             }
         }
         match key {
-            Key::Named(NamedKey::Escape) => {
-                // Dismiss an open overlay sidebar.
-                if self.drawer.is_overlay() && self.drawer.is_open() {
-                    self.dispatch(Action::CloseSidebar, state);
-                    *handled = true;
-                }
-            }
             Key::Named(NamedKey::Space) => {
                 self.dispatch(Action::TogglePlay, state);
                 *handled = true;
@@ -2509,66 +2173,7 @@ impl MusicApp {
 
     // ---- controls ---------------------------------------------------------
 
-    /// Paint an icon button `face` and register its hit. `on` marks a toggle
-    /// that is on (the toolkit's toggled face).
-    fn icon_button(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        face: ButtonFace<'_>,
-        on: bool,
-        action: Action,
-    ) -> bool {
-        let hovered = self.push_hit(face.hit_rect(ctx.theme), action);
-        let face = face.hovered(hovered).toggled(on);
-        Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
-        hovered
-    }
-
-    /// Paint one media transport control and register its hit; `idle`
-    /// rests it, disabled, with nothing to play.
-    fn transport_button(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        control: TransportControl,
-        idle: bool,
-        action: Action,
-    ) -> bool {
-        let face = TransportFace::new(rect, control).disabled(idle);
-        let action = if idle { Action::None } else { action };
-        let hovered = self.push_hit(face.hit_rect(ctx.theme), action) && !idle;
-        TransportFace::paint(ctx.scene, ctx.transform, ctx.theme, &face.hovered(hovered));
-        hovered
-    }
-
     // ---- master frame -----------------------------------------------------
-
-    /// Whether the now-playing bar folds to its compact form: while the
-    /// sidebar floats, or when the content column is too narrow to hold the
-    /// song, the transport and the volume side by side.
-    fn compact_bar(theme: &Theme, drawer: &ui::widget::SidebarDrawer, width: f64) -> bool {
-        drawer.is_overlay() || width < 2.0 * MediaSize::Large.extent(theme)
-    }
-
-    /// Height of the now-playing bar: a row of transport controls over the
-    /// scrubber (wide), or the track and its controls over the scrubber
-    /// (compact), inside the sibling inset.
-    fn bar_height(ctx: &mut PaintCtx<'_>, look: &Look, compact: bool) -> f64 {
-        // The row is as tall as its tallest control: the round play button.
-        let control = ButtonFace::height(ControlSize::Regular, ctx.theme).max(TransportFace::side(
-            TransportControl::PlayPause { playing: false },
-            ctx.theme,
-        ));
-        let caption = ctx.theme.text(TextRole::Caption);
-        let scrub = line_of(ctx, &caption).max(look.section + look.related);
-        let top = if compact {
-            let body = ctx.theme.text(TextRole::Body);
-            control.max(line_of(ctx, &body) + line_of(ctx, &caption))
-        } else {
-            control
-        };
-        2.0 * look.sibling + top + look.tight + scrub
-    }
 
     pub(super) fn render_frame(
         &mut self,
@@ -2595,23 +2200,15 @@ impl MusicApp {
         self.tick();
         self.dirty |= self.toast.expire();
 
-        // The sidebar drawer decides docked vs floating from the window width
-        // (its breakpoint grows with the text), eases its reveal and hands
-        // back the content column.
+        // The shell holds the sidebar and the transport; this is the
+        // content column.
         let look = Look::of(ctx.theme);
-        self.drawer.scale_for(ctx.theme);
-        self.drawer.tick(ctx.theme);
         let r = self.rect;
-        let compact = Self::compact_bar(ctx.theme, &self.drawer, r.width());
-        self.bar_h = Self::bar_height(ctx, &look, compact);
-        let bar = self.nowplaying_rect();
-        let content = self.drawer.resolve(Rect::new(r.x0, r.y0, r.x1, bar.y0));
         // The toolbar is the window bar's: the page starts at the top.
         self.declare_window_toolbar();
         // The body scrolls in the toolkit's region; its content is laid out
         // beside the bar's lane while it overflows.
-        self.body_scroll
-            .set_viewport(Rect::new(content.x0, r.y0, r.x1, bar.y0), ctx.theme);
+        self.body_scroll.set_viewport(r, ctx.theme);
         let body = self.body_scroll.content_rect();
         self.body_rect = body;
 
@@ -2655,27 +2252,8 @@ impl MusicApp {
         self.open_staged_track_menu();
         self.open_staged_facet();
 
-        self.draw_nowplaying(ctx, &look, bar);
-        self.open_staged_player_menu();
-
-        // A tap on the content beside a floating drawer dismisses it.
-        let scrim = self.drawer.scrim_rect();
-        if scrim.width() > 0.5 {
-            self.push_hit(scrim, Action::CloseSidebar);
-        }
-        // The sidebar (docked beside the content, or floating over it). Skip
-        // it entirely when fully collapsed so its hits don't shadow content.
-        if self.sidebar_rect().width() > 0.5 {
-            self.draw_sidebar(ctx, &look);
-        }
-
-        // Collapsed-volume popover floats above the now-playing bar.
-        self.draw_volume_popover(ctx, &look);
-        // Queue hover preview floats above the now-playing bar's queue button.
-        self.draw_queue_preview(ctx, &look);
         self.draw_toast(ctx);
         self.paint_highlight(ctx);
-        self.paint_track_drag(ctx);
 
         if self.name_prompt.is_none() {
             self.name_dialog = None;
@@ -2699,98 +2277,7 @@ impl MusicApp {
         }
     }
 
-    /// Open a `--shots`-staged More menu over the compact transport, once
-    /// the bar has been laid out this frame.
-    fn open_staged_player_menu(&mut self) {
-        if !std::mem::take(&mut self.staged_player_menu) {
-            return;
-        }
-        let more = self.hits.iter().find_map(|hit| match hit.action {
-            Action::OpenPlayerMenu(rect) => Some(rect),
-            _ => None,
-        });
-        if let Some(more) = more {
-            self.open_player_menu(more);
-        }
-    }
-
     // ---- sidebar ----------------------------------------------------------
-
-    /// The navigation sidebar: the drawer's panel, the destinations and the
-    /// playlists section, all painted as the toolkit's navigation rows. Its
-    /// show/hide toggle is the window bar's.
-    fn draw_sidebar(&mut self, ctx: &mut PaintCtx<'_>, look: &Look) {
-        let side = self.sidebar_rect();
-        // Clip to the (possibly sliding) panel so a collapse never spills
-        // rows over the content beside it.
-        ctx.scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            ctx.transform,
-            &side,
-        );
-        let local = self.drawer.paint_panel(ctx.scene, ctx.transform, ctx.theme);
-
-        let mut y = side.y0 + look.related;
-        let row_h = chrome::nav_row_height(&local);
-        for dest in NAV_DESTINATIONS {
-            let rect = Rect::new(side.x0, y, side.x1, y + row_h);
-            let selected = self.view == dest.view;
-            let hovered = self.push_hit(rect, Action::Nav(dest.view));
-            let face = NavRowFace::new(rect, dest.label)
-                .icon(dest.icon)
-                .state(SelectionState::new(selected, hovered, false));
-            chrome::paint_nav_row(ctx.scene, ctx.transform, ctx.text, &local, &face);
-            y += row_h;
-        }
-
-        // The person's own views, kept from their searches, beside the
-        // designed ones.
-        let kept = self.kept_views().kept_views;
-        if !kept.is_empty() {
-            let section_h = chrome::nav_section_height(&local, false);
-            let section = Rect::new(side.x0, y, side.x1, y + section_h);
-            let face = NavSectionFace::new(section, "Your views");
-            chrome::paint_nav_section(ctx.scene, ctx.transform, ctx.text, &local, &face);
-            y += section_h;
-            for view in kept {
-                let rect = Rect::new(side.x0, y, side.x1, y + row_h);
-                let target = View::Kept(view.id.clone());
-                let selected = self.view == target;
-                let hovered = self.push_hit(rect, Action::Nav(target));
-                let face = NavRowFace::new(rect, &view.name)
-                    .icon(Icon::Bookmark)
-                    .state(SelectionState::new(selected, hovered, false));
-                chrome::paint_nav_row(ctx.scene, ctx.transform, ctx.text, &local, &face);
-                y += row_h;
-            }
-        }
-
-        // The playlists section, with its one "new playlist" action.
-        let section_h = chrome::nav_section_height(&local, false);
-        let section = Rect::new(side.x0, y, side.x1, y + section_h);
-        let mut face = NavSectionFace::new(section, "Playlists").action(Icon::Plus);
-        let layout = chrome::nav_section_layout(&local, &face);
-        if let Some(plus) = layout.action {
-            face.action_hover = self.push_hit(plus, Action::BeginNewPlaylist);
-        }
-        chrome::paint_nav_section(ctx.scene, ctx.transform, ctx.text, &local, &face);
-        y += section_h;
-
-        for p in self.gather_playlists() {
-            let rect = Rect::new(side.x0, y, side.x1, y + row_h);
-            let selected = self.view == View::Playlist(p.id.clone());
-            let hovered = self.push_hit(rect, Action::Nav(View::Playlist(p.id.clone())));
-            let count = u32::try_from(p.count).unwrap_or(u32::MAX);
-            let face = NavRowFace::new(rect, &p.name)
-                .count(NavCount::Neutral(count))
-                .state(SelectionState::new(selected, hovered, false));
-            chrome::paint_nav_row(ctx.scene, ctx.transform, ctx.text, &local, &face);
-            y += row_h;
-        }
-        ctx.scene.pop_layer();
-    }
 
     /// Where the window is: the destination's name, or the album, artist or
     /// playlist shown.
@@ -3728,8 +3215,7 @@ impl MusicApp {
             || self
                 .hits
                 .get(self.body_hits..)
-                .is_some_and(|chrome| chrome.iter().any(|hit| hit.rect.contains(mouse)))
-            || (self.volume_popover_open && self.volume_popover_rect.contains(mouse));
+                .is_some_and(|chrome| chrome.iter().any(|hit| hit.rect.contains(mouse)));
         let mut asked = Vec::new();
         let mut tooltip = None;
         for (index, slot) in self.track_tables.iter_mut().enumerate() {
@@ -4675,96 +4161,6 @@ impl MusicApp {
 
     // ---- queue ------------------------------------------------------------
 
-    /// A floating panel previewing the next few queued songs, shown while
-    /// the pointer hovers the now-playing bar's queue button. Anchored just
-    /// above the button and right-aligned to it.
-    fn draw_queue_preview(&mut self, ctx: &mut PaintCtx<'_>, look: &Look) {
-        if !self.queue_preview_active() {
-            return;
-        }
-        let theme = ctx.theme;
-        let btn = self.queue_btn_rect;
-        let ids = self.queue_preview_tracks();
-        let rows = self.gather_tracks(&ids);
-        let panel_theme = theme.on_ground(chrome::panel_ground(theme));
-        let heading = theme.text(TextRole::Subheading);
-        let body = theme.text(TextRole::Body);
-        let caption = theme.text(TextRole::Caption);
-        let pad = look.sibling;
-        let head_h = line_of(ctx, &heading);
-        let row_h = (line_of(ctx, &body) + line_of(ctx, &caption)).max(look.target) + look.related;
-        let w = MediaSize::Large
-            .extent(theme)
-            .min(self.rect.width() - 2.0 * look.related);
-        let h = 2.0 * pad + head_h + look.related + rows.len().max(1) as f64 * row_h;
-        let x1 = btn.x1.min(self.rect.x1 - look.related);
-        let x0 = (x1 - w).max(self.rect.x0 + look.related);
-        let y1 = btn.y0 - look.related;
-        let y0 = (y1 - h).max(self.rect.y0 + look.related);
-        let panel = Rect::new(x0, y0, x1, y1);
-        let radius = f64::from(theme.tokens.radii.panel);
-        surface::shadow(
-            ctx.scene,
-            ctx.transform,
-            panel,
-            radius,
-            &theme.tokens.elevation.floating,
-        );
-        surface::panel(ctx.scene, ctx.transform, panel, radius, theme);
-        // Swallow clicks landing on the panel so they don't fall through.
-        self.push_hit(panel, Action::None);
-
-        let mut y = panel.y0 + pad;
-        let text_w = panel.width() - 2.0 * pad;
-        y += text_line(
-            ctx,
-            "Up next",
-            &heading,
-            panel_theme.text_primary,
-            Point::new(panel.x0 + pad, y),
-            text_w,
-        );
-        y += look.related;
-        if rows.is_empty() {
-            text_line(
-                ctx,
-                "Nothing queued",
-                &body,
-                panel_theme.text_dim,
-                Point::new(panel.x0 + pad, y),
-                text_w,
-            );
-            return;
-        }
-        let side = row_h - look.related;
-        for tk in &rows {
-            let art = Rect::new(panel.x0 + pad, y, panel.x0 + pad + side, y + side);
-            let cover = self.best_cover_id(&tk.id, &tk.album_id);
-            self.draw_cover(ctx, art, &cover, &tk.album);
-            let tx = art.x1 + look.sibling;
-            let maxw = panel.x1 - pad - tx;
-            let block = line_of(ctx, &body) + line_of(ctx, &caption);
-            let top = y + (side - block) / 2.0;
-            let th = text_line(
-                ctx,
-                &tk.title,
-                &body,
-                panel_theme.text_primary,
-                Point::new(tx, top),
-                maxw,
-            );
-            text_line(
-                ctx,
-                &tk.artist,
-                &caption,
-                panel_theme.text_dim,
-                Point::new(tx, top + th),
-                maxw,
-            );
-            y += row_h;
-        }
-    }
-
     fn draw_queue(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         let mut y = y + look.gutter;
         y = self.draw_spotify_remote_queue(ctx, look, body, y);
@@ -5065,506 +4461,10 @@ impl MusicApp {
 
     // ---- now playing bar --------------------------------------------------
 
-    /// The transport along the bottom of the window: the song and its
-    /// like and lyrics actions, the playback controls over the scrubber, and
-    /// the queue and volume. It is part of the content, set apart by one
-    /// hairline. On a narrow content column it folds to the song,
-    /// previous/play/next, volume and a More menu over the scrubber.
-    fn draw_nowplaying(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
-        surface::separator(
-            ctx.scene,
-            ctx.transform,
-            r.x0,
-            r.x1,
-            r.y0,
-            0.0,
-            ctx.theme.tokens.colors.surfaces.content,
-        );
-        // Only the wide transport draws a queue button; clear the captured rect
-        // so the compact bar never reports a stale hover target.
-        self.queue_btn_rect = Rect::ZERO;
-        let inner = Rect::new(
-            r.x0 + look.section,
-            r.y0 + look.sibling,
-            r.x1 - look.section,
-            r.y1 - look.sibling,
-        );
-        if Self::compact_bar(ctx.theme, &self.drawer, r.width()) {
-            self.draw_nowplaying_compact(ctx, look, inner);
-            return;
-        }
-        let w = inner.width();
-        let theme = ctx.theme;
-        // Three columns: the song, the transport, the queue and volume. The
-        // volume slider folds to a button with a popover on a narrower bar.
-        let show_slider = w >= 3.0 * MediaSize::Large.extent(theme);
-        let control = ButtonFace::height(ControlSize::Regular, theme);
-        let right_w = 2.0 * control
-            + look.related
-            + if show_slider {
-                MediaSize::Small.extent(theme) / 2.0 + look.tight
-            } else {
-                0.0
-            };
-        let left_w = (w * 0.36).min(MediaSize::Large.extent(theme));
-        let left = Rect::new(inner.x0, inner.y0, inner.x0 + left_w, inner.y1);
-        let right = Rect::new(inner.x1 - right_w, inner.y0, inner.x1, inner.y1);
-        let center = Rect::new(
-            left.x1 + look.gutter,
-            inner.y0,
-            right.x0 - look.gutter,
-            inner.y1,
-        );
-        self.draw_nowplaying_left(ctx, look, left);
-        self.draw_nowplaying_transport(ctx, look, center);
-        self.draw_nowplaying_right(ctx, look, right, show_slider);
-    }
-
-    /// The song: cover, title over artist, and its like and lyrics actions
-    /// beside the title (or "Nothing playing").
-    fn draw_nowplaying_left(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
-        let cur = self
-            .pb
-            .current
-            .clone()
-            .and_then(|id| self.gather_tracks(&[id]).into_iter().next());
-        let body = ctx.theme.text(TextRole::Body);
-        let Some(tk) = cur else {
-            text_in_band(ctx, "Nothing playing", &body, look.dim, r.x0, r, r.width());
-            return;
-        };
-        let art_side =
-            TransportFace::side(TransportControl::PlayPause { playing: false }, ctx.theme);
-        let art = square_around(Point::new(r.x0 + art_side / 2.0, r.center().y), art_side);
-        let cover = self.best_cover_id(&tk.id, &tk.album_id);
-        self.draw_cover(ctx, art, &cover, &tk.album);
-        // Clicking the art jumps to its album.
-        if !tk.album_id.is_empty() {
-            self.push_hit(art, Action::Nav(View::Album(tk.album_id.clone())));
-        }
-        let control = ButtonFace::height(ControlSize::Regular, ctx.theme);
-        let shortcuts = !self.is_local_file(&tk.id);
-        let actions_w = if shortcuts {
-            2.0 * control + look.tight
-        } else {
-            0.0
-        };
-        let tx = art.x1 + look.sibling;
-        let text_x1 = r.x1 - actions_w - look.related;
-        let title = body.strong();
-        let caption = ctx.theme.text(TextRole::Caption);
-        let block = line_of(ctx, &title) + line_of(ctx, &caption);
-        let top = r.center().y - block / 2.0;
-        let th = text_line(
-            ctx,
-            &tk.title,
-            &title,
-            look.text,
-            Point::new(tx, top),
-            text_x1 - tx,
-        );
-        let (secondary, ink) = match self.playback_error.as_deref() {
-            Some(error) => (error, look.danger),
-            None => (tk.artist.as_str(), look.dim),
-        };
-        text_line(
-            ctx,
-            secondary,
-            &caption,
-            ink,
-            Point::new(tx, top + th),
-            text_x1 - tx,
-        );
-        if !shortcuts {
-            return;
-        }
-        // Like and lyrics follow the song's name, as one group with it.
-        let shown_w = [(&tk.title, &title), (&secondary.to_string(), &caption)]
-            .into_iter()
-            .map(|(text, style)| {
-                let shown = elide(ctx.text, text, style, text_x1 - tx);
-                f64::from(ctx.text.measure_style(&shown, None, style).0)
-            })
-            .fold(0.0, f64::max);
-        let x0 = (tx + shown_w + look.sibling).min(r.x1 - actions_w);
-        let mid = r.center().y;
-        let like = Rect::new(x0, mid - control / 2.0, x0 + control, mid + control / 2.0);
-        let lyrics = Rect::new(
-            like.x1 + look.tight,
-            like.y0,
-            like.x1 + look.tight + control,
-            like.y1,
-        );
-        let liked = self.lib.is_liked(&tk.id);
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(like, Icon::Heart, if liked { "Unlike" } else { "Like" })
-                .control_size(ControlSize::Regular),
-            false,
-            Action::ToggleLike(tk.id.clone()),
-        );
-        if liked {
-            let side = f64::from(ctx.theme.tokens.metrics.icon_md);
-            Icon::Heart.draw_filled(
-                ctx.scene,
-                ctx.transform,
-                square_around(like.center(), side),
-                look.text,
-            );
-        }
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(lyrics, Icon::Mic, "Lyrics").control_size(ControlSize::Regular),
-            self.view == View::Lyrics,
-            Action::Nav(View::Lyrics),
-        );
-    }
-
-    /// Shuffle, previous, play/pause, next and repeat, centred over the
-    /// scrubber with its elapsed and total times.
-    fn draw_nowplaying_transport(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
-        let theme = ctx.theme;
-        let control = ButtonFace::height(ControlSize::Regular, theme);
-        let playing = TransportControl::PlayPause {
-            playing: self.pb.playing,
-        };
-        let play_side = TransportFace::side(playing, theme);
-        let skip_side = TransportFace::side(TransportControl::Next, theme);
-        let row_h = play_side.max(control);
-        // Shuffle and repeat flank the three media controls a group's
-        // width away; previous, play and next stand together.
-        let row_w =
-            2.0 * control + 2.0 * skip_side + play_side + 2.0 * look.sibling + 2.0 * look.related;
-        let mid = r.y0 + row_h / 2.0;
-        let mut x = r.center().x - row_w / 2.0;
-        let mut place = |side: f64, gap: f64| {
-            let rect = Rect::new(x, mid - side / 2.0, x + side, mid + side / 2.0);
-            x += side + gap;
-            rect
-        };
-        let shuffle = place(control, look.sibling);
-        let prev = place(skip_side, look.related);
-        let play = place(play_side, look.related);
-        let next = place(skip_side, look.sibling);
-        let repeat = place(control, 0.0);
-        // With nothing to play the transport rests, disabled.
-        let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
-        let act = |action: Action| (!idle).then_some(action);
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(shuffle, Icon::Shuffle, "Shuffle")
-                .control_size(ControlSize::Regular)
-                .disabled(idle),
-            self.pb.shuffle && !idle,
-            act(Action::ToggleShuffle).unwrap_or(Action::None),
-        );
-        self.transport_button(ctx, prev, TransportControl::Previous, idle, Action::Prev);
-        self.transport_button(ctx, play, playing, idle, Action::TogglePlay);
-        self.transport_button(ctx, next, TransportControl::Next, idle, Action::Next);
-        let (icon, name) = match self.pb.repeat {
-            RepeatMode::One => (Icon::Repeat1, "Repeat one"),
-            RepeatMode::All => (Icon::Repeat, "Repeat all"),
-            RepeatMode::Off => (Icon::Repeat, "Repeat"),
-        };
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(repeat, icon, name)
-                .control_size(ControlSize::Regular)
-                .disabled(idle),
-            self.pb.repeat != RepeatMode::Off && !idle,
-            act(Action::CycleRepeat).unwrap_or(Action::None),
-        );
-
-        let y0 = r.y0 + row_h - control;
-        let scrub = Rect::new(r.x0, y0 + control + look.tight, r.x1, r.y1);
-        self.draw_scrubber(ctx, look, scrub, idle);
-    }
-
-    /// Elapsed time, the draggable position and the total time, in `r`.
-    fn draw_scrubber(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect, idle: bool) {
-        let dur = self.current_duration_ms();
-        let pos = self.playhead_ms.min(dur as f64).max(0.0);
-        let frac = if dur > 0 { pos / dur as f64 } else { 0.0 };
-        let elapsed = ui::format::timecode((pos / 1000.0) as u64);
-        let total = ui::format::timecode(dur / 1000);
-        let numeric = ctx.theme.text(TextRole::Caption).numeric();
-        let time_w = f64::from(ctx.text.measure_style("00:00", None, &numeric).0);
-        text_right_in_band(ctx, &elapsed, &numeric, look.dim, r.x0 + time_w, r);
-        text_in_band(ctx, &total, &numeric, look.dim, r.x1 - time_w, r, time_w);
-        let slider = Rect::new(
-            r.x0 + time_w + look.related,
-            r.y0,
-            r.x1 - time_w - look.related,
-            r.y1,
-        );
-        let face = SliderFace::new(slider, frac);
-        self.scrubber_rect = slider;
-        self.scrubber_hit = face.hit_rect(ctx.theme);
-        let active = self.scrubber_hit.contains(self.mouse) || self.drag == Some(Drag::Scrubber);
-        let face = face
-            .hovered(active && !idle)
-            .dragging(self.drag == Some(Drag::Scrubber))
-            .disabled(idle);
-        Slider::paint(ctx.scene, ctx.transform, ctx.theme, &face);
-    }
-
-    /// Queue and volume. The queue button opens the queue (and restores the
-    /// prior view when toggled off); hovering it previews the next songs.
-    fn draw_nowplaying_right(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        look: &Look,
-        r: Rect,
-        show_slider: bool,
-    ) {
-        let control = ButtonFace::height(ControlSize::Regular, ctx.theme);
-        let mid = r.center().y;
-        let muted = self.pb.volume == 0;
-        let volume_icon = if muted { Icon::VolumeX } else { Icon::Volume2 };
-        let mut x = r.x1;
-        if show_slider {
-            // Inline slider; the speaker is a mute toggle.
-            self.volume_btn_rect = Rect::ZERO;
-            self.volume_popover_open = false;
-            let slider_w = MediaSize::Small.extent(ctx.theme) / 2.0;
-            let slider = Rect::new(x - slider_w, mid - control / 2.0, x, mid + control / 2.0);
-            self.draw_volume_slider(ctx, slider);
-            x = slider.x0 - look.tight;
-            let mute = Rect::new(x - control, mid - control / 2.0, x, mid + control / 2.0);
-            self.icon_button(
-                ctx,
-                ButtonFace::icon_only(mute, volume_icon, if muted { "Unmute" } else { "Mute" })
-                    .control_size(ControlSize::Regular),
-                false,
-                Action::ToggleMute,
-            );
-            x = mute.x0 - look.related;
-        } else {
-            // Collapsed: one volume button that opens a slider popover.
-            self.volume_rect = Rect::ZERO;
-            self.volume_hit = Rect::ZERO;
-            let btn = Rect::new(x - control, mid - control / 2.0, x, mid + control / 2.0);
-            self.volume_btn_rect = btn;
-            self.icon_button(
-                ctx,
-                ButtonFace::icon_only(btn, volume_icon, "Volume")
-                    .control_size(ControlSize::Regular),
-                self.volume_popover_open,
-                Action::ToggleVolumePopover,
-            );
-            x = btn.x0 - look.related;
-        }
-        let queue = Rect::new(x - control, mid - control / 2.0, x, mid + control / 2.0);
-        self.queue_btn_rect = queue;
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(queue, Icon::ListMusic, "Queue")
-                .control_size(ControlSize::Regular),
-            self.view == View::Queue,
-            Action::ToggleQueue,
-        );
-    }
-
-    /// A horizontal volume slider filling `hit` (its whole interactive rect),
-    /// registering the drag target. Shared by the inline slider and the
-    /// collapsed-volume popover.
-    fn draw_volume_slider(&mut self, ctx: &mut PaintCtx<'_>, hit: Rect) {
-        let face = SliderFace::new(hit, f64::from(self.pb.volume) / 100.0);
-        self.volume_rect = hit;
-        self.volume_hit = face.hit_rect(ctx.theme);
-        let active = self.volume_hit.contains(self.mouse) || self.drag == Some(Drag::Volume);
-        let face = face
-            .hovered(active)
-            .dragging(self.drag == Some(Drag::Volume));
-        Slider::paint(ctx.scene, ctx.transform, ctx.theme, &face);
-    }
-
-    /// The collapsed-volume popover: the shared anchored floating Panel
-    /// (placed and painted as every popover is) with the mute toggle, a
-    /// slider and the level, opening above the volume button.
-    fn draw_volume_popover(&mut self, ctx: &mut PaintCtx<'_>, look: &Look) {
-        if !self.volume_popover_open || self.volume_btn_rect.width() <= 0.0 {
-            self.volume_popover_rect = Rect::ZERO;
-            self.volume_popover_slider = Rect::ZERO;
-            return;
-        }
-        let theme = ctx.theme;
-        let btn = self.volume_btn_rect;
-        let control = ButtonFace::height(ControlSize::Regular, theme);
-        let numeric = theme.text(TextRole::Caption).numeric();
-        let pct_w = f64::from(ctx.text.measure_style("100", None, &numeric).0);
-        let pw = control
-            + MediaSize::Small.extent(theme)
-            + pct_w
-            + 2.0 * look.sibling
-            + 2.0 * look.related;
-        let ph = control + 2.0 * look.related;
-        let (panel, _) = ui::widget::floating_surface::place_aligned(
-            btn,
-            (pw, ph),
-            ui::widget::PopoverSide::Above,
-            ui::widget::PanelAlign::Trailing,
-            f64::from(theme.tokens.spacing.s1),
-            ui::widget::floating_surface::panel_room(self.rect, theme),
-        );
-        self.volume_popover_rect = panel;
-        ui::widget::floating_surface::paint(ctx.scene, ctx.transform, panel, theme);
-        // Block clicks inside the panel from falling through.
-        self.push_hit(panel, Action::None);
-
-        let panel_theme = theme.on_ground(chrome::panel_ground(theme));
-        let muted = self.pb.volume == 0;
-        let mute = Rect::new(
-            panel.x0 + look.related,
-            panel.y0 + look.related,
-            panel.x0 + look.related + control,
-            panel.y1 - look.related,
-        );
-        let face = ButtonFace::icon_only(
-            mute,
-            if muted { Icon::VolumeX } else { Icon::Volume2 },
-            if muted { "Unmute" } else { "Mute" },
-        );
-        let hovered = self.push_hit(face.hit_rect(&panel_theme), Action::ToggleMute);
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            &panel_theme,
-            &face.hovered(hovered),
-        );
-        let pct = format!("{}", self.pb.volume);
-        text_right_in_band(
-            ctx,
-            &pct,
-            &numeric,
-            panel_theme.text_dim,
-            panel.x1 - look.sibling,
-            panel,
-        );
-        let slider = Rect::new(
-            mute.x1 + look.related,
-            mute.y0,
-            panel.x1 - look.sibling - pct_w - look.related,
-            mute.y1,
-        );
-        self.volume_popover_slider = slider;
-        self.draw_volume_slider(ctx, slider);
-    }
-
-    /// The narrow transport: the song beside previous/play/next, then the
-    /// volume button and a More menu that holds shuffle, repeat, like,
-    /// lyrics and the queue, over the scrubber. Everything the wide bar
-    /// offers stays one press away.
-    fn draw_nowplaying_compact(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
-        self.volume_rect = Rect::ZERO;
-        self.volume_hit = Rect::ZERO;
-        let control = ButtonFace::height(ControlSize::Regular, ctx.theme);
-        let caption = ctx.theme.text(TextRole::Caption);
-        let scrub_h = line_of(ctx, &caption).max(look.section + look.related);
-        let top = Rect::new(r.x0, r.y0, r.x1, r.y1 - scrub_h - look.tight);
-        let playing = TransportControl::PlayPause {
-            playing: self.pb.playing,
-        };
-        let play_side = TransportFace::side(playing, ctx.theme);
-        let skip_side = TransportFace::side(TransportControl::Next, ctx.theme);
-        let controls_w =
-            2.0 * skip_side + play_side + 2.0 * control + 2.0 * look.related + 2.0 * look.sibling;
-        let mid = top.center().y;
-        let square = |x: f64, side: f64| Rect::new(x, mid - side / 2.0, x + side, mid + side / 2.0);
-        let prev = square(top.x1 - controls_w, skip_side);
-        let play = square(prev.x1 + look.related, play_side);
-        let next = square(play.x1 + look.related, skip_side);
-        let volume = square(next.x1 + look.sibling, control);
-        let more = square(volume.x1 + look.sibling, control);
-        let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
-
-        self.draw_compact_song(ctx, look, top, prev.x0 - look.sibling);
-
-        self.transport_button(ctx, prev, TransportControl::Previous, idle, Action::Prev);
-        self.transport_button(ctx, play, playing, idle, Action::TogglePlay);
-        self.transport_button(ctx, next, TransportControl::Next, idle, Action::Next);
-        // Volume opens the same slider popover as the mid-width bar.
-        self.volume_btn_rect = volume;
-        let volume_icon = if self.pb.volume == 0 {
-            Icon::VolumeX
-        } else {
-            Icon::Volume2
-        };
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(volume, volume_icon, "Volume").control_size(ControlSize::Regular),
-            self.volume_popover_open,
-            Action::ToggleVolumePopover,
-        );
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(more, Icon::MoreHorizontal, "More controls")
-                .control_size(ControlSize::Regular),
-            false,
-            Action::OpenPlayerMenu(more),
-        );
-        let scrub = Rect::new(r.x0, r.y1 - scrub_h, r.x1, r.y1);
-        self.draw_scrubber(ctx, look, scrub, idle);
-    }
-
-    /// The compact bar's song: its cover (which opens the lyrics) beside
-    /// title over artist, or "Nothing playing", ending at `text_x1`.
-    fn draw_compact_song(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, top: Rect, text_x1: f64) {
-        let caption = ctx.theme.text(TextRole::Caption);
-        let cur = self
-            .pb
-            .current
-            .clone()
-            .and_then(|id| self.gather_tracks(&[id]).into_iter().next());
-        let body = ctx.theme.text(TextRole::Body);
-        if let Some(tk) = cur {
-            let art = Rect::new(top.x0, top.y0, top.x0 + top.height(), top.y1);
-            let cover = self.best_cover_id(&tk.id, &tk.album_id);
-            self.draw_cover(ctx, art, &cover, &tk.album);
-            self.push_hit(art, Action::Nav(View::Lyrics));
-            let tx = art.x1 + look.sibling;
-            let title = body.strong();
-            let block = line_of(ctx, &title) + line_of(ctx, &caption);
-            let ty = top.center().y - block / 2.0;
-            let th = text_line(
-                ctx,
-                &tk.title,
-                &title,
-                look.text,
-                Point::new(tx, ty),
-                text_x1 - tx,
-            );
-            text_line(
-                ctx,
-                &tk.artist,
-                &caption,
-                look.dim,
-                Point::new(tx, ty + th),
-                text_x1 - tx,
-            );
-        } else {
-            text_in_band(
-                ctx,
-                "Nothing playing",
-                &body,
-                look.dim,
-                top.x0,
-                top,
-                text_x1 - top.x0,
-            );
-        }
-    }
-
     // ---- toast ------------------------------------------------------------
 
     fn draw_toast(&self, ctx: &mut PaintCtx<'_>) {
-        let area = Rect::new(
-            self.body_rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1 - self.bar_h,
-        );
+        let area = Rect::new(self.body_rect.x0, self.rect.y0, self.rect.x1, self.rect.y1);
         self.toast.paint(
             ctx.scene,
             ctx.transform,
@@ -5585,7 +4485,6 @@ impl MusicApp {
                 title: tk.title.clone(),
                 artist: self.lib.artist_name(&tk.artist_id).to_string(),
                 album: self.lib.album_title(&tk.album_id).to_string(),
-                album_id: tk.album_id.clone(),
                 dur: tk.duration_s,
                 no: tk.track_no,
             })

@@ -627,8 +627,11 @@ impl MusicApp {
     /// Take the person to where the control running `action` lives, and
     /// highlight it there.
     pub(in crate::app) fn on_show_control(&mut self, home: &str, action: Action) {
-        if home == Home::Sidebar.id() && self.drawer.is_overlay() && !self.drawer.is_open() {
-            self.toggle_sidebar();
+        if home == Home::Sidebar.id()
+            && let Some(bar) = &self.bar
+            && !bar.is_sidebar_open()
+        {
+            bar.event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
         }
         let now = ui::motion::frame_now();
         let mut ring = Presence::closed();
@@ -1126,15 +1129,12 @@ impl MusicApp {
     }
 
     /// The playlist of the sidebar under `point`, while songs are dragged.
-    pub(in crate::app) fn drop_target_at(&self, point: Point) -> Option<String> {
-        self.hits.iter().rev().find_map(|hit| match &hit.action {
-            Action::Nav(View::Playlist(id))
-                if hit.rect.contains(point) && self.lib.playlist(id).is_some() =>
-            {
-                Some(id.clone())
-            }
+    pub(in crate::app) fn drop_target_at(&self, point: Point) -> Option<(String, Rect)> {
+        let (place, row) = self.places.place_at(point)?;
+        match crate::app::shell::place_view(&place)? {
+            View::Playlist(id) if self.lib.playlist(&id).is_some() => Some((id, row)),
             _ => None,
-        })
+        }
     }
 
     /// The dragged songs were let go: onto a playlist they join it, as one
@@ -1144,7 +1144,7 @@ impl MusicApp {
             return;
         };
         self.dirty = true;
-        let Some(playlist) = self.drop_target_at(drag.at) else {
+        let Some((playlist, _)) = self.drop_target_at(drag.at) else {
             return;
         };
         let _gesture = self
@@ -1190,16 +1190,11 @@ impl MusicApp {
         let Some(drag) = self.search.drag.clone() else {
             return;
         };
-        if let Some(target) = self.drop_target_at(drag.at)
-            && let Some(hit) = self
-                .hits
-                .iter()
-                .find(|hit| matches!(&hit.action, Action::Nav(View::Playlist(id)) if *id == target))
-        {
+        if let Some((_, row)) = self.drop_target_at(drag.at) {
             // A playlist row's corner, concentric with the ring just outside it.
             let radius = f64::from(ctx.theme.tokens.radii.item) + 1.0;
             let ink = ctx.theme.border_focus;
-            ctx.stroke_round(hit.rect.inset(-1.0), radius, ink, 2.0);
+            ctx.stroke_round(row.inset(-1.0), radius, ink, 2.0);
         }
         let label = match drag.tracks.as_slice() {
             [one] => self.track_title(one),
