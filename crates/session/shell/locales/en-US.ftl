@@ -1123,6 +1123,7 @@ shell-window-menu-move-to-workspace = Move to workspace
 shell-window-menu-new-tab = New tab
 shell-window-menu-close-window = Close window
 shell-window-menu-unnamed-strip = Strip { $number }
+shell-window-menu-tell-agent = Tell an agent…
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Application unavailable
 shell-activity-title = Activity
@@ -2920,6 +2921,7 @@ portal-chooser-file-grant-unavailable = The selected file is no longer available
 
 ## The agent composer: one field to ask an agent or tell it what to do
 agent-quick-title = { $agent }
+agent-quick-agent = Agent
 agent-quick-about-selection = About your selection in { $app }: “{ $selection }”
 agent-quick-about-window = About { $app }; nothing is selected
 agent-quick-accessible-name = Agent composer

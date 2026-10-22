@@ -18,7 +18,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 /// The window menu of a tabbed window, top to bottom.
-const TABBED_LABELS: [&str; 9] = [
+const TABBED_LABELS: [&str; 10] = [
     "Full screen",
     "Maximize",
     "Move to strip",
@@ -28,15 +28,17 @@ const TABBED_LABELS: [&str; 9] = [
     "Move to new group",
     "Close tab",
     "Close window",
+    "Tell an agent…",
 ];
 /// The window menu of a window of one tab.
-const SINGLE_LABELS: [&str; 6] = [
+const SINGLE_LABELS: [&str; 7] = [
     "Full screen",
     "Maximize",
     "Move to strip",
     "Move to workspace",
     "New tab",
     "Close window",
+    "Tell an agent…",
 ];
 
 const TAB_A: u64 = 0xa1;
@@ -633,6 +635,21 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         );
     }
 
+    /// "Tell an agent…" is done once chosen, an agent to tell or not: the
+    /// menu closes rather than reopening as a refused row does.
+    fn telling_an_agent_closes_the_menu() {
+        let mut h = harness(1);
+        h.right_click_pill(0);
+        assert!(h.host.perform_semantic_action(
+            "tabmenu:tell-agent",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut h.doc),
+            &automerge::ROOT,
+        ));
+        assert!(!h.host.tab_context_menu_is_open());
+        assert_eq!(h.tab_ids(0), h.tabs, "the window is untouched");
+    }
+
     /// The menu paints through the shared widget with the live theme and
     /// an `e4` shadow following its outline, and never paints when closed.
     fn the_open_menu_paints_and_the_closed_one_does_not() {
@@ -684,6 +701,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
     right_click_on_a_tab_opens_the_menu_arrows_move_the_highlight_and_escape_closes();
     a_click_outside_the_menu_dismisses_it_and_goes_no_further();
     a_single_tab_group_is_offered_close_only();
+    telling_an_agent_closes_the_menu();
     the_open_menu_paints_and_the_closed_one_does_not();
 }
 

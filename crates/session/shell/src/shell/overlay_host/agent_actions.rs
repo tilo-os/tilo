@@ -876,6 +876,10 @@ fn request_queue(request: &ComposerRequest, title: Option<String>) -> Operation 
     )
 }
 
+/// The task the composer starts: the one place it does, so where tasks live
+/// changes here alone. Queued for `owner`'s agent, it runs with an ordinary
+/// task's authority; what it is about rides as its subject and grants
+/// nothing.
 fn queue_operation(
     owner: &ComposerOwner,
     request: Option<ComposerRequest>,
@@ -1614,6 +1618,59 @@ mod tests {
         assert!(instruction.starts_with("Tighten this\n\n"));
         assert!(instruction.contains("selected in Terminal"));
         assert!(instruction.contains("<<<\nls -la /srv\n>>>"));
+    }
+
+    #[test]
+    fn a_thing_told_from_a_context_menu_is_a_typed_subject_of_an_ordinary_assigned_task() {
+        use ui::shared_selection::SharedSelection;
+
+        let mut request = request(ComposerIntent::Request);
+        request.text = "File this under Q3".into();
+        request.conversation.clear();
+        // What a row's context menu attaches: its item, in its resource.
+        request.about = Some(SelectionSeed::new(
+            "so.tilo.mail",
+            "Mail",
+            Some(
+                SharedSelection::of_text("Invoice March")
+                    .at(tilo_actions::SelectionPlace::item("msg-7"))
+                    .in_resource(tilo_actions::ActionResource {
+                        id: "mailbox:inbox".into(),
+                        kind: "mail.mailbox".into(),
+                        label: "Inbox".into(),
+                    }),
+            ),
+        ));
+        let operation = request_queue(&request, None);
+        // The one door every task goes through: the desktop's task queue,
+        // an action the broker admits like any other.
+        assert_eq!(
+            (operation.resource.as_str(), operation.action.as_str()),
+            (TASKS, "queue")
+        );
+        let mut keys: Vec<_> = operation.arguments.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "assigned_agent",
+                "instruction",
+                "planning",
+                "subject_json",
+                "title"
+            ],
+            "the reference names a place and grants nothing: no scope, resource or grant"
+        );
+        assert_eq!(operation.arguments["assigned_agent"], request.owner.agent);
+        let subject: tilo_actions::SelectionSubject =
+            serde_json::from_str(operation.arguments["subject_json"].as_str().unwrap()).unwrap();
+        subject.validate().unwrap();
+        assert_eq!(subject.resource.id, "mailbox:inbox");
+        assert_eq!(
+            subject.anchor.place,
+            Some(tilo_actions::SelectionPlace::item("msg-7"))
+        );
+        assert_eq!(operation.arguments["instruction"], "File this under Q3");
     }
 
     #[test]
