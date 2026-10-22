@@ -561,12 +561,6 @@ struct TrayBell {
     only: bool,
 }
 
-impl TrayBell {
-    fn shown(self) -> bool {
-        self.unread > 0 || self.quiet || self.only
-    }
-}
-
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
@@ -789,10 +783,6 @@ struct TrayLayout {
     icon_px: f64,
     pct_style: TextStyle,
     pct_label: Option<String>,
-    /// Width held beside the bell for the widest unread-count badge, zero
-    /// without a bell.
-    badge_w: f64,
-    slots: usize,
     center_y: f64,
     dim: Color,
     bright: Color,
@@ -2383,15 +2373,15 @@ impl TopBarChrome {
         );
     }
 
-    /// The tray's status glyph slots: volume, network link and battery
-    /// when known, and one bell slot (the unread count rides beside it, and
-    /// quiet mode silences it).
+    /// The tray's status glyph slots: the bell, always (the unread count
+    /// sits on it, and quiet mode silences it), then volume, network link
+    /// and battery when known.
     fn tray_slot_count(&self) -> usize {
         [
+            true,
             self.status.volume.is_some(),
             self.status.link.is_some(),
             self.status.battery_percent().is_some(),
-            self.bell.shown(),
         ]
         .into_iter()
         .filter(|shown| *shown)
@@ -2423,39 +2413,17 @@ impl TopBarChrome {
         let tray_gap = 0.0;
         let icon_px = BAR_GLYPH_PX;
         let pct_style = tokens.typography.style(TextRole::Caption);
-        // The unread count rides beside the bell. Its room is held for the
-        // widest count whenever the bell stands, read or not, so a count
-        // arriving or growing never pushes the faces to its left out from
-        // under a pointer already on its way to one.
-        let badge_w = if self.bell.shown() {
-            Self::notification_badge_room(text_renderer, theme)
-        } else {
-            0.0
-        };
-
         let pct_label = self.status.battery_percent().map(|p| format!("{p}%"));
         let pct_strong = pct_style.clone().with_weight(TextWeight::Semibold);
         let pct_w = pct_label.as_ref().map_or(0.0, |s| {
             f64::from(text_renderer.measure_style(s, None, &pct_strong).0)
         });
         let slots = self.tray_slot_count();
-        let mut tray_w = if slots == 0 {
-            // Still the quick-settings trigger, so keep one slot for
-            // the settings glyph.
-            tray_pad * 2.0 + tray_slot
-        } else {
-            tray_pad * 2.0
-                + small_count_to_f64(slots) * tray_slot
-                + small_count_to_f64(slots.saturating_sub(1)) * tray_gap
-        };
+        let mut tray_w = tray_pad * 2.0
+            + small_count_to_f64(slots) * tray_slot
+            + small_count_to_f64(slots.saturating_sub(1)) * tray_gap;
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
-        }
-        if self.bell.shown() {
-            // Bell plus room for a compact exact count (`99+` once the number
-            // no longer fits); the base slot calculation already paid for the
-            // bell.
-            tray_w += badge_w + tray_gap;
         }
 
         self.tray_pill_rect = Rect::new(
@@ -2507,8 +2475,6 @@ impl TopBarChrome {
             icon_px,
             pct_style,
             pct_label,
-            badge_w,
-            slots,
             center_y,
             dim: colors.text_dim,
             bright: colors.text_primary,
@@ -2518,22 +2484,11 @@ impl TopBarChrome {
         }
     }
 
-    fn draw_tray_settings_icon(scene: &mut Scene, transform: Affine, layout: &TrayLayout, sx: f64) {
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            layout.slot_rect(sx),
-            ui::icons::Icon::Settings2,
-            layout.dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-    }
-
-    /// Draws the bell + compact unread count if there are unread
-    /// notifications, and the silenced bell while fresh banners are held
-    /// (Do Not Disturb): the state lives in the status cluster, not in a
-    /// card over the person's work. Returns the x cursor position for the
-    /// next slot (unchanged if not drawn).
+    /// Draws the bell, quiet with nothing unread, with a compact unread
+    /// count on its shoulder, and silenced while fresh banners are held (Do
+    /// Not Disturb): the state lives in the status cluster, not in a card
+    /// over the person's work. Returns the x cursor position for the next
+    /// slot.
     fn draw_tray_notification_badge(
         &self,
         scene: &mut Scene,
@@ -2543,9 +2498,6 @@ impl TopBarChrome {
         layout: &TrayLayout,
         sx: f64,
     ) -> f64 {
-        if !self.bell.shown() {
-            return sx;
-        }
         // A bell that is only the way to the centre rests as quietly as
         // the other status glyphs; something unread or held lights it.
         let ink = if self.bell.unread == 0 && !self.bell.quiet {
@@ -2553,10 +2505,11 @@ impl TopBarChrome {
         } else {
             layout.bright
         };
+        let glyph = layout.slot_rect(sx);
         ui::icons::draw_icon(
             scene,
             transform,
-            layout.slot_rect(sx),
+            glyph,
             if self.bell.quiet {
                 ui::icons::Icon::BellOff
             } else {
@@ -2565,23 +2518,24 @@ impl TopBarChrome {
             ink,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
+        let next = sx + layout.tray_slot + layout.tray_gap;
         if self.bell.unread == 0 {
-            return sx + layout.tray_slot + layout.badge_w + layout.tray_gap;
+            return next;
         }
         let label = Self::notification_badge_label(self.bell.unread);
         // The count is set at the chrome's numeric-readout size, so it
         // follows the person's text scale like every other bar label.
         let label_style = &layout.pct_style;
         let (label_w, label_h) = text_renderer.measure_style(&label, None, label_style);
-        // The badge hugs its own count inside the room `draw_tray_pill_body`
-        // held for the widest one.
+        // The count sits on the bell's top-right shoulder inside the bell's
+        // own slot, a wider count growing leftward over the glyph, so it
+        // takes no room of its own: the cluster keeps its width whatever the
+        // count, and the faces to its left never move under a pointer
+        // already on its way to one.
         let (badge_w, badge_h) = Self::notification_badge_size(label_w, label_h, theme);
-        let badge = Rect::new(
-            sx + layout.tray_slot,
-            layout.center_y - badge_h / 2.0,
-            sx + layout.tray_slot + badge_w,
-            layout.center_y + badge_h / 2.0,
-        );
+        let right = glyph.x1 + badge_h / 2.0 - 1.0;
+        let top = glyph.y0 - badge_h / 2.0 + 2.0;
+        let badge = Rect::new(right - badge_w, top, right, top + badge_h);
         // A count badge is a capsule (Selector radius) in the danger hue;
         // its ink is whichever text tone stays legible on that fill, so a
         // light or high-contrast palette is not handed a fixed white.
@@ -2613,15 +2567,7 @@ impl TopBarChrome {
             None,
             label_style,
         );
-        sx + layout.tray_slot + layout.badge_w + layout.tray_gap
-    }
-
-    /// The width the widest count badge (`99+`) takes beside the bell.
-    fn notification_badge_room(text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
-        let label = Self::notification_badge_label(u32::MAX);
-        let style = theme.tokens.typography.style(TextRole::Caption);
-        let (w, h) = text_renderer.measure_style(&label, None, &style);
-        Self::notification_badge_size(w, h, theme).0
+        next
     }
 
     /// `99+` once the exact number no longer fits the compact badge.
@@ -2813,9 +2759,6 @@ impl TopBarChrome {
     ) {
         let colors = &theme.tokens.colors;
         let mut sx = self.tray_pill_rect.x0 + layout.tray_pad;
-        if layout.slots == 0 {
-            Self::draw_tray_settings_icon(scene, transform, layout, sx);
-        }
         sx = self.draw_tray_notification_badge(scene, transform, theme, text_renderer, layout, sx);
         sx = Self::draw_tray_volume_icon(scene, transform, &self.status, layout, sx);
         sx = Self::draw_tray_network_icon(scene, transform, &self.status, layout, sx);
@@ -5178,10 +5121,10 @@ mod tests {
         assert!(!painted(&mut bar));
     }
 
-    /// Do Not Disturb is shown in the status cluster, as a silenced bell in
-    /// its own slot, not as a card over the person's work.
+    /// Do Not Disturb is shown in the status cluster, as the bell silenced
+    /// in its own slot, not as a card over the person's work.
     #[test]
-    fn quiet_mode_adds_a_silenced_bell_to_the_status_cluster() {
+    fn quiet_mode_silences_the_bell_in_the_status_cluster() {
         let mut bar = sample_chrome();
         bar.status.link = Some(crate::chrome::LinkStatus {
             kind: crate::chrome::LinkKind::Wired,
@@ -5193,13 +5136,7 @@ mod tests {
         bar.bell.quiet = true;
         lay_out_and_draw(&mut bar, 1280.0);
         let quiet = bar.tray_pill_rect;
-        let badge_room =
-            TopBarChrome::notification_badge_room(&mut TextRenderer::new(), &Theme::default());
-        assert!(
-            (quiet.width() - loud.width() - BAR_CONTROL_PX - badge_room).abs() < 1e-6,
-            "one glyph slot more, and room for a count: {loud:?} -> {quiet:?}"
-        );
-        assert_eq!(quiet.x1, loud.x1, "the cluster keeps its right edge");
+        assert_eq!(quiet, loud, "the bell's slot was there all along");
         bar.bell.unread = 2;
         let node = bar.accessibility().expect("topbar semantics");
         let tray = node
@@ -5221,25 +5158,20 @@ mod tests {
         );
     }
 
-    /// A host without quick settings (the web) opens the notification
-    /// centre from the status cluster: it is drawn as the bell and named
-    /// "Notifications", never a settings glyph promising settings.
+    /// Every host draws the bell in the status cluster, quiet with nothing
+    /// unread, so both trays are one design. A host without quick settings
+    /// (the web) names the cluster "Notifications", since that is all it
+    /// opens.
     #[test]
     fn without_quick_settings_the_status_cluster_is_the_notifications_bell() {
         let mut bar = sample_chrome();
         lay_out_and_draw(&mut bar, 1280.0);
-        let settings = bar.tray_pill_rect;
-        assert_eq!(bar.tray_slot_count(), 0, "a settings glyph alone");
+        let desktop = bar.tray_pill_rect;
+        assert_eq!(bar.tray_slot_count(), 1, "the bell, with nothing unread");
         bar.bell.only = true;
         lay_out_and_draw(&mut bar, 1280.0);
-        assert_eq!(bar.tray_slot_count(), 1, "the bell takes the slot");
-        let badge_room =
-            TopBarChrome::notification_badge_room(&mut TextRenderer::new(), &Theme::default());
-        assert!(
-            (bar.tray_pill_rect.width() - settings.width() - badge_room).abs() < 1e-6,
-            "the bell replaces the glyph and holds room for a count: {settings:?} -> {:?}",
-            bar.tray_pill_rect
-        );
+        assert_eq!(bar.tray_slot_count(), 1, "the same bell");
+        assert_eq!(bar.tray_pill_rect, desktop, "one tray on both hosts");
         let node = bar.accessibility().expect("topbar semantics");
         let tray = node
             .children
