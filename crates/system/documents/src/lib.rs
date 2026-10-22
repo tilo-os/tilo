@@ -31,7 +31,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-#[cfg(unix)]
+// Opening beneath a chosen item takes Linux's `openat2` (`RESOLVE_BENEATH`).
+#[cfg(target_os = "linux")]
 pub mod host;
 #[cfg(all(target_os = "linux", any(feature = "mount", test)))]
 pub mod mount;
