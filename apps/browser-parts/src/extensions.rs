@@ -37,6 +37,8 @@ const ARCHIVE_LIMITS: ZipLimits = ZipLimits {
     max_total_bytes: 256 * 1024 * 1024,
 };
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+/// Largest `_locales/<locale>/messages.json` read for an extension's names.
+const MAX_MESSAGES_BYTES: u64 = 1024 * 1024;
 /// The manager and resource surface materialize at most this many locally
 /// installed extensions. This keeps a hostile or accidentally huge profile
 /// from turning a refresh into unbounded filesystem work.
@@ -125,7 +127,9 @@ fn install_package(
             }
             error => ExtensionError::Manifest(error.to_string()),
         })?;
-    let mut info = parse_manifest(&manifest_text)?;
+    let mut info = parse_manifest_with(&manifest_text, |file| {
+        zip.read_text(file, MAX_MESSAGES_BYTES).ok()
+    })?;
     let keyed_manifest = match &signed {
         Some((id, key)) => {
             info.id.clone_from(id);
@@ -191,7 +195,9 @@ fn list_in(root: &Path) -> Vec<ExtensionInfo> {
         .filter_map(|entry| {
             let manifest = entry.path().join("manifest.json");
             let text = read_manifest(&manifest).ok()?;
-            let mut info = parse_manifest(&text).ok()?;
+            let root = entry.path();
+            let mut info =
+                parse_manifest_with(&text, |file| read_bounded(&root.join(file))).ok()?;
             // A package installed from a signed CRX lives under the
             // identifier its key names, which is the identity Chromium shows.
             if let Some(name) = entry.file_name().to_str()
@@ -217,14 +223,99 @@ fn read_manifest(path: &Path) -> Result<String, ExtensionError> {
     std::fs::read_to_string(path).map_err(ExtensionError::Io)
 }
 
+/// A file of at most [`MAX_MESSAGES_BYTES`], as text.
+pub(crate) fn read_bounded(path: &Path) -> Option<String> {
+    let length = std::fs::metadata(path).ok()?.len();
+    (length <= MAX_MESSAGES_BYTES)
+        .then(|| std::fs::read_to_string(path).ok())
+        .flatten()
+}
+
+/// An extension's messages in its default locale, keyed in lower case:
+/// Chromium resolves `__MSG_name__` without regard to case.
+pub type Messages = std::collections::HashMap<String, String>;
+
+/// Where an extension keeps its default locale's messages, relative to its
+/// root: `_locales/<default_locale>/messages.json`. `None` without a
+/// default locale, or with one that is no plain locale name.
+pub fn messages_file(manifest: &serde_json::Value) -> Option<String> {
+    let locale = manifest
+        .get("default_locale")
+        .and_then(serde_json::Value::as_str)
+        .filter(|locale| {
+            !locale.is_empty()
+                && locale.len() <= 16
+                && locale
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || "_-".contains(character))
+        })?;
+    Some(format!("_locales/{locale}/messages.json"))
+}
+
+/// The messages a `messages.json` holds, ignoring any it cannot read.
+pub fn messages(text: &str) -> Messages {
+    let Ok(serde_json::Value::Object(entries)) = serde_json::from_str(text) else {
+        return Messages::new();
+    };
+    entries
+        .into_iter()
+        .filter_map(|(key, entry)| {
+            let message = entry.get("message")?.as_str()?;
+            Some((key.to_lowercase(), message.to_owned()))
+        })
+        .collect()
+}
+
+/// `text` with each `__MSG_name__` replaced by its message, as Chromium
+/// shows an extension's name and titles. A name it has no message for stays
+/// as written rather than going blank.
+pub fn localize(text: &str, messages: &Messages) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once("__MSG_") {
+        let Some((name, tail)) = after.split_once("__") else {
+            break;
+        };
+        out.push_str(before);
+        if let Some(message) = messages.get(&name.to_lowercase()) {
+            out.push_str(message);
+        } else {
+            out.push_str("__MSG_");
+            out.push_str(name);
+            out.push_str("__");
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
 fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
+    parse_manifest_with(text, |_| None)
+}
+
+/// The manifest's inventory record, its names in the extension's default
+/// locale: `read` gives the text of a file of the package by its path
+/// within it.
+fn parse_manifest_with(
+    text: &str,
+    read: impl FnOnce(&str) -> Option<String>,
+) -> Result<ExtensionInfo, ExtensionError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| ExtensionError::Manifest(e.to_string()))?;
+    let messages = messages_file(&value)
+        .and_then(|file| read(&file))
+        .map(|text| messages(&text))
+        .unwrap_or_default();
     let name = bounded_manifest_string(
-        value
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| ExtensionError::Manifest("manifest has no name".into()))?,
+        &localize(
+            value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ExtensionError::Manifest("manifest has no name".into()))?,
+            &messages,
+        ),
         "name",
         MAX_EXTENSION_NAME_BYTES,
     )?;
@@ -241,10 +332,13 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(2);
     let description = bounded_manifest_string(
-        value
-            .get("description")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default(),
+        &localize(
+            value
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+            &messages,
+        ),
         "description",
         MAX_EXTENSION_DESCRIPTION_BYTES,
     )?;
@@ -378,6 +472,66 @@ mod tests {
     }
 
     /// Installing XPI and CRX3, listing and rejecting invalid archives.
+    /// A package named in its locales, as most Web Store extensions are.
+    fn localized_zip(name: &str) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", opts).unwrap();
+            zip.write_all(
+                br#"{"manifest_version":3,"name":"__MSG_extName__","version":"1.0",
+                "description":"__MSG_extDesc__ for pages","default_locale":"en",
+                "action":{"default_title":"__MSG_EXTNAME__"}}"#,
+            )
+            .unwrap();
+            zip.start_file("_locales/en/messages.json", opts).unwrap();
+            zip.write_all(
+                format!(
+                    r#"{{"extName":{{"message":"{name}"}},"extDesc":{{"message":"Blocks ads"}}}}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn an_extension_is_named_in_its_own_locale() {
+        let staged = stage_file(localized_zip("uBlock Origin Lite")).unwrap();
+        assert_eq!(staged.info.name, "uBlock Origin Lite", "the offer names it");
+        assert_eq!(staged.info.description, "Blocks ads for pages");
+        let root = tempfile::tempdir().unwrap();
+        let first = staged.install(root.path()).unwrap();
+        // Two such packages are two extensions, not one written over the other.
+        let second = stage_file(localized_zip("Dark Reader"))
+            .unwrap()
+            .install(root.path())
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        let listed = list_in(root.path());
+        assert_eq!(
+            listed
+                .iter()
+                .map(|info| info.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Dark Reader", "uBlock Origin Lite"]
+        );
+        let installed = crate::extension_toolbar::Installed::read(&listed[1], true, false).unwrap();
+        assert_eq!(
+            installed.action.unwrap().title.as_deref(),
+            Some("uBlock Origin Lite"),
+            "message names are matched as Chromium does, whatever their case"
+        );
+        // A name with no message keeps what it says.
+        assert_eq!(
+            localize("__MSG_missing__", &Messages::new()),
+            "__MSG_missing__"
+        );
+    }
+
     #[test]
     fn extension_archives_install_list_and_reject_invalid_packages() {
         // Phase `installs_xpi_and_reads_manifest`.
@@ -777,7 +931,9 @@ pub fn stage_file(bytes: Vec<u8>) -> Result<StagedPackage, ExtensionError> {
     let manifest = zip
         .read_text("manifest.json", MAX_MANIFEST_BYTES)
         .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
-    let info = parse_manifest(&manifest)?;
+    let info = parse_manifest_with(&manifest, |file| {
+        zip.read_text(file, MAX_MESSAGES_BYTES).ok()
+    })?;
     let permissions = summarize_manifest(&manifest)?;
     Ok(StagedPackage {
         info,
@@ -812,7 +968,9 @@ pub fn stage_package(bytes: Vec<u8>, expected_id: &str) -> Result<StagedPackage,
     let manifest = zip
         .read_text("manifest.json", MAX_MANIFEST_BYTES)
         .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
-    let mut info = parse_manifest(&manifest)?;
+    let mut info = parse_manifest_with(&manifest, |file| {
+        zip.read_text(file, MAX_MESSAGES_BYTES).ok()
+    })?;
     info.id = verified.id;
     let permissions = summarize_manifest(&manifest)?;
     Ok(StagedPackage {

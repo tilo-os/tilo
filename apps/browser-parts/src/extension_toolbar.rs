@@ -96,13 +96,24 @@ impl Installed {
         let id = crate::extensions::chrome_id(info)?;
         let manifest = std::fs::read_to_string(info.path.join("manifest.json")).ok()?;
         let manifest: Value = serde_json::from_str(&manifest).ok()?;
+        let mut action = action_manifest(&manifest);
+        // A title is named as the extension is: in its default locale.
+        if let Some(title) = action.as_mut().and_then(|action| action.title.as_mut())
+            && title.contains("__MSG_")
+        {
+            let messages = crate::extensions::messages_file(&manifest)
+                .and_then(|file| crate::extensions::read_bounded(&info.path.join(file)))
+                .map(|text| crate::extensions::messages(&text))
+                .unwrap_or_default();
+            *title = crate::extensions::localize(title, &messages);
+        }
         Some(Self {
             id,
             name: info.name.clone(),
             root: info.path.clone(),
             enabled,
             pinned,
-            action: action_manifest(&manifest),
+            action,
         })
     }
 
