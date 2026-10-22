@@ -357,6 +357,17 @@ impl SearchProvider for HostApplicationsProvider {
                 })
             })
     }
+    fn app_row(&self, app_id: &str) -> Option<SearchResult> {
+        let snapshot = self.snapshot()?;
+        let app = snapshot.apps.iter().find(|app| {
+            app.desktop_id.eq_ignore_ascii_case(app_id)
+                || app
+                    .window_identities
+                    .iter()
+                    .any(|identity| identity.eq_ignore_ascii_case(app_id))
+        })?;
+        Some(self.row(app, 0, &snapshot.apps))
+    }
     fn name(&self) -> &str {
         HOST_APPLICATIONS_KIND
     }

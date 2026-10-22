@@ -719,10 +719,17 @@ fn launch_resolved_installed_app(
     // If the room already has this app open, focus it rather than starting
     // a second copy. See `peer_windows::opened_for_the_room`. A Terminal
     // asked for into a group (the tab strip's "+", Super+T) is the explicit
-    // request for another shell, so it always launches.
+    // request for another shell, so it always launches; so does an app whose
+    // process here opens more windows: asked for again, it opens one.
     let wants_another_terminal = package_id == crate::shell::window_actions::TERMINAL_PACKAGE
         && matches!(chrome.borrow().open_target, OpenTarget::Here(_));
-    let already = if wants_another_terminal {
+    let opens_another_window = chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .is_some_and(|workspace| launcher::opens_more_windows(package_id, workspace.room()));
+    let already = if wants_another_terminal || opens_another_window {
         None
     } else {
         let st = chrome.borrow();
@@ -875,6 +882,18 @@ impl SearchProvider for ApplicationsProvider {
     }
     fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
         package_row_opens(result, app_id)
+    }
+    fn app_row(&self, app_id: &str) -> Option<SearchResult> {
+        let snapshot = self.snapshot()?;
+        let app = snapshot.entries.iter().find_map(|entry| match entry {
+            ApplicationEntry::Installed(app)
+                if crate::shell::launcher::app_id_matches_package(app_id, &app.package_id) =>
+            {
+                Some(Arc::clone(app))
+            }
+            _ => None,
+        })?;
+        self.installed_rows("", vec![app], &[Some(0)]).pop()
     }
     fn name(&self) -> &str {
         APPLICATIONS_KIND

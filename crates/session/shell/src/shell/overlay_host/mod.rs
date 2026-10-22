@@ -1768,6 +1768,10 @@ mod overview_transition_tests;
 mod wifi_password_tests;
 
 #[cfg(test)]
+#[path = "open_window_rows_tests.rs"]
+mod open_window_rows_tests;
+
+#[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
