@@ -312,10 +312,22 @@ fn the_bar_is_two_choices_the_shutter_and_options_and_nothing_else() {
             "{item:?} inside the bar"
         );
     }
-    // No shortcut hints: the shortcuts live in the controls' tooltips.
+    // No shortcut helpers anywhere in the tool: a labelled button has no
+    // tooltip, and the shutter's names it alone, without a keycap.
     s.cursor = s.bar_item(BarItem::Output(1)).center();
-    let (_, tip) = s.bar_tip().expect("a tooltip over a control");
-    assert!(tip.ends_with('R'), "{tip:?} names its shortcut");
+    assert_eq!(s.bar_tip(), None, "the Recording button carries its label");
+    s.cursor = s.bar_item(BarItem::Target(2)).center();
+    assert_eq!(s.bar_tip(), None, "the Screen button carries its label");
+    s.cursor = s.bar_item(BarItem::Output(2)).center();
+    let (_, tip) = s.bar_tip().expect("the short PiP label is spelled out");
+    assert_eq!(
+        tip,
+        studio_text("widget-capture-mode-pip-name"),
+        "no shortcut"
+    );
+    s.cursor = s.bar_item(BarItem::Shutter).center();
+    let (_, tip) = s.bar_tip().expect("the unlabelled shutter is named");
+    assert_eq!(tip, s.shutter_name(), "the name alone, no shortcut");
     assert!(names(&s).iter().all(|n| !n.contains("hint")));
     // Enter and Space are the shutter.
     s.set_source_mode(SourceMode::Display);
