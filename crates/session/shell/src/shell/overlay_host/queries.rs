@@ -197,13 +197,15 @@ impl ShellOverlayHost {
         })
     }
 
-    /// Keep [`Self::tab_tiles`] and the pointer current in a handle a
-    /// presence pump outside this tree can read — the hosted shell's frame
-    /// tick, which is handed no host. Tiles refresh after every layout, the
-    /// pointer on every move and when it leaves the window.
+    /// Keep [`Self::tab_tiles`], [`Self::shown_strip`] and the pointer
+    /// current in a handle a presence pump outside this tree can read — the
+    /// hosted shell's frame tick, which is handed no host. Tiles and strip
+    /// refresh after every layout, the pointer on every move and when it
+    /// leaves the window.
     pub fn share_desk(&mut self) -> crate::shell::peer_presence::SharedDesk {
         let desk = self.shared_desk.get_or_insert_default().clone();
         desk.set_tiles(self.tab_tiles());
+        desk.set_strip(self.shown_strip());
         desk.set_pointer(self.last_cursor.map(|p| (p.x, p.y)));
         desk
     }

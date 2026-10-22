@@ -114,6 +114,9 @@ pub struct Desk {
     /// The pointer, or `None` before it has moved or after it left the
     /// window.
     pub pointer: Option<(f64, f64)>,
+    /// The strip shown, where and how far panned: what a live member's
+    /// pointer on a strip showing no window is placed in.
+    pub strip: Option<ShownStrip>,
 }
 
 impl SharedDesk {
@@ -124,6 +127,11 @@ impl SharedDesk {
     /// Replace the tiles shown with `tiles`.
     pub fn set_tiles(&self, tiles: Vec<(u64, vello::kurbo::Rect)>) {
         self.with(|desk| desk.tiles = tiles);
+    }
+
+    /// Replace the strip shown with `strip`.
+    pub fn set_strip(&self, strip: Option<ShownStrip>) {
+        self.with(|desk| desk.strip = strip);
     }
 
     /// Record where the pointer is, or that it is in no tile's window.
@@ -230,6 +238,10 @@ pub struct PeerPresence {
     /// The record each window shows, by tab, as learned from the local app
     /// pointing in it ([`Self::window_record`]).
     window_records: WindowRecords,
+    /// The records local app windows hold, by the window instance the
+    /// launcher started each for: what each window shows from the moment
+    /// its app opens a record, whoever pointed where.
+    window_instances: WindowInstances,
     /// The strip this desktop shows and how far it is scrolled, as of the
     /// last layout: what a pointer on a strip showing no window is placed
     /// in ([`Self::set_shown_strip`]).
@@ -249,6 +261,9 @@ pub struct WindowRecord {
 }
 
 type WindowRecords = Arc<Mutex<HashMap<u64, WindowRecord>>>;
+
+type WindowInstances =
+    Box<dyn Fn() -> Vec<(u64, tilo_action_broker::route::CrdtRoute)> + Send + Sync>;
 
 /// Where this person's cursor chat is: the window it is over, the record
 /// that window shows, and the pointer from the window's top-left corner.
@@ -534,6 +549,8 @@ impl PeerPresence {
             rooms,
         );
         presence.window_records = window_records;
+        let fanout = Arc::clone(&broker.fanout);
+        presence.window_instances = Box::new(move || fanout.window_records());
         presence
     }
 
@@ -610,6 +627,7 @@ impl PeerPresence {
             participants_epoch,
             roster_seen: Mutex::new(None),
             window_records: Arc::default(),
+            window_instances: Box::new(Vec::new),
             shown_strip: Mutex::new(None),
             last_chat_target: Mutex::new(None),
             net: Arc::clone(net),
@@ -838,6 +856,7 @@ impl PeerPresence {
         tree: &crate::shell::state::WorkspaceTreeHandle,
     ) -> bool {
         self.set_pointer(desk.pointer.and_then(|at| anchor_pointer(&desk.tiles, at)));
+        self.set_shown_strip(desk.strip);
         self.follow_tree(tree);
         let moved = self.pump(presence, &desk.tiles);
         let roster_changed = self.refresh_roster(presence);
@@ -933,9 +952,9 @@ impl PeerPresence {
                 &|room| mine.iter().any(|r| r == room),
                 now,
             );
-            let records = self.window_records.lock_recover();
+            let records = self.shown_records(tiles);
             let strip = *self.shown_strip.lock_recover();
-            let layout = |room: &str| desk_layout(room, tiles, &*records, strip);
+            let layout = |room: &str| desk_layout(room, tiles, &records, strip);
             place_heard_pointers(&anchored, &fresh, presence, tiles, &layout, now) || cleared
         });
         // A room left, or one where this person now shows nothing: its

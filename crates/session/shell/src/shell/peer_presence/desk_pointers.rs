@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use tilo_lock::MutexRecover as _;
+
 use tilo_relay_protocol::live::{LivePointer, LiveRecord, PointerLayout, ShownStrip};
 use ui::collaboration::PresencePayload;
 use ui::num::f32_of_f64;
@@ -25,37 +27,41 @@ pub enum HeardPointer {
 }
 
 /// What this desktop shows of `room` that a live pointer can be over: the
-/// shown windows of `room` by the record they show (as its apps said when
-/// they pointed there, named as the live plane names them), and `strip`.
+/// shown windows of `room` by the records they show (named as the live
+/// plane names them), and `strip`.
 /// The same [`PointerLayout`] a browser tab builds, so a pointer lands
 /// beside the same window on both.
 pub fn desk_layout<S: std::hash::BuildHasher>(
     room: &str,
     tiles: &TabTiles,
-    records: &HashMap<u64, WindowRecord, S>,
+    records: &HashMap<u64, Vec<WindowRecord>, S>,
     strip: Option<ShownStrip>,
 ) -> PointerLayout {
     let windows = tiles
         .iter()
-        .filter_map(|(tab, rect)| {
-            let shown = records.get(tab).filter(|shown| shown.room == room)?;
-            let record = LiveRecord {
-                app: shown.app.clone(),
-                record: crate::network::wire_record::wire_record_id(
-                    room,
-                    &shown.app,
-                    &shown.record,
-                ),
-            };
-            Some((
-                record,
-                [
-                    f32_of_f64(rect.x0),
-                    f32_of_f64(rect.y0),
-                    f32_of_f64(rect.x1),
-                    f32_of_f64(rect.y1),
-                ],
-            ))
+        .flat_map(|(tab, rect)| {
+            let rect = [
+                f32_of_f64(rect.x0),
+                f32_of_f64(rect.y0),
+                f32_of_f64(rect.x1),
+                f32_of_f64(rect.y1),
+            ];
+            records
+                .get(tab)
+                .into_iter()
+                .flatten()
+                .filter(|shown| shown.room == room)
+                .map(move |shown| {
+                    let record = LiveRecord {
+                        app: shown.app.clone(),
+                        record: crate::network::wire_record::wire_record_id(
+                            room,
+                            &shown.app,
+                            &shown.record,
+                        ),
+                    };
+                    (record, rect)
+                })
         })
         .collect();
     PointerLayout { windows, strip }
@@ -196,4 +202,42 @@ pub fn place_heard_pointers(
         || presence.pointers_fading(now, POINTER_STAYS, POINTER_FADE)
         || presence.pointers_easing(now)
         || presence.pointer_names_fading(now, POINTER_FADE)
+}
+
+impl super::PeerPresence {
+    /// The records each shown window (`tiles`) shows: those its app holds,
+    /// found through the window instance the launcher started it for, and
+    /// the one it last said it points in.
+    pub(super) fn shown_records(&self, tiles: &TabTiles) -> HashMap<u64, Vec<WindowRecord>> {
+        let held = (self.window_instances)();
+        let mut shown: HashMap<u64, Vec<WindowRecord>> = HashMap::new();
+        if !held.is_empty() {
+            let tree = self.roster_tree.read();
+            for (tab, _) in tiles {
+                let Some((room, app, instance)) = tree.local_app_window(*tab) else {
+                    continue;
+                };
+                let room = room.to_string();
+                let records = held
+                    .iter()
+                    .filter(|(at, route)| {
+                        *at == instance && route.app_id == app && route.cluster_id == room
+                    })
+                    .map(|(_, route)| WindowRecord {
+                        room: room.clone(),
+                        app: route.app_id.clone(),
+                        record: route.record_id.clone(),
+                    });
+                shown.entry(*tab).or_default().extend(records);
+            }
+            drop(tree);
+        }
+        for (tab, record) in self.window_records.lock_recover().iter() {
+            let records = shown.entry(*tab).or_default();
+            if !records.contains(record) {
+                records.push(record.clone());
+            }
+        }
+        shown
+    }
 }

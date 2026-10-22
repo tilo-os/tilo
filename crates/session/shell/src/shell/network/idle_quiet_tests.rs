@@ -383,6 +383,7 @@ impl Desktop {
             desk: Desk {
                 tiles: vec![(SHARED_TAB, vello::kurbo::Rect::new(0.0, 0.0, 800.0, 600.0))],
                 pointer: None,
+                strip: None,
             },
             repaints: 0,
         }

@@ -3446,6 +3446,9 @@ pub struct CapnpBrokerState {
     launchable: launchable::LaunchableCatalogue,
     /// Workspace `open`s waiting for the instance each started to publish.
     workspace_opens: workspace_open::WorkspaceOpens,
+    /// The window instance the shell launched each connected app for, by
+    /// peer id: which tab's window the records it holds are shown in.
+    window_instances: Mutex<HashMap<u64, u64>>,
     /// Pull-only, revisioned directories owned by currently connected apps.
     /// This intentionally has no durable/archive counterpart: retaining a
     /// capability after disconnect would make a stale live-only row look
@@ -4296,6 +4299,7 @@ impl CapnpBrokerState {
                 surface_changes: tokio::sync::watch::Sender::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
                 workspace_opens: workspace_open::WorkspaceOpens::default(),
+                window_instances: Mutex::new(HashMap::new()),
                 action_directory_bridge: ActionDirectoryRequestQueue {
                     sender: bridge_tx,
                     turn: std::sync::Arc::clone(&local_turn),
@@ -7327,6 +7331,9 @@ impl CapnpBrokerState {
 
     fn remove_connection(&self, peer_id: u64) {
         self.launch_disconnected(peer_id);
+        if let Ok(mut windows) = self.window_instances.lock() {
+            windows.remove(&peer_id);
+        }
         self.witness_publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -14783,6 +14790,11 @@ async fn drive_connection(
             }) => {
                 if let Some(launch) = launch {
                     state.launch_connected(peer_id, &launch);
+                }
+                if let Some(instance) = local_media.as_ref().and_then(|l| l.continuation_instance)
+                    && let Ok(mut windows) = state.window_instances.lock()
+                {
+                    windows.insert(peer_id, instance);
                 }
                 local_media
             }

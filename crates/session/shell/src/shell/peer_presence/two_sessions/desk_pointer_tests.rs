@@ -11,32 +11,36 @@ use tilo_relay_protocol::live::{
 /// note's window on the tab lands as far right of it here; one on the tab's
 /// strip, with no window shown there, lands on the same strip here, panned
 /// as it is here; one beside a window this desk does not show, or over a
-/// window (that window's app draws it), is not drawn by the desktop.
+/// window (that window's app draws it), is not drawn by the desktop. This
+/// desk never points anywhere and runs as a window-hosted shell: which
+/// record its window shows comes from the window instance its app was
+/// launched for, and the strip from the desk it shares.
 #[test]
 fn a_pointer_over_the_empty_desktop_lands_beside_the_same_window_on_another_layout() {
-    let pair = pair("desk-pointer");
+    let mut pair = pair("desk-pointer");
     let room = pair.room.to_string();
-    let t0 = Instant::now();
     let note = LiveRecord {
         app: "so.tilo.notes".into(),
         record: "note-1".into(),
     };
-    // This desk: the note's window, as its app said when pointed in.
+    // This desk: the note's window, its app launched for window instance
+    // 77, which holds the note's record. Nobody here has pointed in it.
     let tab = 0x51;
-    let tiles = [(tab, vello::kurbo::Rect::new(100.0, 50.0, 700.0, 650.0))];
-    pair.host.window_records.lock_recover().insert(
-        tab,
-        WindowRecord {
-            room: room.clone(),
-            app: note.app.clone(),
-            record: note.record.clone(),
-        },
-    );
-    pair.host.set_shown_strip(Some(ShownStrip {
-        id: 9,
-        area: [0.0, 40.0, 1200.0, 800.0],
-        scroll_x: 100.0,
-    }));
+    let tiles = vec![(tab, vello::kurbo::Rect::new(100.0, 50.0, 700.0, 650.0))];
+    let tree = pair.host.roster_tree.clone();
+    a_window_of(&tree, pair.room, tab, &note.app);
+    let held = tilo_action_broker::route::CrdtRoute::record(&note.app, &room, &note.record);
+    pair.host.window_instances = Box::new(move || vec![(77, held.clone())]);
+    assert_eq!(pair.host.window_record(tab), None, "never pointed in");
+    let desk = Desk {
+        tiles,
+        pointer: None,
+        strip: Some(ShownStrip {
+            id: 9,
+            area: [0.0, 40.0, 1200.0, 800.0],
+            scroll_x: 100.0,
+        }),
+    };
     let key = PresenceKey::Workspace { id: room };
     let ada = pair.guest_user();
     let mut seq = 0;
@@ -67,7 +71,7 @@ fn a_pointer_over_the_empty_desktop_lands_beside_the_same_window_on_another_layo
     let beside = tab_desk.anchor([900.0, 300.0]).expect("beside the note");
     assert!(matches!(beside, LivePointer::Beside { .. }));
     say(Some(beside));
-    assert!(pair.host.pump_at(&mut on_host, &tiles, t0));
+    assert!(pair.host.frame(&mut on_host, &desk, &tree));
     assert_eq!(
         on_host.pointer_for(&key, &ada),
         Some((800.0, 350.0)),
@@ -76,7 +80,7 @@ fn a_pointer_over_the_empty_desktop_lands_beside_the_same_window_on_another_layo
 
     // Over the window, it is the note's app's to draw.
     say(tab_desk.anchor([400.0, 300.0]));
-    pair.host.pump_at(&mut on_host, &tiles, t0);
+    pair.host.frame(&mut on_host, &desk, &tree);
     assert_eq!(on_host.pointer_for(&key, &ada), None);
 
     // On a tab showing no window, on the strip this desk shows too.
@@ -91,7 +95,7 @@ fn a_pointer_over_the_empty_desktop_lands_beside_the_same_window_on_another_layo
     let on_strip = bare.anchor([300.0, 100.0]).expect("on the strip");
     assert!(matches!(on_strip, LivePointer::Strip { strip: 9, .. }));
     say(Some(on_strip));
-    assert!(pair.host.pump_at(&mut on_host, &tiles, t0));
+    assert!(pair.host.frame(&mut on_host, &desk, &tree));
     assert_eq!(
         on_host.pointer_for(&key, &ada),
         Some((200.0, 140.0)),
@@ -107,7 +111,43 @@ fn a_pointer_over_the_empty_desktop_lands_beside_the_same_window_on_another_layo
         edge: [1.0, 0.5],
         at: [40.0, 0.0],
     }));
-    pair.host.pump_at(&mut on_host, &tiles, t0);
+    pair.host.frame(&mut on_host, &desk, &tree);
     assert_eq!(on_host.pointer_for(&key, &ada), None);
     let _ = std::fs::remove_dir_all(&pair.dir);
+}
+
+/// Show `app` in tab `tab` of `room`'s workspace in `tree`, launched for
+/// window instance 77.
+fn a_window_of(tree: &crate::shell::state::WorkspaceTreeHandle, room: RoomId, tab: u64, app: &str) {
+    {
+        use crate::shell::state::FreshId as _;
+        let mut tree = tree.write();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room() == room)
+            .expect("the room's workspace");
+        workspace.strips.push(crate::shell::state::Strip {
+            id: crate::shell::state::StripId::new(),
+            name: "Notes".into(),
+            window_groups: vec![crate::shell::state::WindowGroup {
+                id: 4242,
+                tabs: vec![crate::shell::state::Tab {
+                    id: tab,
+                    title: "Note".into(),
+                    tile: crate::shell::state::TileContent::LocalApp {
+                        app_id: app.to_owned(),
+                        label: "Notes".into(),
+                        note: String::new(),
+                    },
+                }],
+                active_tab: tab,
+                width: crate::shell::state::WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        });
+        tree.remember_local_app_record(tab, 77);
+    }
 }

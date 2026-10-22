@@ -72,6 +72,13 @@ impl WorkspaceTree {
         .then_some(record.record_instance)
     }
 
+    /// The room and app `tab` shows and the window instance the launcher
+    /// started it for, when it shows one.
+    pub(crate) fn local_app_window(&self, tab: TabId) -> Option<(RoomId, &str, u64)> {
+        let (room, app) = self.local_app_at(tab)?;
+        Some((room, app, self.local_app_record(tab, room, app)?))
+    }
+
     pub(crate) fn prune_local_app_records(&mut self) {
         if self.archived_workspaces.is_empty() {
             Self::prune_local_app_records_of(&self.desktop, &mut self.local_app_records);

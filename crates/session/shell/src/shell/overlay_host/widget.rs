@@ -734,6 +734,7 @@ impl Widget for ShellOverlayHost {
         self.publish_strip_viewport();
         if let Some(desk) = &self.shared_desk {
             desk.set_tiles(self.tab_tiles());
+            desk.set_strip(self.shown_strip());
         }
     }
 
