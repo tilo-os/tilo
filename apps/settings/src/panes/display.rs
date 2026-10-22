@@ -420,7 +420,13 @@ fn transform_options() -> Vec<String> {
 
 /// How a person reads a mode's resolution: `2560 × 1440`.
 fn resolution_label(mode: OutputMode) -> String {
-    format!("{} × {}", mode.width, mode.height)
+    resolution_text(mode.width, mode.height)
+}
+
+/// A resolution as people write it: `2560 × 1440`.
+fn resolution_text(width: u32, height: u32) -> String {
+    // ratchet-allow(glyph_icon): the multiplication sign of a resolution is text, not an icon
+    format!("{width} × {height}")
 }
 
 /// How a person reads a mode's refresh rate: `144 Hz`, `59.94 Hz`.
@@ -442,7 +448,7 @@ fn resolution_choices(modes: &[OutputMode]) -> Vec<String> {
     sizes.sort_by_key(|&(width, height)| std::cmp::Reverse(u64::from(width) * u64::from(height)));
     sizes
         .into_iter()
-        .map(|(width, height)| format!("{width} × {height}"))
+        .map(|(width, height)| resolution_text(width, height))
         .collect()
 }
 
