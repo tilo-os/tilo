@@ -192,17 +192,8 @@ impl Sandboxed {
 
     fn spawn(&self, state: &mut State) -> Result<Connection, Error> {
         let (ours, theirs) = UnixStream::pair().map_err(Error::Io)?;
-        let mut command = Command::new(&self.helper);
-        command
-            .stdin(Stdio::from(OwnedFd::from(theirs)))
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .env_clear();
-        for key in ["TILO_PDFIUM_LIB", "HOME", "LANG"] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
+        let mut command = helper_command(&self.helper);
+        command.stdin(Stdio::from(OwnedFd::from(theirs)));
         let child = spawn_from_spawner_thread(command)
             .map_err(|e| Error::Unavailable(format!("starting {}: {e}", self.helper.display())))?;
         ours.set_read_timeout(Some(START_TIMEOUT))
@@ -622,6 +613,31 @@ impl Drop for Sandboxed {
 /// (`PR_SET_PDEATHSIG`), and "parent" there means the *thread* that forked
 /// it. Spawning from whichever thread happened to need a helper would kill
 /// the helper as soon as that thread finished.
+/// The time zone the helper runs in: a POSIX rule, so libc never opens a
+/// zone file for it. pdfium converts times only with `gmtime`, yet glibc's
+/// first conversion of any kind loads the local zone — `/etc/localtime`,
+/// which the sandbox rightly refuses. Nothing the helper returns is in local
+/// time (document dates are passed through as written), so UTC is what it
+/// needs, and it makes exports identical whichever machine wrote them.
+const HELPER_TZ: &str = "UTC0";
+
+/// The helper's command line and environment: nothing inherited but what it
+/// needs to find pdfium and fonts, in UTC.
+fn helper_command(helper: &Path) -> Command {
+    let mut command = Command::new(helper);
+    command
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .env_clear()
+        .env("TZ", HELPER_TZ);
+    for key in ["TILO_PDFIUM_LIB", "HOME", "LANG"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command
+}
+
 fn spawn_from_spawner_thread(command: Command) -> std::io::Result<Child> {
     type Job = (Command, std::sync::mpsc::Sender<std::io::Result<Child>>);
     static SPAWNER: std::sync::OnceLock<Mutex<std::sync::mpsc::Sender<Job>>> =
@@ -654,4 +670,23 @@ fn unexpected(response: &Response) -> Error {
     Error::Engine(format!(
         "unexpected reply from the PDF helper: {response:?}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// glibc reads `/etc/localtime` on its first time conversion unless `TZ`
+    /// names a rule it can parse without a file; the sandbox denies that read.
+    #[test]
+    fn the_helper_runs_in_utc_so_it_never_reads_a_zone_file() {
+        let command = helper_command(Path::new("tilo-pdf-helper"));
+        let tz = command
+            .get_envs()
+            .find(|(key, _)| *key == "TZ")
+            .and_then(|(_, value)| value);
+        // A POSIX rule, not a zone name ("UTC", "Etc/UTC"), which glibc
+        // would look up under /usr/share/zoneinfo.
+        assert_eq!(tz, Some(std::ffi::OsStr::new("UTC0")));
+    }
 }
