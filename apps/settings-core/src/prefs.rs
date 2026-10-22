@@ -1253,9 +1253,11 @@ mod tests {
         path: &std::path::Path,
         value: &T,
     ) -> serde_json::Value {
-        let serde_json::Value::Object(values) = serde_json::to_value(value).unwrap() else {
-            unreachable!("a section serializes to an object")
-        };
+        let values = serde_json::to_value(value)
+            .unwrap()
+            .as_object()
+            .cloned()
+            .expect("a section serializes to an object");
         settings_store::update_section_at(path, T::SCOPE.section(), values).unwrap();
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
