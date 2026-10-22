@@ -19,6 +19,8 @@ pub mod certificates;
 #[cfg(unix)]
 pub mod custody;
 #[cfg(unix)]
+pub mod device_admin;
+#[cfg(unix)]
 pub mod device_fleet;
 #[cfg(unix)]
 pub mod enrolled_transport;

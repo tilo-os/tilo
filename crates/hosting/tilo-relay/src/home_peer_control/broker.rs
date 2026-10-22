@@ -74,7 +74,7 @@ struct ApplyRequest {
 
 fn require_root() -> anyhow::Result<()> {
     if std::fs::metadata("/proc/self")?.uid() != 0 {
-        bail!("tilo-home-peer-control must be started through polkit");
+        bail!("tilo-home-peer-control must be started through polkit or sudo");
     }
     Ok(())
 }
@@ -371,11 +371,26 @@ fn apply(request: &ApplyRequest) -> anyhow::Result<()> {
     result
 }
 
+/// The account this root process acts for: whoever polkit authorised, or
+/// whoever ran it through sudo (an SSH session has no polkit agent). Only
+/// root starts this helper, so either variable comes from the launcher that
+/// authenticated them.
 fn invoking_uid() -> anyhow::Result<u32> {
-    std::env::var("PKEXEC_UID")
-        .context("polkit did not identify the requesting user")?
+    invoking_uid_from(
+        std::env::var("PKEXEC_UID").ok().as_deref(),
+        std::env::var("SUDO_UID").ok().as_deref(),
+    )
+}
+
+fn invoking_uid_from(pkexec: Option<&str>, sudo: Option<&str>) -> anyhow::Result<u32> {
+    let (value, launcher) = match (pkexec, sudo) {
+        (Some(value), _) => (value, "polkit"),
+        (None, Some(value)) => (value, "sudo"),
+        (None, None) => bail!("neither polkit nor sudo identified the requesting user"),
+    };
+    value
         .parse()
-        .context("polkit supplied an invalid requesting user")
+        .with_context(|| format!("{launcher} supplied an invalid requesting user"))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -694,6 +709,14 @@ fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn the_requesting_account_comes_from_polkit_or_sudo() {
+        assert_eq!(invoking_uid_from(Some("1000"), Some("1001")).unwrap(), 1000);
+        assert_eq!(invoking_uid_from(None, Some("1001")).unwrap(), 1001);
+        assert!(invoking_uid_from(None, None).is_err());
+        assert!(invoking_uid_from(None, Some("person")).is_err());
+    }
 
     #[test]
     fn enrollment_requests_run_as_the_invoking_user_with_bounded_diagnostics() {

@@ -23,7 +23,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use tilo_actions::remote::identity_admin::FleetDevice;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 
@@ -407,48 +406,13 @@ fn protect(store: &Store, id: &str) -> Answer {
 
 /// The devices trusted under `identity`, this one marked current.
 pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
-    let fleet = store
-        .fleets()
-        .load(&identity.id)
-        .map_err(|error| error.to_string())?;
-    if fleet
-        .certificates
-        .iter()
-        .any(|cert| cert.user_public_key != identity.user_public_key)
-        || fleet
-            .revocations
-            .iter()
-            .any(|entry| entry.user_public_key != identity.user_public_key)
-    {
-        return Err("the device fleet holds another identity's records".into());
-    }
-    let current = tilo_user_identity::persist::read_device_cert(
-        &store.device.device_cert_for_user(&identity.user_public_key),
-    )
-    .ok()
-    .map(|cert| cert.device_public_key);
-    let devices = fleet
-        .certificates
-        .iter()
-        .map(|cert| FleetDevice {
-            label: cert.device_label.clone(),
-            key_hex: hex::encode(cert.device_public_key),
-            fingerprint: fingerprint(&cert.device_public_key),
-            current: current == Some(cert.device_public_key),
-            revoked: fleet.is_revoked(&cert.device_public_key),
-            can_host: cert.capabilities.can_act_as_host,
-        })
-        .collect::<Vec<_>>();
+    let devices = tilo_identity_host::device_admin::trusted_devices(
+        &store.fleets(),
+        &store.device,
+        &identity.id,
+        identity.user_public_key,
+    )?;
     serde_json::to_value(devices).map_err(|error| error.to_string())
-}
-
-/// A key's short form people compare between screens: its first six bytes.
-fn fingerprint(key: &[u8; 32]) -> String {
-    key[..6]
-        .iter()
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Root-sign the permanent revocation of the device `args` names under
@@ -459,32 +423,13 @@ fn fingerprint(key: &[u8; 32]) -> String {
 ///
 /// Why the device was not revoked.
 pub(crate) fn revoke(store: &Store, identity: &IdentityProfile, args: &ActionArgs) -> Answer {
-    let device = node_id(args.text("device").unwrap_or_default(), "device")?;
-    let mut key = [0; 32];
-    hex::decode_to_slice(&device, &mut key).map_err(|error| error.to_string())?;
-    let reason = revocation_reason(args.text("reason").unwrap_or("retired"))?;
-    store
-        .fleets()
-        .revoke(&identity.id, key, reason, tilo_clock::unix_now_ns())
-        .map_err(|error| error.to_string())?;
+    let device = tilo_identity_host::device_admin::revoke(
+        &store.fleets(),
+        &identity.id,
+        args.text("device").unwrap_or_default(),
+        args.text("reason").unwrap_or("retired"),
+    )?;
     Ok(serde_json::json!({ "device": device, "revoked": true }))
-}
-
-/// The revocation reason `text` names.
-///
-/// # Errors
-///
-/// When it names none.
-pub(crate) fn revocation_reason(
-    text: &str,
-) -> Result<tilo_user_identity::RevocationReason, String> {
-    match text.trim().to_ascii_lowercase().as_str() {
-        "lost" => Ok(tilo_user_identity::RevocationReason::Lost),
-        "stolen" => Ok(tilo_user_identity::RevocationReason::Stolen),
-        "retired" => Ok(tilo_user_identity::RevocationReason::Retired),
-        "compromised" => Ok(tilo_user_identity::RevocationReason::Compromised),
-        _ => Err("reason must be lost, stolen, retired, or compromised".into()),
-    }
 }
 
 /// Refuse unless `person` administers `room`'s identity: they may grant in
