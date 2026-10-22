@@ -200,6 +200,22 @@ pub struct Showing {
     pub screen: bool,
 }
 
+/// The call that is room `room`'s window carrier: every member device of a
+/// room that shares its layout joins it ([`Envelope::VoiceJoin`](crate::Envelope::VoiceJoin))
+/// to publish the windows of host programs it runs (a terminal, any Wayland
+/// or X client) and to view the other members' as live video, one
+/// `tilo-video/1` window track each. It is in no room's governance: it
+/// stands while the room shares its layout, and a device holds it beside its
+/// voice call, never in place of one. Its pictures are sealed for the
+/// room's members, so the relay forwards what it cannot read.
+#[must_use]
+pub fn windows_call(room: &str) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tilo-room-windows-v1\0");
+    hash.update(room.as_bytes());
+    *hash.finalize().as_bytes()
+}
+
 /// The voice namespace of `participation` in `call`: `<call hex>/<participation hex>`.
 #[must_use]
 pub fn namespace(call: &[u8; 32], participation: &[u8; 32]) -> String {

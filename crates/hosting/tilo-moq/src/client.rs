@@ -92,7 +92,11 @@ pub struct PublicationId {
 /// One picture received from another participant.
 pub struct ReceivedPicture {
     pub publisher: PublicationId,
+    /// What the picture shows; a window's is [`Source::Screen`].
     pub source: Source,
+    /// The tab of the window it shows, for a window track
+    /// ([`video::Track::Window`]).
+    pub window: Option<u64>,
     pub object: VideoObject,
     pub received_at: Instant,
 }
@@ -138,11 +142,33 @@ impl PictureOut {
     }
 }
 /// The pictures received of one shown track.
-#[derive(Default)]
 struct PictureQueue {
     pictures: VecDeque<ReceivedPicture>,
     /// The queue overflowed: nothing until the next keyframe.
     awaiting_keyframe: bool,
+    /// Pictures held before it starts over at the next keyframe.
+    capacity: usize,
+}
+impl PictureQueue {
+    /// The queue of a shown `track`. A call's layers keep a few pictures:
+    /// one that falls behind starts over at the next keyframe, which a
+    /// camera sends often. A window changes only when it does and sends a
+    /// keyframe only when asked, so a reader that starts on it is handed the
+    /// whole of its newest group at once, and holds all of it: a group is
+    /// what decodes to the window as it stands.
+    fn for_track(track: video::Track) -> Self {
+        let capacity = match track {
+            video::Track::Picture(..) => PICTURES_QUEUED,
+            video::Track::Window(_) => {
+                usize::try_from(video::MAX_GROUP_OBJECTS).unwrap_or(usize::MAX)
+            }
+        };
+        Self {
+            pictures: VecDeque::new(),
+            awaiting_keyframe: false,
+            capacity,
+        }
+    }
 }
 impl PictureQueue {
     /// Queue `picture`, or start over at the next keyframe when behind,
@@ -152,7 +178,7 @@ impl PictureQueue {
             return;
         }
         self.awaiting_keyframe = false;
-        if self.pictures.len() >= PICTURES_QUEUED {
+        if self.pictures.len() >= self.capacity {
             self.pictures.clear();
             if !picture.object.keyframe {
                 self.awaiting_keyframe = true;
@@ -227,6 +253,9 @@ struct State {
     pictures_out: BTreeMap<String, PictureOut>,
     /// Advances whenever `pictures_out` gains or loses a track.
     pictures_revision: u64,
+    /// Windows whose tracks were asked for afresh since last taken: each
+    /// needs a keyframe, since its new reader can start at nothing else.
+    window_keyframes: BTreeSet<u64>,
     /// The picture tracks to show of each publication, by namespace.
     shown: BTreeMap<String, BTreeSet<String>>,
     /// Pictures received, by namespace and track.
@@ -299,8 +328,17 @@ struct Shared {
     outgoing: moq_net::origin::Producer,
     incoming: moq_net::origin::Producer,
     _origins: [carrier::OriginTask; 2],
+    /// Called when a picture arrives or what is asked of this publisher
+    /// changes, so an owner that waits on events hears of it.
+    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 impl Shared {
+    fn wake(&self) {
+        let wake = self.wake.lock_recover().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
     fn current(&self) -> bool {
         self.scope
             .publication
@@ -367,6 +405,7 @@ impl Client {
             outgoing,
             incoming,
             _origins: [outgoing_task, incoming_task],
+            wake: Mutex::new(None),
             state: Mutex::new(State {
                 status: Status::Connecting,
                 muted: true,
@@ -380,6 +419,7 @@ impl Client {
                 reading_revision: 0,
                 pictures_out: BTreeMap::new(),
                 pictures_revision: 0,
+                window_keyframes: BTreeSet::new(),
                 shown: BTreeMap::new(),
                 pictures_in: BTreeMap::new(),
                 counters: Counters::default(),
@@ -572,7 +612,34 @@ impl Client {
             .filter_map(|name| video::parse_track(name))
             .collect()
     }
-    /// Advances whenever a picture layer is asked for or no longer is.
+    /// The windows someone views of this publisher now: the tabs to encode.
+    /// Changes with [`Self::pictures_revision`].
+    pub fn wanted_windows(&self) -> Vec<u64> {
+        let state = self.shared.state.lock_recover();
+        state
+            .pictures_out
+            .keys()
+            .filter_map(|name| video::parse_window_track(name))
+            .collect()
+    }
+    /// The windows that need a keyframe now: their tracks were asked for
+    /// afresh, or a picture could not join its group
+    /// ([`video::MAX_GROUP_OBJECTS`]). A window's pictures change only when
+    /// it does, so a still window sends its new reader nothing until asked.
+    pub fn take_window_keyframes(&self) -> Vec<u64> {
+        let mut state = self.shared.state.lock_recover();
+        std::mem::take(&mut state.window_keyframes)
+            .into_iter()
+            .collect()
+    }
+    /// Call `wake` whenever a picture arrives, or a picture layer or window
+    /// is asked for or no longer is: an owner that waits on events, not a
+    /// timer, learns of them as they happen.
+    pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.shared.wake.lock_recover() = Some(wake);
+    }
+    /// Advances whenever a picture layer or window is asked for or no
+    /// longer is.
     pub fn pictures_revision(&self) -> u64 {
         self.shared.state.lock_recover().pictures_revision
     }
@@ -602,6 +669,50 @@ impl Client {
             .and_then(|out| out.write(object.keyframe, timestamp, bytes));
         drop(state);
         sent
+    }
+    /// Send one picture of window `tab` on its track, as
+    /// [`Self::send_picture`] sends a layer's; the object is in
+    /// [`video::Layer::High`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send_picture`]; [`ClientError::Invalid`] for an object in
+    /// another layer.
+    pub fn send_window(&self, tab: u64, object: &VideoObject) -> Result<(), ClientError> {
+        self.shared.check()?;
+        if object.layer != video::Track::Window(tab).layer() {
+            return Err(ClientError::Invalid);
+        }
+        let bytes = object.encode().map_err(|_| ClientError::Invalid)?;
+        let timestamp = moq_net::Timestamp::from_scale(object.timestamp_us, 1_000_000)
+            .map_err(|_| ClientError::Invalid)?;
+        let mut state = self.shared.state.lock_recover();
+        if state.status != Status::Live {
+            return Err(ClientError::Unavailable);
+        }
+        let sent = state
+            .pictures_out
+            .get_mut(&video::window_track(tab))
+            .ok_or(ClientError::Muted)
+            .and_then(|out| out.write(object.keyframe, timestamp, bytes));
+        if matches!(sent, Err(ClientError::Capacity | ClientError::Expired)) {
+            state.window_keyframes.insert(tab);
+        }
+        drop(state);
+        sent
+    }
+    /// Show windows `tabs` of the publication `namespace` (none: stop
+    /// showing it), as [`Self::show`] shows picture layers.
+    pub fn show_windows(&self, namespace: &str, tabs: &[u64]) {
+        let mut state = self.shared.state.lock_recover();
+        if tabs.is_empty() {
+            state.shown.remove(namespace);
+        } else {
+            state.shown.insert(
+                namespace.to_owned(),
+                tabs.iter().map(|tab| video::window_track(*tab)).collect(),
+            );
+        }
     }
     /// Show `tracks` of the publication `namespace` (none: stop showing it):
     /// the carrier asks the relay for exactly these while it reads that
@@ -844,8 +955,13 @@ async fn run(
                     // A layer nobody shows any more is no longer encoded.
                     let asked = state.pictures_out.len();
                     state.pictures_out.retain(|_, out| out.track.is_used());
-                    if state.pictures_out.len() != asked {
+                    let changed = state.pictures_out.len() != asked;
+                    if changed {
                         state.pictures_revision = state.pictures_revision.saturating_add(1);
+                    }
+                    drop(state);
+                    if changed {
+                        shared.wake();
                     }
                 }
                 // A new grant may admit someone the relay already offers, or
@@ -884,13 +1000,16 @@ fn accept_picture(shared: &Shared, request: moq_net::track::Request) {
             .authority
             .current(&shared.scope, Direction::Publish, name)
     });
-    if video::parse_track(request.name()).is_none() || !publishes {
+    if video::Track::parse(request.name()).is_none() || !publishes {
         request.reject(moq_net::Error::NotFound);
         return;
     }
     let name = request.name().to_owned();
     let track = request.accept(moq_net::track::Info::default().with_max_age(PICTURE_SEND_AGE));
     let mut state = shared.state.lock_recover();
+    if let Some(tab) = video::parse_window_track(&name) {
+        state.window_keyframes.insert(tab);
+    }
     state.pictures_out.insert(
         name,
         PictureOut {
@@ -901,6 +1020,8 @@ fn accept_picture(shared: &Shared, request: moq_net::track::Request) {
         },
     );
     state.pictures_revision = state.pictures_revision.saturating_add(1);
+    drop(state);
+    shared.wake();
 }
 
 /// The publications one carrier reads, as the relay offers them.
@@ -1015,17 +1136,17 @@ impl Readers {
                 continue;
             }
             self.picture_retry.remove(&key);
-            let Some((source, _)) = video::parse_track(&key.1) else {
+            let Some(track) = video::Track::parse(&key.1) else {
                 continue;
             };
             shared
                 .state
                 .lock_recover()
                 .pictures_in
-                .insert(key.clone(), PictureQueue::default());
+                .insert(key.clone(), PictureQueue::for_track(track));
             let (owner, reading) = (shared.clone(), key.clone());
             let task = self.picture_tasks.spawn(async move {
-                receive_pictures(owner, &reading, incarnation, source).await;
+                receive_pictures(owner, &reading, incarnation, track).await;
                 reading
             });
             self.pictures.insert(key, (incarnation, task));
@@ -1073,7 +1194,7 @@ async fn receive_pictures(
     shared: Arc<Shared>,
     key: &(String, String),
     incarnation: u64,
-    source: Source,
+    shown: video::Track,
 ) {
     let (name, track) = key;
     let Ok(broadcast) = shared
@@ -1101,7 +1222,7 @@ async fn receive_pictures(
             let Ok(object) = VideoObject::decode(&frame.payload) else {
                 return;
             };
-            if !deliver_picture(&shared, key, incarnation, source, object) {
+            if !deliver_picture(&shared, key, incarnation, shown, object) {
                 return;
             }
         }
@@ -1113,9 +1234,13 @@ fn deliver_picture(
     shared: &Shared,
     key: &(String, String),
     incarnation: u64,
-    source: Source,
+    shown: video::Track,
     object: VideoObject,
 ) -> bool {
+    let (source, window) = match shown {
+        video::Track::Picture(source, _) => (source, None),
+        video::Track::Window(tab) => (Source::Screen, Some(tab)),
+    };
     let picture = ReceivedPicture {
         publisher: PublicationId {
             namespace: key.0.clone(),
@@ -1123,6 +1248,7 @@ fn deliver_picture(
             incarnation,
         },
         source,
+        window,
         object,
         received_at: Instant::now(),
     };
@@ -1136,6 +1262,9 @@ fn deliver_picture(
         .map(|queue| queue.admit(picture))
         .is_some();
     drop(state);
+    if queued {
+        shared.wake();
+    }
     queued
 }
 

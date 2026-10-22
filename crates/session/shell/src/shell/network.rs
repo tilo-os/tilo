@@ -19,6 +19,7 @@ mod governor_actions;
 mod home_peer_reader;
 mod hosted_sites;
 mod hosted_topology;
+mod room_window_carriers;
 mod room_window_views;
 pub use room_window_views::RoomWindowViewer;
 #[cfg(test)]
@@ -1433,6 +1434,9 @@ pub struct ShellNetwork {
     /// Members viewing this device's windows, and what this device views
     /// of theirs ([`room_window_views`]).
     room_window_views: room_window_views::State,
+    /// Each room's window carrier, for members reached only through the
+    /// room's relay ([`room_window_carriers`]).
+    room_window_carriers: room_window_carriers::State,
     relay_rooms: relay_rooms::State,
     /// The rooms held through a site, reached over their host's HTTPS routes.
     hosted_sites: hosted_sites::State,
@@ -2329,6 +2333,7 @@ impl ShellNetwork {
             peer_sync_worker: peer_sync_worker::State::default(),
             hosted_topology: hosted_topology::State::default(),
             room_window_views: room_window_views::State::default(),
+            room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
             hosted_sites: hosted_sites::State::open(state_dir),
             device_approvals: device_approvals::State::default(),
@@ -2824,7 +2829,8 @@ impl ShellNetwork {
 
     /// Send one window's stream traffic on `workspace_topic` to exactly
     /// `viewers` (peer handles) over the direct media route, and to nobody
-    /// else in the room.
+    /// else in the room; a room's window carrier among them carries it,
+    /// sealed, through the room's relay ([`room_window_carriers`]).
     pub fn publish_legacy_to(
         &self,
         workspace_topic: u64,
@@ -2839,6 +2845,11 @@ impl ShellNetwork {
                 | NeighbourMsg::PermissionGrant { .. }
         ) {
             return false;
+        }
+        let count = viewers.len();
+        let viewers = self.carry_room_window(workspace_topic, &msg, viewers);
+        if viewers.is_empty() && count > 0 {
+            return true;
         }
         self.join_topic(workspace_topic)
             && self
@@ -2862,6 +2873,7 @@ impl ShellNetwork {
     /// Drain authenticated live legacy-app traffic without holding the queue
     /// while decoders or the compositor do work.
     pub fn take_inbound_legacy(&self) -> Vec<InboundLegacyEvent> {
+        self.pump_room_window_carriers();
         let Ok(mut queue) = self.inbound_legacy.lock() else {
             return Vec::new();
         };
@@ -7214,6 +7226,7 @@ impl ShellNetwork {
                     relays.insert((ws, peer));
                 }
                 self.handle_host_ready(ws, peer);
+                self.room_relay_ready();
             }
             NetEvent::PeerJoined { ws, peer, .. } => {
                 self.note_peer_joined();
@@ -9017,6 +9030,7 @@ pub(crate) fn shell_network_for_test(
         peer_sync_worker: peer_sync_worker::State::default(),
         hosted_topology: hosted_topology::State::default(),
         room_window_views: room_window_views::State::default(),
+        room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
         hosted_sites: hosted_sites::State::default(),
         device_approvals: device_approvals::State::default(),

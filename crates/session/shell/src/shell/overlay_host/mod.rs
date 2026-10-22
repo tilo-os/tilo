@@ -1844,6 +1844,10 @@ mod window_bar_location_tests;
 #[path = "hosted_window_tests.rs"]
 mod hosted_window_tests;
 
+#[cfg(test)]
+#[path = "room_window_stream_tests.rs"]
+mod room_window_stream_tests;
+
 /// The collaborators dropdown lists live people and agents together, and
 /// says which is which. Dormant membership stays in workspace settings:
 /// immediate presence never invents an idle session.

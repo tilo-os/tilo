@@ -212,21 +212,29 @@ impl ShellNetwork {
             .record((peer, room), views, decode, Instant::now());
     }
 
-    /// The members viewing each of this device's windows, by tab.
+    /// The members viewing each of this device's windows, by tab: those
+    /// that asked directly, and each room's carrier for those that view it
+    /// through the room's relay.
     pub fn room_window_viewers(&self) -> BTreeMap<u64, Vec<RoomWindowViewer>> {
-        self.room_window_views.viewers(Instant::now())
+        let mut viewers = self.room_window_views.viewers(Instant::now());
+        for (tab, carried) in self.room_carrier_viewers() {
+            viewers.entry(tab).or_default().extend(carried);
+        }
+        viewers
     }
 
     /// Tell each host which of its windows this device shows as a member of
     /// their room, given as (room, host device key, window); cheap when
     /// nothing changed, so call it every tick. The person's own devices are
-    /// told over their personal fabric instead, and are left out here; a
-    /// host this device reaches only through a relay is not told (a
-    /// relay would fan the list out to the room).
-    pub fn publish_room_window_views(&self, shown: Vec<(RoomId, String, SurfaceView)>) {
+    /// told over their personal fabric instead, and are left out here. A
+    /// host this device reaches only through a relay is not told (a relay
+    /// would fan the list out to the room): its windows are shown through
+    /// the room's carrier instead ([`super::room_window_carriers`]).
+    pub fn publish_room_window_views(&self, shown: Vec<(RoomId, String, String, SurfaceView)>) {
         let own = self.online_device_ids();
         let mut by_host: BTreeMap<(iroh::EndpointId, RoomId), Vec<SurfaceView>> = BTreeMap::new();
-        for (room, host, view) in shown {
+        let mut apps: HashMap<(iroh::EndpointId, RoomId, u64), String> = HashMap::new();
+        for (room, host, app_id, view) in shown {
             let Ok(device) = crate::shell::personal_continuity::DeviceId::new(host.clone()) else {
                 continue;
             };
@@ -243,6 +251,7 @@ impl ShellNetwork {
             if target == self.local_peer_id {
                 continue;
             }
+            apps.insert((target, room, view.tab), app_id);
             by_host.entry((target, room)).or_default().push(view);
         }
         for views in by_host.values_mut() {
@@ -250,6 +259,22 @@ impl ShellNetwork {
             views.dedup_by_key(|view| view.tab);
             views.truncate(MAX_SURFACE_VIEWS);
         }
+        let direct = |target: iroh::EndpointId, room: RoomId| {
+            self.workspace_control_direct
+                .lock()
+                .is_ok_and(|peers| peers.contains(&(room_topic_id(room), target)))
+        };
+        let carried = by_host
+            .iter()
+            .filter(|((target, room), _)| !direct(*target, *room))
+            .flat_map(|((target, room), views)| {
+                views.iter().filter_map(|view| {
+                    let app_id = apps.get(&(*target, *room, view.tab))?.clone();
+                    Some((*room, *target.as_bytes(), view.tab, app_id))
+                })
+            })
+            .collect();
+        self.show_room_windows_through_carriers(carried);
         let due = self.room_window_views.due(by_host, Instant::now());
         if due.is_empty() {
             return;
@@ -257,11 +282,7 @@ impl ShellNetwork {
         let decode = local_decode();
         for ((target, room), views) in due {
             let ws = room_topic_id(room);
-            let direct = self
-                .workspace_control_direct
-                .lock()
-                .is_ok_and(|peers| peers.contains(&(ws, target)));
-            if !direct {
+            if !direct(target, room) {
                 tracing::debug!(%room, host = %target, "no direct route to the window's host");
                 continue;
             }

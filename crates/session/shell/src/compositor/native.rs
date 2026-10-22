@@ -1882,8 +1882,8 @@ fn apply_app_cycle_tab(
 #[path = "native_hosted_windows.rs"]
 mod hosted_windows;
 use hosted_windows::{
-    desired_legacy_shares, hosts_viewed_window, remote_extents, shown_hosted_windows,
-    shown_room_hosted_windows,
+    desired_legacy_shares, hosts_viewed_window, remote_extents, rooms_hosting_windows,
+    shown_hosted_windows, shown_room_hosted_windows,
 };
 
 #[cfg(test)]
@@ -13230,6 +13230,11 @@ pub fn run() {
                 for room in rooms {
                     net.publish_hosted_legacy_windows(room, &tree_handle);
                 }
+                let generation = tree_handle.generation();
+                net.set_room_window_hosting(
+                    &rooms_hosting_windows(&tree_handle.read()),
+                    generation,
+                );
             }
             pump_phase!(
                 "legacy-share-reconcile",
@@ -13243,6 +13248,11 @@ pub fn run() {
             // once the encode cap allows, not when it next changes.
             let _ = state.flush_share_sessions();
             let inbound_legacy = net.take_inbound_legacy();
+            // A member that started showing a window through a room's relay
+            // starts at a keyframe of it as it stands.
+            for (peer, surface) in net.take_room_window_keyframes() {
+                state.start_share_reader(peer, surface);
+            }
             let inbound_legacy_count = inbound_legacy.len();
             pump_phase!(
                 "legacy-inbound",

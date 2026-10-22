@@ -142,6 +142,65 @@ impl Participation {
             getrandom::fill(&mut request).map_err(|error| error.to_string())?;
             Phase::Starting(request)
         };
+        let participation = Self::joining(owner, room, workspace, device, phase, call);
+        match (phase, call) {
+            (Phase::Starting(request), _) => session.voice_call(
+                request,
+                CallOperation::Open {
+                    app_id: channel.app.clone(),
+                    record_id: channel.record.clone(),
+                    channel_id: channel.channel.clone(),
+                },
+            ),
+            (_, Some(call)) => session.voice_join(call, None),
+            (_, None) => return Err("governed call missing".into()),
+        }
+        .map_err(|_| "the room's relay session is gone")?;
+        Ok(participation)
+    }
+
+    /// Join `room`'s window carrier
+    /// ([`tilo_relay_protocol::voice::windows_call`]) over the room's relay
+    /// `session`: the call on which its member devices publish the windows
+    /// of host programs they run and view each other's. It needs no governed
+    /// call; the governor grants it while the room shares its layout.
+    /// `check` vets the device's custody.
+    ///
+    /// # Errors
+    /// The device is no member, or the session is gone or of another room.
+    pub fn open_windows(
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+        session: &RelayCoeditSession,
+        check: impl Fn(&NativeCommittedView) -> Result<(), String>,
+    ) -> Result<Arc<Self>, String> {
+        let (workspace, device) = owner.with_current(room, |view| {
+            check(view)?;
+            view.peer()
+                .permissions(view.device().device_public_key, SystemTime::now())?;
+            Ok((view.workspace(), view.device().device_public_key))
+        })?;
+        if session.workspace_id() != workspace {
+            return Err("the session belongs to another room".into());
+        }
+        let call = tilo_relay_protocol::voice::windows_call(&room.to_string());
+        let participation =
+            Self::joining(owner, room, workspace, device, Phase::Joining, Some(call));
+        session
+            .voice_join(call, None)
+            .map_err(|_| "the room's relay session is gone")?;
+        Ok(participation)
+    }
+
+    /// A participation in `phase`, fenced by its room's custody.
+    fn joining(
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+        workspace: u64,
+        device: [u8; 32],
+        phase: Phase,
+        call: Option<[u8; 32]>,
+    ) -> Arc<Self> {
         let participation = Arc::new(Self {
             owner,
             room,
@@ -181,20 +240,7 @@ impl Participation {
                     }
                 }));
         *participation.fence.lock() = Some(fence);
-        match (phase, call) {
-            (Phase::Starting(request), _) => session.voice_call(
-                request,
-                CallOperation::Open {
-                    app_id: channel.app.clone(),
-                    record_id: channel.record.clone(),
-                    channel_id: channel.channel.clone(),
-                },
-            ),
-            (_, Some(call)) => session.voice_join(call, None),
-            (_, None) => return Err("governed call missing".into()),
-        }
-        .map_err(|_| "the room's relay session is gone")?;
-        Ok(participation)
+        participation
     }
 
     /// The room's relay workspace.

@@ -15,6 +15,15 @@
 //! participants, and the carrier's sessions, are bounded by the room's member
 //! devices, not by a constant.
 //!
+//! Each room also has its window carrier
+//! ([`tilo_relay_protocol::voice::windows_call`]): the members' devices
+//! publish the windows of host programs they run and view each other's on
+//! it. It is no governed call: it stands while the room shares its layout,
+//! any member device joins it, and a device holds it beside its voice call
+//! (one window participation per room), so neither ends the other. A room
+//! whose layout turns personal refuses every window participation on the
+//! next observation, which closes its carrier.
+//!
 //! What a participation may do is the room's current policy for its device:
 //! the call is active, the device is a member, and neither the call's
 //! directions nor a denial of its person exclude it. It is re-derived after
@@ -74,6 +83,8 @@ struct Participation {
     room: String,
     workspace_id: u64,
     call: [u8; 32],
+    /// Whether `call` is the room's window carrier, not a voice call.
+    windows: bool,
     epoch: u64,
     device: [u8; 32],
     user: [u8; 32],
@@ -132,13 +143,19 @@ impl State {
         Some(participation)
     }
 
-    /// End every participation of `device`, as its join of `call` does;
-    /// the other calls it left, whose participants hear the change.
-    fn end_device(&mut self, device: [u8; 32], call: &[u8; 32]) -> Vec<[u8; 32]> {
+    /// End the participations of `device` its join of `call` replaces: of a
+    /// voice call, its voice participation; of a room's window carrier
+    /// (`windows`), its earlier one in that carrier. The other calls it
+    /// left, whose participants hear the change.
+    fn end_device(&mut self, device: [u8; 32], call: &[u8; 32], windows: bool) -> Vec<[u8; 32]> {
         let earlier: Vec<[u8; 32]> = self
             .participations
             .iter()
-            .filter(|(_, existing)| existing.device == device)
+            .filter(|(_, existing)| {
+                existing.device == device
+                    && existing.windows == windows
+                    && (!windows || existing.call == *call)
+            })
             .map(|(id, _)| *id)
             .collect();
         let mut left = Vec::new();
@@ -382,6 +399,11 @@ fn parse_namespace(call: &[u8; 32], namespace: &str) -> Option<[u8; 32]> {
 struct Policy {
     calls: Option<RoomMediaV1>,
     access: GovernedAccess,
+    /// The room's window carrier ([`protocol::windows_call`]).
+    windows: [u8; 32],
+    /// Whether the room shares its members' layout, and with it their
+    /// windows.
+    shares_layout: bool,
 }
 
 impl Policy {
@@ -399,6 +421,8 @@ impl Policy {
         Ok(Self {
             calls,
             access: peer.governance().governed_access(SystemTime::now())?,
+            windows: protocol::windows_call(room.room()),
+            shares_layout: !peer.governance().room_layout().is_personal(),
         })
     }
 }
@@ -413,6 +437,24 @@ fn current(
     user: [u8; 32],
     call: &[u8; 32],
 ) -> Result<(u64, Directions), String> {
+    if *call == policy.windows {
+        // The room's window carrier: every member device publishes the
+        // windows it runs and views the others', while the room shares its
+        // layout.
+        if !member(policy, device, user) {
+            return Err("not a member of the room".into());
+        }
+        if !policy.shares_layout {
+            return Err("the room keeps each member's windows on their device".into());
+        }
+        return Ok((
+            0,
+            Directions {
+                publish: true,
+                subscribe: true,
+            },
+        ));
+    }
     let call = policy
         .calls
         .as_ref()
@@ -981,15 +1023,17 @@ impl Rooms {
             return Err("this relay serves no voice carrier".into());
         }
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
-        let (workspace_id, epoch, directions) = {
+        let (workspace_id, epoch, directions, windows) = {
             let governed = governed.lock().await;
-            let (epoch, directions) = current(
-                &Policy::read(&governed)?,
-                peer.device_public_key,
-                peer.user_public_key,
-                &call,
-            )?;
-            (governed.workspace_id(), epoch, directions)
+            let policy = Policy::read(&governed)?;
+            let (epoch, directions) =
+                current(&policy, peer.device_public_key, peer.user_public_key, &call)?;
+            (
+                governed.workspace_id(),
+                epoch,
+                directions,
+                call == policy.windows,
+            )
         };
         let mut state = calls.state();
         let id = if let Some(id) = participation {
@@ -1012,8 +1056,9 @@ impl Rooms {
             id
         } else {
             // A device is in one call at a time: its earlier participation,
-            // in this call or another, ends with this join.
-            let left = state.end_device(peer.device_public_key, &call);
+            // in this call or another, ends with this join. Its window
+            // carrier stands beside it.
+            let left = state.end_device(peer.device_public_key, &call, windows);
             calls.announce(&state, &left);
             let id = loop {
                 let id: [u8; 32] = rand::random();
@@ -1027,6 +1072,7 @@ impl Rooms {
                     room: room.to_owned(),
                     workspace_id,
                     call,
+                    windows,
                     epoch,
                     device: peer.device_public_key,
                     user: peer.user_public_key,
@@ -1253,6 +1299,7 @@ mod tests {
                     room: "room".into(),
                     workspace_id: 1,
                     call,
+                    windows: false,
                     epoch: 1,
                     device: id,
                     user: id,
@@ -1366,6 +1413,111 @@ mod tests {
             publishing.status_all(),
             AuthorizationStatus::Denied
         ));
+    }
+
+    /// One participation of `device` in `call`, for `State` fixtures.
+    fn participation(device: [u8; 32], call: [u8; 32], windows: bool) -> Participation {
+        let (outbound, _) = mpsc::channel(1);
+        Participation {
+            room: "room".into(),
+            workspace_id: 1,
+            call,
+            windows,
+            epoch: 0,
+            device,
+            user: device,
+            directions: Directions {
+                publish: true,
+                subscribe: true,
+            },
+            showing: Showing::default(),
+            seen: Instant::now(),
+            outbound,
+            token: [0; 32],
+            token_expires: Instant::now(),
+            token_expires_ns: 0,
+        }
+    }
+
+    /// A device's window carrier stands beside its voice call: joining a
+    /// call ends only its earlier voice participation, and joining a room's
+    /// window carrier only its earlier one in that carrier.
+    #[test]
+    fn a_window_carrier_stands_beside_a_voice_call() {
+        let device = [9; 32];
+        let windows = protocol::windows_call("room");
+        let elsewhere = protocol::windows_call("other room");
+        let mut state = State::default();
+        state
+            .participations
+            .insert([1; 32], participation(device, [3; 32], false));
+        state
+            .participations
+            .insert([2; 32], participation(device, windows, true));
+        state
+            .participations
+            .insert([7; 32], participation(device, elsewhere, true));
+
+        assert_eq!(state.end_device(device, &[4; 32], false), [[3; 32]]);
+        assert_eq!(
+            state
+                .participations
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [[2; 32], [7; 32]].into(),
+            "both window carriers stand"
+        );
+        assert!(state.end_device(device, &windows, true).is_empty());
+        assert_eq!(
+            state.participations.keys().copied().collect::<Vec<_>>(),
+            [[7; 32]],
+            "a fresh join of one room's carrier replaces only its own"
+        );
+    }
+
+    /// Any member device may publish and view windows on a room's window
+    /// carrier while the room shares its layout, and nobody may once it
+    /// keeps each member's windows on their device.
+    #[test]
+    fn a_rooms_window_carrier_admits_its_members_while_it_shares_its_layout() {
+        let member_device = [1; 32];
+        let mut policy = Policy {
+            calls: None,
+            access: GovernedAccess {
+                member_devices: vec![member_device],
+                member_user_roots: Vec::new(),
+            },
+            windows: protocol::windows_call("room"),
+            shares_layout: true,
+        };
+        let windows = policy.windows;
+        assert_eq!(
+            current(&policy, member_device, [2; 32], &windows),
+            Ok((
+                0,
+                Directions {
+                    publish: true,
+                    subscribe: true,
+                }
+            ))
+        );
+        assert!(
+            current(&policy, [3; 32], [4; 32], &windows).is_err(),
+            "a stranger"
+        );
+        assert!(
+            current(
+                &policy,
+                member_device,
+                [2; 32],
+                &protocol::windows_call("other room")
+            )
+            .is_err(),
+            "another room's carrier is no call of this one"
+        );
+        policy.shares_layout = false;
+        assert!(current(&policy, member_device, [2; 32], &windows).is_err());
     }
 
     #[test]

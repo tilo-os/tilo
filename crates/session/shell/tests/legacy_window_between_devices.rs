@@ -138,6 +138,7 @@ async fn a_legacy_window_streams_between_two_devices() {
     stream_a_window(Viewer::OwnDevice).await;
 }
 
+// USER REQUIREMENT (2026-10-21): "it should be streamed, MOQ, live, efficient, directly to them! just the window, low latency"
 /// A host window (a terminal, any Wayland or X client) in a room that
 /// shares its layout, viewed by another member of the room: it streams live
 /// to that member's device alone, end-to-end encrypted over the direct
