@@ -42,6 +42,14 @@ int main() {
     assert(geometry.ResizePhysical(801,451,2.0)==ResizeEffect::Repaint);
   }
   {
+    // A paint whose grown area the renderer has not drawn is transparent there.
+    std::string drawn(2*3*4,'\xff');
+    assert(PaintCoversView(drawn.data(),2,3));
+    std::string grown=drawn; grown[(2*3-1)*4+3]='\0';
+    assert(!PaintCoversView(grown.data(),2,3));
+    assert(!PaintCoversView(drawn.data(),0,3));
+  }
+  {
     DownloadSlots slots;
     assert(slots.Admit(1));
     assert(slots.Admit(1));

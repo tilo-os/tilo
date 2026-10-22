@@ -1,10 +1,23 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 
 namespace tilo {
 
 enum class ResizeEffect { Changed, Repaint };
+
+// Whether a view paint covers the whole view. The browser's background is
+// opaque, so everything the renderer draws is opaque; a paint the compositor
+// publishes after a resize but before the renderer drew at the new size leaves
+// the grown area transparent. The bottom-right pixel lies in every grown area,
+// whichever way the view grew.
+inline bool PaintCoversView(const void* bgra, int width, int height) {
+  if (width <= 0 || height <= 0) return false;
+  const auto* pixels = static_cast<const unsigned char*>(bgra);
+  const std::size_t last = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) - 1;
+  return pixels[last * 4 + 3] != 0;
+}
 
 // Tracks the physical size requested over IPC separately from CEF's logical
 // view rect. During a scale-only resize CEF can still deliver a queued paint
