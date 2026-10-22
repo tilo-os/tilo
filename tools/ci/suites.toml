@@ -402,7 +402,8 @@ suites = ["os/tests/direct_boot_bundle_export.sh"]
 name = "home-peer"
 requirement = { cores = 1, memory = "1GiB" }
 inputs = [
-  "os/", "apps/settings/", "crates/hosting/tilo-relay/", "crates/system/bounded-command/",
+  "os/", "apps/settings-rare/", "crates/hosting/tilo-relay/", "crates/system/bounded-command/",
+  "crates/session/shell/src/shell/device_pairing.rs", "crates/runtime/tilo-identity-host/",
 ]
 suites = ["os/tests/home_peer_setup.sh"]
 
