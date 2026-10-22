@@ -52,6 +52,9 @@ anyhow.workspace = true
 # hermetic; `deflate` covers common EPUBs.
 bounded-zip = { path = "../../crates/doc/bounded-zip", features = ["epub"] }
 roxmltree.workspace = true
+# The library index segments travel deflated, in pure Rust (the browser runs
+# Books too).
+flate2.workspace = true
 # Decode and downscale embedded raster covers for the shelf, through the
 # shared preview decoder.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }

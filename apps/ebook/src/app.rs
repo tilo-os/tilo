@@ -58,12 +58,11 @@ use ui::tokens::metrics::Metrics;
 use ui::widget::modal_dialog;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ChipStyle, ColorSwatchFace,
-    Continuable, ControlSize, DropZoneFace, EditOutcome, EditableLabel, EmptyState,
-    EmptyStateContent, InputHint, Interaction, ListRowFace, MediaArt, MediaAspect, MediaBadge,
-    MediaCardFace, MediaSize, ModalAction, ModalSpec, ScrollMetrics, Scrollbar, SegmentedFace,
-    SegmentedStyle, SidebarDrawer, Slider, SliderFace, Toggle, ToggleFace, ToggleGroup, Widget,
-    card_column_width, card_columns,
+    Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ColorSwatchFace, Continuable,
+    ControlSize, DropZoneFace, EditOutcome, EditableLabel, EmptyState, EmptyStateContent,
+    InputHint, Interaction, ListRowFace, MediaArt, MediaAspect, MediaSize, ModalAction, ModalSpec,
+    ScrollMetrics, Scrollbar, SegmentedFace, SegmentedStyle, SidebarDrawer, Slider, SliderFace,
+    Toggle, ToggleFace, ToggleGroup, Widget, card_column_width, card_columns,
 };
 
 use crate::comment_overlay::{CommentAction, CommentOverlay};
@@ -4603,6 +4602,8 @@ impl Widget for BooksApp {
         self.drain_import_worker(edits);
         self.commit_pending_share(edits);
         self.open_pending_book(edits);
+        self.reveal_arrived();
+        self.keep_built_segments(edits);
         self.deliver_effect_replies();
     }
 
@@ -4629,6 +4630,7 @@ impl Widget for BooksApp {
         self.refresh_from_doc(doc);
         let registry: Vec<crate::model::LibraryEntry> =
             self.record.entries.values().cloned().collect();
+        self.sync_library_index(&registry);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for book in self.library.iter() {
             book.id.hash(&mut hasher);
@@ -6752,17 +6754,6 @@ impl ShelfGrid {
     }
 }
 
-/// The book-specific facts painted over and under a shelf cover.
-struct ShelfCard<'a> {
-    book: &'a Book,
-    /// Index into the library (not the display order).
-    index: usize,
-    shared: bool,
-    progress: f32,
-    notes: Option<String>,
-    focused: bool,
-}
-
 impl BooksApp {
     /// The header row of a full-width page (library, settings): no fill,
     /// one hairline under it. Returns the band.
@@ -6915,7 +6906,8 @@ impl BooksApp {
                 let notes = self.shelf_annos.get(&book.id).copied().unwrap_or(0);
                 Some(ShelfCard {
                     book,
-                    index,
+                    open: Action::OpenBook(index),
+                    here: true,
                     shared: self
                         .library_paths
                         .get(&book.id)
@@ -7006,112 +6998,6 @@ impl BooksApp {
             start_x: body.x0 + gutter,
             start_y: top,
             row_text,
-        }
-    }
-
-    /// One book's media card: its cover (or generated art), title, author
-    /// and note count, with its reading progress along the cover's foot.
-    fn book_face<'a>(
-        card: &'a ShelfCard<'a>,
-        art: MediaArt<'a>,
-        badges: &'a [MediaBadge<'a>],
-    ) -> MediaCardFace<'a> {
-        let mut face = MediaCardFace::new(art)
-            .aspect(MediaAspect::Portrait)
-            .title(&card.book.title)
-            .badges(badges);
-        if !card.book.author.is_empty() {
-            face = face.meta(&card.book.author);
-        }
-        if let Some(notes) = &card.notes {
-            face = face.meta(notes);
-        }
-        face
-    }
-
-    fn draw_book_card(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        card: &ShelfCard<'_>,
-        cell: Rect,
-        body: Rect,
-    ) {
-        let theme = ctx.theme;
-        let hovered = self.is_hover(cell) && body.contains(self.cursor);
-        let image = self.cover_image(card.book);
-        let art = image
-            .as_ref()
-            .map_or(MediaArt::Placeholder, MediaArt::Image);
-        // The card's state as the design system's badges: how far it is
-        // read, and whether it is on the shared workspace. The book's
-        // subject is not on the cover: it is a filter of the shelf and of
-        // search.
-        let mut badges = Vec::with_capacity(2);
-        if card.progress > 0.0 {
-            badges.push(MediaBadge::Progress(f64::from(card.progress)));
-        }
-        if card.shared {
-            badges.push(MediaBadge::Tag("Shared", ChipStyle::Neutral));
-        }
-        let face = Self::book_face(card, art, &badges).interaction(Interaction {
-            hovered,
-            focused: card.focused,
-            ..Interaction::default()
-        });
-        face.paint(ctx, cell);
-        let cover = face.art_rect(cell);
-
-        let inset = f64::from(theme.tokens.spacing.s2);
-
-        // The whole card opens the book; clamp it to the scrolling body so a
-        // card sliding under the header never takes its clicks.
-        let hit = cell.intersect(body);
-        if hit.height() > 0.0 {
-            self.push_hit(hit, Action::OpenBook(card.index));
-        }
-        // Share and Remove over the cover's foot while the card is hovered;
-        // pushed after the card so they win where they overlap it.
-        let actions_h = ButtonFace::height(ControlSize::Small, theme) + inset;
-        if hovered && cover.y1 <= body.y1 && cover.y1 - actions_h >= body.y0 {
-            self.draw_book_card_hover_actions(ctx, cover, &card.book.id, card.shared);
-        }
-    }
-
-    /// Share (local books only) and Remove, at the cover's trailing foot.
-    fn draw_book_card_hover_actions(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        cover: Rect,
-        book_id: &str,
-        shared: bool,
-    ) {
-        let theme = ctx.theme;
-        let inset = f64::from(theme.tokens.spacing.s2);
-        let height = ButtonFace::height(ControlSize::Small, theme);
-        let y = cover.y1 - inset - height;
-        let mut x1 = cover.x1 - inset;
-        let remove = Rect::new(x1 - height, y, x1, y + height);
-        self.button(
-            ctx,
-            ButtonFace::icon_only(remove, Icon::Trash2, "Remove from library")
-                .role(ButtonRole::Secondary)
-                .control_size(ControlSize::Small),
-            Action::RemoveFromLibrary(book_id.to_string()),
-        );
-        x1 = remove.x0 - f64::from(theme.tokens.spacing.rhythm.related);
-        if !shared {
-            let width = ButtonFace::new(Rect::ZERO, "Share")
-                .icon(Icon::Users)
-                .control_size(ControlSize::Small)
-                .intrinsic_width(ctx.text, theme);
-            let share = Rect::new(x1 - width, y, x1, y + height);
-            self.button(
-                ctx,
-                ButtonFace::new(share, "Share")
-                    .icon(Icon::Users)
-                    .control_size(ControlSize::Small),
-                Action::ShareToWorkspace(book_id.to_string()),
-            );
         }
     }
 
@@ -10480,9 +10366,12 @@ fn draw_progress_label(ctx: &mut PaintCtx<'_>, rect: Rect, fraction: f32, color:
     );
 }
 
+mod book_card;
+use book_card::ShelfCard;
 mod query_view;
 mod stage;
 
+pub(crate) use query_view::PASSAGE;
 pub(crate) use query_view::kinds as query_kinds;
 
 #[cfg(test)]

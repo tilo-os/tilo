@@ -24,7 +24,7 @@ const SEARCH_URL: &str = "https://www.gutenberg.org/ebooks/search.opds/";
 const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
 
 /// The largest book fetched, in bytes: the reader's own EPUB budget.
-const MAX_BOOK_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MAX_BOOK_BYTES: usize = 128 * 1024 * 1024;
 
 /// One book in the store: what its row shows and what getting it fetches.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,7 +101,7 @@ fn client() -> Result<&'static tilo_net::Client, RemoteError> {
 
 /// GET `url` and read at most `limit` bytes of it, from this (non-UI)
 /// thread.
-fn fetch(url: &str, query: &[(&str, &str)], limit: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn fetch(url: &str, query: &[(&str, &str)], limit: usize) -> Result<Vec<u8>, String> {
     let client = client().map_err(|error| error.0)?;
     let request = client.get(url).query(query);
     let runtime = ui::rt::try_app().map_err(|error| error.to_string())?;

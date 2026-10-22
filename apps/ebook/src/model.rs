@@ -1188,6 +1188,12 @@ pub struct LibraryEntry {
     /// when only the devices holding the file read it.
     #[model(readonly)]
     pub content: Bytes,
+    /// The index of the book's text ([`crate::library_index`]), by reference
+    /// to a host content store: with it every device finds a passage in the
+    /// book before the book itself is there. Empty until a device that has
+    /// the text builds it.
+    #[model(readonly)]
+    pub index: Bytes,
 }
 
 /// The longest title, author or subject a shelf row keeps, in bytes.
@@ -1208,6 +1214,14 @@ impl LibraryEntry {
                     .to_hex()
                     .to_string(),
             ),
+        }
+    }
+
+    /// The content hash (hex) the index of the book's text is kept under.
+    pub fn index_hash(&self) -> Option<String> {
+        match &self.index {
+            Bytes::Empty => None,
+            index => Some(blake3::Hash::from_bytes(index.hash()).to_hex().to_string()),
         }
     }
 

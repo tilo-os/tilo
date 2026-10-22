@@ -39,6 +39,7 @@ pub mod content;
 pub mod epub;
 mod hosted_dropdown;
 mod input_controls;
+mod library_index;
 mod local_library;
 pub mod model;
 pub mod paginate;

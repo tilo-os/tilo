@@ -188,6 +188,24 @@ impl Ebook {
         self.entries.remove(&Id::from_raw(book));
     }
 
+    /// Keep the index of a book's text with its row, so that every device
+    /// finds a passage in the book before the book itself is there.
+    #[action(housekeeping)]
+    pub fn index_book(
+        &mut self,
+        #[param("The book's id")] book: String,
+        #[param("The index of its text, as a content store keeps it")] index: StoredContent,
+    ) -> Result<(), Refusal> {
+        let index = LibraryEntry::stored(&index.hash, index.size)
+            .ok_or("the index hash is not a content hash")?;
+        let entry = self
+            .entries
+            .get_mut(&Id::from_raw(book))
+            .ok_or("the book is not in the library")?;
+        entry.index = index;
+        Ok(())
+    }
+
     /// Record where the reader is in a book.
     #[action(housekeeping)]
     pub fn record_progress(
@@ -479,6 +497,7 @@ impl Ebook {
                 subject,
                 added: now(cx),
                 content: content.unwrap_or_default(),
+                index: ui::tilo_resource::Bytes::Empty,
             },
         );
     }
@@ -942,6 +961,14 @@ pub(crate) fn shelve(entry: &LibraryEntry) -> Invoke<Ebook> {
             hash,
             size: entry.content.len(),
         }),
+    })
+}
+
+/// The index of `book`'s text, kept as `stored`, joining its row.
+pub(crate) fn index_book(book: &str, stored: StoredContent) -> Invoke<Ebook> {
+    Ebook::INDEX_BOOK.with(books::IndexBook {
+        book: book.to_owned(),
+        index: stored,
     })
 }
 

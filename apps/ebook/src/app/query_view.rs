@@ -33,6 +33,8 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, paint_scroll_thumb};
+use crate::library_index::LibraryIndex;
+use crate::model::Book;
 use crate::search_provider::{
     ANNOTATION_KIND, AUTHOR_FACET, BOOK_FACET, BOOK_KIND, BookSearch, CHAPTER_KIND, LOCATION_KIND,
 };
@@ -127,6 +129,14 @@ pub(super) struct BookQuery {
     pumped: Option<Pumped>,
     /// The store's covers, fetched off the UI thread as their rows show.
     covers: ui::ImageStore,
+    /// The index of the library's text, built here for the books here and
+    /// read back for the books elsewhere.
+    index: LibraryIndex,
+    /// What of the library the index was last brought up to date with.
+    indexed: Option<u64>,
+    /// A passage opened in a book whose text is on its way: the book, its
+    /// chapter and its paragraph.
+    pub(super) reveal_on_arrival: Option<(String, usize, usize)>,
 }
 
 /// One result as laid out: where it is, what opening it does, and what it
@@ -151,6 +161,7 @@ impl BookQuery {
         // placeholder art.
         let offline: ui::Fetcher = Arc::new(|_: &str| None);
         let mut query = Self::with_engine(engine, &offline);
+        query.index = LibraryIndex::default().with_background(pumped.background());
         query.pumped = Some(pumped);
         query
     }
@@ -160,8 +171,10 @@ impl BookQuery {
     pub(super) fn live(wake: ui::WakeHandle) -> Self {
         let store: Arc<dyn RemoteSource> = Arc::new(crate::store::Gutenberg);
         let mut engine = QueryEngine::new(kinds()).with_remote(store);
-        engine.set_waker(wake);
-        Self::with_engine(engine, &crate::store::cover_fetcher())
+        engine.set_waker(wake.clone());
+        let mut query = Self::with_engine(engine, &crate::store::cover_fetcher());
+        query.index.set_waker(wake);
+        query
     }
 
     fn with_engine(engine: QueryEngine, covers: &ui::Fetcher) -> Self {
@@ -184,6 +197,9 @@ impl BookQuery {
             staged: None,
             pumped: None,
             covers: ui::ImageStore::new(covers),
+            index: LibraryIndex::default(),
+            indexed: None,
+            reveal_on_arrival: None,
         }
     }
 
@@ -237,10 +253,159 @@ impl BooksApp {
         self.query.engine.sync_local(items);
     }
 
+    /// Bring the library's index up to date with `entries`: build the
+    /// segments of the books here that have none, read back those of the
+    /// books elsewhere, and search what is read back; take in a book a hit
+    /// was opened in once it arrives.
+    pub(super) fn sync_library_index(&mut self, entries: &[crate::model::LibraryEntry]) {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for entry in entries {
+            entry.id.hash(&mut hasher);
+            entry.index.hash().hash(&mut hasher);
+        }
+        for book in self.library.iter() {
+            book.id.hash(&mut hasher);
+        }
+        let key = hasher.finish();
+        let arrived = self.query.index.take_loaded();
+        let changed = self.query.indexed != Some(key);
+        if changed {
+            self.query.indexed = Some(key);
+            // A segment built here is kept in the content store with the
+            // book's row; without one it would not reach other devices.
+            if self.content.is_some() {
+                self.query.index.build_missing(&self.library, entries);
+            }
+            let here: std::collections::HashSet<&str> =
+                self.library.iter().map(|book| book.id.as_str()).collect();
+            let local = |id: &str| here.contains(id);
+            self.query
+                .index
+                .load_missing(entries, &local, self.content.as_ref());
+        }
+        if arrived || changed {
+            let here: std::collections::HashSet<&str> =
+                self.library.iter().map(|book| book.id.as_str()).collect();
+            let local = |id: &str| here.contains(id);
+            let source = self.query.index.source(entries, &local);
+            self.query.engine.set_local_source(Some(source));
+            self.dirty = true;
+        }
+        if let Some((id, book)) = self.query.index.take_fetched() {
+            match book {
+                Some(loaded) if !self.library.iter().any(|book| book.id == loaded.book.id) => {
+                    self.library_paths
+                        .insert(loaded.book.id.clone(), loaded.path);
+                    Arc::make_mut(&mut self.library).push(Arc::new(loaded.book));
+                }
+                Some(_) => {}
+                None => {
+                    tracing::debug!(book = %id, "books: the text of a book a hit opened did not arrive");
+                    if self
+                        .query
+                        .reveal_on_arrival
+                        .as_ref()
+                        .is_some_and(|(book, ..)| *book == id)
+                    {
+                        self.query.reveal_on_arrival = None;
+                        self.load_error =
+                            Some("This book's text is not on this device yet.".into());
+                    }
+                }
+            }
+            self.dirty = true;
+        }
+        self.reveal_arrived();
+    }
+
+    /// Open the passage a hit named once its book is here.
+    pub(super) fn reveal_arrived(&mut self) {
+        let Some((book, chapter, block)) = self.query.reveal_on_arrival.clone() else {
+            return;
+        };
+        if !self.library.iter().any(|open| open.id == book) {
+            return;
+        }
+        self.query.reveal_on_arrival = None;
+        if let Err(error) = self.reveal(&book, chapter, 0, Some(block)) {
+            tracing::debug!(%book, %error, "books: a passage opened elsewhere is not in the book");
+        }
+        self.record_progress();
+        self.dirty = true;
+    }
+
+    /// Keep the segments built since the last frame in the content store,
+    /// each joining its book's row.
+    pub(super) fn keep_built_segments(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let built = self.query.index.take_built();
+        let Some(store) = self.content.clone() else {
+            return;
+        };
+        for (book, segment) in built {
+            match store.put(&segment) {
+                Ok(hash) => {
+                    let size = u64::try_from(segment.len()).unwrap_or(u64::MAX);
+                    self.edit(
+                        doc,
+                        crate::resource::index_book(
+                            &book,
+                            crate::resource::StoredContent { hash, size },
+                        ),
+                    );
+                }
+                Err(error) => tracing::debug!(%book, %error, "books: an index could not be kept"),
+            }
+        }
+    }
+
+    /// Open the passage `anchor` names in a book whose text is elsewhere:
+    /// fetch the book, from the workspace or the content store, and land on
+    /// the passage once it is here. Whether the anchor named such a book.
+    fn open_elsewhere(&mut self, anchor: &str) -> bool {
+        let target = parse_location(anchor).or_else(|| {
+            // A book itself opens where its reader left off.
+            let entry = self
+                .record
+                .entries
+                .values()
+                .find(|entry| crate::resource::book_place_resource(&entry.id) == anchor)?;
+            let progress = self.record.progress_of(&entry.id);
+            Some((entry.id.clone(), progress.chapter, progress.block))
+        });
+        let Some((book, chapter, block)) = target else {
+            return false;
+        };
+        if self.library.iter().any(|open| open.id == book) {
+            return false;
+        }
+        let Some(entry) = self
+            .record
+            .entries
+            .values()
+            .find(|entry| entry.id == book)
+            .cloned()
+        else {
+            return false;
+        };
+        self.query.reveal_on_arrival = Some((book.clone(), chapter, block));
+        if entry.shared && entry.content.is_empty() {
+            self.dispatch
+                .effect(&crate::resource::BooksEffect::Download { book });
+        } else if !self.query.index.fetch(&entry, self.content.as_ref()) {
+            self.query.reveal_on_arrival = None;
+            return false;
+        }
+        self.dirty = true;
+        true
+    }
+
     /// Whether the search is still answering what a capture shows: a
     /// staged search not yet typed, or an answer on its way.
     pub(super) fn query_busy(&self) -> bool {
-        self.query.staged.is_some() || (self.query.open && self.query.engine.results().pending())
+        self.query.staged.is_some()
+            || (self.query.open
+                && (self.query.engine.results().pending() || self.query.index.reading()))
     }
 
     /// Take in what the library and the store sent since the last frame.
@@ -335,6 +500,9 @@ impl BooksApp {
     /// host like any caller's.
     pub(super) fn open_hit(&mut self, anchor: &str) {
         use crate::resource::BooksEffect;
+        if self.open_elsewhere(anchor) {
+            return;
+        }
         let Some(effect) = self.book_search.opened(anchor) else {
             tracing::debug!(%anchor, "books: a search hit to open is gone");
             return;
@@ -569,10 +737,10 @@ impl BooksApp {
         group: &ResultGroup,
     ) -> f64 {
         let mut y = Self::query_heading(ctx, span, y, &group.label);
-        let (shelved, rows): (Vec<&Item>, Vec<&Item>) = group
-            .items
-            .iter()
-            .partition(|item| item.kind == BOOK && self.query.shelved.contains_key(&item.id));
+        // Every book is a card: one here as the shelf shows it, one whose
+        // text is elsewhere with its generated cover.
+        let (shelved, rows): (Vec<&Item>, Vec<&Item>) =
+            group.items.iter().partition(|item| item.kind == BOOK);
         if !shelved.is_empty() {
             y = self.query_shelf(ctx, span, body, y, &shelved);
         }
@@ -596,15 +764,53 @@ impl BooksApp {
     ) -> f64 {
         let theme = ctx.theme;
         let library = Arc::clone(&self.library);
+        // The books whose text is elsewhere, as their rows name them.
+        let elsewhere: Vec<(String, Book)> = items
+            .iter()
+            .filter(|item| !self.query.shelved.contains_key(&item.id))
+            .filter_map(|item| {
+                let entry = self
+                    .record
+                    .entries
+                    .values()
+                    .find(|entry| crate::resource::book_place_resource(&entry.id) == item.id)?;
+                Some((
+                    item.id.clone(),
+                    Book {
+                        id: entry.id.clone(),
+                        title: entry.title.clone(),
+                        author: entry.author.clone(),
+                        subject: entry.subject.clone(),
+                        ..Book::default()
+                    },
+                ))
+            })
+            .collect();
         let cards: Vec<ShelfCard<'_>> = items
             .iter()
             .filter_map(|item| {
-                let index = *self.query.shelved.get(&item.id)?;
+                let Some(&index) = self.query.shelved.get(&item.id) else {
+                    let (_, book) = elsewhere.iter().find(|(id, _)| *id == item.id)?;
+                    return Some(ShelfCard {
+                        book,
+                        open: Action::OpenHit(item.id.clone()),
+                        here: false,
+                        shared: self
+                            .record
+                            .entries
+                            .values()
+                            .any(|entry| entry.id == book.id && entry.shared),
+                        progress: self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0),
+                        notes: None,
+                        focused: false,
+                    });
+                };
                 let book = library.get(index)?;
                 let notes = self.shelf_annos.get(&book.id).copied().unwrap_or(0);
                 Some(ShelfCard {
                     book,
-                    index,
+                    open: Action::OpenBook(index),
+                    here: true,
                     shared: self
                         .library_paths
                         .get(&book.id)
@@ -648,7 +854,7 @@ impl BooksApp {
             let cell = grid.cell(slot);
             self.query.rows.push(QueryRow {
                 rect: cell,
-                action: Action::OpenBook(card.index),
+                action: card.open.clone(),
                 id: card.book.id.clone(),
                 label: format!("Open {}", card.book.title),
             });
@@ -933,4 +1139,12 @@ impl BooksApp {
         }
         took
     }
+}
+
+/// The book, chapter and paragraph a location anchor names.
+fn parse_location(anchor: &str) -> Option<(String, usize, usize)> {
+    let rest = anchor.strip_prefix("ebook.location:")?;
+    let (rest, block) = rest.rsplit_once(':')?;
+    let (book, chapter) = rest.rsplit_once(':')?;
+    Some((book.to_owned(), chapter.parse().ok()?, block.parse().ok()?))
 }

@@ -73,7 +73,7 @@ impl BooksApp {
                 self.comment_overlay.open(COMMENTED_HIGHLIGHT);
             }
             "continuous" => self.scroll_y = 520.0,
-            "search" => {
+            "search" | "search-elsewhere" => {
                 self.view = View::Library;
                 self.query.staged = Some((View::Library, "glass".into()));
             }
