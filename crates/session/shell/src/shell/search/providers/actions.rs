@@ -1381,28 +1381,23 @@ fn request_window_shortcut(
     Ok(())
 }
 
-/// Store an appearance change the action `action` made, then apply it.
-fn persist_appearance(
-    st: &mut ChromeState,
-    action: &str,
-    write: settings_store::SectionWrite,
-) -> Result<(), ActionError> {
-    write
-        .commit_by(&settings_store::ChangeOrigin::action(action))
-        .map_err(|err| ActionError::Refused(err.to_string()))?;
-    crate::shell::i18n::apply_configured_locale();
-    st.note_appearance_change();
-    Ok(())
-}
-
 /// Dark, light or automatic mode, keeping whichever theme the person chose
-/// for it, changed through the appearance section's field edits. Choosing a
-/// mode leaves high contrast.
-pub(super) fn set_mode(st: &mut ChromeState, mode: &str) -> Result<(), ActionError> {
+/// for it, changed through the appearance section's field edits on behalf
+/// of the action `invoked_by`. Choosing a mode leaves high contrast.
+pub(super) fn set_mode(
+    st: &mut ChromeState,
+    mode: &str,
+    invoked_by: &settings_store::InvokingAction,
+) -> Result<(), ActionError> {
     use crate::shell::settings_records::{address, change, set_field};
     let edit = address("settings.appearance", "field-edit");
-    change(&edit, &set_field("mode", &mode.into()), false)?;
-    change(&edit, &set_field("high_contrast", &false.into()), false)?;
+    change(&edit, &set_field("mode", &mode.into()), false, invoked_by)?;
+    change(
+        &edit,
+        &set_field("high_contrast", &false.into()),
+        false,
+        invoked_by,
+    )?;
     st.note_appearance_change();
     Ok(())
 }
@@ -1456,6 +1451,7 @@ fn flip_setting(st: &mut ChromeState, id: &str) -> Result<(), ActionError> {
 }
 
 fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError> {
+    use crate::shell::settings_records::{address, change, set_field};
     let language = match requested.trim() {
         "en" | "en-US" | "english" | "English" => "en-US",
         "de" | "de-DE" | "german" | "German" | "deutsch" | "Deutsch" => "de-DE",
@@ -1465,11 +1461,15 @@ fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError
             )));
         }
     };
-    let write = settings_store::SectionWrite::new().set(
-        &settings_store::appearance::LANGUAGE,
-        &Some(language.to_string()),
-    );
-    persist_appearance(st, "appearance.language", write)
+    change(
+        &address("settings.appearance", "field-edit"),
+        &set_field("language", &language.into()),
+        false,
+        &settings_store::InvokingAction::action("appearance.language"),
+    )?;
+    crate::shell::i18n::apply_configured_locale();
+    st.note_appearance_change();
+    Ok(())
 }
 
 /// One action row. `id` is the palette command id (`overview.toggle`,
@@ -2858,13 +2858,19 @@ impl Action {
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
-            |st, _| set_mode(st, "dark"),
+            |st, _| {
+                let invoked_by = settings_store::InvokingAction::action("appearance.theme.dark");
+                set_mode(st, "dark", &invoked_by)
+            },
         ),
         chrome(
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
-            |st, _| set_mode(st, "light"),
+            |st, _| {
+                let invoked_by = settings_store::InvokingAction::action("appearance.theme.light");
+                set_mode(st, "light", &invoked_by)
+            },
         ),
         chrome(
             "appearance.high-contrast",
@@ -7693,8 +7699,15 @@ mod tests {
             .map(|entry| {
                 assert_eq!(entry["section"], "appearance");
                 // The palette changes settings through Settings' own field
-                // edits, so each leaf names the edit that set it.
+                // edits, so each leaf names the edit that set it, and the
+                // palette action that ran it: "light mode, from the palette"
+                // stays distinct from the same edit made in Settings.
                 assert_eq!(entry["action"], "settings.appearance/field-edit");
+                assert_eq!(
+                    entry["invoked_by"],
+                    serde_json::json!({ "action": "appearance.theme.light" }),
+                    "{entry}"
+                );
                 assert_eq!(entry["via"], "session");
                 (
                     entry["leaf"].as_str().unwrap_or_default(),
@@ -7709,7 +7722,7 @@ mod tests {
                 ("high_contrast", serde_json::json!(false)),
                 ("mode", serde_json::json!("light")),
             ],
-            "the action sets both leaves, each attributed to its field edit"
+            "the action sets both leaves, each attributed to its field edit and the palette action"
         );
         assert_eq!(
             settings_store::load_at(&paths.copy)["appearance"]["mode"],

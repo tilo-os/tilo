@@ -1918,7 +1918,13 @@ mod tests {
         let dir = crate::test_dir();
         let session = open(dir.path());
         let paths = session.paths().clone();
-        let origin = ChangeOrigin::action("x").by("agent:alice");
+        let origin =
+            ChangeOrigin::action("x")
+                .by("agent:alice")
+                .invoked_by(Some(crate::InvokingAction {
+                    action: "palette.y".into(),
+                    invocation: Some("run-1".into()),
+                }));
         session
             .update_section_by(
                 "input",
@@ -1948,6 +1954,11 @@ mod tests {
         assert_eq!(touchpad["after"], false);
         assert_eq!(touchpad["action"], "x");
         assert_eq!(touchpad["principal"], "agent:alice");
+        assert_eq!(
+            touchpad["invoked_by"],
+            json!({"action": "palette.y", "invocation": "run-1"}),
+            "the action that ran `x` is kept beside it"
+        );
         assert_eq!(touchpad["via"], "session");
         assert_eq!(entry("tap_to_click")["action"], "x");
         let external = entry("auto_suspend");
@@ -1958,6 +1969,7 @@ mod tests {
             "a copy take-in has no origin"
         );
         assert_eq!(external["principal"], Value::Null);
+        assert_eq!(external["invoked_by"], Value::Null);
         assert_eq!(external["via"], "copy");
     }
 

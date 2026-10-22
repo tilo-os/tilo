@@ -32,7 +32,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
 
-pub use settings_store::ChangeOrigin;
+pub use settings_store::{ChangeOrigin, InvokingAction};
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 

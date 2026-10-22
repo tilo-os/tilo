@@ -629,10 +629,10 @@ fn a_section_is_published_and_changed_without_a_window() {
         "never locking asks first"
     );
 
-    records.invoke(&address, &edit(1), &invoker).unwrap();
+    records.invoke(&address, &edit(1), &invoker, None).unwrap();
     assert_eq!(stored(), 1);
     assert!(
-        records.invoke(&address, &edit(90), &invoker).is_err(),
+        records.invoke(&address, &edit(90), &invoker, None).is_err(),
         "the model's check refuses"
     );
     assert_eq!(stored(), 1, "a refused change stores nothing");

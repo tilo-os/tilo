@@ -372,6 +372,7 @@ pub mod host {
                         .filter(|action| !action.is_empty())
                         .map(str::to_owned),
                     principal: None,
+                    invoked_by: None,
                 };
                 if !settings_store::personal_dictionary::host::command(
                     self.source.as_ref(),
