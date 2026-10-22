@@ -19459,6 +19459,7 @@ name = "tilo-rt"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "libc",
  "rayon",
  "thiserror 2.0.21",
  "tilo-clock",
