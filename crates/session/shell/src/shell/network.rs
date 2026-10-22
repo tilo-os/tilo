@@ -451,6 +451,18 @@ impl PeerDepartureHistory {
     }
 }
 
+/// The rooms whose topics this device joins: every room in the tree but one
+/// it is still joining through a host. That room's traffic comes over its
+/// native session once the replica installs, which joins the topic itself;
+/// joined earlier, its host would replay the room's retained traffic to a
+/// device that cannot yet tell a member from anyone.
+fn topic_rooms(tree: &crate::shell::state::WorkspaceTree) -> Vec<RoomId> {
+    tree.rooms()
+        .into_iter()
+        .filter(|room| !tree.is_joining(*room))
+        .collect()
+}
+
 /// Stable transport/host shard for a durable room. Local workspace handles are
 /// deliberately not used: they differ between devices.
 pub fn room_topic_id(room: RoomId) -> u64 {
@@ -4518,7 +4530,11 @@ impl ShellNetwork {
         self.export_personal_rooms();
         let mut topics = vec![DEFAULT_WS_TOPIC];
         if let Ok(replica) = self.replica.lock() {
-            topics.extend(replica.tree.read().rooms().into_iter().map(room_topic_id));
+            topics.extend(
+                topic_rooms(&replica.tree.read())
+                    .into_iter()
+                    .map(room_topic_id),
+            );
         }
         topics.extend(
             self.person_roots()
@@ -4719,7 +4735,7 @@ impl ShellNetwork {
             .replica
             .lock()
             .ok()
-            .map(|replica| replica.tree.read().rooms())
+            .map(|replica| topic_rooms(&replica.tree.read()))
         else {
             return false;
         };
