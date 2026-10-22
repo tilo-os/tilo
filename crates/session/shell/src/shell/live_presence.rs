@@ -24,6 +24,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use crate::shell::state::RoomId;
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
@@ -52,6 +53,19 @@ pub fn seal(
         keys.seal_content(artifact, retention, cleartext)
     })
     .ok()
+}
+
+/// Where live frames find the content keys of a room's record channel.
+pub type LiveKeys = Box<dyn Fn(RoomId, ChannelId) -> Option<ChannelContentKeys> + Send + Sync>;
+
+/// The content keys of `channel` of `room` from this session's channel
+/// encryption service, when this device is admitted.
+pub fn session_keys(room: RoomId, channel: ChannelId) -> Option<ChannelContentKeys> {
+    let access = crate::shell::channel_encryption::ChannelKeyProvider::session().get()?;
+    match access.access(room, channel).0 {
+        crate::shell::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
+        _ => None,
+    }
 }
 
 /// Open sealed live `frame` with its channel's keys, returning the canonical

@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 8;
+pub const PEER_PROTOCOL_VERSION: u32 = 9;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -512,6 +512,14 @@ pub enum NeighbourMsg {
         surface: SurfaceId,
         seq: u64,
     },
+    /// One of session `peer`'s live presence frames in the room
+    /// (`tilo_relay_protocol::live`, sealed with the channel keys of the
+    /// record it names), on the room's own topic: how the frame travels
+    /// when no workspace host's live plane reaches the room. It is the same
+    /// frame, read the same way as one the live plane delivers, so what
+    /// rides it (a wave) reaches the room's people with or without a host.
+    /// Appended to preserve every existing Postcard discriminant.
+    LivePresence { peer: PeerId, frame: Vec<u8> },
 }
 
 impl NeighbourMsg {
@@ -572,7 +580,8 @@ impl NeighbourMsg {
             | Self::PersonalWorkspaces { .. }
             | Self::RecordContentWant { .. }
             | Self::RecordContentPiece { .. }
-            | Self::SurfaceKeyframeRequest { .. } => false,
+            | Self::SurfaceKeyframeRequest { .. }
+            | Self::LivePresence { .. } => false,
         }
     }
 
@@ -610,6 +619,7 @@ impl NeighbourMsg {
             Self::RecordContentPiece { .. } => "RecordContentPiece",
             Self::MlsRoutedAccessRequest { .. } => "MlsRoutedAccessRequest",
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
+            Self::LivePresence { .. } => "LivePresence",
         }
     }
 }
@@ -689,6 +699,13 @@ mod tests {
         all.extend(fixtures_input_permissions_and_identity());
         all.extend(fixtures_app_crdt_and_scrollback());
         all.extend(fixtures_channel_governance());
+        all.push((
+            "live presence",
+            NeighbourMsg::LivePresence {
+                peer: 3,
+                frame: vec![1, 2, 3],
+            },
+        ));
         all
     }
 
@@ -1103,7 +1120,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 30;
+    const VARIANT_COUNT: usize = 31;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1157,7 +1174,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b08",
+                "0b09",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1314,6 +1331,7 @@ mod tests {
                 "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
             ),
         ),
+        ("live presence", "1e0303010203"),
     ];
 
     fn every_variant_encodes_to_its_pinned_bytes() {

@@ -60,6 +60,7 @@ impl ShellNetwork {
             | NeighbourMsg::PresenceCleared { .. }
             | NeighbourMsg::Heartbeat { .. }
             | NeighbourMsg::AppPresenceV2 { .. }
+            | NeighbourMsg::LivePresence { .. }
             // The sender's own device certificate, which only the room
             // governor may promote into governance.
             | NeighbourMsg::IdentityAnnouncementV2 { .. }

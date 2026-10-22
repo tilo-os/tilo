@@ -20,10 +20,13 @@ mod home_peer_reader;
 mod hosted_sites;
 mod hosted_topology;
 #[cfg(test)]
+mod hostless_live_tests;
+#[cfg(test)]
 mod idle_quiet_tests;
 mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
+mod live_waves;
 mod native_admission;
 #[cfg(test)]
 mod native_admission_tests;
@@ -1596,6 +1599,9 @@ pub struct ShellNetwork {
     live_desk_pointers: Mutex<Vec<LiveDeskPointer>>,
     /// Waves sent and heard on the room's live presence.
     live_waves: Mutex<crate::shell::live_waves::LiveWaves>,
+    /// The content keys of a room's record channel, when this device is
+    /// admitted to it: what live frames are sealed and opened with.
+    live_keys: crate::shell::live_presence::LiveKeys,
     /// The last reaction counter said in each room over its presence
     /// channel (a room with no live plane), so each new one is told apart.
     room_reactions: Mutex<std::collections::HashMap<String, u32>>,
@@ -2353,6 +2359,7 @@ impl ShellNetwork {
             live_chat: Mutex::default(),
             live_desk_pointers: Mutex::default(),
             live_waves: Mutex::default(),
+            live_keys: Box::new(crate::shell::live_presence::session_keys),
             room_reactions: Mutex::default(),
             presence_visibility: Mutex::default(),
             peer_colours: Mutex::default(),
@@ -3589,7 +3596,7 @@ impl ShellNetwork {
                 std::time::Instant::now(),
             )
         });
-        if let Some(frame) = frame.and_then(|frame| Self::seal_live(room, &frame)) {
+        if let Some(frame) = frame.and_then(|frame| self.seal_live(room, &frame)) {
             let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
         }
     }
@@ -3743,7 +3750,7 @@ impl ShellNetwork {
                 std::time::Instant::now(),
             )
         });
-        let Some(frame) = frame.and_then(|frame| Self::seal_live(room, &frame)) else {
+        let Some(frame) = frame.and_then(|frame| self.seal_live(room, &frame)) else {
             return false;
         };
         self.cmd_tx
@@ -3770,58 +3777,6 @@ impl ShellNetwork {
             .ok()
             .and_then(|rooms| rooms.get(room).copied())
             .unwrap_or(ui::PresenceVisibility::Nothing)
-    }
-
-    /// Wave at `target` (a roster id) in `cluster_id`'s room on its live
-    /// presence, where browser tabs and desktops alike hear it. Only where
-    /// its people may see that this person is here; returns whether it
-    /// went out.
-    pub fn publish_wave(&self, cluster_id: &str, target: &str) -> bool {
-        let Some(room) = RoomId::parse(cluster_id).filter(|room| {
-            !room.is_nil()
-                && self.person_root_of_room(*room).is_none()
-                && self.presence_visibility(cluster_id).shows_presence()
-                && self.has_live_plane(cluster_id)
-        }) else {
-            return false;
-        };
-        let others: Vec<[u8; 32]> = self
-            .room_devices(room)
-            .iter()
-            .map(|d| *d.as_bytes())
-            .collect();
-        let Some(wave) = self
-            .live_waves
-            .lock()
-            .ok()
-            .and_then(|mut waves| waves.aim(target, &others, tilo_clock::unix_now_ms()))
-        else {
-            return false;
-        };
-        let ws = room_topic_id(room);
-        let desktop = tilo_relay_protocol::live::LiveRecord {
-            app: tilo_desktop_model::ownership::DESKTOP_APP.into(),
-            record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
-        };
-        let frames = self.live_presence.lock().map_or_else(
-            |_| Vec::new(),
-            |mut live| {
-                let at = std::time::Instant::now();
-                live.wave(ws, desktop, Self::live_participant(), wave, at)
-            },
-        );
-        // Every frame goes, in order: the wave rides the last.
-        let mut sent = false;
-        for frame in frames
-            .iter()
-            .filter_map(|frame| Self::seal_live(room, frame))
-        {
-            sent = self
-                .cmd_tx
-                .try_send(NetCmd::PublishLive { ws, frame })
-                .is_ok();
-        }
-        sent
     }
 
     /// Who waved at this person on a live plane since the last call, by
@@ -3861,30 +3816,18 @@ impl ShellNetwork {
         for (ws, frame) in due {
             if let Some(frame) = self
                 .room_of_topic(ws)
-                .and_then(|room| Self::seal_live(room, &frame))
+                .and_then(|room| self.seal_live(room, &frame))
             {
                 let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
             }
         }
     }
 
-    /// The content keys of `channel` of `room`, when this device is admitted.
-    fn live_channel_keys(
-        room: RoomId,
-        channel: collab_types::ChannelId,
-    ) -> Option<channel_crypto::ChannelContentKeys> {
-        let access = crate::shell::channel_encryption::ChannelKeyProvider::session().get()?;
-        match access.access(room, channel).0 {
-            crate::shell::channel_encryption::ChannelAccess::Ready(keys) => Some(keys),
-            _ => None,
-        }
-    }
-
     /// Seal live `frame` of `room` with its record's channel keys; a frame
     /// this device cannot seal is never published.
-    fn seal_live(room: RoomId, frame: &[u8]) -> Option<Vec<u8>> {
+    fn seal_live(&self, room: RoomId, frame: &[u8]) -> Option<Vec<u8>> {
         crate::shell::live_presence::seal(&room.to_string(), frame, |channel| {
-            Self::live_channel_keys(room, channel)
+            (self.live_keys)(room, channel)
         })
     }
 
@@ -3915,9 +3858,9 @@ impl ShellNetwork {
         let Some(room) = self.room_of_topic(ws) else {
             return;
         };
-        let Some(frame) = crate::shell::live_presence::open(frame, |channel| {
-            Self::live_channel_keys(room, channel)
-        }) else {
+        let Some(frame) =
+            crate::shell::live_presence::open(frame, |channel| (self.live_keys)(room, channel))
+        else {
             return;
         };
         self.take_live_frame(room, from, &frame);
@@ -8076,6 +8019,11 @@ impl ShellNetwork {
             NeighbourMsg::RemoteAction { frame } => {
                 self.dispatch_remote_action(ws, &origin, peer, &frame);
             }
+            // A live frame on the room's own topic, from the device the
+            // transport authenticated: read as one the live plane delivers.
+            NeighbourMsg::LivePresence { frame, .. } => {
+                self.handle_live_frame(ws, *peer.as_bytes(), &frame);
+            }
             message @ (NeighbourMsg::SurfaceStreamStart { .. }
             | NeighbourMsg::SurfaceFrame { .. }
             | NeighbourMsg::SurfaceStreamEnd { .. }
@@ -8325,7 +8273,8 @@ impl ShellNetwork {
             | NeighbourMsg::Heartbeat { peer, .. }
             | NeighbourMsg::MediaCapabilities { peer, .. }
             | NeighbourMsg::AppDocument { peer, .. }
-            | NeighbourMsg::AppPresenceV2 { peer, .. } => Some(*peer),
+            | NeighbourMsg::AppPresenceV2 { peer, .. }
+            | NeighbourMsg::LivePresence { peer, .. } => Some(*peer),
             NeighbourMsg::SurfaceStreamStart { source_peer, .. }
             | NeighbourMsg::SurfaceStreamEnd { source_peer, .. }
             | NeighbourMsg::SurfaceFrame { source_peer, .. } => Some(*source_peer),
@@ -9084,6 +9033,7 @@ pub(crate) fn shell_network_for_test(
         live_chat: Mutex::default(),
         live_desk_pointers: Mutex::default(),
         live_waves: Mutex::default(),
+        live_keys: Box::new(crate::shell::live_presence::session_keys),
         room_reactions: Mutex::default(),
         presence_visibility: Mutex::new(presence_visibility),
         peer_colours: Mutex::default(),
