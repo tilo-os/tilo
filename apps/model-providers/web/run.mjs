@@ -125,7 +125,9 @@ try {
     const before = await tab.evaluate('semanticDeliveries');
     await tab.evaluate('mount.requestSemantics()');
     await wait(`semanticDeliveries > ${before}`);
-    if (action === 'value' && !id.startsWith('agent-models-api-key-')) {
+    // A private key buffer is never projected, and the add chooser is a
+    // command: choosing a preset adds the provider and leaves it empty.
+    if (action === 'value' && !id.startsWith('agent-models-api-key-') && id !== 'agent-models-add-provider') {
       await wait(`findControl(${JSON.stringify(id)})?.semantics?.value === ${JSON.stringify(value)}`);
     }
   };
@@ -140,7 +142,7 @@ try {
     await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error,frames:mount.state()?.frames})') + '; ' + tab.log.join('; ') + '; browser: ' + browser.diagnostics());
   assert((await tab.screenshot())?.length > 1000, 'production WebGPU canvas was not captured');
   await settled();
-  await control('agent-models-add-openai');
+  await control('agent-models-add-provider', 'value', 'openai-compatible');
   await wait('mount.actions().some(a=>a.resource_kind==="settings.agent-provider")');
   assert.equal(config.profiles.length, 1);
   const id = config.profiles[0].id;
