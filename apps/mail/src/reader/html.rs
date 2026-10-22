@@ -568,7 +568,7 @@ impl HtmlBody {
     }
 
     /// Select the whole document.
-    pub fn select_all(&mut self) {
+    pub fn select_all(&self) {
         if let Some(engine) = &self.engine {
             for down in [true, false] {
                 engine.send(WebViewCommand::Key {
@@ -611,7 +611,7 @@ impl HtmlBody {
     }
 
     /// Step to the next or previous match of the find running.
-    pub fn step(&mut self, query: &str, forward: bool) {
+    pub fn step(&self, query: &str, forward: bool) {
         if let (Some(engine), Some(id)) = (&self.engine, self.finding) {
             engine.send(WebViewCommand::Find {
                 id,
