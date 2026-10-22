@@ -751,6 +751,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs",
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/image-decode.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
