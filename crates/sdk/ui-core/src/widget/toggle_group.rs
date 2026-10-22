@@ -2440,6 +2440,8 @@ impl Widget for ToggleGroup {
     fn needs_redraw(&self) -> bool {
         self.cache_dirty
             || self.thumb.is_moving(crate::motion::frame_now())
+            // Drawn on its way: the frame after it settles paints it at rest.
+            || self.last_thumb.is_some()
             || self.selected != self.last_selected
             || self.focus_visible() != self.last_focused
             || self.hovered != self.last_hovered

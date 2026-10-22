@@ -11930,9 +11930,13 @@ mod tests {
         });
         assert_ne!(prefs.revision(), before, "views following it refresh");
 
-        // Another app's settings are out of reach.
+        // Another app's settings are out of reach: a write that changes
+        // them is refused (one that changes nothing writes nothing).
         let error = crate::storage::Settings::<MonitorPrefs>::for_app("so.tilo.notes")
-            .set(&MonitorPrefs::default())
+            .set(&MonitorPrefs {
+                confirm_kill: true,
+                interval_ms: 5000,
+            })
             .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(
