@@ -8874,7 +8874,7 @@ mod tests {
             assert_eq!(caps.secret_store, wifi);
         }
         assert!(!permits_roaming_setting(
-            ContinuityPolicySnapshot::default(),
+            ContinuityPolicySnapshot::OFF,
             arrangement_key
         ));
     }
@@ -10398,7 +10398,7 @@ mod tests {
                 "Desktop"
             );
             assert!(
-                roaming_provenance(&fabric, ContinuityPolicySnapshot::default())
+                roaming_provenance(&fabric, ContinuityPolicySnapshot::OFF)
                     .settings
                     .is_empty()
             );
