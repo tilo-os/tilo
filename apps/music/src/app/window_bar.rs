@@ -23,7 +23,7 @@ impl MusicApp {
             }),
             ..WindowToolbar::default()
         };
-        if !self.nav_back.is_empty() {
+        if self.nav.can_go_back() {
             toolbar
                 .leading
                 .push(ToolbarAction::new(BACK, "arrow-left", "Back"));
