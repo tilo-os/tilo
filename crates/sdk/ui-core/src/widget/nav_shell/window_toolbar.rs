@@ -479,18 +479,15 @@ fn collect_slots(
     if is_app_search(widget) {
         return Some(());
     }
-    if let Some(button) = widget
-        .as_any()
-        .and_then(|any| any.downcast_ref::<crate::widget::Button>())
-    {
-        let id = widget.test_id().filter(|id| !id.is_empty()).map_or_else(
-            || {
-                let at: Vec<String> = path.iter().map(usize::to_string).collect();
-                format!("nav-shell.{}.{}", column.key(), at.join("."))
-            },
-            str::to_owned,
-        );
-        slots.push((button.window_slot(id)?, column, path.clone()));
+    let id = widget.test_id().filter(|id| !id.is_empty()).map_or_else(
+        || {
+            let at: Vec<String> = path.iter().map(usize::to_string).collect();
+            format!("nav-shell.{}.{}", column.key(), at.join("."))
+        },
+        str::to_owned,
+    );
+    if let Some(action) = widget.window_slot(id) {
+        slots.push((action, column, path.clone()));
         return Some(());
     }
     let children = widget.children();

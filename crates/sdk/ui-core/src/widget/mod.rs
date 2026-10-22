@@ -1600,6 +1600,13 @@ pub trait Widget {
         None
     }
 
+    /// This control as an action of the window's bar, sent back as `id`
+    /// ([`crate::window_toolbar::ToolbarAction`]): a button's icon and name.
+    /// `None` for anything that is not a button.
+    fn window_slot(&self, _id: String) -> Option<crate::window_toolbar::ToolbarAction> {
+        None
+    }
+
     /// Downcast to the concrete widget, for hosts and tests that reach a
     /// known widget through `dyn Widget`. Default `None` (a widget may borrow
     /// and so not be `'static`); a widget opts in with `Some(self)`, and a
