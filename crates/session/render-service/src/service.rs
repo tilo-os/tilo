@@ -545,8 +545,13 @@ impl Service {
             return;
         }
         let started = Instant::now();
-        if let Some(gpu) = &self.gpu {
-            let _ = gpu.device.poll(vello::wgpu::PollType::wait_indefinitely());
+        if let Some(gpu) = &self.gpu
+            && !gpu.finish()
+        {
+            // Nothing of this pass was drawn: the GPU stopped or was lost, and `run` ends the
+            // service for the broker to start another; apps send their frames again.
+            self.ready.clear();
+            return;
         }
         let waited = u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX);
         let limits = self.limits;
