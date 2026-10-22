@@ -43,6 +43,12 @@ impl ShellOverlayHost {
         // SAFETY: stable Box<GroupRow> contract documented on
         // `group_row_ptrs`; this method holds `&mut self` for the mutation.
         let row: &mut GroupRow = unsafe { &mut *ptr };
+        // A strip showing a maximized window stays at home, as it does
+        // under a wheel or a sideways pull: there is nothing beside the
+        // window to pan to, and sliding it away is not restoring it.
+        if row.groups.iter().any(|group| group.maximized) {
+            return false;
+        }
         if began {
             row.begin_strip_pan();
             self.strip_pan_active = true;

@@ -184,6 +184,7 @@ pub mod speaker_group_runtime;
 pub mod speaker_settings;
 pub mod state;
 pub mod status;
+pub mod stepped_back;
 pub mod storage_notice;
 pub mod system_sounds;
 pub(crate) mod system_update;
