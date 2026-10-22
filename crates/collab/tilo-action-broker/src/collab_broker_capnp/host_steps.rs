@@ -10,124 +10,22 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{Pending, device_pairing, identity_admin, settings_records};
-use tilo_actions::{ActionAddress, ActionDescriptor};
-
-use super::{BrokerActor, CapnpBrokerState};
-use crate::services::{
-    DevicePairingOutcome, DevicePairingRequest, DevicePairingServices, HostServices,
-    IdentityAdminRequest, IdentityAdminServices, SettingsRecordServices,
-};
+use super::CapnpBrokerState;
+use crate::services::{HostServices, HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvocationReceipt, InvokeRequest, Reservation,
+    ActionHostError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
 };
 
-/// One installed host-step service.
-#[derive(Clone)]
-pub(super) enum HostSteps {
-    Pairing(Arc<dyn DevicePairingServices>),
-    Identity(Arc<dyn IdentityAdminServices>),
-    Settings(Arc<dyn SettingsRecordServices>),
-}
-
-impl HostSteps {
-    /// Every host-step service `services` installs.
-    pub(super) fn installed(services: &HostServices) -> Vec<Self> {
-        let pairing = services.device_pairing.clone().map(Self::Pairing);
-        let identity = services.identity_admin.clone().map(Self::Identity);
-        let settings = services.settings_records.clone().map(Self::Settings);
-        pairing
-            .into_iter()
-            .chain(identity)
-            .chain(settings)
-            .collect()
-    }
-
-    /// The installed service that answers under `provider`, if any.
-    pub(super) fn for_provider(services: &HostServices, provider: &str) -> Option<Self> {
-        Self::installed(services)
-            .into_iter()
-            .find(|steps| steps.provider() == provider)
-    }
-
-    /// The provider the steps are answered under.
-    pub(super) fn provider(&self) -> &'static str {
-        match self {
-            Self::Pairing(_) => device_pairing::PROVIDER,
-            Self::Identity(_) => identity_admin::PROVIDER,
-            Self::Settings(_) => settings_records::PROVIDER,
-        }
-    }
-
-    /// The application whose controls reach the steps as their person.
-    pub(super) fn app_id(&self) -> &str {
-        match self {
-            Self::Pairing(service) => service.app_id(),
-            Self::Identity(service) => service.app_id(),
-            Self::Settings(service) => service.app_id(),
-        }
-    }
-
-    /// Every step, described.
-    pub(super) fn descriptors(&self) -> Vec<ActionDescriptor> {
-        match self {
-            Self::Pairing(service) => service.descriptors(),
-            Self::Identity(service) => service.descriptors(),
-            Self::Settings(service) => service.descriptors(),
-        }
-    }
-
-    /// The step at `address` as one invocation with `argument` is: a
-    /// setting's change is as risky as the value it carries makes it.
-    pub(super) fn invocation(
-        &self,
-        address: &ActionAddress,
-        argument: Option<&str>,
-    ) -> Option<ActionDescriptor> {
-        match self {
-            Self::Settings(service) => service.invocation(address, argument),
-            _ => self
-                .descriptors()
-                .into_iter()
-                .find(|descriptor| &descriptor.address == address),
-        }
-    }
-
-    /// Start the admitted step `address` for `actor` in `room`.
-    ///
-    /// # Errors
-    ///
-    /// Why the host refuses to start it.
-    pub(super) fn start(
-        &self,
-        room: &str,
-        actor: &BrokerActor,
-        address: &ActionAddress,
-        argument: Option<&str>,
-    ) -> Result<Pending<DevicePairingOutcome>, String> {
-        match self {
-            Self::Pairing(service) => service.start(&DevicePairingRequest {
-                room,
-                actor,
-                address,
-                argument,
-            }),
-            Self::Identity(service) => service.start(&IdentityAdminRequest {
-                room,
-                actor,
-                address,
-                argument,
-            }),
-            Self::Settings(service) => service
-                .apply(&DevicePairingRequest {
-                    room,
-                    actor,
-                    address,
-                    argument,
-                })
-                .map(|()| Pending::ready(Ok(tilo_actions::ActionOutput::default()))),
-        }
-    }
+/// The installed host-step service that answers under `provider`, if any.
+pub(super) fn for_provider(
+    services: &HostServices,
+    provider: &str,
+) -> Option<Arc<dyn HostStepServices>> {
+    services
+        .host_steps
+        .iter()
+        .find(|steps| steps.provider() == provider)
+        .cloned()
 }
 
 /// Transport keys alone never grant access to a service on this device.
@@ -212,7 +110,7 @@ impl CapnpBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
-        steps: &super::host_steps::HostSteps,
+        steps: &dyn HostStepServices,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let abandon = |error: ActionHostError| {
@@ -309,7 +207,12 @@ impl CapnpBrokerState {
             )?;
             Ok(policy)
         })?;
-        let started = steps.start(room, &policy, address, argument.as_deref());
+        let started = steps.start(&HostStepRequest {
+            room,
+            actor: &policy,
+            address,
+            argument: argument.as_deref(),
+        });
         match started {
             Ok(started) => self.follow_admitted_host_step(admitted, started),
             Err(reason) => {
@@ -327,7 +230,7 @@ impl CapnpBrokerState {
     pub(super) fn follow_admitted_host_step(
         self: &Arc<Self>,
         admitted: super::host_action_admission::AdmittedHostAction,
-        started: Pending<DevicePairingOutcome>,
+        started: Pending<HostStepOutcome>,
     ) {
         let state = Arc::clone(self);
         started.then(move |outcome| {
@@ -775,7 +678,7 @@ pub(super) mod signed_test_support {
 mod identity_admin_tests {
     use super::super::action_host::RowScope;
     use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
-    use crate::services::{IdentityAdminOutcome, IdentityAdminRequest, IdentityAdminServices};
+    use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
@@ -788,7 +691,7 @@ mod identity_admin_tests {
     #[derive(Default)]
     struct Host {
         started: Mutex<Vec<(String, String, String)>>,
-        answers: Mutex<Vec<Completer<IdentityAdminOutcome>>>,
+        answers: Mutex<Vec<Completer<HostStepOutcome>>>,
         admission_check: Mutex<Option<Box<dyn Fn() + Send>>>,
     }
 
@@ -808,7 +711,11 @@ mod identity_admin_tests {
         }
     }
 
-    impl IdentityAdminServices for Host {
+    impl HostStepServices for Host {
+        fn provider(&self) -> &'static str {
+            identity_admin::PROVIDER
+        }
+
         fn app_id(&self) -> &'static str {
             "so.tilo.settings"
         }
@@ -833,10 +740,7 @@ mod identity_admin_tests {
                 .collect()
         }
 
-        fn start(
-            &self,
-            request: &IdentityAdminRequest<'_>,
-        ) -> Result<Pending<IdentityAdminOutcome>, String> {
+        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
             if let Some(check) = self.admission_check.lock().unwrap().as_ref() {
                 check();
             }
@@ -866,7 +770,7 @@ mod identity_admin_tests {
             None,
             None,
             crate::services::HostServices {
-                identity_admin: Some(host),
+                host_steps: vec![host],
                 ..Default::default()
             },
         );
@@ -903,7 +807,11 @@ mod identity_admin_tests {
     #[derive(Default)]
     struct PairingHost(Host);
 
-    impl crate::services::DevicePairingServices for PairingHost {
+    impl HostStepServices for PairingHost {
+        fn provider(&self) -> &'static str {
+            tilo_actions::remote::device_pairing::PROVIDER
+        }
+
         fn app_id(&self) -> &str {
             self.0.app_id()
         }
@@ -923,16 +831,8 @@ mod identity_admin_tests {
             vec![descriptor]
         }
 
-        fn start(
-            &self,
-            request: &crate::services::DevicePairingRequest<'_>,
-        ) -> Result<Pending<crate::services::DevicePairingOutcome>, String> {
-            self.0.start(&IdentityAdminRequest {
-                room: request.room,
-                actor: request.actor,
-                address: request.address,
-                argument: request.argument,
-            })
+        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+            self.0.start(request)
         }
     }
 
@@ -947,10 +847,11 @@ mod identity_admin_tests {
                 let host = Arc::new(PairingHost::default());
                 let identity = Arc::new(Host::default());
                 let services = crate::services::HostServices {
-                    device_pairing: pairing
-                        .then(|| host.clone() as Arc<dyn crate::services::DevicePairingServices>),
-                    identity_admin: (!pairing)
-                        .then(|| identity.clone() as Arc<dyn IdentityAdminServices>),
+                    host_steps: vec![if pairing {
+                        host.clone() as Arc<dyn HostStepServices>
+                    } else {
+                        identity.clone()
+                    }],
                     ..Default::default()
                 };
                 let f = if foreign {
@@ -1022,7 +923,7 @@ mod identity_admin_tests {
     fn device_pairing_uses_the_same_signed_admission_and_terminal_path() {
         let host = Arc::new(PairingHost::default());
         let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-            device_pairing: Some(host.clone()),
+            host_steps: vec![host.clone()],
             ..Default::default()
         });
         let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1056,7 +957,7 @@ mod identity_admin_tests {
     fn identity_admin_signs_before_start_and_retains_the_original_uuid() {
         let host = Arc::new(Host::default());
         let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-            identity_admin: Some(host.clone()),
+            host_steps: vec![host.clone()],
             ..Default::default()
         });
         let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1100,7 +1001,7 @@ mod identity_admin_tests {
         for dropped in [false, true] {
             let host = Arc::new(Host::default());
             let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-                identity_admin: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             });
             let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1148,7 +1049,7 @@ mod identity_admin_tests {
         for admission_failure in [false, true] {
             let host = Arc::new(Host::default());
             let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-                identity_admin: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             });
             let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1196,7 +1097,7 @@ mod identity_admin_tests {
             ] {
                 let host = Arc::new(Host::default());
                 let services = crate::services::HostServices {
-                    identity_admin: Some(host.clone()),
+                    host_steps: vec![host.clone()],
                     ..Default::default()
                 };
                 let mut f = if certified {
@@ -1224,10 +1125,10 @@ mod identity_admin_tests {
                     let state = f.state.clone();
                     let caller = f.caller.clone();
                     let origin = f.origin.clone();
-                    let steps = super::HostSteps::Identity(host.clone());
+                    let steps = host.clone();
                     let asked = &asked;
                     let worker = scope.spawn(move || {
-                        state.invoke_host_step(&caller, Some(&origin), &steps, asked)
+                        state.invoke_host_step(&caller, Some(&origin), steps.as_ref(), asked)
                     });
                     blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                     // The journal writer holds a signed admission but has not
@@ -1279,7 +1180,7 @@ mod identity_admin_tests {
         for revoked in [false, true] {
             let host = Arc::new(Host::default());
             let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-                identity_admin: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             });
             if revoked {
@@ -1434,7 +1335,7 @@ mod identity_admin_tests {
 #[cfg(test)]
 mod settings_records_tests {
     use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
-    use crate::services::{SettingsRecordRequest, SettingsRecordServices};
+    use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{
         Grants as _, KindSet, Subject, Workspace, WorkspaceId, WorkspaceTree,
     };
@@ -1491,7 +1392,11 @@ mod settings_records_tests {
         }
     }
 
-    impl SettingsRecordServices for Host {
+    impl HostStepServices for Host {
+        fn provider(&self) -> &'static str {
+            settings_records::PROVIDER
+        }
+
         fn app_id(&self) -> &'static str {
             APP
         }
@@ -1513,7 +1418,10 @@ mod settings_records_tests {
             Some(self.descriptor(weakens)).filter(|descriptor| &descriptor.address == address)
         }
 
-        fn apply(&self, request: &SettingsRecordRequest<'_>) -> Result<(), String> {
+        fn start(
+            &self,
+            request: &HostStepRequest<'_>,
+        ) -> Result<tilo_actions::remote::Pending<HostStepOutcome>, String> {
             let json = request
                 .argument
                 .and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
@@ -1522,7 +1430,9 @@ mod settings_records_tests {
                 serde_json::from_str(json).map_err(|error| error.to_string())?;
             let minutes = arguments["edit"]["value"].as_u64().ok_or("no value")?;
             *self.minutes.lock().unwrap() = u32::try_from(minutes).map_err(|e| e.to_string())?;
-            Ok(())
+            Ok(tilo_actions::remote::Pending::ready(Ok(
+                tilo_actions::ActionOutput::default(),
+            )))
         }
     }
 
@@ -1585,7 +1495,7 @@ mod settings_records_tests {
             None,
             None,
             crate::services::HostServices {
-                settings_records: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             },
         );

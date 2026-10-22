@@ -853,7 +853,7 @@ impl CapnpBrokerState {
         // Listing must retain the same local custody as dispatch. A device key
         // alone does not establish that this is a local rather than remote door.
         let host_steps = if super::host_steps::is_local_host_caller(caller, origin) {
-            super::host_steps::HostSteps::installed(&self.services)
+            self.services.host_steps.clone()
         } else {
             Vec::new()
         };
@@ -949,7 +949,7 @@ impl CapnpBrokerState {
                     .iter()
                     .filter(|steps| scope.wants(steps.provider()))
                 {
-                    Self::host_step_rows((&workspace, &policy, now), steps, &mut rows);
+                    Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
                 }
             }
             let provider = workspace_provider(&room);
@@ -1096,7 +1096,7 @@ impl CapnpBrokerState {
     /// first.
     fn host_step_rows(
         (workspace, actor, now): (&Workspace, &BrokerActor, u64),
-        steps: &super::host_steps::HostSteps,
+        steps: &dyn crate::services::HostStepServices,
         rows: &mut Vec<CatalogueRow>,
     ) {
         let start = rows.len();
@@ -1575,9 +1575,9 @@ impl CapnpBrokerState {
             );
         }
         if let Some(steps) =
-            super::host_steps::HostSteps::for_provider(&self.services, &request.target.provider)
+            super::host_steps::for_provider(&self.services, &request.target.provider)
         {
-            return Pending::ready(self.invoke_host_step(caller, origin, &steps, request));
+            return Pending::ready(self.invoke_host_step(caller, origin, steps.as_ref(), request));
         }
         if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, origin, request));
@@ -3655,7 +3655,7 @@ mod argument_size_tests {
 mod device_pairing_tests {
     use super::super::CapnpBrokerState;
     use super::RowScope;
-    use crate::services::{DevicePairingOutcome, DevicePairingRequest, DevicePairingServices};
+    use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
         Caller, Completer, Confirmation, InvokeArgument, InvokeRequest, Pending,
@@ -3667,10 +3667,14 @@ mod device_pairing_tests {
     #[derive(Default)]
     struct Host {
         started: Mutex<Vec<(String, String, String)>>,
-        answers: Mutex<Vec<Completer<DevicePairingOutcome>>>,
+        answers: Mutex<Vec<Completer<HostStepOutcome>>>,
     }
 
-    impl DevicePairingServices for Host {
+    impl HostStepServices for Host {
+        fn provider(&self) -> &'static str {
+            device_pairing::PROVIDER
+        }
+
         fn app_id(&self) -> &'static str {
             "so.tilo.settings"
         }
@@ -3705,10 +3709,7 @@ mod device_pairing_tests {
                 .collect()
         }
 
-        fn start(
-            &self,
-            request: &DevicePairingRequest<'_>,
-        ) -> Result<Pending<DevicePairingOutcome>, String> {
+        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
             self.started.lock().unwrap().push((
                 request.room.to_owned(),
                 request.actor.id().to_owned(),
@@ -3757,7 +3758,7 @@ mod device_pairing_tests {
         let host = Arc::new(Host::default());
         let fixture = super::super::host_steps::signed_test_support::Fixture::new(
             crate::services::HostServices {
-                device_pairing: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             },
         );
