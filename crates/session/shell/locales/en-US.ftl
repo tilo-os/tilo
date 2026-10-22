@@ -1272,6 +1272,7 @@ bluetooth-handoff-failure-rollback = source rollback failed
 # Search result kinds, as the filter chips and group headers name them
 search-kind-actions = Actions
 search-kind-applications = Applications
+search-group-in-the-store = In the Store
 search-kind-host-apps = Host Apps
 search-kind-notes = Notes
 search-kind-records = Records

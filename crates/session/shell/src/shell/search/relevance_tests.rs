@@ -33,7 +33,9 @@ use crate::shell::search::providers::{
     SessionActionsProvider, SettingsPagesProvider, SystemSettingsProvider, WebProvider,
 };
 use crate::shell::search::providers::{HostApplicationsProvider, StoreCatalogueProvider};
-use crate::shell::search::{Availability, QueryArgs, SearchRegistry, SearchResult};
+use crate::shell::search::{
+    Availability, QueryArgs, ResourceKind, ResourceKindText as _, SearchRegistry, SearchResult,
+};
 use std::sync::Arc;
 
 /// Every language's words of `search/*.ftl`, as the packer joins them.
@@ -945,6 +947,65 @@ fn installed_and_tilo_apps_lead_then_own_content_then_flatpak_store_pages() {
             .count(),
         10,
         "every Flathub app that matches and is not installed is still found"
+    );
+}
+
+/// No two groups share a heading: when the person's apps and third-party
+/// Store pages both match, the Store pages are their own group, after the
+/// person's own content, and Tilo apps that open at once stay under
+/// Applications.
+#[test]
+fn store_pages_have_their_own_heading_after_the_persons_content() {
+    let palette = music_palette();
+    let groups = palette.with_args("music", |args| {
+        palette
+            .registry
+            .query_grouped(args, ui::search::system::PALETTE_ROW_BUDGET)
+    });
+    let headings: Vec<String> = groups
+        .iter()
+        .map(|group| group.kind.localized_label())
+        .collect();
+    let mut unique = headings.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        headings.len(),
+        "a heading twice: {headings:?}"
+    );
+    let store = crate::shell::search::in_the_store();
+    assert_eq!(
+        groups.last().map(|group| &group.kind),
+        Some(&store),
+        "the Store pages come last: {headings:?}"
+    );
+    for group in &groups {
+        let third_party = group
+            .results
+            .iter()
+            .filter(|row| palette.registry.availability(row) == Availability::ThirdPartyCatalogue);
+        if group.kind == store {
+            assert_eq!(third_party.count(), group.results.len(), "{headings:?}");
+        } else {
+            assert_eq!(
+                third_party.count(),
+                0,
+                "{:?} holds a Store page",
+                group.kind
+            );
+        }
+    }
+    let applications = groups
+        .iter()
+        .find(|group| group.kind == ResourceKind::Application)
+        .expect("the person's apps");
+    assert!(
+        applications
+            .results
+            .iter()
+            .any(|row| row.id == "app:so.tilo.sheet-music"),
+        "the Tilo app that opens at once stays under Applications"
     );
 }
 

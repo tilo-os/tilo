@@ -1270,6 +1270,7 @@ bluetooth-handoff-failure-rollback = Zurücksetzen der Quelle fehlgeschlagen
 # Arten von Suchergebnissen, wie Filterchips und Gruppenüberschriften sie nennen
 search-kind-actions = Aktionen
 search-kind-applications = Anwendungen
+search-group-in-the-store = Im Store
 search-kind-host-apps = Host-Apps
 search-kind-notes = Notizen
 search-kind-records = Einträge

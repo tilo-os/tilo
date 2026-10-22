@@ -665,11 +665,19 @@ impl ShellOverlayHost {
         }
         // Ranking can split one kind into runs apart (a web row from two
         // providers): it is one chip, counting every hit it holds.
+        // Store pages have their own heading but are apps: their chip is
+        // their rows' kind.
+        let store = crate::shell::search::in_the_store();
         let mut present: Vec<(usize, crate::shell::search::ResourceKind)> = Vec::new();
         for group in groups {
-            match present.iter_mut().find(|(_, kind)| *kind == group.kind) {
+            let chip = if group.kind == store {
+                group.results.first().map_or(&group.kind, |row| &row.kind)
+            } else {
+                &group.kind
+            };
+            match present.iter_mut().find(|(_, kind)| kind == chip) {
                 Some((total, _)) => *total = total.saturating_add(group.total),
-                None => present.push((group.total, group.kind.clone())),
+                None => present.push((group.total, chip.clone())),
             }
         }
         present.sort_by_key(|(total, _)| std::cmp::Reverse(*total));
