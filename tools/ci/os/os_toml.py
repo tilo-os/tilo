@@ -18,6 +18,7 @@ the binaries up, and neither ever the package transaction.
 import os
 import re
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pieces  # noqa: E402
@@ -53,6 +54,35 @@ def scripts_of(paths, depth=3):
                     nxt.append(q)
         todo = nxt
     return sorted(found)
+
+
+# The verified, read-only fixture cache every build that ships takes (TILO_TEST_ASSET_SEED):
+# filled once by the `test-assets` check, keyed by the manifests, so a trusted build, which
+# reruns every build script, never reaches the forge for a fixture.
+TEST_ASSET_SEED = "/target/test-assets"
+
+
+def fixture_manifests():
+    """Every test-asset manifest a build script names (tools/test-assets-build.rs)."""
+    found = set()
+    for pattern in ("apps/*/build.rs", "crates/*/*/build.rs"):
+        for script in sorted(Path(REPO).glob(pattern)):
+            text = script.read_text(encoding="utf-8")
+            if "prepare_fixture_assets" not in text:
+                continue
+            for relative in re.findall(r'"([^"]*artifacts\.json)"', text):
+                found.add(os.path.relpath(os.path.normpath(script.parent / relative), REPO))
+    return sorted(found)
+
+
+def test_assets_check():
+    manifests = fixture_manifests()
+    return check([("name", '"test-assets"'),
+                  ("run", f'"python3 tools/test-assets.py --cache-root {TEST_ASSET_SEED} {" ".join(manifests)}"'),
+                  ("inputs", arr(["tools/test-assets.py", *manifests])),
+                  ("outputs", arr([f"{TEST_ASSET_SEED}/**"])),
+                  ("requires", arr(["arch=any"])),
+                  ("cost", '"minutes"'), ("requirement", requirement(1, "1GiB")), ("default", "false")])
 
 
 def arr(items):
@@ -100,7 +130,8 @@ def block():
                   ("run", '"bash os/image/build-layer.sh assets"'),
                   ("inputs", arr(["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/image/build-layer.sh"])),
                   ("outputs", arr(["os/external-assets/cache/**"])),
-                  ("cost", '"minutes"'), ("default", "false")])]
+                  ("cost", '"minutes"'), ("default", "false")]),
+           test_assets_check()]
     builder_sources = pieces.inputs_of_text(pieces.helpers()["builder-sources"])
     for arch, node in ARCHES:
         req = arr([node, "disk-100g"])
@@ -141,10 +172,11 @@ def block():
             ("image", BUILDER_IMAGE.format(arch=arch)),
             ("run", f'"bash os/image/compile.sh /target/os/{arch}/compiled"'),
             ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
-            ("needs", arr(["os-assets"])),
+            ("needs", arr(["os-assets", "test-assets"])),
             # The development image's compile: no LTO and no line tables, as Build / OS dev did.
             # A build to ship, not a lint gate: warnings stay warnings, as in every image build.
             ("env", '{ TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", '
+                    f'TILO_TEST_ASSET_SEED = "{TEST_ASSET_SEED}", '
                     'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '
                     'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
             ("outputs", arr([f"/target/os/{arch}/compiled/**"])),
@@ -156,8 +188,11 @@ def block():
             ("image", BUILDER_IMAGE.format(arch=arch)),
             ("run", f'"bash os/image/compile.sh --dev /target/os/{arch}/compiled-dev"'),
             ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
+            ("needs", arr(["test-assets"])),
             # The dev components of the development image: no LTO, as Build / OS dev built them.
-            ("env", '{ TILO_DEV_RUST_LTO = "off", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '
+            ("env", '{ TILO_DEV_RUST_LTO = "off", '
+                    f'TILO_TEST_ASSET_SEED = "{TEST_ASSET_SEED}", '
+                    'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '
                     'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
             ("outputs", arr([f"/target/os/{arch}/compiled-dev/**"])),
             ("requires", arr([node])),

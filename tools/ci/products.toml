@@ -575,6 +575,9 @@ fields = { inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "d
 [[matrix.check]]
 name = "apps-build-{arch}"
 run = "bash tools/apps/t-release.sh build {arch} /target/apps-release/{arch}"
+# Fixtures the build scripts embed come from the test-assets check's verified seed, never the forge.
+needs = ["test-assets"]
+env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 outputs = ["/target/apps-release/{arch}/compiled/**"]
 requires = ["{node}"]
 timeout_secs = 10800
@@ -608,6 +611,9 @@ default = false
 [[matrix.check]]
 name = "app-binaries-{arch}"
 run = "bash tools/apps/t-release.sh binaries {arch} /target/app-binaries/{arch}"
+# Fixtures the build scripts embed come from the test-assets check's verified seed, never the forge.
+needs = ["test-assets"]
+env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 outputs = ["/target/app-binaries/{arch}/**"]
 requires = ["{node}"]
 requirement = { cores = 16, memory = "32GiB" }
