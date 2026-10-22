@@ -654,12 +654,26 @@ impl AnimationSettle {
     }
 
     /// Record the tick: motion owes a frame painted after it ends.
-    fn after_tick(&mut self, animating: bool, painted: bool) {
-        if animating {
+    /// `animating` is the demand read before the paint; a paint may set a
+    /// motion going itself (a tooltip's or popover's arrival starts as the
+    /// frame draws its first pose), which no read before it could see, so
+    /// a tick that painted at rest reads the demand again (`moving_now`).
+    /// Returns whether the paint set a motion going: the loop must then
+    /// come back on the next cadence, or the motion stays at its first,
+    /// invisible pose until something unrelated paints.
+    fn after_tick(
+        &mut self,
+        animating: bool,
+        painted: bool,
+        moving_now: impl FnOnce() -> bool,
+    ) -> bool {
+        let set_going = painted && !animating && moving_now();
+        if animating || set_going {
             self.owed = true;
         } else if painted {
             self.owed = false;
         }
+        set_going
     }
 }
 
@@ -13843,7 +13857,6 @@ pub fn run() {
         // A change this tick saw but could not paint is still to be shown: the
         // next tick that may paint does, even if nothing new happens by then.
         content_owed = content_changed && !should_paint;
-        animation_settle.after_tick(still_moving, should_paint);
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
@@ -14674,6 +14687,9 @@ pub fn run() {
         if retain_session_redraw(session_changed || injected_redraw, should_paint) {
             injected_redraw_pending = true;
         }
+        let set_going_by_paint = animation_settle.after_tick(still_moving, should_paint, || {
+            frame_builder.animation_demand().any()
+        });
         deliver_held_key_releases!();
         let t_paint_done = iter_t0.elapsed();
 
@@ -14929,8 +14945,13 @@ pub fn run() {
         // A redraw requested after this tick's paint decision (control-socket
         // input, a configure flush, a released capture barrier) has no fd
         // left to wake the loop; its frame is due on the next cadence.
-        let cadence_needed =
-            cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
+        // A motion this tick's paint set going wants its next frame on the
+        // next cadence, as one that was already moving does.
+        let cadence_needed = cadence_needed
+            || cadence_wait_needed(
+                pipe_ready,
+                injected_redraw_pending || (set_going_by_paint && !session.is_locked()),
+            );
         // Nothing changed on screen and no frame is waiting, here or behind
         // the presenter: the inputs handled so far are done without a frame.
         // Their latency ends here rather than at the next painted frame,
@@ -15913,23 +15934,46 @@ mod tests {
     #[test]
     fn an_animation_ends_on_a_painted_resting_frame() {
         let mut settle = AnimationSettle::default();
+        let still = || false;
         assert!(!settle.due(false), "nothing moving owes nothing");
         // The last moving tick finds the presenter full and cannot paint.
-        settle.after_tick(true, false);
+        settle.after_tick(true, false, still);
         assert!(
             settle.due(false),
             "the tick after motion ends still owes the resting frame"
         );
         // Off-cadence: still not painted, still owed.
-        settle.after_tick(false, false);
+        settle.after_tick(false, false, still);
         assert!(settle.due(false));
         // Painted at rest: settled.
-        settle.after_tick(false, true);
+        settle.after_tick(false, true, still);
         assert!(!settle.due(false));
         // A frame painted while still moving samples mid-motion; the
         // resting frame remains owed.
-        settle.after_tick(true, true);
+        settle.after_tick(true, true, still);
         assert!(settle.due(false));
+    }
+
+    /// A frame painted at rest may set a motion going itself: a tooltip's
+    /// arrival begins as the frame that reveals it draws its first,
+    /// invisible pose. Nothing moved before that paint, so only a read
+    /// after it sees the motion; the loop then owes its frames and its
+    /// resting frame, or the tooltip never shows.
+    #[test]
+    fn a_motion_the_paint_sets_going_gets_its_frames() {
+        let mut settle = AnimationSettle::default();
+        assert!(
+            settle.after_tick(false, true, || true),
+            "the paint set a motion going: the loop comes back on the next cadence"
+        );
+        assert!(settle.due(false), "and that tick paints it");
+        // The motion is seen moving before the next paint: no second read.
+        assert!(!settle.after_tick(true, true, || unreachable!()));
+        assert!(settle.due(false), "its resting frame is still owed");
+        settle.after_tick(false, true, || false);
+        assert!(!settle.due(false), "painted at rest: settled");
+        // An unpainted tick changes nothing on screen and sets nothing going.
+        assert!(!settle.after_tick(false, false, || unreachable!()));
     }
 
     /// A key the focused client alone took asks for no frame: the client's
