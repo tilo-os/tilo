@@ -1367,6 +1367,13 @@ fn prepare_named(
             prepared
                 .context
                 .provide_capture(Capture::new(args.scenario.clone()));
+            // The theme the capture draws in is the stored choice its
+            // controls show.
+            ui_core::storage::SettingsDocument::File(super::testing::profile_settings(
+                &profile_root,
+            ))
+            .update_section("appearance", ui_core::launch::capture_appearance(args))
+            .map_err(operation)?;
         }
         if private {
             prepared.context.provide_private();

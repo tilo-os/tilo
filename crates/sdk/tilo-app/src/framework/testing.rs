@@ -82,15 +82,20 @@ pub(crate) fn in_profile(
 ) -> PreparedComponentInputs {
     prepared
         .context
-        .provide_settings(ui_core::storage::SettingsDocument::File(
-            root.join("settings.json"),
-        ));
+        .provide_settings(ui_core::storage::SettingsDocument::File(profile_settings(
+            root,
+        )));
     prepared
         .context
         .provide_files(ui_core::storage::AppFiles::at(
             ui_core::storage::AppPaths::under(root.join("files"), app_id),
         ));
     prepared
+}
+
+/// The settings document of the profile at `root`.
+pub(crate) fn profile_settings(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("settings.json")
 }
 
 /// The root of a `--data-dir` profile.
