@@ -6911,6 +6911,56 @@ fn pump_test_control_conn(
     }
 }
 
+/// Follow the person's session on their other devices
+/// (`crate::shell::owner_session`): idle time here counts from their use of a
+/// nearby one, and a lock or unlock there may be followed. Publishes this
+/// device's own session to them.
+fn follow_owner_session(
+    net: &crate::shell::network::ShellNetwork,
+    session: &mut SessionManager,
+    follow: &mut crate::shell::owner_session::SessionFollow,
+) -> Option<crate::shell::owner_session::Follow> {
+    let (local, _) = net.local_device_fabric_identity()?;
+    let now = Instant::now();
+    let now_ms = tilo_clock::unix_now_ms();
+    let since_input = u64::try_from(session.input_idle_for(now).as_millis()).unwrap_or(u64::MAX);
+    let input_ms = now_ms.saturating_sub(since_input);
+    let followed = net
+        .with_device_fabric(|fabric| {
+            let snapshots = fabric.snapshots();
+            let others = || {
+                snapshots
+                    .iter()
+                    .filter(|(device, _)| **device != local)
+                    .map(|(_, snapshot)| &snapshot.presence)
+            };
+            if let Some(used) = snapshots.get(&local).and_then(|own| {
+                crate::shell::owner_session::latest_use_nearby(&own.presence, others())
+            }) && let Some(at) =
+                now.checked_sub(Duration::from_millis(now_ms.saturating_sub(used)))
+            {
+                session.note_use_elsewhere(at);
+            }
+            let own = snapshots.get(&local).map(|own| &own.presence);
+            follow.decide(
+                session.is_locked(),
+                input_ms,
+                session.in_use(now),
+                others().map(|presence| {
+                    let nearby = own.is_some_and(|own| {
+                        crate::shell::owner_session::shares_network(own, presence)
+                    });
+                    (presence.session, nearby)
+                }),
+            )
+        })
+        .flatten();
+    crate::shell::device_fabric_runtime::set_owner_session(
+        follow.presence(session.is_locked(), input_ms),
+    );
+    followed
+}
+
 /// Turn a [`SessionTransition`] into a real backend effect.
 ///
 /// `Dimmed`/`Undimmed` lower and restore the backlight, or switch the paint
@@ -10822,11 +10872,22 @@ pub fn run() {
     // in the model with nothing presented.
     let mut transition_hold_sleep = Duration::ZERO;
     let mut credit_transition_hold;
+    // The person's session on their other devices: this one follows a lock
+    // or unlock there and tells them about its own.
+    let mut session_follow = crate::shell::owner_session::SessionFollow::default();
+    // The fabric samples this device's presence once a second; following
+    // the others more often would change nothing.
+    let mut session_followed: Option<Instant> = None;
     // Every session transition reaches the backend, presenter, logind lifecycle,
-    // dimmer and output management alike.
+    // dimmer and output management alike. A lock or unlock that comes here is
+    // the person's own, which their other devices follow; the idle timer's
+    // and the followed ones are applied apart.
     macro_rules! apply_session_transitions {
         ($transitions:expr) => {
             for t in $transitions {
+                if matches!(t, SessionTransition::Locked | SessionTransition::Unlocked) {
+                    session_follow.changed_by_person(tilo_clock::unix_now_ms());
+                }
                 apply_session_transition(
                     t,
                     backend.as_mut(),
@@ -12284,8 +12345,44 @@ pub fn run() {
             session_changed = true;
         }
 
+        if let Some(net) = peer_sync.as_ref().filter(|_| {
+            session_followed.is_none_or(|followed| followed.elapsed() >= Duration::from_secs(1))
+        }) {
+            session_followed = Some(Instant::now());
+            let followed = follow_owner_session(net, &mut session, &mut session_follow);
+            if followed == Some(crate::shell::owner_session::Follow::Unlock) {
+                // As after the person's own unlock: the next lock starts bare.
+                lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                frame_builder.set_lock_keyboard_keys(Vec::new());
+                frame_builder.set_lock_surfaces(Vec::new());
+            }
+            let transitions = match followed {
+                Some(crate::shell::owner_session::Follow::Lock) => {
+                    session.request_lock(Instant::now())
+                }
+                Some(crate::shell::owner_session::Follow::Unlock) => {
+                    session.request_unlock(Instant::now())
+                }
+                None => Vec::new(),
+            };
+            for t in transitions {
+                session_changed = true;
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
+                    &mut screen_dimmer,
+                    Some(&mut state.output_management),
+                );
+            }
+        }
+
         // Advance the idle timers and apply any timeout-driven transitions (blank, auto-lock, suspend).
         for t in session.tick_inhibited(Instant::now(), &inhibit_registry) {
+            if t == SessionTransition::Locked {
+                session_follow.locked_by_idle();
+            }
             if t == SessionTransition::Suspend {
                 // Idle-suspend is gated by the inhibitor registry (media playing, a task
                 // running). `tick_inhibited` already restarts the period while a hold is

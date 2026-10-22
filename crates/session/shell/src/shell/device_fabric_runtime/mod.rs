@@ -50,7 +50,8 @@ use crate::shell::device_fabric::{
     ClipboardEntry, ClipboardPayload, DeviceFabric, DeviceFabricSnapshot, DeviceKind,
     DevicePresence, DisplayEdge, DisplayPlacement, DisplayRect, FABRIC_SCHEMA_VERSION,
     FabricCapabilities, FabricInputEvent, FabricStamp, InputLease, MAX_INPUT_LEASE_MS,
-    MediaHandoffFailure, MediaSession, MediaSourceLocator, PersonalFabricAction, RoamingSetting,
+    MediaHandoffFailure, MediaSession, MediaSourceLocator, OwnerSession, PersonalFabricAction,
+    RoamingSetting,
 };
 use crate::shell::network::{ShellNetwork, fabric_monotonic_us};
 pub(crate) use nearby_changes::{
@@ -7535,6 +7536,17 @@ pub(super) fn flush_spatial_input(network: &ShellNetwork) {
     }
 }
 
+fn owner_session_slot() -> &'static Mutex<OwnerSession> {
+    static SESSION: OnceLock<Mutex<OwnerSession>> = OnceLock::new();
+    SESSION.get_or_init(Mutex::default)
+}
+
+/// The person's session here, as the next local snapshot carries it to their
+/// other devices (`crate::shell::owner_session`).
+pub(crate) fn set_owner_session(session: OwnerSession) {
+    *owner_session_slot().lock_recover() = session;
+}
+
 /// One causal native-seat phase. Releases precede every surviving input in a
 /// frame, so an old lease's barrier cannot erase a replacement lease's edge.
 pub(crate) enum SpatialInputBatch {
@@ -7857,6 +7869,7 @@ fn build_local_snapshot(
             online: true,
             last_seen_unix_ms: 0,
             wake_routes: Vec::new(),
+            session: *owner_session_slot().lock_recover(),
             stamp: stamp.clone(),
         },
         media,
@@ -9363,6 +9376,7 @@ mod tests {
                 online: true,
                 last_seen_unix_ms: counter,
                 wake_routes: Vec::new(),
+                session: OwnerSession::default(),
                 stamp: stamp.clone(),
             },
             media: Vec::new(),
@@ -10013,6 +10027,7 @@ mod tests {
                     online: true,
                     last_seen_unix_ms: 0,
                     wake_routes: Vec::new(),
+                    session: OwnerSession::default(),
                     stamp: FabricStamp {
                         counter: 0,
                         device: device.clone(),
@@ -10049,6 +10064,7 @@ mod tests {
                     online: true,
                     last_seen_unix_ms: 0,
                     wake_routes: Vec::new(),
+                    session: OwnerSession::default(),
                     stamp: old_stamp.clone(),
                 },
                 media: Vec::new(),

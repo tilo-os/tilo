@@ -11443,7 +11443,7 @@ mod tests {
     ) -> crate::shell::device_fabric::DeviceFabricSnapshot {
         use crate::shell::device_fabric::{
             DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-            FabricCapabilities, FabricStamp,
+            FabricCapabilities, FabricStamp, OwnerSession,
         };
         DeviceFabricSnapshot {
             schema_version: FABRIC_SCHEMA_VERSION,
@@ -11459,6 +11459,7 @@ mod tests {
                 online: true,
                 last_seen_unix_ms: counter,
                 wake_routes: Vec::new(),
+                session: OwnerSession::default(),
                 stamp: FabricStamp {
                     counter,
                     device: owner.clone(),
