@@ -1470,7 +1470,7 @@ impl Widget for DisplayArrangement {
             // A screen reader chooses a display by activating its tile.
             let node = if self.selection.is_some() {
                 let node = node.with_action_target(format!("{CHOOSE_TARGET}{}", display.connector));
-                let state = node.state.clone().checked(chosen);
+                let state = node.state.checked(chosen);
                 node.with_state(state)
             } else {
                 node
@@ -1874,23 +1874,29 @@ mod tests {
             "HDMI-A-1",
             "nothing further that way keeps the choice"
         );
-        assert!(
-            ui::widget::controls::take_control_invocation(host.root_mut::<DisplayArrangement>())
-                .is_none(),
+        let place_of = |host: &mut ui::headless::FrameHarness, connector: &str| {
+            host.root_mut::<DisplayArrangement>()
+                .displays
+                .iter()
+                .find(|display| display.connector == connector)
+                .map(|display| (display.placement.x, display.placement.y))
+        };
+        assert_eq!(
+            place_of(&mut host, "eDP-1"),
+            Some((0, 0)),
             "choosing moves nothing"
         );
+        assert_eq!(place_of(&mut host, "HDMI-A-1"), Some((1920, 0)));
         host.key("ArrowLeft");
         assert_eq!(selection.with(Clone::clone), "eDP-1");
         host.set_modifiers(&["ctrl".to_owned()]);
         host.key("ArrowRight");
-        let moved =
-            ui::widget::controls::take_control_invocation(host.root_mut::<DisplayArrangement>())
-                .expect("Ctrl+arrow moves the chosen display");
-        assert_eq!(moved.address.action, "move-display");
+        // (The move is sent as the display's move action, as
+        // `arrow_keys_move_the_selected_display_from_the_keyboard` shows.)
         assert_eq!(
-            (moved.arguments["x"].as_i64(), moved.arguments["y"].as_i64()),
-            (Some(3840), Some(0)),
-            "the panel moves past the monitor's right side"
+            place_of(&mut host, "eDP-1"),
+            Some((3840, 0)),
+            "Ctrl+arrow moves the panel past the monitor's right side"
         );
         assert_eq!(selection.with(Clone::clone), "eDP-1", "and stays chosen");
 
