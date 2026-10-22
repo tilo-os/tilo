@@ -411,7 +411,7 @@ impl DisplayArrangement {
     /// Grow the framed view so the held display stays in it: it springs
     /// out to take in the display wherever the hand holds it, and never
     /// shrinks while the display is held.
-    fn follow_view(&mut self, now: Instant) {
+    fn follow_view(&self, now: Instant) {
         let Some(drag) = self
             .gesture
             .with(|gesture| gesture.drag.clone())
@@ -435,7 +435,7 @@ impl DisplayArrangement {
     }
 
     /// Spring the framed view back to fit the arrangement.
-    fn settle_view(&mut self, now: Instant) {
+    fn settle_view(&self, now: Instant) {
         let fitted = self.fitted_view();
         let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
         self.gesture.update(|gesture| {
@@ -1116,9 +1116,9 @@ impl Widget for DisplayArrangement {
         self.dirty = false;
     }
 
-    /// Frames while a dropped display settles or Identify's numbers fade;
-    /// none at rest, none for a held drag (each move of the hand asks for
-    /// its own frame by what it changed).
+    /// Frames while a dropped display settles, the view springs to frame
+    /// the arrangement, or Identify's numbers fade; none at rest, and a held
+    /// drag otherwise asks for its frames by each move of the hand.
     fn needs_animation_frame(&self) -> bool {
         let now = crate::motion::frame_now();
         self.settling(now) || self.identify_moving(now)
@@ -1654,7 +1654,18 @@ mod tests {
             writes +=
                 usize::from(ui::widget::controls::take_control_invocation(&mut canvas).is_some());
             canvas.mark_drawn();
-            assert!(!canvas.needs_redraw());
+            // Between moves it asks for nothing, unless the view is still
+            // springing out to keep the held display in sight.
+            let view_growing = canvas.gesture.with(|gesture| {
+                gesture
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.is_moving(crate::motion::frame_now()))
+            });
+            assert!(
+                !canvas.needs_redraw() || view_growing,
+                "move {step} asks for nothing more"
+            );
             // 1:1: away from every line, the held display is exactly where
             // the hand put it.
             let (held, _) = canvas.drawn().into_iter().find(|(_, held)| *held).unwrap();
