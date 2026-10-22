@@ -3819,6 +3819,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bounded-zip",
+ "flate2",
  "image",
  "roxmltree 0.21.1",
  "runtime-dylib",

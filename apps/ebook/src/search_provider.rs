@@ -41,7 +41,7 @@ fn facet_label(key: &str) -> &'static str {
     }
 }
 
-fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
+pub(crate) fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
     if chapter.title.trim().is_empty() {
         format!("Chapter {}", index + 1)
     } else {
