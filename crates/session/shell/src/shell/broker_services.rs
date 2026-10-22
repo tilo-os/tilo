@@ -399,7 +399,7 @@ async fn record_receipt_elsewhere(
         .await?;
     // A transport acknowledgement is not our commit barrier: wait until the
     // governor's signed receipt is in this device's actual admitted room.
-    tokio::time::timeout(GOVERNED_OPEN_TIMEOUT, async {
+    tokio::time::timeout(governed_receipt_wait(), async {
         loop {
             network.check_native_custody(owner, room)?;
             let receipt = owner.with_current(room, |view| {
@@ -716,6 +716,22 @@ pub struct NativeLauncher(
     pub Option<WorkspaceTreeHandle>,
     pub Option<Arc<super::network::ShellNetwork>>,
 );
+
+/// How long an effect receipt recorded at a room's governor may take to come
+/// back into this device's admitted room.
+#[cfg(not(test))]
+fn governed_receipt_wait() -> std::time::Duration {
+    GOVERNED_OPEN_TIMEOUT
+}
+/// How long an effect receipt recorded at a room's governor may take to come
+/// back into this device's admitted room: in test builds, whose fixture
+/// governor and relay share a loaded runner, the shared test hang bound.
+/// Running out reports the outcome unknown and turns the app's collaboration
+/// off for good, so a slow round trip would otherwise read as a refusal.
+#[cfg(test)]
+fn governed_receipt_wait() -> std::time::Duration {
+    tilo_test_env::hang_bound()
+}
 
 /// How long a launch waits for a room's governor to open the app.
 const GOVERNED_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
