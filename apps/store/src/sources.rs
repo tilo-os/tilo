@@ -596,7 +596,7 @@ pub(crate) mod tests {
     #[test]
     fn tapp_versions_keep_their_runtime_pin_and_runtime_packages_offer_install() {
         let mut entry = tilo_entry("so.tilo.runtime.chromium", "Chromium", "1.0.0", [1; 32]);
-        let runtime = "tilo-runtime/2026.10.22-chromium";
+        let runtime = "tilo-runtime/2026.10.23-chromium";
         let version = &mut entry.versions[0];
         version.tapp_mut().unwrap().target.runtime = Some(runtime.into());
         let stored = tilo_version_to_store(version, version.tapp().unwrap());

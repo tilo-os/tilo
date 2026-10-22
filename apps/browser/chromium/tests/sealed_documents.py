@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """A host started for sealed documents (a mail) never leaves the document.
 
-The page carries a meta refresh and a frame to other sites, and a link. Nothing
-navigates: the refresh and the frame go nowhere, and the link the pointer
-follows comes back as an open_tab request for the embedder, after the address
-under the pointer was reported. The selection is read back as text for the
-embedder's clipboard.
+The page carries a script, a meta refresh, a frame to other sites and a link.
+The script never runs. Nothing navigates: the refresh and the frame go nowhere,
+and the link the pointer follows comes back as an open_tab request for the
+embedder, after the address under the pointer was reported. The selection is
+read back as text for the embedder's clipboard.
 """
 import argparse
 import base64
@@ -25,8 +25,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('host', type=Path)
 args = parser.parse_args()
 
-PAGE = ('<!doctype html><html><head>'
+PAGE = ('<!doctype html><html><head><title>Sealed</title>'
         '<meta http-equiv="refresh" content="0; url=https://refresh.invalid/">'
+        '<script>document.title = "script ran"</script>'
         '</head><body style="margin:0;font:16px sans-serif">'
         '<a href="https://open.invalid/story" style="display:block;height:120px">Open the story</a>'
         '<p id="text">Hello sealed world</p>'
@@ -108,6 +109,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-sealed-') as profile:
         # The refresh and the frame had their chance: nothing was opened.
         until(lambda e: False, timeout=2.0)
         assert not [e for e in seen if e['event'] == 'open_tab'], 'a refresh opened something'
+        assert not [e for e in seen if e.get('title') == 'script ran'], 'a script ran'
 
         # The pointer over the link says where it goes.
         send({'op': 'mouse_move', 'x': 40.0, 'y': 40.0})
@@ -139,7 +141,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-sealed-') as profile:
         send({'op': 'shutdown'})
         until(lambda e: e['event'] == 'closed', what='closed')
         assert host.wait(timeout=HANG_BOUND) == 0
-        print('PASS: refresh and frame refused, link reported and handed out, selection read')
+        print('PASS: script, refresh and frame refused, link reported and handed out, selection read')
     finally:
         if host.poll() is None:
             host.kill()
