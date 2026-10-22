@@ -39,9 +39,14 @@ pub fn self_check() -> Result<String, String> {
     result
 }
 
+/// The error of `step`, named.
+#[cfg(feature = "thin")]
+fn fail(step: &'static str) -> impl Fn(std::io::Error) -> String {
+    move |error| format!("{step}: {error}")
+}
+
 #[cfg(feature = "thin")]
 fn check_in(scratch: &std::path::Path) -> Result<String, String> {
-    let fail = |step: &str| move |error: std::io::Error| format!("{step}: {error}");
     let source = scratch.join("hello.txt");
     std::fs::create_dir_all(scratch).map_err(fail("making the scratch folder"))?;
     std::fs::write(&source, b"hello from the archive engine")
