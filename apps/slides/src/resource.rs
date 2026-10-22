@@ -120,6 +120,7 @@ impl ResourceApp for SlidesShell {
             "slide_menu",
             "reorder",
             "edit_text",
+            "words_menu",
             "delete_zone",
             "inspector_widgets",
         ]
