@@ -25,6 +25,9 @@ kind `tasks.tracker`), written the one way every app is
 | `comments` | `Collection<Message>`, the thread | `comment`, `send-message`, the run's reports |
 | `run` | `Option<Run>`, read-only | the run verbs below |
 
+Beside its issues the tracker holds `private`, the private issues it lists by
+id alone (below).
+
 History, undo, sync, search and permissions are the framework's. Nested issues
 are a parent id on a flat collection, as notes' pages are; a parent's progress
 is counted from its direct children, never stored. The thread is the
@@ -34,6 +37,44 @@ Numbers come from a counter: increments merge, so the next number is always
 past every issue a replica has seen. Two issues made concurrently on two
 replicas can share a number; links and references carry the issue's id, the
 number is how it reads.
+
+## Private issues
+
+A read decision reaches a record, never part of one, so a private issue
+lives in a record of its own: a tracker holding just that issue, a child
+record of the workspace's tracker (`tasks::model::private`). The tracker
+lists it in `private` by its id alone; its kind and whether it is in the
+trash are all a reference says. The room keeps that record to its readers
+with one grant ([permissions.md](permissions.md) §5.3): the person who made
+it private and the people and agents they named. Nobody else's device is
+given its key, and every door denies it to them; an agent reads it only when
+it is named itself and its person reads it too, so a run of a private issue
+is admitted for a named agent and an approver who reads it.
+
+Making an issue private is one action, the tracker's `take` on its
+`private` container ("Make private" on the issue page, where the room's
+members are offered by name and agents by id): the room is asked to keep
+the issue's record to the readers with its own `grant`, then the issue moves
+whole into it, its run aside (a run is approved there by someone who reads
+it), and leaves the tracker in the same step. Nothing is ever half private:
+a refused grant changes nothing, and an issue with a run going or with
+sub-issues stays where it is. The private issue keeps its id and number, so
+its address and every reference to it stay; its record is the tracker's
+record's child of that id (`tasks::model::private::private_record`). What
+the tracker held before stays in its history.
+
+For its readers a private issue shows among the others: the list, the board
+and search read the workspace's tracker together with every private tracker
+the device reads, and the issue's page is the same page over its own
+tracker, so editing it, its thread and its runs are actions on that record.
+Others see nothing of it. The runs the broker is given include those of
+every private tracker the device reads, each only while its agent, acting
+for the person who approved it, reads it too, and the agent reports to the
+tracker that keeps the issue.
+
+Making an issue public again, changing its readers and making a new issue
+private from the start are not offered yet: a new private issue is written
+in the workspace's tracker first.
 
 ## References
 

@@ -1,8 +1,9 @@
 //! The list: every issue, sub-issues nested under their parent.
 //!
 //! Each row reads as the issue's reference and title, with its status
-//! beside it. Choosing a row opens the issue; dragging one onto another
-//! makes it a sub-issue there, the tracker's `move-under`.
+//! beside it, and a private one says so. Choosing a row opens the issue;
+//! dragging one onto another makes it a sub-issue there, the `move-under`
+//! of the tracker that keeps it.
 
 use std::rc::Rc;
 
@@ -11,7 +12,7 @@ use ui::prelude::*;
 use ui::reorder::{DropPlacement, ReorderDrop};
 use ui::widget::{TreeClickActivation, TreeRowDecoration, TreeRowTone};
 
-use crate::{Nav, reference, tr};
+use crate::{Nav, Shown, reference, tr};
 
 /// The root node's id; issues take ids from 1, by their place in the
 /// tracker.
@@ -23,12 +24,13 @@ struct Row {
     number: u64,
     status: crate::model::Status,
     progress: (usize, usize),
+    private: bool,
 }
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
-    let tracker = cx.value(Tracker::clone);
+    let shown = nav.shown.clone();
     let nav = nav.clone();
-    let list = cx.switch(&tracker, move |cx, tracker| tree(cx, tracker, &nav));
+    let list = cx.switch(&shown, move |cx, shown| tree(cx, shown, &nav));
     Box::new(
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
@@ -45,7 +47,8 @@ fn label(issue: &Issue) -> String {
     format!("{}  {}", reference(issue.number), issue.title)
 }
 
-fn node(tracker: &Tracker, parent: Option<&Id>, ids: &mut Vec<Id>) -> Vec<TreeNode<Option<Row>>> {
+fn node(shown: &Shown, parent: Option<&Id>, ids: &mut Vec<Id>) -> Vec<TreeNode<Option<Row>>> {
+    let tracker = &shown.tracker;
     tracker
         .children(parent)
         .map(|(id, issue)| {
@@ -55,8 +58,9 @@ fn node(tracker: &Tracker, parent: Option<&Id>, ids: &mut Vec<Id>) -> Vec<TreeNo
                 number: issue.number,
                 status: issue.status,
                 progress: tracker.progress(id),
+                private: shown.private.contains_key(id),
             });
-            let children = node(tracker, Some(id), ids);
+            let children = node(shown, Some(id), ids);
             if children.is_empty() {
                 TreeNode::leaf(key, label(issue), data)
             } else {
@@ -66,7 +70,8 @@ fn node(tracker: &Tracker, parent: Option<&Id>, ids: &mut Vec<Id>) -> Vec<TreeNo
         .collect()
 }
 
-fn tree(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
+fn tree(cx: &ViewCx<Tracker>, shown: &Shown, nav: &Nav) -> Element {
+    let tracker = &shown.tracker;
     if tracker.issues.is_empty() {
         return Box::new(
             EmptyState::new("tasks-empty-title")
@@ -75,7 +80,7 @@ fn tree(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
         );
     }
     let mut ids = Vec::new();
-    let children = node(tracker, None, &mut ids);
+    let children = node(shown, None, &mut ids);
     let expanded: Vec<u64> = (ROOT..=u64::try_from(ids.len()).unwrap_or(u64::MAX)).collect();
     let ids = Rc::new(ids);
     let issue_of = {
@@ -91,7 +96,7 @@ fn tree(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
     let opener = nav.clone();
     let check = tracker.clone();
     let validate_issue = issue_of.clone();
-    let dispatcher = cx.dispatcher();
+    let (dispatcher, submitting) = (cx.dispatcher(), nav.clone());
     let parents = tracker.clone();
     Box::new(
         TreeView::new(TreeNode::branch(
@@ -134,10 +139,11 @@ fn tree(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
                         .get(&target)
                         .and_then(|issue| issue.parent.clone()),
                 };
-                dispatcher.submit(Tracker::MOVE_UNDER.with(tracker::MoveUnder {
-                    issue: source,
+                let moved = Tracker::MOVE_UNDER.with(tracker::MoveUnder {
+                    issue: source.clone(),
                     parent,
-                }));
+                });
+                submitting.submit(&dispatcher, &source, moved);
                 // The tracker answers with the moved issue; the list is
                 // built again from it.
                 false
@@ -165,6 +171,9 @@ fn decorate(
                 ("total", data.progress.1.into()),
             ],
         );
+    }
+    if data.private {
+        status = format!("{}, {status}", tr("tasks-private"));
     }
     let decoration = TreeRowDecoration::new()
         .trailing(status.clone())

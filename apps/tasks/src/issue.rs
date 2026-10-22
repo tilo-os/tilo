@@ -1,5 +1,7 @@
 //! An issue's page: its title, status and assignee, its description in the
-//! block editor, its sub-issues, its agent's run and its thread.
+//! block editor, its sub-issues, its agent's run and its thread. A private
+//! issue's page is the same page over its own tracker, which only its
+//! readers read.
 //!
 //! Each part that shows the issue's state is built again only when that
 //! part changes, so typing in the title or the description never rebuilds
@@ -14,6 +16,29 @@ use ui::prelude::*;
 use ui::widget::{Badge, ChipStyle, Dropdown, Tone};
 
 use crate::{Nav, reference, tr};
+
+/// The page of `issue`, over the tracker that keeps it: built again when the
+/// issue moves into a private tracker.
+pub(crate) fn open(cx: &ViewCx<Tracker>, issue: &Id, nav: &Nav) -> Element {
+    let Some(private) = nav.private.clone() else {
+        return page(cx, issue.clone(), nav);
+    };
+    let home = cx.value_with_children(&private, {
+        let issue = issue.clone();
+        move |_, kept| {
+            kept.iter()
+                .find(|(_, tracker)| tracker.issues.contains(&issue))
+                .map(|(home, _)| home.clone())
+        }
+    });
+    let (issue, nav) = (issue.clone(), nav.clone());
+    cx.switch(&home, move |cx, home| {
+        let shown = home
+            .as_ref()
+            .and_then(|home| cx.record(&private.record(home), |cx| page(cx, issue.clone(), &nav)));
+        shown.unwrap_or_else(|| page(cx, issue.clone(), &nav))
+    })
+}
 
 pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav) -> Element {
     let exists = cx.value({
@@ -101,6 +126,7 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                             .push(Box::new(header))
                             .push(facts(cx, id))
                             .push(labels(cx, id))
+                            .push(privacy(cx, id, nav))
                             .push(Box::new(
                                 Text::new("tasks-issue-description").with_role(TextRole::Heading),
                             ))
@@ -111,6 +137,55 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                             .push(thread(cx, id)),
                     )),
             )),
+    )
+}
+
+/// Who reads a private issue; for another, choosing its readers makes it
+/// private.
+fn privacy(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
+    let Some(private) = &nav.private else {
+        return Box::new(Column::new());
+    };
+    let people = cx.people();
+    if let Some(home) = nav.home(id) {
+        let readers = private
+            .reader_names(&people, &home)
+            .unwrap_or_default()
+            .join(", ");
+        return Box::new(
+            Row::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(
+                    Badge::text(tr("tasks-private")).style(ChipStyle::Tinted(Tone::Warning)),
+                ))
+                .push(Box::new(
+                    Text::new(&ui::i18n::I18nManager::format(
+                        "tasks-private-readers",
+                        &[("readers", readers.into())],
+                    ))
+                    .with_id("tasks-issue-readers")
+                    .dimmed(),
+                )),
+        );
+    }
+    let choosing = cx.local(false);
+    let shown = choosing.clone();
+    let (private, issue) = (private.clone(), id.clone());
+    let reveal = Button::new("tasks-issue-make-private", "tasks-private-make")
+        .with_icon(ui::icons::Icon::Lock)
+        .on_view(move || shown.set(!shown.get()));
+    let chooser = cx.switch(&choosing, move |_, choosing| {
+        if *choosing {
+            private.readers_chooser(&people, &issue, "tasks-issue-private", "tasks-private-make")
+        } else {
+            Box::new(Column::new())
+        }
+    });
+    Box::new(
+        Column::new()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(Box::new(reveal))
+            .push(chooser),
     )
 }
 
