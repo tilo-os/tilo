@@ -513,7 +513,9 @@ mod tests {
     #[test]
     fn an_action_bar_button_runs_the_operation_its_row_offers() {
         let mut app = TestApp::<SampleDisks>::new().unwrap();
-        app.harness().click_named("disks-action-benchmark").unwrap();
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+            id: ActionKind::Benchmark.key().to_owned(),
+        });
         app.settle();
         app.harness().relayout();
         assert!(

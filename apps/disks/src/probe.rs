@@ -532,7 +532,10 @@ mod tests {
         let mut expected: Vec<serde_json::Value> =
             serde_json::from_str(include_str!("../tests/fixtures/lsblk-drives.json")).unwrap();
         expected.retain(|drive| drive["kind"] != "Zram");
-        assert_eq!(serde_json::to_value(drives).unwrap(), serde_json::Value::from(expected));
+        assert_eq!(
+            serde_json::to_value(drives).unwrap(),
+            serde_json::Value::from(expected)
+        );
     }
 
     /// Health the drive reports becomes the verdict: a critical warning
