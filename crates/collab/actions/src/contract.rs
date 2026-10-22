@@ -412,6 +412,13 @@ impl ResultSpec {
 /// device, never for a collaborator or a remote participant.
 pub const LOCAL_DEVICE_ONLY: &str = "tilo.local-device-only";
 
+/// The contract tag of an action that needs its person attending: it opens
+/// a chooser for them, asks them for a credential or a sign-in, or shows
+/// something only they may see. Whoever acts for a person (an agent, a bot,
+/// an app) is always asked first, and no answer allows it unasked, not even
+/// one given for that very action.
+pub const ATTENDED_TAG: &str = "tilo.attended";
+
 /// The contract tag of an effect whose whole scope is the invoking
 /// person's own device: it touches nothing a room shares and no one else
 /// (their clipboard, their own appearance, a network test from their own
@@ -598,6 +605,11 @@ impl ActionContract {
         self.tags.iter().any(|tag| tag == OWN_DEVICE_SCOPE)
     }
 
+    /// Whether the action needs its person attending. See [`ATTENDED_TAG`].
+    pub fn is_attended(&self) -> bool {
+        self.tags.iter().any(|tag| tag == ATTENDED_TAG)
+    }
+
     /// Who the action is listed for, as its tags record it. See [`Audience`].
     pub fn audience(&self) -> Audience {
         if self.tags.iter().any(|tag| tag == AGENTS_AUDIENCE_TAG) {
@@ -681,6 +693,14 @@ impl ActionContract {
         } else {
             self.confirmation.clone()
         }
+    }
+
+    /// Whether an invocation with `argument` asks the person an agent acts
+    /// for, whatever their broader answers allow: it needs a confirmation
+    /// ([`Self::confirmation_for_argument`]) or its person attending
+    /// ([`Self::is_attended`]).
+    pub fn asks_for_argument(&self, argument: Option<&str>) -> bool {
+        self.is_attended() || self.confirmation_for_argument(argument) != ConfirmationPolicy::None
     }
 
     /// The confirmation an invocation with `argument` (the wire argument:

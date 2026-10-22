@@ -275,10 +275,8 @@ impl CapnpBrokerState {
                 resource: offered.resource.clone(),
                 action: offered.action.clone(),
                 need: offered.contract.need(),
-                consequential: !matches!(
-                    offered.contract.confirmation_for_argument(argument),
-                    tilo_actions::ConfirmationPolicy::None
-                ),
+                consequential: offered.contract.asks_for_argument(argument),
+                attended: offered.contract.is_attended(),
                 confirmed,
             },
         )?;

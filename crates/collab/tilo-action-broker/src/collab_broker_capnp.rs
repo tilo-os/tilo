@@ -909,8 +909,10 @@ impl BrokerActor {
         let need = action.contract.need();
         let node = published_node(workspace, &surface.app_id, action);
         let (answer, spent) = self.verdict_in(workspace, &node, need.kind, need.privileged, now);
+        // Whoever acts for a person asks them before an attended action,
+        // whatever the grants allow.
         let mut asks = match answer {
-            Answer::Allow => false,
+            Answer::Allow => self.delegate().is_some() && action.contract.is_attended(),
             Answer::Ask => true,
             Answer::Deny => return Err(refused()),
         };
@@ -7269,12 +7271,9 @@ impl CapnpBrokerState {
                 .ok()
                 .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
         });
-        let consequential = !matches!(
-            descriptor
-                .contract
-                .confirmation_for_argument(contract_argument.as_deref().or(argument)),
-            tilo_actions::ConfirmationPolicy::None
-        );
+        let consequential = descriptor
+            .contract
+            .asks_for_argument(contract_argument.as_deref().or(argument));
         // A native run pauses for its person where an action asks first
         // (`native_task_confirmation`); an older run has nobody to ask.
         if consequential && run.native.is_none() {
@@ -7290,6 +7289,7 @@ impl CapnpBrokerState {
             action: descriptor.action.clone(),
             need: descriptor.contract.need(),
             consequential,
+            attended: descriptor.contract.is_attended(),
             confirmed: confirmed.0,
         };
         if let Some(binding) = &run.native {

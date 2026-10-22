@@ -83,6 +83,7 @@ impl NativeLaunch {
             action: "open".into(),
             need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
             consequential: false,
+            attended: false,
             // Opening the application is part of the action the person
             // confirmed, not a second question.
             confirmed: self.confirmed,
@@ -122,6 +123,7 @@ impl NativeLaunch {
                     action: self.action.clone(),
                     need: retained.contract.need(),
                     consequential: false,
+                    attended: false,
                     confirmed: self.confirmed,
                 },
             )?;
@@ -564,6 +566,7 @@ impl CapnpBrokerState {
             action: target.action.into(),
             need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
             consequential: false,
+            attended: false,
             confirmed: false,
         };
         self.admit_task_launch(run, &binding, &requirement, &mut || {

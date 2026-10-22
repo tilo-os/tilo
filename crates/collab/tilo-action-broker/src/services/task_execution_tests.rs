@@ -204,6 +204,7 @@ fn approve_task(
             privileged: false,
         },
         consequential: false,
+        attended: false,
         confirmed: false,
     }
 }
@@ -463,6 +464,68 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
     let mut purge = requirement;
     purge.consequential = true;
     purge.check(&peer, room, "scribe", now).unwrap();
+}
+
+/// An action is decided by its kind and the person's answers alone: an agent
+/// reads where reading is allowed, and an effect reaching outside the
+/// document (writing a file, say) asks first. An attended action (a chooser,
+/// a sign-in, a secret shown) asks every time: even "Always allow this"
+/// does not let the agent run it unasked, and Deny still refuses it.
+#[test]
+fn an_attended_action_asks_every_time_and_ordinary_kinds_follow_the_answers() {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let authority = WorkspaceTaskAuthority::Person { caller: starter };
+    let requirement = approve_task(&mut peer, &authority, now);
+    let awaits = |requirement: &NativeTaskActionRequirement, peer: &StatePeer| {
+        requirement
+            .check(peer, room, "scribe", now)
+            .err()
+            .is_some_and(|error| NativeTaskActionRequirement::awaits_confirmation(&error))
+    };
+
+    let mut read = requirement.clone();
+    read.need.kind = tilo_action_policy::ActionKind::Read;
+    read.check(&peer, room, "scribe", now).unwrap();
+
+    let mut save = requirement.clone();
+    save.action = "save".into();
+    save.need.kind = tilo_action_policy::ActionKind::Outside;
+    assert!(awaits(&save, &peer), "an outside effect asks first");
+    save.confirmed = true;
+    save.check(&peer, room, "scribe", now).unwrap();
+
+    let mut choose = requirement;
+    choose.action = "open-file".into();
+    choose.need.kind = tilo_action_policy::ActionKind::Read;
+    choose.consequential = true;
+    choose.attended = true;
+    let answer = |answer: Answer, peer: &mut StatePeer| {
+        peer.governance_mut()
+            .put_governed_grants(
+                &[agent_answers::grant(
+                    room,
+                    "scribe",
+                    (
+                        &AnswerScope::action("so.tilo.notes", "document", "open-file"),
+                        tilo_action_policy::ActionKind::Read,
+                    ),
+                    answer,
+                    Subject::person("governor"),
+                )],
+                &key,
+                now,
+            )
+            .unwrap();
+    };
+    answer(Answer::Allow, &mut peer);
+    assert!(awaits(&choose, &peer), "always allowing it still asks");
+    choose.confirmed = true;
+    choose.check(&peer, room, "scribe", now).unwrap();
+    answer(Answer::Deny, &mut peer);
+    assert!(choose.check(&peer, room, "scribe", now).is_err());
+    assert!(!awaits(&choose, &peer), "deny refuses outright");
 }
 
 /// A task a person starts runs on their behalf: an agent admitted with the

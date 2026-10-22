@@ -54,6 +54,10 @@ pub struct NativeTaskActionRequirement {
     /// (it sends, publishes or deletes for good): the agent's person is
     /// asked first unless they allowed this very action.
     pub consequential: bool,
+    /// The action needs its person attending ([`tilo_actions::ATTENDED_TAG`]):
+    /// it asks them every time, whatever they answered, even for this very
+    /// action.
+    pub attended: bool,
     /// The person the run acts for confirmed this invocation, or it was
     /// admitted on their confirmation: an answer that asks first is
     /// answered.
@@ -231,6 +235,11 @@ impl NativeTaskActionRequirement {
         let agent_answer = verdict.parts.first().map_or(Answer::Deny, |decision| {
             agent_answers::held_to_contract(decision, self.consequential)
         });
+        let agent_answer = if self.attended {
+            agent_answer.min(Answer::Ask)
+        } else {
+            agent_answer
+        };
         let task = policy
             .task_answer(task_id, node, self.need.kind, cx)
             .unwrap_or(Answer::Allow);
