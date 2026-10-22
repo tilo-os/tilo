@@ -4077,7 +4077,9 @@ default = false
 name = "apps-build-{arch}"
 run = "bash tools/apps/t-release.sh build {arch} /target/apps-release/{arch}"
 inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
+needs = ["test-assets"]
 outputs = ["/target/apps-release/{arch}/compiled/**"]
+env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["{node}"]
 cost = "heavy"
 timeout_secs = 10800
@@ -4104,7 +4106,9 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 name = "app-binaries-{arch}"
 run = "bash tools/apps/t-release.sh binaries {arch} /target/app-binaries/{arch}"
 inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
+needs = ["test-assets"]
 outputs = ["/target/app-binaries/{arch}/**"]
+env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
@@ -4483,14 +4487,15 @@ default = false
 # and lays them out in bubblewrap sandboxes of its own (so it is "nested");
 # `tilo-vm-pack-shell-<arch>` builds the shell's release binary, the size of shell-binaries;
 # `tilo-vm-pack-<arch>` builds every other component (the launcher, the system services), release
-# builds of one program each.
+# builds of one program each. Each takes the fixtures its build scripts embed from the test-assets
+# check's verified seed (TILO_TEST_ASSET_SEED), never from the forge.
 [[check]]
 name = "tilo-vm-pack-x86_64"
 run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
-needs = ["tilo-vm-binary-x86_64"]
+needs = ["tilo-vm-binary-x86_64", "test-assets"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=x86_64"]
 requirement = { cores = 8, memory = "12GiB" }
@@ -4503,9 +4508,9 @@ default = false
 name = "tilo-vm-pack-shell-x86_64"
 run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
-needs = ["tilo-vm-binary-x86_64"]
+needs = ["tilo-vm-binary-x86_64", "test-assets"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=x86_64"]
 requirement = { cores = 8, memory = "24GiB" }
@@ -4518,11 +4523,11 @@ default = false
 name = "tilo-vm-pack-apps-x86_64"
 run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_BUILD_JOBS = "16", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/x86_64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/x86_64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
 # The Browser's engine the collection pins, sealed for development layers (engine-dev-<arch>):
 # the registry doesn't have to offer it.
-needs = ["tilo-vm-binary-x86_64", "engine-dev-x86_64"]
+needs = ["tilo-vm-binary-x86_64", "test-assets", "engine-dev-x86_64"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=x86_64"]
 requirement = { cores = 16, memory = "32GiB" }
@@ -4538,9 +4543,9 @@ default = false
 name = "tilo-vm-pack-arm64"
 run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
-needs = ["tilo-vm-binary-arm64"]
+needs = ["tilo-vm-binary-arm64", "test-assets"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=arm64"]
 requirement = { cores = 8, memory = "12GiB" }
@@ -4553,9 +4558,9 @@ default = false
 name = "tilo-vm-pack-shell-arm64"
 run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
-needs = ["tilo-vm-binary-arm64"]
+needs = ["tilo-vm-binary-arm64", "test-assets"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=arm64"]
 requirement = { cores = 8, memory = "24GiB" }
@@ -4568,11 +4573,11 @@ default = false
 name = "tilo-vm-pack-apps-arm64"
 run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_BUILD_JOBS = "16", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/aarch64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/aarch64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
 # The Browser's engine the collection pins, sealed for development layers (engine-dev-<arch>):
 # the registry doesn't have to offer it.
-needs = ["tilo-vm-binary-arm64", "engine-dev-aarch64"]
+needs = ["tilo-vm-binary-arm64", "test-assets", "engine-dev-aarch64"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=arm64"]
 requirement = { cores = 16, memory = "32GiB" }
@@ -5767,6 +5772,16 @@ cost = "minutes"
 default = false
 
 [[check]]
+name = "test-assets"
+run = "python3 tools/test-assets.py --cache-root /target/test-assets apps/ebook/assets/artifacts.json apps/pdf-viewer/tests/fixtures/artifacts.json apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json apps/video-editor/sample-media/artifacts.json apps/video-player/tests/fixtures/artifacts.json crates/doc/fixtures/artifacts.json crates/platform/tilo-pdf/tests/fixtures/artifacts.json"
+inputs = ["tools/test-assets.py", "apps/ebook/assets/artifacts.json", "apps/pdf-viewer/tests/fixtures/artifacts.json", "apps/settings/shots/artifacts.json", "apps/store/fixtures/artwork/artifacts.json", "apps/video-editor/sample-media/artifacts.json", "apps/video-player/tests/fixtures/artifacts.json", "crates/doc/fixtures/artifacts.json", "crates/platform/tilo-pdf/tests/fixtures/artifacts.json"]
+outputs = ["/target/test-assets/**"]
+requires = ["arch=any"]
+cost = "minutes"
+requirement = { cores = 1, memory = "1GiB" }
+default = false
+
+[[check]]
 name = "os-assembler-x86_64"
 run = "bash os/image/assembler.sh x86_64 /target/os/x86_64/assembler"
 inputs = ["os/image/assembler.Containerfile", "os/image/assembler.sh", "tools/ci/publish/lib.sh", "os/base-snapshot.env", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh"]
@@ -5824,8 +5839,8 @@ name = "os-compile-x86_64"
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets"]
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["os-assets", "test-assets"]
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled/**"]
 requires = ["arch=x86_64"]
 cost = "heavy"
@@ -5838,7 +5853,8 @@ name = "os-compile-dev-x86_64"
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh --dev /target/os/x86_64/compiled-dev"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-env = { TILO_DEV_RUST_LTO = "off", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["test-assets"]
+env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled-dev/**"]
 requires = ["arch=x86_64"]
 cost = "heavy"
@@ -5995,8 +6011,8 @@ name = "os-compile-aarch64"
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets"]
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["os-assets", "test-assets"]
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled/**"]
 requires = ["arch=arm64"]
 cost = "heavy"
@@ -6009,7 +6025,8 @@ name = "os-compile-dev-aarch64"
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh --dev /target/os/aarch64/compiled-dev"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-env = { TILO_DEV_RUST_LTO = "off", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["test-assets"]
+env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled-dev/**"]
 requires = ["arch=arm64"]
 cost = "heavy"
