@@ -29,7 +29,6 @@ def never_ancestor(commit: str, base: str) -> bool:
 
 
 class SelectTests(unittest.TestCase):
-    # USER REQUIREMENT (2026-10-21): "t pre push needs to be really fast and not run too many tests -- main is unstable, our stable branch for continuous deployment is "stable""
     def test_a_push_runs_no_test_vm_suite_or_whole_tree_check_whatever_it_touches(self):
         config = t_matrix.load(ROOT)
         checks = {check["name"]: check for check in config["check"]}
@@ -161,7 +160,6 @@ class HookTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    # USER REQUIREMENT (2026-10-21): "t pre push needs to be really fast and not run too many tests -- main is unstable, our stable branch for continuous deployment is "stable""
     def test_a_push_to_main_runs_no_tests_skips_what_main_has_red_and_names_the_opt_in_checks(self):
         pushed = self.git("push", "origin", "main", env=self.env, check=False)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)

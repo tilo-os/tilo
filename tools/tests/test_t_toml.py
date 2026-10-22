@@ -278,7 +278,6 @@ class PlanTests(unittest.TestCase):
         paths = ["apps/notes/locales/en-US.ftl", "apps/notes/locales/de.ftl", "apps/settings-core/locales/de-DE.ftl"]
         self.assertEqual(sorted(name for name in self.planned(paths) if name.startswith("clippy/")), [])
 
-    # USER REQUIREMENT (2026-10-21): "t pre push needs to be really fast and not run too many tests -- main is unstable, our stable branch for continuous deployment is "stable""
     def test_default_pre_push_plans_no_test_check(self):
         sys.path.insert(0, str(ROOT / "tools/ci"))
         import pre_push
