@@ -21,15 +21,6 @@ pub const ZONE_TABLES: [&str; 2] = [
     "/usr/share/zoneinfo/zone.tab",
 ];
 
-/// The zone of the installed tzdata's city nearest `location`.
-#[must_use]
-pub fn nearest_zone(location: Location) -> Option<String> {
-    ZONE_TABLES
-        .iter()
-        .find_map(|table| std::fs::read_to_string(table).ok())
-        .and_then(|table| nearest_zone_in(location, &table))
-}
-
 /// The zone of the city nearest `location` in a `zone1970.tab`/`zone.tab`
 /// body, by great-circle distance.
 #[must_use]
