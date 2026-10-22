@@ -656,6 +656,8 @@ impl ResourceApp for TerminalShell {
         // service permission or connection the shell lent; in its own process, locally.
         let lent = cx.take_lent::<crate::HostedProcessServices>();
         let deferred = cx.take_lent::<crate::HostedSessionSource>().is_some();
+        // The window the shell shows a tab of it in, in the shell's process.
+        let hosted_window = cx.take_lent::<ui::hosted_window::HostedWindow>();
         let widget = if cx.read_only() {
             TerminalWidget::spawn_headless()
         } else if deferred {
@@ -680,6 +682,12 @@ impl ResourceApp for TerminalShell {
             Some(content) => widget.with_content(content),
             None => widget,
         };
+        // A live terminal is the app of its window: the window's title says
+        // where its shell runs, and the window closes when the shell exits.
+        // A past version shows a terminal, not a window of one.
+        if cx.mode().is_live() {
+            widget.show_in_window(hosted_window);
+        }
         let queue = crate::runs::RunQueue::default();
         widget.run_through(queue.clone());
         let owner = queue.clone();

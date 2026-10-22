@@ -174,6 +174,74 @@ impl ReaderLifetime {
     }
 }
 
+/// Where a lease stands for a reader, when its peer may say how the session
+/// ended before closing it (a relay session's `end_report`).
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeaseState {
+    /// The peer holds the session open.
+    Open,
+    /// The peer closed the lease without a word.
+    Closed,
+    /// The peer said how the session ended (one line, without its newline)
+    /// and closes the lease.
+    Reported(Vec<u8>),
+}
+
+/// The longest end report a reader takes.
+#[cfg(unix)]
+const MAX_END_REPORT: usize = 4096;
+
+#[cfg(unix)]
+impl ReaderLifetime {
+    /// [`Self::is_open`] for a lease whose peer may report how the session
+    /// ended before it closes: a report is read (once; afterwards the lease
+    /// reads as closed), never taken for a peer still holding it open.
+    #[must_use]
+    pub fn state(&self) -> LeaseState {
+        use std::os::fd::AsRawFd as _;
+        let mut line = Vec::new();
+        let mut chunk = [0u8; 512];
+        loop {
+            // SAFETY: `chunk` is valid writable storage for its length and the
+            // descriptor stays open for the duration of the call.
+            let received = unsafe {
+                libc::recv(
+                    self.socket.as_raw_fd(),
+                    chunk.as_mut_ptr().cast::<libc::c_void>(),
+                    chunk.len(),
+                    libc::MSG_DONTWAIT,
+                )
+            };
+            match usize::try_from(received) {
+                Ok(0) => break,
+                Ok(n) => {
+                    line.extend_from_slice(chunk.get(..n).unwrap_or_default());
+                    if line.contains(&b'\n') || line.len() >= MAX_END_REPORT {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    let error = std::io::Error::last_os_error().raw_os_error();
+                    if line.is_empty() && matches!(error, Some(libc::EAGAIN | libc::EINTR)) {
+                        return LeaseState::Open;
+                    }
+                    break;
+                }
+            }
+        }
+        if line.is_empty() {
+            return LeaseState::Closed;
+        }
+        let end = line
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap_or(line.len());
+        line.truncate(end.min(MAX_END_REPORT));
+        LeaseState::Reported(line)
+    }
+}
+
 impl Drop for SessionLifetime {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -187,6 +255,30 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn a_reader_takes_the_end_a_peer_reports_and_then_sees_it_closed() {
+        let (ours, peer) = UnixStream::pair().expect("socket pair");
+        let lifetime = SessionLifetime::new(ours);
+        let reader = lifetime.clone_for_reader().expect("reader duplicate");
+        assert_eq!(reader.state(), LeaseState::Open);
+        (&peer)
+            .write_all(b"{\"ended\":\"lost\"}\n")
+            .expect("peer reports");
+        peer.shutdown(std::net::Shutdown::Both)
+            .expect("peer closes");
+        assert_eq!(
+            reader.state(),
+            LeaseState::Reported(b"{\"ended\":\"lost\"}".to_vec())
+        );
+        assert_eq!(reader.state(), LeaseState::Closed);
+
+        let (ours, peer) = UnixStream::pair().expect("socket pair");
+        let lifetime = SessionLifetime::new(ours);
+        let reader = lifetime.clone_for_reader().expect("reader duplicate");
+        drop(peer);
+        assert_eq!(reader.state(), LeaseState::Closed, "closed without a word");
+    }
 
     #[test]
     fn reader_lifetime_sees_the_peer_close_its_end() {

@@ -21,8 +21,15 @@
 //! click or a tap commits one. This list is the only one: the app draws no
 //! suggestions of its own while the bar hosts its location.
 //!
-//! The overflow menu is the shared [`ContextMenu`]. Both are painted in the
-//! window's top layer ([`ToolbarRow::paint_popups`]).
+//! A location that is one of a few places (its app declared
+//! [`LocationChoice`](crate::window_toolbar::LocationChoice)s) reads as a
+//! picker: its label with a chevron, lifting under the pointer like the
+//! bar's buttons. A click, a tap or the location's accessibility action opens
+//! the choices in the shared [`ContextMenu`] under it, the current one
+//! checked; choosing one commits its value ([`ToolbarEvent::Commit`]).
+//!
+//! The overflow menu is the shared [`ContextMenu`] too. Both are painted in
+//! the window's top layer ([`ToolbarRow::paint_popups`]).
 //!
 //! When the window shows another tab, the row's content cross-fades in place
 //! ([`crate::motion::CrossFade`]): the outgoing tab's slots fade out where
@@ -58,6 +65,7 @@ pub const ACTION_TARGET_PREFIX: &str = "window-toolbar-action:";
 pub const OVERFLOW_TARGET: &str = "window-toolbar-more";
 pub const SEGMENT_TARGET_PREFIX: &str = "window-toolbar-level:";
 pub const SUGGESTION_TARGET_PREFIX: &str = "window-toolbar-suggestion:";
+pub const CHOICE_TARGET_PREFIX: &str = "window-toolbar-choice:";
 
 /// Between the navigation buttons and the location, and between the
 /// location and the actions.
@@ -69,6 +77,15 @@ const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as 
 /// Actions move into the overflow menu, last first, while the location
 /// would be narrower than this.
 const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
+
+/// What a row of the open menu does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuRow {
+    /// Runs declared action `index` (the overflow's rows).
+    Action(usize),
+    /// Commits the location's choice `index` (the location's picker).
+    Choice(usize),
+}
 
 /// One slot of the row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,9 +228,13 @@ pub(crate) struct ToolbarRow {
     /// The location's levels as a breadcrumb, while it has them, and the
     /// labels it was built from.
     crumbs: Option<(Vec<String>, Breadcrumb)>,
-    /// The overflow button's menu, and the declared action each row runs.
+    /// The overflow button's menu or the location's picker, and what each
+    /// of its rows does (`None`: a separator).
     menu: ContextMenu,
-    menu_actions: Vec<usize>,
+    menu_rows: Vec<Option<MenuRow>>,
+    /// Where a location with choices painted its picker last: what its menu
+    /// hangs from (`Rect::ZERO`: not painted yet, the whole slot).
+    choice_trigger: Rect,
     /// The suggestions under the edited field, and what each commits.
     suggestions: SuggestionList,
     suggestion_values: Vec<String>,
@@ -252,7 +273,8 @@ impl ToolbarRow {
             heard: String::new(),
             crumbs: None,
             menu: ContextMenu::new(),
-            menu_actions: Vec::new(),
+            menu_rows: Vec::new(),
+            choice_trigger: Rect::ZERO,
             suggestions: SuggestionList::new(),
             suggestion_values: Vec::new(),
             suggestions_dismissed: false,
@@ -415,11 +437,112 @@ impl ToolbarRow {
                 self.end_edit();
             }
         }
-        if self.slots.overflow.area() <= 0.0 {
-            self.menu.close();
-        } else if self.menu.is_open() {
-            self.menu.reanchor(self.slots.overflow, self.popup_area);
+        if self.menu.is_open() {
+            // The menu hangs from what opened it, and goes with it.
+            let anchor = if self.choices_open() {
+                self.choice_anchor()
+            } else {
+                self.slots.overflow
+            };
+            if anchor.area() > 0.0 {
+                self.menu.reanchor(anchor, self.popup_area);
+            } else {
+                self.menu.close();
+            }
         }
+    }
+
+    /// Whether the location is one of a few places, picked from a menu.
+    fn has_choices(&self) -> bool {
+        self.toolbar()
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .is_some_and(|location| !location.editable && !location.choices.is_empty())
+    }
+
+    /// Whether the open menu is the location's picker.
+    pub(crate) fn choices_open(&self) -> bool {
+        self.menu.is_open()
+            && self
+                .menu_rows
+                .iter()
+                .flatten()
+                .any(|row| matches!(row, MenuRow::Choice(_)))
+    }
+
+    /// The labels of the open menu's rows, for tests.
+    #[cfg(test)]
+    pub(crate) fn menu_labels(&self) -> Vec<String> {
+        if !self.menu.is_open() {
+            return Vec::new();
+        }
+        self.menu
+            .items()
+            .iter()
+            .filter_map(MenuItem::label)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// What the location's picker hangs from: the label and chevron it
+    /// painted, inside the location's slot.
+    fn choice_anchor(&self) -> Rect {
+        let slot = self.slots.location;
+        if slot.area() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let trigger = self.choice_trigger.intersect(slot);
+        if trigger.width() > 0.0 && trigger.height() > 0.0 {
+            trigger
+        } else {
+            slot
+        }
+    }
+
+    /// Open the location's picker under it: every choice by its label, the
+    /// current one checked, separators where the app grouped them.
+    fn open_choices(&mut self) -> bool {
+        let Some(location) = self
+            .toolbar()
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .filter(|location| !location.editable && !location.choices.is_empty())
+        else {
+            return false;
+        };
+        let mut items = Vec::with_capacity(location.choices.len() + 2);
+        let mut rows = Vec::with_capacity(location.choices.len() + 2);
+        for (index, choice) in location.choices.iter().enumerate() {
+            if choice.separated && index > 0 {
+                items.push(MenuItem::separator());
+                rows.push(None);
+            }
+            items.push(MenuItem::selection(choice.label.clone()).with_checked(choice.current));
+            rows.push(Some(MenuRow::Choice(index)));
+        }
+        let anchor = self.choice_anchor();
+        if anchor.area() <= 0.0 {
+            return false;
+        }
+        self.menu.set_items(items);
+        self.menu.set_align(super::PanelAlign::Leading);
+        self.menu.open_anchored(anchor, self.popup_area);
+        self.menu_rows = rows;
+        true
+    }
+
+    /// Commit the location's choice `index`, as choosing it does.
+    fn commit_choice(&mut self, index: usize) -> bool {
+        let Some(value) = self
+            .toolbar()
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .filter(|location| !location.editable)
+            .and_then(|location| location.choices.get(index))
+            .map(|choice| choice.value.clone())
+        else {
+            return false;
+        };
+        self.menu.close();
+        self.push(ToolbarEvent::Commit { text: value });
+        true
     }
 
     /// The field goes, and the suggestions with it.
@@ -624,7 +747,10 @@ impl ToolbarRow {
         self.menu.set_align(super::PanelAlign::Trailing);
         self.menu
             .open_anchored(self.slots.overflow, self.popup_area);
-        self.menu_actions = hidden;
+        self.menu_rows = hidden
+            .into_iter()
+            .map(|index| Some(MenuRow::Action(index)))
+            .collect();
         true
     }
 
@@ -651,6 +777,7 @@ impl ToolbarRow {
             Slot::Sidebar => self.push(ToolbarEvent::ToggleSidebar),
             Slot::Back => self.push(ToolbarEvent::Back),
             Slot::Forward => self.push(ToolbarEvent::Forward),
+            Slot::Location if self.has_choices() => return self.open_choices(),
             Slot::Location => return self.begin_edit(),
             Slot::Action(i) => return self.run_action(*i),
             Slot::Overflow => return self.open_overflow(),
@@ -755,8 +882,14 @@ impl ToolbarRow {
                 },
             );
             if let Some(row) = self.menu.take_selection() {
-                if let Some(index) = self.menu_actions.get(row).copied() {
-                    self.run_action(index);
+                match self.menu_rows.get(row).copied().flatten() {
+                    Some(MenuRow::Action(index)) => {
+                        self.run_action(index);
+                    }
+                    Some(MenuRow::Choice(index)) => {
+                        self.commit_choice(index);
+                    }
+                    None => {}
                 }
                 self.menu.close();
             }
@@ -883,6 +1016,12 @@ impl ToolbarRow {
                 // A click on one of the location's levels goes there.
                 if let Some(value) = self.crumb_at(p) {
                     self.push(ToolbarEvent::Commit { text: value });
+                    return true;
+                }
+                // One of a few places: the picker opens as the press ends,
+                // as the bar's menu buttons do.
+                if self.has_choices() {
+                    self.pressed = Some(Slot::Location);
                     return true;
                 }
                 // Anywhere else on it starts editing at once: the field
@@ -1034,7 +1173,7 @@ impl ToolbarRow {
             && let Some((toolbar, slots)) = self.outgoing.as_ref()
         {
             layered(scene, transform, self.row, opacity, |scene| {
-                paint_slots(
+                let _ = paint_slots(
                     scene,
                     transform,
                     (tr, theme, presence),
@@ -1050,18 +1189,21 @@ impl ToolbarRow {
         let Some((_, toolbar)) = self.shown.as_ref() else {
             return;
         };
+        let choices_open = self.choices_open();
         let interaction = Interaction {
             hover: self.hover.clone(),
             pressed: self.pressed.clone(),
             editing: self.field.is_some(),
-            menu_open: self.menu.is_open(),
+            menu_open: self.menu.is_open() && !choices_open,
+            choices_open,
         };
         let row = self.row;
         let slots = &self.slots;
         let field = self.field.as_mut();
         let crumbs = self.crumbs.as_mut().map(|(_, crumbs)| crumbs);
+        let mut trigger = None;
         layered(scene, transform, row, incoming, |scene| {
-            paint_slots(
+            trigger = paint_slots(
                 scene,
                 transform,
                 (tr, theme, presence),
@@ -1073,6 +1215,9 @@ impl ToolbarRow {
                 Widget::draw(field, scene, transform, tr, theme, presence);
             }
         });
+        if let Some(trigger) = trigger {
+            self.choice_trigger = trigger;
+        }
     }
 
     /// The slots as assistive technology and automation reach them.
@@ -1130,7 +1275,8 @@ impl ToolbarRow {
                 } else {
                     location.name.clone()
                 };
-                let mut node = AccessNode::new(if location.editable {
+                let picker = !location.editable && !location.choices.is_empty();
+                let mut node = AccessNode::new(if location.editable || picker {
                     Role::Button
                 } else {
                     Role::StaticText
@@ -1138,13 +1284,36 @@ impl ToolbarRow {
                 .with_name(name)
                 .with_optional_value(Some(location.edit_value().to_owned()))
                 .with_bounds(self.slots.location);
-                if location.editable {
+                if location.editable || picker {
                     node = node
                         .with_action_target(LOCATION_TARGET)
                         .with_state(AccessState {
                             focusable: true,
+                            expanded: picker.then(|| self.choices_open()),
                             ..Default::default()
                         });
+                }
+                if picker && self.choices_open() {
+                    // The open picker's rows: each one goes there.
+                    let count = location.choices.len();
+                    node = node.with_children(
+                        location
+                            .choices
+                            .iter()
+                            .enumerate()
+                            .map(|(index, choice)| {
+                                AccessNode::new(Role::MenuItem)
+                                    .with_name(choice.label.clone())
+                                    .with_action_target(format!("{CHOICE_TARGET_PREFIX}{index}"))
+                                    .with_position(index.saturating_add(1), count)
+                                    .with_state(AccessState {
+                                        focusable: true,
+                                        checked: Some(choice.current),
+                                        ..Default::default()
+                                    })
+                            })
+                            .collect(),
+                    );
                 }
                 nodes.push(node);
             }
@@ -1247,6 +1416,12 @@ impl ToolbarRow {
         {
             return self.suggestions_open() && self.commit_suggestion(index);
         }
+        if let Some(index) = target
+            .strip_prefix(CHOICE_TARGET_PREFIX)
+            .and_then(|index| index.parse::<usize>().ok())
+        {
+            return self.commit_choice(index);
+        }
         let slot = match target {
             SIDEBAR_TARGET => Slot::Sidebar,
             BACK_TARGET => Slot::Back,
@@ -1302,6 +1477,8 @@ struct Interaction {
     editing: bool,
     /// The overflow menu is open: its button stays lifted.
     menu_open: bool,
+    /// The location's picker is open: it stays lifted.
+    choices_open: bool,
 }
 
 /// Paint `paint` at `opacity`, in a layer only while it is part-way.
@@ -1331,6 +1508,8 @@ fn layered(
     }
 }
 
+/// Paint `toolbar`'s slots. Returns where a location with choices painted
+/// its picker, which its menu hangs from.
 fn paint_slots(
     scene: &mut Scene,
     transform: Affine,
@@ -1338,7 +1517,7 @@ fn paint_slots(
     toolbar: &WindowToolbar,
     slots: &Slots,
     (interaction, crumbs): (Option<&Interaction>, Option<&mut Breadcrumb>),
-) {
+) -> Option<Rect> {
     let face = |slot: Slot, enabled: bool, on: bool| ButtonFace {
         hovered: interaction.is_some_and(|i| i.hover.as_ref() == Some(&slot)),
         pressed: interaction.is_some_and(|i| i.pressed.as_ref() == Some(&slot)),
@@ -1402,24 +1581,36 @@ fn paint_slots(
         );
     }
     let editing = interaction.is_some_and(|i| i.editing);
-    if let Some(location) = toolbar.location.as_ref()
-        && slots.location.area() > 0.0
-        && !editing
-    {
-        let hovered = interaction.is_some_and(|i| i.hover == Some(Slot::Location));
-        paint_location(
-            scene,
-            transform,
-            (tr, theme, presence),
-            (location, crumbs),
-            slots.location,
-            hovered,
-        );
+    let location = toolbar.location.as_ref()?;
+    if slots.location.area() <= 0.0 || editing {
+        return None;
     }
+    let lifted = LocationLift {
+        hovered: interaction.is_some_and(|i| i.hover == Some(Slot::Location)),
+        pressed: interaction.is_some_and(|i| i.pressed == Some(Slot::Location) || i.choices_open),
+    };
+    paint_location(
+        scene,
+        transform,
+        (tr, theme, presence),
+        (location, crumbs),
+        slots.location,
+        lifted,
+    )
+}
+
+/// How the pointer stands on the location.
+#[derive(Clone, Copy, Debug, Default)]
+struct LocationLift {
+    hovered: bool,
+    /// Pressed, or its picker is open.
+    pressed: bool,
 }
 
 /// The location at rest: its icon, then its label, elided at the end. An
-/// editable one stands in a field's frame, so it reads as one to click.
+/// editable one stands in a field's frame, so it reads as one to click; one
+/// with choices reads as a picker, its label and a chevron on the bar's
+/// plain button face, and returns where it painted that.
 fn paint_location(
     scene: &mut Scene,
     transform: Affine,
@@ -1429,11 +1620,21 @@ fn paint_location(
         Option<&mut Breadcrumb>,
     ),
     rect: Rect,
-    hovered: bool,
-) {
+    lift: LocationLift,
+) -> Option<Rect> {
+    if !location.editable && !location.choices.is_empty() {
+        return Some(paint_location_picker(
+            scene,
+            transform,
+            (tr, theme),
+            location,
+            rect,
+            lift,
+        ));
+    }
     let mut text_rect = rect;
     if location.editable {
-        let face = FieldFace::new(rect, "").hovered(hovered);
+        let face = FieldFace::new(rect, "").hovered(lift.hovered);
         face.paint_chrome(scene, transform, theme);
         text_rect = face.text_rect(theme);
     }
@@ -1457,7 +1658,7 @@ fn paint_location(
             crumbs.set_rect(Rect::new(text_rect.x0, rect.y0, text_rect.x1, rect.y1));
             Widget::draw(crumbs, scene, transform, tr, theme, presence);
         }
-        return;
+        return None;
     }
     let (shown, ink) = if location.label.is_empty() {
         (
@@ -1468,7 +1669,7 @@ fn paint_location(
         (location.label.as_str(), theme.tokens.colors.text_primary)
     };
     if shown.is_empty() || text_rect.width() <= 0.0 {
-        return;
+        return None;
     }
     let style = theme.text(TextRole::Body);
     #[allow(
@@ -1485,6 +1686,75 @@ fn paint_location(
     )]
     let origin = transform * Affine::translate((text_rect.x0, y));
     tr.draw_style(scene, &line, ink, origin, None, &style);
+    None
+}
+
+/// A location with choices: its label (elided at the end) and a trailing
+/// chevron, on the plain button face the bar's buttons lift with, as wide as
+/// they need and never wider than the slot. Returns the face's rect.
+fn paint_location_picker(
+    scene: &mut Scene,
+    transform: Affine,
+    (tr, theme): (&mut TextRenderer, &Theme),
+    location: &crate::window_toolbar::ToolbarLocation,
+    rect: Rect,
+    lift: LocationLift,
+) -> Rect {
+    let pad = f64::from(theme.tokens.spacing.s2);
+    let gap = f64::from(theme.tokens.spacing.s1);
+    let style = theme.text(TextRole::Body);
+    let (shown, ink) = if location.label.is_empty() {
+        (
+            location.placeholder.as_str(),
+            theme.tokens.colors.text_tertiary,
+        )
+    } else {
+        (location.label.as_str(), theme.tokens.colors.text_primary)
+    };
+    let room = (rect.width() - pad * 2.0 - gap - LOCATION_ICON_PX).max(0.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a location's width is a bounded on-screen size, far inside f32"
+    )]
+    let line = tr.elide_to_width_style(shown, room as f32, &style);
+    let (w, h) = tr.measure_style(&line, None, &style);
+    let label_w = f64::from(w).min(room);
+    let face_rect = Rect::new(
+        rect.x0,
+        rect.y0,
+        (rect.x0 + pad * 2.0 + label_w + gap + LOCATION_ICON_PX).min(rect.x1),
+        rect.y1,
+    );
+    let face = crate::widget::ButtonFace::new(face_rect, "")
+        .role(crate::widget::ButtonRole::Plain)
+        .control_size(crate::widget::ControlSize::Small)
+        .hovered(lift.hovered)
+        .pressed(lift.pressed);
+    crate::widget::Button::paint(scene, transform, tr, theme, &face);
+    if !line.is_empty() {
+        let y = rect.center().y - f64::from(h) / 2.0;
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine transform composition over f64 screen coordinates"
+        )]
+        let origin = transform * Affine::translate((face_rect.x0 + pad, y));
+        tr.draw_style(scene, &line, ink, origin, None, &style);
+    }
+    let chevron_x = face_rect.x0 + pad + label_w + gap;
+    crate::icons::draw_icon(
+        scene,
+        transform,
+        Rect::new(
+            chevron_x,
+            rect.center().y - LOCATION_ICON_PX / 2.0,
+            chevron_x + LOCATION_ICON_PX,
+            rect.center().y + LOCATION_ICON_PX / 2.0,
+        ),
+        Icon::ChevronDown,
+        theme.tokens.colors.text_dim,
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+    face_rect
 }
 
 #[cfg(test)]
@@ -1576,6 +1846,75 @@ mod tests {
         assert!(row.cancel_edit());
         assert!(!row.is_editing());
         assert!(row.take_events().is_empty(), "nothing was committed");
+    }
+
+    /// A terminal's slots: where its shell runs, one of a few places.
+    fn terminal() -> WindowToolbar {
+        use crate::window_toolbar::LocationChoice;
+        let choice = |label: &str, value: &str, current: bool, separated: bool| LocationChoice {
+            label: label.into(),
+            value: value.into(),
+            current,
+            separated,
+        };
+        WindowToolbar {
+            location: Some(ToolbarLocation {
+                label: "Your shell on this device".into(),
+                choices: vec![
+                    choice("Your shell on this device", "target:host", true, false),
+                    choice("work", "target:environment:work", false, false),
+                    choice("Manage environments…", "manage", false, true),
+                ],
+                ..ToolbarLocation::default()
+            }),
+            ..WindowToolbar::default()
+        }
+    }
+
+    #[test]
+    fn a_location_with_choices_opens_its_picker_and_commits_the_one_chosen() {
+        let mut row = ToolbarRow::new();
+        row.show(
+            9,
+            Some(&terminal()),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        row.set_popup_area(Rect::new(0.0, 0.0, 800.0, 600.0));
+        row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
+        let location = row.slots().location.center();
+        assert!(row.press(location));
+        assert!(!row.is_editing(), "a picker never turns into a field");
+        assert!(!row.choices_open(), "it opens as the press ends");
+        assert!(row.release(location));
+        assert!(row.choices_open());
+        assert_eq!(
+            row.menu_labels(),
+            vec![
+                "Your shell on this device".to_owned(),
+                "work".to_owned(),
+                "Manage environments…".to_owned()
+            ]
+        );
+        let picker = row
+            .accessibility()
+            .into_iter()
+            .find(|node| node.action_target.as_deref() == Some(LOCATION_TARGET))
+            .expect("the picker reaches assistive technology");
+        assert_eq!(picker.state.expanded, Some(true));
+        assert_eq!(picker.children.len(), 3);
+        assert_eq!(picker.children[0].state.checked, Some(true));
+        assert!(row.perform(&format!("{CHOICE_TARGET_PREFIX}1")));
+        assert!(!row.choices_open(), "choosing closes the picker");
+        assert_eq!(
+            row.take_events(),
+            vec![(
+                9,
+                ToolbarEvent::Commit {
+                    text: "target:environment:work".into()
+                }
+            )]
+        );
     }
 
     #[test]

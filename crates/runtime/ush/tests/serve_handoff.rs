@@ -79,6 +79,7 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             relay_session: None,
             runs: None,
             editor_protocol: None,
+            end_report: false,
         })
         .expect_err("the host target was served");
         assert!(err.starts_with("not available"), "{err}");
@@ -175,6 +176,7 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         relay_session: None,
         runs: None,
         editor_protocol: None,
+        end_report: false,
     };
 
     let (response, fd) = ask(&open);
@@ -456,6 +458,7 @@ fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
         relay_session: None,
         runs: None,
         editor_protocol: None,
+        end_report: false,
     })
     .unwrap();
     request.push(b'\n');

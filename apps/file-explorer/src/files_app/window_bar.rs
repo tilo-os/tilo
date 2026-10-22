@@ -136,6 +136,7 @@ impl FileExplorerWidget {
                 segments,
                 image: None,
                 suggestions: self.bar_suggestions(),
+                choices: Vec::new(),
             }),
             actions,
         }

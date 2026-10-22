@@ -1,8 +1,13 @@
 terminal-find-scrollback = Im Terminalverlauf suchen
 terminal-target-host = Deine Shell auf diesem Gerät
 terminal-target-default = Standardumgebung
-terminal-target-legacy = Legacy-VM
+terminal-target-legacy = Virtuelle Maschine { $vm }
 terminal-target-manage = Umgebungen verwalten…
+terminal-target-choose = Wählen, wo dies läuft
+terminal-start-failed-title = Die Shell konnte nicht starten
+terminal-start-retry = Erneut versuchen
+terminal-reconnecting = Verbindung wird wiederhergestellt…
+terminal-reconnect-superseded = Diese Sitzung ist in einem anderen Terminal geöffnet
 terminal-run-on = Ausführen auf:
 terminal-run-on-this-device = Diesem Gerät
 terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst

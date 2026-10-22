@@ -335,10 +335,14 @@ pub enum BridgeStatus {
         images: std::collections::BTreeMap<String, String>,
     },
     Ended {
+        /// The guest's exit code, when it exited.
         #[serde(default)]
         code: Option<i32>,
         #[serde(default)]
         reason: Option<String>,
+        /// Another terminal took the session over; it runs on there.
+        #[serde(default)]
+        superseded: bool,
     },
 }
 

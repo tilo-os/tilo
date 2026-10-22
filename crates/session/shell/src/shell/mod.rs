@@ -1012,6 +1012,35 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
     }
 }
 
+/// Mount Terminal in `tab`, lent the window it is shown in: where it says
+/// where its shell runs (the bar's location) and closes its tab when the
+/// shell exits.
+fn mount_terminal(
+    apps: &mut in_process::InProcessApps,
+    room: &str,
+    tab: u64,
+    inputs: &hosted_inputs::HostedTileInputs,
+) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
+    let window = apps.hosted_window(tab);
+    apps.mount(
+        terminal::definition(),
+        room,
+        tab,
+        ui::record::RecordId::for_tab(tab),
+        |context| {
+            context.lend(window);
+            // Only a real session's terminals open sessions; a test's or a
+            // capture's show a terminal with none.
+            if inputs.opens_sessions() {
+                // Discovery and connect belong to the open worker, too.
+                context.lend(terminal::HostedSessionSource);
+            } else {
+                context.lend(terminal::HostedProcessServices::unavailable());
+            }
+        },
+    )
+}
+
 fn mount_private_feedback(
     apps: &mut in_process::InProcessApps,
     room: &str,
@@ -1047,22 +1076,7 @@ pub fn mount_in_process(
         ShellKind::Other(name) if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND) => {
             mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
         }
-        ShellKind::Terminal => apps.borrow_mut().mount(
-            terminal::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::for_tab(tab),
-            |context| {
-                // Only a real session's terminals open sessions; a test's or
-                // a capture's show a terminal with none.
-                if inputs.opens_sessions() {
-                    // Discovery and connect belong to the open worker, too.
-                    context.lend(terminal::HostedSessionSource);
-                } else {
-                    context.lend(terminal::HostedProcessServices::unavailable());
-                }
-            },
-        ),
+        ShellKind::Terminal => mount_terminal(&mut apps.borrow_mut(), &room, tab, inputs),
         ShellKind::FileExplorer => {
             let startup = inputs.files_for_tab(tab).or_else(|| inputs.files.clone());
             // Without a starting place the shell names, only a Linux

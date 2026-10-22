@@ -723,6 +723,9 @@ pub struct TerminalWidget {
     focused: bool,
     /// How this tab reaches its sessions, and where the current one runs.
     sessions: crate::sessions::Sessions,
+    /// The window this terminal is the app of, and how its session's
+    /// end reaches it.
+    life: WindowLife,
     /// Height of the header that carries the target chip.
     chrome_header_h: f64,
     /// The target chip, as last drawn.
@@ -796,8 +799,6 @@ impl TerminalWidget {
         content: ContentStore,
     ) -> Self {
         let (width, height) = (80, 24);
-        let grid = vec![" ".repeat(width); height];
-        let grid_attrs = vec![vec![Attr::default(); width]; height];
 
         Self {
             rect: Rect::ZERO,
@@ -818,8 +819,8 @@ impl TerminalWidget {
             child_killer: None,
             session_status_message: Arc::new(Mutex::new(SESSION_ENDED_MESSAGE.to_owned())),
             parser: Parser::new(),
-            grid,
-            grid_attrs,
+            grid: vec![" ".repeat(width); height],
+            grid_attrs: vec![vec![Attr::default(); width]; height],
             cursor_x: 0,
             cursor_y: 0,
             width,
@@ -897,6 +898,7 @@ impl TerminalWidget {
             mouse_buttons: 0,
             focused: false,
             sessions: crate::sessions::Sessions::none(),
+            life: WindowLife::default(),
             chrome_header_h: 32.0,
             chip_rect: Rect::ZERO,
             target_menu_rows: None,
@@ -991,6 +993,14 @@ impl TerminalWidget {
     }
 
     fn status_banner_message(&self) -> Option<String> {
+        // A window closing for its exited shell keeps nothing behind, and a
+        // shell that could not start says why once, with its retry.
+        if self.closing_for_exit()
+            || self.start_failure().is_some()
+            || self.life.reconnect.is_some()
+        {
+            return None;
+        }
         if self.is_disconnected() {
             return Some(self.disconnected_message());
         }
@@ -1261,6 +1271,10 @@ impl TerminalWidget {
 
     fn target_picker_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        // Where the window bar names the target, the picker is the bar's.
+        if self.bar_shows_target() {
+            return None;
+        }
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.chip_label()?)
@@ -2716,6 +2730,10 @@ impl TerminalWidget {
         // waker (or an embedding host's own pump), is what shows output.
         self.pump();
         self.type_asked_run();
+        self.begin_reconnect_if_lost();
+        self.reconnect_when_due();
+        self.sync_window_bar();
+        self.close_if_exited();
     }
 
     /// Bring the session record up to date with this terminal: the session
@@ -2943,6 +2961,11 @@ impl Widget for TerminalWidget {
     /// host independently of painting. Treating an absent standalone proxy as
     /// animation demand made every idle embedded terminal repaint the complete
     /// desktop continuously.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        // The next automatic reconnect to a remote shell.
+        self.reconnect_deadline()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // A bounded pump deliberately leaves excess output queued. Keep frames
         // flowing until it is drained even when the reader's coalesced wake is
@@ -3051,10 +3074,23 @@ impl Widget for TerminalWidget {
             self.ever_nonblank = true;
         }
         self.draw_target_header(scene, transform, text_renderer, theme);
+        // A shell that could not start says so, with a retry, in place of
+        // the grid.
+        if let Some(reason) = self.start_failure().map(str::to_owned) {
+            self.draw_start_failure(scene, transform, text_renderer, theme, &reason);
+            self.draw_top_bands(scene, transform, text_renderer, theme);
+            return;
+        }
+        self.life.retry_rect = Rect::ZERO;
         // With no shell behind the grid (or one that has already ended) and
         // nothing ever printed, say so instead of showing a blank void. A live
-        // shell that has not drawn its prompt yet shows its blank grid.
-        if !self.alt_active && !self.ever_nonblank && (self.headless || self.is_disconnected()) {
+        // shell that has not drawn its prompt yet shows its blank grid. A
+        // window closing for its exited shell shows nothing new.
+        if !self.alt_active
+            && !self.ever_nonblank
+            && !self.closing_for_exit()
+            && (self.headless || self.is_disconnected())
+        {
             self.draw_empty_state(scene, transform, text_renderer, theme);
             self.draw_top_bands(scene, transform, text_renderer, theme);
             return;
@@ -3381,6 +3417,9 @@ impl Widget for TerminalWidget {
         if let Some(picker) = self.target_picker_accessibility() {
             transcript.children.push(picker);
         }
+        if let Some(failure) = self.start_failure_accessibility() {
+            transcript.children.push(failure);
+        }
         transcript
             .children
             .extend(self.visible_link_accessibility());
@@ -3446,6 +3485,9 @@ impl Widget for TerminalWidget {
 
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
+        }
+        if target == format!("terminal.retry:{}", self.pane_id) {
+            return self.retry_session();
         }
         let link_prefix = format!("terminal.link:{}:", self.pane_id);
         if let Some(link_id) = target
@@ -4143,11 +4185,13 @@ impl TerminalWidget {
         // The header with the session's target comes first.
         let mut y = self.rect.y0 + self.header_h();
         self.banner_rect = Rect::ZERO;
-        if let Some(message) = self.status_banner_message()
+        if let Some((kind, message, action)) = self.top_banner()
             && self.rect.width() > gutter * 2.0
         {
             let width = self.rect.width() - gutter * 2.0;
-            let height = Self::banner_height(&message, width, theme, tr);
+            let mut content = BannerContent::new(kind, &message);
+            content.action = action.as_deref();
+            let height = Banner::height(&content, width, tr, theme);
             self.banner_rect = Rect::new(
                 self.rect.x0 + gutter,
                 y + gutter,
@@ -4159,14 +4203,19 @@ impl TerminalWidget {
         self.chrome_top_band = y - self.rect.y0;
     }
 
-    /// The height a banner reading `message` needs in `width`.
-    fn banner_height(message: &str, width: f64, theme: &Theme, tr: &mut TextRenderer) -> f64 {
-        Banner::height(
-            &BannerContent::new(BannerKind::Warning, message),
-            width,
-            tr,
-            theme,
-        )
+    /// The banner over the grid: the reconnecting one (quiet, with Try
+    /// again) while the tab reconnects to its remote shell, else the
+    /// session's lifecycle line.
+    fn top_banner(&self) -> Option<(BannerKind, String, Option<String>)> {
+        if let Some(message) = self.reconnect_banner() {
+            return Some((
+                BannerKind::Neutral,
+                message,
+                Some(t("terminal-start-retry")),
+            ));
+        }
+        self.status_banner_message()
+            .map(|message| (BannerKind::Warning, message, None))
     }
 
     /// Paint the session banner laid out by
@@ -4178,18 +4227,19 @@ impl TerminalWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.life.banner_action.set(Rect::ZERO);
         if self.banner_rect.width() > 0.0
-            && let Some(message) = self.status_banner_message()
+            && let Some((kind, message, action)) = self.top_banner()
         {
             // Transport and unconfirmed edits remain visible beside the
             // transcript and through the same accessible live region.
             let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-            Banner::paint(
-                &mut ctx,
-                self.banner_rect,
-                &BannerContent::new(BannerKind::Warning, &message),
-                self.last_cursor_pos,
-            );
+            let mut content = BannerContent::new(kind, &message);
+            content.action = action.as_deref();
+            let hit = Banner::paint(&mut ctx, self.banner_rect, &content, self.last_cursor_pos);
+            self.life
+                .banner_action
+                .set(hit.action.unwrap_or(Rect::ZERO));
         }
     }
 
@@ -6735,6 +6785,30 @@ impl TerminalBackend {
         }
     }
 
+    /// A remote session as the supervisor hands it over — for tests: its
+    /// terminal output reads from `output`, and `lease` is the session's
+    /// lease, on which the supervisor reports how it ended.
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn for_test_remote(
+        output: std::os::unix::net::UnixStream,
+        lease: std::os::unix::net::UnixStream,
+        relay_session: &str,
+    ) -> Self {
+        Self {
+            writer: Box::new(std::io::sink()),
+            reader: Box::new(output),
+            master: Box::new(NullMaster),
+            shell_name: "ush".into(),
+            relay_session: Some(relay_session.to_owned()),
+            runs: None,
+            native_editor: None,
+            service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
+                lease,
+            )),
+        }
+    }
+
     /// Open a PTY on `target`.
     ///
     /// **Never `$SHELL` by default.** Inside a Tilo app sandbox there is no
@@ -7243,6 +7317,14 @@ pub(crate) fn ush_request(
         if let Some(session) = relay_session {
             fields.insert("relay_session".to_string(), serde_json::json!(session));
         }
+        // A remote shell's lease says how its session ended, so a lost
+        // connection reconnects and only an exit closes the window.
+        if target
+            .location()
+            .is_some_and(|location| !location.is_this_device())
+        {
+            fields.insert("end_report".to_string(), serde_json::json!(true));
+        }
         if let Some(key) = runs {
             fields.insert("runs".to_string(), serde_json::json!(key));
         }
@@ -7555,7 +7637,66 @@ impl TerminalWidget {
         });
     }
 
+    /// ConPTY keeps its output pipe open while the pseudoconsole exists, so
+    /// the child handle is watched too: its exit is the session's.
+    #[cfg(windows)]
+    fn watch_child_exit(
+        &mut self,
+        mut child: Box<dyn portable_pty::Child + Send + Sync>,
+        child_exit: SessionExit,
+    ) {
+        // Keep a killer for normal window teardown.
+        self.child_killer = Some(child.clone_killer());
+        let disconnected = self.session_disconnected.clone();
+        let status = self.session_status_message.clone();
+        let waker = self.waker.clone();
+        if std::thread::Builder::new()
+            .name("tilo-terminal-child-wait".into())
+            .spawn(move || {
+                let message = if child.wait().is_ok() {
+                    SESSION_ENDED_MESSAGE
+                } else {
+                    "Session ended. The shell's exit status could not be read."
+                };
+                set_terminal_disconnected(&disconnected, &status, message);
+                child_exit.ended(SessionEnd::Exited);
+                request_terminal_wake(&waker);
+            })
+            .is_err()
+        {
+            if let Some(killer) = &mut self.child_killer {
+                let _ = killer.kill();
+            }
+            self.mark_disconnected(
+                "Session unavailable. The terminal could not watch the shell for exit.",
+            );
+        }
+    }
+
+    /// What the reader asks whether the session is still open, and how it
+    /// ended once it is not. The reader distinguishes a hosted session's
+    /// start-up `EIO` from its exit by the lifetime socket the supervisor
+    /// closes when the guest ends. A local PTY has none.
+    #[cfg(unix)]
+    fn reader_lease(&self) -> ReaderLease {
+        ReaderLease::new(
+            self.service_lifetime
+                .as_ref()
+                .and_then(|socket| socket.clone_for_reader().ok()),
+        )
+    }
+
+    /// What the reader asks whether the session is still open: a PTY
+    /// without a supervisor's lease is open until it reads end of file.
+    #[cfg(not(unix))]
+    fn reader_lease(&self) -> ReaderLease {
+        ReaderLease::new()
+    }
+
     fn attach_backend(&mut self, backend: TerminalBackend) {
+        // What this session's threads say when its shell exits.
+        let exit = self.next_session_exit();
+        self.life.close_asked = false;
         let (output_tx, output_rx) = sync_channel(PTY_QUEUE_CHUNKS);
         self.pty_write = std::sync::Arc::new(std::sync::Mutex::new(backend.writer));
         self.pty_master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
@@ -7570,58 +7711,14 @@ impl TerminalWidget {
         widget.attach_native_editor(backend.native_editor);
         widget.service_lifetime = backend.service_lifetime;
         #[cfg(windows)]
-        {
-            // ConPTY keeps its output pipe open while the pseudoconsole exists.
-            // Observe the child handle too, so exit is visible before closing
-            // the terminal window. Keep a killer for normal window teardown.
-            widget.child_killer = Some(backend.child.clone_killer());
-            let disconnected = widget.session_disconnected.clone();
-            let status = widget.session_status_message.clone();
-            let waker = widget.waker.clone();
-            let mut child = backend.child;
-            if std::thread::Builder::new()
-                .name("tilo-terminal-child-wait".into())
-                .spawn(move || {
-                    let message = if child.wait().is_ok() {
-                        SESSION_ENDED_MESSAGE
-                    } else {
-                        "Session ended. The shell's exit status could not be read."
-                    };
-                    set_terminal_disconnected(&disconnected, &status, message);
-                    request_terminal_wake(&waker);
-                })
-                .is_err()
-            {
-                if let Some(killer) = &mut widget.child_killer {
-                    let _ = killer.kill();
-                }
-                widget.mark_disconnected(
-                    "Session unavailable. The terminal could not watch the shell for exit.",
-                );
-            }
-        }
+        widget.watch_child_exit(backend.child, exit.clone());
         // Share the waker with the reader thread so fresh PTY output wakes an
         // idle host instead of waiting for a poll.
         let waker = widget.waker.clone();
         let session_disconnected = widget.session_disconnected.clone();
         let session_status_message = widget.session_status_message.clone();
 
-        // The reader distinguishes a hosted session's start-up `EIO` from its
-        // exit by the lifetime socket the supervisor closes when the guest
-        // ends. A local PTY has none.
-        #[cfg(unix)]
-        let reader_lifetime = widget
-            .service_lifetime
-            .as_ref()
-            .and_then(|socket| socket.clone_for_reader().ok());
-        #[cfg(unix)]
-        let session_open = move || {
-            reader_lifetime
-                .as_ref()
-                .is_some_and(runtime_portal::pending_connection::ReaderLifetime::is_open)
-        };
-        #[cfg(not(unix))]
-        let session_open = || false;
+        let lease = widget.reader_lease();
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
         let reader_result = std::thread::Builder::new()
             .name("tilo-terminal-pty-reader".to_string())
@@ -7641,7 +7738,7 @@ impl TerminalWidget {
                         break;
                     };
                     let read = std::io::Read::read(&mut *r, &mut buf);
-                    match classify_pty_read(&read, &session_open) {
+                    match classify_pty_read(&read, || lease.open()) {
                         PtyReadDisposition::Retry => {
                             // Avoid a hot loop while the guest is between
                             // opening/closing slave descriptors.
@@ -7653,6 +7750,10 @@ impl TerminalWidget {
                                 &session_status_message,
                                 SESSION_ENDED_MESSAGE,
                             );
+                            // The shell exited (its window closes), or the
+                            // connection to a remote one was lost (the tab
+                            // reconnects): the supervisor's report says which.
+                            exit.ended(lease.end());
                             request_terminal_wake(&waker);
                             break;
                         }
@@ -7766,9 +7867,11 @@ impl TerminalWidget {
     }
 }
 
-#[cfg(windows)]
 impl Drop for TerminalWidget {
     fn drop(&mut self) {
+        // Its sessions end with it; that closes no window.
+        self.end_session_exit();
+        #[cfg(windows)]
         if let Some(killer) = &mut self.child_killer {
             let _ = killer.kill();
         }

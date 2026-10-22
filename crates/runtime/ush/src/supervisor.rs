@@ -569,6 +569,12 @@ pub enum ServeRequest {
         /// Explicit opt-in; existing clients continue to receive exactly one FD.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
+        /// Explicit opt-in: before a relay session's lease closes, tell the
+        /// app on it how the session ended ([`EndReport`]): its shell exited,
+        /// the connection to the relay was lost, or another terminal took
+        /// it over. Existing clients get a lease that only closes.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        end_report: bool,
     },
     /// The environments there are, for Terminal's picker and its
     /// environments panel.
@@ -1052,7 +1058,7 @@ fn open_environment(
         master,
         child,
         editor.map(|(app, _)| app),
-        || {},
+        || None,
     )?;
     Ok(Served::Done)
 }
@@ -1084,7 +1090,7 @@ fn hand_off_session(
     master: std::fs::File,
     child: std::process::Child,
     editor: Option<runtime_portal::editor::Socket>,
-    on_started: impl FnOnce(),
+    on_started: impl FnOnce() -> Option<RelayWatch>,
 ) -> anyhow::Result<()> {
     use std::os::fd::AsFd;
     #[derive(serde::Serialize)]
@@ -1141,8 +1147,12 @@ fn hand_off_session(
         }
         drop(editor);
         drop(master);
-        on_started();
-        let termination = finish_session(transport.stream, child.transfer()?);
+        // The legacy lease carries no report: it only closes.
+        let watch = on_started().map(|watch| RelayWatch {
+            report: false,
+            ..watch
+        });
+        let termination = finish_session(transport.stream, child.transfer()?, watch);
         AuditLog::at(audit_dir).append(
             &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
         );
@@ -1165,12 +1175,12 @@ fn hand_off_session(
     drop(editor);
     drop(master);
     drop(terminal_lease);
-    on_started();
+    let watch = on_started();
     let active = transport.active.clone();
     let child = child.transfer()?;
     active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     std::thread::spawn(move || {
-        let termination = finish_session(&supervisor_lease, child);
+        let termination = finish_session(&supervisor_lease, child, watch);
         AuditLog::at(audit_dir).append(
             &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
         );
@@ -1428,7 +1438,7 @@ fn serve_host(
         master,
         child,
         None,
-        || {},
+        || None,
     )?;
     Ok(Served::Done)
 }
@@ -1481,6 +1491,7 @@ fn serve_relay(
         rows,
         term,
         relay_session,
+        end_report,
         ..
     } = req
     else {
@@ -1550,7 +1561,12 @@ fn serve_relay(
         master,
         child,
         None,
-        || adopt_relay_tools(status, store.records_root().to_path_buf()),
+        || {
+            Some(RelayWatch {
+                bridge: watch_relay_bridge(status, store.records_root().to_path_buf()),
+                report: *end_report,
+            })
+        },
     )?;
     Ok(Served::Done)
 }
@@ -1643,27 +1659,93 @@ fn start_relay_bridge(
     }
 }
 
-/// Tools the relay builds for a session become the record's, as a `pkg
-/// install` on this device would.
-fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathBuf) {
+/// How a relay session's bridge ended, as it said on its status channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RelayEnd {
+    /// The shell on the relay exited.
+    Exited,
+    /// The connection to the relay was lost; the session may still run
+    /// there, and the tab re-attaches to it.
+    Lost(String),
+    /// Another terminal took the session over; it runs on there.
+    Superseded,
+}
+
+impl RelayEnd {
+    /// The end a bridge's last status line names; a bridge that stopped
+    /// without saying lost its connection, as far as the tab can tell.
+    fn of(status: Option<crate::relay::BridgeStatus>) -> Self {
+        match status {
+            Some(crate::relay::BridgeStatus::Ended { code: Some(_), .. }) => Self::Exited,
+            Some(crate::relay::BridgeStatus::Ended {
+                superseded: true, ..
+            }) => Self::Superseded,
+            Some(crate::relay::BridgeStatus::Ended {
+                reason: Some(reason),
+                ..
+            }) => Self::Lost(reason),
+            _ => Self::Lost("the connection to the relay ended".into()),
+        }
+    }
+}
+
+/// What an app that asked (`end_report`) reads on its lease just before it
+/// closes: one JSON line.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "ended", rename_all = "kebab-case")]
+enum EndReport<'a> {
+    Exited,
+    Lost { reason: &'a str },
+    Superseded,
+}
+
+impl<'a> From<&'a RelayEnd> for EndReport<'a> {
+    fn from(end: &'a RelayEnd) -> Self {
+        match end {
+            RelayEnd::Exited => Self::Exited,
+            RelayEnd::Lost(reason) => Self::Lost { reason },
+            RelayEnd::Superseded => Self::Superseded,
+        }
+    }
+}
+
+/// A relay session's bridge, watched: how it ended, and whether the app
+/// asked to be told.
+pub(crate) struct RelayWatch {
+    bridge: std::thread::JoinHandle<RelayEnd>,
+    report: bool,
+}
+
+/// Read a relay session's status channel to its end: the tools the relay
+/// builds for it become the record's, as a `pkg install` on this device
+/// would, and its last line says how it ended.
+fn watch_relay_bridge(
+    mut status: crate::relay::StatusReader,
+    records_root: PathBuf,
+) -> std::thread::JoinHandle<RelayEnd> {
     std::thread::spawn(move || {
         let records = Records::at(records_root);
+        let mut ended = None;
         while let Some(line) = status.next(None) {
-            if let crate::relay::BridgeStatus::ToolBuilt {
-                record,
-                packages,
-                images,
-            } = line
-            {
-                for (arch, image) in images {
-                    let _ = records.apply(
-                        &record,
-                        Environment::ADD_TOOL.with((packages.clone(), arch, image)),
-                    );
+            match line {
+                crate::relay::BridgeStatus::ToolBuilt {
+                    record,
+                    packages,
+                    images,
+                } => {
+                    for (arch, image) in images {
+                        let _ = records.apply(
+                            &record,
+                            Environment::ADD_TOOL.with((packages.clone(), arch, image)),
+                        );
+                    }
                 }
+                line @ crate::relay::BridgeStatus::Ended { .. } => ended = Some(line),
+                crate::relay::BridgeStatus::Session { .. } => {}
             }
         }
-    });
+        RelayEnd::of(ended)
+    })
 }
 
 /// Wait for whichever side of a served session ends first and tear the
@@ -1676,10 +1758,29 @@ fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathB
 /// child exits first, it is reaped at once and the connection closed, which
 /// is how Terminal tells a finished session from the hand-off window in which
 /// its PTY master also reports `EIO`.
-fn finish_session(stream: &UnixStream, mut child: std::process::Child) -> String {
+fn finish_session(
+    stream: &UnixStream,
+    mut child: std::process::Child,
+    relay: Option<RelayWatch>,
+) -> String {
     match wait_for_guest_or_terminal(stream, &child) {
         LifetimeEnd::GuestExited => {
             let status = child.wait();
+            // A relay session's bridge said how it ended: a terminal that
+            // asked reads it before the lease closes, and tells a shell that
+            // exited from a connection that was lost.
+            if let Some(relay) = relay {
+                let end = relay
+                    .bridge
+                    .join()
+                    .unwrap_or_else(|_| RelayEnd::Lost("the relay bridge failed".into()));
+                if relay.report
+                    && let Ok(mut line) = serde_json::to_vec(&EndReport::from(&end))
+                {
+                    line.push(b'\n');
+                    let _ = (&*stream).write_all(&line);
+                }
+            }
             let _ = stream.shutdown(std::net::Shutdown::Both);
             match status {
                 Ok(status) => format!("exit {}", status.code().unwrap_or(-1)),
@@ -1969,7 +2070,7 @@ mod tests {
                 master,
                 child,
                 None,
-                || {},
+                || None,
             );
             if fails {
                 assert!(handed.is_err());
@@ -2037,7 +2138,7 @@ mod tests {
                 master,
                 child,
                 None,
-                || {},
+                || None,
             )
             .unwrap();
             let (bytes, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
@@ -2163,6 +2264,71 @@ mod tests {
         }
     }
 
+    // A relay session's lease tells a terminal that asked whether its shell
+    // exited or its connection was lost: only an exit closes its window.
+    #[test]
+    fn a_relay_sessions_lease_says_whether_its_shell_exited_or_the_connection_was_lost() {
+        use crate::relay::BridgeStatus;
+        let ended = |code: Option<i32>, reason: Option<&str>, superseded: bool| {
+            Some(BridgeStatus::Ended {
+                code,
+                reason: reason.map(str::to_owned),
+                superseded,
+            })
+        };
+        assert_eq!(RelayEnd::of(ended(Some(0), None, false)), RelayEnd::Exited);
+        assert_eq!(RelayEnd::of(ended(Some(3), None, false)), RelayEnd::Exited);
+        assert_eq!(
+            RelayEnd::of(ended(None, Some("relay unreachable"), false)),
+            RelayEnd::Lost("relay unreachable".into())
+        );
+        assert_eq!(
+            RelayEnd::of(ended(None, Some("attached on another terminal"), true)),
+            RelayEnd::Superseded
+        );
+        assert!(
+            matches!(RelayEnd::of(None), RelayEnd::Lost(_)),
+            "a bridge that stopped without a word did not see the shell exit"
+        );
+
+        for (end, line, report) in [
+            (RelayEnd::Exited, Some(r#"{"ended":"exited"}"#), true),
+            (
+                RelayEnd::Lost("relay unreachable".into()),
+                Some(r#"{"ended":"lost","reason":"relay unreachable"}"#),
+                true,
+            ),
+            (
+                RelayEnd::Superseded,
+                Some(r#"{"ended":"superseded"}"#),
+                true,
+            ),
+            (RelayEnd::Exited, None, false),
+        ] {
+            let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
+            let child = std::process::Command::new("true")
+                .spawn()
+                .expect("spawn the bridge");
+            let watch = RelayWatch {
+                bridge: std::thread::spawn(move || end),
+                report,
+            };
+            let termination = finish_session(&supervisor, child, Some(watch));
+            assert!(termination.starts_with("exit"), "{termination}");
+            let mut read = String::new();
+            (&terminal)
+                .read_to_string(&mut read)
+                .expect("the lease closes after the report");
+            match line {
+                Some(line) => assert_eq!(read.trim_end(), line),
+                None => assert!(
+                    read.is_empty(),
+                    "a terminal that did not ask is told nothing"
+                ),
+            }
+        }
+    }
+
     #[test]
     fn cancelling_a_terminal_connection_kills_and_reaps_its_guest_with_clones_open() {
         let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
@@ -2175,7 +2341,7 @@ mod tests {
         terminal
             .shutdown(std::net::Shutdown::Both)
             .expect("cancel pending or accepted session");
-        let termination = finish_session(&supervisor, child);
+        let termination = finish_session(&supervisor, child, None);
         assert!(
             termination.starts_with("terminal closed; exit"),
             "{termination}"
@@ -2266,6 +2432,7 @@ mod tests {
             relay_session: None,
             runs: None,
             editor_protocol: None,
+            end_report: false,
         }
     }
 

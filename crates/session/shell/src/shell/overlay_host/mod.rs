@@ -997,6 +997,9 @@ pub struct ShellOverlayHost {
     selection_requests: crate::shell::selection_agent::SelectionRequests,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
+    /// The tree revision the windows lent to apps the shell mounts were
+    /// last matched against the tabs at ([`Self::sync_hosted_windows`]).
+    hosted_windows_revision: Option<u64>,
     /// The tabs whose bar says "Only on this device", and the tree
     /// generation they were read at ([`device_local_chips`]).
     device_local: device_local_chips::DeviceLocal,
@@ -1822,6 +1825,10 @@ mod multi_display_tests;
 #[cfg(test)]
 #[path = "window_bar_location_tests.rs"]
 mod window_bar_location_tests;
+
+#[cfg(test)]
+#[path = "hosted_window_tests.rs"]
+mod hosted_window_tests;
 
 /// The collaborators dropdown lists live people and agents together, and
 /// says which is which. Dormant membership stays in workspace settings:
