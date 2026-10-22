@@ -3226,6 +3226,10 @@ pub mod capture_button;
 pub use capture_button::{CaptureButtonFace, CaptureKind};
 pub mod transport;
 pub use transport::{TransportControl, TransportFace};
+pub mod media_transport;
+pub use media_transport::{
+    MediaTransport, TransportArt, TransportEvent, TransportFeed, TransportRepeat, TransportState,
+};
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
 pub mod file_open;

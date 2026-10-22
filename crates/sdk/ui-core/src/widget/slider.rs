@@ -465,6 +465,20 @@ impl Slider {
         self
     }
 
+    /// Whether the person holds the knob (a pointer drag or a finger on
+    /// it): a host that moves the value itself (a song's position) leaves
+    /// it to them until they let go.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        self.is_dragging || self.touch.is_active()
+    }
+
+    /// Whether the slider takes input now.
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Imperatively flip the enabled state.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
