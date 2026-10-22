@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use agent_provider_config::local::hub::{HubModelOffer, HubSearchResult};
 pub use agent_provider_config::local::snapshot::{
     AcceleratorSetup, AcceleratorSetupState, HardwareFit, HardwareRecommendation,
     InProcessLocalModel, InstalledLocalModel, LocalModelPackage, LocalModelPhase,
@@ -44,7 +45,10 @@ use ui::lock::MutexRecover as _;
 
 #[cfg(test)]
 mod admin_tests;
+mod hub;
+mod sample;
 use provider_settings_ui::{ProviderEffect, ProviderPanel};
+use sample::SampleManager;
 
 crate::effects::effect_family!(AgentModelsEffect => answer);
 
@@ -124,6 +128,63 @@ pub enum AgentModelsEffect {
         #[param("The model's id")]
         model: String,
     },
+    /// Search Hugging Face for models to run on this device, most
+    /// downloaded first. Answers with the results.
+    #[effect(job, returns, kind = "read", label = "Search Hugging Face")]
+    SearchHubModels {
+        #[param("What to search for, for example qwen or llama")]
+        query: String,
+        #[param("`gguf` for llama.cpp, the default, or `safetensors` for vLLM")]
+        format: Option<String>,
+    },
+    /// Show a Hugging Face model's variants with their size, fit for this
+    /// device and licence. Answers with them; downloads nothing.
+    #[effect(job, returns, kind = "read", label = "Show Hugging Face model")]
+    ShowHubModel {
+        #[param("A model id such as owner/name, or its huggingface.co link")]
+        model: String,
+    },
+    /// Show or hide what downloading one variant of the shown model involves.
+    #[effect(view, row)]
+    ReviewHubVariant {
+        #[param("The variant, for example Q4_K_M")]
+        variant: String,
+        show: bool,
+    },
+    /// Download a variant of a Hugging Face model at the commit it was
+    /// shown at, accepting its licence, and start it when a signed runtime
+    /// here serves it.
+    #[effect(job, row, label = "Download model")]
+    InstallHubModel {
+        #[param("The model id, owner/name")]
+        repo: String,
+        #[param("The commit it was shown at")]
+        revision: String,
+        #[param("The variant, for example Q4_K_M")]
+        variant: String,
+    },
+    /// Copy a GGUF model file on this device into the model store.
+    #[effect(job, device_only, label = "Add model file")]
+    AddModelFile {
+        #[param("The absolute path of a .gguf file")]
+        path: String,
+    },
+    /// Open a gated model's page on Hugging Face, where its terms are accepted.
+    #[effect(view, label = "Open model page")]
+    OpenHubModelPage {
+        #[param("The model id, owner/name")]
+        repo: String,
+    },
+    /// Keep a Hugging Face access token in this device's vault, for gated
+    /// and private models.
+    #[effect(job, device_only, label = "Save Hugging Face token")]
+    SaveHubToken {
+        #[param(secret, "The token; what the token field holds when omitted")]
+        token: Option<String>,
+    },
+    /// Remove the Hugging Face token from this device's vault.
+    #[effect(job, device_only, destructive, label = "Remove Hugging Face token")]
+    RemoveHubToken,
     /// Reload the authoritative profiles and credential status.
     #[effect(job, device_only, label = "Refresh providers")]
     RefreshProviders,
@@ -362,17 +423,28 @@ pub(crate) fn answer(
             model.reveal(&id)?;
             Ok(Effected::done())
         }
+        effect @ (AgentModelsEffect::ReviewHubVariant { .. }
+        | AgentModelsEffect::OpenHubModelPage { .. }
+        | AgentModelsEffect::SearchHubModels { .. }
+        | AgentModelsEffect::ShowHubModel { .. }
+        | AgentModelsEffect::SaveHubToken { .. }
+        | AgentModelsEffect::RemoveHubToken) => hub::answer(model, effect, cx),
         AgentModelsEffect::SetUpAccelerator
         | AgentModelsEffect::InstallModel { .. }
         | AgentModelsEffect::StartModel { .. }
         | AgentModelsEffect::StopModel { .. }
         | AgentModelsEffect::RetryModel { .. }
-        | AgentModelsEffect::RemoveModel { .. } => {
+        | AgentModelsEffect::RemoveModel { .. }
+        | AgentModelsEffect::InstallHubModel { .. }
+        | AgentModelsEffect::AddModelFile { .. } => {
             let work = model.manager_work(&effect)?;
             let control = Arc::clone(&model.control);
             if matches!(effect, AgentModelsEffect::InstallModel { .. }) {
                 model.reviewing.set(false);
                 model.reviewing_local.set(None);
+            }
+            if matches!(effect, AgentModelsEffect::InstallHubModel { .. }) {
+                model.hub.reviewing = None;
             }
             drop(model);
             Ok(crate::device_read::job(
@@ -538,6 +610,12 @@ impl<T: Send + 'static> Rereads<T> {
 enum ManagerWork {
     Accelerator,
     Install(LocalModelPackage),
+    HubInstall {
+        repo: String,
+        revision: String,
+        variant: String,
+    },
+    ImportFile(String),
     Start(String),
     Stop(String),
     Remove(String),
@@ -554,6 +632,18 @@ impl ManagerWork {
                 .map_err(|error| t_args("agent-notice-accel-err", &[("error", error.into())])),
             Self::Install(package) => control
                 .install(package)
+                .map(|()| t("agent-notice-install-ok"))
+                .map_err(|error| t_args("agent-notice-install-err", &[("error", error.into())])),
+            Self::HubInstall {
+                repo,
+                revision,
+                variant,
+            } => control
+                .hub_install(repo, revision, variant)
+                .map(|()| t("agent-notice-install-ok"))
+                .map_err(|error| t_args("agent-notice-install-err", &[("error", error.into())])),
+            Self::ImportFile(path) => control
+                .import_file(path)
                 .map(|()| t("agent-notice-install-ok"))
                 .map_err(|error| t_args("agent-notice-install-err", &[("error", error.into())])),
             Self::Start(id) => Self::named(ModelAction::Start, control.start(id)),
@@ -597,6 +687,8 @@ pub struct AgentModelsArea {
 pub(crate) struct AgentModelsRead {
     snapshot: Result<LocalModelSnapshot, String>,
     keys: HashMap<String, Result<CredentialStatus, String>>,
+    /// Whether a Hugging Face token is stored on this device.
+    hub_token: Result<bool, String>,
 }
 
 impl AgentModelsRead {
@@ -604,6 +696,7 @@ impl AgentModelsRead {
     fn of(control: &dyn LocalModelControl, hosted: Vec<String>) -> Self {
         Self {
             snapshot: control.snapshot(),
+            hub_token: control.hub_token(),
             keys: hosted
                 .into_iter()
                 .map(|id| (id, Err(t("agent-provider-offline"))))
@@ -699,7 +792,7 @@ impl AgentModelsArea {
             .models
             .iter()
             .map(|installed| {
-                available_actions(&installed.phase).into_iter().fold(
+                model_actions(installed).into_iter().fold(
                     LiveRow::new(
                         format!("settings.agent-model:{}", installed.package.id),
                         "settings.agent-model",
@@ -743,6 +836,7 @@ impl AgentModelsArea {
                 })),
             );
         }
+        rows.extend(model.hub.rows());
         rows.extend(model.panel.rows().into_iter().map(|row| {
             let profile = model
                 .panel
@@ -789,6 +883,8 @@ pub struct AgentModelsModel {
     opener: Arc<dyn BrowserOpener>,
     /// A native sign-in edit waiting for the authoritative provider acknowledgement.
     vertex_commit: Option<(String, Option<ProviderProfile>)>,
+    /// Hugging Face: what was found, the model shown, the token.
+    hub: hub::HubBrowser,
 }
 
 impl std::ops::Deref for AgentModelsModel {
@@ -849,6 +945,7 @@ impl AgentModelsModel {
             custodian: account_custody::Custodian::live(),
             opener: Arc::new(PortalOpener),
             vertex_commit: None,
+            hub: hub::HubBrowser::new(read.hub_token),
         };
         model.notice = notice;
         model.sync_local_profile();
@@ -1058,7 +1155,7 @@ impl AgentModelsModel {
                 .ok_or_else(|| t("agent-model-gone"))
         };
         let allowed = |model: &InstalledLocalModel, action: ModelAction| {
-            if available_actions(&model.phase).contains(&action) {
+            if model_actions(model).contains(&action) {
                 Ok(())
             } else {
                 Err(t("agent-model-busy"))
@@ -1082,6 +1179,30 @@ impl AgentModelsModel {
                     .filter(|package| &package.id == model && &package.revision == revision)
                     .map(ManagerWork::Install)
                     .ok_or_else(|| t("agent-model-gone"))
+            }
+            AgentModelsEffect::InstallHubModel {
+                repo,
+                revision,
+                variant,
+            } => {
+                // The download is of what was shown and reviewed: the same
+                // commit, a variant that fits.
+                self.hub
+                    .offered(repo, revision, variant)
+                    .filter(|offered| offered.fit.fit != HardwareFit::Unsupported)
+                    .ok_or_else(|| t("agent-hub-changed"))?;
+                Ok(ManagerWork::HubInstall {
+                    repo: repo.clone(),
+                    revision: revision.clone(),
+                    variant: variant.clone(),
+                })
+            }
+            AgentModelsEffect::AddModelFile { path } => {
+                let path = path.trim();
+                if !path.starts_with('/') || !path.to_ascii_lowercase().ends_with(".gguf") {
+                    return Err(t("agent-hub-file-invalid"));
+                }
+                Ok(ManagerWork::ImportFile(path.to_owned()))
             }
             AgentModelsEffect::StartModel { model } => {
                 let model = installed(model)?;
@@ -1667,7 +1788,10 @@ impl AgentModelsModel {
                 body.push(note(&t("agent-ready-stopped-caption")));
             }
         }
-        let actions = available_actions(&model.phase);
+        if model.package.no_runtime {
+            body.push(note(&t("agent-hub-no-runtime")));
+        }
+        let actions = model_actions(model);
         if !actions.is_empty() {
             let mut buttons = Row::new();
             for action in actions {
@@ -1864,6 +1988,7 @@ impl AgentModelsModel {
                 cards.push(self.in_process_card(model));
             }
         }
+        cards.extend(self.hub.sections(&self.cx, self.manager_available));
         if self.snapshot.models.is_empty() {
             cards.push(section(
                 &t("agent-models-empty-title"),
@@ -1964,6 +2089,32 @@ pub trait LocalModelControl: Send + Sync {
     fn stop(&self, id: &str) -> Result<(), String>;
     fn remove(&self, id: &str) -> Result<(), String>;
     fn stage_accelerator(&self) -> Result<(), String>;
+    /// Search Hugging Face for models with `format`'s files.
+    fn hub_search(&self, _query: &str, _format: &str) -> Result<Vec<HubSearchResult>, String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    /// A Hugging Face model, by id or link, as this device can pick it.
+    fn hub_model(&self, _reference: &str) -> Result<HubModelOffer, String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    /// Download `variant` of `repo` at `revision`, accepting its licence.
+    fn hub_install(&self, _repo: &str, _revision: &str, _variant: &str) -> Result<(), String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    /// Copy the GGUF file at `path` into the model store.
+    fn import_file(&self, _path: &str) -> Result<(), String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    /// Whether a Hugging Face token is stored on this device.
+    fn hub_token(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn save_hub_token(&self, _token: &str) -> Result<(), String> {
+        Err(t("agent-hub-unavailable"))
+    }
+    fn forget_hub_token(&self) -> Result<(), String> {
+        Err(t("agent-hub-unavailable"))
+    }
 }
 
 pub struct ModelManagerCli;
@@ -2031,6 +2182,38 @@ impl LocalModelControl for ModelManagerCli {
             .then_some(())
             .ok_or_else(|| "accelerator setup service refused the request".to_string())
     }
+
+    fn hub_search(&self, query: &str, format: &str) -> Result<Vec<HubSearchResult>, String> {
+        hub::manager_answer(&[
+            "hub-search",
+            &format!("--query={query}"),
+            &format!("--format={format}"),
+        ])
+    }
+
+    fn hub_model(&self, reference: &str) -> Result<HubModelOffer, String> {
+        hub::manager_answer(&["hub-model", &format!("--reference={reference}")])
+    }
+
+    fn hub_install(&self, repo: &str, revision: &str, variant: &str) -> Result<(), String> {
+        hub::manager_install(repo, revision, variant)
+    }
+
+    fn import_file(&self, path: &str) -> Result<(), String> {
+        hub::manager_request(&["import-file", &format!("--path={path}")])
+    }
+
+    fn hub_token(&self) -> Result<bool, String> {
+        hub::token_status()
+    }
+
+    fn save_hub_token(&self, token: &str) -> Result<(), String> {
+        hub::store_token(token)
+    }
+
+    fn forget_hub_token(&self) -> Result<(), String> {
+        hub::forget_token()
+    }
 }
 
 fn fallback_snapshot() -> LocalModelSnapshot {
@@ -2078,6 +2261,16 @@ pub(crate) enum ModelAction {
     Stop,
     Remove,
     Retry,
+}
+
+/// What can be done to `model` now: its phase's actions, without Start
+/// while no signed runtime here serves it.
+fn model_actions(model: &InstalledLocalModel) -> Vec<ModelAction> {
+    let mut actions = available_actions(&model.phase);
+    if model.package.no_runtime {
+        actions.retain(|action| *action != ModelAction::Start);
+    }
+    actions
 }
 
 fn available_actions(phase: &LocalModelPhase) -> Vec<ModelAction> {
@@ -2290,65 +2483,6 @@ impl PaneModel for AgentModelsModel {
     }
 }
 
-/// The model manager a screenshot and the crate's tests show: a good fit,
-/// one recommended model, nothing installed. Every request succeeds.
-struct SampleManager;
-
-impl LocalModelControl for SampleManager {
-    fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
-        crate::device_read::off_ui_thread();
-        Ok(LocalModelSnapshot {
-            hardware: HardwareRecommendation {
-                fit: HardwareFit::Good,
-                memory_gib: 32,
-                accelerator: "GPU with 16 GiB".into(),
-                accelerator_memory_gib: Some(16),
-                free_storage_gib: Some(120),
-                reason: t("agent-reason-good"),
-            },
-            recommendation: Some(LocalModelPackage {
-                id: "sample/helpful-7b".into(),
-                name: "Helpful 7B".into(),
-                description: "A capable assistant model for this device".into(),
-                source: "huggingface.co/sample/helpful-7b".into(),
-                revision: "0123456789abcdef".into(),
-                license: "Apache 2.0".into(),
-                license_url: "https://www.apache.org/licenses/LICENSE-2.0".into(),
-                download_bytes: 5_368_709_120,
-                installed_bytes: 10_737_418_240,
-                vision: false,
-                face_recognition: false,
-                in_process: false,
-                segmentation: false,
-                no_runtime: false,
-            }),
-            models: Vec::new(),
-            in_process: Vec::new(),
-            accelerator_setup: None,
-        })
-    }
-    fn install(&self, _: &LocalModelPackage) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        Ok(())
-    }
-    fn start(&self, _: &str) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        Ok(())
-    }
-    fn stop(&self, _: &str) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        Ok(())
-    }
-    fn remove(&self, _: &str) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        Ok(())
-    }
-    fn stage_accelerator(&self) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -2404,7 +2538,7 @@ mod tests {
         }
     }
 
-    fn rendered_names(model: &AgentModelsModel) -> Vec<String> {
+    pub(super) fn rendered_names(model: &AgentModelsModel) -> Vec<String> {
         let composition = model.build_composition();
         let mut nodes = Vec::new();
         collect_accessibility(composition.as_ref(), &mut nodes);
@@ -2557,7 +2691,7 @@ mod tests {
         assert!(synced_local_profile(None, &installed).is_none());
     }
 
-    fn snapshot(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
+    pub(super) fn snapshot(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
         let package = package();
         LocalModelSnapshot {
             hardware: HardwareRecommendation {
@@ -2577,9 +2711,9 @@ mod tests {
         }
     }
 
-    struct MockControl {
+    pub(super) struct MockControl {
         snapshot: Mutex<LocalModelSnapshot>,
-        calls: Mutex<Vec<String>>,
+        pub(super) calls: Mutex<Vec<String>>,
     }
 
     impl LocalModelControl for MockControl {
@@ -2607,6 +2741,17 @@ mod tests {
         }
         fn stage_accelerator(&self) -> Result<(), String> {
             self.calls.lock().unwrap().push("stage-accelerator".into());
+            Ok(())
+        }
+        fn hub_install(&self, repo: &str, revision: &str, variant: &str) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("hub-install:{repo}@{revision}:{variant}"));
+            Ok(())
+        }
+        fn import_file(&self, path: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("import:{path}"));
             Ok(())
         }
     }
@@ -2847,7 +2992,7 @@ mod tests {
         assert!(!agent_vertex::signed_in(&pane.custodian, &id));
     }
 
-    fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
+    pub(super) fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         let mut model = AgentModelsModel::new(cx, control);
@@ -2855,7 +3000,7 @@ mod tests {
         model
     }
 
-    fn mock(snapshot: LocalModelSnapshot) -> Arc<MockControl> {
+    pub(super) fn mock(snapshot: LocalModelSnapshot) -> Arc<MockControl> {
         Arc::new(MockControl {
             snapshot: Mutex::new(snapshot),
             calls: Mutex::new(Vec::new()),
@@ -3331,6 +3476,7 @@ mod tests {
         let down = AgentModelsRead {
             snapshot: Err("the manager is not running".into()),
             keys: HashMap::new(),
+            hub_token: Ok(false),
         };
         let model = AgentModelsModel::from_read(cx, control, down);
         assert!(!model.manager_available);
