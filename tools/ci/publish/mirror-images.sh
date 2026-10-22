@@ -38,7 +38,14 @@ while IFS=$'\t' read -r mirror upstream digest; do
   fi
   login
   tag=${upstream##*:}
-  skopeo copy --all --preserve-digests --retry-times 3 --authfile "$auth" "$source" "docker://$mirror:$tag"
+  # A multi-gigabyte layer copies for minutes without skopeo printing a line; say it still is.
+  (while sleep 60; do printf 'still copying %s@%s\n' "$mirror" "$digest"; done) &
+  ticker=$!
+  copied=0
+  skopeo copy --all --preserve-digests --retry-times 3 --authfile "$auth" "$source" "docker://$mirror:$tag" \
+    || copied=$?
+  kill "$ticker"
+  ((copied == 0)) || die "copying $upstream failed"
   [[ sha256:$(digest_of "docker://$mirror@$digest") == "$digest" ]] || die "the mirror does not hold $digest after copying"
   printf 'mirrored %s@%s from %s\n' "$mirror" "$digest" "$upstream"
 done < "$list"
