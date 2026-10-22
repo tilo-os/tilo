@@ -2857,6 +2857,22 @@ impl NavShell {
             self.toggle_inspector();
             acted = true;
         }
+        if self.built
+            && let Some(open) = self.requests.staged_sidebar.take()
+        {
+            if self.is_sidebar_open() != open {
+                self.toggle_sidebar();
+            }
+            self.snap();
+            acted = true;
+        }
+        if self.requests.put_drawer_away.take()
+            && self.geometry.sidebar == SidebarPlacement::Drawer
+            && self.is_sidebar_open()
+        {
+            self.toggle_sidebar();
+            acted = true;
+        }
         acted
     }
 
@@ -4848,6 +4864,20 @@ impl NavShell {
             .rev()
             .filter(|(part, _)| !self.part_inert(*part) && !self.part_hidden(*part))
             .collect();
+        // A part holding the pointer (a drag it started, crossing into a
+        // neighbour's column) takes the pointer alone until it lets go.
+        if pointer || matches!(event, WindowEvent::CursorMoved { .. }) {
+            if let Some(&(part, node)) = order
+                .iter()
+                .find(|(part, _)| self.part(*part).is_some_and(|w| w.wants_pointer_capture()))
+            {
+                let path = ctx.path;
+                if let Some(widget) = self.part_mut(part) {
+                    widget.handle_event(event, &mut ctx.reborrow(path, node));
+                }
+                return;
+            }
+        }
         if pointer {
             let p = self.last_cursor;
             // A header row in the window's bar stands over the content: over

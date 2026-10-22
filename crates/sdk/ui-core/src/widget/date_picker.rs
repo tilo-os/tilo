@@ -12,7 +12,10 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
+
+mod feed;
 use chrono::{Datelike, NaiveDate};
+pub use feed::{DateFeed, DateShown};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -60,6 +63,10 @@ pub struct DatePicker {
     marked: HashSet<NaiveDate>,
     /// The day the host calls today; `None` reads the toolkit clock.
     today: Option<NaiveDate>,
+    /// The app's day, when the app feeds the picker ([`DateFeed`]).
+    feed: Option<DateFeed>,
+    /// The feed's revision the picker last read.
+    feed_seen: Option<u64>,
 }
 
 impl DatePicker {
@@ -79,6 +86,8 @@ impl DatePicker {
             navigator: false,
             marked: HashSet::new(),
             today: None,
+            feed: None,
+            feed_seen: None,
         }
     }
 
@@ -349,6 +358,15 @@ impl Widget for DatePicker {
             self.selected = date;
             self.month_view = (date.year(), date.month());
         }
+        self.pull_feed();
+    }
+
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.pull_feed()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn build_layout(
