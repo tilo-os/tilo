@@ -113,19 +113,17 @@ mod schema;
 /// scripts alike. See `tilo_resource::effect`.
 ///
 /// `#[effect(operation = "app.effects")]` names the vocabulary's operation
-/// type; `device_only` beside it marks every effect device-only. Each variant is unit or has named fields (the effect's typed
+/// type. Each variant is unit or has named fields (the effect's typed
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, device_only, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read")]`.
-/// A `device_only` effect reaches the files, hardware or services of the
-/// device it runs on: only the person at that device may invoke it. In a
-/// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts
-/// one effect that reaches nothing of the device (a personal setting). An
+/// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read")]`.
+/// Who may run an effect is decided by its kind, like any action. An
 /// `own_device` effect's whole scope is the invoking person's own device,
 /// touching nothing shared and no one else (their clipboard, their own
-/// appearance): it is device-only, and a room's grants have nothing to
-/// consent to. Generates `impl Effect` and one `ActionRef`
+/// appearance): a room's grants have nothing to consent to. An `attended`
+/// effect needs its person attending (a chooser, a sign-in, a secret shown):
+/// whoever acts for them is always asked first. Generates `impl Effect` and one `ActionRef`
 /// constant per variant (`Backups::RESTORE`) for binding controls.
 #[proc_macro_derive(Effect, attributes(effect, param))]
 pub fn derive_effect(input: TokenStream) -> TokenStream {

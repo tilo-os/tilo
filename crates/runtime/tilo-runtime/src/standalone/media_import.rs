@@ -166,7 +166,6 @@ impl WorkspaceGovernanceServices for MediaImport {
                 result: tilo_actions::ResultSpec::Json {
                     schema: serde_json::json!({"type": "object", "properties": {"imported_bytes": {"type": "integer", "minimum": 0}}, "required": ["imported_bytes"], "additionalProperties": false}),
                 },
-                tags: vec![tilo_actions::contract::LOCAL_DEVICE_ONLY.into()],
                 ..Default::default()
             },
             input: tilo_actions::door::InputSpec::None,

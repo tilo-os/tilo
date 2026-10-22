@@ -5,7 +5,7 @@ existing SDK semantic-document reader. The SDK selects the actual retained
 widget's reader and reads its current canonical record: either a verified hosted
 record loan or the mounted native primary document. It refuses an unidentified
 or retired owner and pending edits. It never commits a transaction, writes a
-file or grants filesystem access. Ordinary read/edit and device-only Save
+file or grants filesystem access. Ordinary read/edit and Save
 behavior remain unchanged.
 
 The SDK supplies `version`, `record` (room/application/record identifiers) and

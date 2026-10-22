@@ -2640,13 +2640,21 @@ fn execute_document(
     Ok(dispatched)
 }
 
-/// A resolved, encoded resource operation and the caller it runs for.
-/// Whether `actor` may run a device-only action here: the person at this
-/// device, or an agent acting for them that the broker admitted. The broker
-/// runs a device-only action for an agent only when that person's own
-/// device handed it the session, so a collaborator, a remote participant
-/// and an agent admitted elsewhere stay refused.
-pub(crate) fn runs_device_only(
+/// The refusal of an own-device effect for someone not at this device.
+pub(crate) fn own_device_refusal() -> tilo_actions::DoorError {
+    tilo_actions::DoorError::Unavailable {
+        code: "own_device".into(),
+        reason:
+            "This action acts on the device of whoever invokes it: here, the host participant's"
+                .into(),
+    }
+}
+
+/// Whether `actor` may run an own-device effect here
+/// ([`tilo_actions::OWN_DEVICE_SCOPE`]): it acts on the device of whoever
+/// invokes it, so only the person at this device, or an agent the broker
+/// admitted acting for them, has it as their own.
+pub(crate) fn runs_own_device(
     actor: &str,
     local_author: &str,
     broker_admitted: bool,
@@ -2663,6 +2671,7 @@ pub(crate) fn runs_device_only(
                 }))
 }
 
+/// A resolved, encoded resource operation and the caller it runs for.
 pub(crate) struct ResourceOperation<'a> {
     pub(crate) target_route: Option<crate::collaboration::RouteSpec>,
     pub(crate) address: &'a tilo_actions::ActionAddress,
@@ -2708,17 +2717,10 @@ pub(crate) fn execute_resource_operation(
         !broker_admitted || source_invocation.is_some(),
         "admitted operation {address:?} must retain its source invocation"
     );
-    if spec
-        .contract
-        .tags
-        .iter()
-        .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
-        && !runs_device_only(actor, local_author, broker_admitted, ambient)
+    if spec.contract.is_own_device()
+        && !runs_own_device(actor, local_author, broker_admitted, ambient)
     {
-        return Err(tilo_actions::DoorError::Unavailable {
-            code: "local_device_only".into(),
-            reason: "This action uses private files on the host participant's device".into(),
-        });
+        return Err(own_device_refusal());
     }
     if spec.kind == tilo_actions::OperationKind::View
         && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)

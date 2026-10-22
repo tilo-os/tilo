@@ -66,6 +66,13 @@ confirms (it sends, publishes, deletes for good) asks first whatever a broader
 answer says; only "Always allow this", an answer for that one action, lifts
 it.
 
+An action that needs its person attending (`tilo_actions::ATTENDED_TAG`,
+`#[effect(attended)]`: it opens a chooser for them, asks them for a credential
+or a sign-in, or shows something only they may see) asks first every time: no
+answer allows it, not even "Always allow this", and Deny still refuses it.
+There is no other rule about who may run an action; reaching the files,
+hardware or services of a device is an outside effect like any other.
+
 Ask first pauses the agent's task run instead of refusing. The broker renders
 the invocation as a draft (`tilo_actions::draft`: one field per parameter,
 resource references and attachments by label, secrets withheld, a message

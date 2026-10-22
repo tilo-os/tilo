@@ -194,24 +194,28 @@ async fn an_untrusted_contract_marks_every_observation_of_its_invocation() {
     }
 }
 
-/// A device-only action runs for the person at the device, never for an
-/// agent no certified local admission handed the session: one acting for
-/// that same person, admitted any other way, is refused before the app
-/// hears of it.
+/// An attended action asks the person before it runs for an agent acting
+/// for them: without the person's confirmation it is refused before the app
+/// hears of it, while the person at the device runs it.
 #[test]
-fn a_device_only_action_refuses_an_agent_admitted_elsewhere() {
-    let (state, person, mut app) = fixture_tagged(vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]);
+fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it() {
+    let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
     let room = person.room().unwrap().to_owned();
-    let agent = Caller::local_agent("elsewhere")
+    let agent = Caller::local_agent("scribe")
         .acting_for("a1".repeat(32))
         .in_room(room)
         .in_new_execution();
-    let refused = state
+    let asked = state
         .action_invoke(&agent, None, None, &request())
         .poll_ready();
     assert!(
-        matches!(&refused, PendingPoll::Ready(Err(_))),
-        "an agent admitted elsewhere is refused: {refused:?}"
+        matches!(
+            &asked,
+            PendingPoll::Ready(Err(
+                tilo_actions::remote::ActionHostError::ConfirmationRequired
+            ))
+        ),
+        "the agent waits for the person: {asked:?}"
     );
     assert!(app.try_recv().is_err(), "the app never hears of it");
     assert!(matches!(

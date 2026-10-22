@@ -407,11 +407,6 @@ impl ResultSpec {
     }
 }
 
-/// The contract tag of an action that reaches files, hardware or services
-/// of the device it runs on: the door runs it only for the person at that
-/// device, never for a collaborator or a remote participant.
-pub const LOCAL_DEVICE_ONLY: &str = "tilo.local-device-only";
-
 /// The contract tag of an action that needs its person attending: it opens
 /// a chooser for them, asks them for a credential or a sign-in, or shows
 /// something only they may see. Whoever acts for a person (an agent, a bot,
@@ -426,9 +421,10 @@ pub const ATTENDED_TAG: &str = "tilo.attended";
 /// to, so it needs only what reading needs ([`ActionContract::need`]), and
 /// a guest presses it as the room's owner does. Whatever shared it goes on
 /// to change goes through that change's own action and is decided there.
-/// It is [`LOCAL_DEVICE_ONLY`] too: it runs only for the person at the
-/// device. A device-only effect that reaches other people (a direct
-/// message, a call, a shared live context) is not of this scope.
+/// Being the invoker's own device, it runs only for the person at the
+/// device it acts on and those acting for them. An effect that reaches
+/// other people (a direct message, a call, a shared live context) is not of
+/// this scope.
 pub const OWN_DEVICE_SCOPE: &str = "tilo.scope.own-device";
 
 /// Complete operational contract copied into every inert descriptor.
@@ -813,9 +809,6 @@ impl ActionContract {
             if self.kind != ActionKind::Read {
                 errors.push("an offloadable action must be a read".into());
             }
-            if self.tags.iter().any(|tag| tag == LOCAL_DEVICE_ONLY) {
-                errors.push("a local-device-only action cannot be offloaded".into());
-            }
         }
         errors
     }
@@ -965,21 +958,12 @@ mod tests {
         };
         assert_eq!(unbounded.validate_declaration().len(), 4);
         let writes = ActionContract {
-            offload: Some(offload.clone()),
+            offload: Some(offload),
             ..ActionContract::default()
         };
         assert_eq!(
             writes.validate_declaration(),
             vec!["an offloadable action must be a read".to_string()]
-        );
-        let pinned = ActionContract {
-            offload: Some(offload),
-            tags: vec![LOCAL_DEVICE_ONLY.into()],
-            ..ActionContract::view()
-        };
-        assert_eq!(
-            pinned.validate_declaration(),
-            vec!["a local-device-only action cannot be offloaded".to_string()]
         );
     }
 }

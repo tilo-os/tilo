@@ -859,7 +859,7 @@ recorded by these timing options.
 Settings publishes `sync-now` and either `pause-sync` or `resume-sync` on each
 `settings.account:<id>` row while the cloud account service lists that account
 as mounted at `~/Remote/<label>`; an account that is not mounted offers none of
-them. They are device-only jobs: the effect answers once the service has
+them. They are outside-effect jobs: the effect answers once the service has
 accepted the request, and the account's health still arrives through the
 account status store. `sync-now` cuts a failure back-off short and runs a pass
 (an account whose mount could not start is tried again); a pause stops
