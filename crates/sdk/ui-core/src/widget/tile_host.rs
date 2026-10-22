@@ -167,6 +167,15 @@ pub enum TileContent {
         title: String,
         detail: String,
     },
+    /// The place of an app whose code is still on its way (a browser
+    /// bundle fetches each app's module the first time one of its windows
+    /// opens). It has drawn nothing and is opening from the start, so its
+    /// window keeps its frame and shows the opening card, as for any app
+    /// asked for and not yet drawn; the app built in its place once the code
+    /// is in takes the card over ([`TileHost::continue_opening_card`]). It
+    /// holds no record and takes no focus or input: nothing typed while it
+    /// waits lands in a field that is not there yet.
+    Arriving,
 }
 
 /// A tab is an open thing, not a view onto one shared thing: the document
@@ -559,7 +568,7 @@ impl TileHost {
             TileContent::App(app) => super::capability::capability::<
                 dyn crate::widget::WindowHistory,
             >(app.as_ref() as &dyn Widget),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
 
@@ -568,7 +577,7 @@ impl TileHost {
             TileContent::App(app) => super::capability::capability_mut::<
                 dyn crate::widget::WindowHistory,
             >(app.as_mut() as &mut dyn Widget),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
 
@@ -790,7 +799,7 @@ impl TileHost {
             TileContent::App(w) => {
                 super::window_header::offer_window_bar(w.as_mut() as &mut dyn Widget, bar)
             }
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         }
     }
 
@@ -798,7 +807,7 @@ impl TileHost {
     pub(crate) fn window_bar_slot(&self) -> Option<super::WindowBarSlot> {
         match &self.content {
             TileContent::App(w) => super::window_header::window_bar_slot(w.as_ref() as &dyn Widget),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
 
@@ -821,6 +830,17 @@ impl TileHost {
 
     /// Test seam for the parent group's push — a card naming the wrong
     /// app, or an app-id, is the defect this exists to catch.
+    /// Built in place of `previous` (an app whose code just arrived, in
+    /// the window that held its place): when `previous` had its opening card
+    /// on screen, this host dissolves that card over what it shows instead of
+    /// cutting to it, so the window fills in rather than jumping.
+    pub fn continue_opening_card(&mut self, previous: &Self) {
+        if previous.opening_shown && previous.handed_over_at.is_none() {
+            self.opening_shown = true;
+            self.set_opening_name(&previous.opening_name);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn opening_name_for_test(&self) -> &str {
         &self.opening_name
@@ -872,7 +892,7 @@ impl TileHost {
         match &self.content {
             TileContent::App(app) => app.uses_host_record(),
             TileContent::Stub { .. } => true,
-            TileContent::Notice { .. } => false,
+            TileContent::Notice { .. } | TileContent::Arriving => false,
         }
     }
 
@@ -1111,7 +1131,7 @@ impl TileHost {
             TileContent::App(root) => {
                 crate::record::capability::release_record_scope(root.as_mut())
             }
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Ok(()),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => Ok(()),
         };
         if let Err(error) = release {
             self.record_transition_error = Some(error.clone());
@@ -1354,7 +1374,7 @@ impl TileHost {
         }
         let want = match &self.content {
             TileContent::App(w) => crate::record::capability::record_intent(w.as_ref()),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         };
         let changing_owner = match (&self.binding, &want) {
             (Some(binding), Some(want)) if want.id != binding.live => {
@@ -1428,6 +1448,7 @@ impl TileHost {
             TileContent::App(_) => "App".into(),
             TileContent::Stub { kind, .. } => kind.as_str().into(),
             TileContent::Notice { title, .. } => title.clone(),
+            TileContent::Arriving => "Arriving".into(),
         }
     }
     /// The hosted app, to reach a capability or concrete type of it in
@@ -1437,7 +1458,7 @@ impl TileHost {
     pub fn app_mut(&mut self) -> Option<&mut (dyn AppWidget + 'static)> {
         match &mut self.content {
             TileContent::App(app) => Some(app.as_mut()),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
     /// Mutable legacy content access. Canonical components use checked replacement.
@@ -1606,7 +1627,7 @@ impl TileHost {
             TileContent::App(app) => {
                 app.draw_complete_content(scene, rect, transform, tr, theme, presence)
             }
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         };
         scene.pop_layer();
         if !painted {
@@ -1699,7 +1720,7 @@ impl FloatingSurfaceProvider for TileHost {
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
         match &self.content {
             TileContent::App(widget) => widget.floating_surface_accessibility(id),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
 
@@ -1714,14 +1735,14 @@ impl FloatingSurfaceProvider for TileHost {
         match &mut self.content {
             TileContent::App(widget) => widget
                 .perform_floating_surface_accessibility_action(id, target, action, state, path),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         }
     }
 
     fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
         match &self.content {
             TileContent::App(widget) => widget.floating_surface_ime(id),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
 
@@ -1730,21 +1751,23 @@ impl FloatingSurfaceProvider for TileHost {
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
         match &mut self.content {
             TileContent::App(widget) => widget.take_floating_surface_request(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
 
     fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
         match &mut self.content {
             TileContent::App(widget) => widget.take_capture_studio_request(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
         match &mut self.content {
             TileContent::App(widget) => widget.take_floating_surface_source_updates(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => {
+                Vec::new()
+            }
         }
     }
 
@@ -1774,7 +1797,7 @@ impl FloatingSurfaceProvider for TileHost {
             TileContent::App(widget) => {
                 widget.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
             }
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         }
     }
 
@@ -1789,14 +1812,18 @@ impl FloatingSurfaceProvider for TileHost {
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
         match &self.content {
             TileContent::App(widget) => widget.floating_surface_presentations(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => {
+                Vec::new()
+            }
         }
     }
 
     fn active_floating_surface_ids(&self) -> Vec<String> {
         match &self.content {
             TileContent::App(widget) => widget.active_floating_surface_ids(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => {
+                Vec::new()
+            }
         }
     }
 
@@ -2361,13 +2388,14 @@ impl Widget for TileHost {
                     &[child],
                 )
             }
-            TileContent::Stub { .. } | TileContent::Notice { .. } => taffy.leaf_node(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            }),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => taffy
+                .leaf_node(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                }),
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         // This build composed the current content and admission, so a change
@@ -2656,7 +2684,7 @@ impl Widget for TileHost {
                     .with_description(detail.clone())
                     .with_bounds(self.rect),
             ),
-            TileContent::App(_) | TileContent::Stub { .. } => None,
+            TileContent::App(_) | TileContent::Stub { .. } | TileContent::Arriving => None,
         }
     }
     /// Only an app can answer anything but `true` — a stub/notice is
@@ -2666,6 +2694,7 @@ impl Widget for TileHost {
             let now = match &self.content {
                 TileContent::App(w) => w.presented(),
                 TileContent::Stub { .. } | TileContent::Notice { .. } => true,
+                TileContent::Arriving => false,
             };
             self.content_was_presented.set(now);
             self.was_presented.set(self.was_presented.get() || now);
@@ -2684,6 +2713,7 @@ impl Widget for TileHost {
         }
         match &self.content {
             TileContent::App(w) => self.was_presented.get() || w.opening(),
+            TileContent::Arriving => true,
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
@@ -2694,7 +2724,7 @@ impl Widget for TileHost {
     fn wants_pointer_capture(&self) -> bool {
         match &self.content {
             TileContent::App(widget) => widget.wants_pointer_capture(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         }
     }
     fn take_structure_dirty(&mut self) -> bool {
@@ -2718,7 +2748,7 @@ impl Widget for TileHost {
         // compositor at display cadence until a slow app's first frame.
         let inner = match &self.content {
             TileContent::App(w) => w.needs_animation_frame(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         };
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
@@ -3093,7 +3123,9 @@ impl crate::collaboration::participants::CollaborationTopology for TileHost {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         match &mut self.content {
             TileContent::App(live) => vec![live.as_mut()],
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => {
+                Vec::new()
+            }
         }
     }
 }
@@ -3371,6 +3403,8 @@ impl TileHost {
                     TileContent::Notice { title, detail } => {
                         draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
                     }
+                    // The opening card above stands in for it.
+                    TileContent::Arriving => {}
                 }
             }
             self.draw_transition_status(scene, transform, tr, theme);
@@ -5382,7 +5416,7 @@ mod tests {
     /// app painted.
     const STARTING_FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
 
-    fn starting_host(
+    pub(super) fn starting_host(
         presented: bool,
         opening: bool,
     ) -> (TileHost, std::rc::Rc<std::cell::Cell<bool>>) {
@@ -5398,7 +5432,7 @@ mod tests {
         (host, drawn)
     }
 
-    fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
+    pub(super) fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         host.draw(
@@ -6014,6 +6048,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "tile_host_arriving_tests.rs"]
+mod arriving_tests;
 #[cfg(test)]
 #[path = "tile_host_window_tests.rs"]
 mod window_tests;

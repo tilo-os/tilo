@@ -428,6 +428,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         UiTile::App(_) => "App",
         UiTile::Stub { .. } => "Stub",
         UiTile::Notice { .. } => "Notice",
+        UiTile::Arriving => "Arriving",
     }
 }
 

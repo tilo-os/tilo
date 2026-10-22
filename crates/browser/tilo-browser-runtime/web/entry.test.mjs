@@ -354,26 +354,29 @@ test('any other link waits for the runtime’s grammar before admission', async 
   page.router.stop?.();
 });
 
-test('the home workspace’s app in front is fetched beside the runtime, before admission', async () => {
+test('the home workspace’s app in front is fetched once admitted, never before or when refused', async () => {
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/', app: 'so.tilo.chat'};
-  const order = [];
-  const window = {
-    __tiloLinkSecrets: Object.freeze({}),
-    location: {href: 'https://rooms.example/open/', hash: ''},
-    history: {state: null, replaceState() {}, pushState() {}},
-    addEventListener() {}, removeEventListener() {},
+  const run = async enterViaHost => {
+    const order = [];
+    const window = {
+      __tiloLinkSecrets: Object.freeze({}),
+      location: {href: 'https://rooms.example/open/', hash: ''},
+      history: {state: null, replaceState() {}, pushState() {}},
+      addEventListener() {}, removeEventListener() {},
+    };
+    const deps = {
+      loadRuntime: () => new Promise(() => {}),
+      prefetchApplication: app => order.push(`prefetch ${app}`),
+      fetch: async () => ({ok: true, json: async () => ({home})}),
+      enterViaHost: async () => { order.push('door'); return enterViaHost(); },
+    };
+    // An admitted boot goes on to wait for the runtime, which never loads here.
+    void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    return order;
   };
-  const deps = {
-    loadRuntime: () => new Promise(() => {}),
-    prefetchApplication: app => order.push(`prefetch ${app}`),
-    fetch: async () => ({ok: true, json: async () => ({home})}),
-    enterViaHost: async () => {
-      order.push('door');
-      throw new Error('closed');
-    },
-  };
-  await assert.rejects(boot({mode: 'desktop', window, deps}), /closed/);
-  assert.deepEqual(order, ['prefetch so.tilo.chat', 'door']);
+  assert.deepEqual(await run(async () => ({room: 'r1'})), ['door', 'prefetch so.tilo.chat']);
+  assert.deepEqual(await run(async () => { throw new Error('closed'); }), ['door', 'closed']);
 });
 
 test('only a bare desktop entry under a home reopens the workspace the person last chose', () => {
