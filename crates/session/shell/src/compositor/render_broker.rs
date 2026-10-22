@@ -347,8 +347,11 @@ impl Inner {
             .env(BROKER_FD_ENV, "3")
             .env(
                 tilo_render_service::RENDER_NODE_ENV,
+                // Once the compositor gave its GPU up (`ui::gpu::recover`), a service started
+                // after draws on the CPU too, instead of opening the dead GPU again.
                 self.render_node
                     .as_ref()
+                    .filter(|_| ui::gpu::software_fallback().is_none())
                     .map(|path| path.as_os_str().to_owned())
                     .unwrap_or_default(),
             )
