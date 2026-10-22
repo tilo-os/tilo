@@ -1647,6 +1647,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bzip2"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
+dependencies = [
+ "libbz2-rs-sys",
+]
+
+[[package]]
 name = "calculator"
 version = "0.1.0"
 dependencies = [
@@ -4563,7 +4572,6 @@ dependencies = [
  "chrono",
  "cloud-source",
  "ed25519-dalek 3.0.0",
- "flate2",
  "fs-protocol",
  "fuser",
  "hex",
@@ -4580,6 +4588,8 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-archive",
+ "tilo-archive-engine",
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-clock",
@@ -8311,6 +8321,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c2cdeb66e45e9f36bfad5bbdb4d2384e70936afbee843c6f6543f0c551ebb25"
 
 [[package]]
+name = "libbz2-rs-sys"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9044,6 +9060,15 @@ name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+
+[[package]]
+name = "lzma-rust2"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1c46f3fcd2e888afdb01a07efc071cb21300e07c68d32c3e8b01b5c8cb1fcaa"
+dependencies = [
+ "sha2 0.11.0",
+]
 
 [[package]]
 name = "mac-addr"
@@ -14572,6 +14597,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sevenz-rust2"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f0c68c0e8289bfd09e49ef433e8de02c7c464afc1d7f5a275c99749a880e301"
+dependencies = [
+ "bzip2",
+ "crc32fast",
+ "js-sys",
+ "lzma-rust2",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "sfv"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16768,6 +16806,30 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-archive"
+version = "0.1.0"
+dependencies = [
+ "bzip2",
+ "flate2",
+ "lzma-rust2",
+ "ruzstd",
+ "sevenz-rust2",
+ "tar",
+ "tempfile",
+ "workspace-hack",
+ "zip",
+]
+
+[[package]]
+name = "tilo-archive-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-archive",
+ "workspace-hack",
 ]
 
 [[package]]

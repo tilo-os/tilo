@@ -159,6 +159,13 @@ ENGINES = {
              "libtilo_emoji_engine.so",
     "browser-parts": "the parts of Browser people rarely use, which Browser loads from "
                      "libtilo_browser_import_engine.so",
+    "tilo-archive-engine": "the archive codecs' engine library (libtilo_archive_engine.so)",
+    "tilo-archive": "the archive reader and writer, which Files loads from "
+                    "libtilo_archive_engine.so",
+    "sevenz-rust2": "the 7z reader, in libtilo_archive_engine.so",
+    "lzma-rust2": "the xz and LZMA decoder, in libtilo_archive_engine.so",
+    "bzip2": "the bzip2 codec, in libtilo_archive_engine.so",
+    "libbz2-rs-sys": "the bzip2 codec's pure-Rust core, in libtilo_archive_engine.so",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
     "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
                        "worker loads from libtilo_fuse_engine.so",
