@@ -27,6 +27,21 @@ toolbar-row 1 apps/mail/src/compose.rs
 toolbar-row 2 apps/monitor/src/view.rs
 toolbar-row 1 apps/pdf-viewer/src/app_draw.rs
 toolbar-row 1 apps/typst-editor/src/chrome.rs
+# Books' shelf header: sort, Hide finished, Settings and Open book in a row of
+# its own; sort and Hide finished become the window bar's views and menu items.
+toolbar-band 1 apps/ebook/src/app.rs
+toolbar-band 1 apps/pdf-viewer/src/app_draw.rs
+toolbar-band 1 apps/typst-editor/src/app.rs
+toolbar-band 1 apps/video-editor/src/app.rs
+# The browser's address row; the hairline under it is the page's edge.
+toolbar-band 1 apps/browser/src/browser_widget.rs
+# Not toolbar rows, only the band's hairline borrowed: a panel's heading
+# (Calculator's history, Photos' side panel), Notes' pinned title, Writer's
+# ruler. Each wants a divider of its own instead.
+toolbar-band 1 apps/calculator/src/keypad.rs
+toolbar-band 1 apps/notes/src/main_panel.rs
+toolbar-band 1 apps/photos/src/app/chrome.rs
+toolbar-band 1 apps/word-processor/src/ruler.rs
 window-header 1 apps/git-client/src/app.rs
 window-header 1 apps/hex-editor/src/view.rs
 window-header 1 apps/maps/src/app.rs
