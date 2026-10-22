@@ -1135,8 +1135,10 @@ mod tests {
                 &mut text,
                 &theme,
             );
-            assert_eq!(tree.children(root).unwrap().len(), 2);
-            assert_eq!(app.children().len(), 2);
+            // The refresh control is the app's one retained child: search
+            // and the other header buttons are the window bar's.
+            assert_eq!(tree.children(root).unwrap().len(), 1);
+            assert_eq!(app.children().len(), 1);
             let control = app
                 .children()
                 .into_iter()

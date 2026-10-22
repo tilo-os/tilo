@@ -395,34 +395,45 @@ mod tests {
         Invoke::edit(edit).unwrap()
     }
 
+    // USER REQUIREMENT (2026-10-21): "every app's primary controls live in
+    // the system window bar's app slots, through the one tilo-app API Files,
+    // Notes and Browser already use, and no app draws a second toolbar row."
+    /// History stands beside Music's slots in the window's bar: no band of
+    /// the window's own above the page and no control of Music's own; the
+    /// bar's History opens the framework's History.
     #[test]
-    fn history_shares_the_scaled_music_header() {
+    fn history_is_the_window_bars_beside_musics_slots() {
         use ui::widget::Widget as _;
         let mut app = TestApp::<MusicShell>::capture_at(Some("nowplaying"), (1440, 810)).unwrap();
-        let theme = ui::theme::Theme::dark().with_ui_scale(1.5);
-        let header_height = f64::from(theme.tokens.metrics.header_height);
-        app.harness().set_theme(theme);
+        app.harness()
+            .set_theme(ui::theme::Theme::dark().with_ui_scale(1.5));
         app.harness().relayout();
         let surface = app.surface_mut::<MusicApp>();
         assert!(
             surface.get_rect().y0.abs() < f64::EPSILON,
-            "no extra framework toolbar"
+            "no History band above the page"
         );
-        let history = surface
-            .children()
-            .into_iter()
-            .find(|child| {
-                child
-                    .accessibility()
-                    .is_some_and(|node| node.name.as_deref() == Some("History"))
-            })
-            .expect("the framework's History control is retained in Music");
-        let rect = history.get_rect();
         assert!(
-            rect.y0 >= 0.0 && rect.y1 <= header_height,
-            "History is in the one top row"
+            !surface.children().into_iter().any(|child| child
+                .accessibility()
+                .is_some_and(|node| node.name.as_deref() == Some("History"))),
+            "Music holds no History control of its own"
         );
-        assert!(rect.x0 > 1440.0 / 2.0, "History stays at the trailing edge");
+        assert!(
+            ui::window_toolbar::declared().is_some(),
+            "Music's controls are its window bar's slots"
+        );
+        assert_eq!(
+            app.harness().window_history_control(),
+            Some(ui::widget::HistoryControl::Closed),
+            "the window's bar offers History beside them"
+        );
+        app.harness().press_window_history().unwrap();
+        assert_eq!(
+            app.harness().window_history_control(),
+            Some(ui::widget::HistoryControl::Open),
+            "the bar's History opens the framework's History"
+        );
     }
 
     #[test]

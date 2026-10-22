@@ -16,11 +16,17 @@ use crate::{date, model::View};
 const PREVIOUS: &str = "previous";
 const NEXT: &str = "next";
 const TODAY: &str = "today";
-const NEW: &str = "new";
+/// New event (New task on Tasks).
+pub(crate) const NEW: &str = "new";
 const EXPORT: &str = "export";
 const IMPORT: &str = "import";
 /// A view's slot id: `view:` and its label.
 const VIEW_PREFIX: &str = "view:";
+
+/// The slot id of `view` in the bar's switcher.
+pub(crate) fn view_slot(view: View) -> String {
+    format!("{VIEW_PREFIX}{}", view.label())
+}
 
 /// What the person asked of the calendar in the window's bar.
 pub(crate) enum BarAction {
@@ -65,11 +71,11 @@ pub(crate) fn window_toolbar(view: View, anchor: NaiveDate, sidebar_open: bool) 
             choices: View::ALL
                 .iter()
                 .map(|choice| ToolbarView {
-                    id: format!("{VIEW_PREFIX}{}", choice.label()),
+                    id: view_slot(*choice),
                     label: choice.display_label(),
                 })
                 .collect(),
-            chosen: format!("{VIEW_PREFIX}{}", view.label()),
+            chosen: view_slot(view),
         }),
         ..WindowToolbar::default()
     };

@@ -199,14 +199,13 @@ impl SlotBar {
             node_id: node,
             taffy: &self.tree,
         };
-        let took = if self.row.popup_open() && self.row.popup_event(event, &mut ctx) {
-            true
-        } else if self.row.is_editing()
-            && (!matches!(
-                event,
-                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-            ) || self.row.location_hit(self.pointer))
-            && self.row.field_event(event, &mut ctx)
+        let took = if (self.row.popup_open() && self.row.popup_event(event, &mut ctx))
+            || (self.row.is_editing()
+                && (!matches!(
+                    event,
+                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                ) || self.row.location_hit(self.pointer))
+                && self.row.field_event(event, &mut ctx))
         {
             true
         } else {

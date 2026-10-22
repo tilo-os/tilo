@@ -1279,13 +1279,20 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
             app.right_flap_open(),
             "the members pill opened the right flap"
         );
-        // The members panel painted its own close control (a second
-        // ToggleRightFlap hit beyond the always-present header pill), and no
+        // The members panel painted its own close control (the pill that
+        // opened it is the window bar's People slot, shown on), and no
         // thread panel did — i.e. the previously-blank column now has content.
         assert_eq!(
             count_hits(&app, |h| matches!(h, Hit::ToggleRightFlap)),
-            2,
-            "header pill + members-panel close = two toggle hits (roster shown)"
+            1,
+            "the members panel's close is painted (roster shown)"
+        );
+        assert!(
+            ui::window_toolbar::declared().is_some_and(|toolbar| toolbar
+                .actions
+                .iter()
+                .any(|action| action.id == "people" && action.on)),
+            "the bar's People slot shows the roster open"
         );
         assert_eq!(
             count_hits(&app, |h| matches!(h, Hit::CloseThread)),
@@ -2171,12 +2178,15 @@ fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() 
     let mut state = ui::State::new();
     assert!(state.adopt_doc(doc.chat));
     let mut driver = FrameHarness::for_root(state, app, (1800, 900), ui::Theme::dark());
-    let people = driver
-        .a11y_node_named("Show people or thread")
-        .expect("the actual Chat People control");
-    driver
-        .perform_a11y_action(people, &Action::Activate)
-        .unwrap();
+    // People is the window bar's slot; the desktop hands its press to the app.
+    assert!(
+        ui::window_toolbar::declared()
+            .is_some_and(|toolbar| toolbar.actions.iter().any(|action| action.id == "people")),
+        "the window's bar offers People"
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: "people".into(),
+    });
     assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
         driver
             .root::<ChatApp>()
@@ -2184,7 +2194,10 @@ fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() 
             .resize_accessibility()
             .is_some()
     }));
-    let people = driver.a11y_node_named("Show people or thread").unwrap();
+    // The open panel's own close control takes the keyboard.
+    let people = driver
+        .a11y_node_named("Show people or thread")
+        .expect("the people panel's close control");
     driver.perform_a11y_action(people, &Action::Focus).unwrap();
     assert!(driver.root::<ChatApp>().keyboard_target.is_some());
     let sidebar = driver.a11y_node_named("Resize sidebar").unwrap();

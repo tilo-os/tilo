@@ -58,6 +58,40 @@ impl FrameHarness {
         self.window_bar
     }
 
+    /// The History control the window lists beside the app's slots, as the
+    /// desktop's bar (or, outside a session, the runner's slot row) shows
+    /// it: none while the app has no History to open.
+    #[must_use]
+    pub fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
+        self.history
+            .as_ref()
+            .filter(|history| history.offers_control())
+            .map(|history| crate::widget::HistoryControl::of(history.is_open()))
+    }
+
+    /// Press the window's History control as the bar hands the press over:
+    /// it runs on the app's History door, as the History shortcut does, and
+    /// never reaches the app.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the app has no History to open, or its door
+    /// refuses the control.
+    pub fn press_window_history(&mut self) -> Result<(), String> {
+        self.invalidate_local();
+        let control = self
+            .window_history_control()
+            .ok_or("History is unavailable")?;
+        let history = self.history.as_mut().ok_or("History is unavailable")?;
+        let intent = crate::standalone_history_host::history_control_binding(control)
+            .invoke(())
+            .map_err(|error| error.to_string())?;
+        crate::history_mode::embedded::run_door_control(history, &intent)
+            .map_err(|error| error.to_string())?;
+        self.relayout();
+        Ok(())
+    }
+
     /// The app's frame for a window of `viewport`: the part under the bar.
     pub(super) fn content_viewport(&self, viewport: (u32, u32)) -> (u32, u32) {
         if self.window_bar {
@@ -92,12 +126,7 @@ impl FrameHarness {
         bar.set_window_controls(true);
         bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
         bar.set_toolbar(TAB, crate::window_toolbar::declared());
-        let history = self
-            .history
-            .as_ref()
-            .filter(|history| history.offers_control())
-            .map(|history| crate::widget::HistoryControl::of(history.is_open()));
-        bar.set_history_control(TAB, history);
+        bar.set_history_control(TAB, self.window_history_control());
         bar.set_group_focused(true);
         lay_out_bar(&mut bar, width, &self.theme);
         let mut search = WindowSearch::new();
