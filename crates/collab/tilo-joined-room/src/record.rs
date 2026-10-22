@@ -97,6 +97,15 @@ pub(crate) struct StoredRoom {
     /// these say who governs the room now.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub successions: Vec<tilo_user_identity::GovernorSuccession>,
+    /// What this device, governing the room, keeps between the steps of
+    /// its joins: the same ledger a relay keeps for the rooms it governs.
+    /// Empty for a room joined through a host.
+    #[serde(
+        default,
+        rename = "joinLedger",
+        skip_serializing_if = "tilo_peer_state::join_ledger::JoinLedger::is_empty"
+    )]
+    pub join_ledger: tilo_peer_state::join_ledger::JoinLedger,
 }
 
 impl StoredRoom {

@@ -58,6 +58,7 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             effect_history_root: None,
             successions: Vec::new(),
+            join_ledger: tilo_peer_state::join_ledger::JoinLedger::default(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, None)
     }

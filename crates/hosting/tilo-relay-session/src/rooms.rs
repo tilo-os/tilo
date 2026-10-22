@@ -168,57 +168,9 @@ pub const ROOM_ADMIN_MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 /// How long one room administration exchange may take.
 pub const ROOM_ADMIN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Issue one invitation. A repeated `request_id` returns the invitation it
-/// issued, and fails if it named a different request.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssueInvitationRequest {
-    /// Caller-chosen idempotency key; never zero.
-    pub request_id: [u8; 32],
-    /// The role the redeeming person gets.
-    pub role: MemberRole,
-    /// Restrict redemption to devices of this person.
-    pub recipient_user_public_key: Option<[u8; 32]>,
-    /// How the invitation names its recipient to them.
-    pub invitee_name: Option<String>,
-    /// When the invitation stops being redeemable, at most 30 days ahead.
-    pub expires_at_ns: u64,
-    /// The name the inviting person gives, recorded in the invitation with
-    /// their user root.
-    pub inviter_name: Option<String>,
-}
-
-/// An issued invitation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssuedInvitation {
-    /// Digest of `signed_invitation`.
-    pub invite_id: [u8; 32],
-    /// The signed invitation a device redeems.
-    pub signed_invitation: Vec<u8>,
-}
-
-/// Cancel an unredeemed invitation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CancelInvitationRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The invitation to cancel.
-    pub invite_id: [u8; 32],
-}
-
-/// An invitation still redeemable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingInvitation {
-    /// Digest of the signed invitation.
-    pub invite_id: [u8; 32],
-    /// The role it grants.
-    pub role: MemberRole,
-    /// The only person who may redeem it, if restricted.
-    pub recipient_user_public_key: Option<[u8; 32]>,
-    /// How it names its recipient.
-    pub invitee_name: Option<String>,
-    /// When it expires.
-    pub expires_at_ns: u64,
-}
+pub use tilo_workspace_join::invitations::{
+    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
+};
 
 /// Change a member's role.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
