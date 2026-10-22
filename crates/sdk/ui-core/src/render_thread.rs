@@ -43,7 +43,7 @@ mod surface_lifecycle_tests;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
 use std::thread::JoinHandle;
 
@@ -197,6 +197,10 @@ pub struct RenderThreadHandle {
     /// Set by the worker when presented pixels lost geometry to a Vello bump
     /// overflow; the next frame main submits must repaint everything.
     full_repaint: Arc<AtomicBool>,
+    /// The largest texture edge the frames' device accepts: main fits each
+    /// frame under it (`crate::scale::fit_to_texture_limit`). The limit
+    /// every device is opened with until the worker reads its own device's.
+    texture_limit: Arc<AtomicU32>,
     join: Option<JoinHandle<Option<PreparedRenderer>>>,
 }
 
@@ -444,6 +448,27 @@ impl RetainedRaster {
 }
 
 impl RenderThreadHandle {
+    /// The largest edge a frame sent to this worker may have, in pixels.
+    #[cfg(feature = "native")]
+    pub(crate) fn texture_limit(&self) -> u32 {
+        self.texture_limit.load(Ordering::Relaxed)
+    }
+
+    /// A window of `physical` pixels at `scale`, as a frame this worker can
+    /// draw: past the device's texture limit it draws at a lower scale.
+    #[cfg(feature = "native")]
+    pub(crate) fn frame_extent(
+        &self,
+        physical: winit::dpi::PhysicalSize<u32>,
+        scale: f64,
+    ) -> crate::scale::RenderExtent {
+        crate::scale::fit_to_texture_limit(
+            (physical.width, physical.height),
+            scale,
+            self.texture_limit(),
+        )
+    }
+
     /// Whether the worker asked for a whole-surface repaint since the last
     /// call. It wakes the window when it asks, so the request does not wait
     /// for an unrelated event.
@@ -512,6 +537,8 @@ pub(crate) fn spawn_render_thread_deferred(
     let waiting = Arc::new(AtomicBool::new(false));
     let full_repaint = Arc::new(AtomicBool::new(false));
     let worker_full_repaint = full_repaint.clone();
+    let texture_limit = Arc::new(AtomicU32::new(crate::gpu::requested_texture_limit()));
+    let worker_texture_limit = texture_limit.clone();
     let buffers = BufferPool::new(pool_rx, waiting.clone());
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
@@ -530,6 +557,12 @@ pub(crate) fn spawn_render_thread_deferred(
                 }
             };
             tilo_startup_metrics::mark("window-render-context-done");
+            if let Some(device) = render_cx.devices.get(surface.dev_id) {
+                worker_texture_limit.store(
+                    device.device.limits().max_texture_dimension_2d,
+                    Ordering::Relaxed,
+                );
+            }
             // `TILO_UI_PRESENT=1` logs per-frame encode/acquire/present timings
             // — a slow compositor/present path shows up as a large acquire or
             // present, invisible to offscreen benches. Off by default.
@@ -883,6 +916,7 @@ pub(crate) fn spawn_render_thread_deferred(
         frame_complete,
         retry: retry::RenderRetryState::default(),
         full_repaint,
+        texture_limit,
         join: Some(join),
     })
 }

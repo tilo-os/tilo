@@ -36,6 +36,72 @@ pub fn logical_size(physical: (u32, u32), device_scale: f64) -> (f64, f64) {
     (f64::from(physical.0) / s, f64::from(physical.1) / s)
 }
 
+/// The pixels a window's frame is drawn in, and the scale that draws its
+/// logical layout into them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderExtent {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f64,
+}
+
+/// A window of `physical` pixels at `device_scale`, drawn into a texture
+/// no edge of which may exceed `limit` (the device's
+/// `max_texture_dimension_2d`).
+///
+/// A window that fits is drawn as it is. A larger one (a kiosk stretched
+/// over several displays: 2944 + 1920 logical pixels at scale 2 is 9728
+/// wide, past the 8192 every device here is opened with) keeps its logical
+/// size and is drawn at the lower scale that fits; the compositor stretches
+/// the smaller buffer over the window, so it is softer, never missing or
+/// failing. Layout divides the extent by its scale and lands on the same
+/// logical size, within a pixel.
+#[must_use]
+pub fn fit_to_texture_limit(physical: (u32, u32), device_scale: f64, limit: u32) -> RenderExtent {
+    let (width, height) = (physical.0.max(1), physical.1.max(1));
+    let scale = if device_scale.is_finite() && device_scale > 0.0 {
+        device_scale
+    } else {
+        1.0
+    };
+    let limit = limit.max(1);
+    if width <= limit && height <= limit {
+        return RenderExtent {
+            width,
+            height,
+            scale,
+        };
+    }
+    let factor = (f64::from(limit) / f64::from(width)).min(f64::from(limit) / f64::from(height));
+    // Without fractional scaling a Wayland window keeps its integer buffer
+    // scale, and a buffer whose size it does not divide is a protocol error.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "an integral scale of at least two, far below u32::MAX"
+    )]
+    let step = if scale.fract() == 0.0 && scale >= 2.0 && scale <= f64::from(limit) {
+        scale as u32
+    } else {
+        1
+    };
+    let fitted = |edge: u32| -> u32 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a positive edge times a factor below one, clamped to the u32 limit"
+        )]
+        let scaled = (f64::from(edge) * factor).round() as u32;
+        let scaled = scaled.clamp(1, limit);
+        (scaled - scaled % step).max(step)
+    };
+    RenderExtent {
+        width: fitted(width),
+        height: fitted(height),
+        scale: scale * factor,
+    }
+}
+
 #[inline]
 pub fn physical_len(logical: f64, device_scale: f64) -> f64 {
     logical * device_scale
@@ -109,6 +175,51 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::Rect;
     use vello::peniko::{Color, Fill};
+
+    /// A login kiosk stretched over a 2944x1840 panel and a 1920x1080
+    /// monitor side by side (4864x1840 logical) at scale 2 asked for a
+    /// 9728-wide texture on a device that allows 8192, and the window exited
+    /// instead of drawing.
+    #[test]
+    fn a_window_past_the_texture_limit_draws_at_the_scale_that_fits() {
+        let limit = 8192;
+        let extent = fit_to_texture_limit((9728, 3680), 2.0, limit);
+        assert!(
+            extent.width <= limit && extent.height <= limit,
+            "{extent:?} exceeds {limit}"
+        );
+        assert_eq!(extent.width, limit, "the long edge uses the whole texture");
+        let (logical_w, logical_h) = logical_size((extent.width, extent.height), extent.scale);
+        assert!(
+            (logical_w - 4864.0).abs() <= 1.0 && (logical_h - 1840.0).abs() <= 1.0,
+            "the layout keeps the window's logical size: {logical_w}x{logical_h}"
+        );
+        assert!(extent.scale < 2.0 && extent.scale > 1.6, "{extent:?}");
+        // The window keeps buffer scale 2 where the compositor has no
+        // fractional scaling; the buffer must stay divisible by it.
+        assert_eq!((extent.width % 2, extent.height % 2), (0, 0), "{extent:?}");
+
+        // A tall window is fitted by its height.
+        let tall = fit_to_texture_limit((2000, 20000), 1.0, limit);
+        assert_eq!(tall.height, limit);
+        assert!(tall.width <= limit && tall.width >= 800);
+
+        // A window that fits is drawn exactly as it is.
+        assert_eq!(
+            fit_to_texture_limit((5888, 3680), 2.0, limit),
+            RenderExtent {
+                width: 5888,
+                height: 3680,
+                scale: 2.0
+            }
+        );
+        // Degenerate input never yields an empty texture or a zero scale.
+        let empty = fit_to_texture_limit((0, 0), 0.0, limit);
+        assert_eq!((empty.width, empty.height), (1, 1));
+        assert!(empty.scale > 0.0);
+        let sliver = fit_to_texture_limit((1_000_000, 1), 1.0, limit);
+        assert_eq!((sliver.width, sliver.height), (limit, 1));
+    }
 
     #[test]
     fn scale_factors_compose_device_and_user_scale_uniformly() {
