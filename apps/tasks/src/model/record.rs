@@ -129,13 +129,14 @@ fn message_text(text: &str) -> Result<String, Refusal> {
     Ok(text.to_owned())
 }
 
-/// The run `epoch` of `issue`, while it is going, invoked by its own agent.
-fn own_run<'a>(cx: &ActionCx, issue: &'a mut Issue, epoch: u64) -> Result<&'a mut Run, Refusal> {
+/// The run of `issue` going on, invoked by its own agent. The door that
+/// admits the agent's actions holds them to the run they belong to.
+fn own_run<'a>(cx: &ActionCx, issue: &'a mut Issue) -> Result<&'a mut Run, Refusal> {
     let agent = cx.author().unwrap_or_default().to_owned();
     let run = issue
         .run
         .as_mut()
-        .filter(|run| run.epoch == epoch && run.phase.active())
+        .filter(|run| run.phase.active())
         .ok_or_else(|| Refusal::new("This run has ended or was replaced"))?;
     if !by_agent(cx) || run.agent.0 != agent {
         return Err(Refusal::new("Only the run's own agent reports on it"));
@@ -480,7 +481,6 @@ impl Tracker {
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        epoch: u64,
         phase: RunPhase,
         #[param("What it did or found, in markdown")] text: Option<String>,
     ) -> Result<(), Refusal> {
@@ -493,9 +493,10 @@ impl Tracker {
         let at_ms = cx.now_ms();
         let author = author(cx)?;
         let target = self.issue_mut(issue)?;
-        let run = own_run(cx, target, epoch)?;
+        let run = own_run(cx, target)?;
         run.phase = phase;
         run.updated_ms = at_ms;
+        let epoch = run.epoch;
         if let Some(text) = text {
             push_message(
                 target,
@@ -514,27 +515,35 @@ impl Tracker {
         Ok(())
     }
 
-    /// Mark messages to the run as taken in by its agent.
+    /// Mark the first `through` messages to the run as taken in by its
+    /// agent: it takes them in in order.
     ///
     /// # Errors
-    /// Refuses anyone but the run's agent, or messages to another run.
+    /// Refuses anyone but the run's agent, or more messages than the run
+    /// has.
     #[action(audience = "agents", writes = issues)]
     pub fn incorporate(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        epoch: u64,
-        messages: Vec<Id>,
+        #[param("How many of the run's messages, oldest first")] through: u64,
     ) -> Result<(), Refusal> {
         let target = self.issue_mut(issue)?;
-        own_run(cx, target, epoch)?;
-        for id in &messages {
-            let message = target
-                .comments
-                .get_mut(id)
-                .filter(|message| message.kind == MessageKind::ToRun && message.run == epoch)
-                .ok_or_else(|| Refusal::new("That message is not to this run"))?;
-            message.incorporated = true;
+        let epoch = own_run(cx, target)?.epoch;
+        let to_run: Vec<Id> = target
+            .comments
+            .iter()
+            .filter(|(_, message)| message.kind == MessageKind::ToRun && message.run == epoch)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let through = usize::try_from(through).unwrap_or(usize::MAX);
+        if through > to_run.len() {
+            return Err(Refusal::new("The run has not had that many messages"));
+        }
+        for id in to_run.iter().take(through) {
+            if let Some(message) = target.comments.get_mut(id) {
+                message.incorporated = true;
+            }
         }
         Ok(())
     }
@@ -548,12 +557,11 @@ impl Tracker {
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        epoch: u64,
         #[param("What the run asks about")] question: Question,
     ) -> Result<(), Refusal> {
         let now = cx.now_ms();
         let target = self.issue_mut(issue)?;
-        let run = own_run(cx, target, epoch)?;
+        let run = own_run(cx, target)?;
         if run.phase == RunPhase::Waiting {
             return Err(Refusal::new("The run waits for an answer already"));
         }
@@ -561,6 +569,7 @@ impl Tracker {
         run.updated_ms = now;
         run.confirmation = Some(Confirmation {
             id: question.id,
+            app: question.app,
             action: question.action,
             resource: question.resource,
             arguments_digest: question.arguments_digest,
@@ -620,11 +629,10 @@ impl Tracker {
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        epoch: u64,
         #[param("The question's id")] id: String,
     ) -> Result<(), Refusal> {
         let target = self.issue_mut(issue)?;
-        let run = own_run(cx, target, epoch)?;
+        let run = own_run(cx, target)?;
         if run.confirmation.as_ref().is_none_or(|question| {
             question.id != id || question.state == ConfirmationState::Waiting
         }) {
@@ -643,7 +651,6 @@ impl Tracker {
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        epoch: u64,
         outcome: RunOutcome,
         #[param("What it did, in markdown")] summary: Option<String>,
     ) -> Result<(), Refusal> {
@@ -651,13 +658,14 @@ impl Tracker {
         let at_ms = cx.now_ms();
         let author = author(cx)?;
         let target = self.issue_mut(issue)?;
-        let run = own_run(cx, target, epoch)?;
+        let run = own_run(cx, target)?;
         run.phase = match outcome {
             RunOutcome::Done => RunPhase::Done,
             RunOutcome::Failed => RunPhase::Failed,
             RunOutcome::Stopped => RunPhase::Stopped,
         };
         run.updated_ms = at_ms;
+        let epoch = run.epoch;
         target.status = match outcome {
             RunOutcome::Done => Status::InReview,
             RunOutcome::Failed | RunOutcome::Stopped => Status::Todo,

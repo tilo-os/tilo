@@ -26,6 +26,7 @@ mod resource_views;
 #[cfg(target_os = "linux")]
 mod service_sessions;
 mod task_execution;
+mod tracker_runs;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
@@ -1827,6 +1828,19 @@ fn native_task_execution(
     Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
 }
 
+fn native_tracker_runs(
+    tree: &WorkspaceTreeHandle,
+    network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+) -> Arc<dyn tilo_action_broker::services::TrackerRuns> {
+    Arc::new(tracker_runs::NativeTrackerRuns::new(
+        NativeOwnerCommitService {
+            history_keys,
+            ..NativeOwnerCommitService::new(tree.clone(), network)
+        },
+    ))
+}
+
 fn native_resource_views(
     membership: Option<&WorkspaceTreeHandle>,
     network: Option<&Arc<super::network::ShellNetwork>>,
@@ -1858,6 +1872,9 @@ pub fn native_services(
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> HostServices {
+    let tracker_runs = membership
+        .as_ref()
+        .map(|tree| native_tracker_runs(tree, network.clone(), history_keys.clone()));
     let committed_documents = membership
         .as_ref()
         .map(|tree| native_document_reads(tree, network.clone(), history_keys));
@@ -1930,6 +1947,7 @@ pub fn native_services(
         committed_documents,
         workspace_memberships,
         task_execution,
+        tracker_runs,
         person_chat: membership
             .as_ref()
             .map(|tree| native_person_chat(tree, network.clone())),

@@ -326,18 +326,25 @@ impl CapnpBrokerState {
         caller: &durable_local_invocation::LocalCaller,
     ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, String> {
         let binding = run.native.as_ref().ok_or("native task binding absent")?;
-        let snapshot = self
-            .native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?
-            .snapshot(&run.cluster_id)?;
-        if !snapshot.tasks.iter().any(|task| {
-            task.id == run.task_id && task.assigned_agent.as_deref() == Some(run.agent_id.as_str())
-        }) || snapshot
-            .controls
-            .get(&run.task_id)
-            .is_none_or(|control| control.run_epoch != binding.epoch)
-        {
-            return Err("native task observation source was replaced".into());
+        if crate::services::is_tracker_issue(&binding.task_id) {
+            if self.tracker_run_of(run)?.epoch != binding.epoch {
+                return Err("native task observation source was replaced".into());
+            }
+        } else {
+            let snapshot = self
+                .native_tasks(&run.cluster_id)
+                .ok_or("native task owner unavailable")?
+                .snapshot(&run.cluster_id)?;
+            if !snapshot.tasks.iter().any(|task| {
+                task.id == run.task_id
+                    && task.assigned_agent.as_deref() == Some(run.agent_id.as_str())
+            }) || snapshot
+                .controls
+                .get(&run.task_id)
+                .is_none_or(|control| control.run_epoch != binding.epoch)
+            {
+                return Err("native task observation source was replaced".into());
+            }
         }
         let record = {
             let guard = self
@@ -375,9 +382,7 @@ impl CapnpBrokerState {
                     .actor()?,
             ),
         )?;
-        self.native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?
-            .authorize_action(&run.cluster_id, &run.agent_id, &requirement)?;
+        self.authorize_task_action(run, &requirement)?;
         let (app, record_id) = if target.provider.is_empty() {
             let offered = self
                 .surfaces
@@ -417,7 +422,7 @@ impl CapnpBrokerState {
         Ok(Some((record.wire_id, update)))
     }
 
-    fn cancel_native_children(&self, run: &PendingTaskRun) -> Result<(), String> {
+    pub(super) fn cancel_native_children(&self, run: &PendingTaskRun) -> Result<(), String> {
         let binding = run.native.as_ref().ok_or("native task binding absent")?;
         let owner = InvocationOwner::NativeTask {
             agent: run.agent_id.clone(),
@@ -646,7 +651,7 @@ impl CapnpBrokerState {
         )
     }
 
-    fn offer_native_run(
+    pub(super) fn offer_native_run(
         &self,
         room: &str,
         binding: NativeTaskBinding,
@@ -717,6 +722,7 @@ impl CapnpBrokerState {
             }
             Err(_) => return,
         };
+        self.refresh_tracker_runs(&rooms);
         for room in rooms {
             let Some(service) = self.native_tasks(&room) else {
                 continue;
@@ -753,6 +759,7 @@ impl CapnpBrokerState {
         runs.retain(|_, run| {
             run.native.as_ref().is_none_or(|binding| {
                 run.cluster_id != room
+                    || crate::services::is_tracker_issue(&binding.task_id)
                     || snapshot
                         .controls
                         .get(&run.task_id)
@@ -770,6 +777,9 @@ impl CapnpBrokerState {
         lease: &str,
     ) -> Result<runtime_collab::TaskRunStatus, String> {
         let binding = run.native.as_ref().ok_or("not a native task run")?;
+        if crate::services::is_tracker_issue(&binding.task_id) {
+            return self.tracker_status(run, lease);
+        }
         let (_, revision) =
             runtime_collab::native_task_revision(lease).ok_or("invalid native task lease")?;
         let snapshot = self

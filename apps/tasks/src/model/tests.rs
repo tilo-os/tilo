@@ -189,7 +189,6 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
     let report = |phase| {
         Tracker::REPORT_RUN.with(tracker::ReportRun {
             issue: issue.clone(),
-            epoch: 1,
             phase,
             text: Some("Read the index".into()),
         })
@@ -202,8 +201,7 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
     agent
         .apply(Tracker::INCORPORATE.with(tracker::Incorporate {
             issue: issue.clone(),
-            epoch: 1,
-            messages: pending,
+            through: u64::try_from(pending.len()).unwrap(),
         }))
         .unwrap();
 
@@ -211,10 +209,10 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
     agent
         .apply(Tracker::ASK_CONFIRMATION.with(tracker::AskConfirmation {
             issue: issue.clone(),
-            epoch: 1,
             question: Question {
                 id: "q1".into(),
-                action: "so.tilo.mail/mail.account/send".into(),
+                app: "so.tilo.mail".into(),
+                action: "send".into(),
                 resource: "mail.account".into(),
                 arguments_digest: "digest".into(),
                 draft: ui::serde_json::json!({ "to": "team" }),
@@ -250,7 +248,6 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
         .apply(
             Tracker::SETTLE_CONFIRMATION.with(tracker::SettleConfirmation {
                 issue: issue.clone(),
-                epoch: 1,
                 id: "q1".into(),
             }),
         )
@@ -258,7 +255,6 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
     agent
         .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
             issue: issue.clone(),
-            epoch: 1,
             outcome: RunOutcome::Done,
             summary: Some("Tidied".into()),
         }))

@@ -40,6 +40,7 @@ tilo-model-gateway = { default-features = false, path = "../../crates/agent/mode
 # Pictures a read answers with are shown to a model that sees, base64-encoded.
 base64.workspace = true
 blake3.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

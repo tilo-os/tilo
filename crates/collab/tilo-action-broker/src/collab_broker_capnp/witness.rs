@@ -266,12 +266,8 @@ impl CapnpBrokerState {
             .ok_or("invalid native lease")?
             .1;
         let actor = binding.actor()?;
-        let service = self
-            .native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?;
-        service.authorize_action(
-            &run.cluster_id,
-            &run.agent_id,
+        self.authorize_task_action(
+            run,
             &crate::services::NativeTaskActionRequirement {
                 binding: Some(binding.clone()),
                 app: app.into(),

@@ -109,7 +109,9 @@ impl Budget {
 pub struct Question {
     /// The question's id.
     pub id: String,
-    /// The action, as `app/resource/action`.
+    /// The app whose action it is.
+    pub app: String,
+    /// The action's id.
     pub action: String,
     /// The resource it acts on.
     pub resource: String,
@@ -133,14 +135,17 @@ pub enum ConfirmationState {
 /// An action a run asks its person before taking.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Confirmation {
-    /// The question's id, as the door that paused the run gave it.
+    /// The question's id.
     pub id: String,
-    /// The action, as its app names it (`app/resource/action`).
+    /// The app whose action it is.
+    pub app: String,
+    /// The action's id.
     pub action: String,
     /// The resource it acts on.
     pub resource: String,
-    /// The digest of the exact arguments asked about: a confirmation
-    /// admits those arguments (with the person's edits) and no others.
+    /// Hex of the digest of the exact arguments asked about: a
+    /// confirmation admits those arguments (with the person's edits) and no
+    /// others.
     pub arguments_digest: String,
     /// What it would do, as a draft the person can edit: one field per
     /// parameter, secrets withheld (`tilo_actions::draft`). Shaped by the

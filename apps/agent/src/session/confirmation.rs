@@ -2,7 +2,7 @@
 //!
 //! Where an operation asks first, the host answers the step
 //! [`tilo_actions::draft::AWAITING_CONFIRMATION`] and shows the person the
-//! step's draft in Task Center. The step waits: it says so in the task's
+//! step's draft in Task Center, or on the issue for an issue's run. The step waits: it says so in the task's
 //! progress, asks again with the identical request every few seconds (the
 //! host runs it once the person confirmed it, as they edited it), and stops
 //! when the run is cancelled. Time spent waiting does not count against the
@@ -53,6 +53,7 @@ impl Session {
     ) -> Result<Result<tilo_actions::InvocationUpdate, TaskActionStop>> {
         let paused = ui::time::now();
         tracing::info!(action = %action.action, "task step waits for confirmation");
+        self.ask_on_tracker(run, (action, arguments))?;
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Progress {
@@ -88,6 +89,9 @@ impl Session {
             }
         };
         self.extend_deadline(paused);
+        if outcome.is_ok() {
+            self.settle_on_tracker(run, (action, arguments))?;
+        }
         Ok(outcome)
     }
 

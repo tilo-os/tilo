@@ -59,19 +59,29 @@ system and an entry in its history:
 | Action | Who | What |
 |---|---|---|
 | `approve-run` | people | starts run *n*+1 for the assigned agent, acting for the approver |
-| `stop-run` | people | fences the run; what it already changed stays |
+| `stop-run` | people | stops the run; what it already changed stays |
 | `set-execution-budget` | people | turn and total time ceilings while no run is active |
-| `send-message` | anyone who may comment | a message in the thread addressed to the current run |
-| `report-run` | agents | the run's phase and progress, as thread messages |
-| `ask-confirmation` | agents | records the draft of an action that asks first |
-| `answer-confirmation` | people | confirms (with edits) or declines with a reason |
-| `finish-run` | agents | ends the run: done, failed or stopped |
+| `send-message` | anyone who may comment | a message in the thread to the run going on |
+| `report-run` | the run's agent | its phase, and progress posted in the thread |
+| `incorporate` | the run's agent | the first *n* messages to the run, taken in |
+| `ask-confirmation` | the run's agent | the draft of an action that asks first |
+| `answer-confirmation` | people | confirm (with edits) or decline with a reason |
+| `settle-confirmation` | the run's agent | the answer is spent once the action started |
+| `finish-run` | the run's agent | done goes to review, failed or stopped back to Todo |
 
-The agent's own actions on other resources are admitted as before: as the agent
-acting for the run's approver, bounded by the approver's live grants, the
-agent's grants and the run's frozen scope (the issue's links narrow it). The
-runner reads its instruction from the issue's title and body, and the thread's
-messages addressed to its run, never another issue's.
+The broker reads the tracker (`TrackerRuns`, served by the shell from the
+room's committed record) and delivers each going run to its agent under the
+native task lease: the instruction is the issue's title and description, the
+steering is the thread's messages to the run, and a run the tracker no longer
+holds as going is cancelled. The agent writes the run's reports, questions and
+end itself, through the tracker's actions above, as children of its run.
+
+Each of the agent's actions, the tracker's included, is admitted as the agent
+acting for the run's approver: bounded by the approver's live grants, the
+agent's grants and the issue's own grant set, with every message to the run
+read first. An action that asks first waits for the person's answer on the
+issue, and a confirmation admits only the arguments asked about, when the
+draft the person saw is the one those arguments render.
 
 ## Migration
 

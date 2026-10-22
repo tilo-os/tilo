@@ -40,6 +40,7 @@ fields = [
   { path = "issues.*.run.updated_ms", type = "i64" },
   { path = "issues.*.run.confirmation", type = "Option<Confirmation>", stored = "record" },
   { path = "issues.*.run.confirmation.id", type = "String" },
+  { path = "issues.*.run.confirmation.app", type = "String" },
   { path = "issues.*.run.confirmation.action", type = "String" },
   { path = "issues.*.run.confirmation.resource", type = "String" },
   { path = "issues.*.run.confirmation.arguments_digest", type = "String" },
@@ -174,7 +175,6 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "epoch", required = true, schema = { type = "integer", minimum = 0 } },
   { name = "phase", required = true, schema = { oneOf = [{ type = "string", const = "approved" }, { type = "string", const = "accepted" }, { type = "string", const = "planning" }, { type = "string", const = "executing" }, { type = "string", const = "waiting" }, { type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
   { name = "text", required = false, schema = { type = ["string", "null"] } },
 ]
@@ -185,8 +185,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "epoch", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "messages", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "through", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]
@@ -195,8 +194,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "epoch", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "question", required = true, schema = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, arguments_digest = { type = "string" }, draft = {}, id = { type = "string" }, resource = { type = "string" } }, required = ["id", "action", "resource", "arguments_digest", "draft"] } },
+  { name = "question", required = true, schema = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, app = { type = "string" }, arguments_digest = { type = "string" }, draft = {}, id = { type = "string" }, resource = { type = "string" } }, required = ["id", "app", "action", "resource", "arguments_digest", "draft"] } },
 ]
 
 [[resources.verbs]]
@@ -216,7 +214,6 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "epoch", required = true, schema = { type = "integer", minimum = 0 } },
   { name = "id", required = true, schema = { type = "string" } },
 ]
 
@@ -226,7 +223,6 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "epoch", required = true, schema = { type = "integer", minimum = 0 } },
   { name = "outcome", required = true, schema = { oneOf = [{ type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
   { name = "summary", required = false, schema = { type = ["string", "null"] } },
 ]

@@ -3,7 +3,11 @@ mod own_device;
 pub mod person_chat;
 mod task_execution;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
-pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
+pub use task_execution::{
+    NativeTaskActionRequirement, NativeTaskBinding, TRACKER_APP, TRACKER_ISSUE_PREFIX,
+    TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun, TrackerRuns,
+    WorkspaceTaskExecution, is_tracker_issue,
+};
 
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
@@ -1556,6 +1560,9 @@ pub struct HostServices {
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     pub task_execution: Option<Arc<dyn WorkspaceTaskExecution>>,
+    /// The Tasks app's tracker, whose issues assigned to an agent are its
+    /// runs. Without it agents run only the room's own tasks.
+    pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
     pub person_chat: Option<person_chat::PersonChatService>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
