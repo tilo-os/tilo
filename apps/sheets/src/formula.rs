@@ -494,7 +494,48 @@ enum Token {
     Ne,
 }
 
-fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
+impl std::fmt::Display for Token {
+    /// The token as a formula spells it, for naming it in a parse problem.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Token::Num(n) => write!(f, "{n}"),
+            Token::Str(s) => write!(f, "\"{s}\""),
+            Token::Ident(id) => f.write_str(id),
+            Token::Op(op) => write!(f, "{op}"),
+            Token::Lt => f.write_str("<"),
+            Token::Gt => f.write_str(">"),
+            Token::Le => f.write_str("<="),
+            Token::Ge => f.write_str(">="),
+            Token::Eq => f.write_str("="),
+            Token::Ne => f.write_str("<>"),
+        }
+    }
+}
+
+/// Why a formula does not parse: the error its cell shows, and the problem
+/// in words for whoever wrote it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParseError {
+    /// What the cell shows.
+    pub error: FormulaError,
+    /// What is wrong, e.g. "`INDEX(` is never closed: add `)`".
+    pub problem: String,
+}
+
+impl ParseError {
+    fn new(error: FormulaError, problem: impl Into<String>) -> Self {
+        Self {
+            error,
+            problem: problem.into(),
+        }
+    }
+
+    fn syntax(problem: impl Into<String>) -> Self {
+        Self::new(FormulaError::Error, problem)
+    }
+}
+
+fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
     let chars: Vec<char> = input.chars().collect();
     let mut scan = Scan::new(&chars);
     let mut out = Vec::new();
@@ -520,10 +561,9 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
                         scan = before_exponent; // not actually an exponent
                     }
                 }
-                let n = scan
-                    .text_from(start)
-                    .parse::<f64>()
-                    .map_err(|_| FormulaError::Error)?;
+                let n = scan.text_from(start).parse::<f64>().map_err(|_| {
+                    ParseError::syntax(format!("`{}` is not a number", scan.text_from(start)))
+                })?;
                 out.push(Token::Num(n));
             }
             '"' => {
@@ -532,7 +572,9 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
                 scan.skip_while(|c| c != '"');
                 let literal = scan.text_from(start);
                 if scan.bump() != Some('"') {
-                    return Err(FormulaError::Error); // unterminated string
+                    return Err(ParseError::syntax(
+                        "a text in quotes is never closed: add the closing `\"`",
+                    ));
                 }
                 out.push(Token::Str(literal));
             }
@@ -573,7 +615,11 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
                 scan.bump();
                 out.push(Token::Op(ch));
             }
-            _ => return Err(FormulaError::Error),
+            _ => {
+                return Err(ParseError::syntax(format!(
+                    "`{ch}` has no meaning in a formula"
+                )));
+            }
         }
     }
     Ok(out)
@@ -633,15 +679,29 @@ impl Parser {
         t
     }
 
-    fn parse(&mut self) -> Result<Expr, FormulaError> {
+    fn parse(&mut self) -> Result<Expr, ParseError> {
         let e = self.parse_comparison()?;
-        if self.pos != self.tokens.len() {
-            return Err(FormulaError::Error);
+        match self.peek() {
+            None => Ok(e),
+            Some(Token::Op(')')) => Err(ParseError::syntax("a `)` closes no `(`")),
+            Some(token) => Err(ParseError::syntax(format!(
+                "unexpected `{token}` after a complete value: an operator or `,` is missing"
+            ))),
         }
-        Ok(e)
     }
 
-    fn parse_comparison(&mut self) -> Result<Expr, FormulaError> {
+    /// The problem of the `(` after `opened` (a function's name, or nothing
+    /// for a bracket) that `found` does not close.
+    fn unclosed(opened: &str, found: Option<Token>) -> ParseError {
+        ParseError::syntax(match (opened, found) {
+            ("", None) => "a `(` is never closed: add `)`".to_owned(),
+            ("", Some(token)) => format!("`)` is expected, not `{token}`"),
+            (_, None) => format!("`{opened}(` is never closed: add `)`"),
+            (_, Some(token)) => format!("in `{opened}(…)` `,` or `)` is expected, not `{token}`"),
+        })
+    }
+
+    fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_concat()?;
         loop {
             let op = match self.peek() {
@@ -660,7 +720,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_concat(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_concat(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_add()?;
         while matches!(self.peek(), Some(Token::Op('&'))) {
             self.next();
@@ -670,7 +730,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_add(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_add(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_mul()?;
         loop {
             let op = match self.peek() {
@@ -685,7 +745,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_mul(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek() {
@@ -700,7 +760,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_unary(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         if let Some(Token::Op(c @ ('-' | '+'))) = self.peek().cloned() {
             self.next();
             let e = self.parse_unary()?;
@@ -709,7 +769,7 @@ impl Parser {
         self.parse_power()
     }
 
-    fn parse_power(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_power(&mut self) -> Result<Expr, ParseError> {
         let base = self.parse_postfix()?;
         if matches!(self.peek(), Some(Token::Op('^'))) {
             self.next();
@@ -720,7 +780,7 @@ impl Parser {
         Ok(base)
     }
 
-    fn parse_postfix(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
         let mut e = self.parse_primary()?;
         // Percent literal suffix: `50%` -> 0.5.
         while matches!(self.peek(), Some(Token::Op('%'))) {
@@ -730,7 +790,7 @@ impl Parser {
         Ok(e)
     }
 
-    fn parse_primary(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match self.next() {
             Some(Token::Num(n)) => Ok(Expr::Num(n)),
             Some(Token::Str(s)) => Ok(Expr::Str(s)),
@@ -738,7 +798,7 @@ impl Parser {
                 let e = self.parse_comparison()?;
                 match self.next() {
                     Some(Token::Op(')')) => Ok(e),
-                    _ => Err(FormulaError::Error),
+                    found => Err(Self::unclosed("", found)),
                 }
             }
             Some(Token::Ident(id)) => {
@@ -759,7 +819,7 @@ impl Parser {
                     }
                     match self.next() {
                         Some(Token::Op(')')) => {}
-                        _ => return Err(FormulaError::Error),
+                        found => return Err(Self::unclosed(&id, found)),
                     }
                     return Ok(Expr::Call(id.to_uppercase(), args));
                 }
@@ -773,30 +833,54 @@ impl Parser {
                 if matches!(self.peek(), Some(Token::Op(':'))) {
                     self.next();
                     let Some(Token::Ident(end)) = self.next() else {
-                        return Err(FormulaError::Ref);
+                        return Err(ParseError::new(
+                            FormulaError::Ref,
+                            format!("`{id}:` is followed by no cell, as in `A1:B5`"),
+                        ));
                     };
-                    let a = a1_to_addr(&id).ok_or(FormulaError::Ref)?;
-                    let b = a1_to_addr(&end).ok_or(FormulaError::Ref)?;
+                    let (a, b) = a1_to_addr(&id).zip(a1_to_addr(&end)).ok_or_else(|| {
+                        ParseError::new(
+                            FormulaError::Ref,
+                            format!("`{id}:{end}` is not a range of cells such as `A1:B5`"),
+                        )
+                    })?;
                     return Ok(Expr::Range(a, b));
                 }
                 // Single cell reference; an identifier that isn't a valid A1
                 // reference is an unknown name.
-                let addr = a1_to_addr(&id).ok_or(FormulaError::Name)?;
+                let addr = a1_to_addr(&id).ok_or_else(|| {
+                    ParseError::new(
+                        FormulaError::Name,
+                        format!("`{id}` is not a cell such as `A1` nor a call such as `SUM(…)`"),
+                    )
+                })?;
                 Ok(Expr::Ref(addr))
             }
-            _ => Err(FormulaError::Error),
+            None => Err(ParseError::syntax(
+                "the formula ends where a value is expected",
+            )),
+            Some(token) => Err(ParseError::syntax(format!(
+                "unexpected `{token}` where a value is expected"
+            ))),
         }
     }
 }
 
 /// Parse a formula body (without the leading `=`) into an `Expr`. The
 /// returned tree can be evaluated repeatedly against changing cell data.
-fn parse(formula: &str) -> Result<Expr, FormulaError> {
+fn parse(formula: &str) -> Result<Expr, ParseError> {
     let tokens = tokenize(formula)?;
     if tokens.is_empty() {
-        return Err(FormulaError::Error);
+        return Err(ParseError::syntax("nothing follows the `=`"));
     }
     Parser::new(tokens).parse()
+}
+
+/// Why cell input `raw` is a formula that does not parse: `None` for a
+/// formula that parses and for input that is no formula. The cell keeps the
+/// input and shows the error, as a spreadsheet does.
+pub fn parse_error(raw: &str) -> Option<ParseError> {
+    parse(raw.strip_prefix('=')?).err()
 }
 
 // ---------------------------------------------------------------------------
@@ -852,7 +936,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             self.visiting.insert(addr);
             let v = match parse(body) {
                 Ok(expr) => self.eval_expr(&expr),
-                Err(e) => CellValue::Error(e),
+                Err(e) => CellValue::Error(e.error),
             };
             self.visiting.remove(&addr);
             v
@@ -3143,5 +3227,52 @@ mod tests {
             assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:C1)");
             assert_eq!(col("=SUM($A$1:$A$3)"), "=SUM($A$1:$A$3)");
         }
+    }
+
+    /// `parse_error` names what the engine cannot parse, with the error the
+    /// cell shows, and passes formulas that parse and input that is no
+    /// formula.
+    #[test]
+    fn parse_errors_say_what_is_wrong() {
+        let problem = |raw: &str| parse_error(raw).map(|e| (e.error.text(), e.problem));
+        assert_eq!(problem("=SUM(A1:A3)"), None);
+        assert_eq!(problem("plain (text"), None);
+        assert_eq!(
+            problem("=SUM(A1"),
+            Some(("#ERROR!", "`SUM(` is never closed: add `)`".into()))
+        );
+        assert_eq!(
+            problem("=(1+2"),
+            Some(("#ERROR!", "a `(` is never closed: add `)`".into()))
+        );
+        assert_eq!(
+            problem("=1+2)"),
+            Some(("#ERROR!", "a `)` closes no `(`".into()))
+        );
+        assert_eq!(
+            problem("="),
+            Some(("#ERROR!", "nothing follows the `=`".into()))
+        );
+        assert_eq!(
+            problem("=\"open"),
+            Some((
+                "#ERROR!",
+                "a text in quotes is never closed: add the closing `\"`".into()
+            ))
+        );
+        assert_eq!(
+            problem("=1 2"),
+            Some((
+                "#ERROR!",
+                "unexpected `2` after a complete value: an operator or `,` is missing".into()
+            ))
+        );
+        assert_eq!(
+            problem("=TOTAL"),
+            Some((
+                "#NAME?",
+                "`TOTAL` is not a cell such as `A1` nor a call such as `SUM(…)`".into()
+            ))
+        );
     }
 }

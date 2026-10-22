@@ -346,7 +346,7 @@ impl Workbook {
         sheet: &Id,
         #[param("Top-left cell, e.g. A1")] start: String,
         #[param(
-            "Rows of values written rightward and down from start; \"=…\" is a formula, \"\" clears, null skips"
+            "Rows of values written rightward and down from start; \"=…\" is a formula (one that does not parse is kept, shows its error and is listed in the answer's formula_errors), \"\" clears, null skips"
         )]
         rows: Vec<Vec<serde_json::Value>>,
     ) -> Result<(), Refusal> {

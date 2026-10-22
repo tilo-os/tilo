@@ -199,13 +199,60 @@ fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Va
         }
         rows.push(serde_json::Value::Array(line));
     }
-    serde_json::json!({
+    let mut content = serde_json::json!({
         "sheet": snap.name,
         "range": range_label(start, end),
         "rows": rows,
         "formulas": formulas,
         "bold": bold,
-    })
+    });
+    note_formula_errors(&mut content, snap, start, end);
+    content
+}
+
+/// Adds to `content` the formulas of `start..=end` that do not parse, when
+/// there are any.
+fn note_formula_errors(
+    content: &mut serde_json::Value,
+    snap: &SheetSnapshot,
+    start: Addr,
+    end: Addr,
+) {
+    let errors = formula_errors(snap, start, end);
+    if let Some(fields) = content.as_object_mut() {
+        if errors.is_empty() {
+            fields.remove("formula_errors");
+        } else {
+            fields.insert("formula_errors".into(), errors.into());
+        }
+    }
+}
+
+/// The formulas of `start..=end` that do not parse, each with its cell, the
+/// error it shows and what is wrong, at most [`MAX_ANSWERED_CELLS`]. The
+/// cells keep them, as a spreadsheet does; this tells the writer what to fix.
+fn formula_errors(snap: &SheetSnapshot, start: Addr, end: Addr) -> Vec<serde_json::Value> {
+    let mut cells: Vec<(Addr, &String)> = snap
+        .raw
+        .iter()
+        .filter(|((col, row), _)| {
+            (start.0..=end.0).contains(col) && (start.1..=end.1).contains(row)
+        })
+        .map(|(addr, raw)| (*addr, raw))
+        .collect();
+    cells.sort_unstable_by_key(|((col, row), _)| (*row, *col));
+    cells
+        .into_iter()
+        .filter_map(|((col, row), raw)| {
+            let error = crate::formula::parse_error(raw)?;
+            Some(serde_json::json!({
+                "cell": addr_to_a1(col, row),
+                "shows": error.error.text(),
+                "message": error.problem,
+            }))
+        })
+        .take(MAX_ANSWERED_CELLS as usize)
+        .collect()
 }
 
 /// The cell edits that answer with the range they changed, so a caller sees
@@ -286,6 +333,9 @@ pub fn answer(
         && let Some(fields) = content.as_object_mut()
     {
         fields.insert("changed".into(), range_label(start, end).into());
+    }
+    if shown_end != end {
+        note_formula_errors(&mut content, &snap, start, end);
     }
     Some(content)
 }
