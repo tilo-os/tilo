@@ -27,6 +27,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use tilo_control::client::{connect, id_from_printed, invoke_wire, printable_id, round_trip};
 use tilo_control::{TEST_CONTROL_ENV, admin_socket_path, default_socket_path};
 
 /// Which socket a command was routed to, so a failure to reach it can say
@@ -91,6 +92,27 @@ fn connect_hint(kind: SocketKind, error: &std::io::Error) -> String {
             "is the desktop running, and is this the socket it bound?".to_string()
         }
     }
+}
+
+/// What a person reads when the admin's socket turns their process away:
+/// it serves only the device owner's own login, and a terminal app, with
+/// everything run in it, is not that. `tilo action` reaches the desktop
+/// from there, with the terminal workspace's scope.
+const TURNED_AWAY: &str = "tilo-control works only from the device owner's own login.\n\
+     In a terminal app, use `tilo action` instead:\n\
+     \x20 tilo actions              what this desktop can do\n\
+     \x20 tilo do <action>          do one of those things\n\
+     \x20 tilo open <app>           open an app";
+
+/// Whether the admin socket answered by turning this process away rather
+/// than answering its request.
+fn turned_away_by_admin_socket(kind: SocketKind, response: &serde_json::Value) -> bool {
+    kind == SocketKind::Admin
+        && tilo_control::client::refusal_of_process(
+            &tilo_control::client::Door::Admin(PathBuf::new()),
+            response,
+        )
+        .is_some()
 }
 
 /// A next step for a refusal the compositor answered with.
@@ -1052,29 +1074,6 @@ fn parse_modifier_flags(s: &str) -> Result<(bool, bool, bool, bool), ParseError>
 /// Build the JSON wire payload for a parsed [`Command`]. For `raw`
 /// the caller's JSON is used verbatim; every other variant serialises
 /// through `serde_json::to_string`.
-/// The `actions_invoke` request, carrying `device` and `wait_ms` only when
-/// they are given.
-fn invoke_wire(
-    provider: &str,
-    id: &str,
-    args: &serde_json::Value,
-    device: Option<&str>,
-    wait_ms: Option<u64>,
-) -> serde_json::Value {
-    let mut value = serde_json::json!({
-        "op": "actions_invoke", "provider": provider, "id": id, "args": args,
-    });
-    if let Some(object) = value.as_object_mut() {
-        if let Some(device) = device {
-            object.insert("device".to_string(), device.into());
-        }
-        if let Some(wait_ms) = wait_ms {
-            object.insert("wait_ms".to_string(), wait_ms.into());
-        }
-    }
-    value
-}
-
 fn action_arguments(
     text: Option<&str>,
     stdin_pending: bool,
@@ -1238,28 +1237,6 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
     Ok(value.to_string())
 }
 
-/// Connect to the unix socket at `path`. Returns a usage-style error
-/// message wrapped in a string so the caller can format it however
-/// it likes — the binary's `main` prints this and exits 2.
-fn connect(path: &PathBuf) -> std::io::Result<UnixStream> {
-    UnixStream::connect(path)
-}
-
-/// Send `cmd_json` to the compositor and read one response line.
-/// Both directions are line-delimited; the function pushes `\n` and
-/// reads up to the first newline.
-fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> std::io::Result<serde_json::Value> {
-    let mut line = cmd_json.to_string();
-    line.push('\n');
-    stream.write_all(line.as_bytes())?;
-    stream.flush()?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    serde_json::from_str(response.trim())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-}
-
 /// Print the compositor's response in the format each subcommand
 /// expects. Returns the process exit code (0 on `ok`/`targets`/`state`,
 /// 1 on `err`).
@@ -1371,55 +1348,6 @@ fn action_rows(actions: &[serde_json::Value]) -> Vec<String> {
                 .to_string()
         })
         .collect()
-}
-
-/// `id` with every control character written as `\xHH`, so a terminal
-/// shows each part and a person can copy it back into `actions invoke`.
-fn printable_id(id: &str) -> std::borrow::Cow<'_, str> {
-    use std::fmt::Write as _;
-    if !id.chars().any(char::is_control) {
-        return std::borrow::Cow::Borrowed(id);
-    }
-    let mut out = String::with_capacity(id.len().saturating_add(8));
-    for ch in id.chars() {
-        // Every control character is below U+0100, so two digits name it.
-        if ch.is_control() {
-            let _ = write!(out, "\\x{:02x}", u32::from(ch));
-        } else {
-            out.push(ch);
-        }
-    }
-    std::borrow::Cow::Owned(out)
-}
-
-/// [`printable_id`] undone: `\xHH` of a control character back to the
-/// character. Ids never hold such text themselves, so a raw id (from
-/// `--json`) passes through unchanged.
-fn id_from_printed(printed: &str) -> String {
-    let mut out = String::with_capacity(printed.len());
-    let mut chars = printed.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            let mut ahead = chars.clone();
-            let escaped = (ahead.next() == Some('x'))
-                .then(|| Some([ahead.next()?, ahead.next()?]))
-                .flatten()
-                .and_then(|[high, low]| {
-                    high.to_digit(16)?
-                        .checked_mul(16)?
-                        .checked_add(low.to_digit(16)?)
-                })
-                .and_then(char::from_u32)
-                .filter(|decoded| decoded.is_control());
-            if let Some(decoded) = escaped {
-                out.push(decoded);
-                chars = ahead;
-                continue;
-            }
-        }
-        out.push(ch);
-    }
-    out
 }
 
 fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
@@ -1758,6 +1686,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if turned_away_by_admin_socket(kind, &response) {
+        eprintln!("{TURNED_AWAY}");
+        return ExitCode::from(1);
+    }
     let code = print_response(&invocation.command, &response);
     if code == 0 {
         ExitCode::SUCCESS
@@ -1773,6 +1705,24 @@ mod tests {
     //! socket protocol itself is covered in
     //! `compositor::test_control::tests` and `tests/control_socket_test.rs`.
     use super::*;
+
+    /// In the Terminal app the admin socket answers `not_permitted`; the
+    /// person is pointed at `tilo action`, in plain words.
+    #[test]
+    fn a_sandboxed_caller_is_pointed_at_tilo_action_without_jargon() {
+        let refused = serde_json::json!({"err": {
+            "code": "not_permitted",
+            "message": "a sandboxed process cannot use the admin control socket"
+        }});
+        assert!(turned_away_by_admin_socket(SocketKind::Admin, &refused));
+        assert!(!turned_away_by_admin_socket(SocketKind::Named, &refused));
+        let other = serde_json::json!({"err": {"code": "unknown_action", "message": ""}});
+        assert!(!turned_away_by_admin_socket(SocketKind::Admin, &other));
+        assert!(TURNED_AWAY.contains("tilo action"));
+        for jargon in ["socket", "collaboration", "sandbox", "connection"] {
+            assert!(!TURNED_AWAY.contains(jargon), "{jargon} in {TURNED_AWAY}");
+        }
+    }
 
     /// Ids join their parts with U+001F, which a terminal draws as nothing:
     /// the table ran the parts and the columns together. Each part shows,
