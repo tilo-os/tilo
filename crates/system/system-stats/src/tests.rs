@@ -710,6 +710,12 @@ impl crate::storage::StorageSource for HeldStorage {
 /// answers the app's other requests meanwhile.
 #[test]
 fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
+    struct Shared(std::sync::Arc<HeldStorage>);
+    impl crate::storage::StorageSource for Shared {
+        fn read(&self) -> Result<crate::protocol::Storage, Refusal> {
+            self.0.read()
+        }
+    }
     let root = tempfile::tempdir().unwrap();
     machine(root.path(), 100);
     let (release, released) = mpsc::channel();
@@ -719,12 +725,6 @@ fn a_slow_storage_read_holds_up_neither_the_service_nor_the_connection() {
         release: std::sync::Mutex::new(released),
         readers: std::sync::Mutex::new(Vec::new()),
     });
-    struct Shared(std::sync::Arc<HeldStorage>);
-    impl crate::storage::StorageSource for Shared {
-        fn read(&self) -> Result<crate::protocol::Storage, Refusal> {
-            self.0.read()
-        }
-    }
     let hub = Hub::with_storage(
         Box::new(KernelProbe::at(root.path())),
         EndPolicy::for_user(UID, std::process::id()),
