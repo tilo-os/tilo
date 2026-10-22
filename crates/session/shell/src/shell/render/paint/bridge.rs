@@ -122,11 +122,10 @@ impl VelloDrmBridge {
 
         let device_errors = DeviceErrorLatch::install(device);
         let mut loss_watch = ui::gpu::LossWatch::new(dev_handle.loss_monitor());
-        let opened_in_software = ui::gpu::software_fallback().is_some();
         // A GPU that cannot be brought back loses every device opened on it, before its first
         // frame.
         #[cfg(target_os = "linux")]
-        if super::dead_gpu_injected(opened_in_software) {
+        if super::dead_gpu_injected(ui::gpu::software_fallback().is_some()) {
             apply_injected_fault(device, super::InjectedGpuFault::Dead);
         }
         let mut target = match RetainedGpuTarget::new(dev_handle, width, height) {
@@ -168,7 +167,6 @@ impl VelloDrmBridge {
             device_errors,
             loss_watch,
             adapter: adapter_info,
-            opened_in_software,
             bgra_blitter,
             dispatch_stage_observer: std::env::var_os("TILO_PROFILE_GPU_STAGES")
                 .is_some_and(|value| value == "1")
@@ -1514,7 +1512,7 @@ impl VelloDrmBridge {
     /// ([`super::InjectedGpuFault`]), on this bridge's own device.
     #[cfg(target_os = "linux")]
     fn apply_injected_fault(&self) {
-        if let Some(fault) = super::injected_gpu_fault(self.opened_in_software) {
+        if let Some(fault) = super::injected_gpu_fault(ui::gpu::software_fallback().is_some()) {
             apply_injected_fault(&self.target.device, fault);
         }
     }
