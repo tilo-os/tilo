@@ -303,6 +303,9 @@ pub struct OverlayFlags {
     pub shortcut_help: bool,
     /// The full first-use desktop tour, reopened from global search.
     pub desktop_tour: bool,
+    /// Asked for the first-identity setup (its backup and recovery steps)
+    /// on a device with no identity, from the identity chooser.
+    pub identity_setup: bool,
     pub overview: bool,
     pub quick_settings: bool,
     pub ws_settings: bool,

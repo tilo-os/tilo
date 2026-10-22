@@ -356,6 +356,14 @@ mod tests {
     // REQUIREMENT (2026-10-22): ""Use identity in this workspace" must never
     // ask for a raw 64-character fingerprint. It offers a picker of the
     // identities this device has (name and avatar, from the identity store)"
+    fn rows_of(params: &[ActionParam]) -> Vec<String> {
+        let id = params.iter().find(|param| param.name == "id").unwrap();
+        match step_for(id, "Use identity in this workspace") {
+            Step::Choices(rows) => rows.into_iter().map(|row| row.label).collect(),
+            Step::Field(_) => Vec::new(),
+        }
+    }
+
     #[test]
     fn choosing_an_identity_offers_names_and_avatars_never_a_fingerprint() {
         use crate::shell::search::providers::actions::identity_select_params;
@@ -386,11 +394,31 @@ mod tests {
             "nobody is asked for a fingerprint"
         );
 
+        // REQUIREMENT (2026-10-22): the empty picker's next step is an action
+        // "Set up your identity" that starts the first-identity setup, offered
+        // only when the device has no identity.
         let none = identity_select_params(&[]);
         let id = none.iter().find(|param| param.name == "id").unwrap();
+        let Step::Choices(rows) = step_for(id, "Use identity in this workspace") else {
+            panic!("with none connected it is still a list, never a field for a fingerprint");
+        };
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Set up your identity"],
+            "the next step, not a spelling hint"
+        );
+        assert_eq!(rows[0].person, None);
         assert!(
-            matches!(step_for(id, "Use identity in this workspace"), Step::Choices(rows) if rows.is_empty()),
-            "with none connected the list is empty, never a field for a fingerprint"
+            none.iter().all(|param| param.name != "confirm"),
+            "setting one up delegates nothing, so nothing is confirmed"
+        );
+        assert!(
+            rows_of(&params)
+                .iter()
+                .all(|label| label != "Set up your identity"),
+            "a device with an identity is not offered another"
         );
     }
 

@@ -39,6 +39,7 @@ impl Widget for ShellOverlayHost {
             self.onboarding_released = false;
             self.onboarding_focus_reset = false;
         }
+        self.start_requested_identity_setup();
         if let Some(onboarding) = self.onboarding.as_mut() {
             let had_identity = onboarding.flow().is_done();
             onboarding.sync(s, p);
