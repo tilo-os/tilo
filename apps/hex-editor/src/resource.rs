@@ -449,4 +449,40 @@ mod tests {
         );
         assert_eq!(reader.state().bytes, state(&replica).bytes);
     }
+
+    /// The History button the editor seats in its own header row opens the
+    /// window's History: the press is History's, never an app action the
+    /// editor does not have.
+    #[test]
+    fn the_header_history_button_opens_history() {
+        use ui::widget::HistoryControl;
+        fn button(node: &ui::a11y::AccessNode) -> Option<ui::a11y::AccessBounds> {
+            if node.action_target.as_deref() == Some(ui::widget::HISTORY_CONTROL_ID) {
+                return node.bounds;
+            }
+            node.children.iter().find_map(button)
+        }
+        fn find(node: &ui::headless::InspectionNode) -> Option<ui::a11y::AccessBounds> {
+            node.semantics
+                .as_ref()
+                .and_then(button)
+                .or_else(|| node.children.iter().find_map(find))
+        }
+        let mut app = ui::prelude::TestApp::<HexEditorShell>::capture(None).unwrap();
+        assert_eq!(
+            app.harness().window_history_control(),
+            Some(HistoryControl::of(false)),
+            "the window offers History"
+        );
+        let at = find(&app.harness().inspection().root)
+            .expect("the header row shows the History button");
+        app.harness()
+            .click_at(f64::midpoint(at.x0, at.x1), f64::midpoint(at.y0, at.y1));
+        app.settle();
+        assert_eq!(
+            app.harness().window_history_control(),
+            Some(HistoryControl::of(true)),
+            "pressing History opens it"
+        );
+    }
 }
