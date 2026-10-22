@@ -35,8 +35,9 @@ pub(super) enum SearchRequest {
     /// Window `GroupId`'s new-tab control: which application to open there.
     NewTab(StripId, GroupId),
     /// Window `GroupId`'s search control, or its app's own search button:
-    /// search what its shown tab holds, starting from the text given.
-    Window(StripId, GroupId, Option<String>),
+    /// search what its shown tab holds, narrowed and prefilled as the app
+    /// asked.
+    Window(StripId, GroupId, ui::search::SearchRequest),
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
@@ -246,6 +247,21 @@ fn is_escape(event: &WindowEvent) -> bool {
 /// Every open window as search lists it: the app it shows (for its glyph),
 /// and where it is. Windows titled alike say what tells them apart: who
 /// holds the window, or else which of them it is, counted left to right.
+/// The name of the app window `group` shows, as the desktop labels it.
+fn window_app(tree: &DesktopTree, group: GroupId) -> Option<String> {
+    let window = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .find(|window| window.id == group)?;
+    let tab = window.tabs.iter().find(|tab| tab.id == window.active_tab)?;
+    match &tab.tile {
+        TileContent::LocalApp { label, .. } => Some(label.clone()),
+        _ => None,
+    }
+}
+
 fn windows(
     tree: &DesktopTree,
     holders: &std::collections::HashMap<TabId, ui::widget::TabHolder>,
@@ -385,6 +401,7 @@ impl DesktopSurface {
             .palette_mut()
             .set_platform_conventions(self.platform);
         self.new_tab_into = None;
+        self.search_window = None;
         if let Some(query) = query {
             self.search.set_query(&query);
         }
@@ -412,19 +429,21 @@ impl DesktopSurface {
             .set_platform_conventions(self.platform);
         self.search.set_query("");
         self.new_tab_into = into;
+        self.search_window = None;
         self.structure_dirty = true;
     }
 
     /// Open search over what window `group` shows: its shown tab's
     /// resources and search providers, the in-app search its search control
-    /// and the app's own search button offer, with `query` typed. Opens
-    /// over everything when the window is gone.
+    /// and the app's own search button offer, narrowed to the part of the
+    /// app `request` names and with its query typed. Opens over everything
+    /// when the window is gone.
     fn open_window_search(
         &mut self,
         doc: &AutoCommit,
         strip: StripId,
         group: GroupId,
-        query: Option<String>,
+        request: ui::search::SearchRequest,
     ) {
         let host = self
             .rows
@@ -432,21 +451,34 @@ impl DesktopSurface {
             .and_then(|row| row.groups.iter().find(|candidate| candidate.id == group))
             .and_then(|window| window.active_host());
         let Some(host) = host else {
-            self.open_search(doc, query);
+            self.open_search(doc, request.query);
             return;
         };
+        // The field says what it searches: the part of the app asked for,
+        // else the app itself.
+        let scope = request.resource_scope();
+        let searched = scope
+            .map(|scope| scope.label.clone())
+            .or_else(|| window_app(&self.shared.borrow().tree, group))
+            .filter(|name| !name.is_empty());
         let data = SearchData {
             resources: ui::widget::published_resources(host, doc),
             providers: ui::widget::published_search_providers(host),
             content_only: true,
+            scope: scope.map(|scope| scope.anchor.clone()),
+            placeholder: searched.map(|name| {
+                crate::i18n::t_args("search-window-placeholder", &[("searched", name.into())])
+            }),
             ..SearchData::default()
         };
         self.search.open(data);
         self.search
             .palette_mut()
             .set_platform_conventions(self.platform);
-        self.search.set_query(query.as_deref().unwrap_or_default());
+        self.search
+            .set_query(request.query.as_deref().unwrap_or_default());
         self.new_tab_into = None;
+        self.search_window = Some((strip, group));
         self.structure_dirty = true;
     }
 
@@ -462,8 +494,8 @@ impl DesktopSurface {
             Some(SearchRequest::NewTab(strip, group)) => {
                 self.open_applications_search(Some((strip, group)));
             }
-            Some(SearchRequest::Window(strip, group, query)) => {
-                self.open_window_search(doc, strip, group, query);
+            Some(SearchRequest::Window(strip, group, request)) => {
+                self.open_window_search(doc, strip, group, request);
             }
             None => {}
         }
@@ -478,6 +510,12 @@ impl DesktopSurface {
             let refreshed = self.search.refresh();
             self.structure_dirty |= closed || refreshed;
         }
+        if let Some((strip, group)) = self.search_window
+            && let Some(invocation) =
+                ui::widget::controls::take_control_invocation(self.search.palette_mut())
+        {
+            self.run_in_window(strip, group, invocation);
+        }
         match (self.search.take_choice(), self.new_tab_into.take()) {
             (Some(Target::Launch { app }), Some((strip, group))) => {
                 self.open_tab_in_group(strip, group, &app);
@@ -490,8 +528,38 @@ impl DesktopSurface {
             // The aim is for one choice; search opened otherwise opens
             // applications as their own windows again.
             self.new_tab_into = None;
+            self.search_window = None;
         }
         self.shared.borrow_mut().search_open = open;
+    }
+
+    /// Run `invocation`, chosen in the search over window `group`, inside
+    /// the app that window shows, as its own control would: the desktop's
+    /// door never reaches into an app's actions by address.
+    fn run_in_window(
+        &mut self,
+        strip: StripId,
+        group: GroupId,
+        invocation: ui::tilo_actions::ControlInvocation,
+    ) {
+        let host = self
+            .rows
+            .get_mut(&strip)
+            .and_then(|row| {
+                row.groups
+                    .iter_mut()
+                    .find(|candidate| candidate.id == group)
+            })
+            .and_then(|window| window.active_host_mut());
+        match host {
+            Some(host) => {
+                if let Err(invocation) = host.queue_control(invocation) {
+                    self.unrouted_control = Some(invocation);
+                }
+            }
+            None => self.unrouted_control = Some(invocation),
+        }
+        self.structure_dirty = true;
     }
 
     /// Queue what a chosen row does, as the matching navigation command.

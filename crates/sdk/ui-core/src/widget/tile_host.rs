@@ -612,6 +612,35 @@ impl TileHost {
         Ok(())
     }
 
+    /// Queue `invocation` as one of the hosted app's own controls: an action
+    /// the person chose over this window (its in-app search) runs inside the
+    /// app, under the app's custody and permissions, exactly as clicking the
+    /// control in it would. The outer document never resolves an app's
+    /// actions by address, so this is the only way such a choice reaches
+    /// the app.
+    ///
+    /// # Errors
+    ///
+    /// Hands `invocation` back when the tile hosts no app component, or the
+    /// one it hosts is closing.
+    pub fn queue_control(
+        &mut self,
+        invocation: tilo_actions::ControlInvocation,
+    ) -> Result<(), tilo_actions::ControlInvocation> {
+        let Some(binding) = crate::widget::Widget::callback_binding(self) else {
+            return Err(invocation);
+        };
+        let Ok(_entry) = binding.enter() else {
+            return Err(invocation);
+        };
+        let mut queued = binding.queued_controls.borrow_mut();
+        if queued.len() >= 64 {
+            queued.pop_front();
+        }
+        queued.push_back(invocation);
+        Ok(())
+    }
+
     /// Run `visit` on the root of this tile's app, where the window's search
     /// finds a document or a list ([`crate::widget::WindowSearch`]); `visit`
     /// says whether it changed what the app shows. `None` for a tile with no

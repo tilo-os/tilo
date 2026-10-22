@@ -523,6 +523,12 @@ pub struct DesktopSurface {
     /// The window a group's new-tab control opened search for: the
     /// application chosen there opens as its tab, as in the native shell.
     new_tab_into: Option<(StripId, GroupId)>,
+    /// The window search was opened over (its in-app search): an action
+    /// chosen there runs inside that window's app.
+    search_window: Option<(StripId, GroupId)>,
+    /// An action chosen over a window that hosts no app to run it, left for
+    /// the host's own door, which says why it did not run.
+    unrouted_control: Option<ui::tilo_actions::ControlInvocation>,
     /// The pointer in logical coordinates, while search is open.
     search_pointer: Point,
     platform: ui::platform::PlatformConventions,
@@ -571,6 +577,8 @@ const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
 /// lift, and a spun mouse wheel's notches come 0 to 50 ms apart, all well
 /// inside this; the pauses between spins are mostly longer.
 const SWIPE_GAP: Duration = Duration::from_millis(200);
+/// How soon search looks again for an app's answer that is still coming.
+const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
 
 /// Logical pixels a line of sideways wheel travels: the 40 px to the line a
 /// trackpad's pixels are weighed against when telling sideways from
@@ -708,6 +716,8 @@ impl DesktopSurface {
             settle: None,
             search: tilo_desktop_search::DesktopSearch::new(),
             new_tab_into: None,
+            search_window: None,
+            unrouted_control: None,
             search_pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
             history: None,
@@ -1211,7 +1221,7 @@ impl DesktopSurface {
         let mut search_in = None;
         for group in &mut row.groups {
             if group.take_pending_search_open().is_some() {
-                search_in = Some((group.id, None));
+                search_in = Some((group.id, ui::search::SearchRequest::this_app()));
             }
             // An app asks its host for what only the host can do. Here that
             // is search: the app's own search button opens the window's
@@ -1225,7 +1235,7 @@ impl DesktopSurface {
                         break;
                     };
                     if let ui::widget::AppHostIntent::OpenSearch(request) = intent {
-                        search_in = Some((group_id, request.query));
+                        search_in = Some((group_id, request));
                     }
                 }
             }
@@ -2620,10 +2630,18 @@ impl Widget for DesktopSurface {
             .swipe
             .filter(|swipe| swipe.panned || swipe.pan.is_some())
             .and_then(|swipe| swipe.last.checked_add(SWIPE_GAP));
+        // An app's answer to the search query is still coming: look again
+        // shortly, as its rows show once it is in.
+        let answer = self
+            .search
+            .waiting()
+            .then(|| ui::time::now().checked_add(SEARCH_ANSWER_POLL))
+            .flatten();
         self.children()
             .into_iter()
             .filter_map(Widget::next_wake_deadline)
             .chain(ends)
+            .chain(answer)
             .min()
     }
 
@@ -2690,9 +2708,19 @@ impl ui::widget::controls::ActionControls for DesktopSurface {
         }
     }
 
+    fn has_pending_control_invocation(&self) -> bool {
+        self.unrouted_control.is_some()
+            || self
+                .children()
+                .into_iter()
+                .any(ui::widget::controls::has_pending_control_invocation)
+    }
+
     /// An action row the palette queued outlives the palette closing on it.
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        ui::widget::controls::take_control_invocation(self.search.palette_mut())
+        self.unrouted_control
+            .take()
+            .or_else(|| ui::widget::controls::take_control_invocation(self.search.palette_mut()))
             .or_else(|| ui::widget::controls::take_control_invocation(self.shown_row()?))
     }
 }

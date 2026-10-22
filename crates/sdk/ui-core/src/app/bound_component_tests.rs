@@ -191,6 +191,9 @@ impl crate::search::SearchProvider for LazyProbe {
     fn action_directory_generation(&self) -> Option<u64> {
         Some(0)
     }
+    fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        Some(tilo_actions::ActionAddress::new("bound:sealed", "open"))
+    }
     fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
         match query {
             "sealed" => vec![crate::search::SearchResult::for_action(
@@ -2529,6 +2532,25 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     assert!(
         !wake_handles.borrow()[0].is_active(),
         "callback captured the component lifetime, not detached execution"
+    );
+}
+
+/// The host opens a hosted component's anchored hits (a video, a search of
+/// the app's service) through the `open` its provider names, so the
+/// component's provider must say which `open` that is.
+#[test]
+fn a_hosted_components_provider_names_the_open_its_hits_go_through() {
+    let fixture = ActionFixture::new();
+    let opens: Vec<_> = crate::widget::published_search_providers(fixture.app.root_widget.as_ref())
+        .iter()
+        .map(|provider| provider.open_action())
+        .collect();
+    assert!(!opens.is_empty());
+    assert!(
+        opens
+            .iter()
+            .all(|open| open == &Some(tilo_actions::ActionAddress::new("bound:sealed", "open"))),
+        "{opens:?}"
     );
 }
 

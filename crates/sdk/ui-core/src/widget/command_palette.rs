@@ -239,6 +239,8 @@ pub struct CommandEntry {
     pub adjustable: bool,
     action_address: Option<ActionAddress>,
     action_argument: Option<String>,
+    /// The value `action_argument` takes when the row asks for none.
+    action_preset: Option<String>,
 }
 
 impl std::fmt::Debug for CommandEntry {
@@ -262,6 +264,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("adjustable", &self.adjustable)
             .field("action_address", &self.action_address)
             .field("action_argument", &self.action_argument)
+            .field("action_preset", &self.action_preset)
             .finish()
     }
 }
@@ -287,7 +290,19 @@ impl CommandEntry {
             adjustable: false,
             action_address: None,
             action_argument: None,
+            action_preset: None,
         }
+    }
+
+    /// Run the row's action ([`Self::from_flat_action`]) with `value` as its
+    /// parameter `name`, without asking for it: a search hit the action
+    /// opens names its item itself.
+    #[must_use]
+    pub fn with_action_preset(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.argument = None;
+        self.action_argument = Some(name.into());
+        self.action_preset = Some(value.into());
+        self
     }
 
     /// Let ←/→ step the row's value ([`Self::adjustable`]).
@@ -1202,7 +1217,10 @@ impl CommandPalette {
             && let Some(address) = entry.action_address.clone()
         {
             let mut arguments = serde_json::Map::new();
-            if let (Some(name), Some(value)) = (&entry.action_argument, argument) {
+            if let (Some(name), Some(value)) = (
+                &entry.action_argument,
+                argument.or_else(|| entry.action_preset.clone()),
+            ) {
                 arguments.insert(name.clone(), serde_json::Value::String(value));
             }
             self.action_invocation

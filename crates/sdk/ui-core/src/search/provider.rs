@@ -1144,6 +1144,17 @@ pub trait SearchProvider {
     fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
         None
     }
+
+    /// The action that opens one of this provider's hits that names no
+    /// action of its own: invoked with the hit's anchor (its `action_id`) as
+    /// its one argument, it shows the hit in the app, as picking it in the
+    /// app's own search does and as an agent's `open` does. A host that
+    /// searches the app from outside it (a desktop's search over the app's
+    /// window) opens such hits through it; `None` where hits are opened only
+    /// inside the app.
+    fn open_action(&self) -> Option<ActionAddress> {
+        None
+    }
 }
 
 /// A [`SearchProvider`] answered entirely from one retained [`SearchCatalog`].
