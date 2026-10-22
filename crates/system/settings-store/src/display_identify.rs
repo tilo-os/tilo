@@ -131,12 +131,12 @@ pub fn display_names(outputs: &[DisplayOutputSnapshot]) -> Vec<String> {
         .iter()
         .map(|output| display_name(&output.descriptor, output.builtin))
         .collect();
-    name_apart(names, &display_numbers(outputs))
+    name_apart(&names, &display_numbers(outputs))
 }
 
 /// `names` with each one more than one display shares followed by that
 /// display's number from `numbers` (same order).
-pub fn name_apart(names: Vec<String>, numbers: &[usize]) -> Vec<String> {
+pub fn name_apart(names: &[String], numbers: &[usize]) -> Vec<String> {
     let shared = |name: &String| names.iter().filter(|other| *other == name).count() > 1;
     names
         .iter()
