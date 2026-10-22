@@ -254,13 +254,11 @@ elsewhere (a peer's edit, the room's echo of a close) is applied to the
 live strip in place, through the same removal, insertion and reorder, so
 it moves the strip no differently than the person doing it here.
 Pinned by `group_row.rs`'s `after_releasing_a_resize_no_window_moves`
-(`USER REQUIREMENT`) and its width-change tests.
+and its width-change tests.
 
 Pinned by `edge_resize.rs`'s unit tests (the rule), `group_row.rs`'s row
 tests (hover highlight, push, Shift, limits, cancel, auto-scroll) and the
 pointer tests in `crates/session/shell/tests/desktop_env_interactions.rs`.
-The tests that state the user's own words carry a `USER REQUIREMENT` marker
-and may not lose an assertion without their OK (`docs/policies.md`).
 
 **Why it kept regressing.** Seam ownership used to be nobody's decision. The
 seam handle was keyed to its left neighbour (its drag set "left width + dx"),

@@ -26,8 +26,6 @@ class AppSearchFieldsTests(unittest.TestCase):
             (root / check.BASELINE).write_text(baseline, encoding="utf-8")
         return root
 
-    # USER REQUIREMENT (2026-10-21): apps draw no search field of their own;
-    # the window bar's query field is the only search entry.
     def test_an_app_drawing_its_own_search_field_is_refused(self):
         for line in [
             "let f = SearchField::filter();",

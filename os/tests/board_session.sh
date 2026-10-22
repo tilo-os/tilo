@@ -154,7 +154,6 @@ else
   bad 'the next session started over one left behind'; cat "$work/seat.log" >&2
 fi
 
-# USER REQUIREMENT (2026-10-19): "Tilo, not a tty, always — robust across updates and reboots."
 : >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
 seat SESSION_TENTHS=600 DRM_TENTHS=3 TILO_SEAT_DRM_RETRY_SEC=1 &
 pid=$!
