@@ -30,6 +30,7 @@ use ui::Widget;
 use taffy::prelude::NodeId;
 
 mod search_seed;
+mod window_menu_scene;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
 /// Used only as the unit for the spin-wait loop; animations themselves
@@ -2054,6 +2055,7 @@ impl ShellDriver {
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
             "workspace-menu" => self.scene_workspace_menu(),
+            "window-menu" => self.scene_window_menu(),
             "profile-card" => self.scene_profile_card(),
             "dictation-consent"
             | "dictation-listening"
@@ -3870,6 +3872,7 @@ impl ShellDriver {
         "display-confirm",
         "portal-permission",
         "workspace-menu",
+        "window-menu",
         "profile-card",
         "dictation-consent",
         "dictation-listening",
