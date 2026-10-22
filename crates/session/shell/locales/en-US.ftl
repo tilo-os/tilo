@@ -1288,7 +1288,43 @@ search-kind-tabs = Tabs
 search-kind-window-groups = Window groups
 search-kind-answers = Answers
 search-kind-people = People
-search-group-recent = Recent
+
+# Search before anything is typed: the launcher
+search-launcher-happening-now = Happening now
+search-launcher-waiting-on-you = Waiting on you
+search-launcher-continue = Continue
+search-launcher-apps = Apps
+search-launcher-apps-office = Office
+search-launcher-apps-internet = Internet
+search-launcher-apps-media = Media
+search-launcher-apps-development = Development
+search-launcher-apps-games = Games
+search-launcher-apps-learning = Learning
+search-launcher-apps-utilities = Utilities
+search-launcher-apps-system = System
+search-launcher-apps-other = More apps
+search-launcher-app-downloaded = Downloaded
+search-launcher-opened = Opened { $when }
+search-launcher-here-one = { $name } is here
+search-launcher-here-two = { $name } and { $other } are here
+search-launcher-here-many = { $count ->
+    [one] { $name } and 1 other are here
+   *[other] { $name } and { $count } others are here
+}
+search-launcher-with-one = With { $name }
+search-launcher-with-two = With { $name } and { $other }
+search-launcher-with-many = { $count ->
+    [one] With { $name } and 1 other
+   *[other] With { $name } and { $count } others
+}
+search-launcher-call = Call
+search-launcher-call-in = Call in { $channel }
+search-launcher-calling-now = Calling now
+search-launcher-waiting-unavailable = Open the app it came from to answer it.
+search-launcher-widen = Search every workspace
+search-launcher-outcome-open = Open
+search-launcher-outcome-join = Join
+search-launcher-outcome-answer = Answer
 
 # Search scopes
 search-scope-this-app = This app

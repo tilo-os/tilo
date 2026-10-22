@@ -7,11 +7,13 @@
 //! surfaces are open), lays the widgets out at their edges beside any live
 //! call or navigation card, and paints them.
 //!
-//! The Super surface is the command palette opened field-only
-//! ([`ui::CommandPalette::set_field_only_while_empty`]) over a light scrim,
-//! with every widget open around it and the time and status under the field. Typing
-//! searches exactly as the palette always has; Escape and a click outside
-//! close it through the palette's own paths.
+//! The Super surface is global search over a light scrim, with every widget
+//! open around it and the time and status under the field. Tapped, it shows
+//! the launcher under the field ([`crate::shell::search::launcher`]); held,
+//! it is the field alone
+//! ([`ui::CommandPalette::set_field_only_while_empty`]), a glance at the
+//! widgets. Typing searches exactly as the palette always has; Escape and a
+//! click outside close it through the palette's own paths.
 //!
 //! Nothing here paints a blurred backdrop: glance forms and cards are the
 //! opaque overlay surface, the scrim one translucent fill, so an idle desk
@@ -208,10 +210,14 @@ impl ShellOverlayHost {
                     self.close_super_surface();
                 } else {
                     self.desk.super_surface = Some(SuperSurface::Pinned);
+                    self.palette.set_field_only_while_empty(false);
+                    self.palette_layout_dirty = true;
                 }
             }
             (SuperGesture::PeekTaken, Some(SuperSurface::Peek)) => {
                 self.desk.super_surface = Some(SuperSurface::Pinned);
+                self.palette.set_field_only_while_empty(false);
+                self.palette_layout_dirty = true;
             }
             _ => return,
         }
@@ -231,10 +237,13 @@ impl ShellOverlayHost {
     /// Open the Super surface: search with an empty field at the top, every
     /// widget open around it, the time and status.
     pub fn open_super_surface(&mut self, mode: SuperSurface, doc: &AutoCommit, root: &ObjId) {
-        if !self.palette_visible {
-            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+        if !self.global_search_open() {
+            self.toggle_global_search();
         }
-        self.palette.set_field_only_while_empty(true);
+        // Tapped, it is global search with the launcher under the field;
+        // held, a glance at the widgets with the field alone.
+        self.palette
+            .set_field_only_while_empty(mode != SuperSurface::Pinned);
         self.palette_layout_dirty = true;
         self.desk.super_surface = Some(mode);
         self.refresh_search_results(doc, root);

@@ -367,6 +367,9 @@ pub(crate) fn filter_listing(
     let count = rows.len();
     if let Some(object) = answer.as_object_mut() {
         object.insert("count".into(), count.into());
+        // The launcher is the person's view of all their workspaces; a
+        // program in one app's window lists actions, not that.
+        object.remove("launcher");
     }
 }
 

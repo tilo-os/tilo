@@ -68,6 +68,14 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) -> Box<ShellSceneSections> {
         self.motion.set(theme.motion());
+        // Search's Happening now offers the calls the people panel would:
+        // read them from presence while search is open.
+        if self.palette_visible
+            && let Some(chrome) = self.chrome.clone()
+        {
+            let calls = self.calls_here(presence);
+            chrome.borrow_mut().publish_calls_here(calls);
+        }
         // Boxed so each section keeps its address while the caller draws
         // into it too: a floating surface's backdrop layer is found by the
         // scene it is drawn into.

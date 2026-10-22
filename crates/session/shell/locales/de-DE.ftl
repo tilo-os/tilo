@@ -1304,7 +1304,43 @@ search-provider-tray = Statusbereich
 search-provider-files = Dateien
 search-kind-answers = Antworten
 search-kind-people = Personen
-search-group-recent = Zuletzt
+
+# Suche, bevor etwas getippt ist: der Starter
+search-launcher-happening-now = Gerade los
+search-launcher-waiting-on-you = Wartet auf dich
+search-launcher-continue = Weitermachen
+search-launcher-apps = Apps
+search-launcher-apps-office = Büro
+search-launcher-apps-internet = Internet
+search-launcher-apps-media = Medien
+search-launcher-apps-development = Entwicklung
+search-launcher-apps-games = Spiele
+search-launcher-apps-learning = Lernen
+search-launcher-apps-utilities = Werkzeuge
+search-launcher-apps-system = System
+search-launcher-apps-other = Weitere Apps
+search-launcher-app-downloaded = Heruntergeladen
+search-launcher-opened = Geöffnet { $when }
+search-launcher-here-one = { $name } ist hier
+search-launcher-here-two = { $name } und { $other } sind hier
+search-launcher-here-many = { $count ->
+    [one] { $name } und eine weitere Person sind hier
+   *[other] { $name } und { $count } weitere sind hier
+}
+search-launcher-with-one = Mit { $name }
+search-launcher-with-two = Mit { $name } und { $other }
+search-launcher-with-many = { $count ->
+    [one] Mit { $name } und einer weiteren Person
+   *[other] Mit { $name } und { $count } weiteren
+}
+search-launcher-call = Anruf
+search-launcher-call-in = Anruf in { $channel }
+search-launcher-calling-now = Ruft gerade an
+search-launcher-waiting-unavailable = Öffne die App, von der es kam, um zu antworten.
+search-launcher-widen = In allen Workspaces suchen
+search-launcher-outcome-open = Öffnen
+search-launcher-outcome-join = Beitreten
+search-launcher-outcome-answer = Annehmen
 search-provider-quick-answers = Schnelle Antworten
 search-provider-people = Personen
 search-answer-sum = { $expression } =

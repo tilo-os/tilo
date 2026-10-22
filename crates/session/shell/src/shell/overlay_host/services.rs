@@ -200,9 +200,12 @@ impl ShellOverlayHost {
         &self.layers.emoji_picker
     }
 
-    /// Open global search (the palette scoped to everything).
+    /// Open global search as Super+Space does: scoped to the workspace in
+    /// front, the launcher until something is typed.
     pub fn open_global_search(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
-        self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+        if !self.global_search_open() {
+            self.toggle_global_search();
+        }
         self.refresh_search_results(doc, root);
     }
 

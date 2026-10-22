@@ -120,9 +120,49 @@ fn text_index(entries: &[IndexedEntry]) -> SearchIndex {
 /// and retained, and the session's action door. Absent where no broker is
 /// attached; a hit then opens the app itself.
 #[derive(Clone)]
-struct OpenDoor {
+pub(crate) struct OpenDoor {
     broker: AppActionBroker,
     sessions: ActionSessionSource,
+}
+
+impl OpenDoor {
+    pub(crate) fn new(broker: AppActionBroker) -> Self {
+        Self {
+            sessions: ActionSessionSource::new(broker.clone()),
+            broker,
+        }
+    }
+}
+
+/// Open `app` in the workspace of `room` at `anchor`, through its `open`
+/// as a search hit at that anchor opens: the running app takes it, a closed
+/// one is launched first; with nothing published that opens it, the app
+/// opens.
+pub(crate) fn open_at(
+    door: Option<&OpenDoor>,
+    chrome: &Chrome,
+    app: &str,
+    room: &str,
+    anchor: &str,
+) -> Result<(), ActionError> {
+    let slot = SlotKey {
+        app: app.to_owned(),
+        room: room.to_owned(),
+        record: String::new(),
+    };
+    let entry = IndexEntry {
+        key: anchor.to_owned(),
+        resource: anchor.to_owned(),
+        action: None,
+        title: String::new(),
+        subtitle: None,
+        group: None,
+        icon: None,
+        boost: 0,
+        fields: Vec::new(),
+        secret: false,
+    };
+    open_entry(door, chrome, &slot, &entry)
 }
 
 pub struct AppContentProvider {
@@ -138,10 +178,7 @@ impl AppContentProvider {
     pub fn new(index: Arc<AppContentIndex>, broker: AppActionBroker) -> Self {
         Self {
             index,
-            door: Some(OpenDoor {
-                sessions: ActionSessionSource::new(broker.clone()),
-                broker,
-            }),
+            door: Some(OpenDoor::new(broker)),
             snapshot: RefCell::new(None),
             wakes: Cell::new(false),
         }
@@ -483,6 +520,9 @@ impl SearchProvider for AppContentProvider {
         }
     }
 
+    /// Continue: what the person opened from here lately, newest first,
+    /// each opening where it is through its app's `open` at its anchor, as
+    /// a search hit does. Scoped to a workspace, only what lives there.
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         if !self.wakes.replace(true) {
             self.index

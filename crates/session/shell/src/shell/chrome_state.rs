@@ -649,6 +649,9 @@ pub enum PresenceRequest {
     /// Open who is here at the collaborator with this roster id (a press on
     /// their face in the bar); pressed again while open there, close it.
     Show(String),
+    /// Join this call of the workspace in front, as the people panel's Join
+    /// does.
+    JoinCall(tilo_desktop::collaborators::VoiceChannel),
 }
 
 impl Default for QuickSettingsState {
@@ -920,6 +923,10 @@ pub struct ChromeState {
     pub activity_glance: ActivityGlance,
     /// The last wave at this person, which the top bar says for a moment.
     pub(crate) wave_notice: Option<tilo_desktop::chrome::WaveNotice>,
+    /// The calls in progress in the workspace in front that this device is
+    /// not in, as the people panel reads them from presence: what search's
+    /// Happening now offers to join ([`Self::publish_calls_here`]).
+    pub calls_here: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     activity_focus_request: Option<ActivityFocus>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
@@ -1263,6 +1270,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             wave_notice: None,
+            calls_here: Vec::new(),
             activity_focus_request: None,
             workspace_view_request: None,
             history_action_request: None,
@@ -2239,6 +2247,18 @@ impl ChromeState {
         };
         if self.activity_glance != next {
             self.activity_glance = next;
+            self.bump();
+        }
+    }
+
+    /// Publish the calls of the workspace in front ([`Self::calls_here`]).
+    /// The same calls again change nothing, so a resting frame stays cached.
+    pub fn publish_calls_here(
+        &mut self,
+        calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
+    ) {
+        if self.calls_here != calls {
+            self.calls_here = calls;
             self.bump();
         }
     }

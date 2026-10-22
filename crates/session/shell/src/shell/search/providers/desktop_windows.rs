@@ -914,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn the_empty_palette_offers_windows_to_go_back_to_not_an_inventory() {
+    fn the_empty_palette_is_the_launcher_not_an_inventory() {
         let (chrome, doc) = fixture();
         let mut registry = registry();
         registry.register(Rc::new(
@@ -934,41 +934,16 @@ mod tests {
             },
             12,
         );
-        let first = groups.first().expect("the empty palette has rows");
-        assert_eq!(first.kind, ResourceKind::Tab, "windows come first");
+        // Nothing typed is the launcher: no window rows, no actions, no
+        // inventory; the fake Linux app source answers nothing for it.
         assert!(
-            first
-                .results
-                .iter()
-                .all(|row| row.id.starts_with("tab.focus:")),
-            "every window row goes to it: {:?}",
-            first.results.iter().map(|row| &row.id).collect::<Vec<_>>()
-        );
-        let rows: Vec<&SearchResult> = groups.iter().flat_map(|group| &group.results).collect();
-        assert!(
-            rows.iter().all(
-                |row| row.operation_kind == tilo_actions::OperationKind::View
-                    || row.kind == ResourceKind::Application
-            ),
-            "nothing on the empty palette changes anything: {:?}",
-            rows.iter().map(|row| &row.id).collect::<Vec<_>>()
-        );
-        assert!(
-            rows.iter()
-                .filter(|row| row.provider_id == "host-apps")
-                .count()
-                <= crate::shell::search::JUMP_BACK_IN_GROUP_ROWS,
-            "a few apps to start with; the app list is a keystroke away, not the default"
-        );
-        assert!(rows.iter().any(|row| row.id == "room.activity.open"));
-        assert!(
-            rows.iter().any(|row| row.id == "shortcut-help.toggle"),
-            "help stays on the empty palette even when it is last in the catalogue"
-        );
-        assert!(
+            groups.is_empty(),
+            "the empty palette lists no window or action: {:?}",
             groups
                 .iter()
-                .all(|group| group.total == group.results.len())
+                .flat_map(|group| &group.results)
+                .map(|row| &row.id)
+                .collect::<Vec<_>>()
         );
 
         let app_scoped = registry.query_grouped(

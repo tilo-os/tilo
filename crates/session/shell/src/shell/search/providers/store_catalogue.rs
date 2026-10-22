@@ -1728,6 +1728,51 @@ mod tests {
         );
     }
 
+    /// The launcher's Apps lists the apps the person has; what the
+    /// catalogue offers to get, Flathub's above all, is found by typing and
+    /// never crowds the launcher.
+    #[test]
+    fn the_launcher_never_lists_apps_the_person_does_not_have() {
+        use crate::shell::chrome_state::SearchScope;
+        let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
+            state(&[], &[]),
+        ));
+        assert!(
+            search(&provider, "spotify")
+                .iter()
+                .any(|row| row.title == "Spotify"),
+            "precondition: Flathub's Spotify is in the catalogue"
+        );
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(std::rc::Rc::new(provider));
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        for scope in [SearchScope::Workspace, SearchScope::All] {
+            let groups = crate::shell::search::launcher::groups(
+                &registry,
+                &crate::shell::search::QueryArgs {
+                    needle: "",
+                    scope,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                },
+            );
+            assert!(
+                groups.is_empty(),
+                "nothing the person does not have is listed: {:?}",
+                groups
+                    .iter()
+                    .flat_map(|group| &group.rows)
+                    .map(|row| &row.title)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn an_empty_query_offers_nothing_to_get() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(

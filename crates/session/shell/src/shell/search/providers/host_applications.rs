@@ -460,6 +460,17 @@ impl SearchProvider for HostApplicationsProvider {
     fn display_name(&self) -> String {
         t("search-provider-host-apps")
     }
+    fn launcher_section(&self) -> Option<crate::shell::search::launcher::LauncherSection> {
+        Some(crate::shell::search::launcher::LauncherSection::Apps)
+    }
+    fn app_category(&self, result: &SearchResult) -> Option<String> {
+        let snapshot = self.snapshot()?;
+        snapshot
+            .apps
+            .iter()
+            .find(|app| app.desktop_id == result.id)
+            .map(|app| app.categories.join(";"))
+    }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
     }

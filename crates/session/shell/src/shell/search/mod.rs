@@ -15,7 +15,9 @@ pub mod action_api;
 pub mod app_content_index;
 pub mod files_index;
 pub mod invocation_wake;
+pub mod launcher;
 pub mod providers;
+pub mod recent_places;
 #[cfg(test)]
 mod relevance_tests;
 pub mod usage;
@@ -491,6 +493,23 @@ pub trait SearchProvider {
     /// The set of kinds this provider CAN return; contributes chips to
     /// the palette's filter strip.
     fn resource_kinds(&self) -> &[ResourceKind];
+    /// The launcher section this provider's answer to the empty query
+    /// fills ([`launcher`]): what global search shows before anything is
+    /// typed. `None` for a provider that has nothing to offer there.
+    fn launcher_section(&self) -> Option<launcher::LauncherSection> {
+        None
+    }
+    /// The rows this provider shows in its [`Self::launcher_section`] for
+    /// `ctx` (its needle empty; its scope the current workspace or every
+    /// workspace). By default every page of its answer to the empty query.
+    fn launcher_rows(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        launcher::every_page(self, ctx)
+    }
+    /// The categories an app row of this provider declares (freedesktop
+    /// main categories, `;`-separated), which the launcher groups apps by.
+    fn app_category(&self, _result: &SearchResult) -> Option<String> {
+        None
+    }
     /// Run the search. `wanted` is the set of kinds currently asked for
     /// (filter chips + scope); a remote-backed provider should dispatch
     /// ONE query and split the response into the wanted kinds.
@@ -529,6 +548,18 @@ pub trait SearchProvider {
     /// find by the row's kind and id: an app this device does not have yet
     /// wears its catalogue icon. `None` keeps the icon.
     fn row_image(&self, _result: &SearchResult) -> Option<ui::icons::AppImage> {
+        None
+    }
+
+    /// The people a row of this provider is about, worn as faces at the
+    /// row's end (who is in a workspace, in a call). Empty for most rows.
+    fn row_faces(&self, _result: &SearchResult) -> Vec<ui::widget::command_palette::RowFace> {
+        Vec::new()
+    }
+
+    /// What choosing a row of this provider does, shown at its end
+    /// ("Join", "Answer"), for a row whose outcome its title does not say.
+    fn row_outcome(&self, _result: &SearchResult) -> Option<String> {
         None
     }
 
@@ -1279,6 +1310,25 @@ impl SearchRegistry {
             .row_image(result)
     }
 
+    /// The faces the provider that returned `result` gives it
+    /// ([`SearchProvider::row_faces`]).
+    pub fn row_faces(&self, result: &SearchResult) -> Vec<ui::widget::command_palette::RowFace> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id() == result.provider_id)
+            .map(|provider| provider.row_faces(result))
+            .unwrap_or_default()
+    }
+
+    /// What choosing `result` does, as its provider says
+    /// ([`SearchProvider::row_outcome`]).
+    pub fn row_outcome(&self, result: &SearchResult) -> Option<String> {
+        self.providers
+            .iter()
+            .find(|provider| provider.id() == result.provider_id)
+            .and_then(|provider| provider.row_outcome(result))
+    }
+
     /// The other actions the provider that returned `result` offers for it
     /// ([`SearchProvider::secondary_actions`]).
     pub fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
@@ -1720,15 +1770,12 @@ impl SearchRegistry {
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
     ///
-    /// With nothing typed and no kind chosen, the desktop-wide palette offers
-    /// [`jump_back_in`] instead of listing everything; scoped to one app it
-    /// still lists that app's commands.
+    /// With nothing typed and no kind chosen, the desktop-wide palette is
+    /// the [`launcher`]; scoped to one app it still lists that app's
+    /// commands.
     pub fn query_grouped(&self, args: &QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
-        if args.needle.trim().is_empty()
-            && args.wanted_kinds.is_empty()
-            && args.scope != SearchScope::ActiveApp
-        {
-            return jump_back_in(self, args);
+        if launcher::wanted(args) {
+            return launcher::kind_groups(self, args);
         }
         let store = in_the_store();
         let ranked: Vec<(ResourceKind, SearchResult)> = self
@@ -1924,113 +1971,6 @@ fn files_follow_what_was_named(merged: &mut [(SearchResult, f32)], needle: &str)
             *strength = ceiling;
         }
     }
-}
-
-/// Rows per group the empty palette shows.
-pub(crate) const JUMP_BACK_IN_GROUP_ROWS: usize = 4;
-
-/// The starting points the empty palette offers after windows and apps.
-const JUMP_BACK_IN_SUGGESTIONS: [&str; 3] =
-    ["room.activity.open", "peer.invite", "shortcut-help.toggle"];
-
-const JUMP_BACK_IN_ACTIONS_PROVIDER: &str = "actions";
-
-/// Recent choices the empty palette shows.
-const RECENT_CHOICES: usize = 5;
-/// How far back the recent choices are read, so that rows that no longer
-/// resolve or are not offered there still leave five.
-const RECENT_CHOICES_SCANNED: usize = 24;
-
-/// Whether a recent choice may sit in the empty palette, one Enter away:
-/// never something that ends or destroys work (restart, close, delete), and
-/// never a window, which the windows group lists already.
-fn offered_again(row: &SearchResult) -> bool {
-    if matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup) {
-        return false;
-    }
-    !row.contract.as_ref().is_some_and(|contract| {
-        matches!(
-            contract.risk,
-            tilo_actions::RiskLevel::Destructive | tilo_actions::RiskLevel::Privileged
-        ) || contract.confirmation == tilo_actions::ConfirmationPolicy::Confirm
-    })
-}
-
-/// The palette before anything is typed. Once the person has chosen from
-/// search, it is what they chose last (five things, newest first: apps,
-/// files, actions, settings), then the other windows of this workspace in
-/// the order they were left. Before there is any history, it is the windows,
-/// a few apps to start with and a few ways in. It is never the full
-/// inventory, and never offers a row that changes something: close, move and
-/// revoke need their verb typed. Agents still enumerate everything through
-/// [`SearchRegistry::query_exhaustive`].
-///
-/// Interactive search is one bounded page, so late catalogue rows (help,
-/// the tour) are not on that page. Suggestions and recent choices are
-/// fetched by exact id.
-fn jump_back_in(registry: &SearchRegistry, args: &QueryArgs<'_>) -> Vec<KindGroup> {
-    let rows = registry.query(args);
-    let windows = rows
-        .iter()
-        .filter(|row| matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup))
-        .filter(|row| row.operation_kind == tilo_actions::OperationKind::View)
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut recent: Vec<SearchResult> = Vec::new();
-    for (provider, id) in usage::recent_choices(RECENT_CHOICES_SCANNED) {
-        if recent.len() >= RECENT_CHOICES {
-            break;
-        }
-        if let Some(row) = registry.resolve(&provider, &id, args)
-            && offered_again(&row)
-        {
-            recent.push(row);
-        }
-    }
-    if !recent.is_empty() {
-        // A recent app starts it again; its windows are listed apart.
-        let windows: Vec<SearchResult> =
-            windows.into_iter().take(JUMP_BACK_IN_GROUP_ROWS).collect();
-        return [
-            (ResourceKind::Custom(t("search-group-recent")), recent),
-            (ResourceKind::Tab, windows),
-        ]
-        .into_iter()
-        .filter(|(_, results)| !results.is_empty())
-        .map(|(kind, results)| KindGroup {
-            kind,
-            total: results.len(),
-            results,
-        })
-        .collect();
-    }
-    let windows = windows
-        .into_iter()
-        .take(JUMP_BACK_IN_GROUP_ROWS)
-        .collect::<Vec<_>>();
-    let apps = rows
-        .iter()
-        .filter(|row| row.kind == ResourceKind::Application)
-        .take(JUMP_BACK_IN_GROUP_ROWS)
-        .cloned()
-        .collect::<Vec<_>>();
-    let suggestions = JUMP_BACK_IN_SUGGESTIONS
-        .iter()
-        .filter_map(|id| registry.resolve(JUMP_BACK_IN_ACTIONS_PROVIDER, id, args))
-        .collect::<Vec<_>>();
-    [
-        (ResourceKind::Tab, windows),
-        (ResourceKind::Application, apps),
-        (ResourceKind::Action, suggestions),
-    ]
-    .into_iter()
-    .filter(|(_, results)| !results.is_empty())
-    .map(|(kind, results)| KindGroup {
-        kind,
-        total: results.len(),
-        results,
-    })
-    .collect()
 }
 
 fn scope_allows(

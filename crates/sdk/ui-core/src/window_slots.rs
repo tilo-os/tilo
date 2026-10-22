@@ -59,6 +59,9 @@ pub struct HostedSync {
     pub closing: Vec<TabId>,
     /// An app asked for its window's search and its group opened it.
     pub searched: bool,
+    /// Tabs whose app declared something new for its bar (its location
+    /// among it), in the order their windows were given.
+    pub declared: Vec<TabId>,
 }
 
 impl WindowSlots {
@@ -242,7 +245,10 @@ impl WindowSlots {
             let revision = window.revision();
             if seen != Some(revision) {
                 self.hosted_seen.insert(*tab, (window.clone(), revision));
-                sync.changed |= self.declare(*tab, IN_PROCESS, window.declared());
+                if self.declare(*tab, IN_PROCESS, window.declared()) {
+                    sync.changed = true;
+                    sync.declared.push(*tab);
+                }
             }
             if window.take_close() {
                 sync.closing.push(*tab);

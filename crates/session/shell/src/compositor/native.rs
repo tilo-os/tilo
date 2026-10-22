@@ -3454,7 +3454,7 @@ impl FrameBuilderControlState<'_> {
         let chrome_handle = self.fb.chrome_handle();
         // The borrow lives only for the closure; `ActionCatalog` owns its results
         // outright, so the catalogue outlives the guards it was built through.
-        let (catalog, complete) = with_action_gate(&chrome_handle, |chrome, gate| {
+        let (catalog, launcher, complete) = with_action_gate(&chrome_handle, |chrome, gate| {
             let args = crate::shell::search::QueryArgs {
                 needle: query,
                 scope: crate::shell::chrome_state::SearchScope::All,
@@ -3472,9 +3472,11 @@ impl FrameBuilderControlState<'_> {
                 self.fb
                     .host()
                     .action_catalog_query(&args, &first_use_gate, include_programmatic);
+            let launcher = self.fb.host().launcher_answer(&args, page, &first_use_gate);
             // Read after the query, which may itself have started the work
             // that leaves the listing incomplete.
-            (catalog, self.fb.host().action_listing_complete(&args))
+            let complete = self.fb.host().action_listing_complete(&args);
+            (catalog, launcher, complete)
         })
         .map_err(test_control::ActionRefusal::listing_failed)?;
         // A paged listing is an agent's: apps' own resources and actions
@@ -3527,6 +3529,9 @@ impl FrameBuilderControlState<'_> {
         answer.insert("query".into(), query.into());
         answer.insert("count".into(), actions.len().into());
         answer.insert("actions".into(), actions.into());
+        if let Some(launcher) = launcher {
+            answer.insert("launcher".into(), launcher);
+        }
         if let Some(window) = window {
             window.describe(&mut answer);
         }

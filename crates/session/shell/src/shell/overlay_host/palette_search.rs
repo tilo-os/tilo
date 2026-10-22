@@ -116,6 +116,31 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Whether global search is open: the palette over everything, scoped to
+    /// the workspace in front or widened to every workspace.
+    pub(super) fn global_search_open(&self) -> bool {
+        use crate::shell::chrome_state::SearchScope;
+        self.palette_visible
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                matches!(
+                    chrome.borrow().search_scope,
+                    SearchScope::Workspace | SearchScope::All
+                )
+            })
+    }
+
+    /// Open global search the way Super, Super+Space and Super+K do, scoped
+    /// to the workspace in front so the launcher shows what is going on
+    /// there; or close it when it is open already, in either scope.
+    pub(super) fn toggle_global_search(&mut self) {
+        if self.global_search_open() {
+            self.palette_visible = false;
+            self.palette.close();
+            return;
+        }
+        self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::Workspace);
+    }
+
     /// Open the palette in `scope`, or close it if the same scope fires
     /// twice (mirrors the old second-press-dismisses chord behaviour). A
     /// different scope while open just swaps scope without losing the
@@ -154,6 +179,9 @@ impl ShellOverlayHost {
             st.search_resource_scope = None;
             st.bump();
         }
+        // The field names its scope, and the control that widens it, in the
+        // same frame the scope changes.
+        self.sync_scope_token();
         if !self.palette_visible {
             self.palette_visible = true;
             self.palette.set_focus(true);
@@ -493,6 +521,23 @@ impl ShellOverlayHost {
         (results, entries)
     }
 
+    /// `groups` cut to the rows the card has room for, noting which kinds
+    /// there are to filter by. The launcher's sections are not kinds.
+    fn fit_to_card(
+        &mut self,
+        groups: Vec<crate::shell::search::KindGroup>,
+        launcher: bool,
+    ) -> Vec<crate::shell::search::KindGroup> {
+        let capacity = self.palette.entry_row_capacity();
+        if launcher {
+            self.present_kinds.clear();
+            crate::shell::search::launcher::trim(groups, capacity, &self.expanded_kinds)
+        } else {
+            self.note_present_kinds(&groups);
+            ui::search::system::trim_groups(groups, capacity, &self.expanded_kinds)
+        }
+    }
+
     pub(super) fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         // A step collecting an argument owns the list until it ends.
@@ -519,7 +564,7 @@ impl ShellOverlayHost {
             let active_provider = active_tab_provider_id(&st, &self.search_registry);
             (scope, active_provider)
         };
-        let groups = {
+        let (groups, launcher) = {
             let st = chrome.borrow();
             self.search_chrome_revision = st.revision;
             let args = crate::shell::search::QueryArgs {
@@ -542,14 +587,12 @@ impl ShellOverlayHost {
             self.last_search_revision = revision;
             // Every hit, grouped; the palette's own height decides how many
             // each group shows below.
-            self.search_registry.query_grouped(&args, 0)
+            (
+                self.search_registry.query_grouped(&args, 0),
+                crate::shell::search::launcher::wanted(&args),
+            )
         };
-        self.note_present_kinds(&groups);
-        let groups = ui::search::system::trim_groups(
-            groups,
-            self.palette.entry_row_capacity(),
-            &self.expanded_kinds,
-        );
+        let groups = self.fit_to_card(groups, launcher);
 
         // Provider revisions may insert/re-rank rows without a query edit.
         // Keep the resource the person chose, never its old callback or row
@@ -566,7 +609,10 @@ impl ShellOverlayHost {
         // Kind travels as the row's section and glyph, not a `[Files]`
         // literal on the subtitle, which pushed the distinguishing part
         // of a path off the right edge.
-        let (results, entries) = self.palette_rows(&groups, &current_query);
+        let (results, mut entries) = self.palette_rows(&groups, &current_query);
+        if launcher {
+            under_launcher_sections(&mut entries);
+        }
 
         // Peer-sync rows are ordinary `ActionsProvider` results, ranked
         // against everything else rather than appended below every hit.
@@ -631,6 +677,11 @@ impl ShellOverlayHost {
             .unwrap_or_default();
         let token = (scope != SearchScope::All).then(|| self.search_scope_pill_label(scope));
         self.palette.set_scope_token(token);
+        // Scoped to the workspace, the token is the one control that widens
+        // the search to every workspace: pressed, or Backspace.
+        self.palette.set_scope_token_action(
+            (scope == SearchScope::Workspace).then(|| t("search-launcher-widen")),
+        );
     }
 
     /// Backspace took the scope token away: search one scope wider.
@@ -794,6 +845,13 @@ impl ShellOverlayHost {
                 e = e.path_description();
             }
         }
+        let faces = self.search_registry.row_faces(r);
+        if !faces.is_empty() {
+            e = e.faces(faces);
+        }
+        if let Some(outcome) = self.search_registry.row_outcome(r) {
+            e = e.outcome(outcome);
+        }
         if let Some(badge) = &r.badge {
             e = e.badge(badge.clone());
         }
@@ -879,5 +937,19 @@ impl ShellOverlayHost {
                     false
                 }
             });
+    }
+}
+
+/// Each launcher row under its section's header, read as that section's
+/// named group.
+fn under_launcher_sections(entries: &mut [CommandEntry]) {
+    for entry in entries {
+        if let Some(section) = entry
+            .group
+            .as_deref()
+            .and_then(crate::shell::search::launcher::section_of)
+        {
+            entry.section = Some(section.label());
+        }
     }
 }

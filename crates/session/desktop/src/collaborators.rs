@@ -1771,8 +1771,27 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
             roster.push(participant.clone());
         }
     }
-    let colors = roster_colors_with_local_user(&roster, local_user);
-    let workspace = desktop.active_workspace();
+    rows_of(desktop.active_workspace(), &roster, local_user)
+}
+
+/// Everyone present in `workspace` (not only the active one) as the roster
+/// lists them: the presence its collaborators last published, which is what
+/// the overview and the strip show of a workspace too. The active workspace
+/// reads [`collaborator_roster_rows`], which also merges the tree-wide mirror.
+#[must_use]
+pub fn workspace_roster_rows(
+    workspace: &tilo_desktop_model::Workspace,
+    local_user: &str,
+) -> Vec<RosterRow> {
+    rows_of(Some(workspace), &workspace.collaborators, local_user)
+}
+
+fn rows_of(
+    workspace: Option<&tilo_desktop_model::Workspace>,
+    roster: &[Collaborator],
+    local_user: &str,
+) -> Vec<RosterRow> {
+    let colors = roster_colors_with_local_user(roster, local_user);
     let now = tilo_clock::unix_now();
     let rows: Vec<RosterRow> = roster
         .iter()
@@ -1809,7 +1828,7 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
                 own_device: participant.own_device,
                 activity: participant
                     .active_tab
-                    .and_then(|tab| active_tab_title(desktop, tab))
+                    .and_then(|tab| tab_title_in(workspace, tab))
                     .map(|title| {
                         crate::i18n::t_args("people-panel-viewing", &[("title", title.into())])
                     }),
@@ -1920,9 +1939,8 @@ pub fn in_app(app: &str) -> String {
     crate::i18n::t_args("people-panel-in-app", &[("app", app.to_owned().into())])
 }
 
-fn active_tab_title(desktop: &DesktopTree, tab_id: u64) -> Option<String> {
-    desktop
-        .active_workspace()?
+fn tab_title_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {
+    workspace?
         .strips
         .iter()
         .flat_map(|strip| &strip.window_groups)
