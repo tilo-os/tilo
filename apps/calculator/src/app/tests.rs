@@ -5,6 +5,7 @@ use ui::tilo_resource::Invoke;
 
 include!("../local_capture_tests.rs");
 include!("../typing_tests.rs");
+include!("../history_tests.rs");
 
 fn keyboard(key: WKey) -> WindowEvent {
     let text = if let WKey::Character(text) = &key {
@@ -124,7 +125,7 @@ fn click(app: &mut TestApp<CalculatorShell>, target: &str) {
 /// open drawer, a collaborator's pointer over the first formula.
 #[test]
 fn captures_stage_mode_drawers_and_collaborators() {
-    let _calc = TestApp::<CalculatorShell>::capture(Some("history-open")).unwrap();
+    let _calc = TestApp::<CalculatorShell>::capture(Some("calculator")).unwrap();
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     assert_eq!(
         toolbar.views.as_ref().map(|views| views.chosen.as_str()),
@@ -138,13 +139,6 @@ fn captures_stage_mode_drawers_and_collaborators() {
             .as_ref()
             .map(|location| location.label.as_str()),
         Some("Calculator")
-    );
-    assert!(
-        toolbar
-            .actions
-            .iter()
-            .any(|action| action.name == "Hide history" && action.on),
-        "the history drawer is staged open"
     );
 
     let mut narrow = TestApp::<CalculatorShell>::capture(Some("narrow-functions")).unwrap();
@@ -653,11 +647,8 @@ fn the_modes_units_and_panel_button_are_the_window_bars_and_no_row_is_drawn() {
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     assert_eq!(toolbar.sidebar, None);
     assert!(
-        toolbar
-            .actions
-            .iter()
-            .any(|action| action.id == "calculator.history.toggle" && !action.menu),
-        "the calculations' show/hide button is in the bar's row"
+        toolbar.actions.iter().all(|action| action.menu),
+        "past calculations are the window's History, not a button of the app's own"
     );
 }
 
@@ -725,8 +716,6 @@ fn scenarios_stage_the_view_they_name() {
     assert!(engine::evaluate(&error.model.expr, &error.model.ctx()).is_err());
     let drawer = stage(Some("narrow-functions"), 480.0);
     assert!(drawer.g2.panel.side().is_overlay() && drawer.g2.panel.side().is_open());
-    let drawer = stage(Some("narrow-history"), 480.0);
-    assert!(drawer.calc.is_overlay() && drawer.calc.sidebar_open());
 }
 
 /// The real key path (`on_key`): Ctrl+digit switches mode, typing and
@@ -759,10 +748,6 @@ fn keyboard_path_switches_mode_and_edits_graph_rows() {
         let mut app = CalculatorApp::new();
         let mut st = ui::State::new();
         let escape = WKey::Named(NamedKey::Escape);
-        app.calc.snap_sidebar(true);
-        assert!(!app.escape_is_idle(&escape), "Escape dismisses the drawer");
-        app.on_key(&escape, none, &mut Edits::lend(&mut st.doc));
-        assert!(!app.calc.sidebar_open());
         app.on_key(
             &WKey::Character("7".into()),
             none,
@@ -1022,54 +1007,6 @@ fn calc_pointer_clicks_drive_keypad_history_and_memory() {
         assert_eq!(
             app.model.expr, "7+",
             "tapping an operator keycap must append it"
-        );
-    }
-
-    // phase history_row_click_recalls_expression
-    {
-        // on_press_calc → history_at → model.expr loads the tapped entry.
-        let mut app = CalculatorApp::seeded();
-        app.set_mode(Mode::Calc);
-        let mut st = ui::State::new();
-        let mut app = wide(app); // wide → history docks open
-        let want = app.model.history[0].expr.clone();
-        assert!(!want.is_empty(), "history recall: fixture non-empty");
-        let row = app
-            .calc
-            .history_row_center(0)
-            .expect("history row 0 laid out");
-        app.model.expr = "999".into(); // something distinct to overwrite
-        app.model.after_equals = true;
-        tap(&mut app, &mut st, row);
-        assert_eq!(
-            app.model.expr, want,
-            "tapping a history row must load its expression"
-        );
-        assert!(
-            !app.model.after_equals,
-            "recall must clear the after-equals latch"
-        );
-    }
-
-    // phase clear_history_button_click_empties_history
-    {
-        // on_press_calc → clear_history_at → model.history.clear().
-        let mut app = CalculatorApp::seeded();
-        app.set_mode(Mode::Calc);
-        let mut st = ui::State::new();
-        let mut app = wide(app);
-        assert!(
-            !app.model.history.is_empty(),
-            "clear history: fixture non-empty"
-        );
-        let clear = app
-            .calc
-            .clear_history_center()
-            .expect("Clear button laid out");
-        tap(&mut app, &mut st, clear);
-        assert!(
-            app.model.history.is_empty(),
-            "tapping Clear must empty the history"
         );
     }
 

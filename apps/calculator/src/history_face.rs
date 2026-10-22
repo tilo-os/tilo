@@ -1,0 +1,468 @@
+//! How the calculator's changes show in the shared History view.
+//!
+//! The calculations a person did are the calculator's history: there is no
+//! list of its own beside History. Each `commit-history` change shows as the
+//! calculation, typeset as the display sets it, with its result; choosing it
+//! puts the calculation back into the calculator and Copy copies the result.
+//! A change to a graph shows the function it plotted (a 2D curve with a
+//! small plot of it). Everything else (a removal, hiding a curve) reads as
+//! its sentence from the app's catalogue.
+//!
+//! A face is made from the change's recorded facts alone, never the live
+//! document, so a past calculation reads the same after it left the
+//! calculator's record (it keeps only the newest [`crate::actions::HISTORY_CAP`]).
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use ui::charts::ChartPalette;
+use ui::paint::PaintCtx;
+use ui::tilo_actions::{Did, EditOp, FieldEdit, PathStep};
+use ui::tokens::TextRole;
+use ui::widget::{EntryBody, EntryFace, HistoryEntry, HistoryEntryPresenter};
+use vello::kurbo::{BezPath, Point, Rect, Stroke};
+
+use crate::actions::GraphKind;
+use crate::draw::{self, Align};
+use crate::engine;
+use crate::mathfield::{self, MathField};
+
+/// A calculation row: the expression over its result, as the display sets
+/// them.
+const CALCULATION_HEIGHT: f64 = 60.0;
+/// A graph row: one formula line.
+const GRAPH_HEIGHT: f64 = 48.0;
+/// The x range a curve's thumbnail plots.
+const THUMBNAIL_SPAN: f64 = 5.0;
+/// Samples across a thumbnail.
+const THUMBNAIL_SAMPLES: usize = 48;
+
+/// The calculator's [`HistoryEntryPresenter`].
+#[derive(Default)]
+pub struct CalculatorEntries;
+
+impl HistoryEntryPresenter for CalculatorEntries {
+    fn face(&self, entry: &HistoryEntry) -> Option<EntryFace> {
+        if let Some((expression, result)) = calculation(entry) {
+            let spoken = format!("{expression} = {result}");
+            return Some(
+                EntryFace::new(spoken)
+                    .with_body(Rc::new(CalculationBody::new(&expression, &result)))
+                    .copying(result)
+                    .opening(),
+            );
+        }
+        let (kind, formula) = plotted(entry)?;
+        let spoken = format!("{} = {formula}", kind.variable());
+        Some(EntryFace::new(spoken).with_body(Rc::new(GraphBody::new(kind, &formula))))
+    }
+}
+
+/// The calculation a `commit-history` change made: its expression and
+/// result.
+pub fn calculation(entry: &HistoryEntry) -> Option<(String, String)> {
+    let Some(Did::Verb(call)) = entry.context.as_ref()?.what.as_ref() else {
+        return None;
+    };
+    if call.action.action != "commit-history" {
+        return None;
+    }
+    let text = |name: &str| {
+        call.args
+            .get(name)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .map(str::to_owned)
+    };
+    let expression = text("expr").filter(|expression| !expression.is_empty())?;
+    Some((expression, text("result").unwrap_or_default()))
+}
+
+/// The function a graph change plotted: a formula added (by the verb or as
+/// a new row) or written into a row.
+fn plotted(entry: &HistoryEntry) -> Option<(GraphKind, String)> {
+    let context = entry.context.as_ref()?;
+    let formula = match context.what.as_ref()? {
+        Did::Verb(call) => {
+            let kind = match call.action.action.as_str() {
+                "add-function" => GraphKind::Curve2d,
+                "add-surface" => GraphKind::Surface3d,
+                _ => return None,
+            };
+            let formula = call.args.get("formula")?.as_str()?.trim().to_owned();
+            return (!formula.is_empty()).then_some((kind, formula));
+        }
+        Did::Edit(edit) => match edit.op {
+            // A formula typed into a row.
+            EditOp::Replace | EditOp::Splice if edit.field == "expr" => edit
+                .new
+                .as_ref()
+                .and_then(|new| new.as_str())
+                .map(str::to_owned)
+                .or_else(|| context.item.as_ref().map(|item| item.label.clone())),
+            // A row added with its formula: the item's label is its formula.
+            EditOp::Insert if graph_kind(edit).is_some() && edit.new.is_none() => {
+                context.item.as_ref().map(|item| item.label.clone())
+            }
+            _ => None,
+        },
+        Did::Group(_) | Did::History(_) => None,
+    }?;
+    let formula = formula.trim().to_owned();
+    if formula.is_empty() {
+        return None;
+    }
+    Some((graph_kind(edit_of(context)?)?, formula))
+}
+
+fn edit_of(context: &ui::tilo_actions::ActionContext) -> Option<&FieldEdit> {
+    match context.what.as_ref()? {
+        Did::Edit(edit) => Some(edit),
+        _ => None,
+    }
+}
+
+/// Which graph list an edit is in, from the collection it names.
+fn graph_kind(edit: &FieldEdit) -> Option<GraphKind> {
+    let names = |list: &str| {
+        edit.field == list
+            || edit
+                .path
+                .iter()
+                .any(|step| matches!(step, PathStep::Field(field) if field == list))
+    };
+    if names(GraphKind::Curve2d.field()) {
+        Some(GraphKind::Curve2d)
+    } else if names(GraphKind::Surface3d.field()) {
+        Some(GraphKind::Surface3d)
+    } else {
+        None
+    }
+}
+
+impl GraphKind {
+    /// What a formula of this list is equal to: `y` for a curve, `z` for a
+    /// surface.
+    fn variable(self) -> &'static str {
+        match self {
+            GraphKind::Curve2d => "y",
+            GraphKind::Surface3d => "z",
+        }
+    }
+}
+
+/// A calculation, set as the display sets it: the expression in the math
+/// layout, dim, and its result in the numeric title face beneath, trailing.
+struct CalculationBody {
+    field: RefCell<MathField>,
+    result: String,
+}
+
+impl CalculationBody {
+    fn new(expression: &str, result: &str) -> Self {
+        Self {
+            field: RefCell::new(MathField::new(expression)),
+            result: result.to_owned(),
+        }
+    }
+}
+
+impl EntryBody for CalculationBody {
+    fn height(&self) -> f64 {
+        CALCULATION_HEIGHT
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        let theme = ctx.theme;
+        let colors = &theme.tokens.colors;
+        let pad_y = f64::from(theme.tokens.spacing.s1);
+        let result_style = theme.text(TextRole::Title).numeric();
+        let result_h = f64::from(result_style.line_height_px()).min(rect.height() / 2.0);
+        let expression = Rect::new(
+            rect.x0,
+            rect.y0 + pad_y,
+            rect.x1,
+            rect.y1 - pad_y - result_h,
+        );
+        let mut field = self.field.borrow_mut();
+        field.set_size(formula_size(ctx));
+        field.set_rect(expression, ctx.text);
+        field.draw(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            colors.text_dim,
+            false,
+        );
+        let result = Rect::new(rect.x0, expression.y1, rect.x1, expression.y1 + result_h);
+        draw::text_in(
+            ctx,
+            result,
+            &self.result,
+            &result_style,
+            colors.text_primary,
+            Align::Right,
+        );
+    }
+}
+
+/// The size a formula is set at in a History row: the body face, so a row
+/// keeps the display's typesetting at the list's scale.
+fn formula_size(ctx: &PaintCtx<'_>) -> f32 {
+    let size = ctx.theme.tokens.typography.size(TextRole::Body);
+    let renderer = ctx.text.text_scale();
+    if renderer.is_finite() && renderer > f32::EPSILON {
+        size / renderer
+    } else {
+        mathfield::formula_size(ctx.theme, ctx.text)
+    }
+}
+
+/// A plotted function: `y = f(x)` typeset, and for a curve a small plot of
+/// it beside the formula.
+struct GraphBody {
+    kind: GraphKind,
+    field: RefCell<MathField>,
+    /// The curve's samples over the thumbnail span, `None` where it is
+    /// undefined; empty for a surface or a formula that does not compile.
+    samples: Vec<Option<f64>>,
+}
+
+impl GraphBody {
+    fn new(kind: GraphKind, formula: &str) -> Self {
+        let samples = match kind {
+            GraphKind::Curve2d => engine::compile(formula, false, false)
+                .map(|curve| {
+                    (0..=THUMBNAIL_SAMPLES)
+                        .map(|i| {
+                            let t = i as f64 / THUMBNAIL_SAMPLES as f64;
+                            let y = curve.eval1(-THUMBNAIL_SPAN + 2.0 * THUMBNAIL_SPAN * t);
+                            y.is_finite().then_some(y)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            GraphKind::Surface3d => Vec::new(),
+        };
+        Self {
+            kind,
+            field: RefCell::new(MathField::new(formula)),
+            samples,
+        }
+    }
+
+    /// The thumbnail's path inside `frame`, scaled to the curve's own range.
+    fn thumbnail(&self, frame: Rect) -> Option<BezPath> {
+        let defined: Vec<f64> = self.samples.iter().flatten().copied().collect();
+        let low = defined.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = defined.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if !low.is_finite() || !high.is_finite() {
+            return None;
+        }
+        let span = (high - low).max(1e-9);
+        let mut path = BezPath::new();
+        let mut drawing = false;
+        let last = self.samples.len().saturating_sub(1).max(1) as f64;
+        for (i, sample) in self.samples.iter().enumerate() {
+            let Some(y) = sample else {
+                drawing = false;
+                continue;
+            };
+            let point = Point::new(
+                frame.x0 + frame.width() * i as f64 / last,
+                frame.y1 - frame.height() * (y - low) / span,
+            );
+            if drawing {
+                path.line_to(point);
+            } else {
+                path.move_to(point);
+                drawing = true;
+            }
+        }
+        Some(path)
+    }
+}
+
+impl EntryBody for GraphBody {
+    fn height(&self) -> f64 {
+        GRAPH_HEIGHT
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        let theme = ctx.theme;
+        let colors = &theme.tokens.colors;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let pad_y = f64::from(theme.tokens.spacing.s1);
+        let thumb_w = if self.samples.is_empty() {
+            0.0
+        } else {
+            (rect.height() * 1.5).min(rect.width() / 3.0)
+        };
+        let label_style = theme.text(TextRole::Body);
+        let (label_w, _) =
+            ctx.text
+                .measure_style(&format!("{} =", self.kind.variable()), None, &label_style);
+        let label = Rect::new(rect.x0, rect.y0, rect.x0 + f64::from(label_w), rect.y1);
+        draw::text_in(
+            ctx,
+            label,
+            &format!("{} =", self.kind.variable()),
+            &label_style,
+            colors.text_dim,
+            Align::Left,
+        );
+        let formula = Rect::new(
+            label.x1 + gap,
+            rect.y0 + pad_y,
+            (rect.x1 - thumb_w - if thumb_w > 0.0 { gap } else { 0.0 }).max(label.x1 + gap),
+            rect.y1 - pad_y,
+        );
+        let mut field = self.field.borrow_mut();
+        field.set_size(formula_size(ctx));
+        field.set_rect(formula, ctx.text);
+        field.draw(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            colors.text_primary,
+            false,
+        );
+        if thumb_w > 0.0 {
+            let frame = Rect::new(
+                rect.x1 - thumb_w,
+                rect.y0 + 2.0 * pad_y,
+                rect.x1,
+                rect.y1 - 2.0 * pad_y,
+            );
+            if let Some(path) = self.thumbnail(frame) {
+                let stroke = Stroke::new(1.5 * f64::from(theme.ui_scale));
+                let ink = ChartPalette::from_theme(theme).categorical(0);
+                ctx.scene.stroke(&stroke, ctx.transform, ink, None, &path);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::tilo_actions::{ActionContext, ActionItem, ActionKey, Scalar, VerbCall};
+    use ui::widget::{ArtifactKind, EntryKind, HistoryAuthor, HistoryEntryId};
+
+    fn entry(what: Did, item: Option<&str>) -> HistoryEntry {
+        HistoryEntry {
+            id: HistoryEntryId([7; 16]),
+            author: HistoryAuthor::new("You", 0.0, "you"),
+            entry_kind: EntryKind::Details,
+            artifact_kind: ArtifactKind::Note,
+            timestamp: ui::time::SystemTime::UNIX_EPOCH,
+            summary: "Changed the document".into(),
+            text_delta: None,
+            diff_payload: None,
+            redaction: None,
+            context: Some(ActionContext {
+                what: Some(what),
+                item: item.map(|label| ActionItem {
+                    id: "row".into(),
+                    label: label.into(),
+                }),
+                ..ActionContext::default()
+            }),
+        }
+    }
+
+    fn verb(action: &str, args: &[(&str, &str)]) -> Did {
+        Did::Verb(VerbCall::new(
+            ActionKey::new("calculator", "calculator.document", action),
+            args.iter()
+                .map(|(name, value)| ((*name).to_owned(), Scalar::text(value))),
+        ))
+    }
+
+    fn formula_edit(list: &str, op: EditOp, new: Option<&str>) -> Did {
+        Did::Edit(FieldEdit {
+            ty: "plot-fn".into(),
+            field: "expr".into(),
+            path: vec![
+                PathStep::Field(list.into()),
+                PathStep::Item("row".into()),
+                PathStep::Field("expr".into()),
+            ],
+            op,
+            old: None,
+            new: new.map(Scalar::text),
+            args: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// A calculation is its expression and result, typeset; it opens in the
+    /// calculator and copies its result.
+    #[test]
+    fn a_calculation_reads_as_itself_opens_and_copies_its_result() {
+        let face = CalculatorEntries
+            .face(&entry(
+                verb(
+                    "commit-history",
+                    &[("expr", "sqrt(2)/2"), ("result", "0.7071")],
+                ),
+                None,
+            ))
+            .expect("a calculation has a face");
+        assert_eq!(face.spoken, "sqrt(2)/2 = 0.7071");
+        assert_eq!(face.copy.as_deref(), Some("0.7071"));
+        assert!(face.opens, "choosing it puts it back into the calculator");
+        assert!(face.body.is_some(), "it is typeset, not a sentence");
+    }
+
+    /// A formula typed into a curve shows the curve as it now reads, with a
+    /// plot; a surface shows its formula; neither opens or copies.
+    #[test]
+    fn a_graph_change_shows_the_function_it_plotted() {
+        let curve = CalculatorEntries
+            .face(&entry(
+                formula_edit("funcs", EditOp::Replace, Some("x^2-1")),
+                Some("x^2"),
+            ))
+            .expect("a typed formula has a face");
+        assert_eq!(curve.spoken, "y = x^2-1", "the formula after the change");
+        assert!(!curve.opens && curve.copy.is_none());
+
+        let surface = CalculatorEntries
+            .face(&entry(verb("add-surface", &[("formula", "x*y")]), None))
+            .expect("an added surface has a face");
+        assert_eq!(surface.spoken, "z = x*y");
+
+        let body = GraphBody::new(GraphKind::Curve2d, "x^2-1");
+        assert!(
+            body.thumbnail(Rect::new(0.0, 0.0, 60.0, 30.0)).is_some(),
+            "a curve plots"
+        );
+        assert!(
+            GraphBody::new(GraphKind::Surface3d, "x*y")
+                .samples
+                .is_empty()
+        );
+    }
+
+    /// Removing, clearing and hiding read as their sentences.
+    #[test]
+    fn other_changes_read_as_their_sentence() {
+        for what in [
+            verb("clear-history", &[]),
+            verb("delete-function", &[("function", "row")]),
+            Did::Edit(FieldEdit {
+                ty: "plot-fn".into(),
+                field: "visible".into(),
+                path: vec![PathStep::Field("funcs".into())],
+                op: EditOp::Set,
+                old: None,
+                new: Some(Scalar::of(&false).unwrap()),
+                args: std::collections::BTreeMap::new(),
+            }),
+        ] {
+            assert!(CalculatorEntries.face(&entry(what, Some("x"))).is_none());
+        }
+    }
+}

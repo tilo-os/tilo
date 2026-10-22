@@ -2,9 +2,9 @@
 //! ([`ui::window_toolbar`]).
 //!
 //! The bar names the mode as its location and shows the modes as its view
-//! switcher (Calculator, Graph 2D, Graph 3D), the side panel's show/hide
-//! button (the graphs' formulas as the sidebar, the calculations as an
-//! action) and the angle unit in its menu.
+//! switcher (Calculator, Graph 2D, Graph 3D), a graph's formulas as its
+//! sidebar and the angle unit in its menu. Past calculations are the
+//! window's History, which the bar opens itself.
 //! Each slot runs the same semantic action an assistive technology runs on
 //! the calculator, so there is one state path for all of them.
 
@@ -16,7 +16,6 @@ use super::CalculatorApp;
 use crate::actions::GraphKind;
 use crate::model::Mode;
 
-const HISTORY_TOGGLE: &str = "calculator.history.toggle";
 const RADIANS: &str = "calculator.angle:radians";
 const DEGREES: &str = "calculator.angle:degrees";
 
@@ -53,16 +52,6 @@ impl CalculatorApp {
         };
         if let Some(kind) = mode.graph() {
             toolbar.sidebar = Some(self.panel(kind).side().is_open());
-        } else {
-            let open = self.calc.sidebar_open();
-            toolbar.actions.push(
-                ToolbarAction::new(
-                    HISTORY_TOGGLE,
-                    "panel-right",
-                    if open { "Hide history" } else { "Show history" },
-                )
-                .on(open),
-            );
         }
         toolbar.actions.push(
             ToolbarAction::new(RADIANS, "ruler", "Radians")
@@ -93,7 +82,7 @@ impl CalculatorApp {
             let target = match &event {
                 ToolbarEvent::ToggleSidebar => match self.model.mode.graph() {
                     Some(kind) => panel_target(kind).to_owned(),
-                    None => HISTORY_TOGGLE.to_owned(),
+                    None => continue,
                 },
                 ToolbarEvent::Action { id } if id.starts_with("calculator.") => id.clone(),
                 _ => continue,

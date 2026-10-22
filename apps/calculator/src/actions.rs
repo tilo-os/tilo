@@ -38,6 +38,12 @@ pub enum CalculatorEffect {
         #[param("The history entry's id")]
         entry: String,
     },
+    /// Use calculation.
+    #[effect(view, idempotent)]
+    Recall {
+        #[param("The calculation to put back into the calculator")]
+        expression: String,
+    },
 }
 
 /// The most recent evaluated computations kept in the shared history list.
