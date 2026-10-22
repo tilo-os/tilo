@@ -1502,6 +1502,9 @@ pub struct ShellNetwork {
     /// the revocations learned are written to it. `None` keeps them for this
     /// session only.
     own_device_fleet: Option<crate::device_fleet::DeviceFleetStore>,
+    /// Private LAN discovery of the person's devices, when this session runs
+    /// it: asked again for each of them this session has not reached.
+    lan_discovery: Option<tilo_lan_discovery::LanDiscovery>,
     /// Last bounded scan of the enrollment registry. A paired home peer may
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
@@ -2121,17 +2124,20 @@ impl ShellNetwork {
             Arc::clone(&listen_addrs),
             reachability.clone(),
         );
-        if internet && let Some(identity) = &host_identity {
-            lan_discovery::start(
-                &runtime,
-                &discovery_endpoint,
-                identity,
-                own_device_fleet.clone(),
-                &personal_device_peers,
-                state_dir,
-                &cmd_tx,
-            );
-        }
+        let lan_discovery = host_identity
+            .as_ref()
+            .filter(|_| internet)
+            .and_then(|identity| {
+                lan_discovery::start(
+                    &runtime,
+                    &discovery_endpoint,
+                    identity,
+                    own_device_fleet.clone(),
+                    &personal_device_peers,
+                    state_dir,
+                    &cmd_tx,
+                )
+            });
 
         let relay_workspace_ids =
             relay_topics_for_home_peers(tree.read().rooms(), personal_continuity_user);
@@ -2264,6 +2270,7 @@ impl ShellNetwork {
             registered_home_device_ids: Mutex::new(home_device_ids),
             personal_device_peers,
             own_device_fleet,
+            lan_discovery,
             last_home_peer_refresh: Mutex::new(None),
             session_reach_checked: Mutex::new(None),
             home_peer_reader: home_peer_reader::HomePeerReader::spawn(
@@ -4713,6 +4720,11 @@ impl ShellNetwork {
         for addr in direct {
             if connected.contains(&addr.id) {
                 continue;
+            }
+            // A device that came onto the network since it was last looked
+            // for is found there; the lookup paces itself per device.
+            if let Some(discovery) = &self.lan_discovery {
+                discovery.probe(Some(*addr.id.as_bytes()));
             }
             if self.cmd_tx.try_send(NetCmd::Connect { addr }).is_ok() {
                 changed = true;
@@ -8930,6 +8942,7 @@ pub(crate) fn shell_network_for_test(
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         personal_device_peers: Arc::default(),
         own_device_fleet: None,
+        lan_discovery: None,
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
         home_peer_reader: home_peer_reader::HomePeerReader::spawn(
