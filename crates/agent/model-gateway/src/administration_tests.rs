@@ -159,16 +159,13 @@ async fn configure(
     first
 }
 
-async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<T>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let first = configure(
-        admin,
-        format!("http://{}/v1", listener.local_addr().unwrap()),
-    )
-    .await;
-    let profile = first.config.profiles[0].clone();
-    // Settings' model list asks the provider with the stored key; the key
-    // never reaches the caller.
+/// Settings' model list asks the provider with the stored key; the key
+/// never reaches the caller.
+async fn lists_models_with_the_stored_key(
+    admin: &dyn ProviderAdmin,
+    listener: &tokio::net::TcpListener,
+    profile: &ProviderProfile,
+) {
     let listing = async {
         use tokio::io::AsyncWriteExt as _;
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -193,6 +190,17 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
         ["first", "second"]
     );
     assert_eq!(listed[0].context_window, Some(8192));
+}
+
+async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<T>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first = configure(
+        admin,
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+    )
+    .await;
+    let profile = first.config.profiles[0].clone();
+    lists_models_with_the_stored_key(admin, &listener, &profile).await;
     let (began, mut started) = tokio::sync::mpsc::channel(1);
     let (release, released) = tokio::sync::oneshot::channel();
     let provider = tokio::spawn(async move {
