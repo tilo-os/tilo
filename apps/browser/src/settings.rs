@@ -73,7 +73,13 @@ impl SettingsPresentation {
         if self.clear_on_exit.with(|value| *value) != settings.clear_on_exit {
             self.clear_on_exit.set(settings.clear_on_exit);
         }
-        if self.homepage.with(Clone::clone) != settings.homepage {
+        // The field keeps what was typed while it names the homepage kept
+        // (`example.com` for `https://example.com/`): saving it never writes
+        // under the caret.
+        let typed = self.homepage.with(Clone::clone);
+        if typed != settings.homepage
+            && homepage_of(&typed).as_deref() != Some(settings.homepage.as_str())
+        {
             self.homepage.set(settings.homepage.clone());
         }
         if self.search_engine.with(Clone::clone) != settings.search_engine {
@@ -459,8 +465,21 @@ fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) ->
     }
 }
 
+/// The homepage typed `value` names: an address as typed, or a bare host
+/// (`example.com`) on https, as the address bar opens it. `None` while it
+/// names none yet, so a half-typed address is not offered to be refused.
+pub(crate) fn homepage_of(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.contains("://") {
+        return crate::actions::normalized_bookmark_url(value);
+    }
+    crate::omnibox::looks_like_address(value)
+        .then(|| crate::actions::normalized_bookmark_url(&format!("https://{value}")))
+        .flatten()
+}
+
 /// A labelled full-width text field: a caption above a [`TextInput`] whose
-/// edits replace the preference at `path` with the typed value.
+/// edits set the homepage at `path` to the address typed, once it is one.
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
@@ -473,7 +492,11 @@ fn field_block(
         .with_id(id)
         .with_placeholder(placeholder);
     let input = match edits {
-        Some(edits) => input.on_change(move |value| edits.submit(path.replace(value))),
+        Some(edits) => input.on_change(move |value| {
+            if let Some(homepage) = homepage_of(value) {
+                edits.submit(path.replace(homepage));
+            }
+        }),
         None => input,
     };
     Box::new(
@@ -582,6 +605,45 @@ mod tests {
             };
             assert!(settings.valid().is_ok(), "{template} is a valid engine");
         }
+    }
+
+    #[test]
+    fn a_homepage_typed_as_a_site_is_kept_as_its_address() {
+        for (typed, kept) in [
+            ("example.com", Some("https://example.com/")),
+            ("  news.example/today ", Some("https://news.example/today")),
+            ("http://intranet.example", Some("http://intranet.example/")),
+            ("localhost:3000", Some("https://localhost:3000/")),
+            ("exa", None),
+            ("example.", None),
+            ("file:///etc/passwd", None),
+        ] {
+            assert_eq!(homepage_of(typed).as_deref(), kept, "{typed}");
+            if let Some(kept) = kept {
+                let settings = Settings {
+                    homepage: kept.to_owned(),
+                    ..Settings::default()
+                };
+                assert!(settings.valid().is_ok(), "{kept} is accepted");
+            }
+        }
+        // Kept, the field still says what was typed, and the caret stays put.
+        let presentation = SettingsPresentation::from_settings(&Settings::default());
+        presentation.homepage.set("example.com".into());
+        presentation.reflect(&Settings {
+            homepage: "https://example.com/".into(),
+            ..Settings::default()
+        });
+        assert_eq!(presentation.homepage.with(Clone::clone), "example.com");
+        // Another homepage, set elsewhere, is shown.
+        presentation.reflect(&Settings {
+            homepage: "https://other.example/".into(),
+            ..Settings::default()
+        });
+        assert_eq!(
+            presentation.homepage.with(Clone::clone),
+            "https://other.example/"
+        );
     }
 
     #[test]
