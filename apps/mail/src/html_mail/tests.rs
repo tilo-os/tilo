@@ -643,9 +643,6 @@ Not links: a@b, http://, www.x, sam@localhost.";
         || url.starts_with("mailto:")));
 }
 
-/// The reader shows a body once the engine's frame carries the document's
-/// end mark, so every prepared document, light or dark, has it, after what
-/// the mail itself says.
 #[test]
 fn every_document_carries_its_end_mark() {
     for dark in [false, true] {
@@ -659,6 +656,41 @@ fn every_document_carries_its_end_mark() {
             prepared.document
         );
     }
+}
+
+fn assert_end_mark_first(mail: &str, hostile: &str) {
+    for dark in [false, true] {
+        let document = prepare(mail, &policy(false, dark)).document;
+        let mark = document.find(END_MARK).expect("the end mark");
+        let author = document.find(hostile).expect("the mail's rule");
+        assert!(mark < author, "{document}");
+        assert_eq!(document.find("@layer"), Some(mark), "{document}");
+        assert_eq!(document.matches("<html").count(), 1, "{document}");
+    }
+}
+
+#[test]
+fn a_mail_that_hides_the_root_after_still_carries_the_end_mark() {
+    assert_end_mark_first(
+        "<html style=\"display:none\"><head><style>html::after{display:none;content:none}</style>\
+</head><body><p>Hi</p></body></html>",
+        "html::after{display:none;content:none}",
+    );
+}
+
+#[test]
+fn a_mail_that_hides_everything_still_carries_the_end_mark() {
+    assert_end_mark_first(
+        "<style>* { display:none }*::after{display:none!important;content:none!important}\
+@layer{html::after{display:none!important}}</style><p>Hi</p>",
+        "* { display:none }*::after{display:none!important;content:none!important}",
+    );
+}
+
+#[test]
+fn the_engine_test_holds_chromium_to_the_end_mark_the_mail_writes() {
+    let test = include_str!("../../../browser/chromium/tests/resize_frames.py");
+    assert!(test.contains(&format!("END_MARK = '{END_MARK}'")));
 }
 
 /// The reader scrolls the mail as one page: the document, as tall as its

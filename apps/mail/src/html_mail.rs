@@ -350,12 +350,26 @@ fn dark_ready(html: &str) -> bool {
 /// frame at the size the view has carries the mark there, so the reader
 /// shows a body once a frame has it (`reader::html`). A pseudo-element of the root,
 /// above everything, so nothing the mail lays out moves or covers it.
+///
+/// The mail's style cannot remove it: the rules are important declarations in
+/// the document's first cascade layer, which win over every important
+/// declaration after it, layered or not, and the layer has no name for a
+/// mail's rule to join. The mark resets every property it does not set, and
+/// the root keeps nothing that would hide, move or contain it. The mail's own
+/// root element, with its attributes, is never written.
 /// `apps/browser/chromium/tests/resize_frames.py` holds Chromium to it.
-pub const END_MARK: &str = "html::after{content:\"\"!important;display:block!important;\
-position:fixed!important;right:0!important;bottom:0!important;width:2px!important;\
-height:2px!important;margin:0!important;background:rgb(1,1,1)!important;\
-mix-blend-mode:difference!important;pointer-events:none!important;\
-z-index:2147483647!important}";
+pub const END_MARK: &str = "@layer{html::after{all:initial!important;content:\"\"!important;\
+display:block!important;position:fixed!important;right:0!important;bottom:0!important;\
+width:2px!important;height:2px!important;margin:0!important;\
+background:rgb(1,1,1)!important;mix-blend-mode:difference!important;\
+pointer-events:none!important;z-index:2147483647!important}\
+html{display:block!important;visibility:visible!important;opacity:1!important;\
+transform:none!important;translate:none!important;scale:none!important;\
+rotate:none!important;perspective:none!important;filter:none!important;\
+backdrop-filter:none!important;contain:none!important;\
+container-type:normal!important;content-visibility:visible!important;\
+will-change:auto!important;clip-path:none!important;mask:none!important;\
+zoom:1!important;isolation:auto!important;mix-blend-mode:normal!important}}";
 
 /// The document's own style, before the mail's: a light sheet or the
 /// reader's dark ground, preformatted text that wraps, long words that
