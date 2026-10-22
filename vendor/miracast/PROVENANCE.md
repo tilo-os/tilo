@@ -2,7 +2,7 @@
 
 - Package: `miracast` 0.1.0, Tilo's own crate, not published to crates.io
 - Repository: https://code.tilo.so/tilo/miracast
-- Revision: `c37c8cdfcdf7959a1daa38925f0e13d217c083c0`
+- Revision: `ce4e1d09ae2c1451c7ac065586d29d8d80c521a9`
 - License: MIT OR Apache-2.0; `LICENSE-MIT` and `LICENSE-APACHE` are the
   repository's files at that revision.
 - Vendored: 2026-10-22, replacing the git dependency on that revision, so a
