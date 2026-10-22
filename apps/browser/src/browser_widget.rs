@@ -193,6 +193,11 @@ enum PipChoice {
     SelectArea,
 }
 
+/// `uri` without its `#fragment`: the document it names.
+fn without_fragment(uri: &str) -> &str {
+    uri.split_once('#').map_or(uri, |(document, _)| document)
+}
+
 /// The ids of the toolbar controls a panel opens beside.
 fn anchor_ids(ids: &[&str]) -> Vec<String> {
     ids.iter().map(|id| (*id).to_owned()).collect()
@@ -3103,11 +3108,17 @@ impl BrowserWidget {
                     crate::credentials::Credentials::send(&self.engine, requests);
                     self.structure_dirty = true;
                     self.document_revision = self.document_revision.wrapping_add(1);
-                    self.favicon = None;
-                    self.favicon_png = None;
-                    self.media_playing = false;
-                    self.media_document_generation = None;
-                    if uri != self.current_uri {
+                    // A jump to a `#section` of the page is the same document:
+                    // its title, icon, media, find and reader view stay.
+                    let same_document = uri != self.current_uri
+                        && without_fragment(&uri) == without_fragment(&self.current_uri);
+                    if !same_document {
+                        self.favicon = None;
+                        self.favicon_png = None;
+                        self.media_playing = false;
+                        self.media_document_generation = None;
+                    }
+                    if uri != self.current_uri && !same_document {
                         self.title.clear();
                         self.loading_stopped = false;
                         self.structure_dirty |= self.daily.navigation_started(&self.engine);
@@ -3188,6 +3199,13 @@ impl BrowserWidget {
                     }
                 }
                 WebViewEvent::RendererTerminated => {
+                    // The page's renderer is gone (out of memory, a crash):
+                    // its last frame is no page any more. Say so, with the
+                    // way back a failed load offers, instead of a page that
+                    // looks open and takes no input.
+                    self.set_loading_progress(1.0);
+                    self.load_error = Some(crate::resource::CATALOG.t("browser-page-stopped"));
+                    self.structure_dirty = true;
                     self.deactivate_credentials();
                     if self.content_fullscreen {
                         self.content_fullscreen = false;
@@ -3921,7 +3939,12 @@ impl BrowserWidget {
             );
             return true;
         }
+        // Escape in the address field is the field's: it closes the
+        // suggestions or puts the address back, never Find or the load.
+        let escape_is_the_address = key.logical_key == WKey::Named(WNamedKey::Escape)
+            && (self.url_input_focused() || self.suggestions.is_visible());
         if self.daily.open
+            && !escape_is_the_address
             && (key.logical_key == WKey::Named(WNamedKey::Escape)
                 || (key.logical_key == WKey::Named(WNamedKey::Enter)
                     && self.control_focused(crate::daily_controls::FIND_INPUT)))
@@ -3937,7 +3960,10 @@ impl BrowserWidget {
             self.structure_dirty = true;
             return true;
         }
-        if key.logical_key == WKey::Named(WNamedKey::Escape) && self.progress < 1.0 {
+        if key.logical_key == WKey::Named(WNamedKey::Escape)
+            && self.progress < 1.0
+            && !escape_is_the_address
+        {
             self.queue_unit_operation("browser.page", "stop");
             return true;
         }
@@ -5767,7 +5793,14 @@ impl BrowserWidget {
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
-        self.structure_dirty |= self.capabilities.downloads_changed();
+        let downloads_changed = self.capabilities.downloads_changed();
+        self.structure_dirty |= downloads_changed;
+        // The download that kept the tab from closing finished or was
+        // cancelled: the tab can close now, and the notice saying it cannot
+        // goes.
+        if self.close_blocked && downloads_changed && !self.capabilities.exit_requires_choice() {
+            self.close_blocked = false;
+        }
         self.sync_search_and_suggestions();
         // Suggestions for what was just typed in the bar go out this frame.
         self.declare_window_toolbar();

@@ -108,3 +108,4 @@ browser-menu-extensions = Erweiterungen
 browser-menu-manage-extensions = Erweiterungen verwalten
 browser-extension-add = Zu Tilo Browser hinzufügen
 browser-extension-adding = Erweiterung wird hinzugefügt
+browser-page-stopped = Diese Seite funktioniert nicht mehr
