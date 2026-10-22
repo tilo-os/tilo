@@ -1885,16 +1885,20 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         );
     }
 
-    // Phase `image_clipboard_from_in_process_chrome_offers_png_and_keeps_text`.
+    // Phase `image_clipboard_from_in_process_chrome_replaces_the_earlier_copy`.
+    // A screenshot reaches the clipboard through this copy. It is a new copy:
+    // the text copied before it is no longer offered, or every app that
+    // prefers text would paste that text instead of the screenshot. The copy
+    // is the compositor's, so it still pastes in an app started afterwards.
     {
         let compositor = Compositor::start();
         let mut client = TestClient::new(compositor.connect(), "org.tilo.test.image-sink");
         client.assert_is_tilo_compositor();
         client.map_window(&compositor);
-        compositor.chrome_copy("caption survives image copy", false);
+        compositor.chrome_copy("text copied before the screenshot", false);
         compositor.chrome_copy_image();
         // The text copy's own selection may arrive first; the image copy
-        // replaces it with an offer advertising both formats.
+        // replaces it.
         client.wait_until(
             |s| {
                 s.clipboard_offer_mimes
@@ -1903,7 +1907,11 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
             },
             "the image copy's selection never arrived",
         );
-
+        assert_eq!(
+            client.state.clipboard_offer_mimes,
+            vec!["image/png".to_string()],
+            "the image copy offers the image and nothing that was copied before"
+        );
         let png = client.read_clipboard_bytes("image/png", None);
         let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
         assert_eq!((decoded.width, decoded.height), (2, 1));
@@ -1911,10 +1919,26 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
             decoded.rgba,
             [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
         );
+        drop(client);
 
-        // One compositor-owned selection advertises both formats, so image copy
-        // must not make the previously copied text disappear.
-        assert_eq!(client.read_clipboard(None), "caption survives image copy");
+        let mut later = TestClient::new(compositor.connect(), "org.tilo.test.image-later");
+        later.map_window(&compositor);
+        later.wait_until(
+            |s| {
+                s.clipboard_offer_mimes
+                    .iter()
+                    .any(|mime| mime == "image/png")
+            },
+            "an app started after the copy was never offered the image",
+        );
+        assert_eq!(
+            later.state.clipboard_offer_mimes,
+            vec!["image/png".to_string()],
+            "an app started later is offered the image alone"
+        );
+        let png = later.read_clipboard_bytes("image/png", None);
+        let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
+        assert_eq!((decoded.width, decoded.height), (2, 1));
     }
 
     // Phase `app_wayland_clipboard_publishes_png_and_text_to_another_client`.

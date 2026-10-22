@@ -670,9 +670,31 @@ pub fn mirror_text(store: &SharedSelection, target: Target) -> Option<String> {
 /// in-process immediately, becomes a Wayland selection on the next tick via
 /// [`State::pump_selection`].
 pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> bool {
-    // Ctrl+C starts a new offer even when chrome already owned the clipboard;
-    // otherwise unrelated successive copies would be merged into one history
-    // generation. Primary selection remains ephemeral and is not retained.
+    copy_into_mirror(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
+}
+
+/// A new copy from chrome: `bytes` as `mime` and nothing else, replacing
+/// whatever `target` held, and published on the next tick.
+///
+/// Every copy starts a new offer, even when the compositor already owned the
+/// selection (a copy it took over from a client that went away, or an
+/// earlier chrome copy). Adding to that offer instead would keep the earlier
+/// formats beside the new one: a screenshot taken after copying some text
+/// would still offer that text, and every app that prefers text would paste
+/// it instead of the image. It would also fold the copy into the earlier
+/// copy's history entry. Primary selection remains ephemeral and is not
+/// retained.
+///
+/// # Errors
+///
+/// As [`set_mirror_bytes`]: an invalid MIME type, an unavailable store or a
+/// payload over the selection budget. The earlier copy is gone either way.
+fn copy_into_mirror(
+    store: &SharedSelection,
+    target: Target,
+    mime: &str,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
     if let Ok(mut store) = store.lock() {
         let slot = store.slot_mut(target);
         wipe_if_secret(slot);
@@ -680,7 +702,7 @@ pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> b
         slot.mime_types.clear();
         slot.compositor_owned = false;
     }
-    set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
+    set_mirror_bytes(store, target, mime, bytes)
 }
 
 /// Write a secret `text` to the clipboard from chrome: the same as
@@ -1626,7 +1648,7 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
         if png.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_BYTES {
             return false;
         }
-        set_mirror_bytes(&self.store, Target::Clipboard, "image/png", png).is_ok()
+        copy_into_mirror(&self.store, Target::Clipboard, "image/png", png).is_ok()
     }
 
     fn name(&self) -> &'static str {
@@ -2506,23 +2528,23 @@ mod tests {
             assert!(mimes.iter().any(|mime| mime == "image/png"));
             assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"));
         }
-        // Phase `chrome_image_copy_offers_png_and_preserves_text`.
+        // Phase `chrome_image_copy_offers_png_and_replaces_the_earlier_copy`.
+        // An image copy (a screenshot) is a new copy: the text copied before
+        // it is no longer offered, else apps that prefer text paste that.
         {
             let s = store();
-            set_mirror_text(&s, Target::Clipboard, "caption");
+            set_mirror_text(&s, Target::Clipboard, "copied before");
             let host = HostClipboard {
                 store: Arc::clone(&s),
             };
             assert!(host.set_image(1, 1, &[0xff, 0x00, 0x80, 0xff]));
             let bytes = mirror_bytes(&s, Target::Clipboard, "image/png").unwrap();
             assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+            assert_eq!(mirror_text(&s, Target::Clipboard), None);
             assert_eq!(
-                mirror_text(&s, Target::Clipboard).as_deref(),
-                Some("caption")
+                mirror_mime_types(&s, Target::Clipboard),
+                vec!["image/png".to_string()]
             );
-            let mimes = mirror_mime_types(&s, Target::Clipboard);
-            assert!(mimes.iter().any(|mime| mime == "image/png"));
-            assert!(mimes.iter().any(|mime| mime == TEXT_MIME));
         }
         // Phase `chrome_image_copy_rejects_invalid_dimensions_and_payload_size`.
         {
