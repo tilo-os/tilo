@@ -153,7 +153,6 @@ struct MediaMetrics {
     text_gap: f64,
     inset: f64,
     lift: f64,
-    progress: f64,
     action: f64,
     icon: f64,
     mark: f64,
@@ -174,7 +173,6 @@ impl MediaMetrics {
             text_gap: f64::from(spacing.s2),
             inset: f64::from(spacing.s2),
             lift: f64::from(spacing.s2),
-            progress: f64::from(metrics.chrome_rule_px) * 3.0,
             action: f64::from(metrics.bar_height),
             icon: f64::from(metrics.icon_md),
             mark: f64::from(metrics.icon_sm),
@@ -755,37 +753,23 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 .paint(ctx.scene, ctx.transform, ctx.text, theme);
         }
         MediaBadge::Progress(share) => {
+            // No progress draws nothing; some draws the design system's
+            // bar, inset from the art's foot and corners so it reads as a
+            // bar however little is filled.
             let share = share.clamp(0.0, 1.0);
-            let track = Rect::new(art.x0, art.y1 - m.progress, art.x1, art.y1);
-            // Clip to the art's rounded corners so the bar follows them.
-            let clip = RoundedRect::from_rect(art, m.radius);
-            ctx.scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                ctx.transform,
-                &clip,
-            );
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                colors.surfaces.overlay,
-                None,
-                &track,
-            );
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                colors.intent.neutral_fill,
-                None,
-                &Rect::new(
-                    track.x0,
-                    track.y0,
-                    track.x0 + track.width() * share,
-                    track.y1,
-                ),
-            );
-            ctx.scene.pop_layer();
+            if share > 0.0 {
+                let height = crate::widget::ProgressBarFace::height(theme).min(art.height());
+                let bar = Rect::new(
+                    art.x0 + m.inset,
+                    art.y1 - m.inset - height,
+                    art.x1 - m.inset,
+                    art.y1 - m.inset,
+                );
+                if bar.width() > 0.0 {
+                    #[allow(clippy::cast_possible_truncation, reason = "a share in 0..=1")]
+                    crate::widget::ProgressBarFace::new(share as f32).paint(ctx, bar);
+                }
+            }
         }
     }
 }
