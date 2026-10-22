@@ -32,7 +32,6 @@ class AppSearchFieldsTests(unittest.TestCase):
             "let f = ui::widget::SearchField::new();",
             "let f = Filtered::new(list);",
             "let i = TextInput::new().with_kind(TextInputKind::Search);",
-            "let s = NavSection::new(a, b, c).filterable();",
             'let i = TextInput::new().with_placeholder("Search cities");',
             'let i = TextInput::new().with_placeholder(&t("store-search-placeholder"));',
         ]:
@@ -48,6 +47,9 @@ class AppSearchFieldsTests(unittest.TestCase):
                 "apps/demo/src/app.rs": (
                     "// SearchField::new() was here\n"
                     'fn view() { TextInput::new().with_placeholder("Name"); }\n'
+                    # A filterable section draws nothing: the window bar's
+                    # search narrows it.
+                    "fn nav() { NavSection::new(a, b, c).filterable(); }\n"
                     "#[cfg(test)]\nmod tests { fn t() { SearchField::new(); } }\n"
                 ),
                 "apps/demo/src/app_tests.rs": "fn t() { SearchField::new(); }\n",

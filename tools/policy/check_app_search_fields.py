@@ -14,8 +14,6 @@ refuses what draws a search or filter field:
 
 * ``SearchField::new``, ``SearchField::filter`` and ``Filtered::new``;
 * a text input of ``TextInputKind::Search``;
-* a navigation list or section made ``.filterable()``, which draws its filter
-  field;
 * an in-app palette given a query placeholder (``set_query_placeholder``);
 * any field whose placeholder asks to search ("Search cities", a
   ``…-search-placeholder`` message).
@@ -45,7 +43,6 @@ PATTERNS = (
     (re.compile(r"\bSearchField::(?:new|filter)\s*\("), "draws a search field"),
     (re.compile(r"\bFiltered::new\s*\("), "draws a filter field over its content"),
     (re.compile(r"\bTextInputKind::Search\b"), "draws a search text input"),
-    (re.compile(r"\.filterable\s*\(\s*\)"), "draws a list's own filter field"),
     (re.compile(r"\.set_query_placeholder\s*\("), "draws an in-app palette's query field"),
     (
         re.compile(r"\.with_placeholder\s*\([^;]*?(?i:\bsearch|-search\b|search-)", re.DOTALL),
