@@ -73,7 +73,11 @@ impl TopBarChrome {
     ) -> f64 {
         let height = 24.0;
         let right = right_x - f64::from(theme.tokens.spacing.s2);
-        let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
+        // It yields to what the centre draws (the clock, or the activity
+        // pill across the whole lane), not to the lane kept for an
+        // activity: at a laptop's width that lane alone left the notice
+        // no room for its words.
+        let left_limit = self.center_rect.x1 + f64::from(theme.tokens.spacing.s4);
         // No room for the words: the bouncing face says it alone.
         let Some(text) =
             self.wave_notice_fitted(ui::time::now(), right - left_limit, text_renderer, theme)
