@@ -129,7 +129,6 @@ mod tests {
 
     #[test]
     fn lane_heads_and_master_strip_keep_token_gaps() {
-        // Case `a_head_keeps_a_token_gap_from_its_lane_stripe`.
         {
             let lane = Rect::new(128.0, 34.0, 1280.0, 96.0);
             let card = track_head_card(GUTTER, &lane);
@@ -150,7 +149,6 @@ mod tests {
                 lane.y1
             );
         }
-        // Case `the_pills_sit_one_step_apart_on_the_name_band`.
         {
             let h = head_for(62.0);
             assert!(((h.lock.x0 - h.solo.x1) - (S1)).abs() < 1e-9, "solo ↔ lock");
@@ -189,7 +187,6 @@ mod tests {
             );
             assert!(h.name.width() > 0.0, "a 128 px gutter leaves the name room");
         }
-        // Case `every_band_clears_the_next_on_the_shortest_lane`.
         {
             for lane_h in [MIN_LANE_H, 62.0] {
                 let h = head_for(lane_h);
@@ -207,7 +204,6 @@ mod tests {
                 assert!(h.card.y1 - h.meter.y1 >= S1, "{lane_h}: bottom inset");
             }
         }
-        // Case `the_master_strip_centres_its_two_bands_a_step_apart`.
         {
             let strip = Rect::new(0.0, 0.0, 128.0, 30.0);
             let m = master_strip(strip, 1.0);

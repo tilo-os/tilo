@@ -353,7 +353,6 @@ mod tests {
         }
     }
 
-    /// The deck publishes its verbs and edits, and its slides as items.
     #[test]
     fn the_deck_publishes_its_verbs_and_slides() {
         let mut app = TestApp::<SlidesShell>::new().unwrap();

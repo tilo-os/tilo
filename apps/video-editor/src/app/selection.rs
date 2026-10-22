@@ -101,7 +101,6 @@ mod tests {
 
     #[test]
     fn selection_primary_stays_a_member_of_the_selection() {
-        // Case `removing_the_primary_promotes_the_last_remaining_clip`.
         {
             let first = Uuid::new_v4();
             let second = Uuid::new_v4();
@@ -113,7 +112,6 @@ mod tests {
             assert_eq!(selection.ids(), &[first]);
             assert_eq!(selection.primary(), Some(first));
         }
-        // Case `an_explicit_primary_must_belong_to_the_selection`.
         {
             let first = Uuid::new_v4();
             let second = Uuid::new_v4();

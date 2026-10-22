@@ -343,7 +343,6 @@ mod tests {
         }
         assert_eq!(categories.len(), Category::ALL.len());
 
-        // Every category appears exactly once when we walk section by section.
         let count: usize = Section::ALL
             .iter()
             .map(|s| Category::in_section(*s).count())
@@ -372,7 +371,6 @@ mod tests {
         let cases = [
             (Category::Network, "net", true, "label substring"),
             (Category::Bluetooth, "BLUE", true, "case-insensitive"),
-            // Subtitle "Pair and manage Bluetooth devices".
             (Category::Bluetooth, "pair", true, "subtitle substring"),
             // Keyword-only terms land on the owning pane.
             (

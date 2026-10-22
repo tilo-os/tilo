@@ -836,7 +836,6 @@ pub struct HubFit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HubFitReason {
-    /// It fits in accelerator memory.
     Accelerator,
     /// It is split between accelerator and system memory.
     AcceleratorAndMemory,
@@ -1003,7 +1002,6 @@ impl HubModelOffer {
         })
     }
 
-    /// The offered variant called `name`.
     #[must_use]
     pub fn variant(&self, name: &str) -> Option<&HubVariantOffer> {
         self.variants

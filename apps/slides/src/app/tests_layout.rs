@@ -476,7 +476,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
     }
 }
 
-/// The thumbnail rail docks when wide and becomes a toggled overlay flap when narrow.
 #[test]
 fn rail_docks_wide_and_overlays_narrow() {
     // Case `wide_window_docks_the_rail_beside_the_canvas`.
@@ -596,7 +595,6 @@ fn rail_docks_wide_and_overlays_narrow() {
     }
 }
 
-/// The inspector docks when wide and becomes a toggled overlay flap when narrow.
 #[test]
 fn inspector_docks_wide_and_overlays_narrow() {
     // Case `wide_window_docks_the_inspector`.
@@ -667,7 +665,6 @@ fn inspector_docks_wide_and_overlays_narrow() {
     }
 }
 
-/// Compact drawers, their exclusivity, and reflow across the breakpoint.
 #[test]
 fn compact_editor_drawers_and_breakpoint_reflow() {
     // Case `compact_editor_keeps_the_canvas_wide_with_both_panels_as_drawers`.
@@ -777,7 +774,6 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
     }
 }
 
-/// Wheel scrolling of rail and overview, and the overview scrollbar drag.
 #[test]
 fn wheel_and_scrollbar_scroll_rail_and_overview() {
     // Case `wheel_scrolls_the_thumbnail_rail_only_over_the_rail`.

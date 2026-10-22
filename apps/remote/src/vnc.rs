@@ -55,11 +55,6 @@ pub struct VncSession {
 
 impl VncSession {
     /// Start connecting; returns immediately with status `Connecting`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the operating system refuses to spawn the
-    /// background worker thread.
     pub fn connect(cfg: VncConfig) -> io::Result<VncSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let frame: Arc<Mutex<Option<Framebuffer>>> = Arc::new(Mutex::new(None));
@@ -124,11 +119,6 @@ impl VncSession {
     }
 
     /// Queue input without blocking the UI thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bounded queue is full or the VNC worker has
-    /// already stopped.
     pub fn send_input(&self, input: VncInput) -> Result<(), String> {
         self.input_tx.try_send(input).map_err(|error| match error {
             TrySendError::Full(_) => {
@@ -383,7 +373,6 @@ mod tests {
             assert_eq!(chosen[0], rfb::security::NONE);
             s.write_all(&0u32.to_be_bytes()).unwrap(); // SecurityResult OK
 
-            // ClientInit.
             let mut ci = [0u8; 1];
             s.read_exact(&mut ci).unwrap();
 

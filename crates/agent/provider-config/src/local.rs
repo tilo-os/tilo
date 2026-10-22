@@ -372,10 +372,6 @@ impl LocalModelRelease {
     /// vision or face capabilities, and must say what it does; a runtime
     /// model needs a runtime and a context window and cannot claim an
     /// in-process capability.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error naming the first contradiction.
     pub fn validate_shape(&self) -> Result<(), ProvisionError> {
         if matches!(
             self.artifact_format,
@@ -440,11 +436,6 @@ pub struct LocalModelCatalog {
 
 impl LocalModelCatalog {
     /// Validate the runtime and model entries supplied by the signed catalog.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when an entry is incomplete, not pinned, or conflicts
-    /// with another catalog entry.
     pub fn validate(&self) -> Result<(), ProvisionError> {
         let mut runtime_ids = BTreeSet::new();
         for runtime in &self.runtimes {
@@ -695,11 +686,6 @@ pub struct LocalEndpoint {
 
 impl LocalEndpoint {
     /// Validate that an activated endpoint is local and identifies a model.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the endpoint is not loopback-only or does not
-    /// identify a model.
     pub fn validate(&self) -> Result<(), ProvisionError> {
         let local =
             self.url.starts_with("http://127.0.0.1:") || self.url.starts_with("http://[::1]:");
@@ -829,11 +815,6 @@ impl<'a, B: LocalModelBackend> LocalModelProvisioner<'a, B> {
     }
 
     /// Install the selected catalog-approved model and runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the catalog, hardware, transfer, verification, or
-    /// backend installation step is invalid or fails.
     pub fn install(
         &mut self,
         catalog: &LocalModelCatalog,
@@ -881,11 +862,6 @@ impl<'a, B: LocalModelBackend> LocalModelProvisioner<'a, B> {
     }
 
     /// Start an installed model and validate its returned loopback endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the hardware, catalog, requested port, backend, or
-    /// returned endpoint is invalid.
     pub fn activate(
         &mut self,
         catalog: &LocalModelCatalog,
@@ -964,7 +940,6 @@ mod tests {
     #[test]
     fn legacy_runtime_metadata_roundtrips_without_changing_signing_payload() {
         let runtime = catalog().runtimes.remove(0);
-        // Exact legacy RuntimeRelease encoding, used inside signed payloads.
         let golden = r#"{"id":"vllm-cpu-0.9.0","kind":"cpu","version":"0.9.0","artifact":{"url":"https://models.example.invalid/runtime","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size_bytes":100},"oci_image":"registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
         assert_eq!(serde_json::to_string(&runtime).unwrap(), golden);
         let mut wire = serde_json::to_value(&runtime).unwrap();
@@ -1459,7 +1434,6 @@ mod tests {
             select_runtime_for_model(&rocm, &model, all),
             RuntimeDecision::Ready(RuntimeKind::AmdRocm)
         );
-        // Dedicated memory too small for the model's requirement.
         model.required_accelerator_mib = 9000;
         assert!(matches!(
             select_runtime_for_model(&radeon, &model, all),

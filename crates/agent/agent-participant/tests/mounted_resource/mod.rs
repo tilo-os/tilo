@@ -1,4 +1,3 @@
-//! Mounted acceptance fixture, deliberately separate from the native test suite.
 use super::{
     Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Replica, Seed,
     common, enrol, record_provider, start_browser,

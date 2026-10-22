@@ -1,4 +1,3 @@
-//! Real authenticated HTTP and descriptor administration over isolated files.
 use super::*;
 use crate::{
     caller::{Caller, Session},

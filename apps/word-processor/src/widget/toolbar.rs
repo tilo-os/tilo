@@ -31,11 +31,9 @@ pub(super) enum ToolAction {
     /// Make the selected paragraphs a bulleted list, or plain paragraphs
     /// again when they already are one.
     BulletList,
-    /// The same with a numbered list.
     NumberedList,
     TextColor(Option<[u8; 3]>),
     Highlight(Option<[u8; 3]>),
-    /// Open the text-colour swatch grid.
     TextColorPalette,
     /// Open the highlight swatch grid.
     HighlightPalette,

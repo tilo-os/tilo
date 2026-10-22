@@ -1983,7 +1983,6 @@ mod tests {
         assert!(outcome.unwrap().is_ok());
         assert_eq!(installs.load(Ordering::SeqCst), 1);
         assert!(state.imported_package.is_none() && state.refresh_requested);
-        // A later source change revokes the previously reviewed file.
         handle(
             Request::ImportPackage(crate::package_import::Input::Bytes(bytes)),
             &mut state,
@@ -2057,7 +2056,6 @@ mod tests {
             release.send(()).unwrap();
         }
 
-        // Case `filtered_snapshot_never_truncates_authoritative_action_directory`.
         {
             let directory = StoreDirectory::default();
             let state = state_with_items(
@@ -2095,7 +2093,6 @@ mod tests {
             );
         }
 
-        // Case `authoritative_catalogue_replacement_updates_and_removes_directory_rows`.
         {
             let directory = StoreDirectory::default();
             let mut state = state_with_items(

@@ -61,7 +61,6 @@ pub(crate) enum Action {
     Duplicate(SnippetId),
     Delete(SnippetId),
     SetLanguage(SnippetId, Language),
-    /// Give the snippet a new name.
     Rename(SnippetId, String),
     /// Show the menu of the snippet's less frequent actions.
     More(SnippetId),
@@ -155,7 +154,6 @@ pub(crate) struct Core {
     /// The resource's dispatcher, once the framework attaches the view.
     /// Each on-screen control submits a field edit or a verb through it.
     dispatch: Option<Dispatcher<Snippets>>,
-    /// The pointer, in window coordinates.
     pub(crate) pointer: Point,
     /// The window, for dialogs and menus.
     pub(crate) window: Rect,
@@ -351,7 +349,6 @@ impl Core {
         }
     }
 
-    /// The paths of snippet `id`'s fields.
     fn paths(id: &SnippetId) -> SnippetPaths<Snippets> {
         Snippets::paths().snippets.item(id)
     }
@@ -986,7 +983,6 @@ impl SnippetsApp {
         self.core.borrow_mut().body_reachable = !drawer_open && !content_hidden;
     }
 
-    /// Show the library the resource holds.
     pub(crate) fn show_library(&mut self, state: &Rc<Snippets>) {
         self.core.borrow_mut().show_library(state);
         self.settle();
@@ -1013,8 +1009,6 @@ impl SnippetsApp {
             Ok(())
         }
     }
-
-    // ---- test accessors -------------------------------------------------
 
     #[cfg(test)]
     pub(crate) fn open_id_for_test(&self) -> Option<SnippetId> {

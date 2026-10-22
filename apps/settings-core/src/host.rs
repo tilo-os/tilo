@@ -713,7 +713,6 @@ pub mod testing {
             actions.extend(menu.labels().into_iter().map(str::to_owned));
             return;
         }
-        // A row that acts when chosen, offered or shown unavailable here.
         let acts = w.name() == "Button"
             || (w.name() == "ListRow" && (w.is_focusable() || !w.is_enabled()));
         if acts && let Some(label) = w.accessibility().and_then(|node| node.name) {

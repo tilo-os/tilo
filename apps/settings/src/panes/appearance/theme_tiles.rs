@@ -182,7 +182,6 @@ impl ui::framework::ActionControl<String> for ThemeTiles {
     }
 }
 
-/// Paint one theme's little window into `area`.
 fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme, radius: f64) {
     let colors = &theme.tokens.colors;
     let surfaces = &colors.surfaces;

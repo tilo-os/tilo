@@ -475,7 +475,6 @@ enum PanelHit {
     ImageInline,
     /// Turn the selected object into a freely positioned page object.
     ImageFreePosition,
-    /// Float the selected object at paragraph scope, with text on its right.
     ImageWrapLeft,
     /// Float the selected object at paragraph scope, with text on its left.
     ImageWrapRight,
@@ -793,7 +792,6 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, color: Color, x0: f64, x1
     let mut x = x0;
     let mut up = false;
     path.move_to((x0, y));
-    // Step in half-periods, alternating the peak above/below the baseline.
     while x < x1 {
         x = (x + SQUIGGLE_PERIOD / 2.0).min(x1);
         let dy = if up { -SQUIGGLE_AMP } else { SQUIGGLE_AMP };
@@ -1074,7 +1072,6 @@ pub struct WordProcessorWidget {
     bar_commands: Vec<(String, window_bar::BarCommand)>,
     /// The Find bar's band this frame (empty while it is closed).
     find_band: Rect,
-    /// The theme for what is drawn on the paper, this frame.
     paper_theme: Theme,
     /// The window's theme this frame, for what is drawn on the desk.
     desk_theme: Theme,
@@ -1218,10 +1215,8 @@ pub struct WordProcessorWidget {
     /// A save whose destination the person chose, written on the next sync
     /// with the document, and the caller it answers.
     pending_save: Option<(PathBuf, ui::framework::EffectReply)>,
-    // ---- paragraph-style context menu -------------------------------------
     /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
     style_menu: StyleMenu,
-    // ---- transient status toast -------------------------------------------
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Notice,
@@ -1329,10 +1324,6 @@ impl Default for WordProcessorWidget {
 
 impl WordProcessorWidget {
     /// Construct from the canonical record; this performs no document writes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the document does not carry the Writer schema.
     pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
         let mut widget = Self::new();
         widget.inner.bind_view_only(state, &automerge::ROOT);
@@ -1506,8 +1497,6 @@ impl WordProcessorWidget {
         widget.style_pick = style_pick_menu(&style_pick_choice);
         widget
     }
-
-    // ---- Framework hosting ---------------------------------------------------
 
     /// Take part in the framework: read the document from its live state and
     /// submit edits through its dispatcher.
@@ -1717,7 +1706,6 @@ impl WordProcessorWidget {
         self.proofing.enabled && ui::text_assistance::preferences().check_spelling
     }
 
-    /// The language words are checked in.
     pub fn spell_language(&self) -> &str {
         &self.proofing.language
     }
@@ -1978,8 +1966,6 @@ impl WordProcessorWidget {
                 format!("export failed: {e}")
             })
     }
-
-    // ---- Zoom ---------------------------------------------------------------
 
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it
     /// changed.

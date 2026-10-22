@@ -159,8 +159,6 @@ impl Receipt {
     }
 }
 
-// ---- grading -----------------------------------------------------------
-
 /// The document as the system holds it.
 fn snapshot(app: &App) -> DocSnapshot {
     app.read_document(|doc| {
@@ -257,8 +255,6 @@ fn matches_reference(snapshot: &DocSnapshot) -> Result<String, String> {
         want.get(first)
     ))
 }
-
-// ---- the typed arm -----------------------------------------------------
 
 fn agent() -> ActionInvoker {
     ActionInvoker::actor(AGENT)
@@ -404,8 +400,6 @@ fn typed_arm(receipt: &mut Receipt) -> App {
     app
 }
 
-// ---- the input arm -----------------------------------------------------
-
 /// Type `text` the way a keyboard does: a space is the space bar, so what
 /// Writer does at a word boundary (autoformat, autocorrect) happens here
 /// as it does for a person.
@@ -480,8 +474,6 @@ fn input_arm(receipt: &mut Receipt) -> App {
     );
     app
 }
-
-// ---- pixels ------------------------------------------------------------
 
 /// The share of pixels that differ between two frames of one size.
 fn frame_difference(left: &[u8], right: &[u8]) -> Result<f64, String> {
@@ -586,8 +578,6 @@ fn same_picture(
         ))
     }
 }
-
-// ---- export and reopen -------------------------------------------------
 
 fn open() -> App {
     ui::i18n::I18nManager::init("en-US");
@@ -796,8 +786,6 @@ fn pdf_formats(
     }
     Ok(format!("drawn: {}", seen.join(", ")))
 }
-
-// ---- the benchmark -----------------------------------------------------
 
 #[test]
 fn writer_agent_benchmark_qualifies_against_the_reference() {

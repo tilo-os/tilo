@@ -130,10 +130,6 @@ pub fn read_xlsx(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
 }
 
 /// Read every sheet of the `.xlsx` workbook `bytes` into tables.
-///
-/// # Errors
-///
-/// As [`read_xlsx`], for a package that is already read.
 pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     let parsed = XlsxCodec::parse(bytes)?;
     // Excel stores dates as serial numbers; the cell's number format is the
@@ -506,14 +502,12 @@ mod tests {
     use super::*;
     use tilo_locale::Currency;
 
-    /// XLSX values/formats, colliding tab names, formulas and formula normalisation.
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn xlsx_round_trips_values_formats_tabs_and_formulas() {
-        // Case `xlsx_round_trips_values_and_basic_formats`.
         {
             let dir = std::env::temp_dir();
             let path = dir.join("sheets-xlsx-test.xlsx");
@@ -541,7 +535,6 @@ mod tests {
             let back = read_xlsx(&path).unwrap();
             assert_eq!(back.len(), 1);
             assert_eq!(back[0].name, "Data");
-            // Header text survived.
             assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");
             // The currency number survived as 100.
             let price = back[0].rows[1][1].as_ref().unwrap();
@@ -552,7 +545,6 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        // Case `xlsx_export_preserves_tabs_whose_sanitized_names_collide`.
         {
             let path = std::env::temp_dir().join("sheets-xlsx-colliding-tabs.xlsx");
             let tables = vec![
@@ -646,14 +638,11 @@ mod tests {
             );
         }
 
-        // Case `read_formula_normalization`.
         {
             // XLSX bodies have no leading '=' and plain A1 refs.
             assert_eq!(normalize_read_formula("SUM(A1:A3)"), "=SUM(A1:A3)");
-            // ODF formulas carry a namespace prefix and bracketed refs.
             assert_eq!(normalize_read_formula("of:=SUM([.A1:.A3])"), "=SUM(A1:A3)");
             assert_eq!(normalize_read_formula("of:=[.B2]+[.C2]"), "=B2+C2");
-            // A cross-table qualifier is dropped down to the bare cell.
             assert_eq!(normalize_read_formula("of:=[.$A$1]"), "=$A$1");
         }
     }

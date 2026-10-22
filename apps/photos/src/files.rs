@@ -24,7 +24,6 @@ impl StateFile {
         })
     }
 
-    /// The file at `path`.
     #[cfg(test)]
     pub(crate) fn at(path: &Path) -> Option<Self> {
         let (dir, name) = tilo_files::file_at(path).ok()?;

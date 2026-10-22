@@ -1,4 +1,3 @@
-//! Google billing and tool-history extensions through the production Rig codec.
 use super::*;
 use serde_json::json;
 

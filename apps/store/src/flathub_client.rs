@@ -327,10 +327,6 @@ fn get_text(url: &str) -> Result<String, FlathubError> {
 
 /// One of Flathub's collections (`popular`, `trending`, `recently-updated`,
 /// `recently-added`), first page, in `locale`.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn fetch_collection(
     name: &str,
     per_page: usize,
@@ -348,10 +344,6 @@ pub fn fetch_collection(
 /// One page of Flathub's whole catalogue in `locale`: the search index with
 /// an empty query, `per_page` apps at a time. Answers the records and how
 /// many pages there are.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn fetch_catalogue_page(
     page: usize,
     per_page: usize,
@@ -385,10 +377,6 @@ pub fn fetch_catalogue_page(
 }
 
 /// Full-text search of Flathub in `locale`.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn search_localized(query: &str, locale: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
     if query.trim().is_empty() {
         return Ok(Vec::new());
@@ -430,10 +418,6 @@ pub fn fetch_appstream_document(
 
 /// What Flathub's build summary says about one app: its download and
 /// installed size and the permissions its sandbox grants, as JSON.
-///
-/// # Errors
-///
-/// Returns why the request or its decoding failed.
 pub fn fetch_summary(app_id: &str) -> Result<serde_json::Value, FlathubError> {
     if !crate::reports::valid_app_id(app_id) {
         return Err(FlathubError::Decode("invalid app id".into()));
@@ -673,7 +657,6 @@ mod tests {
     /// Every Flathub search/detail response shape decodes; the remotes parser is bounded without a binary.
     #[test]
     fn flathub_decoders_accept_published_shapes_and_remotes_stay_bounded() {
-        // Case `search_decoder_accepts_current_hit_shape`.
         {
             let out = decode_records(
             r#"{"hits":[{"app_id":"org.example.App","name":"Example","summary":"Useful","main_categories":["Utility"]}]}"#,
@@ -683,7 +666,6 @@ mod tests {
             assert_eq!(out[0].categories[0].name, "Utility");
         }
 
-        // Case `detail_decoder_accepts_path_authoritative_shape`.
         {
             let mut record = record_from_value(&serde_json::json!({
                 "id": "placeholder",
@@ -721,7 +703,6 @@ mod tests {
         assert_eq!(rows[0].arches, [std::env::consts::ARCH]);
         assert_eq!(rows[1].arches, ["different-device"]);
 
-        // Host rows include system and user installations, and disabled remotes.
         let rows = list_remotes(
             "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nfedora\toci+https://registry.fedoraproject.org\tFedora\tsystem,disabled\n",
         );

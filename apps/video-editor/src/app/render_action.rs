@@ -128,7 +128,6 @@ fn ranged(project: &Project, start: Option<f64>, end: Option<f64>) -> Result<Pro
     Ok(whole)
 }
 
-/// Keep the file at `path` in `content`.
 fn keep(content: &ContentStore, path: &std::path::Path) -> Result<Rendered, String> {
     let bytes =
         crate::files::read(path).map_err(|error| format!("the render cannot be read: {error}"))?;

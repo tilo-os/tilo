@@ -70,10 +70,6 @@ impl HeldRecords {
     /// is held with that record, in its replica, so the app's actions reach
     /// it through the chain as in a window; one whose app's record is not
     /// held yet is held with it once it is.
-    ///
-    /// # Errors
-    /// The record's app is not on this host, its id is not a record id, or
-    /// the replica refused the document.
     pub fn hold(&mut self, route: &DocumentRoute, saved: Vec<u8>) -> Result<(), String> {
         if let Some(replica) = self.replicas.get(route) {
             return replica

@@ -884,7 +884,6 @@ impl WordProcessorWidget {
             let bottom = page_content_bottom(fg, cur.cur_page);
             // layout_y maps line `li`'s internal top to `slice_top`.
             let layout_y = slice_top - first_line_top;
-            // Take every subsequent line that still fits on this page.
             let mut last = li;
             while let Some(&(nt, nh)) = lines.get(last + 1) {
                 if layout_y + nt + nh > bottom + 0.5 {

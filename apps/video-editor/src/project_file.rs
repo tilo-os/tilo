@@ -90,7 +90,6 @@ pub const MIN_READER_VERSION: u16 = 1;
 /// Bytes before the Automerge payload.
 pub const HEADER_LEN: usize = 17;
 
-/// The extension a project is saved under.
 pub const EXTENSION: &str = "qvp";
 
 /// How a project file is described in a file chooser and in prose.
@@ -455,7 +454,6 @@ mod tests {
 
     #[test]
     fn project_files_round_trip_whole_with_their_ids() {
-        // Case `a_saved_project_comes_back_whole`.
         {
             // Not "it decoded" — every field that has ever been added to the
             // model, read back and compared. A format that loses `solo` or the
@@ -487,7 +485,6 @@ mod tests {
             assert_eq!(c.speed, p.clips[0].speed, "speed + reverse survive");
             assert_eq!(c.anim, p.clips[0].anim, "keyframe curves survive");
         }
-        // Case `the_ids_survive_so_a_reopened_project_is_the_same_project`.
         {
             // If ids were re-minted on load, a collaborator opening the same file
             // would produce a *disjoint* project that merges into duplicates
@@ -500,7 +497,6 @@ mod tests {
             assert_eq!(back.clips[0].track, p.tracks[0].id);
             assert_eq!(back.clips[0].media, p.media[0].id);
         }
-        // Case `saving_and_loading_a_real_file_round_trips`.
         {
             let path = std::env::temp_dir()
                 .join(format!("tilo-ve-proj-{}.{EXTENSION}", std::process::id()));
@@ -511,7 +507,6 @@ mod tests {
             assert_eq!(back.clips.len(), 1);
             std::fs::remove_file(&path).ok();
         }
-        // Case `a_newer_writer_that_only_added_fields_still_opens_here`.
         {
             // The other half of the contract, and the reason there are two
             // version numbers. A future build that adds an optional field bumps
@@ -528,7 +523,6 @@ mod tests {
 
     #[test]
     fn project_header_refuses_foreign_truncated_newer_or_damaged_files() {
-        // Case `the_header_is_the_documented_layout`.
         {
             let bytes = encode(&Project::new("x")).expect("the project encodes");
             assert_eq!(&bytes[..MAGIC.len()], b"TiloVEPRJ");
@@ -545,7 +539,6 @@ mod tests {
                 "the declared payload length is the actual payload length",
             );
         }
-        // Case `something_that_is_not_a_project_is_named_as_such`.
         {
             // The overwhelmingly likely cause is picking the wrong file, so the
             // error has to say that and not "parse error at byte 0".
@@ -560,7 +553,6 @@ mod tests {
                 ProjectFileError::NotAProject
             );
         }
-        // Case `every_short_prefix_of_a_header_is_not_a_project`.
         {
             let bytes = encode(&Project::new("t")).expect("the project encodes");
             for n in 0..HEADER_LEN {
@@ -575,7 +567,6 @@ mod tests {
                 Ok((FORMAT_VERSION, MIN_READER_VERSION))
             );
         }
-        // Case `a_truncated_file_is_refused_rather_than_half_loaded`.
         {
             // This is the case the length field exists for. Automerge can often
             // load a prefix of a document and hand back *some* of the clips —
@@ -591,7 +582,6 @@ mod tests {
                 other => panic!("a short file must be refused, got {other:?}"),
             }
         }
-        // Case `a_file_from_a_newer_editor_is_refused_with_both_versions`.
         {
             // Refuse, never guess: an unknown layout read with today's rules
             // produces a project that looks fine and is wrong.
@@ -608,7 +598,6 @@ mod tests {
                 other => panic!("a newer file must be refused, got {other:?}"),
             }
         }
-        // Case `a_damaged_payload_is_reported_as_damage`.
         {
             let mut bytes = encode(&rich_project()).expect("the project encodes");
             // Scribble over the middle of the Automerge document, leaving the
@@ -622,7 +611,6 @@ mod tests {
                 other => panic!("a scribbled payload must not load, got {other:?}"),
             }
         }
-        // Case `opening_something_that_is_not_there_says_so`.
         {
             let missing = Path::new("/definitely/not/here-xyz.qvp");
             match load(missing) {
@@ -635,7 +623,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn project_names_recents_and_missing_sources_are_tracked() {
-        // Case `the_suggested_filename_gains_the_extension_exactly_once`.
         {
             assert_eq!(with_extension("Holiday"), "Holiday.qvp");
             assert_eq!(with_extension("Holiday.qvp"), "Holiday.qvp");
@@ -644,7 +631,6 @@ mod tests {
             assert_eq!(with_extension("v1.2 cut"), "v1.2 cut.qvp");
             assert_eq!(with_extension("   "), "Untitled.qvp");
         }
-        // Case `the_project_name_follows_the_file_it_was_opened_from`.
         {
             assert_eq!(
                 name_from_path(Path::new("/home/a/Holiday.qvp")).as_deref(),
@@ -652,7 +638,6 @@ mod tests {
             );
             assert_eq!(name_from_path(Path::new("/")), None);
         }
-        // Case `the_most_recent_project_comes_first_and_never_appears_twice`.
         {
             use super::recents::promote;
             let a = std::path::PathBuf::from("/p/a.qvp");
@@ -670,7 +655,6 @@ mod tests {
             let list = promote(&list, &c);
             assert_eq!(list, vec![c, a, b]);
         }
-        // Case `the_recents_list_is_capped`.
         {
             use super::recents::{MAX, promote};
             let mut list = Vec::new();
@@ -683,7 +667,6 @@ mod tests {
                 std::path::PathBuf::from(&format!("/p/{}.qvp", MAX + 4))
             );
         }
-        // Case `recents_survive_a_restart_and_drop_files_that_are_gone`.
         {
             // Drives the real on-disk path, not just `promote`: a recents list
             // that is only ever held in memory is exactly the bug this replaces.
@@ -714,10 +697,8 @@ mod tests {
             drop(env);
             std::fs::remove_dir_all(&tmp).ok();
         }
-        // Case `missing_sources_separate_absent_bytes_from_titles_and_present_files`.
         {
             let mut p = Project::new("moved");
-            // A reference whose bytes are nowhere on this box.
             p.media.push(MediaItem {
                 id: Uuid::new_v4(),
                 name: "Gone.mov".into(),
@@ -734,7 +715,6 @@ mod tests {
                 text: Some(crate::model::TextSource::new("Card")),
                 ..Default::default()
             });
-            // A source that really is here.
             let here =
                 std::env::temp_dir().join(format!("tilo-ve-here-{}.mp4", std::process::id()));
             std::fs::write(&here, b"bytes").unwrap();

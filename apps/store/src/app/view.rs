@@ -144,8 +144,6 @@ impl StoreApp {
         Box::new(Text::new(text).with_role(TextRole::Body).dimmed())
     }
 
-    // ---- the catalogue's chrome ----
-
     /// The top of every catalogue view: a running operation or a failure.
     /// The view switcher is the window bar's ([`super::window_bar`]).
     fn catalogue_top(&self) -> Vec<Element> {
@@ -216,8 +214,6 @@ impl StoreApp {
             ) as Element
         })
     }
-
-    // ---- an app in a list ----
 
     /// The one action an app offers from a list or its page.
     pub(super) fn primary(&self, item: &StoreItem) -> Primary {
@@ -291,7 +287,6 @@ impl StoreApp {
         })
     }
 
-    /// Show more, when `total` is more than a list shows.
     fn show_more(&self, total: usize) -> Option<Element> {
         (total > self.shown).then(|| {
             let mut more =
@@ -302,8 +297,6 @@ impl StoreApp {
             Box::new(Actions::new(more)) as Element
         })
     }
-
-    // ---- Discover ----
 
     /// Home: Updates when there are any, Tilo's apps and Flathub's popular
     /// ones, the recently updated, and the categories. Real content only; a
@@ -630,8 +623,6 @@ impl StoreApp {
             None => empty,
         })
     }
-
-    // ---- an app's page ----
 
     /// The page of the focused app: who makes it and what it is, its one
     /// action, its screenshots, what it does and what changed, its facts and
@@ -1249,8 +1240,6 @@ impl StoreApp {
         ))
     }
 
-    // ---- component repair ----
-
     /// Optional payloads never download just because a Browser link was opened.
     fn build_runtime_recovery(&self, theme: &Theme) -> Element {
         use crate::runtime_recovery::Phase;
@@ -1338,8 +1327,6 @@ impl StoreApp {
         }
         self.page(theme, Measure::Reading, false, children)
     }
-
-    // ---- trust and moderation ----
 
     /// Reports the person has drafted, how decisions work, and what a
     /// signature does and does not promise.
@@ -1475,8 +1462,6 @@ impl StoreApp {
             None => TextControl::view_only_at(input, path),
         })
     }
-
-    // ---- flatpak remotes ----
 
     /// Flatpak repositories: the form that adds one and the list of those
     /// configured on this machine.

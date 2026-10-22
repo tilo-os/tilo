@@ -93,7 +93,6 @@ const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
 
 const GOTO_CARD_W: f64 = 260.0;
 
-// ---- layout constants ----------------------------------------------------
 /// The preview's share of the room under the header row, as the window
 /// opens: about a 360 px timeline in an ordinary window, more preview in a
 /// small one. The person drags the divider; the lanes scroll.
@@ -346,7 +345,6 @@ struct ExportChipText {
     from: ExportStatus,
     /// The chip width the elision was measured against.
     width: f64,
-    /// The severity the chip paints at.
     level: NoticeLevel,
     /// The string as painted, already elided to the chip.
     shown: String,
@@ -1331,7 +1329,6 @@ pub struct VideoEditorApp {
     /// frames open for its whole duration, so the chip's words are formatted
     /// and elided when they change rather than once a frame.
     export_chip_text: Option<ExportChipText>,
-    // --- project files ----------------------------------------------------
     /// The file this project is saved in, once it has one. `None` means the
     /// project has never been saved: the work is still safe (the autosave
     /// document holds it) but there is nothing on disk to hand anybody, and
@@ -1968,16 +1965,12 @@ impl VideoEditorApp {
             && (!r.inspector_overlay || self.inspector_flap.is_open(self.inspector_split()))
     }
 
-    // ---- region geometry -------------------------------------------------
-
     fn time_to_x(&self, t: f64, lanes: &Rect) -> f64 {
         lanes.x0 + (t - self.scroll) * self.zoom
     }
     fn x_to_time(&self, x: f64, lanes: &Rect) -> f64 {
         (self.scroll + (x - lanes.x0) / self.zoom).max(0.0)
     }
-
-    // ---- horizontal timeline scroll --------------------------------------
 
     /// How many seconds fit across the lane area at the current zoom.
     fn visible_seconds(&self, r: &Regions) -> f64 {
@@ -2621,8 +2614,6 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- metering --------------------------------------------------------
-
     /// Age the meters by one frame and take the copy `draw` reads.
     ///
     /// Three things happen here and nothing else does: the bars fall, a
@@ -2738,7 +2729,6 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- playback --------------------------------------------------------
     fn advance_playback(&mut self) {
         let now = ui::time::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
@@ -3062,8 +3052,6 @@ impl VideoEditorApp {
             .collect();
         self.dispatch_existing_clips(&group);
     }
-
-    // ---- selection ------------------------------------------------------
 
     /// The primary (anchor) selected clip — what the inspector edits.
     fn selected(&self) -> Option<ClipId> {
@@ -3390,8 +3378,6 @@ impl VideoEditorApp {
             self.dispatch_clip(*id);
         }
     }
-
-    // ---- linked audio and video -----------------------------------------
 
     /// A linked geometry edit must not bypass a lock or edit only half a shot.
     fn link_group_editable(&self, id: ClipId) -> bool {
@@ -4820,8 +4806,6 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- media-bin clip management ---------------------------------------
-
     /// The sub-rect of a bin row where the media *name* is drawn — clicking it
     /// (on an already-selected item) begins an inline rename, and it's where the
     /// rename field is placed.
@@ -5156,7 +5140,6 @@ impl VideoEditorApp {
         }
     }
 
-    // ---- media import ----------------------------------------------------
     /// Open the host file picker to import media through the shared XDG portal
     /// (`ui::portal`). The picker is a pure-Rust round-trip compiled into every
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
@@ -5491,10 +5474,6 @@ impl VideoEditorApp {
 
     /// Import a batch of files, reporting what landed *and* what did not.
     ///
-    /// Every refusal is kept with the probe's own reason. The batch used to
-    /// return only a count, so a partly-failed import collapsed to "Imported
-    /// 3 of 5 files" — which names neither of the two files that were
-    /// refused nor why, even though the probe knew exactly.
     fn import_files(&mut self, paths: &[PathBuf]) -> ImportReport {
         self.import_notice = None;
         let mut report = ImportReport::default();
@@ -5616,7 +5595,6 @@ impl VideoEditorApp {
     /// layer draws its representative fill, which keeps a capture
     /// deterministic and free of any media pipeline.
     fn pump_compositor(&mut self, r: &Regions) {
-        // Match the canvas's aspect at a sane readback size.
         const MAX_W: f64 = 960.0;
         if !self.render_pipeline.compositor_tried {
             self.render_pipeline.compositor_tried = true;
@@ -6158,7 +6136,6 @@ struct ExportLayout {
     /// The shared frame: scrim, card, title band, close control, action row.
     modal: ModalLayout,
     type_sizes: DialogType,
-    /// Top of the filename line under the title.
     filename_top: f64,
     /// Top of the mix-words line, when the levels have something to say.
     mix_top: Option<f64>,
@@ -6465,7 +6442,6 @@ impl Widget for VideoEditorApp {
         for (id, palette, src, at) in visual {
             self.thumbnails.ensure(id, palette, &src, at);
         }
-        // Apply a one-shot capture scenario once the project is loaded.
         if !self.shot_lifecycle.applied
             && self.shot_scenario != ShotScenario::Live
             && !self.project.clips.is_empty()
@@ -7207,7 +7183,6 @@ impl Widget for VideoEditorApp {
         if r.ruler.contains(point) {
             return Some(CursorIcon::ColResize);
         }
-        // Track-header pills and the add-track buttons.
         if r.gutter.contains(point) {
             for (_, _, lane) in self.lane_rects(&r) {
                 let header = VideoEditorApp::track_head_rect(&r, &lane);
@@ -7814,7 +7789,6 @@ fn help_columns(two_col: bool, m: HelpMetrics) -> (usize, f64) {
 /// way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PickField {
-    /// One project frame-size preset, by index into [`FRAME_PRESETS`].
     Frame(usize),
     /// One project frame-rate preset, by index into [`RATE_PRESETS`].
     Rate(usize),

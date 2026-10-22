@@ -175,7 +175,6 @@ pub struct TypstApp {
     // --- workspace ---
     /// The workspace as last presented.
     files: Rc<crate::resource::Workspace>,
-    /// The id of the file shown.
     current: Option<Id>,
     /// Where each file was saved when that place has no path here (a
     /// browser page's Save dialog file): every later Save writes there
@@ -505,8 +504,6 @@ impl TypstApp {
         .collect()
     }
 
-    // ----- compile pipeline -----------------------------------------------
-
     /// Poll the background worker; apply the freshest result if any arrived.
     /// Called from `draw` so async results are consumed even on frames where
     /// `sync` doesn't run (the App only re-syncs after input).
@@ -581,8 +578,6 @@ impl TypstApp {
         self.request_compile(&src);
         self.compile_feedback = true;
     }
-
-    // ----- file I/O -------------------------------------------------------
 
     /// The name of the file shown, for a picker's suggestion.
     fn current_name(&self) -> String {
@@ -1195,8 +1190,6 @@ impl TypstApp {
         self.chrome.place_close(close);
     }
 
-    // ----- drawing --------------------------------------------------------
-
     /// What the person reads while working, left: where the caret is.
     fn status_left_label(&self) -> String {
         let (ln, col) = self.caret_line_col();
@@ -1298,7 +1291,6 @@ impl Widget for TypstApp {
         }
         // Land a finished Open/Save/Export file dialog.
         self.drain_io();
-        // Show the open file's source as the document holds it.
         self.editor.pull(doc);
         let source = self.editor.text().to_owned();
         self.outline.sync(&source);
@@ -1814,14 +1806,12 @@ impl TypstApp {
                             return;
                         }
                     }
-                    "a"
-                        // Select-all in the preview when it holds focus.
-                        if !self.editor.focused => {
-                            self.preview.select_all();
-                            self.dirty = true;
-                            *handled = true;
-                            return;
-                        }
+                    "a" if !self.editor.focused => {
+                        self.preview.select_all();
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
                     // remaining a/c/x/v fall through to the editor's clipboard
                     _ => {}
                 }

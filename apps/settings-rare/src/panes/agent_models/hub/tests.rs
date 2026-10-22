@@ -138,9 +138,6 @@ impl crate::panes::accounts::BrowserOpener for Browser {
     }
 }
 
-/// Signing in with Hugging Face in the browser stores the sign-in where a
-/// pasted token goes, and the token group names who signed in and offers
-/// Sign out, with pasting a token still there.
 #[test]
 fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
     let server = FakeAuthorizationServer::start();

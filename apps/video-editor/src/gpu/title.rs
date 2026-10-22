@@ -353,7 +353,6 @@ mod tests {
                 "a word too wide for the frame is still broken up: {broken:?}",
             );
         }
-        // Case `a_title_rasters_visible_glyphs_on_a_transparent_field`.
         {
             let mut raster = TitleRaster::default();
             let text = TextSource {
@@ -379,7 +378,6 @@ mod tests {
                 .count();
             assert_eq!(dark, 0, "white glyphs raster white, not grey");
         }
-        // Case `an_empty_title_rasters_nothing_rather_than_a_block`.
         {
             let mut raster = TitleRaster::default();
             let text = TextSource::new("");
@@ -395,7 +393,6 @@ mod tests {
 
     #[test]
     fn title_alignment_backdrop_and_cache_follow_the_style() {
-        // Case `alignment_moves_the_glyphs_across_the_frame`.
         {
             let mut raster = TitleRaster::default();
             let centre_of_mass = |rgba: &[u8], w: u32| {
@@ -430,7 +427,6 @@ mod tests {
                 "and centred left of right-aligned: {centre} vs {right}"
             );
         }
-        // Case `the_backdrop_fills_the_field_behind_the_text`.
         {
             let mut raster = TitleRaster::default();
             let t = TextSource {
@@ -447,7 +443,6 @@ mod tests {
                 corner[3],
             );
         }
-        // Case `rasters_are_cached_per_style_and_size`.
         {
             let mut raster = TitleRaster::default();
             let a = TextSource::new("same");

@@ -73,7 +73,6 @@ const SCENARIOS: &[&str] = &[
     "image-object",
 ];
 
-/// The word processor on the app framework.
 pub struct WordProcessorApp;
 
 impl ResourceApp for WordProcessorApp {

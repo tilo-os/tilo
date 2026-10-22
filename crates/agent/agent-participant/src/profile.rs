@@ -21,7 +21,6 @@ pub enum ModelClass {
     Small,
     /// The fallback for unrecognised model names.
     Medium,
-    /// Large model families.
     Large,
     /// Very large model families.
     VeryLarge,

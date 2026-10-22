@@ -34,7 +34,6 @@ pub const RECORD_PROVIDER: &str = "record";
 /// Invocations remembered for retries.
 const REMEMBERED: usize = 256;
 
-/// The provider token of the record at `route`.
 #[must_use]
 pub fn record_provider(route: &DocumentRoute) -> String {
     format!("{RECORD_PROVIDER}:{}:{}", route.app_id, route.record)

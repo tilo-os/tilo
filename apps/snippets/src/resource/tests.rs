@@ -303,8 +303,6 @@ fn snippets_folders_and_tags_offer_their_verbs() {
     );
 }
 
-/// Search lists each snippet once, by what it holds, anchored at the
-/// snippet it opens.
 #[test]
 fn search_finds_each_snippet_by_what_it_holds() {
     let mut library = Replica::<Snippets>::new();

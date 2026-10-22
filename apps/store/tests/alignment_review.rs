@@ -79,8 +79,6 @@ fn staged(scenario: &str) -> StoreApp {
 /// The bar's slot ids of the catalogue's actions.
 const CATALOGUE_ACTIONS: [&str; 3] = ["review-package", "remotes", "trust"];
 
-/// The catalogue's toolbar is the window bar's, and its sections share one
-/// column.
 #[test]
 fn catalogue_toolbar_is_the_window_bars_and_sections_share_one_column() {
     let theme = ui::Theme::dark();

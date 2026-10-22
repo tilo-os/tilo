@@ -200,17 +200,11 @@ struct PendingComputerApplicationsScope {
 
 impl Migration {
     /// Validate descriptive source metadata without granting source access.
-    ///
-    /// # Errors
-    /// Returns the first malformed source, consent or inventory binding.
     pub fn validate_standalone(&self) -> Result<(), String> {
         self.validate_context(None)
     }
 
     /// Validate the source against the retained disk and installation extents.
-    ///
-    /// # Errors
-    /// Returns the first malformed or mismatched source binding.
     pub fn validate_in_handoff(&self, handoff: &Handoff) -> Result<(), String> {
         self.validate_context(Some(handoff))
     }

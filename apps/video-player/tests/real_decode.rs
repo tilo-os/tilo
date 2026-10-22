@@ -143,7 +143,6 @@ fn real_file_decodes_and_reaches_the_player_surface() {
                 }
             }
             if let Some(frame) = engine.latest_frame() {
-                // Every decoded frame is tightly-packed RGBA of a real size.
                 assert!(
                     frame.width > 0 && frame.height > 0,
                     "decoded frame has real dimensions"
@@ -172,7 +171,6 @@ fn real_file_decodes_and_reaches_the_player_surface() {
             "expected multiple decoded frames from {}, saw PTS {ptss:?}",
             sample.display()
         );
-        // PTS is monotonic and actually advances across the decoded frames.
         for pair in ptss.windows(2) {
             assert!(pair[1] >= pair[0], "PTS must not go backwards: {ptss:?}");
         }

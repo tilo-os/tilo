@@ -182,7 +182,6 @@ mod tests {
         images.insert((3, 16), image(16));
         assert!(images.contains_key(&(0, 16)) && images.contains_key(&(2, 16)));
         assert_eq!(images.len(), 3);
-        // The next frame settles the budget again.
         images.begin_frame();
         images.insert((4, 16), image(16));
         assert!(images.bytes() <= 2 * one);

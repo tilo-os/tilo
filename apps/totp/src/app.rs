@@ -92,7 +92,6 @@ const UNSAVED_DETAIL: &str = "Restore keyring or storage access on this device, 
 pub struct AuthenticatorApp {
     /// The accounts as the document holds them: metadata, no secrets.
     accounts: Rc<Vec<Account>>,
-    /// Each account's seed on this device.
     seeds: Seeds,
     /// The accounts joined with this device's seeds: what the list shows and
     /// codes are computed from.
@@ -825,8 +824,6 @@ impl AuthenticatorApp {
         self.list_dirty = true;
     }
 
-    // ---- painting --------------------------------------------------------
-
     /// The readable strip the banner and rows stand in: the window less its
     /// gutters, no wider than a sheet carrying a form, and centred.
     fn readable_column(rect: Rect, theme: &Theme) -> Rect {
@@ -1364,7 +1361,6 @@ pub(crate) mod tests {
     fn copy_paths_share_row_semantics_and_toast_severity() {
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
-        // Case `accessibility_copy_uses_the_existing_list_event_path`.
         {
             let mut framed = framed(app_with_state(), 640, 700);
             let (app, state) = Framed::split(&mut framed);
@@ -1379,7 +1375,6 @@ pub(crate) mod tests {
             assert!(app.last_copied().is_some());
         }
 
-        // Case `copy_event_selects_the_account_and_confirms_with_a_toast`.
         {
             let (mut app, _state) = app_with_state();
             let id = app.vault.ordered()[0].id;
@@ -1409,7 +1404,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Case `enter_copies_the_selected_accounts_live_code`.
         {
             let mut app = framed(app_with_state(), 1000, 800);
             let id = app
@@ -1433,7 +1427,6 @@ pub(crate) mod tests {
             assert_eq!(kind, ToastKind::Success);
         }
 
-        // Case `copy_without_a_local_secret_is_an_error_toast`.
         {
             let (mut app, _state) = app_with_seeds(demo_accounts().len());
             let id = app.vault.ordered()[0].id;
@@ -1534,7 +1527,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Narrow, missing-key and resized layouts keep targets inside one centred column.
     #[test]
     fn narrow_and_resized_layouts_keep_one_readable_column() {
         let mut app = hosted((320, 640), None);
@@ -1727,7 +1719,6 @@ pub(crate) mod tests {
             assert_eq!(requests[0].title(), "Choose a QR image");
         }
 
-        // Case `portal_chosen_qr_image_fills_the_add_panel_via_frame_drain`.
         {
             let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
             let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
@@ -1757,7 +1748,6 @@ pub(crate) mod tests {
             std::fs::remove_dir_all(&dir).ok();
         }
 
-        // Case `portal_cancel_leaves_the_add_panel_untouched`.
         {
             let (mut app, state) = app_with_state();
             app.add_panel.open();
@@ -1780,7 +1770,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Case `qr_image_file_decodes_and_fills_the_panel`.
         {
             let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
             let path = std::env::temp_dir().join(format!("totp-qr-{}.png", uuid::Uuid::new_v4()));

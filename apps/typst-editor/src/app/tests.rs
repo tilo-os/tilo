@@ -505,7 +505,6 @@ fn source_sync_and_one_document_per_window() {
         assert!(!shown_source(&app, &doc).is_empty(), "the welcome example");
         assert_eq!(app.editor.text(), shown_source(&app, &doc));
         assert!(app.initialized);
-        // Welcome demo compiles cleanly into at least one page.
         assert!(app.preview.page_count() >= 1, "rendered a page");
         assert_eq!(app.err_count, 0, "welcome demo has no errors");
     }
@@ -807,7 +806,6 @@ fn preview_zoom_and_diagnostics_respond_to_input() {
             "a failure while typing is counted, not popped open"
         );
 
-        // An explicit Compile that fails opens Problems.
         app.compile_feedback = true;
         app.apply_output(compile::compile_source(
             &app.parts,
@@ -819,7 +817,6 @@ fn preview_zoom_and_diagnostics_respond_to_input() {
             "an explicit Compile shows why it failed"
         );
 
-        // A subsequent clean compile clears the stale flag and refreshes pages.
         let good = compile::compile_source(&app.parts, "= Fixed\n\nBody.\n", PPP);
         assert!(!good.pages.is_empty());
         app.apply_output(good);
@@ -1012,9 +1009,6 @@ fn resize_reflows_between_split_and_compact() {
 }
 #[test]
 fn text_scale_grows_the_bar_and_compacts_before_controls_collide() {
-    // Enlarged system text changes the geometry as well as glyph metrics:
-    // the taller controls stay in their own bar and a formerly cramped
-    // split switches to the compact single-pane layout.
     let (mut app, _doc) = fresh();
     app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
     let normal = app.frame.bar_h;

@@ -288,7 +288,6 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
         };
         let n = app.doc.page_count();
 
-        // A PNG on disk, imported through the normal code path.
         let img = image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]));
         let png = std::env::temp_dir()
             .join("tilo_pdf_edit")
@@ -357,7 +356,6 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
             app.status_note
         );
 
-        // The pure crop path yields a correctly-sized sub-image of the page.
         let img = app.raster_images.get(&key).expect("the render arrived");
         let rect = PtRect::from_corners(40.0, 40.0, pw * 0.6, ph * 0.5);
         let (w, h, rgba) = render::crop_page_region(&img, pw, ph, rect).expect("crop succeeds");

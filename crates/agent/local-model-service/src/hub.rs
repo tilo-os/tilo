@@ -33,7 +33,6 @@ use crate::{
     set_private_directory_mode, validate_artifact, validate_snapshot_layout,
 };
 
-/// The most a search answer may be.
 const SEARCH_ANSWER_BYTES: usize = 4 * 1024 * 1024;
 /// The most a model description may be; large repositories list thousands
 /// of files.
@@ -44,9 +43,6 @@ const COPY_CHUNK: usize = 1024 * 1024;
 pub trait HubApi {
     /// GET `url`, which is always under [`HUB_ORIGIN`], and return its body
     /// of at most `limit` bytes.
-    ///
-    /// # Errors
-    /// A transport error, a refusal, or a body over `limit`.
     fn get(&mut self, url: &str, limit: usize) -> Result<Vec<u8>, ServiceError>;
 }
 

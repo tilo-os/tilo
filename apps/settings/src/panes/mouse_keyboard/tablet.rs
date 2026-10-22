@@ -13,7 +13,6 @@ pub const WHOLE_DESKTOP: &str = "desktop";
 pub const MAX_PAD_BUTTONS: u32 = 32;
 /// The Pad-button choice for a button that does nothing.
 pub(super) const PAD_BUTTON_NONE: &str = "none";
-/// The Pad-button choice for the button that shows the pad's map.
 pub(super) const PAD_BUTTON_SHOW_MAP: &str = "show-map";
 /// Rings and strips Settings offers a mapping for, of each kind.
 pub const MAX_PAD_DIALS: u32 = 4;

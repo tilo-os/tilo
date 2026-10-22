@@ -63,7 +63,6 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The project `doc` holds.
 fn load(doc: &AutoCommit) -> Project {
     Project::read(doc).expect("the document holds a project")
 }
@@ -245,7 +244,6 @@ fn accessibility_tree_exposes_transport_clips_and_tracks() {
     }
     // Case `a_clip_says_where_it_is_how_long_it_runs_and_what_it_is_on`.
     {
-        // What the eye reads off the bar's position and width, in words.
         let d = a11y_driver();
         let clips: Vec<_> = d
             .a11y_nodes()
@@ -283,7 +281,6 @@ fn accessibility_tree_exposes_transport_clips_and_tracks() {
         for (_, t) in &toggles {
             let l = t.label().unwrap_or_default().to_string();
             if l == "Toggle media bin" || l == "Toggle inspector" {
-                // The window's two panel toggles, in the header row.
                 continue;
             }
             assert!(
@@ -457,7 +454,6 @@ fn clip_activation_and_held_ids_survive_deletes() {
         let (held_id, held_name, held_value) = group.last().cloned().unwrap();
         assert_ne!(earlier_name, held_name);
 
-        // Delete the earlier clip. Every later clip on that track shifts up.
         d.perform_a11y_action(earlier_id, &ui::a11y::Action::Activate)
             .unwrap();
         d.key("Delete");
@@ -702,7 +698,6 @@ fn folded_sections_hide_controls_but_report_their_state() {
         // Collected rather than asserted one at a time, so a run names every
         // summary still reading a superseded constant instead of the first.
         let mut wrong: Vec<String> = Vec::new();
-        // What the panel paints on the folded header.
         let seen_transform = app
             .section_summary(Section::Transform, &clip, None)
             .expect("a placed clip reports itself");
@@ -734,7 +729,6 @@ fn folded_sections_hide_controls_but_report_their_state() {
             ));
         }
 
-        // And what a reader hears, which has to be the same story.
         let heard_transform = app.a11y_section_summary(Section::Transform);
         wrong.extend(missing(
             "the spoken geometry summary",
@@ -957,8 +951,6 @@ fn reader_reaches_every_inspector_control_it_can_adjust() {
     }
 }
 
-// ---- Keyboard navigation ---------------------------------------------
-
 #[expect(
     clippy::needless_pass_by_value,
     reason = "call sites build the key inline; the helper only borrows it"
@@ -971,7 +963,6 @@ fn nav_key(app: &mut VideoEditorApp, doc: &mut AutoCommit, key: Key, shift: bool
     let mods = winit::event::Modifiers::from(st);
     let r = app.regions();
     let handled = {
-        // One key press is one gesture, as `handle_event` makes it.
         let _gesture = app
             .actions
             .as_ref()
@@ -1230,7 +1221,6 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
                 "the sheet lists {key}: {rows:?}",
             );
         }
-        // Both spellings of redo say what they do.
         for key in ["Ctrl+Shift+Z", "Ctrl+Y"] {
             assert!(
                 rows.iter().any(|(k, what)| *k == key && *what == "Redo"),
@@ -1432,7 +1422,6 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
                 "the {name} button must name itself on hover"
             );
         }
-        // And nothing claims a label over empty canvas.
         assert_eq!(app.tooltip_at(r.lanes.center()), None);
     }
     // Case `the_pointer_says_what_each_region_does`.
@@ -1440,7 +1429,6 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         use winit::window::CursorIcon;
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
-        // A bin row can be dragged out.
         let (_mid, row) = app.bin_item_rects(&r)[0];
         assert_eq!(app.cursor_shape(row.center()), Some(CursorIcon::Grab));
         // A clip body grabs; its edges resize.
@@ -1457,17 +1445,14 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
             app.cursor_shape(Point::new(cr.x0, cr.center().y)),
             Some(CursorIcon::EwResize)
         );
-        // Empty lane space is where a marquee starts.
         assert_eq!(
             app.cursor_shape(Point::new(r.lanes.x1 - 24.0, cr.center().y)),
             Some(CursorIcon::Crosshair),
         );
-        // The ruler scrubs.
         assert_eq!(
             app.cursor_shape(r.ruler.center()),
             Some(CursorIcon::ColResize)
         );
-        // Buttons are buttons.
         assert_eq!(
             app.cursor_shape(r.export_btn.center()),
             Some(CursorIcon::Pointer)
@@ -1823,7 +1808,6 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         let theme = Theme::dark();
         let danger = ui::widget::BannerKind::Error;
 
-        // Import side.
         let (mut app, mut doc) = app_and_doc();
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
@@ -1846,7 +1830,6 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         };
         app.import_notice = Some(Notice::ok(REFUSAL));
         let ok_px = render_pixels(&mut app, 1280, 800, &theme);
-        // The severity is the banner's icon, in its status colour.
         assert!(
             region_diff(&failed_px, &ok_px, 1280, 800, strip) > 20,
             "the same sentence at two severities must not paint the same",
@@ -1930,7 +1913,6 @@ fn imports_add_real_clips_through_the_document() {
         );
         sync(&mut app, &mut doc);
 
-        // The in-memory projection gained the clip with real, probed metadata…
         assert_eq!(
             app.project.media.len(),
             1,
@@ -1997,7 +1979,6 @@ fn imports_add_real_clips_through_the_document() {
     }
     // Case `dropped_file_imports_into_the_bin_through_the_doc`.
     {
-        // An OS file drop onto the window imports, exactly like the portal pick.
         let f = write_real_png(200, 120);
         let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -2037,7 +2018,6 @@ fn timeline_geometry_maps_time_lanes_and_canvas() {
         let mut app = app_with_sample();
         let mut doc = crate::seed::sample_document();
         sync(&mut app, &mut doc);
-        // Select a clip we know spans the playhead and split there.
         let target = app.project.top_video_clip_at(10.0).unwrap().id;
         app.selection.select_only(target);
         app.playhead = 12.0;
@@ -2186,7 +2166,6 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
     // Case `crossing_breakpoint_returns_to_docked_default`.
     {
         let mut app = app_with_sample();
-        // Narrow + summon the overlay bin.
         app.rect = Rect::new(0.0, 0.0, 720.0, 820.0);
         app.advance_flap();
         app.toggle_bin();
@@ -2313,8 +2292,6 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
 
 use winit::keyboard::{Key as WKey, ModifiersState};
 
-// ---- the timeline's render range -------------------------------------
-
 #[test]
 fn range_marks_scope_renders_without_stealing_trim_keys() {
     // Case `marking_in_and_out_narrows_what_a_render_covers`.
@@ -2350,7 +2327,6 @@ fn range_marks_scope_renders_without_stealing_trim_keys() {
             "{from}..{to}"
         );
 
-        // And that range is what the render actually walks.
         let plan = crate::export::RenderPlan::new(&app.project, 30.0);
         assert_eq!(plan.total, 300, "ten seconds at 30fps");
         assert!(
@@ -2423,8 +2399,6 @@ fn range_marks_scope_renders_without_stealing_trim_keys() {
         );
     }
 }
-
-// ---- the project's own format ----------------------------------------
 
 /// A blank editor on an empty document — the live app's opening state.
 fn blank_app_and_doc() -> (VideoEditorApp, AutoCommit) {
@@ -2706,7 +2680,6 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
         app.selection.select_only(id);
         app.playhead = 23.0;
-        // Key it once at the head.
         app.key_here(Param::Opacity);
         settle(&mut app, &mut doc);
         let keys_before = load(&doc)
@@ -2718,7 +2691,6 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
             .keys
             .len();
         assert_eq!(keys_before, 1);
-        // Move on and drag the opacity slider to a new value.
         app.playhead = 25.0;
         let r = app.regions();
         app.inspector_scroll = 0.0;
@@ -2858,7 +2830,6 @@ fn keyframes_are_drawn_played_and_edited_from_the_inspector() {
             KeyState::OnKey,
             "one click plants a key on the intensity",
         );
-        // And the curve really drives the effect the compositor is handed.
         app.edit_selected(|c| {
             c.set_key_at(sepia, 23.0, 0.1, Interp::Linear);
             c.set_key_at(sepia, 25.0, 0.9, Interp::Linear);
@@ -3003,7 +2974,6 @@ fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: boo
         winit::event::Modifiers::default()
     };
     let handled = {
-        // One key press is one gesture, as `handle_event` makes it.
         let _gesture = app
             .actions
             .as_ref()
@@ -3018,8 +2988,6 @@ fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: boo
     settle(app, doc);
     handled
 }
-
-// ---- project files ---------------------------------------------------
 
 /// A scratch directory of this test's own, so nothing here can collide
 /// with another test's file or leave one behind.
@@ -3070,7 +3038,6 @@ fn project_save_and_open_round_trip_and_replace() {
         assert_eq!(app.project_path.as_ref(), Some(&path));
         assert!(path.is_file(), "the file is really on disk");
 
-        // A completely separate editor on a blank document opens it.
         let mut fresh_doc = AutoCommit::new();
         let mut fresh = editor();
         fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -3293,13 +3260,11 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         assert!(app.pending_open.is_some(), "it stopped to ask");
         assert_eq!(app.project.clips.len(), before, "and changed nothing yet");
 
-        // Cancel leaves everything exactly where it was.
         app.resolve_pending_open(&doc, DiscardChoice::Cancel);
         assert!(app.pending_open.is_none());
         assert_eq!(app.project.clips.len(), before);
         assert!(app.project_path.is_none());
 
-        // Open anyway goes through.
         app.begin_open(path.clone(), None);
         app.resolve_pending_open(&doc, DiscardChoice::Discard);
         assert_eq!(app.project.name, "Other");
@@ -3696,7 +3661,6 @@ fn export_failures_are_accessible_and_wrap() {
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].value.as_deref(), Some(reason));
 
-        // Ctrl+E is the documented keyboard route to the full export surface.
         assert!(key_press_mods(
             &mut app,
             &mut doc,
@@ -3752,7 +3716,6 @@ fn export_failures_are_accessible_and_wrap() {
             layout.status.y1,
             layout.cancel.y0
         );
-        // Exercise the real Vello draw pass as well as its layout math.
         render(&mut app);
     }
     // Case `a_finished_render_tells_a_reader_what_became_of_it`:
@@ -3868,7 +3831,6 @@ fn export_failures_are_accessible_and_wrap() {
 fn inspector_state_is_the_same_for_eye_and_reader() {
     // Case `the_inspector_says_the_same_empty_thing_to_the_eye_and_to_a_reader`.
     {
-        // These were two different sentences for one state.
         let mut doc = AutoCommit::new();
         let mut app = editor();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -4096,7 +4058,6 @@ fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
         );
         assert!(path.is_file());
 
-        // And an Open arriving the same way loads it back.
         let mut fresh_doc = AutoCommit::new();
         let mut fresh = editor();
         fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -4121,7 +4082,6 @@ fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
             contents: None,
             losing: "Untitled".into(),
         });
-        // An unanswered chooser on the recording host comes back cancelled.
         let (services, _recorder) = ui::host::HostServices::recording();
         ui::host::scoped(&services, || app.request_save_as());
         assert_eq!(
@@ -4189,7 +4149,6 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
             before + 1,
             "paste added a clip to the CRDT"
         );
-        // The pasted clip is the new selection and sits at the playhead.
         let pasted = app.selected().unwrap();
         assert_ne!(pasted, id);
         assert!((reloaded.clip(pasted).unwrap().start - 30.0).abs() < 1e-9);
@@ -4200,7 +4159,6 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         // Interview clip spans roughly [8, 20] on V1.
         let id = app.project.top_video_clip_at(12.0).unwrap().id;
         app.selection.select_only(id);
-        // Move playhead into the clip and set the out-point there.
         app.playhead = 15.0;
         assert!(key_press(&mut app, &mut doc, "o", false), "O handled");
         settle(&mut app, &mut doc);
@@ -4234,7 +4192,6 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         let v1_first = app.project.top_video_clip_at(3.0).unwrap();
         let track = v1_first.track;
         let first = v1_first.id;
-        // Record the next clip on the same track and its start.
         let next = app
             .project
             .clips_on(track)
@@ -4244,7 +4201,6 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         app.selection.select_only(first);
         let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
         let r = app.regions();
-        // Shift+Delete ripples.
         app.handle_key(
             &WKey::Named(NamedKey::Delete),
             mods,
@@ -4272,7 +4228,6 @@ fn keyboard_edit_shortcuts_mutate_the_crdt() {
         settle(&mut app, &mut doc);
         let before = load(&doc).clip(id).unwrap().start;
         let r = app.regions();
-        // Shift = one-second nudge right.
         let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
         app.handle_key(
             &WKey::Named(NamedKey::ArrowRight),
@@ -4302,16 +4257,6 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
     // Case `dragging_the_brightness_slider_writes_the_grade_to_the_crdt`:
     // Dragging the brightness slider writes the grade through to the CRDT.
     //
-    // This used to call `set_filter` — a helper whose only other caller is a
-    // screenshot scenario — so it proved that a function nothing on the live
-    // path goes through could write a document. The slider a person actually
-    // drags goes `press_inspector` → `preview_param` → `commit_drag`: it has
-    // to hit-test the track, resolve the value from the pointer, hold the edit
-    // in memory while the drag is live so the preview can follow it without
-    // writing a document per frame, and dispatch exactly one action on
-    // release. That is four more places to break than the helper had, and the
-    // verification covenant asks for the production path rather than a
-    // stand-in for it.
     {
         let (mut app, mut doc) = app_and_doc();
         // A video clip, so the panel lays out a brightness row at all.
@@ -4389,7 +4334,6 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
             after.scale_x,
         );
         assert!(!after.is_identity(), "the clip is no longer plainly fitted");
-        // Crop writes its own edge and leaves the others alone.
         let track = reveal(&mut app, |l| l.num(NumField::CropTop));
         click(
             &mut app,
@@ -4463,7 +4407,6 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         app.edit_selected(|c| {
             c.set_speed(2.0, false);
         });
-        // Reverse is a separate decision from the rate.
         let rect = reveal(&mut app, |l| l.reverse);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         settle(&mut app, &mut doc);
@@ -4490,7 +4433,6 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         );
         assert!(t.pos_x > 0.0, "bottom-right sits right of centre");
         assert!(t.pos_y > 0.0, "and below it");
-        // And the way back.
         let rect = reveal(&mut app, |l| l.reset_transform);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         settle(&mut app, &mut doc);
@@ -4535,7 +4477,6 @@ fn inspector_grade_and_geometry_controls_write_the_document() {
         let r = app.regions();
         let l = app.inspector_layout(&r);
         assert_eq!(l.anchor.len(), 9, "three by three, no more and no fewer");
-        // The default is the middle, which is what an untouched clip has.
         assert_eq!(app.project.clip(cid).unwrap().transform.anchor_x, 0.5);
 
         let top_left = l
@@ -4750,13 +4691,10 @@ fn name_band_drags_place_and_slow_clicks_rename() {
         // First click on the row, as a user browsing the bin would.
         click(&mut app, &mut doc, name.center().x, name.center().y);
         release(&mut app, &mut doc);
-        // Press past the double-click window, into the slow-second-click
-        // window where the old code renamed unconditionally.
         let slow =
             ui::time::now() + std::time::Duration::from_millis(BIN_DOUBLE_CLICK_MS as u64 + 60);
         let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
         let before = app.project.clips_on(tid).len();
-        // Press on the name band and drag to a lane.
         move_to(&mut app, &mut doc, name.center().x, name.center().y);
         ui::time::testing::with_monotonic_time(slow, || press(&mut app, &mut doc));
         assert!(
@@ -4834,7 +4772,6 @@ fn name_band_drags_place_and_slow_clicks_rename() {
             "the fixture track has content to append past"
         );
         let before = app.project.clips_on(tid).len();
-        // Straight down from the bin row into the gutter, level with the lane.
         let gutter_x = r.gutter.x0 + r.gutter.width() / 2.0;
         assert!(
             gutter_x < r.lanes.x0,
@@ -4889,8 +4826,6 @@ fn name_band_drags_place_and_slow_clicks_rename() {
         );
     }
 }
-
-// ---- horizontal timeline scroll --------------------------------------
 
 #[test]
 #[allow(
@@ -5017,7 +4952,6 @@ fn timeline_scrolls_pans_and_follows_playback() {
             thumb.width() < track.width(),
             "the thumb is shorter than its track"
         );
-        // Grab the thumb and drag it right.
         move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
         press(&mut app, &mut doc);
         assert!(
@@ -5051,7 +4985,6 @@ fn timeline_scrolls_pans_and_follows_playback() {
             app.time_to_x(app.playhead, &r.lanes) > r.lanes.x1,
             "the playhead starts off the right edge",
         );
-        // Press play through the real transport button, then render a frame.
         let (_a, play) = app.transport_buttons(&r)[2];
         click(&mut app, &mut doc, play.center().x, play.center().y);
         assert!(
@@ -5080,8 +5013,6 @@ fn timeline_scrolls_pans_and_follows_playback() {
     }
 }
 
-// ---- cross-track clip move -------------------------------------------
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -5092,7 +5023,6 @@ fn lane_drags_respect_kind_and_track_locks() {
     {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
-        // Two video lanes exist in the sample project.
         let (t0, lane0) = lane_of(&app, &r, TrackKind::Video, 0);
         let (t1, _lane1) = lane_of(&app, &r, TrackKind::Video, 1);
         assert_ne!(t0, t1, "the fixture has two video tracks");
@@ -5160,7 +5090,6 @@ fn lane_drags_respect_kind_and_track_locks() {
             pill.x1 <= app.track_head_layout(header).mute.x0,
             "the lock pill sits clear of the mute pill",
         );
-        // Click the pill through the real press path.
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
         settle(&mut app, &mut doc);
         assert!(
@@ -5195,7 +5124,6 @@ fn lane_drags_respect_kind_and_track_locks() {
             Some(start_before),
             "dragging a locked clip does not move it",
         );
-        // Nor do the keyboard edits.
         dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
         settle(&mut app, &mut doc);
         assert!(
@@ -5305,10 +5233,6 @@ fn lane_drags_respect_kind_and_track_locks() {
     }
 }
 
-// ---- track lock -------------------------------------------------------
-
-// ---- multi-selection --------------------------------------------------
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -5341,7 +5265,6 @@ fn multi_selection_extends_sweeps_and_moves_together() {
             Some(ids[1]),
             "the shift-clicked clip is the new anchor"
         );
-        // Delete both, and prove it was one undo boundary.
         let _ = take_steps();
         dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
         settle(&mut app, &mut doc);
@@ -5484,8 +5407,6 @@ fn multi_selection_extends_sweeps_and_moves_together() {
     }
 }
 
-// ---- cut / duplicate / clip context menu ------------------------------
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -5610,8 +5531,6 @@ fn clipboard_and_duplicate_keep_the_selection_whole() {
     }
 }
 
-// ---- affordances ------------------------------------------------------
-
 #[test]
 #[expect(
     clippy::float_cmp,
@@ -5636,7 +5555,6 @@ fn timeline_chrome_regions_stay_ordered_at_every_size() {
             "clicking the chip fitted the whole project into the lane area",
         );
         assert_eq!(app.scroll, 0.0, "and parked the view at the start");
-        // The keyboard route agrees.
         app.zoom = 180.0;
         assert!(key_press(&mut app, &mut doc, "z", false), "Z is handled");
         assert!(app.time_to_x(dur, &r.lanes) <= r.lanes.x1 + 1.0);
@@ -5716,8 +5634,6 @@ fn timeline_chrome_regions_stay_ordered_at_every_size() {
         }
     }
 }
-
-// ---- responsive geometry ---------------------------------------------
 
 /// The app laid out at an arbitrary window size, synced to the sample.
 fn app_sized(w: f64, h: f64) -> (VideoEditorApp, AutoCommit) {
@@ -5830,7 +5746,6 @@ fn export_dialog_layout_availability_and_shortcuts() {
             app.presentation.export_open = true;
             let r = app.regions();
             let px = render_pixels(&mut app, 1280, 800, &theme);
-            // The timeline lanes stretch well past the card on both sides.
             let mut tr = TextRenderer::new();
             let card = app.export_layout(&mut tr, &theme).modal.card;
             let left = Rect::new(r.lanes.x0, r.lanes.y0, card.x0 - 8.0, r.lanes.y1);
@@ -5959,7 +5874,6 @@ fn render_status_is_painted_cached_and_announced() {
             state.doc = doc;
             let mut app = editor();
             app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            // A render in flight, with the dialog that started it up.
             app.presentation.export_open = true;
             app.export_status = ExportStatus::Rendering { progress: 0.42 };
             let mut d = ui::headless::FrameHarness::new(state, Box::new(app), (1280, 800));
@@ -6208,7 +6122,6 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         // Widths in the neighbourhood of the real measurements: an 18px bold
         // "00:23:00" is ~74px, the "/  00:42:00" tail ~62px, the meta ~96px.
         let (big, total, meta) = (74.0, 62.0, 96.0);
-        // On a wide strip the readout starts past the history buttons.
         let wide = readout_fit(
             Rect::new(0.0, 0.0, 700.0, 58.0),
             TRANSPORT_RIGHT_X,
@@ -6324,7 +6237,6 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
                     "{w}px: {which:?} at {rect:?} is not inside its own slot",
                 );
             }
-            // And there is still room left for the playhead time beside them.
             assert!(
                 r.transport.x1 - (r.transport.x0 + content) >= 88.0,
                 "{w}px: the buttons left the timecode nowhere to go",
@@ -6402,7 +6314,6 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         let r = app.regions();
         assert!(app.inspector_is_visible(&r));
         assert!(r.inspector.x1 <= 500.0 + 0.5, "an open flap is on screen");
-        // Esc puts it away again.
         app.handle_key(
             &Key::Named(NamedKey::Escape),
             winit::event::Modifiers::default(),
@@ -6411,7 +6322,6 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         );
         app.inspector_flap.snap(false);
         assert!(!app.inspector_is_visible(&app.regions()));
-        // The docked layout offers the same toggle, at the same corner.
         let (mut wide, _d) = app_sized(1280.0, 800.0);
         wide.navigation.flap_settled = true;
         assert!(wide.regions().inspector_btn.width() > 0.0);
@@ -6812,10 +6722,6 @@ fn region_colours(rgba: &[u8], fw: u32, fh: u32, rect: Rect) -> usize {
     seen.len()
 }
 
-// ---- narrow-window panes ---------------------------------------------
-
-// ---- pane scrolling ---------------------------------------------------
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -6862,7 +6768,6 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
             thumb.height() < track.height(),
             "the thumb is shorter than its track"
         );
-        // Grab it and drag down.
         move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
         press(&mut app, &mut doc);
         assert!(
@@ -6880,7 +6785,6 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
             "dragging scrolled the inspector"
         );
         release(&mut app, &mut doc);
-        // Scrolled to the end, the Add-effect button is inside the pane.
         app.inspector_scroll = app.inspector_max_scroll(&r);
         let l = app.inspector_layout(&r);
         assert!(l.valid);
@@ -6967,7 +6871,6 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
             after.y1,
             VideoEditorApp::bin_viewport(&r).y1,
         );
-        // And it is genuinely clickable there.
         move_to(&mut app, &mut doc, after.center().x, after.center().y);
         press(&mut app, &mut doc);
         release(&mut app, &mut doc);
@@ -7010,8 +6913,6 @@ fn inspector_and_bin_scrollbars_reach_every_row() {
         release(&mut app, &mut doc);
     }
 }
-
-// ---- filmstrip / import honesty --------------------------------------
 
 #[test]
 fn filmstrip_cells_request_and_draw_the_same_frames() {
@@ -7116,7 +7017,6 @@ fn bin_menus_and_gestures_edit_the_crdt() {
     {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
-        // A visual bin item, and a video lane to drop it on.
         let (mid, row) = app
             .bin_item_rects(&r)
             .into_iter()
@@ -7129,7 +7029,6 @@ fn bin_menus_and_gestures_edit_the_crdt() {
             .expect("a video lane");
         settle(&mut app, &mut doc);
         let before = load(&doc).clips_on(tid).len();
-        // Press on the bin item, drag past the threshold onto the lane, release.
         move_to(&mut app, &mut doc, row.center().x, row.center().y);
         press(&mut app, &mut doc);
         let drop_x = lane.x0 + 300.0;
@@ -7199,7 +7098,6 @@ fn bin_menus_and_gestures_edit_the_crdt() {
         let (_mid, rect) = app.bin_item_rects(&r)[0];
         settle(&mut app, &mut doc);
         let before = load(&doc).clips.len();
-        // Two presses inside the double-click window at the same spot.
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         settle(&mut app, &mut doc);
@@ -7437,8 +7335,6 @@ fn track_header_controls_add_and_delete_tracks() {
     }
 }
 
-// ---- geometry, rate, titles, keys and markers -------------------------
-
 /// Scroll the inspector until `find` returns a rect that is actually on
 /// screen, then hand back that rect. The new sections live below the fold
 /// on a 1280x800 window, and a test that clicked their un-scrolled
@@ -7522,7 +7418,6 @@ fn titles_are_added_written_and_styled() {
         );
         assert_eq!(app.selection.primary(), Some(clip.id), "and selected");
         assert!(app.title_edit.is_some(), "with the caret in its words");
-        // Typing and committing writes the words and renames the source.
         app.commit_title_text(item.id, "SUNSET");
         settle(&mut app, &mut doc);
         let p = load(&doc);
@@ -7539,7 +7434,6 @@ fn titles_are_added_written_and_styled() {
         app.add_title();
         app.title_edit = None;
         let mid = app.selected_media_item().unwrap().id;
-        // Alignment.
         let rect = reveal(&mut app, |l| {
             l.title_align
                 .iter()
@@ -7557,7 +7451,6 @@ fn titles_are_added_written_and_styled() {
         settle(&mut app, &mut doc);
         let t = load(&doc).media(mid).unwrap().text.clone().unwrap();
         assert_eq!(t.color, TITLE_COLORS[2]);
-        // Size is a fraction of the frame height, dragged.
         let track = reveal(&mut app, |l| l.num(NumField::TitleSize));
         let before = t.size;
         click(
@@ -7639,7 +7532,6 @@ fn titles_are_added_written_and_styled() {
 
         // Enter on its own is a line break, so the field keeps the event.
         assert_eq!(title_edit_verdict(&named_ev(NamedKey::Enter), plain), None);
-        // With Ctrl it accepts, and Escape cancels.
         assert_eq!(
             title_edit_verdict(&named_ev(NamedKey::Enter), ctrl),
             Some(true)
@@ -7719,7 +7611,6 @@ fn marker_list_names_navigates_and_deletes() {
     {
         let (mut app, mut doc) = app_and_doc();
         app.playhead = 8.0;
-        // M marks the playhead and opens the name for typing.
         assert!(key_press(&mut app, &mut doc, "m", false));
         assert!(
             app.marker_rename.is_some(),
@@ -7789,7 +7680,6 @@ fn marker_list_names_navigates_and_deletes() {
         key_press(&mut app, &mut doc, "m", false);
         app.marker_rename = None;
         sync(&mut app, &mut doc);
-        // One list, both kinds, sorted by where they actually land.
         let r = app.regions();
         app.inspector_scroll = app.inspector_max_scroll(&r);
         let rows = app.inspector_layout(&r).marker_rows;
@@ -7836,7 +7726,6 @@ fn marker_list_names_navigates_and_deletes() {
         assert_eq!(load(&doc).markers.len(), 1, "a marker was added");
         app.marker_rename = None;
         sync(&mut app, &mut doc);
-        // And the row it produced can be deleted from the same state.
         let l = app.inspector_layout(&app.regions());
         let row = l.marker_rows.first().expect("the marker is listed").1;
         let (_, _, _, del) = marker_row_parts(row);
@@ -7847,8 +7736,6 @@ fn marker_list_names_navigates_and_deletes() {
     // Case `an_empty_project_still_lists_its_markers_to_a_reader`:
     // With no clips at all the panel paints its empty state *and*, under it,
     // the marker list -- markers belong to the project, not to a selection.
-    // The tree used to return only the empty-state line, hiding every marker
-    // that was plainly on the screen.
     {
         ui::host::install_default(ui::host::HostServices::recording().0);
         let mut doc = AutoCommit::new();
@@ -7943,7 +7830,6 @@ fn history_buttons_follow_the_host() {
             None,
             "with nothing to undo the button raises no request at all",
         );
-        // Once the host says there is, the same press does.
         ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus {
             can_undo: true,
             undo_summary: Some("2 fields".into()),
@@ -7959,7 +7845,6 @@ fn history_buttons_follow_the_host() {
             None,
             "and the request is taken once"
         );
-        // Redo is still unavailable, and its button still refuses.
         let (_, redo) = app.history_buttons(&r)[1];
         click(&mut app, &mut doc, redo.center().x, redo.center().y);
         assert_eq!(
@@ -8027,7 +7912,6 @@ fn history_buttons_follow_the_host() {
             ui::undo::take_undo_request(&mut app),
             Some(ui::UndoRequest::Undo)
         );
-        // With the history empty again the same activation refuses.
         ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus::empty());
         assert!(!app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
         assert_eq!(ui::undo::take_undo_request(&mut app), None);
@@ -8087,7 +7971,6 @@ fn key_and_mask_controls_appear_write_and_keyframe() {
         }
         assert_eq!(l.key_colors.len(), crate::model::KEY_PRESETS.len());
 
-        // And a mask shape brings its geometry with it.
         let rect = reveal(&mut app, |l| {
             l.mask_shapes
                 .iter()
@@ -8354,7 +8237,6 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
     // Case `inspector_remove_and_reorder_effects`.
     {
         let (mut app, mut doc) = app_and_doc();
-        // The drone clip carries two seeded effects.
         let id = app.project.top_video_clip_at(6.0).unwrap().id;
         app.selection.select_only(id);
         settle(&mut app, &mut doc);
@@ -8369,7 +8251,6 @@ fn inspector_effects_add_remove_reorder_and_dispatch() {
         let r = app.regions();
         app.inspector_scroll = app.inspector_max_scroll(&r);
         let l = app.inspector_layout(&r);
-        // Move the second effect up via its ▲.
         let (_k, up, _d, _s, _x) = VideoEditorApp::effect_row_parts(l.effect_rows[1]);
         assert!(
             r.inspector.contains(up.center()),
@@ -8539,8 +8420,6 @@ fn pointer_edits_on_the_timeline_write_the_crdt() {
     }
 }
 
-// ---- tone curves -----------------------------------------------------
-
 /// Select the demo's top video clip and open the curves section, with the
 /// panel scrolled so the editor's box is really on screen.
 fn app_with_curve_editor() -> (VideoEditorApp, AutoCommit, Rect) {
@@ -8589,7 +8468,6 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
             "the clip starts on the straight line",
         );
 
-        // A quarter in, three quarters up.
         let at = curve_point(canvas, 0.25, 0.75);
         app.press_curve(canvas, at);
         let s = &app.project.clip(cid).unwrap().curves.master;
@@ -8604,7 +8482,6 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
             (p.x - 0.25).abs() < 0.02 && (p.y - 0.75).abs() < 0.02,
             "{p:?}"
         );
-        // And the curve really passes through it.
         assert!((s.eval(0.25) - 0.75).abs() < 1e-6, "{}", s.eval(0.25));
         assert!(
             matches!(app.drag, Some(Drag::CurvePoint { idx: 1, .. })),
@@ -8618,7 +8495,6 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
         app.edit_selected(|c| {
             c.curves.master.set_point(0.5, 0.5);
         });
-        // A press a couple of pixels off the point.
         let near = curve_point(canvas, 0.51, 0.52);
         app.press_curve(canvas, near);
         assert_eq!(
@@ -8634,13 +8510,11 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
         let cid = app.selected().unwrap();
         let r = app.regions();
         app.press_curve(canvas, curve_point(canvas, 0.5, 0.5));
-        // Drag it up.
         app.last_mouse = curve_point(canvas, 0.5, 0.9);
         app.apply_drag(&r);
         let mid = app.project.clip(cid).unwrap().curves.master.eval(0.5);
         assert!((mid - 0.9).abs() < 0.02, "the drag moved the point: {mid}");
 
-        // Releasing inside the box keeps it, and writes it to the document.
         app.commit_drag();
         app.drag = None;
         settle(&mut app, &mut doc);
@@ -8659,7 +8533,6 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
         app.press_curve(canvas, curve_point(canvas, 0.4, 0.7));
         assert_eq!(app.project.clip(cid).unwrap().curves.master.points.len(), 3);
 
-        // Release well past the left edge.
         app.last_mouse = Point::new(canvas.x0 - POINT_DROP_MARGIN - 10.0, canvas.center().y);
         app.commit_drag();
         app.drag = None;
@@ -8783,7 +8656,6 @@ fn curve_summaries_and_availability_match_for_eye_and_reader() {
             c.set_key_at(Param::PosX, start + 0.5, -0.4, Interp::Linear);
             c.set_key_at(Param::PosX, start + 3.0, 0.4, Interp::Linear);
         }
-        // Half way between the two keys, where the curve reads exactly rest.
         app.playhead = start + 1.75;
         let clip = app.project.clip(cid).expect("clip").clone();
         assert!(
@@ -8880,8 +8752,6 @@ fn curve_summaries_and_availability_match_for_eye_and_reader() {
         );
     }
 }
-
-// ---- the rest of the inspector's animatable / authored controls -------
 
 #[test]
 #[allow(
@@ -9153,7 +9023,6 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             "the note reached the document",
         );
 
-        // And renaming.
         assert!(app.perform_action(
             &ui::a11y::Action::SetValue("act three".into()),
             &verb(1),
@@ -9177,7 +9046,6 @@ fn marker_notes_and_reader_nodes_name_navigate_and_edit() {
             "a nameless marker is a dot nobody can find, and the verb says so",
         );
 
-        // Activating the delete control removes it, exactly as the X does.
         assert!(app.perform_action(
             &ui::a11y::Action::Activate,
             &verb(2),
@@ -9373,7 +9241,6 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
                 want.label(),
             );
         }
-        // The transition picker and the label swatches are drawn there too.
         for t in Transition::ALL {
             assert!(
                 rows.contains(&InspectorRow::Pick(PickField::Transition(t))),
@@ -9678,7 +9545,6 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
             "the cursor's marker carries focus"
         );
 
-        // And Enter on it runs the row's own verb.
         app.playhead = 0.0;
         assert!(
             app.activate_focused(&mut ui::widget::Edits::lend(&mut doc)),
@@ -9721,8 +9587,6 @@ fn with_video_clip_selected() -> (VideoEditorApp, AutoCommit) {
 fn walked_row_rect(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
     VideoEditorApp::inspector_row_rect(l, row)
 }
-
-// ---- the keyboard cursor ---------------------------------------------
 
 #[test]
 #[allow(
@@ -9985,8 +9849,6 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
     }
 }
 
-// ---- the shuttle -----------------------------------------------------
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -10059,7 +9921,6 @@ fn shuttle_direction_and_rate_are_named_and_painted() {
         assert!(key_press(&mut app, &mut doc, "l", false));
         let words = app.motion_words().expect("the shuttle is running");
 
-        // Where the strip puts it, through the production placement.
         let mut tr = TextRenderer::new();
         let readout_theme = Theme::dark();
         let mut width = |s: &str, role: TextRole| {
@@ -10136,7 +9997,6 @@ fn shuttle_direction_and_rate_are_named_and_painted() {
              to start something that was already running",
         );
 
-        // And the press stops it.
         let (mut app, mut doc) = app_and_doc();
         app.playhead = 8.0;
         assert!(key_press(&mut app, &mut doc, "l", false));
@@ -10151,8 +10011,6 @@ fn shuttle_direction_and_rate_are_named_and_painted() {
     }
 }
 
-// ---- linked audio and video -----------------------------------------
-
 /// The sample project's market cutaway, with the sound split off onto its
 /// own clip through the production path. Returns the two halves.
 fn app_with_linked_shot() -> (VideoEditorApp, AutoCommit) {
@@ -10165,7 +10023,6 @@ fn app_with_linked_shot() -> (VideoEditorApp, AutoCommit) {
         .map(|m| m.id)
         .expect("the market source is in the bin");
     if let Some(m) = app.project.media.iter_mut().find(|m| m.id == mid) {
-        // What a probe reads off a real container.
         m.has_audio = true;
     }
     app.dispatch_media(mid);
@@ -10350,7 +10207,6 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
              sliddable, levellable and cuttable on its own",
         );
 
-        // Straight out of the CRDT, which is what a peer will read.
         settle(&mut app, &mut doc);
         let shared = load(&doc);
         let v = shared.clip(vid).expect("the picture replicated");
@@ -10425,7 +10281,6 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
     // Case `every_on_screen_edit_that_follows_the_link_takes_both_halves`:
     // Delete, ripple-delete, split, trim and re-time all take the whole shot.
     {
-        // Delete.
         let (mut app, mut doc) = app_with_linked_shot();
         let aid = app.project.link_partners(app.selected().expect("picture"))[0];
         app.delete_selected();
@@ -10436,13 +10291,11 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
         settle(&mut app, &mut doc);
         assert!(load(&doc).clip(aid).is_none());
 
-        // Ripple delete.
         let (mut app, _) = app_with_linked_shot();
         let aid = app.project.link_partners(app.selected().expect("picture"))[0];
         app.ripple_delete_selected();
         assert!(app.project.clip(aid).is_none());
 
-        // Split at the playhead.
         let (mut app, _) = app_with_linked_shot();
         let vid = app.selected().expect("picture");
         let aid = app.project.link_partners(vid)[0];
@@ -10477,7 +10330,6 @@ fn linked_shots_place_move_edit_and_copy_as_pairs() {
             "the sound has to keep covering the picture: {v:?} {a:?}",
         );
 
-        // Re-time.
         let (mut app, mut doc) = app_with_linked_shot();
         let vid = app.selected().expect("picture");
         let aid = app.project.link_partners(vid)[0];
@@ -10616,7 +10468,6 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
         // will do rather than what is true.
         let node = app.a11y_pick_node(PickField::LinkToggle, false);
         assert_eq!(node.name.as_deref(), Some("Unlink audio and video"));
-        // And it is laid out where the walk says it is.
         let r = app.regions();
         let l = app.inspector_layout(&r);
         assert!(
@@ -10794,7 +10645,6 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
         );
 
         let cr = clip_rect_of(&app, aid);
-        // The clip's own outline, and the gap above it where the tie runs.
         let edge = Rect::new(cr.x0 - 3.0, cr.y0 - 9.0, cr.x1 + 3.0, cr.y0 + 3.0);
 
         let first = render_pixels(&mut app, w, h, &theme);
@@ -10819,8 +10669,6 @@ fn link_controls_marks_and_split_offers_follow_the_link() {
         );
     }
 }
-
-// ---- the mix meter and the clipping warning --------------------------
 
 /// The sample timeline with a mix that has been *measured* over, staged
 /// through [`VideoEditorApp::stage_mix_block`] — the same door the live
@@ -10977,7 +10825,6 @@ fn mixer_lane_reset_and_capture_are_stable() {
         );
 
         let tid = app.project.clip(cid).expect("the clip").track;
-        // Through the same preview-then-commit path a fader drag takes.
         app.preview_track_edit(|t| {
             t.gain_db = 5.5;
             t.pan = -0.4;
@@ -11123,8 +10970,6 @@ fn frame_diff(before: &[u8], after: &[u8], width: u32) -> (usize, String) {
         format!("{count} pixels differ, within ({left},{top})..({right},{bottom})"),
     )
 }
-
-// ---- the project as a search source ----------------------------------
 
 /// The raw bytes of a rectangle of the frame.
 fn crop(rgba: &[u8], fw: u32, rect: Rect) -> Vec<u8> {
@@ -11282,8 +11127,6 @@ fn a_fresh_project_reads_as_ready_to_start() {
     }
 }
 
-/// The empty media bin's "Import media" button, clicked where it is drawn,
-/// asks the host's chooser just as the toolbar's Import does.
 #[test]
 fn the_empty_bin_import_button_asks_the_host_chooser() {
     for (width, height) in [(960.0, 820.0), (1280.0, 800.0), (1440.0, 900.0)] {

@@ -1,4 +1,3 @@
-//! Durable cell scopes and the real peer-selection paint path.
 use super::tests::measured_app;
 use super::*;
 

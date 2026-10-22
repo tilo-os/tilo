@@ -278,9 +278,7 @@ pub(crate) enum Action {
     ConfirmPending,
     /// Dismiss the open confirmation without doing anything.
     CancelPending,
-    /// Pick a protocol in the form.
     SetKind(ConnectionKind),
-    /// Pick an authentication method in the form.
     SetAuth(AuthMethod),
     /// Pick one of the discovered Tilo devices into the form.
     PickTiloDevice(usize),
@@ -582,7 +580,6 @@ pub struct RemoteApp {
     /// Confirmation mirroring resource-action policy. Private view state,
     /// never replicated with the connection profile.
     pending_confirmation: Option<PendingConfirmation>,
-    /// The dialog that asks it.
     dialog: Option<ModalDialog<Column>>,
     /// Outcomes worth a moment's notice (a revalidation that cancelled an
     /// action). They contain no credential material.
@@ -1582,8 +1579,6 @@ impl RemoteApp {
         }
     }
 
-    // -- the window ---------------------------------------------------------
-
     /// One list row per connection the destination shows. The meta says
     /// when the machine was last used, or what about the saved connection
     /// stops it from opening; what this device lacks is said when a session
@@ -1976,7 +1971,6 @@ fn sort_problems(problems: Vec<String>) -> FormProblems {
     sorted
 }
 
-/// The single child node of the app's node.
 fn child_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
@@ -2594,7 +2588,6 @@ impl SessionPane {
         );
     }
 
-    /// The terminal grid the session shows, if it is a terminal.
     fn terminal_grid(core: &SessionCore) -> Option<&crate::vt::VtGrid> {
         match &core.live {
             Some(LiveSession::Ssh(s)) => Some(s.grid()),

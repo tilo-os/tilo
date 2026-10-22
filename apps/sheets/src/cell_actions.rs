@@ -142,9 +142,6 @@ pub fn sort_writes(
 
 /// What `read-cells` answers for `range` of `snap` (every used cell when
 /// none).
-///
-/// # Errors
-/// Names a range that is not one, or one larger than a read returns.
 pub fn read(snap: &SheetSnapshot, range: Option<&str>) -> Result<serde_json::Value, String> {
     let used = snap.raw.keys().chain(snap.bold.iter()).copied();
     let (start, end) = match range {

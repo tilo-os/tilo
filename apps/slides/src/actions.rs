@@ -46,13 +46,11 @@ pub fn element_resource_id(slide: &str, element: &str) -> String {
     )
 }
 
-/// The paths of slide `slide`.
 #[must_use]
 pub fn slide_paths(slide: &str) -> <deck::Slide as ui::tilo_resource::Model>::Paths<Deck> {
     Deck::paths().slides.item(&Id::from(slide))
 }
 
-/// The paths of element `element` on slide `slide`.
 #[must_use]
 pub fn element_paths(
     slide: &str,
@@ -61,7 +59,6 @@ pub fn element_paths(
     slide_paths(slide).elements.item(&Id::from(element))
 }
 
-/// Set the deck's title.
 #[must_use]
 pub fn set_deck_title_action(title: impl Into<String>) -> Action {
     edit(Deck::paths().title.replace(title.into()))
@@ -79,13 +76,11 @@ pub fn set_deck_look_action(look: DeckLook) -> Action {
     edit(Deck::paths().look.set(look))
 }
 
-/// Set slide `slide`'s layout.
 #[must_use]
 pub fn set_slide_layout_action(slide: &str, layout: Layout) -> Action {
     edit(slide_paths(slide).layout.set(layout))
 }
 
-/// Set slide `slide`'s background.
 #[must_use]
 pub fn set_slide_background_action(slide: &str, background: Background) -> Action {
     edit(slide_paths(slide).background.set(background))
@@ -100,7 +95,6 @@ pub fn move_slide_action(slide: &str, position: usize) -> Action {
     }))
 }
 
-/// Insert slide `slide`, whole, at `at`.
 #[must_use]
 pub fn insert_slide_action(at: usize, slide: &Slide) -> Action {
     stamped(DeckAction::InsertSlide(deck::deck::InsertSlide {
@@ -109,7 +103,6 @@ pub fn insert_slide_action(at: usize, slide: &Slide) -> Action {
     }))
 }
 
-/// Delete slide `slide`.
 #[must_use]
 pub fn delete_slide_action(slide: &str) -> Action {
     stamped(DeckAction::DeleteSlide(deck::deck::DeleteSlide {
@@ -117,7 +110,6 @@ pub fn delete_slide_action(slide: &str) -> Action {
     }))
 }
 
-/// Replace the whole deck with `deck`.
 #[must_use]
 pub fn replace_deck_action(deck: &crate::model::Deck) -> Action {
     stamped(DeckAction::ReplaceDeck(deck::deck::ReplaceDeck {
@@ -137,7 +129,6 @@ pub fn add_element_action(slide: &str, element: &Element) -> Action {
     }))
 }
 
-/// Delete element `element` of slide `slide`.
 #[must_use]
 pub fn delete_element_action(slide: &str, element: &str) -> Action {
     stamped(DeckAction::DeleteElement(deck::deck::DeleteElement {

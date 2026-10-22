@@ -32,11 +32,6 @@ pub fn decode_image_bytes(bytes: &[u8]) -> Result<String, String> {
 /// The shared core of the ingestion path: the file importer feeds it a
 /// decoded screenshot. Returns the payload string, or a short reason when no
 /// readable QR grid is present.
-///
-/// # Errors
-/// Returns `Err` with a short, user-facing reason when no QR grid is
-/// detected in `luma`, or when every detected grid fails to decode (or
-/// decodes to an empty payload).
 pub fn decode_luma(luma: image::GrayImage) -> Result<String, String> {
     let mut prepared = rqrr::PreparedImage::prepare(luma);
     let grids = prepared.detect_grids();
@@ -73,7 +68,6 @@ mod tests {
             assert_eq!(decoded, uri);
         }
 
-        // Case `empty_image_reports_no_qr_found`.
         {
             // A blank white field has no finder patterns to detect.
             let blank = GrayImage::from_pixel(128, 128, Luma([255]));

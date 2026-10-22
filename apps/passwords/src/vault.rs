@@ -99,7 +99,6 @@ impl VaultFilter {
 /// What the content column shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Screen {
-    /// The list of items and the open item.
     #[default]
     Vault,
     /// The list of items and the editor of a new or open item.
@@ -131,7 +130,6 @@ pub(crate) enum DraftField {
     CustomFields,
 }
 
-/// The dialog over the window.
 pub(crate) enum Dialog {
     ImportPreview {
         rows: Vec<ImportLogin>,
@@ -555,8 +553,6 @@ impl Core {
         self.touch();
     }
 
-    // --- the list ------------------------------------------------------
-
     pub(crate) fn visible(&self) -> Vec<&SecretItem> {
         self.items
             .iter()
@@ -606,7 +602,6 @@ impl Core {
             return false;
         };
         if !listed {
-            // Show the item where it is listed.
             self.filter = VaultFilter::All;
         }
         if self.screen == Screen::Editor {
@@ -676,8 +671,6 @@ impl Core {
             "Added to favorites"
         });
     }
-
-    // --- the open item -------------------------------------------------
 
     pub(crate) fn revealed_value(&self, id: &SecretId) -> Option<&str> {
         self.revealed
@@ -808,8 +801,6 @@ impl Core {
             format!("Copied {count} addresses")
         });
     }
-
-    // --- the editor ----------------------------------------------------
 
     pub(crate) fn begin_add(&mut self) {
         self.editing = None;
@@ -1141,7 +1132,6 @@ impl Core {
         }
     }
 
-    /// Delete `id` from the vault.
     pub(crate) fn delete(&mut self, id: &SecretId) -> Result<(), String> {
         let result = if let Some(model) = &mut self.model {
             match model.remove(id) {
@@ -1176,8 +1166,6 @@ impl Core {
             self.touch_page();
         }
     }
-
-    // --- app access ----------------------------------------------------
 
     pub(crate) fn revoke(&mut self, id: &str) -> Result<(), String> {
         let grant = self
@@ -1230,8 +1218,6 @@ impl Core {
             self.refresh();
         }
     }
-
-    // --- import, export, backup ----------------------------------------
 
     pub(crate) fn request_import(&mut self) {
         if self.model.is_none() || self.import_portal.is_some() {
@@ -1743,8 +1729,6 @@ impl Core {
         .min()
     }
 
-    // --- requests and operations ----------------------------------------
-
     /// Apply a control's request.
     pub(crate) fn apply(&mut self, request: Request) {
         match request {
@@ -1924,8 +1908,6 @@ impl Core {
         }
         Ok(())
     }
-
-    // --- resources --------------------------------------------------------
 
     /// Live vault rows, one per item: what agents, scripts and the palette
     /// may do with it. A row names the item by its opaque id and kind only;

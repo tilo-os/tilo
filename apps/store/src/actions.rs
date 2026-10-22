@@ -59,8 +59,6 @@ pub fn tapp_staging_dir() -> Option<PathBuf> {
     Some(staged)
 }
 
-// ---- download ------------------------------------------------------
-
 /// HTTP-download a `.tapp` to `dest`. Blocking — runs on the worker
 /// thread. The bytes are *not* trusted here: app-host
 /// re-verifies the content hash + publisher signature before it
@@ -127,8 +125,6 @@ pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
         .map_err(|e| format!("write {}: {e}", dest.display()))?;
     Ok(bytes.len() as u64)
 }
-
-// ---- orchestration -------------------------------------------------
 
 /// Execute a card action end-to-end. `staging_dir` is where a
 /// downloaded `.tapp` is written before install; pass
@@ -478,16 +474,13 @@ mod tests {
     /// Without a Flatpak host, needs-host and open both fail without spawning anything.
     #[test]
     fn actions_without_a_flatpak_host_fail_without_spawning() {
-        // Case `needs_flatpak_host_is_a_no_op_failure`.
         {
             let item = flatpak_item("Chess", InstalledState::Not);
             let out = execute(&item, ActionKind::NeedsFlatpakHost, Path::new("/tmp"));
             assert!(!out.ok);
         }
 
-        // Case `open_without_host_capability_fails_without_spawning_anything`.
         {
-            // A Tilo item whose registry entry lost its download URL.
             let mut item = tilo_item("Notes", InstalledState::Not);
             item.versions[0].download_url = None;
             let out = execute(&item, ActionKind::Open, Path::new("/tmp"));

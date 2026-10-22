@@ -1,5 +1,4 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
-//! Where a Sheets launch keeps its workbook.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 

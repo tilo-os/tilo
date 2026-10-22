@@ -145,9 +145,6 @@ impl CompletionClient {
 
     /// Complete one neutral turn with the same custody and bounded retry policy
     /// as the gateway. Rotating credentials are resolved before every attempt.
-    ///
-    /// # Errors
-    /// Returns bounded credential, provider, deadline or runtime diagnostics.
     pub fn complete(
         &mut self,
         endpoint: &str,

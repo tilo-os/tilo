@@ -1020,7 +1020,6 @@ mod tests {
     /// Blank navigation, presenter clicks and the paused timer.
     #[test]
     fn presentation_navigation_and_timer_state() {
-        // Case `blank_navigation_resumes_before_advancing`.
         {
             let mut p = Presentation::default();
             p.set_blank(Blank::Black);
@@ -1034,14 +1033,12 @@ mod tests {
             );
         }
 
-        // Case `presenter_click_never_advances`.
         {
             let mut p = Presentation::default();
             p.set_presenter_view(true);
             assert_eq!(p.pointer_command(), Command::None);
         }
 
-        // Case `paused_timer_is_stable_and_reset_resumes`.
         {
             use ui::time::testing::with_monotonic_time;
             let begun = ui::time::now();
@@ -1067,7 +1064,6 @@ mod tests {
     /// The settled slide cache reuses unchanged renders and keys every input.
     #[test]
     fn settled_slide_cache_reuses_and_keys_every_input() {
-        // Case `settled_slide_cache_reuses_an_unchanged_render`.
         {
             let deck = crate::model::seed_deck();
             let images = ImageStore::new(tilo_content::ContentStore::memory());
@@ -1113,7 +1109,6 @@ mod tests {
             ));
         }
 
-        // Case `settled_slide_cache_key_covers_all_render_inputs`.
         {
             let destination = Rect::new(100.2, 50.2, 1180.2, 660.2);
             let base = PresentCache::key(destination, 1, 7, PaletteKind::Indigo);

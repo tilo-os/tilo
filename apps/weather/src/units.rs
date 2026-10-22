@@ -125,19 +125,16 @@ mod tests {
 
     #[test]
     fn unit_conversions_and_compass_cardinals() {
-        // Case `celsius_fahrenheit_round_trips`.
         {
             let f = convert_temp(20.0, TempUnit::Celsius, TempUnit::Fahrenheit);
             assert!((f - 68.0).abs() < 1e-6);
             let c = convert_temp(f, TempUnit::Fahrenheit, TempUnit::Celsius);
             assert!((c - 20.0).abs() < 1e-6);
         }
-        // Case `wind_kmh_to_mph`.
         {
             let mph = convert_wind(100.0, WindUnit::Kmh, WindUnit::Mph);
             assert!((mph - 62.1371).abs() < 1e-3);
         }
-        // Case `compass_cardinals`.
         {
             assert_eq!(compass(0.0), "N");
             assert_eq!(compass(90.0), "E");

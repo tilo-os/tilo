@@ -93,8 +93,6 @@ pub(crate) fn content(core: &Core, shared: &Shared, requests: &Requests) -> Elem
     }
 }
 
-// --- the open item ------------------------------------------------------
-
 fn detail(core: &Core, requests: &Requests) -> Element {
     let Some(item) = core.selected_item() else {
         // The list offers the next step; the wide pane beside it says what
@@ -234,8 +232,6 @@ fn properties(core: &Core, item: &SecretItem, requests: &Requests) -> Vec<Proper
     ));
     rows
 }
-
-// --- the editor ---------------------------------------------------------
 
 fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
     let core = Rc::clone(shared);
@@ -387,8 +383,6 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     titled_page(title, None, vec![Box::new(form)])
 }
 
-// --- password review ----------------------------------------------------
-
 fn count_tone(count: usize) -> Tone {
     if count == 0 {
         Tone::Success
@@ -470,8 +464,6 @@ fn review(core: &Core, requests: &Requests) -> Element {
 /// What the review compares against: only this vault, wherever it is kept (a
 /// browser's storage or the device), so the words name the vault, not a place.
 const CHECKED_AGAINST: &str = "Only the passwords in this vault";
-
-// --- app access ---------------------------------------------------------
 
 fn app_access(core: &Core, requests: &Requests) -> Element {
     if core.app_grants.is_empty() && core.app_proposals.is_empty() {
@@ -612,8 +604,6 @@ fn proposal_details(core: &Core, proposal: &accounts::CredentialProposal) -> Str
     )
 }
 
-// --- import and export ---------------------------------------------------
-
 /// A titled group inside a page.
 fn group(title: &str, items: Vec<Element>) -> Section {
     Section::new(items).with_header(SectionHeader::group(title))
@@ -680,8 +670,6 @@ fn transfer(requests: &Requests) -> Element {
         ],
     )
 }
-
-// --- dialogs ------------------------------------------------------------
 
 fn body(children: Vec<Element>) -> Column {
     children.into_iter().fold(

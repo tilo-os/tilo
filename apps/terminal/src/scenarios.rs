@@ -122,7 +122,6 @@ fn colors() -> Vec<u8> {
 fn tui() -> Vec<u8> {
     let mut s = String::new();
     s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
-    // Reverse-video title bar across the top.
     s.push_str("\x1b[1;1H\x1b[7m Tilo EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
     #[allow(
         clippy::literal_string_with_formatting_args,

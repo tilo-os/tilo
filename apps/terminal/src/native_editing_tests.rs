@@ -90,7 +90,6 @@ mod native_editing_tests {
         receipt[7] = 0;
         receipt[16..64].fill(0);
         receipt[72..80].fill(0);
-        // A matching request id with a different transaction is still uncertain.
         receipt[64..72].fill(0);
         producer.send(&receipt).unwrap();
         wait_until("the wrong transaction to retire the original edit", || {

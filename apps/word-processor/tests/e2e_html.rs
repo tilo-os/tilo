@@ -74,7 +74,6 @@ fn html_opens_with_headings_bold_and_links_recovered() {
         assert_eq!(first.text, "Report");
         assert_eq!(first.attrs.get("level"), Some(&tilo_doc::AttrVal::Int(1)));
 
-        // The paragraph survives with the bold run and the link mark.
         let p = snap
             .blocks
             .iter()

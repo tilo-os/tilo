@@ -384,7 +384,6 @@ pub struct SettingRow<'a, T, V> {
 }
 
 impl<T: Section> SettingRow<'_, T, bool> {
-    /// A toggle.
     pub fn toggle(self) -> Item {
         let on = self.followed.shown(&self.path, bool::clone);
         self.row.toggle(&on, self.path)
@@ -392,7 +391,6 @@ impl<T: Section> SettingRow<'_, T, bool> {
 }
 
 impl<T: Section> SettingRow<'_, T, f64> {
-    /// A slider.
     pub fn slider(self) -> Item {
         let value = self.followed.shown(&self.path, f64::clone);
         self.row.slider(&value, self.path)

@@ -20,14 +20,11 @@ use ui::widget::{
     SegmentedFace, SegmentedStyle,
 };
 
-/// A row of the sheet-tab menu.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum TabMenuRow {
-    /// One of the plain tab actions.
     Act(TabAction),
     /// Open the colour popover for the tab.
     PickColour,
-    /// Clear the tab's colour.
     ClearColour,
 }
 
@@ -53,8 +50,6 @@ const SETTINGS_NOTE: &str =
     "These settings apply to this workbook only. Default follows your system settings.";
 
 impl SheetsApp {
-    // --- the command menus ---------------------------------------------------
-
     /// The File menu's rows: New sheet, then the three imports, then the
     /// three exports.
     pub(super) fn file_menu_rows() -> Vec<MenuRow> {
@@ -127,8 +122,6 @@ impl SheetsApp {
             .find(|(_, i)| *i == idx)
             .map_or(self.add_tab_rect, |(rect, _)| *rect)
     }
-
-    // --- the sheet-tab menu --------------------------------------------------
 
     /// Open the right-click menu for sheet tab `idx`, closing any other
     /// overlay first.
@@ -273,8 +266,6 @@ impl SheetsApp {
         }
     }
 
-    // --- routing -------------------------------------------------------------
-
     /// Route an event to whatever floats over the sheet. A floating surface is
     /// modal: while one is open it takes every event. Returns whether the
     /// event was consumed.
@@ -295,8 +286,6 @@ impl SheetsApp {
         }
         false
     }
-
-    // --- the document-settings sheet ------------------------------------------
 
     /// The choices of a settings strip: "Default" (inherit) first, then each
     /// style in display order.
@@ -582,7 +571,6 @@ impl SheetsApp {
         true
     }
 
-    /// The option under `p` in the settings sheet.
     pub(super) fn setting_chip_at(&self, p: Point) -> Option<SettingKind> {
         self.settings_sheet
             .as_ref()?
@@ -591,8 +579,6 @@ impl SheetsApp {
             .find(|option| option.rect.contains(p))
             .map(|option| option.kind)
     }
-
-    // --- the top layer ---------------------------------------------------------
 
     /// Paint everything that floats, in the window's top layer.
     pub(super) fn paint_overlays(

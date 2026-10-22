@@ -434,7 +434,6 @@ mod tests {
     /// The document's own resource id and kind.
     const DOCUMENT: &str = "word-processor.document";
 
-    /// The document verb `operation` as its action value.
     fn verb(
         operation: crate::model::DocumentAction,
     ) -> <crate::model::Document as ui::tilo_resource::Resource>::Action {
@@ -1798,7 +1797,6 @@ mod tests {
             "{:?}",
             spec.contract.validate_declaration()
         );
-        // Empty text is refused, and nothing is written.
         let before = state.doc.save();
         let mut arguments = serde_json::Map::new();
         arguments.insert("text".into(), "".into());

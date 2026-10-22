@@ -1,4 +1,3 @@
-//! Presentation policy tests use the production coalescer with a deterministic clock.
 use super::*;
 
 fn collect(event: &Response, frames: &mut Vec<(String, serde_json::Value)>) -> bool {

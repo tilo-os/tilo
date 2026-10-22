@@ -86,8 +86,6 @@ impl ImportBundle {
         bundle.validate()?;
         Ok(bundle)
     }
-    /// # Errors
-    /// Refuses malformed or oversized bundles before a record is changed.
     pub fn validate(&self) -> Result<(), ActionError> {
         if let Some(tree) = &self.imported_tree {
             tree.validate()?;

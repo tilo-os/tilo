@@ -76,7 +76,6 @@ pub trait Driveable {
     fn survey(&mut self) -> Vec<ActionDescriptor>;
     /// The record's document, for noticing that it changed.
     fn body(&mut self) -> String;
-    /// Do one step.
     fn run(&mut self, action: &StepAction) -> Result<(), String>;
 }
 

@@ -158,10 +158,6 @@ pub fn reasoning_content(message: &Value) -> Result<Option<&str>, String> {
 }
 
 /// The first choice of a chat-completions response.
-///
-/// # Errors
-///
-/// Returns why the response is not a readable assistant turn.
 pub fn read_turn(response: &Value) -> Result<Turn, String> {
     let message = response
         .pointer("/choices/0/message")

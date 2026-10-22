@@ -784,7 +784,6 @@ mod tests {
         .map_err(|error| format!("{error:?}"))
     }
 
-    /// Rules enumerate system and Flatpak desktop identities.
     #[test]
     fn notification_rules_enumerate_desktop_identities() {
         {
@@ -839,7 +838,6 @@ mod tests {
         edit_path(&mut app, NOTIFICATIONS, &["focus", "enabled"], true).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 20 * 60).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "weekdays"], 0b0001_1111).unwrap();
-        // An agent sets one field of a rule the app has none of yet.
         edit_rule(&mut app, "so.tilo.chat", "sounds", false).unwrap();
         edit_rule(&mut app, "so.tilo.chat", "priority", true).unwrap();
         invoke_section(

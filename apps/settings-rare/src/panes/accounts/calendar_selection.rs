@@ -13,9 +13,6 @@ use super::{
 impl AccountsPane {
     /// Start a calendar review using an existing Nextcloud account's canonical
     /// ID and credential. No account or secret is created or copied.
-    ///
-    /// # Errors
-    /// If the account or its saved sign-in is unavailable.
     pub fn connect_nextcloud_calendars(&mut self, id: &str) -> Result<(), String> {
         let account = self
             .account_root
@@ -154,9 +151,6 @@ impl AccountsPane {
 
     /// Choose one collection from the current discovery result, as the
     /// published Settings action and the shared controls do.
-    ///
-    /// # Errors
-    /// If the collection is not in this form's current discovery result.
     pub fn select_calendar(&mut self, href: &str, selected: bool) -> Result<(), String> {
         let choice = self
             .calendar_choices

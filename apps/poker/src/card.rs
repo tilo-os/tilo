@@ -43,7 +43,6 @@ impl CardSize {
 /// What a card shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Showing {
-    /// Its face.
     Face(u8),
     /// Its back, in the presence colour of whoever holds it.
     Back((u8, u8, u8)),
@@ -51,7 +50,6 @@ pub enum Showing {
     Slot,
 }
 
-/// One card.
 pub struct CardView {
     rect: Rect,
     showing: Showing,

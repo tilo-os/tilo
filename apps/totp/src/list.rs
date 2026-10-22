@@ -302,8 +302,6 @@ impl AccountList {
         ));
     }
 
-    // ---- geometry shared by painting and hit-testing -------------------
-
     fn content_height(&self) -> f64 {
         self.metrics
             .map_or(0.0, |m| self.accounts.len() as f64 * m.row_h + 2.0 * m.edge)
@@ -445,8 +443,6 @@ impl AccountList {
         }
         Some((row, Zone::Body))
     }
-
-    // ---- painting ------------------------------------------------------
 
     pub fn draw(&mut self, ctx: &mut PaintCtx<'_>) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
@@ -660,8 +656,6 @@ impl AccountList {
         let action = EmptyState::paint(ctx, self.rect, &content, self.last_mouse);
         self.empty_action = action.unwrap_or(Rect::ZERO);
     }
-
-    // ---- input ---------------------------------------------------------
 
     /// Whether the scroll bar's fade needs frames now.
     pub fn needs_animation_frame(&self) -> bool {

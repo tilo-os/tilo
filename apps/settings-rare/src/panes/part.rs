@@ -299,7 +299,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     },
 ];
 
-/// The part.
 pub const PART: crate::area::Part = crate::area::Part {
     areas: AREAS,
     panes: PANES,

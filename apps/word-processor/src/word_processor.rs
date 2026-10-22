@@ -183,8 +183,6 @@ impl WordProcessor {
         &self.content
     }
 
-    // ---- edit context (Body / Header / Footer) -----------------------------
-
     /// The region the caret + edit ops currently address.
     pub fn region(&self) -> Region {
         self.region
@@ -269,8 +267,6 @@ impl WordProcessor {
         }
         self.caret.block.clone()
     }
-
-    // ---- selection ---------------------------------------------------------
 
     /// Begin (or keep) a selection anchored at the current caret.
     pub fn set_anchor(&mut self) {
@@ -853,8 +849,6 @@ impl WordProcessor {
     // ---- region-aware writes (dispatch body vs. header/footer) -------------
     // Each goes through the region-aware tilo-doc op (`*_in`) for the active region.
 
-    // ---- read helpers ------------------------------------------------------
-
     fn block_len(&self, state: &AutoCommit, block: &str) -> usize {
         self.region_block_len(state, block)
     }
@@ -868,8 +862,6 @@ impl WordProcessor {
     pub(crate) fn ordered_blocks(&self, state: &AutoCommit) -> Vec<String> {
         self.region_blocks_in_order(state)
     }
-
-    // ---- document outline / navigation ------------------------------------
 
     /// Select the whitespace-delimited word under the caret (double-click).
     pub fn select_word(&mut self, state: &AutoCommit) {
@@ -960,10 +952,6 @@ impl WordProcessor {
         core.clamp_to(text);
         Some(core)
     }
-
-    // ---- edit operations ---------------------------------------------------
-
-    // ---- caret motion ------------------------------------------------------
 
     pub fn move_left(&mut self, state: &AutoCommit) {
         let extends_selection = self
@@ -1615,7 +1603,6 @@ mod tests {
                 offset: 3,
             });
 
-            // The copied text spans three blocks, joined by newlines.
             assert_eq!(wp.copy_fragment(&state).0, "rst\nsecond\nthi");
         }
 
@@ -1850,8 +1837,6 @@ mod tests {
         );
     }
 
-    // ---- table editing -----------------------------------------------------
-
     /// The materialized `(row, col)` grid coordinates of every cell in the single
     /// table the snapshot contains, sorted row-major. Reads the production
     /// snapshot path so tests assert on what collaborators/exporters actually see.
@@ -1920,7 +1905,6 @@ mod tests {
         {
             let (mut wp, mut state) = bound();
             wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
-            // Jump to the last cell, then Shift-Tab back one.
             let (_, cells) = wp.caret_table(&state).unwrap();
             let last = cells
                 .iter()
@@ -1955,8 +1939,6 @@ mod tests {
             );
         }
     }
-
-    // ---- editable headers / footers (edit-context routing) -----------------
 
     fn header_texts(wp: &WordProcessor, state: &AutoCommit) -> Vec<String> {
         let c = wp.containers.as_ref().unwrap();
@@ -1993,7 +1975,6 @@ mod tests {
         // Phase: focusing_header_and_typing_writes_into_header_not_body.
         {
             let (mut wp, mut state) = bound();
-            // Body has its seeded empty paragraph.
             wp.insert_str(&mut Edits::lend(&mut state), "body-content");
             assert_eq!(wp.region(), Region::Body);
 
@@ -2003,9 +1984,7 @@ mod tests {
             assert!(wp.in_running_region());
             wp.insert_str(&mut Edits::lend(&mut state), "My Title");
 
-            // The text lands in the HEADER container, asserted on the materialized snap.
             assert_eq!(header_texts(&wp, &state), vec!["My Title".to_string()]);
-            // The body is untouched.
             assert_eq!(body_texts(&wp, &state), vec!["body-content".to_string()]);
         }
 
@@ -2031,7 +2010,6 @@ mod tests {
             let (mut wp, mut state) = bound();
             wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
             wp.insert_str(&mut Edits::lend(&mut state), "Title");
-            // Select the whole word, then toggle bold.
             wp.select_all(&state);
             toggle_mark(&wp, &mut state, "strong");
 

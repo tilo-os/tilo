@@ -176,29 +176,24 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
 
     #[test]
     fn wireguard_transfer_and_sysfs_output_parses() {
-        // Case `wg_transfer_sums_all_peers`.
         {
             let t = parse_wg_transfer(WG_TRANSFER).expect("parses");
             assert_eq!(t.rx, 1024 + 500);
             assert_eq!(t.tx, 2048 + 250);
         }
-        // Case `wg_transfer_single_peer`.
         {
             let t = parse_wg_transfer("abc=\t9999\t1\n").expect("parses");
             assert_eq!(t, Transfer { rx: 9999, tx: 1 });
         }
-        // Case `wg_transfer_empty_is_none`.
         {
             assert!(parse_wg_transfer("").is_none());
             assert!(parse_wg_transfer("\n\n").is_none());
         }
-        // Case `stat_parses_number`.
         {
             assert_eq!(parse_stat("162300528\n"), Some(162_300_528));
             assert_eq!(parse_stat("  42 "), Some(42));
             assert!(parse_stat("not-a-number").is_none());
         }
-        // Case `iface_validation_rejects_traversal`.
         {
             assert!(is_valid_iface("wg0"));
             assert!(is_valid_iface("home"));
@@ -264,7 +259,6 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         // traffic in between and assert the kernel counter only advanced —
         // a property no synthesized value could satisfy.
         let first = read_sys_bytes("lo").expect("loopback statistics are readable");
-        // Generate a little real loopback traffic.
         let _ = std::net::UdpSocket::bind("127.0.0.1:0").and_then(|s| {
             let addr = s.local_addr()?;
             s.send_to(&[0u8; 512], addr).map(|_| ())

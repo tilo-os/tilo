@@ -22,9 +22,7 @@ use crate::participant::ParticipantConfig;
 use crate::participant::unopened::Unopened;
 use crate::worker::ConfinedReplica;
 
-/// Who the bot is in the room.
 pub struct BotIdentity {
-    /// The bot's device key.
     pub key: SigningKey,
     /// Its root-signed certificate.
     pub cert: DeviceCert,
@@ -70,11 +68,6 @@ pub struct BotParticipant {
 impl BotParticipant {
     /// Connect as the bot and join `config.room`'s durable and live
     /// planes, holding the records of the `watched` apps as `actor`.
-    ///
-    /// # Errors
-    ///
-    /// The room is not a uuid or not the delegation's, or the session
-    /// could not join it.
     pub fn start(
         config: ParticipantConfig,
         identity: BotIdentity,
@@ -283,11 +276,6 @@ impl BotParticipant {
     /// Invoke one action of the record at `route` as `invoker` within
     /// `context` (`confirmed` when its contract asks for confirmation and
     /// the run gave it), commit the change it made, and show the bot there.
-    ///
-    /// # Errors
-    ///
-    /// The record is not held, the door refused, or the change could not
-    /// be committed.
     pub fn invoke(
         &mut self,
         route: &DocumentRoute,

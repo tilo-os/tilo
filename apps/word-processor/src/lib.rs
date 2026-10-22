@@ -60,10 +60,6 @@ pub const RECORD_KIND: &str = <model::Document as tilo_resource::Resource>::KIND
 
 /// Initialize a new record as an empty Writer document: the document
 /// resource's genesis, for hosts that reserve a record outside the app.
-///
-/// # Errors
-///
-/// Returns why the document could not be initialized.
 pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {
     <framework::Document as tilo_resource::Resource>::initialize(doc)
         .map_err(|error| error.to_string())
@@ -88,8 +84,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 pub use word_processor::WordProcessor;
 
 use automerge::AutoCommit;
-
-// ---- document open / save (format-aware file I/O) -------------------------
 
 use std::path::Path;
 
@@ -228,8 +222,6 @@ pub fn import_action(
         .map_err(|error| format!("could not keep the file's images: {error}"))?;
     Ok(action)
 }
-
-// ---- document templates (File menu) ---------------------------------------
 
 /// A bundled starter document. The content is embedded at compile time
 /// (`include_str!`) so there is no runtime file dependency — a template is just

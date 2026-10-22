@@ -397,8 +397,6 @@ fn first_writes_into_one_row_both_survive() {
     );
 }
 
-/// The selection's edits are the workbook's verbs with the selection
-/// bound, beside its published actions.
 #[test]
 fn selection_edits_are_declarations_beside_the_published_workbook() {
     let doc = crate::sample::replica().doc().clone();

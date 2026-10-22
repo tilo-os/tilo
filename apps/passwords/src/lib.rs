@@ -236,9 +236,6 @@ impl PasswordsModel {
         analyze_health(&self.items())
     }
     /// Persist any supported secret item.
-    ///
-    /// # Errors
-    /// Returns an error when serialization or durable credential storage fails.
     pub fn save_item(&mut self, item: &mut SecretItem) -> Result<SecretId, String> {
         let id = item.id.clone();
         self.edit(|store| store.put(item))?
@@ -290,9 +287,6 @@ impl PasswordsModel {
             .map_err(|error| format!("could not reveal login: {error:?}"))
     }
     /// Return the primary copyable value for the item's type.
-    ///
-    /// # Errors
-    /// Returns an error if the item no longer exists.
     pub fn reveal_value(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
         let item = self
             .read(|store| store.get(id))?

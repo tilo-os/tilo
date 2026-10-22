@@ -169,7 +169,6 @@ pub type MakeArea = fn(&AreaContext<'_>, &Areas) -> Box<dyn PaneArea>;
 pub struct SectionEntry {
     /// Hold the section's published actions for the panes.
     pub held: HoldSection,
-    /// Publish the section as a record.
     pub record: fn(&mut ui::framework::Records<'_>),
 }
 
@@ -195,9 +194,7 @@ pub use crate::section_entry;
 
 /// One pane: the categories it shows and how it is built for the window.
 pub struct PaneEntry {
-    /// The categories the pane shows.
     pub categories: &'static [Category],
-    /// Build the pane's body for `category`.
     pub build: fn(&SettingsApp, Category) -> Box<dyn Widget>,
 }
 
@@ -215,11 +212,8 @@ pub fn missing() -> String {
 pub struct Part {
     /// What makes each area, by place.
     pub areas: &'static [(u16, MakeArea)],
-    /// Every pane.
     pub panes: &'static [PaneEntry],
-    /// Every effect family, by place.
     pub families: &'static [(u16, &'static crate::effects::EffectFamily)],
-    /// Every area with live rows, by place.
     pub live_areas: &'static [(u16, crate::effects::LiveArea)],
     /// Every settings section, by place.
     pub sections: &'static [(u16, SectionEntry)],
@@ -230,11 +224,8 @@ pub struct Part {
 pub struct Registry {
     /// What makes each area.
     pub areas: Vec<MakeArea>,
-    /// Every pane.
     pub panes: Vec<&'static PaneEntry>,
-    /// Every effect family.
     pub families: Vec<&'static crate::effects::EffectFamily>,
-    /// Every area with live rows.
     pub live_areas: Vec<&'static crate::effects::LiveArea>,
     /// Every settings section.
     pub sections: Vec<&'static SectionEntry>,

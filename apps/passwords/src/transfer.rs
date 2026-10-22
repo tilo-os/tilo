@@ -98,10 +98,6 @@ impl Choosing {
     }
 
     /// The answer, once there is one.
-    ///
-    /// # Errors
-    /// `Empty` while the chooser is open, `Disconnected` when it went away
-    /// without answering.
     pub fn try_recv(&self) -> Result<Chosen, std::sync::mpsc::TryRecvError> {
         use ui::portal::{ContentsOutcome, OpenFileOutcome};
         match self {

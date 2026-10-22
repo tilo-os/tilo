@@ -33,7 +33,6 @@ enum Height {
     Proportional,
 }
 
-/// A preview of one theme document.
 pub struct ThemePreview {
     theme: ui::Theme,
     show: Show,

@@ -373,7 +373,6 @@ mod tests {
         let pt = sample_layer();
         assert_eq!(pt.text, "PDF text layer");
         assert_eq!(pt.chars.len(), pt.text.chars().count());
-        // Byte offsets are contiguous and index the concatenated text.
         for c in &pt.chars {
             assert_eq!(pt.text[c.byte_start..].chars().next(), Some(c.ch));
         }
@@ -466,7 +465,6 @@ mod tests {
         let hits = pt.search(1, "text", SearchOptions::default());
         assert_eq!(hits.len(), 1);
         let m = hits[0];
-        // The matched glyph run reads back as the query.
         assert_eq!(
             pt.text_for_range(m.char_start, m.char_start + m.char_len),
             "text"
@@ -520,7 +518,6 @@ mod tests {
             assert_eq!(bands[0].w, 8.0, "highlight covers exactly the source glyph");
         }
 
-        // Whole-word search rejects accented word fragments.
         let page = PageText::from_glyphs(
             "étest testé e\u{301}test test\u{301} test"
                 .chars()

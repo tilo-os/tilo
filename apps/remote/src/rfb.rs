@@ -158,11 +158,6 @@ pub struct ServerInit {
 
 impl ServerInit {
     /// Read a `ServerInit` message body from a stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the stream ends before the fixed header or the
-    /// server-supplied name have been fully read.
     pub fn read(r: &mut impl Read) -> io::Result<Self> {
         let mut head = [0u8; 24];
         r.read_exact(&mut head)?;
@@ -279,12 +274,6 @@ impl RectHeader {
 ///
 /// The same function backs both the fixture tests (`r` is a `Cursor`) and
 /// the live client (`r` is a `TcpStream`).
-///
-/// # Errors
-///
-/// Returns an error if the stream ends before a rectangle's declared data
-/// has fully arrived, or if the server names a rectangle encoding this
-/// client did not advertise support for.
 pub fn decode_framebuffer_update(
     r: &mut impl Read,
     fb: &mut Framebuffer,
@@ -505,8 +494,6 @@ fn validate_framebuffer_size(width: u16, height: u16) -> io::Result<()> {
     }
     Ok(())
 }
-
-// --- Handshake helpers -----------------------------------------------------
 
 /// Parse a 12-byte `ProtocolVersion` string like `RFB 003.008\n`.
 pub fn parse_protocol_version(b: &[u8; 12]) -> Option<(u8, u8)> {

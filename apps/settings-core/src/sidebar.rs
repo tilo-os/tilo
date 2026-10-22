@@ -74,8 +74,6 @@ pub fn sections() -> Vec<NavSection> {
 mod tests {
     use super::*;
 
-    /// The list holds every category exactly once, under its own section,
-    /// each addressable by its stable slug.
     #[test]
     fn list_holds_every_category_once_under_its_section() {
         let sections = sections();

@@ -224,7 +224,6 @@ mod tests {
     /// Endpoint validation, request identity binding and unforgeable receipts.
     #[test]
     fn moderation_client_endpoints_requests_and_receipts_are_trustworthy() {
-        // Case `endpoint_rejects_credentials_plaintext_and_redirect_tricks`.
         {
             for unsafe_url in [
                 "http://registry.test",
@@ -244,7 +243,6 @@ mod tests {
             );
         }
 
-        // Case `request_id_is_stable_but_body_and_time_bound`.
         {
             assert_eq!(
                 report_request_id("so.tilo.notes", "evidence", 10, &[1; 16]),
@@ -256,7 +254,6 @@ mod tests {
             );
         }
 
-        // Case `submission_receipt_cannot_forge_case_id_package_or_status`.
         {
             // Only the request id and the mutation are read here; signing is
             // the registry's concern and tested there.

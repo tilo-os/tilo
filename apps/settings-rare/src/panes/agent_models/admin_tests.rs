@@ -1,4 +1,3 @@
-//! Exercise the mounted controls' effect door with a portable asynchronous host.
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_provider_config::management::AdminFuture;

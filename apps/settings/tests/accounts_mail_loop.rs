@@ -58,7 +58,6 @@ fn adding_an_email_account_in_settings_lands_in_the_shared_store() {
     );
     assert!(!pane.form_open(), "a successful save closes the form");
 
-    // ---- Read it back the way a consumer of the shared store does. ----
     let shared = accounts::AccountStore::load_in(&tilo_root);
     let email = accounts::AccountTypeId::from("email");
     let listed = shared.list(&email);

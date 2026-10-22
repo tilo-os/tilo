@@ -349,7 +349,6 @@ fn rewrite_refs(
     out.push('=');
     while let Some(ch) = scan.peek() {
         if ch == '"' {
-            // Copy a string literal verbatim, including the closing quote.
             let start = scan.pos();
             scan.bump();
             scan.skip_while(|c| c != '"');
@@ -1126,11 +1125,9 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 Ok(ns) => CellValue::Number(ns.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
                 Err(e) => e,
             },
-            // Count of numeric cells.
             "COUNT" => CellValue::Number(f64_of_usize(
                 self.count_matching(args, |v| matches!(v, CellValue::Number(_))),
             )),
-            // Count of non-empty cells.
             "COUNTA" => {
                 CellValue::Number(f64_of_usize(self.count_matching(args, |v| !v.is_empty())))
             }
@@ -2497,7 +2494,6 @@ enum Unit {
     Currency(tilo_locale::Currency),
     /// A percentage value.
     Percent,
-    /// A date serial.
     Date(tilo_locale::DateStyle),
     /// A time/duration serial.
     Time(ui::clock::TimeStyle),
@@ -2610,7 +2606,6 @@ fn unit_of_call<S: BuildHasher>(
     formats: &HashMap<Addr, CellFormat, S>,
 ) -> Unit {
     match name {
-        // Sum-family + selection functions preserve a uniform unit.
         "SUM" | "AVERAGE" | "MIN" | "MAX" | "MEDIAN" | "PRODUCT" | "ROUND" | "ROUNDUP"
         | "ROUNDDOWN" | "ABS" | "FLOOR" | "CEILING" | "INT" => {
             let mut acc: Option<Unit> = None;
@@ -2678,7 +2673,6 @@ mod tests {
     /// Precedence, references/SUM, IF/comparisons, div-zero/cycles and Excel error codes.
     #[test]
     fn arithmetic_references_conditionals_and_errors() {
-        // Case `arithmetic_and_precedence`.
         {
             let m = run(&[("A1", "=2+3*4"), ("A2", "=(2+3)*4"), ("A3", "=2^3^2")]);
             assert_eq!(val(&m, "A1"), CellValue::Number(14.0));
@@ -2687,7 +2681,6 @@ mod tests {
             assert_eq!(val(&m, "A3"), CellValue::Number(512.0));
         }
 
-        // Case `cell_refs_and_sum_range`.
         {
             let m = run(&[
                 ("A1", "10"),
@@ -2702,7 +2695,6 @@ mod tests {
             assert_eq!(val(&m, "B3"), CellValue::Number(30.0));
         }
 
-        // Case `if_and_comparisons`.
         {
             let m = run(&[
                 ("A1", "5"),
@@ -2713,14 +2705,12 @@ mod tests {
             assert_eq!(val(&m, "C1"), CellValue::Number(0.0));
         }
 
-        // Case `div_zero_and_cycle`.
         {
             let m = run(&[("A1", "=1/0"), ("B1", "=B2"), ("B2", "=B1")]);
             assert_eq!(val(&m, "A1"), CellValue::Error(FormulaError::Div0));
             assert!(val(&m, "B1").is_error());
         }
 
-        // Case `specific_excel_error_codes`.
         {
             use crate::model::{CellFormat, format_value};
             // Each formula triggers one specific cause. Assert both the typed
@@ -2757,10 +2747,8 @@ mod tests {
         }
     }
 
-    /// Text functions, extended text functions and TEXT format codes.
     #[test]
     fn text_functions_and_format_codes() {
-        // Case `text_functions`.
         {
             let m = run(&[
                 ("A1", "=UPPER(\"hi\")"),
@@ -2774,7 +2762,6 @@ mod tests {
             assert_eq!(val(&m, "A4"), CellValue::Number(4.0));
         }
 
-        // Case `extended_text_functions`.
         {
             let m = run(&[
                 ("A1", "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")"),
@@ -2798,7 +2785,6 @@ mod tests {
             assert_eq!(val(&m, "A9"), CellValue::Bool(false));
         }
 
-        // Case `text_format_codes`.
         {
             assert_eq!(apply_text_code(1234.5, "#,##0.00"), "1,234.50");
             assert_eq!(apply_text_code(0.1234, "0.0%"), "12.3%");
@@ -2808,14 +2794,12 @@ mod tests {
         }
     }
 
-    /// COUNTIF/SUMIF, math, conditional statistics and logical functions.
     #[test]
     #[allow(
         clippy::approx_constant,
         reason = "the literals are spreadsheet inputs and expected outputs, not uses of pi or e"
     )]
     fn math_statistics_and_logical_functions() {
-        // Case `countif_sumif`.
         {
             let m = run(&[
                 ("A1", "5"),
@@ -2858,7 +2842,6 @@ mod tests {
             }
         }
 
-        // Case `stats_conditional_functions`.
         {
             let m = run(&[
                 ("A1", "10"),
@@ -2884,7 +2867,6 @@ mod tests {
             assert_eq!(val(&m, "C4"), CellValue::Number(30.0));
         }
 
-        // Case `logical_functions`.
         {
             let m = run(&[
                 ("A1", "=IFERROR(1/0,\"safe\")"),
@@ -2901,10 +2883,8 @@ mod tests {
         }
     }
 
-    /// Lookup functions, date/time functions and TODAY.
     #[test]
     fn lookup_and_date_time_functions() {
-        // Case `lookup_functions`.
         {
             // A small table: A=key, B=payload.
             let m = run(&[
@@ -2927,7 +2907,6 @@ mod tests {
             assert_eq!(val(&m, "D5"), CellValue::Text("b".into()));
         }
 
-        // Case `date_time_functions`.
         {
             let m = run(&[
                 ("A1", "=DATE(2023,3,15)"),
@@ -2950,7 +2929,6 @@ mod tests {
             assert_eq!(val(&m, "A7"), CellValue::Number(5.0));
         }
 
-        // Case `today_returns_a_plausible_recent_serial`.
         {
             let m = run(&[("A1", "=TODAY()"), ("A2", "=NOW()")]);
             // A serial well past 2020-01-01 (43831) and before 2100.
@@ -2965,8 +2943,6 @@ mod tests {
         }
     }
 
-    // --- format propagation -------------------------------------------------
-
     use crate::model::CellFormat;
     use tilo_locale::{Currency, DateStyle};
 
@@ -2980,7 +2956,6 @@ mod tests {
     /// Currency, percent, duration and unitless result formats.
     #[test]
     fn result_formats_propagate_through_arithmetic() {
-        // Case `scalar_times_currency_is_currency`.
         {
             // =5*B2 where B2 is $100 must render as currency.
             let f = fmts(&[("B2", CellFormat::Currency(Currency::USD))]);
@@ -3000,7 +2975,6 @@ mod tests {
             );
         }
 
-        // Case `currency_plus_same_currency_propagates`.
         {
             let f = fmts(&[
                 ("A1", CellFormat::Currency(Currency::EUR)),
@@ -3012,7 +2986,6 @@ mod tests {
             );
         }
 
-        // Case `mixed_currencies_fall_back_to_plain`.
         {
             let f = fmts(&[
                 ("A1", CellFormat::Currency(Currency::USD)),
@@ -3020,18 +2993,15 @@ mod tests {
             ]);
             // USD + EUR is unclear → plain number (None).
             assert_eq!(infer_result_format("A1+A2", &f), None);
-            // USD * EUR is also unclear.
             assert_eq!(infer_result_format("A1*A2", &f), None);
         }
 
-        // Case `percent_arithmetic_propagates`.
         {
             let f = fmts(&[("A1", CellFormat::Percent), ("A2", CellFormat::Percent)]);
             assert_eq!(infer_result_format("A1+A2", &f), Some(CellFormat::Percent));
             assert_eq!(infer_result_format("A1*2", &f), Some(CellFormat::Percent));
         }
 
-        // Case `sum_over_currency_range_inherits_currency`.
         {
             let f = fmts(&[
                 ("B2", CellFormat::Currency(Currency::GBP)),
@@ -3048,7 +3018,6 @@ mod tests {
             );
         }
 
-        // Case `date_minus_date_is_a_duration_not_a_date`.
         {
             let f = fmts(&[
                 ("A1", CellFormat::Date(DateStyle::Iso)),
@@ -3056,27 +3025,23 @@ mod tests {
             ]);
             // Difference of two dates is a number of days → plain (None).
             assert_eq!(infer_result_format("A1-A2", &f), None);
-            // A date plus a scalar stays a date.
             assert_eq!(
                 infer_result_format("A1+7", &f),
                 Some(CellFormat::Date(DateStyle::Iso))
             );
         }
 
-        // Case `plain_arithmetic_has_no_format`.
         {
             let f = fmts(&[]);
             assert_eq!(infer_result_format("2+3*4", &f), None);
         }
 
-        // Case `comparison_and_text_are_unitless`.
         {
             let f = fmts(&[("A1", CellFormat::Currency(Currency::USD))]);
             assert_eq!(infer_result_format("A1>100", &f), None);
             assert_eq!(infer_result_format("A1&\"x\"", &f), None);
         }
 
-        // Case `growth_ratio_is_plain_even_with_currency_operands`.
         {
             // (E2-B2)/B2 where E2,B2 are currency → a ratio, which is unitless.
             let f = fmts(&[
@@ -3088,12 +3053,9 @@ mod tests {
         }
     }
 
-    // --- reference extraction -----------------------------------------------
-
     /// Reference spans, range expansion/colour sharing and skipping strings/functions.
     #[test]
     fn references_report_spans_targets_and_colours() {
-        // Case `references_single_cells_get_spans_and_targets`.
         {
             // Body of `=B9-B7`: two single-cell refs, distinct colour slots.
             let spans = references("B9-B7");
@@ -3108,7 +3070,6 @@ mod tests {
             assert_eq!(slots, vec![0, 1], "two different refs → two colours");
         }
 
-        // Case `references_expand_ranges_and_share_colour_for_duplicates`.
         {
             // `SUM(B2:D2)+B2`: the range B2:D2 and the single B2 are different
             // keys; a repeated B2 would reuse a slot.
@@ -3119,13 +3080,11 @@ mod tests {
             assert_eq!(spans[0].br, a1_to_addr("D2").unwrap());
             assert_eq!(spans[1].key, "B2");
 
-            // A ref repeated twice keeps one colour slot.
             let dup = references("A1+A1");
             let slots = ref_color_slots(&dup);
             assert_eq!(slots, vec![0, 0]);
         }
 
-        // Case `references_skip_strings_and_functions`.
         {
             // `IF(B7>B9,"A1","B2")`: refs are B7 and B9 only; the quoted A1/B2 are
             // string literals and IF is a function name.
@@ -3140,7 +3099,6 @@ mod tests {
     /// Relative/absolute offsets and structural remapping.
     #[test]
     fn reference_offsets_and_structural_remaps() {
-        // Case `offset_refs_shifts_relative_preserves_absolute`.
         {
             // A bare reference shifts on the pasted-to axis. Copying `=A1` from B2
             // and pasting into B3 (Δrow +1) yields `=A2`; into C2 (Δcol +1) → `=B1`.
@@ -3155,13 +3113,11 @@ mod tests {
             // `A$1` locks the row: only the column shifts.
             assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
 
-            // Ranges shift each endpoint independently.
             assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
             // A range mixing anchored and relative endpoints shifts only the free one.
             assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
         }
 
-        // Case `offset_refs_leaves_functions_strings_and_numbers_alone`.
         {
             // Function names and quoted string literals are never references.
             assert_eq!(
@@ -3178,7 +3134,6 @@ mod tests {
             assert_eq!(offset_refs("=A1", -5, -5), "=A1");
         }
 
-        // Case `remap_refs_tracks_structural_moves_including_absolute_references`.
         {
             let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", GridEdit::InsertRow(0));
             assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
@@ -3187,7 +3142,6 @@ mod tests {
             assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
         }
 
-        // Case `remap_refs_shrinks_a_range_whose_edge_line_is_deleted`.
         {
             // Rows (zero-based `DeleteRow(1)` is row 2): first, last, middle,
             // outside, and the whole range.
@@ -3204,7 +3158,6 @@ mod tests {
             assert_eq!(row("=SUM(B$2:$B3)"), "=SUM(B$2:$B2)");
             assert_eq!(row("=SUM(B3:B2)"), "=SUM(B2:B2)");
             assert_eq!(row("=SUM(B4 : B2)"), "=SUM(B3 : B2)");
-            // A lone reference to the deleted row still breaks.
             assert_eq!(row("=B2+SUM(B2:B3)"), "=#REF!+SUM(B2:B2)");
 
             // Columns (`DeleteColumn(1)` is column B).
@@ -3217,7 +3170,6 @@ mod tests {
             assert_eq!(col("=SUM(C1:B1)"), "=SUM(B1:B1)");
         }
 
-        // Case `remap_refs_grows_a_range_around_an_inserted_line`.
         {
             let row = |raw| remap_refs(raw, GridEdit::InsertRow(2));
             assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B4)");

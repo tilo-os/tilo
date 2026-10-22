@@ -115,7 +115,6 @@ fn playlists_and_annotations_change_through_verbs_and_field_edits() {
     );
 }
 
-/// Watch later is one playlist on every replica, and a video is on it once.
 #[test]
 fn watch_later_is_made_once_and_holds_a_video_once() {
     let mut ours = Replica::<Library>::new();

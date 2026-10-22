@@ -5,7 +5,6 @@
 //! and `suit = card / 13`. The resource stores cards as these numbers, so a
 //! deck is a plain list every replica shuffles the same way from one seed.
 
-/// The cards of one deck.
 pub const DECK_SIZE: u8 = 52;
 
 /// The rank of `card`: 0 for a two up to 12 for an ace.

@@ -1,4 +1,3 @@
-//! Regressions exercised through the production painter at full UI scale.
 use super::tests::{measured_app, paint_frame};
 use super::*;
 

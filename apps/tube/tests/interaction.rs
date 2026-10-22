@@ -341,7 +341,6 @@ fn another_rail_destination_navigates() {
     }
 }
 
-/// A real viewport refresh between motion and press keeps the rail's hit state.
 #[test]
 fn rail_click_survives_a_layout_refresh_between_motion_and_press() {
     let mut app = live_app();
@@ -635,7 +634,6 @@ fn search_inputs_are_present_and_navigate() {
             "arriving via search leaves Home to go back to"
         );
 
-        // Scroll the results down, then record where the grid sits.
         h.wheel_at(vello::kurbo::Point::new(640.0, 500.0), -6.0);
         let grid_after_scroll = h
             .rect_by_id("video_grid")
@@ -807,7 +805,6 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             "player height {} should be ~65% of the {viewport_h}px viewport (bigger video)",
             player.height()
         );
-        // Centered in the content lane.
         let lane_center = f64::midpoint(lane_left, lane_right);
         assert!(
             (player.center().x - lane_center).abs() < 3.0,
@@ -821,7 +818,6 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             "player right edge {} must stay left of the scrollbar lane ({lane_right})",
             player.x1
         );
-        // And it stays inset from the rail on the left.
         assert!(
             player.x0 >= lane_left - 0.5,
             "player left edge {} stays right of the nav rail ({lane_left})",
@@ -1154,7 +1150,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             );
             columns_per_width.push(top.len());
 
-            // Equal-width flex tracks.
             let w0 = top[0].width();
             for c in &top {
                 assert!(
@@ -1324,7 +1319,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         let mut hb = Harness::new(app_before, (1280.0, 900.0));
         let avatars_before = hb.image_draw_count();
 
-        // The production reconciliation pass bridges UC_B's avatar onto UC_A.
         model.reconcile_channel_avatars();
         assert_eq!(
             model.channel("UC_A").unwrap().avatar_url,

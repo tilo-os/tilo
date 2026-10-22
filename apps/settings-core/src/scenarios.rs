@@ -112,7 +112,6 @@ pub fn names() -> &'static [&'static str] {
     &NAMES
 }
 
-/// The viewport `scenario` is drawn at.
 pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
@@ -151,7 +150,6 @@ pub struct CaptureScene {
     pub storage_devices: Vec<DeviceResidency>,
     /// A stand-in for this device's disk, for the storage capture.
     pub storage_capacity: Option<os_actions::DiskCapacity>,
-    /// Stand-in remembered NTFS drives, for the drives capture.
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
     /// A room bridged to Discord, and where the person's account there
     /// stands, for the linked-accounts captures.
@@ -161,7 +159,6 @@ pub struct CaptureScene {
     pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
     /// Whether the capture asks about removing the first other device.
     pub device_removal: bool,
-    /// How the sample networks stand, for the network captures.
     pub network: Option<NetworkSample>,
     /// Where the speaker setup stands, for the room layout captures.
     pub speakers: Option<SpeakersSample>,
@@ -184,9 +181,7 @@ pub enum SpeakersSample {
 pub enum DisplaysSample {
     /// The pane as it opens: the main display selected.
     Default,
-    /// The monitor chosen from the keyboard, the canvas focused.
     ChosenByKeyboard,
-    /// The monitor chosen on the canvas.
     PickedOnCanvas,
     /// The monitor held mid-drag, lined up with the panel.
     Dragging,
@@ -197,7 +192,6 @@ pub enum DisplaysSample {
 /// How the network captures' sample stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetworkSample {
-    /// Wi-Fi is off.
     WifiOff,
     /// Wi-Fi is on and looking, nothing found yet.
     Scanning,
@@ -226,7 +220,6 @@ impl ui::linked_accounts::LinkedAccountsHost for CaptureBridge {
     fn unlink(&self, _app: &str) {}
 }
 
-/// The capture code the linking scenario shows.
 fn capture_link_code() -> ui::linked_accounts::LinkCode {
     ui::linked_accounts::LinkCode {
         code: "K7QMW2XRB4TD".into(),
@@ -676,7 +669,6 @@ mod tests {
                     labels.contains(&"Status"),
                     "{scenario}: the status field is rendered"
                 );
-                // The status is the value of its row.
                 let values: Vec<_> = nodes.iter().filter_map(|(_, node)| node.value()).collect();
                 assert!(
                     labels

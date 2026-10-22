@@ -495,8 +495,6 @@ fn tabs(selected: DetailTab, intents: &Intents) -> ToggleGroup {
     })
 }
 
-// ---- Status -------------------------------------------------------------
-
 fn status(model: &DetailModel<'_>, intents: &Intents) -> Element {
     let connection = model.connection;
     let mut page = Column::new().with_intrinsic_height().with_no_padding();
@@ -615,8 +613,6 @@ fn throughput(rates: &Rates) -> Element {
     Box::new(ThroughputPlot::new(rates.down.clone(), rates.up.clone()))
 }
 
-// ---- Configuration and activity ---------------------------------------------
-
 fn config(model: &DetailModel<'_>) -> Element {
     let Some(details) = model.details else {
         return Box::new(
@@ -669,8 +665,6 @@ pub(crate) fn render_config(connection: &Connection, details: &LocalProfileDetai
         ),
     }
 }
-
-// ---- Sheets -------------------------------------------------------------------
 
 /// The import sheet's body: the protocol (unless an existing connection
 /// fixes it) and what happens to the file.
@@ -728,8 +722,6 @@ fn shell_lines(command: &str) -> String {
         _ => command.to_owned(),
     }
 }
-
-// ---- Throughput chart ---------------------------------------------------------
 
 /// A rate axis that ends on a round number of one unit, with the ticks it
 /// is labelled at: `(ceiling, ticks)` in bytes per second.

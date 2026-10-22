@@ -207,7 +207,6 @@ mod tests {
             assert_eq!(code_at(&a, 2_000_000_000.0), "69279037");
         }
 
-        // Case `code_is_stable_within_a_period_and_rotates_after`.
         {
             let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
             // 100s and 119s both fall in the [90, 120) step (counter 3), so the
@@ -218,7 +217,6 @@ mod tests {
             assert_ne!(code_at(&a, 100.0), code_at(&a, 130.0));
         }
 
-        // Case `progress_and_remaining_track_the_clock`.
         {
             let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
             // Exactly at a step boundary: full period remaining.
@@ -263,13 +261,11 @@ mod tests {
             }
         }
 
-        // Case `invalid_secret_yields_masked_placeholder`.
         {
             let a = acc("not valid base32 !!!", Algorithm::Sha1, 6, 30);
             assert_eq!(code_at(&a, 0.0), "••••••");
         }
 
-        // Case `group_code_inserts_a_thin_space`.
         {
             assert_eq!(
                 group_code("123456")

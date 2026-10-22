@@ -323,7 +323,6 @@ pub(crate) fn capture_catalog(_scenario: Option<&str>) -> Vec<StoreItem> {
     fixture_catalog()
 }
 
-/// An app seeded with the fixture catalogue.
 pub fn seeded_app() -> StoreApp {
     let mut app = StoreApp::new();
     app.set_flatpak_available(true);
@@ -349,7 +348,6 @@ mod tests {
         assert!(store.is_idle(), "no fixture work remains in flight");
     }
 
-    /// The fixture catalogue covers every action and every state, with realistic provenance.
     #[test]
     fn fixture_catalogue_covers_every_action_and_is_complete() {
         use crate::model::ActionKind;
@@ -392,7 +390,6 @@ mod tests {
         );
     }
 
-    /// The seeded app lists the fixture catalogue.
     #[test]
     fn seeded_app_lists_the_fixture_catalogue() {
         assert_eq!(seeded_app().items().len(), fixture_catalog().len());

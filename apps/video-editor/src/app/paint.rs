@@ -32,7 +32,6 @@ pub(super) fn text_centre(rect: Rect, s: &str, style: &TextStyle, tr: &mut TextR
     )
 }
 
-/// The width `s` takes set in `style`.
 pub(super) fn text_width(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style(s, None, style).0)
 }
@@ -1016,7 +1015,6 @@ pub(super) fn dialog_type(theme: &Theme) -> DialogType {
     }
 }
 
-/// The measured height of one line set in `style`.
 pub(super) fn line_height(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style("Hg", None, style).1)
 }

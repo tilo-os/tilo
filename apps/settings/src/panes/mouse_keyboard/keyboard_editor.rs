@@ -1230,7 +1230,6 @@ mod tests {
                 .unwrap()
                 .live
                 .set(false);
-            // These fixtures edit configured sources without a native seat observation.
             let mut editor = crate::panes::mouse_keyboard::area(surface)
                 .unwrap()
                 .editor
@@ -1650,7 +1649,6 @@ mod tests {
         };
         assert_eq!(own("fixture-input-1"), true);
         assert_eq!(own("fixture-input-0"), false);
-        // A shared edit leaves a keyboard offered on its own alone.
         perform(
             &mut app,
             InputEffect::AddSource {

@@ -292,7 +292,6 @@ pub enum TraceEvent {
     PlanFailed,
     /// The agent sent one planned action to the host.
     ActionSubmitted,
-    /// The host settled that action.
     ActionSettled,
 }
 
@@ -355,8 +354,6 @@ impl Response {
         }
     }
 
-    /// # Errors
-    /// Returns the typed gateway failure when the request was unsuccessful.
     pub fn into_result(self) -> Result<Self, ClientError> {
         if self.ok {
             Ok(self)
@@ -512,11 +509,6 @@ pub fn request(_request: Request) -> Result<Response, ClientError> {
 }
 
 /// Ask the isolated model gateway to plan against one configured provider.
-///
-/// # Errors
-///
-/// Returns [`ClientError`] when the gateway is unavailable, rejects the
-/// request, returns a malformed response, or the provider request fails.
 pub fn plan(
     profile_id: &str,
     model_id: &str,
@@ -685,11 +677,6 @@ pub fn trace_at(
 /// Run one bounded single-shot transformation through the isolated model
 /// gateway and return the model's answer text. The gateway enforces the
 /// `MAX_TRANSFORM_*` bounds; a request past them is refused, not truncated.
-///
-/// # Errors
-///
-/// Returns [`ClientError`] when the gateway is unavailable, refuses the
-/// request (including for exceeding a bound), or the provider call fails.
 pub fn transform(
     profile_id: &str,
     model_id: &str,
@@ -715,11 +702,6 @@ pub fn transform(
 /// Request a fixed-schema visual analysis through the launcher-issued gateway
 /// descriptor. This operation can only be authorized for Photos by the
 /// gateway; callers cannot provide a URL, arbitrary prompt, or timeout.
-///
-/// # Errors
-///
-/// Returns [`ClientError`] if the capability is not passed by the launcher,
-/// the gateway rejects the request, or the provider is unavailable.
 pub fn analyze_image(
     profile_id: &str,
     model_id: &str,
@@ -737,11 +719,6 @@ pub fn analyze_image(
 
 /// Run the dedicated local face model against one bounded batch.  This is not
 /// a generic multimodal request and cannot be redirected to a hosted model.
-///
-/// # Errors
-///
-/// Returns [`ClientError`] if the launcher gateway is absent, the local model
-/// refuses the fixed protocol, or its response is unavailable.
 pub fn cluster_faces(
     profile_id: &str,
     model_id: &str,
@@ -761,9 +738,6 @@ pub fn cluster_faces(
 pub use agent_provider_config::management::CredentialStatus;
 
 /// Query detailed status without treating an unbound key as absent.
-///
-/// # Errors
-/// Returns gateway, custody or binding failures.
 pub fn credential_status(profile_id: &str) -> Result<CredentialStatus, ClientError> {
     let response = request(Request::CredentialStatus {
         profile_id: profile_id.into(),
@@ -773,9 +747,6 @@ pub fn credential_status(profile_id: &str) -> Result<CredentialStatus, ClientErr
 }
 
 /// Adopt an unbound key only after confirming its original endpoint.
-///
-/// # Errors
-/// Returns gateway, custody or original-origin mismatch failures.
 pub fn migrate_api_key(profile_id: &str, original_endpoint: &str) -> Result<(), ClientError> {
     request(Request::MigrateApiKey {
         profile_id: profile_id.into(),
@@ -785,9 +756,6 @@ pub fn migrate_api_key(profile_id: &str, original_endpoint: &str) -> Result<(), 
 }
 
 /// Delete just the user-selected unbound key, even after editing the endpoint.
-///
-/// # Errors
-/// Returns gateway or custody failures.
 pub fn remove_legacy_api_key(profile_id: &str) -> Result<(), ClientError> {
     request(Request::RemoveLegacyApiKey {
         profile_id: profile_id.into(),

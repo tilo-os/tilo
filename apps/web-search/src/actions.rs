@@ -31,7 +31,6 @@ use ui::tilo_actions::{ExecutionLocus, OperationKind};
 pub const APP_ID: &str = "so.tilo.web-search";
 /// The one resource the service publishes.
 pub const RESOURCE_ID: &str = "web.search:default";
-/// Its resource kind.
 pub const RESOURCE_KIND: &str = "web.search";
 /// Search the web.
 pub const SEARCH_ACTION: &str = "search";
@@ -400,10 +399,6 @@ pub fn bind(resource: &str, action: &str, argument: Option<&str>) -> Result<Call
 
 /// Run a bound call. `state` is shared by every search, so an engine that is
 /// rate-limiting is left alone across calls.
-///
-/// # Errors
-///
-/// The [`Failure`] saying why there is no result.
 pub async fn run(
     client: &tilo_net::Client,
     state: &SearchState,

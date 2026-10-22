@@ -357,7 +357,6 @@ mod tests {
 
     #[test]
     fn the_watch_page_controls_change_the_shared_library() {
-        // Tall enough that the creator row sits on screen.
         let mut app = TestApp::<TubeShell>::capture_at(Some("watch"), (1280, 1200)).unwrap();
         let liked = |app: &TestApp<TubeShell>| app.state().likes.contains(&"vid_donut".to_owned());
         click(&mut app, "watch_like");
@@ -385,7 +384,6 @@ mod tests {
             "the subscribe pill flips the subscription"
         );
 
-        // Each click is one step the person can take back.
         assert!(app.undo());
         assert_eq!(subscribed(&app), before);
     }
@@ -433,7 +431,6 @@ mod tests {
             "collaborators on the library never see them"
         );
 
-        // Agents reach the same preferences through effects.
         app.effect(&TubeEffect::SetPreferredQuality {
             quality: "720p".into(),
         })
@@ -582,7 +579,6 @@ mod tests {
             "a blank reply is refused"
         );
 
-        // The reply is published as its own item, and can be retracted there.
         let item = item_resource_id::<Library>("replies", replies[0].0);
         let resources = app.harness().resources();
         let retract = ui::tilo_actions::flatten(&resources)

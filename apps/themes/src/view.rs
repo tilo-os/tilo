@@ -128,8 +128,6 @@ fn notice(ui: &Ui) -> Text {
         .with_live(ui::a11y::Politeness::Polite)
 }
 
-// ---------------------------------------------------------------- sidebar
-
 /// The navigation list's id, for tests and inspection.
 pub const NAV_ID: &str = "themes-nav";
 /// The destination that shows the presets.
@@ -144,7 +142,6 @@ fn t(key: &str) -> String {
     crate::locales::CATALOG.t(key)
 }
 
-/// The destination a page is.
 fn destination(page: &Page) -> String {
     match page {
         Page::Gallery => PRESETS.to_owned(),
@@ -225,8 +222,6 @@ fn sidebar(ui: &Ui) -> Element {
         .on_delete(delete)
         .into_widget()
 }
-
-// ---------------------------------------------------------------- gallery
 
 fn gallery(ui: &Ui) -> Element {
     // One tile per preset, as many columns as fit tiles of the card grid's
@@ -335,8 +330,6 @@ impl ui::widget::Decorator for InUse {
         Widget::update(&mut self.card, state, path) || changed
     }
 }
-
-// ---------------------------------------------------------------- editor
 
 /// A slider over `band` bound to the numeric role at `path`.
 fn slider(cx: &ViewCx<Studio>, id: &Id, band: (f64, f64), path: Path<Studio, f64>) -> Slider {

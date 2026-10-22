@@ -48,10 +48,6 @@ pub(crate) fn revoke(
 }
 
 /// The devices the host's list answered.
-///
-/// # Errors
-///
-/// When the answer is not a device list.
 pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView>, String> {
     let listed: Vec<FleetDevice> =
         serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))
@@ -60,10 +56,6 @@ pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView
 }
 
 /// The devices `listed` names, as the pane shows them.
-///
-/// # Errors
-///
-/// When a device's key is malformed.
 pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String> {
     listed
         .into_iter()

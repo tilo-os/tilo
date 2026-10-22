@@ -585,8 +585,6 @@ impl Notice {
     }
 }
 
-// ---- hero -------------------------------------------------------------
-
 /// The hero: the condition glyph, the temperature, the condition, the
 /// day's range and the place; the sun's arc beside it on a wide pane.
 struct Hero {
@@ -712,8 +710,6 @@ impl Hero {
         }
     }
 }
-
-// ---- stat tiles ---------------------------------------------------------
 
 /// One stat tile's content.
 struct Tile {
@@ -868,8 +864,6 @@ fn reading_tiles(snap: &WeatherSnapshot, units: Units, with_sun: bool) -> Vec<Ti
     }
     tiles
 }
-
-// ---- 7-day forecast -----------------------------------------------------
 
 /// The 7-day forecast: its heading, then one row per day.
 struct Days<'a> {
@@ -1256,8 +1250,6 @@ impl ForecastRows<'_> {
     }
 }
 
-// ---- air quality --------------------------------------------------------
-
 /// Air quality: its heading, then the indices and pollutants as stat tiles,
 /// or one line saying why there are none.
 struct Air {
@@ -1468,7 +1460,6 @@ mod day_row_geometry_tests {
                 assert!(next - geo.wind_right >= s3 - 1e-9, "{w}: wind runs on");
             }
         }
-        // A tablet-width row keeps the precipitation column, clear of the glyph.
         let geo = DayRowGeometry::new(0.0, 372.0, &columns(30.0), &sp);
         assert!(geo.show_precip);
         assert!(geo.precip_left - geo.icon_x1 >= s3);

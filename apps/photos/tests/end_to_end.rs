@@ -35,12 +35,10 @@ fn new_state() -> ui::State {
     ui::State::from_doc(doc)
 }
 
-/// The library `doc` holds.
 fn library(doc: &AutoCommit) -> PhotoLibrary {
     PhotoLibrary::read(doc).expect("the library reads")
 }
 
-/// Make `doc` hold `library`.
 fn set_library(doc: &mut AutoCommit, library: &PhotoLibrary) {
     library
         .write_fields(doc, &ROOT)
@@ -287,7 +285,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
     eprintln!("phase the_whole_photograph_is_inside_the_canvas_at_every_window_size");
     {
         let dir = tempfile::tempdir().unwrap();
-        // Deliberately much larger than any of the viewports below.
         let (path, _) = staged(dir.path(), 2400, 1600);
 
         for (w, h) in [
@@ -307,7 +304,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
             let canvas = hz.app().canvas_rect();
             let status = hz.app().status_rect();
 
-            // Chrome and canvas stay inside the window.
             for (name, r) in [("canvas", canvas), ("status", status)] {
                 assert!(
                     r.x0 >= window.x0 - 0.5
@@ -322,7 +318,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
                 "{w}x{h}: the canvas was squeezed to nothing: {canvas:?}"
             );
 
-            // And the photograph fits inside that canvas, entirely.
             let visible = hz.app().visible_rect();
             let (x, y, vw, vh) = (visible.x, visible.y, visible.w, visible.h);
             assert!(
@@ -520,7 +515,6 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         let before = hz.app().edited_pixels().expect("rendered").clone();
         assert_eq!((before.w, before.h), (400, 400));
 
-        // Keep the bottom-right quarter.
         let e = Edits::default().cropped_from_view(Rect01 {
             x: 0.5,
             y: 0.5,
@@ -672,7 +666,6 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         hz.app().open_path(&path);
         hz.frame();
 
-        // Turn it, then crop to the bottom-right quarter of what is shown.
         let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
             x: 0.5,
             y: 0.5,
@@ -769,7 +762,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         hz.app().open_path(&path);
         hz.frame();
 
-        // Enumerating is a pure read.
         let before = hz.state().doc.save();
         let resources = [published(&hz.state().doc)];
         let flat = flatten(&resources);
@@ -1007,7 +999,6 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
             hz.app().status_rect()
         );
 
-        // And once a photograph is open the band comes back with text in it.
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 200, 150);
         hz.app().open_path(&path);

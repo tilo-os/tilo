@@ -25,13 +25,11 @@ struct Job {
 
 /// A plan the planner's thread made.
 pub(super) struct Planned {
-    /// The task it is for.
     pub task: String,
     /// It plans the rest of a running task (a `Continue` step), not a new
     /// task.
     pub continues: bool,
     pub steps: Result<Vec<Step>, String>,
-    /// When the planner returned it.
     pub ready_at: Instant,
 }
 
@@ -86,10 +84,6 @@ impl Planning {
 
     /// Ask for the steps of `text` for task `task` (the rest of it when
     /// `continues`).
-    ///
-    /// # Errors
-    ///
-    /// The planner's thread is gone.
     pub(super) fn ask(
         &mut self,
         task: String,

@@ -28,7 +28,6 @@ pub enum Preset {
     Together,
     Fireworks,
     HuggingFace,
-    /// Ollama on this device.
     Ollama,
     /// LM Studio's local server on this device.
     LmStudio,
@@ -200,7 +199,6 @@ impl Preset {
 
 /// The Gemini API's OpenAI-compatible endpoint.
 pub const GEMINI_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
-/// `OpenRouter`'s API.
 pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1";
 /// The `ChatGPT` subscription backend the Codex clients use: `OpenAI`
 /// Responses requests, authorised by the person's `ChatGPT` sign-in.

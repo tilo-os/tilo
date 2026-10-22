@@ -10,7 +10,6 @@
 use super::tests::{measured_app, paint_frame};
 use super::*;
 
-/// Annotation card rows stay clear at every scale and painted targets follow the measured rows.
 #[test]
 #[expect(
     clippy::too_many_lines,

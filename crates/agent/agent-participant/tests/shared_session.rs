@@ -901,7 +901,6 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         };
         agent.run_until(Some(tilo_test_env::hang_deadline()), |_| made());
         assert!(made(), "the late plan for {withdraw} was not made");
-        // The loop takes in the late plan on its next pump.
         agent.pump();
         let late = task_of(&task);
         assert!(

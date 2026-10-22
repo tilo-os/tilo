@@ -444,9 +444,6 @@ impl ApplianceOwnerClient {
         });
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if an appliance action is already active.
     pub fn import_iso(&mut self, source: File) -> Result<(), String> {
         self.ensure_idle()?;
         self.action_pending = true;
@@ -463,10 +460,6 @@ impl ApplianceOwnerClient {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the appliance is not provisioned or an action is
-    /// already active.
     pub fn open_recovery(&mut self) -> Result<(), String> {
         self.ensure_idle()?;
         if !self.status.recovery_available {
@@ -480,11 +473,6 @@ impl ApplianceOwnerClient {
 
     /// Execute one fixed appliance lifecycle action through the existing
     /// polkit boundary. There is intentionally no generic command facility.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when another owner action is active or the appliance
-    /// has not been provisioned.
     pub fn lifecycle(&mut self, action: LifecycleAction) -> Result<(), String> {
         self.ensure_idle()?;
         if !self.status.is_provisioned() {
@@ -512,11 +500,6 @@ impl ApplianceOwnerClient {
     /// Materialise a ten-minute, purpose-bound appliance connection and then
     /// take the owner to the already-authorised recovery/update desktop. The
     /// system-owned lease reaper closes it even if this manager exits.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when another owner action is active or the appliance
-    /// has not been provisioned.
     pub fn open_temporary_egress(&mut self, purpose: EgressPurpose) -> Result<(), String> {
         self.ensure_idle()?;
         if !self.status.is_provisioned() {
@@ -543,11 +526,6 @@ impl ApplianceOwnerClient {
 
     /// Revoke the active temporary egress lease early. The owner helper looks
     /// it up from authoritative state, so no lease identifier reaches UI.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when another owner action is pending or no temporary
-    /// connection is active.
     pub fn revoke_temporary_egress(&mut self) -> Result<(), String> {
         self.ensure_idle()?;
         if self.status.temporary_egress.is_none() {
@@ -731,7 +709,6 @@ mod tests {
 
     #[test]
     fn owner_status_parses_only_the_typed_shape() {
-        // Case `parses_only_the_typed_owner_status_shape`.
         {
             let status: ApplianceStatus = serde_json::from_str(
             r#"{"schema_version":1,"configured":true,"phase":"ready","license":"digitally_activated","catalog_generation":4,"published_applications":2,"recovery_available":true}"#,
@@ -749,7 +726,6 @@ mod tests {
             );
             assert_eq!(status.license_detail(), None);
         }
-        // Case `unactivated_status_is_management_guidance_not_a_licensing_claim`.
         {
             let status = ApplianceStatus {
                 schema_version: 1,
@@ -770,14 +746,12 @@ mod tests {
                     .is_some_and(|detail| detail.contains("doesn't keep product keys"))
             );
         }
-        // Case `rejects_untyped_owner_status_fields`.
         {
             let result = serde_json::from_str::<ApplianceStatus>(
                 r#"{"schema_version":1,"configured":false,"phase":"not_provisioned","license":"unknown","catalog_generation":0,"published_applications":0,"recovery_available":false,"command":"cmd.exe"}"#,
             );
             assert!(result.is_err());
         }
-        // Case `parses_temporary_egress_and_power_state_without_exposing_a_lease_id`.
         {
             let status: ApplianceStatus = serde_json::from_str(
             r#"{"schema_version":1,"configured":true,"phase":"ready","license":"unlicensed","catalog_generation":4,"published_applications":2,"recovery_available":true,"power_state":"suspended","temporary_egress":{"purpose":"activation","expires_at_unix":4102444800}}"#,
@@ -793,7 +767,6 @@ mod tests {
                 Some(EgressPurpose::Activation)
             );
         }
-        // Case `iso_handoff_streams_the_open_descriptor_not_a_later_path_reopen`.
         {
             let dir = tempfile::tempdir().unwrap();
             let source_path = dir.path().join("selected.iso");

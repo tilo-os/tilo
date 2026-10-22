@@ -19,7 +19,6 @@ const KNOWN_MUXED_ITAGS: &[(u32, &str, &str)] = &[
 /// boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedVideo {
-    /// The video id this resolves.
     pub video_id: String,
     /// Directly-playable, fully-rangeable media URL (an Invidious `local=true`
     /// proxy of a progressive muxed format).

@@ -40,10 +40,6 @@ const EMU: f64 = 9_525.0;
 
 /// Serialise `deck` to the bytes of a `.pptx` package, bundling the pictures
 /// `content` holds for its image elements.
-///
-/// # Errors
-///
-/// Returns an error if the ZIP writer fails.
 pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8>> {
     let shown = crate::render::shown_text_heights(deck);
     let mut pictures = Vec::<Picture>::new();
@@ -132,10 +128,6 @@ pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8
 
 /// Parse the bytes of a `.pptx` package into a [`Deck`], storing its
 /// pictures in `content`.
-///
-/// # Errors
-///
-/// Returns an error if `bytes` isn't a readable, bounded presentation package.
 pub fn read_pptx(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> {
     let mut zip = crate::odp::open_package(bytes)?;
     let title = read_zip_text(&mut zip, "docProps/core.xml")
@@ -1097,14 +1089,12 @@ mod tests {
         );
     }
 
-    /// PPTX round-trips core content, shape/text styling, theme backgrounds and pictures.
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn pptx_round_trips_content_styles_backgrounds_and_pictures() {
-        // Case `round_trips_core_content`.
         {
             let content = ContentStore::memory();
             let mut s = Slide::new(Layout::Blank);
@@ -1139,7 +1129,6 @@ mod tests {
             );
         }
 
-        // Case `round_trips_native_shape_and_text_styling`.
         {
             let content = ContentStore::memory();
             let mut slide = Slide::new(Layout::Blank);
@@ -1167,7 +1156,6 @@ mod tests {
             assert_eq!(got.slides[0].elements[1].fill, "success");
         }
 
-        // Case `round_trips_theme_relative_slide_backgrounds`.
         {
             let content = ContentStore::memory();
             let mut accent = Slide::new(Layout::Blank);
@@ -1200,7 +1188,6 @@ mod tests {
             assert_eq!(got.slides[1].background, Background::Deep);
         }
 
-        // Case `bundles_local_picture`.
         {
             let content = ContentStore::memory();
             let p = std::env::temp_dir().join(format!("slides-pptx-{}.png", std::process::id()));
@@ -1229,7 +1216,6 @@ mod tests {
     /// Speaker notes, placeholder filtering, reserved characters and entity references.
     #[test]
     fn pptx_notes_and_text_escaping_round_trip() {
-        // Case `round_trips_speaker_notes_as_native_notes_slides`.
         {
             let content = ContentStore::memory();
             let mut with_notes = Slide::new(Layout::Blank);
@@ -1266,7 +1252,6 @@ mod tests {
             assert!(got.slides[1].notes.is_empty());
         }
 
-        // Case `notes_import_ignores_non_body_placeholders`.
         {
             let notes = parse_notes(
                 r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
@@ -1274,7 +1259,6 @@ mod tests {
             assert_eq!(notes, "Keep this");
         }
 
-        // Case `round_trips_reserved_characters_in_title_text_and_notes`.
         {
             let content = ContentStore::memory();
             let mut slide = Slide::new(Layout::Blank);
@@ -1299,7 +1283,6 @@ mod tests {
             assert_eq!(got.slides[0].notes, "a < b && c > d");
         }
 
-        // Case `entity_and_character_references_resolve_in_notes_title_and_attributes`.
         {
             let notes = parse_notes(&format!(
                 r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>{RAW_REFS}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#

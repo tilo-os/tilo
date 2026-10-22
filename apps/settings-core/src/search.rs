@@ -42,7 +42,6 @@ mod tests {
         ui::framework::testing::search_source::<crate::resource::Settings>(pane_entries())
     }
 
-    /// Keyword synonyms, browsing and budgeted paging over one provider.
     #[test]
     fn pane_search_finds_keywords_browses_and_pages_every_pane() {
         let provider = source();
@@ -56,7 +55,6 @@ mod tests {
         );
         assert!(hits.iter().all(|r| r.kind == SETTINGS_KIND));
 
-        // The empty query browses every pane.
         assert_eq!(provider.search("").len(), Category::ALL.len());
 
         // Paging reaches the complete corpus with a hard per-page budget.

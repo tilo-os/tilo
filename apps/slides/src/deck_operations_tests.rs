@@ -398,7 +398,6 @@ fn add_slide_writes_its_title_and_body_in_one_step() {
     );
 }
 
-/// An agent's changes read back as the app's own sentences.
 #[test]
 fn an_agents_changes_read_as_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
