@@ -299,6 +299,9 @@ pub enum SearchOffer {
     Document,
     /// A list: it narrows to what matches ("12 of 40").
     List,
+    /// The app's views: what is typed turns the window's view into a query
+    /// view of the app's resources, and closing returns to the view before.
+    Query,
 }
 
 /// The search's count: in a document the current match of all of them, in
@@ -348,6 +351,7 @@ impl From<crate::widget::InPlace> for SearchOffer {
             crate::widget::InPlace::Nothing => Self::Nothing,
             crate::widget::InPlace::Document => Self::Document,
             crate::widget::InPlace::List => Self::List,
+            crate::widget::InPlace::Query => Self::Query,
         }
     }
 }
@@ -358,6 +362,7 @@ impl From<SearchOffer> for crate::widget::InPlace {
             SearchOffer::Nothing => Self::Nothing,
             SearchOffer::Document => Self::Document,
             SearchOffer::List => Self::List,
+            SearchOffer::Query => Self::Query,
         }
     }
 }

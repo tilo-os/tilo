@@ -127,8 +127,12 @@ impl App {
     /// The offer to send the shell, when it changed since it was last told.
     #[cfg(feature = "native")]
     pub(crate) fn take_window_offer_change(&mut self) -> Option<WindowOffer> {
-        // The document changed under an open search: its matches follow.
-        if self.floating.window_bar.driver.in_place() == InPlace::Document {
+        // The document changed under an open search: its matches follow; a
+        // query view's count follows its results.
+        if matches!(
+            self.floating.window_bar.driver.in_place(),
+            InPlace::Document | InPlace::Query
+        ) {
             self.drive_window_search(None, false);
         }
         let offer = self.window_offer();
