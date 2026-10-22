@@ -228,12 +228,13 @@ fn inputs_held_for_an_app_surface_are_admitted_again_once_one_is_named() {
         "so.tilo.test.held-input",
         b"[[resources]]\nkind = \"held.input\"\n",
     );
-    assert!(
-        state.next_again().is_some(),
-        "a surface was named: what was held is admitted again"
+    let again = state.next_again();
+    assert_eq!(
+        again.len(),
+        2,
+        "a surface was named: what was held is admitted again, together"
     );
-    assert!(state.next_again().is_some());
-    assert!(state.next_again().is_none(), "both were taken, in order");
+    assert!(state.next_again().is_empty(), "both were taken");
 
     let third = scope.input(
         governor,
@@ -244,16 +245,17 @@ fn inputs_held_for_an_app_surface_are_admitted_again_once_one_is_named() {
     );
     state.hold(third);
     assert!(
-        state.next_again().is_none(),
+        state.next_again().is_empty(),
         "held again with no surface named since: it waits"
     );
     ui::app_surface::register_package(
         "so.tilo.test.held-input-later",
         b"[[resources]]\nkind = \"held.later\"\n",
     );
-    assert!(
-        state.next_again().is_some(),
+    assert_eq!(
+        state.next_again().len(),
+        1,
         "another surface was named: it is admitted again"
     );
-    assert!(state.next_again().is_none());
+    assert!(state.next_again().is_empty());
 }

@@ -320,29 +320,49 @@ fn joining_a_busy_public_room_never_fails_because_of_how_many_messages_it_has() 
         .unwrap();
 }
 
+/// How many relay inputs of one session the shell admits in one commit.
+const BATCH: usize = 256;
+
 #[test]
 fn a_busy_rooms_messages_are_authorized_and_visible_once_its_app_syncs() {
-    // Each message the sync delivers commits the room, so this one is
-    // smaller; still many times what the prerequisite queue holds.
+    // Still many times what the prerequisite queue holds.
     let (_directory, owner, room) = install(busy_room(20));
     assert!(room.sync.len() > 12 * tilo_peer_state::MAX_HELD_INPUTS);
     let id = RoomId::parse(ROOM).unwrap();
-    for (author, message) in room.sync {
-        let report = owner
-            .receive(
-                id,
-                TransportOrigin::RetainedRelayDelta(author),
-                message,
-                room.now,
-            )
-            .expect("each message is authorized against the installed governance");
-        assert!(
-            matches!(report.primary(), InputDisposition::Accepted(_)),
-            "admitted, not held: {:?}",
-            report.primary()
-        );
-        assert!(report.summary().dropped.is_empty());
+    let inputs = room.sync.len();
+    let started = std::time::Instant::now();
+    let generation = owner
+        .with_current(id, |view| Ok(view.generation()))
+        .unwrap();
+    let mut sync = room.sync.into_iter().peekable();
+    while sync.peek().is_some() {
+        let batch = sync
+            .by_ref()
+            .take(BATCH)
+            .map(|(author, message)| (TransportOrigin::RetainedRelayDelta(author), message))
+            .collect();
+        let reports = owner
+            .receive_batch(id, batch, room.now)
+            .expect("the batch commits");
+        for report in reports {
+            let report =
+                report.expect("each message is authorized against the installed governance");
+            assert!(
+                matches!(report.primary(), InputDisposition::Accepted(_)),
+                "admitted, not held: {:?}",
+                report.primary()
+            );
+            assert!(report.summary().dropped.is_empty());
+        }
     }
+    eprintln!("{inputs} relay inputs admitted in {:?}", started.elapsed());
+    assert_eq!(
+        owner
+            .with_current(id, |view| Ok(view.generation()))
+            .unwrap(),
+        generation + u64::try_from(inputs.div_ceil(BATCH)).unwrap(),
+        "a burst persists once per batch, not once per message"
+    );
     owner
         .with_current(id, |view| {
             assert_eq!(view.peer().pending_count(), 0);

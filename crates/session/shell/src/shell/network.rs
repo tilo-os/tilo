@@ -7164,7 +7164,7 @@ impl ShellNetwork {
         // An admission handed off the loop completes before any later event.
         match self.take_native_admission() {
             native_admission::Lane::Busy => return,
-            native_admission::Lane::Finished(admitted) => self.complete_native_input(*admitted),
+            native_admission::Lane::Finished(admitted) => self.complete_native_inputs(*admitted),
             native_admission::Lane::Idle => {}
         }
         for room in self.native_admission.take_replays() {
@@ -7172,10 +7172,11 @@ impl ShellNetwork {
         }
         // Inputs held for an app surface that is here now go first, one
         // admission at a time, as they arrived.
-        if let Some(input) = self.native_admission.next_again() {
+        let again = self.native_admission.next_again();
+        if !again.is_empty() {
             match admission {
-                Admission::OffLoop => self.dispatch_native_input_off_loop(input),
-                Admission::InPlace => self.dispatch_native_input(input),
+                Admission::OffLoop => self.dispatch_native_inputs_off_loop(again),
+                Admission::InPlace => self.dispatch_native_inputs(again),
             }
             return;
         }
@@ -7183,7 +7184,7 @@ impl ShellNetwork {
         // While it opens (off this thread: binding its writer and publishing
         // its generation can take seconds) they stay queued, in order, and
         // the open wakes the loop once it ends.
-        if !event_rx.is_empty()
+        if (!event_rx.is_empty() || self.native_admission.carries())
             && matches!(
                 self.native_owner_status(),
                 native_enrollment::NativeOwnerStatus::Opening
@@ -7192,15 +7193,28 @@ impl ShellNetwork {
             return;
         }
         for _ in 0..MAX_NET_EVENTS_PER_TICK {
-            let Ok(event) = event_rx.try_recv() else {
+            let Some(event) = self
+                .native_admission
+                .carried()
+                .or_else(|| event_rx.try_recv().ok())
+            else {
                 break;
             };
             let admits = matches!(&event, NetEvent::NativeInput(_));
-            match (admission, event) {
-                (Admission::OffLoop, NetEvent::NativeInput(input)) => {
+            match event {
+                // An app write and those of its session queued right after
+                // it are one admission: a room's replay persists once.
+                NetEvent::NativeInput(input) if self.admits_in_batch(&input) => {
+                    let batch = self.batch_from(input, &mut event_rx);
+                    match admission {
+                        Admission::OffLoop => self.dispatch_native_inputs_off_loop(batch),
+                        Admission::InPlace => self.dispatch_native_inputs(batch),
+                    }
+                }
+                NetEvent::NativeInput(input) if matches!(admission, Admission::OffLoop) => {
                     self.dispatch_native_input_off_loop(input);
                 }
-                (_, event) => self.dispatch_net_event(event),
+                event => self.dispatch_net_event(event),
             }
             // Signed replay may cross a durable writer and publish app state.
             // Leave the remaining FIFO queued until the next UI turn, where
