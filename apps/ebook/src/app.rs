@@ -58,12 +58,12 @@ use ui::tokens::metrics::Metrics;
 use ui::widget::modal_dialog;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
 use ui::widget::{
-    BadgeFace, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ChipStyle,
-    ColorSwatchFace, Continuable, ControlSize, DropZoneFace, EditOutcome, EditableLabel,
-    EmptyState, EmptyStateContent, InputHint, Interaction, ListRowFace, MediaArt, MediaAspect,
-    MediaBadge, MediaCardFace, MediaSize, ModalAction, ModalSpec, ScrollMetrics, Scrollbar,
-    SegmentedFace, SegmentedStyle, SidebarDrawer, Slider, SliderFace, Toggle, ToggleFace,
-    ToggleGroup, Widget, card_column_width, card_columns,
+    Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ChipStyle, ColorSwatchFace,
+    Continuable, ControlSize, DropZoneFace, EditOutcome, EditableLabel, EmptyState,
+    EmptyStateContent, InputHint, Interaction, ListRowFace, MediaArt, MediaAspect, MediaBadge,
+    MediaCardFace, MediaSize, ModalAction, ModalSpec, ScrollMetrics, Scrollbar, SegmentedFace,
+    SegmentedStyle, SidebarDrawer, Slider, SliderFace, Toggle, ToggleFace, ToggleGroup, Widget,
+    card_column_width, card_columns,
 };
 
 use crate::comment_overlay::{CommentAction, CommentOverlay};
@@ -7042,9 +7042,18 @@ impl BooksApp {
         let art = image
             .as_ref()
             .map_or(MediaArt::Placeholder, MediaArt::Image);
-        let progress = [MediaBadge::Progress(f64::from(card.progress))];
-        let badges: &[MediaBadge<'_>] = if card.progress > 0.0 { &progress } else { &[] };
-        let face = Self::book_face(card, art, badges).interaction(Interaction {
+        // The card's state as the design system's badges: how far it is
+        // read, and whether it is on the shared workspace. The book's
+        // subject is not on the cover: it is a filter of the shelf and of
+        // search.
+        let mut badges = Vec::with_capacity(2);
+        if card.progress > 0.0 {
+            badges.push(MediaBadge::Progress(f64::from(card.progress)));
+        }
+        if card.shared {
+            badges.push(MediaBadge::Tag("Shared", ChipStyle::Neutral));
+        }
+        let face = Self::book_face(card, art, &badges).interaction(Interaction {
             hovered,
             focused: card.focused,
             ..Interaction::default()
@@ -7052,63 +7061,7 @@ impl BooksApp {
         face.paint(ctx, cell);
         let cover = face.art_rect(cell);
 
-        // Over the cover: the book's subject as a chip at the leading top
-        // and, for a book on the shared workspace, a "Shared" badge at the
-        // trailing top. Both are centred on one row; when the subject leaves
-        // no room beside it, the badge takes the row below.
         let inset = f64::from(theme.tokens.spacing.s2);
-        let gap = f64::from(theme.tokens.spacing.rhythm.related);
-        let room = (cover.width() - 2.0 * inset).max(0.0);
-        let chip_h = ChipFace::height(theme);
-        let badge_h = BadgeFace::height(theme);
-        let row_h = chip_h.max(badge_h);
-        let chip_w = (!card.book.subject.is_empty())
-            .then(|| {
-                ChipFace::intrinsic_width(
-                    &card.book.subject,
-                    ChipLead::None,
-                    false,
-                    ctx.text,
-                    theme,
-                )
-                .min(room)
-            })
-            .filter(|width| *width > chip_h);
-        if let Some(chip_w) = chip_w {
-            let top = cover.y0 + inset + (row_h - chip_h) / 2.0;
-            let chip = Rect::new(
-                cover.x0 + inset,
-                top,
-                cover.x0 + inset + chip_w,
-                top + chip_h,
-            );
-            ChipFace::new(chip, &card.book.subject).paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                theme,
-            );
-        }
-        if card.shared {
-            let label = "Shared";
-            let badge_w = BadgeFace::intrinsic_width(label, ctx.text, theme);
-            let beside = chip_w.is_none_or(|width| width + gap + badge_w <= room);
-            let row_y = if beside {
-                cover.y0 + inset
-            } else {
-                cover.y0 + inset + row_h + gap
-            };
-            let top = row_y + (row_h - badge_h) / 2.0;
-            let badge = Rect::new(
-                cover.x1 - inset - badge_w,
-                top,
-                cover.x1 - inset,
-                top + badge_h,
-            );
-            BadgeFace::new(badge, label)
-                .style(ChipStyle::Neutral)
-                .paint(ctx.scene, ctx.transform, ctx.text, theme);
-        }
 
         // The whole card opens the book; clamp it to the scrolling body so a
         // card sliding under the header never takes its clicks.
