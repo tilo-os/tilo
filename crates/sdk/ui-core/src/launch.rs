@@ -1443,14 +1443,6 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     theme.with_reduce_motion(shot_motion_reduced())
 }
 
-/// The theme a capture draws in, by name: `--theme`, else
-/// `TILO_SHOTS_THEME`.
-fn shot_theme_name(args: &LaunchArgs) -> Option<String> {
-    args.theme
-        .clone()
-        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
-}
-
 /// The screenshot theme for capture frontends that have no [`LaunchArgs`]
 /// (the `ui-shots` examples): `TILO_SHOTS_THEME`, `TILO_SHOTS_TEXT_SCALE` and
 /// the motion preference through the same policy as [`shot_theme`]. An
