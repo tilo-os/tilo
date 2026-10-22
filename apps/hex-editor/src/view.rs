@@ -144,11 +144,9 @@ pub struct HexView {
     find_open: bool,
     /// Every match of the bar's query, as byte ranges, in order.
     matches: Vec<FindMatch>,
-    /// The match the bar is on.
     match_idx: Option<usize>,
 
     // --- go to ---
-    /// The go-to-offset prompt, in a popover at the status bar's offset.
     goto: Popover<PopoverPrompt>,
     /// The offset readout in the status bar, which opens the prompt.
     offset_readout: Rect,
@@ -390,8 +388,6 @@ impl HexView {
         self.problem = Some((title.to_owned(), reason.into(), ui::time::now()));
         self.dirty = true;
     }
-
-    // --- file open / save (through the host portal) --------------------
 
     /// Start the host file chooser to open a file, answering `reply` when
     /// it closes.
@@ -710,7 +706,6 @@ impl HexView {
         self.dirty = true;
     }
 
-    /// Whether `point` is over the inspector drawer.
     fn over_inspector(&self, point: Point) -> bool {
         self.geo.inspector_visible && self.geo.inspector.contains(point)
     }
@@ -1621,7 +1616,6 @@ mod tests {
         // A text query that is not in the buffer finds nothing.
         assert!(Findable::find(&mut view, "Þ", FindOptions::default()).is_empty());
 
-        // Case and whole-word rules apply to text.
         let mut view = HexView::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
         let any = FindOptions::default();
         assert_eq!(Findable::find(&mut view, "ihdr", any).len(), 3);
@@ -1636,7 +1630,6 @@ mod tests {
         };
         assert_eq!(Findable::find(&mut view, "ihdr", word).len(), 2);
 
-        // A large search retains a bounded result index.
         let mut view = HexView::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
         let found = Findable::find(&mut view, "00", hex);
         assert_eq!(found.len(), search::MAX_RETAINED_MATCHES);
@@ -1844,7 +1837,6 @@ mod tests {
         paint_frame(&mut view, &mut tr, &theme);
         assert_eq!(view.model.endian(), Endian::Big);
 
-        // A click on a hex cell puts the cursor there, in the hex column.
         let g = view.geo.clone();
         let cell = Rect::new(
             g.hex_x(3),
@@ -1865,7 +1857,6 @@ mod tests {
         assert_eq!(view.model.endian(), Endian::Little);
         paint_frame(&mut view, &mut tr, &theme);
 
-        // The toggle hides the docked inspector and the grid takes the room.
         let before = view.geo.content.width();
         assert!(click(&mut view, g.toggle));
         view.drawer.snap(false);

@@ -28,7 +28,6 @@ pub struct EditorDoc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CollaborativeFile {
     pub id: String,
-    /// `file` or `folder`.
     pub kind: String,
     pub name: String,
     /// The folders it is in and its name, joined by `/`.

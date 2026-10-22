@@ -79,7 +79,6 @@ impl Places {
         Self { names }
     }
 
-    /// The name of `folder` on the server.
     pub fn name(&self, folder: Folder) -> &str {
         match folder {
             Folder::Inbox | Folder::Starred => "INBOX",

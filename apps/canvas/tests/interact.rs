@@ -102,7 +102,6 @@ impl Desk {
         // The artwork is fitted into the canvas less its 24-point padding.
         let art = app.state();
         let zoom = ((canvas.width() - 48.0) / art.width).min((canvas.height() - 48.0) / art.height);
-        // Centred in the canvas.
         let origin = (
             canvas.center().x - art.width * zoom / 2.0,
             canvas.center().y - art.height * zoom / 2.0,
@@ -234,8 +233,6 @@ fn a_drag_moves_the_selection_once_and_snaps_to_edges() {
     assert!(near(x, 1.5, 1e-6), "{x}");
 }
 
-/// A corner stretches freely, keeps the aspect with Shift, and a stretched
-/// rectangle stays a rectangle.
 #[test]
 fn a_corner_stretches_and_shift_keeps_the_aspect() {
     let mut desk = Desk::open();
@@ -289,8 +286,6 @@ fn the_rotation_handle_turns_in_steps_with_shift() {
     assert!(degrees.abs() > 30.0, "{degrees}");
 }
 
-/// A marquee picks what it touches, Shift-click adds and takes away, and
-/// Delete removes the picked marks in one step.
 #[test]
 fn marquee_and_shift_click_pick_and_delete_removes() {
     let mut desk = Desk::open();
@@ -337,8 +332,6 @@ fn groups_are_picked_whole_and_grouping_is_one_edit() {
     assert!(desk.mark("leaf").group.is_empty());
 }
 
-/// Duplicate, copy and paste make new marks beside the old in one step
-/// each.
 #[test]
 fn duplicate_copy_and_paste_make_new_marks() {
     let mut desk = Desk::open();
@@ -424,7 +417,6 @@ fn a_paths_points_are_dragged_one_edit_at_a_time() {
     assert!(d.starts_with("M 620 700"), "{d}");
 }
 
-/// Shapes square up and lines straighten with Shift.
 #[test]
 fn shift_squares_shapes_and_straightens_lines() {
     let mut desk = Desk::open();
@@ -481,7 +473,6 @@ fn text_is_typed_in_place() {
     assert_eq!(text, "Hello you");
 }
 
-/// The eyedropper picks a mark's colour for the next mark.
 #[test]
 fn the_eyedropper_picks_up_a_colour() {
     let mut desk = Desk::open();
@@ -554,7 +545,6 @@ fn the_eyedropper_and_the_bucket_wait_for_their_pictures() {
     assert!(art.marks.last().unwrap().id.starts_with("fill"));
 }
 
-/// A brush stroke is one `paint`, its pressure following the hand.
 #[test]
 fn a_brush_stroke_is_one_paint() {
     let mut desk = Desk::open();

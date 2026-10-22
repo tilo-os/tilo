@@ -1,4 +1,3 @@
-//! The headless setup binary rejects incomplete requests without publishing output.
 #![cfg(target_os = "linux")]
 
 use std::process::{Command, Stdio};

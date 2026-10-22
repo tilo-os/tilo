@@ -54,7 +54,6 @@ impl AddressControls {
             notice: String::new(),
         }
     }
-    /// Edit the person's address book.
     pub fn attach(&mut self, book: PersonRecord<AddressBook>) {
         if !self.private {
             self.book = Some(book);
@@ -421,10 +420,8 @@ fn line(text: &str) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Address editor opt-in, cross-tab disable and private-mode isolation.
     #[test]
     fn address_editor_requires_opt_in_and_isolates_tabs_and_private_mode() {
-        // Phase `editor_requires_opt_in_saves_edits_and_confirms_deletion`.
         {
             let (_app, book) = crate::autofill::tests::address_book();
             let mut editor = AddressControls::new(false);
@@ -457,7 +454,6 @@ mod tests {
             assert!(editor.profiles.is_empty());
         }
 
-        // Phase `another_tab_disabling_profiles_prevents_fill_from_cached_selection`.
         {
             let (_app, book) = crate::autofill::tests::address_book();
             let mut editor = AddressControls::new(false);
@@ -473,7 +469,6 @@ mod tests {
             assert!(editor.selected_fields().is_none());
         }
 
-        // Phase `private_editor_never_reads_or_writes_the_persons_book`.
         {
             let (_app, book) = crate::autofill::tests::address_book();
             let mut editor = AddressControls::new(true);

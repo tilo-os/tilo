@@ -20,10 +20,8 @@ use ui::lock::MutexRecover as _;
 
 /// The page a live capture opens unless `TILO_BROWSER_LIVE_URL` names one.
 const DEFAULT_LIVE_URL: &str = "https://example.org";
-/// The viewport a live capture is drawn at.
 const LIVE_VIEWPORT: (u32, u32) = (1200, 720);
 
-/// Capture the live page at `out`.
 pub(crate) fn shots_live(out: &str) -> Result<(), String> {
     capture(out, false)
 }

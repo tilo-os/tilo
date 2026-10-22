@@ -71,7 +71,6 @@ pub enum SidebarTransfer {
     InsertImage(PageId),
 }
 
-/// The tree type the sidebar hosts.
 pub type PageTreeView = TreeView<(), PageTree>;
 
 /// The hidden root every top-level page hangs from.

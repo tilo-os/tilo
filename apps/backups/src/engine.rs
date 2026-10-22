@@ -430,12 +430,6 @@ pub fn verify_snapshot(destination: &Path, id: &str) -> Result<Verification> {
 }
 
 /// Restore a snapshot and verify every copied file before placing it.
-///
-/// # Errors
-///
-/// Returns an error when the snapshot is invalid, the restore destination is
-/// unsafe or non-empty without `overwrite`, or any file operation or integrity
-/// check fails.
 pub fn restore_snapshot(
     destination: &Path,
     id: &str,
@@ -860,7 +854,6 @@ mod tests {
             monthly: 0,
         };
 
-        // Nothing kept by policy still keeps the newest snapshot.
         assert_eq!(ids(none), ["now"]);
         // Two hours: the newest of this hour and of the previous hour that
         // holds one; the older snapshot within the same hour goes.

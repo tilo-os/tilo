@@ -353,7 +353,6 @@ fn tab_traverses_every_control_in_order() {
         "Tab reaches a table row's remove button"
     );
 
-    // Shift+Tab reverses.
     d.set_modifiers(&["shift".into()]);
     let back = d.tab(true);
     assert!(back.is_some(), "Shift+Tab moves focus backward");
@@ -745,7 +744,6 @@ fn pointer_and_keyboard_send_use_the_live_request() {
             value: "prod_sk_9f8c1a2b3d4e5f60".into(),
         })
         .unwrap();
-        // The request's own credential, also kept on this device, names it.
         app.effect(&ApiTesterEffect::SetCredential {
             secret: "{{token}}".into(),
         })

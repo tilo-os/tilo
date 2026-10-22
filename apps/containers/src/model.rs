@@ -100,7 +100,6 @@ pub struct Stats {
     pub net_rx_bytes: u64,
     /// Cumulative network transmitted bytes.
     pub net_tx_bytes: u64,
-    /// Block-device read bytes.
     pub block_read_bytes: u64,
     /// Block-device write bytes.
     pub block_write_bytes: u64,
@@ -857,7 +856,6 @@ mod tests {
         }
     }
 
-    /// The sample engine is populated and consistent, with named volumes.
     #[test]
     fn sample_engine_is_consistent() {
         // --- phase: sample_engine_is_populated_and_consistent ---

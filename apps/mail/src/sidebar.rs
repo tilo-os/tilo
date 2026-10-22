@@ -16,7 +16,6 @@ use crate::state::{Command, MailState, Shared};
 /// The id of the per-account settings action on each section header.
 const ACCOUNT_SETTINGS: &str = "account-settings";
 
-/// The row id of `folder` in account `account`.
 pub(crate) fn folder_row_id(account: usize, folder: Folder) -> String {
     format!("{account}/{}", folder.as_key())
 }

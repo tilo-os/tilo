@@ -113,11 +113,6 @@ impl ShareComposerRequest {
 }
 
 /// Create a share from a validated composer request.
-///
-/// # Errors
-///
-/// Returns a localized error for invalid options or a failed control-service
-/// transaction.
 pub async fn create_share(
     socket: &Path,
     record_id: FileRecordId,
@@ -127,11 +122,6 @@ pub async fn create_share(
 }
 
 /// Create a one-use, view-only bearer link for one stable record.
-///
-/// # Errors
-///
-/// Returns a localized error when creation fails or the service returns the
-/// wrong response type.
 pub async fn create_one_use_view_link(
     socket: &Path,
     record_id: FileRecordId,
@@ -159,11 +149,6 @@ pub async fn create_one_use_view_link(
 /// Grant a certified human root access to one stable record. `display_name`
 /// is deliberately absent: the identity directory is presentation-only and
 /// the authority request carries only the root key.
-///
-/// # Errors
-///
-/// Returns a localized error when the control transaction fails or returns the
-/// wrong response type.
 pub async fn create_named_share(
     socket: &Path,
     record_id: FileRecordId,
@@ -190,10 +175,6 @@ pub async fn create_named_share(
 }
 
 /// Revoke one exact share grant.
-///
-/// # Errors
-///
-/// Returns a localized error when the control-service transaction fails.
 pub async fn revoke_grant(socket: &Path, grant_id: Uuid) -> Result<ShareActionResult, String> {
     transact(socket, ShareControlOperationV1::Revoke { grant_id }).await
 }

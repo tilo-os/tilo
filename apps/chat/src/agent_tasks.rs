@@ -1493,7 +1493,6 @@ mod tests {
             Some(crate::agent_stream::AgentFinish::Truncated)
         );
         assert_eq!(stream.detail, "Partial output retained");
-        // An oversized page is refused without replacing the retained reply.
         client.settle_invocation(&purpose, &read(152, &"x".repeat(32 * 1024 + 1), None));
         assert_eq!(
             client.views["scribe"].conversation_messages("conversation", "me")[0].text,

@@ -388,8 +388,6 @@ impl DisksApp {
         self.offer(drive, action).is_available()
     }
 
-    // ---- the shell's content ------------------------------------------
-
     /// Rebuild the sidebar and the content when what they show changed.
     fn refresh_view(&mut self) {
         let key = ViewKey {
@@ -515,8 +513,6 @@ impl DisksApp {
         }
     }
 
-    // ---- results ---------------------------------------------------------
-
     /// Record a result: the status the window announces and the toast that
     /// shows it once.
     fn report(&mut self, text: String, tone: StatusTone) {
@@ -524,8 +520,6 @@ impl DisksApp {
         self.shell.toast(text, tone.kind());
         self.dirty = true;
     }
-
-    // ---- interaction ---------------------------------------------------
 
     /// An action from the bar, a header button or a row's menu: invoke the
     /// operation on partition `partition` of the selected drive (`None`: the
@@ -1046,7 +1040,6 @@ mod tests {
                 ui::framework::testing::TestApp::<crate::resource::DisksShell>::capture(None)
                     .unwrap();
             let nodes = window.harness().a11y_nodes();
-            // Rescan and the operations are the window bar's slots.
             let bar = ui::window_toolbar::declared().expect("the window declares its slots");
             let named = |id: &str| {
                 bar.actions
@@ -1109,7 +1102,6 @@ mod tests {
         assert_eq!(app.display_name(drive), "Workstation");
     }
 
-    /// Operation targets are revalidated against the probed topology.
     #[test]
     fn operation_targets_are_revalidated_against_the_topology() {
         let app = sample_app();
@@ -1164,7 +1156,6 @@ mod tests {
         assert!(app.action_enabled(&drive, ActionKind::Unmount));
     }
 
-    /// A result shows as a toast, and the window announces it.
     #[test]
     fn results_toast_and_are_announced() {
         let mut app = sample_app();
@@ -1237,7 +1228,6 @@ mod tests {
         {
             let mut app = at_width(1280.0);
             let strip = target(&app, "disks-tabs");
-            // The middle of three segments is the Health tab.
             click_at(
                 &mut app,
                 Point::new(strip.x0 + strip.width() * 0.5, strip.center().y),
@@ -1249,8 +1239,6 @@ mod tests {
         // --- phase: a_disabled_action_does_nothing ---
         {
             let mut app = at_width(1280.0);
-            // Formatting the drive the running system lives on is shown,
-            // and unavailable.
             ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
                 id: ActionKind::Format.key().to_owned(),
             });
@@ -1378,7 +1366,6 @@ mod tests {
             app.replace_topology(Topology::default());
             let mut app = framed(app, 1280.0, 800.0);
             assert!(app.drive().is_none());
-            // The action is reachable from the keyboard.
             Framed::harness_mut(&mut app).key("Tab");
             Framed::harness_mut(&mut app).key("Enter");
             assert_eq!(

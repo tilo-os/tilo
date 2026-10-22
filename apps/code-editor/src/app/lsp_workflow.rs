@@ -1,8 +1,6 @@
 use super::{AutoCommit, CodeApp, EditorDoc, LspAsk, LspStatus, TreeId};
 
 impl CodeApp {
-    // ---- LSP orchestration ------------------------------------------------
-
     /// The `file://` URI for a project node.
     ///
     /// For a disk-backed node this is the real file's URI, which is the whole

@@ -50,12 +50,10 @@ pub fn line_in(
     f64::from(w)
 }
 
-/// The width of one line of `s` in `style`.
 pub fn width_of(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style(s, None, style).0)
 }
 
-/// The height of one line in `style`.
 pub fn line_of(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style("Ag", None, style).1)
 }

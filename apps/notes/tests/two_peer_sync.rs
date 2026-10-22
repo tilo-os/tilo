@@ -74,7 +74,6 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
             copied_blocks[0].0, source_blocks[0].0,
             "copies mint independent stable block ids"
         );
-        // A replica receives the complete copy.
         let replica = app.peer_document();
         assert_eq!(read::page_block_snapshots(&replica, copy), copied_blocks);
     }

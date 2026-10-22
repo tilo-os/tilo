@@ -39,7 +39,6 @@ impl CodeApp {
         matches!(effect, CodeEditorEffect::ReadText { .. }).then(answer)
     }
 
-    /// Answer one of the published effects.
     pub(crate) fn answer_effect(
         &mut self,
         effect: CodeEditorEffect,
@@ -199,7 +198,6 @@ impl CodeApp {
         }
     }
 
-    /// The node of the project file `file`.
     fn file_node(&self, file: &str) -> Result<TreeId, String> {
         self.session
             .project

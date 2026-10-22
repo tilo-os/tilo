@@ -160,11 +160,6 @@ pub fn stage_bytes(
 
 /// Materialise a portable reference only after re-validating identity,
 /// metadata, byte count and digest. Missing peer content deliberately fails.
-///
-/// # Errors
-///
-/// Returns an error for invalid metadata, unavailable peer content, or a
-/// byte-count/digest mismatch.
 pub fn materialize(
     content: &ContentStore,
     attachment: &DraftAttachment,
@@ -205,7 +200,6 @@ mod tests {
 
     #[test]
     fn staged_attachments_are_portable_and_bounded() {
-        // Phase `staged_attachment_is_portable_and_not_a_host_path`.
         {
             let path = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(path.path(), b"portable attachment").unwrap();
@@ -224,7 +218,6 @@ mod tests {
             );
         }
 
-        // Phase `rejects_bytes_beyond_the_portable_attachment_limit_before_storing`.
         {
             let bytes = vec![0; MAX_ATTACHMENT_BYTES + 1];
             assert!(stage_bytes(&ContentStore::memory(), &bytes, "too-large.bin").is_err());

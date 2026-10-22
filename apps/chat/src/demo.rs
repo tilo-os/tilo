@@ -39,7 +39,6 @@ fn named(name: &str) -> String {
         .map_or_else(String::new, |emoji| emoji.text().to_owned())
 }
 
-/// A demo message.
 #[derive(Clone, Debug, Default)]
 struct NewMessage {
     author: String,
@@ -494,10 +493,6 @@ fn change_chat(
 /// Write `chat` into `doc`, a document holding no chat yet, as one change:
 /// its items added to what `doc` holds, refused for an item it holds
 /// already.
-///
-/// # Errors
-/// When `chat` does not fit the record's model or names an item `doc`
-/// holds.
 pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
     initialized(doc)?;
     change_chat(doc, |held| {
@@ -531,9 +526,6 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
 
 /// Write `part` into `doc`, a document holding no part yet, as one change:
 /// a part of the chat's messages as a tool or a test holds it.
-///
-/// # Errors
-/// When `part` does not fit the part's model.
 pub fn write_part(doc: &mut AutoCommit, part: &ChatPart) -> Result<(), ModelError> {
     use ui::tilo_resource::Fields as _;
     <ChatPart as ui::tilo_resource::Resource>::initialize(doc)?;
@@ -573,18 +565,12 @@ fn initialized(doc: &mut AutoCommit) -> Result<(), ModelError> {
 
 /// The demo room's chat record in `doc`, read by [`crate::model::ME`]: its
 /// people and channels, without the conversation.
-///
-/// # Errors
-/// When `doc` already holds a chat the demo does not fit into.
 pub fn seed(doc: &mut AutoCommit) -> Result<(), ModelError> {
     write(doc, &demo(crate::model::ME))
 }
 
 /// The demo room in `room`, read by [`crate::model::ME`]: its chat record,
 /// and its conversation as the first part of its messages.
-///
-/// # Errors
-/// When `room` already holds a chat the demo does not fit into.
 pub fn seed_room(room: &mut Room) -> Result<(), DoorError> {
     seed(&mut room.chat).map_err(|error| DoorError::Failed(error.to_string()))?;
     room.write_part(0, &demo_part(crate::model::ME))
@@ -598,7 +584,6 @@ pub fn seed_room(room: &mut Room) -> Result<(), DoorError> {
 pub struct Room {
     /// The room's chat record.
     pub chat: AutoCommit,
-    /// The parts of its messages.
     parts: Option<ui::framework::Chain<ChatPart>>,
     /// The chat record as the chain's actions read it: refreshed before
     /// each of them.
@@ -683,7 +668,6 @@ impl Room {
             .unwrap_or_default()
     }
 
-    /// The numbers of the parts held.
     #[must_use]
     pub fn part_numbers(&self) -> Vec<u64> {
         self.messages()
@@ -762,9 +746,6 @@ impl Room {
     /// Write `part` into part `index` of the messages as it stands: a test's
     /// or a tool's fixture of messages by several people, which no one
     /// person's verb makes ([`ui::framework::Chain::write_start`]).
-    ///
-    /// # Errors
-    /// When the room holds no messages, or the part does not take `part`.
     pub fn write_part(&mut self, index: u64, part: &ChatPart) -> Result<(), DoorError> {
         self.parts
             .as_ref()
@@ -959,9 +940,6 @@ pub fn say(room: &mut Room, author: &str, channel: &str, text: &str) -> Result<S
 /// Add the category `id` named `name` to `doc`, as a fixture writes it:
 /// under the id a test names, which the moderators' `create-category`
 /// mints itself.
-///
-/// # Errors
-/// When `doc` holds the category already, or does not read as a chat.
 pub fn insert_category(doc: &mut AutoCommit, id: &str, name: &str) -> Result<(), DoorError> {
     let category = Category { name: name.into() };
     write_fixture(doc, |chat| {
@@ -972,9 +950,6 @@ pub fn insert_category(doc: &mut AutoCommit, id: &str, name: &str) -> Result<(),
 /// Add the channel `id` named `name` under `category` (none when empty) to
 /// `doc`, as a fixture writes it: under the id a test names, which the
 /// moderators' `create-channel` mints itself.
-///
-/// # Errors
-/// When `doc` holds the channel already, or does not read as a chat.
 pub fn insert_channel(
     doc: &mut AutoCommit,
     id: &str,

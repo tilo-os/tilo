@@ -357,11 +357,6 @@ impl Session {
     /// Run broker-addressed Task Center leases: an unattended task may invoke
     /// only actions that the authenticated broker currently publishes to this
     /// agent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when receiving catalogue updates or reporting task
-    /// progress through the collaboration link fails.
     pub fn run_task_runs(&mut self) -> Result<()> {
         let mut transforms = crate::transform::TransformService::new(
             std::sync::Arc::new(crate::transform::GatewayModel {
@@ -1545,7 +1540,6 @@ mod tests {
 
     #[test]
     fn a_task_run_needs_a_known_version_and_broker_bound_task_context() {
-        // Case `task_run_requires_broker_bound_task_context`.
         {
             assert!(validate_task_run(&task_run()).is_ok());
             let mut mismatched = task_run();
@@ -1556,7 +1550,6 @@ mod tests {
             assert!(validate_task_run(&mismatched).is_err());
         }
 
-        // Case `task_run_rejects_unknown_protocol_version_before_planning`.
         {
             let mut invalid = task_run();
             invalid.version = 2;
@@ -1566,7 +1559,6 @@ mod tests {
 
     #[test]
     fn a_steps_arguments_bind_exactly_one_preceding_content_result_and_key_its_dispatch() {
-        // Case `a_content_step_uses_only_the_immediately_preceding_application_result`.
         {
             let output = tilo_actions::ActionOutput {
                 value: Some(serde_json::json!({"display": "ignored"})),
@@ -1598,7 +1590,6 @@ mod tests {
             );
         }
 
-        // Case `a_content_step_refuses_ambiguous_or_wrong_kind_results`.
         {
             let ambiguous = StepOutcome {
                 output: tilo_actions::ActionOutput {
@@ -1633,7 +1624,6 @@ mod tests {
             );
         }
 
-        // Case `an_empty_result_feeds_no_content_step`.
         {
             let previous = StepOutcome::default();
             assert!(

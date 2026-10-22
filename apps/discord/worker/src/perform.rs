@@ -266,8 +266,6 @@ impl Performer {
             })
     }
 
-    // ----- sends ---------------------------------------------------------
-
     /// Queue a send in its lane (webhook and thread) and start the lane's
     /// drain if it is idle.
     fn enqueue(self: &Arc<Self>, op: SendOp) -> oneshot::Receiver<OpResult> {

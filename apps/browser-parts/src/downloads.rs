@@ -86,10 +86,6 @@ impl Downloads {
     }
 
     /// Checkpoint the bounded download history in the device's settings.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error when the settings could not be written.
     pub fn save(&self) -> std::io::Result<()> {
         match &self.store {
             Some(store) => store.set(&self.stored()),
@@ -299,7 +295,6 @@ mod tests {
     /// Download store lifecycle, bounds, restore and destinations.
     #[test]
     fn download_rows_are_bounded_restart_safe_and_truthful() {
-        // Phase `lifecycle_is_stable_bounded_and_restart_safe`.
         {
             let mut downloads = Downloads::default();
             downloads.requested("stable-1".into(), "https://example.test/a".into(), "a.bin");
@@ -311,7 +306,6 @@ mod tests {
             assert_eq!(entry.status, DownloadStatus::Failed);
         }
 
-        // Phase `hostile_ids_names_and_corpora_are_bounded`.
         {
             let mut downloads = Downloads::default();
             downloads.requested("../escape".into(), "https://bad.test".into(), "bad");
@@ -332,7 +326,6 @@ mod tests {
             );
         }
 
-        // Phase `completed_failed_and_cancelled_rows_restore_truthfully`.
         {
             let mut downloads = Downloads::default();
             assert!(downloads.requested(
@@ -389,7 +382,6 @@ mod tests {
             assert_eq!(restored.get("failed").unwrap().error, previous_error);
         }
 
-        // Phase `relative_destinations_never_become_openable_resources`.
         {
             let mut downloads = Downloads::default();
             assert!(downloads.requested(
@@ -428,7 +420,6 @@ mod tests {
             DownloadStatus::Completed
         );
 
-        // A list too large for the device's settings drops its oldest rows.
         let long = "x".repeat(MAX_TEXT_BYTES - 64);
         for index in 0..MAX_DOWNLOADS {
             downloads.requested(

@@ -142,7 +142,6 @@ mod tests {
         assert_eq!(w[0], d(2026, 6, 15));
         assert_eq!(w[6], d(2026, 6, 21));
 
-        // A week the person starts on Sunday.
         assert_eq!(
             week_start_from(d(2026, 6, 17), chrono::Weekday::Sun),
             d(2026, 6, 14)

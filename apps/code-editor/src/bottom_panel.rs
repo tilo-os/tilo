@@ -747,7 +747,6 @@ mod tests {
         ]);
         assert!(panel.list.is_some());
         assert_eq!(panel.take_jump(), None);
-        // The row's activation is the one thing that writes this.
         panel.activated.set(Some(1));
         assert_eq!(panel.take_jump(), Some((9, 1)));
         assert_eq!(panel.take_jump(), None, "cleared on read");

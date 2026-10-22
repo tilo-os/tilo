@@ -292,8 +292,6 @@ impl Dictionary {
         out
     }
 
-    // --- internals ------------------------------------------------------
-
     /// Index into `entries` for an exact (already-lowercased) word.
     fn lex_index_of(&self, word: &str) -> Option<usize> {
         // Every value in `by_lex` is a valid index into `entries` (see the
@@ -365,9 +363,7 @@ mod tests {
             // "the" is the most common English word — strictly more frequent than
             // a mid-rank word like "quick".
             assert!(d.weight("the").unwrap() > d.weight("quick").unwrap());
-            // Case-insensitive lookup.
             assert_eq!(d.weight("THE"), d.weight("the"));
-            // Absent garbage.
             assert!(!d.contains("zzxqj"));
             assert_eq!(d.frequency("zzxqj"), 0.0);
         }
@@ -404,7 +400,6 @@ mod tests {
             assert!(qu.iter().all(|w| w.starts_with("qu")));
             assert!(qu.contains(&"quick".to_string()));
             assert!(qu.contains(&"question".to_string()));
-            // A prefix nothing starts with yields an empty range.
             assert_eq!(d.iter_prefix("qzx").count(), 0);
         }
 
@@ -415,7 +410,6 @@ mod tests {
             assert!(!top.is_empty());
             // "the" should be the top completion of "th".
             assert_eq!(top[0].word, "the");
-            // Results are frequency-descending.
             for w in top.windows(2) {
                 assert!(w[0].weight >= w[1].weight);
             }
@@ -429,7 +423,6 @@ mod tests {
             let tre: Vec<&str> = d.iter_prefix("tre").map(|e| e.word.as_str()).collect();
             assert_eq!(tre, ["tres", "très", "trésor"]);
             assert_eq!(d.complete("tres", 1)[0].word, "très");
-            // Exact lookups still tell accented words apart.
             assert_eq!(d.weight("ou"), Some(800));
             assert_eq!(d.weight("où"), Some(700));
             assert_eq!(d.weight("trés"), None);

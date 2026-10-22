@@ -282,7 +282,6 @@ pub struct EditorView {
     /// covered — same rule as `TextInput`'s `drag_anchor_span`.
     drag_anchor: (usize, usize),
 
-    // ---- LSP surface ----
     /// Inline diagnostics for the active buffer (from the language server),
     /// drawn as squiggles and used for the Problems panel.
     diagnostics: Vec<InlineDiag>,
@@ -303,14 +302,12 @@ pub struct EditorView {
     /// keybind, drained by the app).
     lsp_ask: Option<LspAsk>,
 
-    // ---- find ----
     /// Every match of the find bar's query, so all of them are tinted at once
     /// and the user can see where the hits are without stepping through them.
     find_matches: Vec<crate::find::Match>,
     /// Which of them is current, drawn more strongly than the rest.
     find_current: Option<usize>,
 
-    // ---- empty state ----
     /// The no-buffer zero-state and its one "Open file" action; the app
     /// drains the action and opens the file picker.
     empty: EmptyState,
@@ -910,8 +907,6 @@ impl EditorView {
         }
     }
 
-    // ---- language-server surface -----------------------------------------
-
     /// Replace the editor's inline diagnostics from a fresh LSP set.
     pub fn set_diagnostics(&mut self, diags: &[LspDiagnostic]) {
         self.diagnostics = diags
@@ -973,7 +968,6 @@ impl EditorView {
             return;
         };
         let (line, col) = self.primary_caret();
-        // Replace [completion_anchor, caret) with the insert text.
         self.carets = vec![Caret {
             line,
             col,
@@ -1268,8 +1262,6 @@ impl EditorView {
         }
     }
 
-    // ---- caret movement ----
-
     /// Arrow motion of the primary caret: `dx` characters (grapheme
     /// clusters, crossing line ends) and `dy` lines at the same column.
     /// `extend` grows the selection; a plain arrow collapses multi-carets to
@@ -1398,8 +1390,6 @@ impl EditorView {
         let spaces = " ".repeat(self.indent_width);
         self.insert(doc, &spaces);
     }
-
-    // ---- line operations (all request action-owned CRDT edits) ----
 
     /// The inclusive `[first, last]` line range the primary caret covers. A
     /// selection that ends exactly at column 0 of a line does not pull that
@@ -1639,7 +1629,6 @@ impl EditorView {
             let Some(line) = self.lines.get(l) else {
                 continue;
             };
-            // Remove up to `indent_width` leading spaces, or a single leading tab.
             let remove = if line.starts_with('\t') {
                 1
             } else {
@@ -1663,8 +1652,6 @@ impl EditorView {
         let (a, b) = self.primary_line_range();
         b > a
     }
-
-    // ---- hit testing ----
 
     /// Map a pixel point to a (line, col) caret position.
     fn point_to_caret(&self, p: Point) -> (usize, usize) {
@@ -1992,7 +1979,6 @@ impl EditorView {
                 continue;
             }
             let x = base_x + col_at(range.start) as f64 * self.cell_w;
-            // Skip fully off-screen-left segments.
             if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + rows.gutter_w {
                 continue;
             }
@@ -3225,7 +3211,6 @@ mod tests {
         assert!(!ev.completion_active(), "accepting closes the popup");
         assert_eq!(ev.text_for_test(), "println");
 
-        // A press outside the popup dismisses it and reaches the editor.
         ev.show_completions(vec![item("primes_below")]);
         ev.last_cursor = Point::new(500.0, 500.0);
         let mut handled = false;
@@ -3246,7 +3231,6 @@ mod tests {
         let view = ev.whole_line_rect();
         assert!((view.height() - 100.0).abs() < 1e-9, "{view:?}");
         assert!((view.y0 - ev.rect.y0).abs() < 1e-9);
-        // A viewport shorter than one line is left as it is.
         ev.rect = Rect::new(0.0, 0.0, 400.0, 12.0);
         assert_eq!(ev.whole_line_rect(), ev.rect);
     }
@@ -3370,7 +3354,6 @@ mod tests {
 
     #[test]
     fn typing_requests_action_owned_edits_and_keeps_the_caret_in_chars() {
-        // Each phase builds a fresh bound editor.
         insert_text_requests_an_action_owned_edit();
         newline_preserves_leading_indent();
         backspace_at_line_start_joins_previous_line();
@@ -3505,7 +3488,6 @@ mod tests {
         assert_eq!(ev.primary_caret(), (0, 5));
         named(&mut ev, &mut doc, NamedKey::ArrowLeft, false);
         assert_eq!(ev.primary_caret(), (0, 3));
-        // A caret placed inside a cluster is pulled back onto its start.
         ev.set_caret_for_test(0, 2);
         assert_eq!(ev.primary_caret(), (0, 1));
 
@@ -3543,7 +3525,6 @@ mod tests {
         key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
         key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
         assert_eq!(ev.caret_count(), 3);
-        // The third caret is clamped to the end of "z".
         named(&mut ev, &mut doc, NamedKey::Backspace, false);
         assert_eq!(ev.text_for_test(), "x\ny\n");
         assert_eq!(ev.caret_count(), 3);
@@ -3559,10 +3540,8 @@ mod tests {
         assert_eq!(ev.primary_display_col(), 3);
         assert!(!ev.composition.has_preedit());
 
-        // One Backspace removes the whole combined letter at each caret.
         named(&mut ev, &mut doc, NamedKey::Backspace, false);
         assert_eq!(ev.text_for_test(), "x\ny\n");
-        // Delete at the end of each line joins it with the next.
         named(&mut ev, &mut doc, NamedKey::Delete, false);
         assert_eq!(ev.text_for_test(), "xy");
         assert_eq!(ev.caret_count(), 2, "carets that meet merge");
@@ -3624,7 +3603,6 @@ mod tests {
 
     #[test]
     fn arrow_keys_move_and_extend_by_char_and_word() {
-        // Each phase builds a fresh bound editor.
         shift_arrow_extends_by_char();
         ctrl_arrow_moves_by_word();
         ctrl_shift_arrow_extends_by_word();
@@ -3656,7 +3634,6 @@ mod tests {
     fn ctrl_arrow_moves_by_word() {
         let (mut ev, mut doc) = geom_editor("foo bar baz");
         ev.set_caret_for_test(0, 0);
-        // Word-forward lands at the start of the next word.
         key(
             &mut ev,
             &mut doc,
@@ -3799,9 +3776,7 @@ mod tests {
                 true,
             );
         }
-        // Ctrl+C copies "hello".
         key(&mut ev, &mut doc, Key::Character("c".into()), true, false);
-        // Move to end and Ctrl+V pastes it.
         ev.set_caret_for_test(0, 11);
         key(&mut ev, &mut doc, Key::Character("v".into()), true, false);
         assert_eq!(ev.text_for_test(), "hello worldhello");

@@ -710,7 +710,6 @@ mod tests {
             Err("installer-preview-storage-unavailable")
         );
         assert!(!preview.direct.active);
-        // The review row is an actual recovery route, with Save returning here.
         preview.journey.edit("storage").unwrap();
         assert_eq!(preview.journey.page, Page::Storage);
         assert!(preview.journey.saving_edit());

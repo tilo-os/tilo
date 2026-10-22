@@ -336,7 +336,6 @@ mod tests {
         assert!((y(50) - 20.0).abs() < 1e-9);
         assert!(y(25) > 1.0 && y(25) < 19.0, "{}", y(25));
         assert!(y(0).abs() < 1e-9 && y(100).abs() < 1e-9);
-        // Pressure is kept.
         assert!(
             edit.points
                 .iter()

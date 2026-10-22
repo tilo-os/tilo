@@ -9,9 +9,6 @@ use ui::webview::chromium::{
 };
 const PRIVATE_ROOT_OWNER: &str = ".tilo-private-owner-pid";
 /// Configure the optional browser data root once for this process.
-///
-/// # Errors
-/// Returns an error for a relative root or a conflicting previous configuration.
 pub fn configure(root: Option<&str>) -> Result<(), String> {
     let root = root
         .map(PathBuf::from)
@@ -252,7 +249,6 @@ mod tests {
     /// Private storage roots allocation and cleanup.
     #[test]
     fn private_roots_are_owned_unique_and_swept_within_budget() {
-        // Phase `private_roots_are_unique_owned_and_never_reuse_normal_overrides`.
         {
             let normal = tempfile::tempdir().unwrap();
             let first = allocate_private_root().unwrap();
@@ -282,7 +278,6 @@ mod tests {
             std::fs::remove_dir_all(live_helper).unwrap();
         }
 
-        // Phase `unrelated_temporary_entries_do_not_starve_private_cleanup`.
         #[cfg(unix)]
         {
             let parent = tempfile::tempdir().unwrap();
@@ -314,7 +309,6 @@ mod tests {
             assert!(unrelated.iter().all(|path| path.is_dir()));
         }
 
-        // Phase `cleanup_budget_counts_orphans_and_preserves_live_roots`.
         #[cfg(unix)]
         {
             let parent = tempfile::tempdir().unwrap();

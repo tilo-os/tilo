@@ -119,7 +119,6 @@ impl Graph2dScreen {
         self.panel.fit(&model.funcs, tr, theme);
         self.layout(area, model);
         self.panel.side_mut().tick(theme);
-        // Advance the smooth-zoom ease one frame toward the model target.
         self.zoom.tick(model.view2d, theme.reduce_motion);
         self.layout(area, model);
     }
@@ -186,8 +185,6 @@ impl Graph2dScreen {
             self.draw_trace(scene, t, tr, theme, model, (p, view));
         }
     }
-
-    // ----- canvas internals -------------------------------------------------
 
     fn plane(&self, v: &View2d) -> FunctionPlane {
         FunctionPlane::new(self.canvas, Point::new(v.cx, v.cy), v.scale)
@@ -420,8 +417,6 @@ impl Graph2dScreen {
         point.y.is_finite().then_some((point, snapped))
     }
 
-    // ----- hit-testing ------------------------------------------------------
-
     pub fn canvas_contains(&self, p: Point) -> bool {
         // While a floating drawer (and its scrim) is up, the canvas is not
         // directly interactive — a press there dismisses the drawer instead of
@@ -602,7 +597,6 @@ mod tests {
             // A press inside the drawer must not pan the plot.
             assert!(!s.canvas_contains(column.center()));
             assert!(s.panel.side().covers(column.center()));
-            // A press on the scrim, beside the drawer, dismisses it.
             let beside = Point::new(area.x1 - 10.0, area.center().y);
             assert!(s.panel.side().scrim_at(beside));
             s.panel.side_mut().close();
@@ -696,7 +690,6 @@ mod tests {
                 s.curve_cache.rebuilds, 1,
                 "re-sampled with no geometry change"
             );
-            // Switching tabs and back leaves funcs/view/canvas identical.
             m.mode = Mode::Calc;
             s.ensure_curves(&m);
             m.mode = Mode::Graph2d;

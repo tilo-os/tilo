@@ -72,7 +72,6 @@ fn feed_icon(kind: FeedKind) -> Icon {
 }
 
 impl Core {
-    /// The sidebar's sections, from the library.
     pub(crate) fn nav_sections(&self) -> Vec<NavSection> {
         let store = &self.store;
         let smart = vec![

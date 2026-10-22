@@ -231,7 +231,6 @@ impl ContactsApp {
             .map_or_else(|| "this contact".to_owned(), Contact::display_name)
     }
 
-    /// The dialog that asks for `key`.
     pub(super) fn build_dialog(&self, key: &DialogKey) -> Option<Element> {
         let shared = &self.shared;
         let element: Element = match key {

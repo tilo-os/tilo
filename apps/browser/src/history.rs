@@ -729,7 +729,6 @@ mod tests {
     /// Recording visits.
     #[test]
     fn record_dedups_keeps_titles_and_evicts_at_the_bound() {
-        // Phase `record_dedups_by_url_and_bumps_count`.
         {
             let mut h = History::new();
             h.record_at("https://a.test", "First", 100);
@@ -741,7 +740,6 @@ mod tests {
             assert_eq!(e.title, "Second", "revisit refreshes the title");
         }
 
-        // Phase `record_keeps_old_title_when_new_is_blank`.
         {
             let mut h = History::new();
             h.record_at("https://a.test", "Real Title", 100);
@@ -753,14 +751,12 @@ mod tests {
             );
         }
 
-        // Phase `record_ignores_blank_url`.
         {
             let mut h = History::new();
             h.record_at("   ", "nope", 100);
             assert!(h.is_empty(), "a blank URL is not recorded");
         }
 
-        // Phase `record_keeps_distinct_urls_separate`.
         {
             let mut h = History::new();
             h.record_at("https://a.test", "A", 100);
@@ -768,7 +764,6 @@ mod tests {
             assert_eq!(h.len(), 2);
         }
 
-        // Phase `history_evicts_oldest_rows_at_the_resource_bound`.
         {
             let mut h = History::new();
             for index in 0..=MAX_HISTORY_ENTRIES {
@@ -863,7 +858,6 @@ mod tests {
                 len: Some(1),
                 first: Some("https://github.com"),
             },
-            // Equal visit counts isolate the recency signal.
             Case {
                 name: "with no query and equal visits, the most-recent page leads",
                 rows: &[

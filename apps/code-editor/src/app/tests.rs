@@ -670,7 +670,6 @@ fn opening_a_file_in_overlay_dismisses_the_flap() {
     app.set_width_hint(600.0);
     app.toggle_sidebar();
     assert!(app.sidebar_open(), "summoned open before selecting a file");
-    // Find prime.rs and open it via the tree-event path the sidebar emits.
     let prime = app
         .session
         .project
@@ -1079,7 +1078,6 @@ fn find_highlights_and_navigates_matches() {
             "'primes' occurs several times in main.rs, got {}",
             app.find_matches.len()
         );
-        // The matches are handed to the editor's highlight layer.
         assert_eq!(
             app.editor.find_match_count_for_test(),
             app.find_matches.len(),
@@ -1182,7 +1180,6 @@ fn toggle_comment_comments_then_uncomments() {
     let mut sample = synced_sample();
     sample.with_doc(|app, doc| {
         let node = app.session.active_buffer().unwrap().node;
-        // Replace the buffer with a content-stable single line of Rust.
         let key = app.buffer_key(node);
         let base = EditorDoc::read_buffer_key(doc, &key).unwrap();
         app.dispatch_text_action(doc, key, &base, "let x = 1;\n")

@@ -323,7 +323,6 @@ mod tests {
             let cursor = Point::new(560.0, 220.0);
             let start = v(64.0, 0.0, 0.0);
 
-            // World point under the cursor at the start view.
             let to_world = |p: Point, view: &View2d| {
                 Point::new(
                     view.cx + (p.x - canvas_center.x) / view.scale,

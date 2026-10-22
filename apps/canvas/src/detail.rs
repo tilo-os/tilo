@@ -165,7 +165,6 @@ fn byte(value: f32) -> u8 {
 
 /// A painted layer's marks at a finer level, kept while its marks stay.
 pub struct LayerLevel {
-    /// The layer's content and the level.
     pub key: blake3::Hash,
     pub scale: f64,
     pub marks: Arc<[Painted]>,

@@ -49,7 +49,6 @@ pub struct AreaGesture {
 }
 
 impl AreaGesture {
-    /// Whether a gesture is under way.
     pub fn active(&self) -> bool {
         self.drag.is_some() || !self.polygon.is_empty()
     }

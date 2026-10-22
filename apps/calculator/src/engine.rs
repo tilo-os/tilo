@@ -1202,7 +1202,6 @@ mod tests {
                 Cmp::Near(1e-9),
             );
         }
-        // Angle mode and saved values survive both levels of binding.
         check(
             "nested degree context",
             evd("int(int(sin(x)+cos(y),y,0,90),x,0,90)"),

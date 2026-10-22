@@ -462,7 +462,6 @@ mod tests {
         for m in HttpMethod::ALL {
             assert_eq!(HttpMethod::from_str(m.as_str()), m, "round trip {m:?}");
         }
-        // Unknown verbs fall back to GET.
         assert_eq!(HttpMethod::from_str("frobnicate"), HttpMethod::Get);
 
         for (method, has_body) in [

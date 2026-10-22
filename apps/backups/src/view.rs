@@ -33,9 +33,7 @@ use crate::model::{
 /// A place in the sidebar, and the page the content shows for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
-    /// Every snapshot of every source.
     All,
-    /// One source's snapshots and schedule.
     Source(String),
     /// One destination's capacity and the snapshots stored on it.
     Destination(String),
@@ -77,7 +75,6 @@ impl Page {
         }
     }
 
-    /// Whether the page lists snapshots.
     pub fn lists_snapshots(&self) -> bool {
         !matches!(self, Page::Retention)
     }
@@ -157,8 +154,6 @@ pub struct Model<'a> {
     /// The last operation failed: what, and what to do.
     pub failure: Option<(&'a str, &'a str)>,
 }
-
-// ---- formatting ---------------------------------------------------------
 
 /// A stored size in the platform's unit for stored data (SI).
 pub fn size(bytes: u64) -> String {
@@ -301,8 +296,6 @@ fn kind_title(snapshot: &Snapshot) -> &'static str {
     }
 }
 
-// ---- sidebar ------------------------------------------------------------
-
 /// The dot a place shows when it needs the person; a healthy one shows none.
 fn health_status(health: Health) -> Option<ui::widget::RowStatus<'static>> {
     match health {
@@ -430,9 +423,6 @@ fn timeline_heading(current: Order, intents: &Intents) -> Row {
         ))
 }
 
-// ---- pages ----------------------------------------------------------------
-
-/// The content for `model.page`.
 pub fn content(
     model: &Model<'_>,
     intents: &Intents,
@@ -743,8 +733,6 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
         .with_child(Box::new(form))
 }
 
-// ---- the selected snapshot ----------------------------------------------
-
 /// The inspector: everything known about the selected snapshot, and what
 /// can be done with it.
 pub fn snapshot_details(
@@ -809,8 +797,6 @@ pub fn snapshot_details(
             )),
     )
 }
-
-// ---- restore --------------------------------------------------------------
 
 /// The restore sheet's body: what recovery does, the snapshot it restores,
 /// and a read-only preview of its contents. Recovery is the whole snapshot,
@@ -943,8 +929,6 @@ fn open_branches(node: &TreeNode<Option<u64>>, out: &mut Vec<u64>) {
     }
 }
 
-// ---- first run and recovery -----------------------------------------------
-
 /// Where setup stands on a device with no usable repository.
 pub enum Setup<'a> {
     /// Nothing chosen yet.
@@ -986,8 +970,6 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
         Intent::Setup,
     ))
 }
-
-// ---- signal forwarding ------------------------------------------------------
 
 /// A widget whose one signal (a dismissed banner, an empty state's action)
 /// leaves as an intent.

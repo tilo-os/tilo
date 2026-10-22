@@ -22,7 +22,6 @@ fn ids(project: &Replica<Project>) -> Vec<Id> {
     project.state().unwrap().files.ids().cloned().collect()
 }
 
-/// A new file named `name` in `folder`, holding `text`, and its id.
 fn file(project: &mut Replica<Project>, name: &str, folder: Option<&Id>, text: &str) -> Id {
     let before = ids(project);
     act(
@@ -327,7 +326,6 @@ fn two_replicas_converge() {
     assert_eq!(text(&left, &shared), text(&right, &shared));
 }
 
-/// The terminal's records land in the project's terminal panel.
 #[test]
 fn the_terminal_session_lives_in_one_panel_of_the_project() {
     let mut project = Replica::<Project>::new();
@@ -357,8 +355,6 @@ fn the_terminal_session_lives_in_one_panel_of_the_project() {
     );
 }
 
-/// The terminal's runs land in its panel, and a command asked of it is
-/// queued for the process running it, as in Terminal's own window.
 #[test]
 fn the_terminal_records_its_runs_and_queues_asked_commands() {
     let mut project = Replica::<Project>::new();

@@ -498,8 +498,6 @@ fn reimporting_a_source_uid_preserves_local_edits_and_detached_occurrences() {
     assert_ne!(state.events[0].id, state.events[1].id);
 }
 
-/// One import is one action, and its payload replays to the same calendar
-/// on every replica.
 #[test]
 fn an_import_replays_as_one_deterministic_action() {
     let mut a = seeded();
@@ -601,8 +599,6 @@ fn a_pulled_event_is_adopted_without_an_upload() {
     assert_eq!(calendar.state().unwrap().sync_tokens[&remote], "sync-1");
 }
 
-/// Undoing the delete of an event its server already deleted restores it,
-/// and its server takes it again.
 #[test]
 fn undoing_a_delete_the_server_took_uploads_the_event_again() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
@@ -641,7 +637,6 @@ fn undoing_a_delete_the_server_took_uploads_the_event_again() {
     assert_eq!(jobs[0].1.href, None, "as a new item there");
 }
 
-/// An event's and a task's JSON forms round-trip what the calendar holds.
 #[test]
 fn json_forms_round_trip_events_and_tasks() {
     let state = read(&seeded_doc());

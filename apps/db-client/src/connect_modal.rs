@@ -84,7 +84,6 @@ impl Fields {
         }
     }
 
-    /// The connection the fields describe.
     pub fn profile(&self) -> ConnectionProfile {
         let engine = self.engine();
         let name = self.name.with(|name| name.trim().to_owned());

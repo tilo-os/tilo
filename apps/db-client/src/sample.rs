@@ -12,10 +12,6 @@ use rusqlite::Connection;
 
 /// Create the sample schema and populate it. Idempotent enough for an
 /// in-memory handle (it assumes a fresh, empty database).
-///
-/// # Errors
-/// Returns the underlying `SQLite` error if the schema or seed data batch
-/// fails to execute.
 pub fn seed(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)?;
     conn.execute_batch(DATA_SQL)?;

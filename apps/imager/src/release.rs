@@ -476,7 +476,6 @@ fn media_releases(catalog: Catalog, arch: &str) -> Vec<TiloRelease> {
         .collect()
 }
 
-/// The architectures the release catalog may describe.
 pub const SUPPORTED_ARCHITECTURES: [&str; 2] = ["x86_64", "aarch64"];
 
 /// The selected target policy for `architecture`, if the embedded catalog
@@ -1136,10 +1135,8 @@ mod tests {
         tilo_net::http::blocking_client().build().unwrap()
     }
 
-    /// Architecture-matched media selection.
     #[test]
     fn media_selection_matches_the_native_host_architecture_only() {
-        // Phase `development_catalog_is_well_formed`.
         {
             assert!(bundled_releases().is_ok());
         }
@@ -1177,7 +1174,6 @@ mod tests {
             );
         }
 
-        // Phase `unknown_or_failed_native_detection_never_offers_media`.
         {
             let catalog = catalog_with_both_architectures();
             assert!(releases_for_host(&catalog, Ok(None)).unwrap().is_empty());
@@ -1385,7 +1381,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn hardware_profiles_are_explicit_data_driven_and_provenance_bound() {
-        // Phase `hardware_variants_keep_distinct_authenticated_selection_and_source_labels`.
         {
             let releases = releases_for_host(
                 &catalog_with_hardware_variant().to_string(),
@@ -1407,7 +1402,6 @@ mod tests {
             assert!(releases[1].matches_source(&board));
         }
 
-        // Phase `legacy_catalogs_mean_generic_and_cannot_silently_claim_a_board`.
         {
             let legacy =
                 releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
@@ -1417,7 +1411,6 @@ mod tests {
             assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
         }
 
-        // Phase `generic_media_provenance_does_not_require_a_board_profile_payload`.
         {
             let mut catalog: serde_json::Value =
                 serde_json::from_str(&catalog_with_both_architectures()).unwrap();
@@ -1485,7 +1478,6 @@ mod tests {
             assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
         }
 
-        // Phase `hardware_profile_ids_are_data_driven_not_a_model_allowlist`.
         {
             let mut catalog = catalog_with_hardware_variant();
             catalog["releases"][2]["hardware_profile"] = "another-reviewed-board".into();
@@ -1502,14 +1494,12 @@ mod tests {
     /// Digest validation, verified source identity and redirect checks.
     #[test]
     fn release_sources_keep_strict_digests_identity_and_trusted_redirects() {
-        // Phase `digest_validation_is_strict`.
         {
             assert!(validate_digest(&"a".repeat(64)).is_ok());
             assert!(validate_digest(&"z".repeat(64)).is_err());
             assert!(validate_digest("abc").is_err());
         }
 
-        // Phase `verified_release_source_keeps_catalog_digest_and_file_identity`.
         {
             let image = tempfile::NamedTempFile::new().unwrap();
             let release = TiloRelease {
@@ -1544,7 +1534,6 @@ mod tests {
             assert!(source_for(&release, &missing).is_err());
         }
 
-        // Phase `trusted_redirect_check_includes_scheme_host_and_port`.
         {
             let trusted = reqwest::Url::parse("https://code.tilo.so/").unwrap();
             assert!(same_origin(
@@ -1565,7 +1554,6 @@ mod tests {
     /// Range resume, restart and oversized partials.
     #[test]
     fn release_download_resumes_only_valid_ranges() {
-        // Phase `interrupted_download_keeps_bytes_and_resumes_with_a_valid_range`.
         {
             let payload = b"signed installer archive bytes";
             let split = 9;
@@ -1602,7 +1590,6 @@ mod tests {
             drop(requests);
         }
 
-        // Phase `ignored_range_restarts_without_duplicating_the_partial`.
         {
             let payload = b"complete archive from a range-ignorant server";
             let (url, origin, requests, server) = serve(vec![HttpResponse {
@@ -1621,7 +1608,6 @@ mod tests {
             assert!(requests.lock().unwrap()[0].contains("range: bytes=8-"));
         }
 
-        // Phase `mismatched_content_range_is_discarded_before_a_clean_restart`.
         {
             let payload = b"archive with authenticated final digest";
             let split = 7;
@@ -1658,7 +1644,6 @@ mod tests {
             drop(requests);
         }
 
-        // Phase `oversized_partial_is_removed_before_requesting_the_full_archive`.
         {
             let payload = b"small complete archive";
             let (url, origin, requests, server) = serve(vec![HttpResponse {
@@ -1681,7 +1666,6 @@ mod tests {
     /// Transient failures, progress reporting and cancellation.
     #[test]
     fn release_download_failures_and_cancellation_keep_the_partial() {
-        // Phase `transient_http_failure_does_not_destroy_a_partial_archive`.
         {
             let payload = b"partial archive survives";
             let (url, origin, requests, server) = serve(vec![HttpResponse {
@@ -1703,7 +1687,6 @@ mod tests {
             assert!(requests.lock().unwrap()[0].contains("range: bytes=6-"));
         }
 
-        // Phase `observed_download_reports_bounded_byte_progress`.
         {
             let payload = b"installer bytes with progress";
             let (url, origin, _requests, server) = serve(vec![HttpResponse {
@@ -1735,7 +1718,6 @@ mod tests {
             )));
         }
 
-        // Phase `cancellation_preserves_the_resumable_partial_archive`.
         {
             let payload = b"more authenticated installer bytes";
             let split = 8;
@@ -1788,12 +1770,10 @@ mod internal_catalog_tests {
     /// Legacy media, internal purpose, unknown fields and published packages.
     #[test]
     fn internal_catalog_entries_parse_strictly_and_separately_from_media() {
-        // Phase `legacy_media_still_parses`.
         {
             assert!(parse_catalog(&catalog(media())).is_ok());
         }
 
-        // Phase `explicit_internal_purpose_never_falls_through_as_media`.
         {
             let mut value = media();
             value["purpose"] = json!("tilo-internal-installer");
@@ -1801,7 +1781,6 @@ mod internal_catalog_tests {
             assert!(parse_catalog(&catalog(value)).is_err());
         }
 
-        // Phase `catalog_rejects_unknown_fields_and_bad_foreign_entries`.
         {
             let mut value = media();
             value["unexpected"] = json!(true);
@@ -1834,9 +1813,7 @@ mod internal_catalog_tests {
             ));
         }
 
-        // Phase `published_package_entries_parse_as_internal_releases`.
         {
-            // The exact shape build-release-catalog.sh emits for a Forgejo package.
             let mut value = crate::setup::internal_bundle::tests::fixture();
             value["release_id"] = json!("imager-v1.2.3");
             let bytes = crate::setup::internal_bundle::tests::bytes(&value);
@@ -1922,7 +1899,6 @@ mod internal_catalog_tests {
     /// Internal entry binding, selection mismatches and strict profiles.
     #[test]
     fn internal_entries_bind_manifest_bytes_release_and_architecture() {
-        // Phase `internal_entries_remain_separate_and_bind_exact_manifest_bytes`.
         {
             let bytes = crate::setup::internal_bundle::tests::bytes(
                 &crate::setup::internal_bundle::tests::fixture(),
@@ -1947,7 +1923,6 @@ mod internal_catalog_tests {
             assert!(release.verify_manifest(&changed).is_err());
         }
 
-        // Phase `internal_selection_rejects_release_and_architecture_mismatch`.
         {
             let bytes = crate::setup::internal_bundle::tests::bytes(
                 &crate::setup::internal_bundle::tests::fixture(),
@@ -1965,7 +1940,6 @@ mod internal_catalog_tests {
             }
         }
 
-        // Phase `explicit_media_pair_and_internal_catalog_profiles_are_strict`.
         {
             let mut tagged = media();
             tagged["purpose"] = json!("removable-media");

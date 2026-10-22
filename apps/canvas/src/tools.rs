@@ -106,7 +106,6 @@ pub enum Tool {
     Oval,
     /// Selects freehand (drag) or point by point (click).
     Lasso,
-    /// Selects like colour touching a point.
     Wand,
     /// Fills like colour touching a point.
     Bucket,
@@ -302,7 +301,6 @@ pub struct Tools {
     pub welcomed: LocalState<bool>,
     /// What was chosen from the artwork's menu, until it is carried out.
     pub menu: LocalState<String>,
-    /// What the export dialog is set to.
     pub export: crate::panels::export::Choices,
     /// What the new-artwork dialog is set to.
     pub new: crate::panels::start::Choices,
@@ -328,7 +326,6 @@ pub enum FileRequest {
     Open,
     /// Open the artwork at this path.
     OpenRecent(String),
-    /// Save to the file the artwork came from, or choose one.
     Save,
     /// Choose a file to save the artwork to, and keep working on it there.
     SaveAs,
@@ -404,9 +401,7 @@ pub struct CanvasKey {
 pub enum ViewRequest {
     ZoomIn,
     ZoomOut,
-    /// The whole artwork in view.
     Fit,
-    /// One artwork unit to a screen pixel.
     Actual,
     /// Whole screen pixels per artwork cell.
     Pixel,

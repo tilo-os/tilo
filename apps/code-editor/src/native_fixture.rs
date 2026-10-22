@@ -24,9 +24,6 @@ pub(crate) fn hash(bytes: &[u8]) -> String {
 }
 
 /// Write a new 2,000-line Rust file; refuse existing files and symlinks.
-///
-/// # Errors
-/// Returns file creation, writing, or synchronization errors.
 pub fn seed(path: &Path) -> std::io::Result<Manifest> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)

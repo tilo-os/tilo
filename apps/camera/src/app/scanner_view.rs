@@ -36,7 +36,6 @@ pub(super) struct ScannerLayout {
     pub hint: Rect,
 }
 
-/// The icon for a kind of code.
 pub(super) fn code_icon(kind: &CodeKind) -> Icon {
     match kind {
         CodeKind::Url => Icon::Link,

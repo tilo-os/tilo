@@ -113,9 +113,6 @@ impl FocusChanges {
 
 /// Connect the keyboard to the session. `wake` wakes the app when the input
 /// method reports a focus change.
-///
-/// # Errors
-/// The input method is required and the compositor does not offer it.
 pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Connection, String> {
     let im = match choice {
         InputMethodChoice::Off => None,
@@ -344,7 +341,6 @@ mod tests {
         );
         tilo_test_env::wait_until("the first read", || polls.load(Ordering::SeqCst) == 1);
 
-        // Phase `no_event_no_wakeup`.
         #[cfg(target_os = "linux")]
         {
             let tid = thread
@@ -359,20 +355,17 @@ mod tests {
             "with no input-method event the focus thread does not read again"
         );
 
-        // Phase `an_event_on_the_socket_is_read_at_once`.
         queued.lock().expect("queued").push(ImEvent::Activate);
         (&compositor).write_all(&[0]).expect("compositor writes");
         let shown = tilo_test_env::recv("the activation is reported", &changes);
         assert_eq!(shown.visibility_changed, Some(true));
         tilo_test_env::wait_until("one read per event", || polls.load(Ordering::SeqCst) == 2);
 
-        // Phase `events_the_ui_thread_read_are_collected_on_its_nudge`.
         queued.lock().expect("queued").push(ImEvent::Deactivate);
         nudge.nudge();
         let hidden = tilo_test_env::recv("the nudge collects the deactivation", &changes);
         assert_eq!(hidden.visibility_changed, Some(false));
 
-        // Phase `a_closed_compositor_ends_the_thread_after_its_last_words`.
         queued.lock().expect("queued").push(ImEvent::Activate);
         (&compositor).write_all(&[0]).expect("compositor writes");
         drop(compositor);

@@ -172,10 +172,6 @@ fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
     assert!(violations.is_empty(), "after the edit: {violations:#?}");
 }
 
-/// A script creating several notes in a row, each before the notebook
-/// republishes, appends each after the last. Every create used to take the
-/// first place, so the second left two notes at one position and the app
-/// refused to show the notebook at all.
 #[test]
 fn notes_made_one_after_another_over_actions_stay_in_order() {
     let mut app = fresh();

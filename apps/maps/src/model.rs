@@ -611,7 +611,6 @@ mod tests {
 
     #[test]
     fn recents_and_saved_places_dedupe_cap_and_keep_flags() {
-        // Phase `recents_dedupe_and_cap`.
         {
             let mut m = MapModel::default();
             for i in 0..12 {
@@ -631,7 +630,6 @@ mod tests {
             );
         }
 
-        // Phase `toggle_saved_flips`.
         {
             let mut m = MapModel::default();
             m.places.push(Place::new(
@@ -646,7 +644,6 @@ mod tests {
             assert!(!m.toggle_saved("missing"));
         }
 
-        // Phase `upsert_preserves_saved_flag`.
         {
             let mut m = MapModel::default();
             let mut p = Place::new("x", "X", Category::Shop, "addr", LatLon::new(1.0, 2.0));

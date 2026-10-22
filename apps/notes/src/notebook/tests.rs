@@ -226,8 +226,6 @@ fn titles_and_parents_change_only_through_verbs() {
     assert_eq!(texts(&notebook, &a), ["Hello"]);
 }
 
-/// Renaming a note relabels every link to it in every note, keeping each
-/// link a link to the same note.
 #[test]
 fn a_rename_relabels_the_links_to_the_note() {
     let mut notebook = Replica::<Notebook>::new();

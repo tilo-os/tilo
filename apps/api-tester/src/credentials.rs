@@ -11,9 +11,6 @@ const UNAVAILABLE: &str = "Authentication secret unavailable; unlock the host se
 pub const PENDING: &str = "Saving authentication securely; waiting for browser storage";
 
 /// Seal authentication, returning a reference only after storage acknowledges it.
-///
-/// # Errors
-/// Returns a sanitized failure, or [`PENDING`] while a browser write is staged.
 pub fn seal(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
     let Some(value) = credential_bytes(auth) else {
         return Ok(auth.clone());
@@ -30,9 +27,6 @@ pub fn seal(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
 }
 
 /// Seal authentication and wait for the backend's durable acknowledgement.
-///
-/// # Errors
-/// Returns a sanitized failure when protected storage refuses the write.
 pub async fn seal_async(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
     let Some(value) = credential_bytes(auth) else {
         return Ok(auth.clone());
@@ -69,9 +63,6 @@ pub fn pending() -> bool {
 }
 
 /// Resolve only an API Tester authentication reference from this device's store.
-///
-/// # Errors
-/// Returns a sanitized failure for malformed, unavailable or corrupt references.
 pub fn resolve(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
     let Auth::SecretRef { id, .. } = auth else {
         return Ok(auth.clone());
@@ -131,9 +122,6 @@ impl Migration {
 
     /// Rewrite visible legacy fields; history is not erased. Retain this
     /// migration across pending retries until all edits can commit together.
-    ///
-    /// # Errors
-    /// Returns a sanitized storage or document failure, including [`PENDING`].
     pub fn migrate_document(
         &mut self,
         doc: &mut automerge::AutoCommit,

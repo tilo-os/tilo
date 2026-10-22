@@ -1873,7 +1873,6 @@ pub mod live {
             let (rd, mut wr) = tokio::io::split(stream);
             let mut reader = BufReader::new(rd);
 
-            // ---- encrypted phase: EHLO, AUTH LOGIN, MAIL/RCPT/DATA ----
             let mut line = String::new();
             loop {
                 line.clear();
@@ -2010,7 +2009,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 .unwrap();
                 let (requests, events) = super::super::spawn_with(Box::new(engine));
 
-                // The newest page, with each message's place on the server.
                 requests
                     .send(super::EngineRequest::fetch(account.clone(), Folder::Inbox))
                     .unwrap();
@@ -2024,7 +2022,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 let known = Window::of(&held, "me@example.com", Folder::Inbox).unwrap();
                 assert_eq!((known.oldest, known.newest), (1, 3));
 
-                // New mail is pushed to a watching connection.
                 requests
                     .send(super::EngineRequest::watch(account.clone()))
                     .unwrap();
@@ -2061,7 +2058,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                     refresh.flags
                 );
 
-                // Archiving moves it to where this provider archives.
                 let archived = held
                     .messages
                     .values()
@@ -2126,7 +2122,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
             reason = "one scenario test keeps each merged phase and its fresh fixture visible"
         )]
         fn imap_fetch_and_smtp_send_work_over_real_sockets() {
-            // Phase `imap_fetch_over_a_real_socket_parses_a_message`.
             {
                 let eml = b"From: Ada Lovelace <ada@analytical.example>\r\n\
     To: you@example.test\r\n\
@@ -2220,7 +2215,6 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 .unwrap();
             }
 
-            // Phase `smtp_send_over_a_real_socket_delivers_the_mime`.
             {
                 ui::rt::block_on(async move {
                     let server_tls = server_tls_config();
@@ -2299,7 +2293,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn stub_engine_reports_offline_and_never_claims_delivery() {
-        // Phase `stub_send_never_claims_delivery`.
         {
             let (tx, rx) = spawn_with(Box::new(StubEngine::new(ContentStore::memory())));
             let account = AccountConfig {
@@ -2327,7 +2320,6 @@ mod tests {
             ));
         }
 
-        // Phase `stub_connect_reports_offline_honestly`.
         {
             let (tx, rx) = spawn_with(Box::new(StubEngine::new(ContentStore::memory())));
             tx.send(EngineRequest::connect(AccountConfig {

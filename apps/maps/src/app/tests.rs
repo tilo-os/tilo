@@ -353,7 +353,6 @@ fn pan_and_zoom_follow_pointer_wheel_and_keys() {
     {
         let mut a = app_at(1280.0, 720.0);
         let before = a.model.zoom;
-        // Cursor over the right-hand map area, clear of the docked panel.
         move_to(&mut a, 1100.0, 360.0);
         let handled = feed(&mut a, &ui::synthetic_input::mouse_wheel(0.0, 1.0));
         assert!(handled, "wheel over the map must be handled");
@@ -608,7 +607,6 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
         assert_eq!(a.info_sheet.current(), Some(MapInfo::Licenses));
         a.info_sheet.close();
 
-        // Toggling again closes it.
         tap(&mut a, &Hit::ToggleOverflow);
         assert!(
             !a.overflow.is_open(),
@@ -657,7 +655,6 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
                 && (region.max.lon - munich.ne.lon).abs() < 1e-6,
             "the download footprint is the place's bounding box, not the screen rect"
         );
-        // A bigger place downloads at a coarser base zoom than a tiny one.
         let city_z = a
             .offline_panel
             .download_request(
@@ -697,7 +694,6 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
             "download surfaces a tile-count status, got {:?}",
             a.model.status
         );
-        // The download covers at least the base zoom plus the extra levels.
         assert!(
             a.tiles.progress().total > 0,
             "a real region of tiles was queued"
@@ -771,7 +767,6 @@ fn traffic_overlay_populates_honestly_and_draws_its_legend_only_when_on() {
             !a.traffic.is_empty(),
             "sample cartography yields congestion segments"
         );
-        // Toggling again turns it off.
         tap_control(&mut a, MapControlAction::ToggleTraffic);
         assert!(
             !a.map_controls.traffic_enabled(),
@@ -957,8 +952,6 @@ fn place_search_matches_ranks_and_labels_results() {
         );
     }
 }
-
-// --- Platform search ---------------------------------------------------
 
 /// The platform search reaches a running window: its query asks the
 /// geocoder, the places that come back are found beside the map's own, and
@@ -1366,7 +1359,6 @@ fn transit_time_and_journeys_drive_queries_and_map_fit() {
     {
         let mut a = app_at(1280.0, 800.0);
 
-        // Default is "leave now".
         let now_q = a.transit_query();
         assert!(now_q.time.is_none(), "leave-now sends no explicit time");
         assert!(!now_q.arrive_by, "leave-now is not arrive-by");
@@ -1468,8 +1460,6 @@ fn transit_time_and_journeys_drive_queries_and_map_fit() {
         );
     }
 }
-
-// --- POI layer (Overpass) ----------------------------------------------
 
 fn demo_poi(id: &str, lat: f64, lon: f64) -> crate::model::Poi {
     crate::model::Poi {
@@ -1676,7 +1666,6 @@ fn poi_and_marker_presses_select_open_cards_and_route() {
             "closest POI leads the list"
         );
 
-        // The draw pass records a SelectPoi target for each listed POI.
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         let has = |id: &str| {
@@ -1714,7 +1703,6 @@ fn poi_and_marker_presses_select_open_cards_and_route() {
         a.model.origin = None; // rank against the map centre, deterministically
         a.model.zoom = 16.5;
         let c = a.model.center;
-        // More POIs than the list cap, all at distinct, well-separated coords.
         a.pois = (0..(NEARBY_MAX + 4))
             .map(|i| demo_poi(&format!("p{i}"), c.lat + 0.001 * (i as f64 + 1.0), c.lon))
             .collect();
@@ -1762,7 +1750,6 @@ fn poi_and_marker_presses_select_open_cards_and_route() {
         assert_eq!(vis.len(), 1, "overlapping markers collapse to one");
         let kept = a.pois[vis[0]].id.clone();
         assert_eq!(kept, "transit", "the salient category is the kept marker");
-        // The hit-test at that pixel returns exactly the kept marker.
         let p = a.projection().project(c);
         assert_eq!(
             a.poi_at(p).as_deref(),
@@ -1821,7 +1808,6 @@ fn poi_and_marker_presses_select_open_cards_and_route() {
         let mut a = app_at(1280.0, 800.0);
         a.model.selected = None;
         let proj = a.projection();
-        // Project a known place to where its pin head sits.
         let place = a.model.place("hofgarten").unwrap().clone();
         let anchor = proj.project(place.pos);
         let head = Point::new(anchor.x, anchor.y - 22.0);
@@ -1864,8 +1850,6 @@ fn poi_and_marker_presses_select_open_cards_and_route() {
         );
     }
 }
-
-// --- Time picker for all modes -----------------------------------------
 
 #[test]
 #[allow(
@@ -1914,7 +1898,6 @@ fn directions_modes_and_route_replies_recompute_the_route() {
             "swap dismisses the endpoint draft and its overlay"
         );
         let ba = a.model.route.clone().expect("route B→A present");
-        // Labels swapped.
         assert_eq!(a.model.origin_name, to0, "from-label must become old to");
         assert_eq!(a.model.dest_name, from0, "to-label must become old from");
         // Coordinates genuinely reversed, not collapsed to a single point.
@@ -2121,7 +2104,6 @@ fn directions_modes_and_route_replies_recompute_the_route() {
             "the card action opens the Directions view (no tab toggle)"
         );
 
-        // Back returns to the plain list view.
         let mut scene2 = Scene::new();
         a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
         let back = a
@@ -2350,8 +2332,6 @@ fn narrow_layout_drawer_reflows_layers_and_toggles() {
     }
 }
 
-// --- Typeable origin ---------------------------------------------------
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2368,7 +2348,6 @@ fn route_endpoints_come_from_ranked_search_or_an_honest_location_fix() {
         a.enter_directions();
         let before = a.model.route.clone().expect("initial route present");
 
-        // Focus the From field, type, and confirm a local match populates.
         a.endpoints.begin_edit(Endpoint::Origin);
         a.apply_endpoint_effect(EndpointEffect::Changed {
             endpoint: Endpoint::Origin,
@@ -2625,10 +2604,6 @@ fn route_endpoints_come_from_ranked_search_or_an_honest_location_fix() {
         );
     }
 }
-
-// --- Location services -------------------------------------------------
-
-// --- Transit time picker -----------------------------------------------
 
 // --- Real handle_event path --------------------------------------------
 // The tests above exercise the internal helpers; these drive the *actual*
@@ -2906,8 +2881,6 @@ fn key_named(a: &mut MapsApp, named: NamedKey) -> bool {
     feed_key(a, Key::Named(named))
 }
 
-// --- Offline download / cache management dispatch -----------------------
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2968,7 +2941,6 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
         );
         assert!(!region.name.is_empty(), "the region has a human label");
 
-        // Deleting via its id removes exactly that record.
         tap_offline(&mut a, OfflineAction::DeleteRegion(region.id.clone()));
         assert!(
             !a.model.regions.iter().any(|r| r.id == region.id),
@@ -3046,7 +3018,6 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
             );
         }
 
-        // Deleting the last owner frees all of its tiles.
         tap_offline(&mut a, OfflineAction::DeleteRegion("big".to_string()));
         for id in &big_ids {
             assert!(
@@ -3332,7 +3303,6 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
         }
         assert!(traffic.y1 <= a.rect.y1, "the whole cluster stays on screen");
 
-        // Without a card the cluster returns to the window's top margin.
         let mut plain = MapsApp::offline_empty();
         plain.rect = a.rect;
         plain.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);

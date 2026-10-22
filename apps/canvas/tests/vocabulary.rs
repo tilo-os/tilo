@@ -1,5 +1,3 @@
-//! The artwork's vocabulary, applied the way the palette, an agent or a
-//! script applies it.
 #![allow(
     clippy::needless_pass_by_value,
     clippy::too_many_lines,
@@ -679,7 +677,6 @@ fn marks_go_directly_above_or_below_another() {
     assert!(refused.contains("`of`"), "{refused}");
 }
 
-/// A gradient travels with its mark, and a flat fill replaces it.
 #[test]
 fn a_gradient_moves_with_its_mark_and_a_fill_replaces_it() {
     let mut art = Replica::<Artwork>::new();

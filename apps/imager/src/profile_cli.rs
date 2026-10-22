@@ -20,10 +20,6 @@ fn value(args: &[String], name: &str) -> io::Result<String> {
 }
 
 /// Embed a secret-free profile in a regular media image and verify its bytes.
-///
-/// # Errors
-/// Returns an error for missing arguments, invalid profile values, a non-regular
-/// target, insufficient space, or failed write/read-back verification.
 pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let target = PathBuf::from(value(args, "--target")?);
 

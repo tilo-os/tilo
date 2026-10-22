@@ -50,7 +50,6 @@ pub enum Step {
     /// Not shown.
     #[default]
     Closed,
-    /// Asking for the token.
     Token,
     /// Asking Discord which servers the bot is in.
     Finding,
@@ -94,7 +93,6 @@ pub enum FindError {
     Refused,
     /// Discord could not be reached.
     Unreachable,
-    /// Discord answered with an error.
     Discord,
     /// Discord's answer could not be read.
     Unreadable,
@@ -115,10 +113,6 @@ impl FindError {
 }
 
 /// Ask Discord which servers the bot with `token` is in.
-///
-/// # Errors
-/// The token is not one, Discord refused it, or Discord could not be
-/// reached or read.
 pub async fn find_servers(token: String) -> Result<Vec<Server>, FindError> {
     let token = token.trim().to_owned();
     if !crate::token::valid_token_shape(&token) {
@@ -350,7 +344,6 @@ pub fn answer(
     }
 }
 
-/// The sheet's body for `step`.
 fn body(setup: &Setup, step: &Step) -> Element {
     let text = |key: &str| -> Element { Box::new(Text::new(&CATALOG.t(key))) };
     let named = |key: &str, server: &Server| -> Element {
@@ -403,7 +396,6 @@ fn body(setup: &Setup, step: &Step) -> Element {
     }
 }
 
-/// The primary action's label at `step`.
 fn primary_label(step: &Step) -> String {
     CATALOG.t(match step {
         Step::Closed | Step::Token | Step::Finding => "discord-setup-find",
@@ -527,7 +519,6 @@ pub struct SetupDoor {
 }
 
 impl SetupDoor {
-    /// `page` with the setup's sheet over it.
     #[must_use]
     pub fn new(page: Element, sheet: Element, setup: &Setup) -> Self {
         Self {

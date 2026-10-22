@@ -1513,10 +1513,8 @@ mod tests {
             );
             assert!(layout.total_height > 0.0);
             assert!(layout.page_count() >= 1);
-            // The long paragraph wrapped into multiple lines.
             let para_block = &layout.blocks[1];
             assert!(para_block.lines.len() >= 2, "paragraph should wrap");
-            // Lines are monotonically increasing in y.
             let ys: Vec<f32> = para_block.lines.iter().map(|l| l.y).collect();
             assert!(ys.windows(2).all(|w| w[1] > w[0]));
         }
@@ -1579,7 +1577,6 @@ mod tests {
                 &FontChoice::SansSerif,
             );
             assert!(layout.page_count() >= 3, "lots of text -> several pages");
-            // Page starts strictly increase.
             assert!(layout.pages.windows(2).all(|w| w[1] > w[0]));
         }
 
@@ -1626,7 +1623,6 @@ mod tests {
                 b.text, "alpha beta gamma",
                 "canonical text joins words with spaces"
             );
-            // Each run carries a char range that indexes into the canonical text.
             let runs: Vec<&LineRun> = b.lines.iter().flat_map(|l| l.runs.iter()).collect();
             assert_eq!(runs.len(), 3);
             for r in &runs {

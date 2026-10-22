@@ -16,7 +16,6 @@ use crate::panels::shortcuts::keys_for;
 use crate::selection::{Combine, Select, UseSelection};
 use crate::tools::{CanvasKey, Tools};
 
-/// The canvas with its context menu.
 pub fn over(
     canvas: ui::widget::Element,
     tools: &Tools,
@@ -68,7 +67,6 @@ fn lookup(id: &str) -> String {
     ui::i18n::I18nManager::lookup_plain(id)
 }
 
-/// An entry that applies `action` to the artwork.
 fn applying(dispatcher: &Dispatcher<Artwork>, label: &str, action: Invoke<Artwork>) -> MenuEntry {
     let dispatcher = dispatcher.clone();
     MenuEntry::new(lookup(label), move || dispatcher.submit(action.clone()))

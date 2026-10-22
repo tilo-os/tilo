@@ -1,9 +1,4 @@
-//! Calls through the native voice service, and two participants converging on
-//! one room over the real sync path.
-
 use super::*;
-
-// --- sidebar mute/deafen (were dead outside a call) -----------------
 
 #[test]
 fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
@@ -93,7 +88,6 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
             !buttons.iter().any(|(label, ..)| *label == "Follow host"),
             "the non-functional Follow-host toggle was removed"
         );
-        // The genuinely-wired controls remain.
         assert!(buttons.iter().any(|(l, ..)| *l == "Unmute"));
         assert!(buttons.iter().any(|(l, ..)| *l == "Leave"));
     }
@@ -324,8 +318,6 @@ fn microphone_intent_waits_for_local_service_and_never_writes_membership() {
     assert_eq!(doc.save(), before);
 }
 
-// --- call controls under reduced permissions ------------------------
-
 #[test]
 fn leave_remains_available_after_downgrade() {
     use ui::permissions::{PermissionContext, Role};
@@ -346,10 +338,6 @@ fn leave_remains_available_after_downgrade() {
 }
 
 // --- header Call button (was unreachable without a voice channel) ---
-
-// --- Follow-host control removal ------------------------------------
-
-// --- reaction round-trip through the picker (test gap) --------------
 
 #[test]
 fn emoji_search_enter_picks_the_best_match() {
@@ -433,7 +421,6 @@ fn two_participants_converge_on_messages_and_edits() {
 
         let mut a = peer("u_alice", "Alice", "AL", 0);
         let mut b = peer("u_bob", "Bob", "BO", 1);
-        // The room's message parts, which both hold.
         let parts = crate::testing::Room::default();
         a.attach_room(&parts);
         b.attach_room(&parts);
@@ -560,14 +547,12 @@ fn two_participants_converge_on_messages_and_edits() {
 
         let mut a = peer("u_alice", "Alice", "AL", 0);
         let mut b = peer("u_bob", "Bob", "BO", 1);
-        // The room's message parts, which both hold.
         let parts = crate::testing::Room::default();
         a.attach_room(&parts);
         b.attach_room(&parts);
         a.reload(&doc_a);
         b.reload(&doc_b);
 
-        // Alice posts, then Bob sees the original body.
         a.insert_text(&mut ui::widget::Edits::lend(&mut doc_a), "shipping friday");
         a.send_focused(&mut ui::widget::Edits::lend(&mut doc_a));
         exchange(&mut doc_a, &mut doc_b);

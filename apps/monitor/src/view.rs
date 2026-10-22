@@ -160,9 +160,7 @@ pub(crate) enum Request {
     },
     /// Sample the machine now: Refresh, or a retry of an unreadable list.
     Refresh,
-    /// The inspector's End process.
     End(u32),
-    /// The inspector's Kill process.
     Kill(u32),
     /// The inspector's End app, for the app the process belongs to.
     EndApp(u32),
@@ -316,7 +314,6 @@ struct TableShape {
     compact: bool,
 }
 
-/// The process table for `shape`, and the sort key of each of its columns.
 fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, Vec<SortKey>) {
     let mut columns = vec![(
         SortKey::Name,

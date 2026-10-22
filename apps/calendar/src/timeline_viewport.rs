@@ -21,7 +21,6 @@ pub(super) const TIMELINE_MIN_HOUR_H: f64 = ui::tokens::Metrics::BASE.panel_row_
 pub(super) struct TimelineType {
     /// "Mon" over each day column.
     pub weekday: TextStyle,
-    /// The day number under it.
     pub day: TextStyle,
     /// An all-day event's title in its strip.
     pub strip: TextStyle,
@@ -400,7 +399,6 @@ mod tests {
 
     #[test]
     fn geometry_keeps_legible_hours_maps_columns_and_grows_with_the_text() {
-        // Case `geometry_keeps_legible_hours_and_maps_columns`.
         {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);
@@ -412,7 +410,6 @@ mod tests {
                 3
             );
         }
-        // Case `scaled_text_grows_the_header_strip_blocks_and_gutter`.
         {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let large = Theme::dark().with_text_scale(2.0);
@@ -479,7 +476,6 @@ mod tests {
                 "an hour rule sits on the body top"
             );
         }
-        // Case `scroll_offset_drives_minute_and_block_hit_geometry`.
         {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);

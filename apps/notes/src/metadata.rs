@@ -220,7 +220,6 @@ impl NoteDateIndex {
     }
 }
 
-/// Whether `history` holds every change in `heads`.
 fn contains_all(history: &automerge::Automerge, heads: &[ChangeHash]) -> bool {
     heads
         .iter()

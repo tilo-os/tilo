@@ -37,7 +37,6 @@ pub(crate) struct CallVideo {
     pub(crate) wanted: Vec<Shown>,
     /// What the service was last told.
     told: Vec<Shown>,
-    /// The `Show` in flight.
     showing: Option<u64>,
     /// The collection in flight, and when it was sent.
     collecting: Option<(u64, Instant)>,
@@ -904,15 +903,12 @@ mod tests {
                 )
             })
         };
-        // The page stood still for half a minute past the watch's deadline.
         let woken = now + WATCH_LOST + Duration::from_secs(30);
         assert!(!leaves(&voice.take_requests(woken)), "the call stays");
         assert_eq!(voice.snapshot.state, State::Live);
         assert_eq!(voice.channel.as_deref(), Some("voice"));
-        // The answer that waited meanwhile is taken as any other.
         assert!(!voice.complete(request_id(&watch[0]), &Ok(live())));
         assert_eq!(voice.snapshot.state, State::Live);
-        // Running again, a watch that stays unanswered is still given up.
         let next = voice.take_requests(woken);
         assert_eq!(next.len(), 1);
         let lost = woken + WATCH_LOST;
@@ -1631,7 +1627,6 @@ mod tests {
                 },
             ]
         );
-        // A window nobody sees asks for nothing.
         app.presented = false;
         assert!(app.wanted_pictures().is_empty());
     }
@@ -1690,7 +1685,6 @@ mod tests {
                 .any(|request| command(request) == Command::Pictures { after: 5 }),
             "the next collection continues where the last ended"
         );
-        // Out of the call, nothing is collected.
         voice.submit(Command::Leave).unwrap();
         assert!(
             voice

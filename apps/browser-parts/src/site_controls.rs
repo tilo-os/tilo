@@ -553,7 +553,6 @@ mod tests {
     /// Origin canonicalisation, exceptions, private sharing and certificate text.
     #[test]
     fn site_origins_exceptions_and_certificates_are_canonical() {
-        // Phase `canonical_origin_rejects_nonweb_and_preserves_ports`.
         {
             assert_eq!(
                 origin("HTTPS://User:pass@EXAMPLE.com:443/path?q=1#x"),
@@ -574,7 +573,6 @@ mod tests {
             }
         }
 
-        // Phase `an_accepted_change_is_a_decision_and_the_engine_follows_the_document`.
         {
             let recorder = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = std::sync::Arc::new(NativeRecordingEngine(recorder.clone()));
@@ -610,7 +608,6 @@ mod tests {
             }));
         }
 
-        // Phase `certificate_dates_and_protocol_versions_are_human_readable`.
         {
             assert_eq!(
                 certificate_date(11_644_473_600.0 * 1_000_000.0 + 86400.0 * 1_000_000.0),
@@ -620,14 +617,12 @@ mod tests {
             assert_eq!(tls_version(6), "TLS 1.3");
         }
     }
-    /// Panel viewport, navigation discards and bounded polling.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn site_panel_is_scrollable_and_discards_stale_state_on_navigation() {
-        // Phase `navigation_discards_count_pending_actions_and_stale_status`.
         {
             let mut controls = SiteControls::default();
             controls.open = true;
@@ -650,7 +645,6 @@ mod tests {
             assert!(controls.notice.is_empty());
         }
 
-        // Phase `site_panel_has_a_visible_scroll_viewport_and_actionable_children`.
         {
             let mut controls = SiteControls::default();
             controls.open = true;
@@ -716,7 +710,6 @@ mod tests {
             assert!(matches!(controls.pending.get(), Some(Pending::Close)));
         }
 
-        // Phase `polling_is_bounded_and_stale_buttons_cannot_act_after_navigation`.
         {
             let capture = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
@@ -792,14 +785,12 @@ mod tests {
         }
     }
 
-    /// Protection reload success, cancellation and stale replies.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn protection_toggle_reloads_only_after_a_current_success() {
-        // Phase `successful_protection_toggle_reloads_once_even_after_panel_dismissal`.
         {
             for kind in ["enable", "disable"] {
                 for dismiss in [false, true] {
@@ -850,7 +841,6 @@ mod tests {
             }
         }
 
-        // Phase `protection_reload_is_cancelled_by_navigation_or_new_document`.
         {
             for target in [
                 "https://two.test/page",
@@ -877,7 +867,6 @@ mod tests {
             }
         }
 
-        // Phase `failed_or_stale_protection_replies_do_not_reload`.
         {
             for case in [
                 "failure",

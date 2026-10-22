@@ -1,5 +1,3 @@
-//! The artwork as a document a person names, starts, opens, saves and
-//! exports, and the steps that leaves in its history.
 #![allow(
     clippy::unwrap_used,
     reason = "test assertions over exact, hand-written fixtures"
@@ -512,7 +510,6 @@ fn open_and_save_as_read_and_write_through_the_host() {
     let (services, recorder) = ui::host::HostServices::recording();
     let copy = dir.path().join("Valley copy.artwork");
     ui::host::scoped(&services, || {
-        // The host reads and writes the chosen file as background work.
         let work = ui::background::Pumped::new();
         let _work = work.background().enter();
         app.harness()

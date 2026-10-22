@@ -30,7 +30,6 @@ use attachment_import::{
 use embedded_input::drive_retained_control;
 pub(crate) use embedded_input::drive_text_input;
 
-/// The record's id for `id`.
 fn item(id: &str) -> ui::tilo_resource::Id {
     ui::tilo_resource::Id::from_raw(id)
 }
@@ -319,7 +318,6 @@ impl ChatApp {
             self.call_hovered = hovered;
             *handled = true;
         }
-        // Track an in-progress channel-row swipe.
         if let Some(sw) = &mut self.swipe {
             sw.current = self.last_mouse;
             *handled = true;
@@ -1269,8 +1267,6 @@ impl ChatApp {
         }
     }
 
-    // --- voice / call wiring ---------------------------------------------
-
     /// Pointer and accessibility call controls use the same local service as
     /// exported Effect resources. They never mutate durable voice membership.
     fn join_voice(&mut self, channel: &str, _doc: &mut ui::widget::Edits<'_>) {
@@ -1294,8 +1290,6 @@ impl ChatApp {
             self.media_error = Some(error);
         }
     }
-
-    // --- structure CRUD ---------------------------------------------------
 
     pub(crate) fn apply_menu_action(
         &mut self,

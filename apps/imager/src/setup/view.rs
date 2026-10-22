@@ -3782,7 +3782,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn folder_selection_blocks_navigation_until_scans_and_pickers_settle() {
-        // Phase `folder_selection_held_scans_block_both_experiences_until_every_terminal_result`.
         {
             for experience in [Experience::Desktop, Experience::FullOs] {
                 let mut app = SetupApp::with_worker_launcher(
@@ -3834,7 +3833,6 @@ mod tests {
             }
         }
 
-        // Phase `folder_selection_pending_picker_blocks_next_until_cancelled`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -3859,7 +3857,6 @@ mod tests {
             assert_eq!(app.controller().page(), SetupPage::Review);
         }
 
-        // Phase `folder_selection_disconnected_picker_recovers_with_existing_failure_path`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -3880,7 +3877,6 @@ mod tests {
             assert_eq!(app.controller().page(), SetupPage::Review);
         }
 
-        // Phase `folder_selection_stale_desktop_install_is_disabled_and_rejected_until_settled`.
         {
             for pending in [PendingFolderSelection::Scan, PendingFolderSelection::Picker] {
                 let (render_app, _render_picker_tx) = stale_ready_desktop_review(pending);
@@ -3931,7 +3927,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn experience_commands_route_through_the_controller() {
-        // Phase `unavailable_experience_command_cannot_proceed`.
         {
             let mut app = SetupApp::with_capabilities(SetupCapabilities {
                 platform: Capabilities {
@@ -3949,7 +3944,6 @@ mod tests {
             assert!(app.status.contains("available"));
         }
 
-        // Phase `copy_connected_and_later_commands_change_review`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -3972,7 +3966,6 @@ mod tests {
             }
         }
 
-        // Phase `back_retains_experience_and_folder_settings`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
@@ -4025,7 +4018,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Phase `enter_and_space_keyboard_events_reach_controller_commands`.
         {
             let app = supported_fixture();
             let observed = app.controller_handle();
@@ -4043,7 +4035,6 @@ mod tests {
             assert_eq!(observed.borrow().page(), SetupPage::Folders);
         }
 
-        // Phase `assistive_activation_reaches_controller_command`.
         {
             let app = supported_fixture();
             let observed = app.controller_handle();
@@ -4369,14 +4360,12 @@ mod tests {
             .unwrap();
     }
 
-    /// Failed scans, warnings, distinct destinations and launch failures.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn scan_results_warnings_and_launch_failures_are_truthful() {
-        // Phase `failed_scan_worker_never_becomes_a_completed_folder`.
         {
             let mut app = supported_fixture();
             app.apply_worker_message(WorkerMessage::ScanFinished {
@@ -4389,7 +4378,6 @@ mod tests {
             assert!(!app.status.contains("ready to copy"));
         }
 
-        // Phase `partial_scan_warnings_persist_on_folder_and_review_screens`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -4442,7 +4430,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Phase `concurrent_same_basename_completions_receive_distinct_destinations`.
         {
             let mut app = supported_fixture();
             let destination = PathBuf::from(TEST_DEST_ROOT).join("Documents");
@@ -4467,7 +4454,6 @@ mod tests {
             );
         }
 
-        // Phase `worker_launch_failures_clear_pending_state`.
         {
             let mut scan_app = SetupApp::with_worker_launcher(
                 supported_fixture().capabilities,
@@ -4503,7 +4489,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn folder_sources_are_validated_before_scanning_and_show_mode_feedback() {
-        // Phase `protected_and_overlapping_sources_are_rejected_before_worker_launch`.
         {
             let mut protected = SetupApp::with_worker_launcher(
                 supported_fixture().capabilities,
@@ -4529,7 +4514,6 @@ mod tests {
             assert!(overlapping.status.contains("already covered"));
         }
 
-        // Phase `overlapping_scan_is_deduplicated_with_an_explanation`.
         {
             let mut app = supported_fixture();
             app.apply_worker_message(WorkerMessage::ScanFinished {
@@ -4545,7 +4529,6 @@ mod tests {
             assert!(app.status.contains("already covered"));
         }
 
-        // Phase `system_folder_scan_is_refused`.
         {
             let mut app = supported_fixture();
             app.apply_worker_message(WorkerMessage::ScanFinished {
@@ -4565,7 +4548,6 @@ mod tests {
             assert!(app.status.contains("system folder"));
         }
 
-        // Phase `var_home_user_folder_is_accepted`.
         #[cfg(unix)]
         {
             let mut app = supported_fixture();
@@ -4586,7 +4568,6 @@ mod tests {
             assert!(app.status.contains("ready to copy"));
         }
 
-        // Phase `inherited_and_overridden_folder_modes_have_visible_selection_feedback`.
         {
             let mut inherited = supported_fixture();
             inherited.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -4686,7 +4667,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn desktop_review_shows_exact_status_and_recovers_from_failures() {
-        // Phase `initial_worker_loss_can_recheck_and_recover_navigation_in_the_same_app`.
         {
             RECOVERY_PROBES.store(0, Ordering::SeqCst);
             let mut app = SetupApp::with_capabilities(SetupCapabilities {
@@ -4750,7 +4730,6 @@ mod tests {
             assert_eq!(RECOVERY_PROBES.load(Ordering::SeqCst), 2);
         }
 
-        // Phase `desktop_review_shows_exact_host_version_and_pending_destination_before_authorization`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -4796,7 +4775,6 @@ mod tests {
             assert!(desktop < folders);
         }
 
-        // Phase `installed_review_leads_with_login_guidance_and_completion_status`.
         {
             let app = SetupApp::for_shot("setup-desktop-installed");
             let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
@@ -4826,7 +4804,6 @@ mod tests {
             );
         }
 
-        // Phase `native_failure_and_retry_retain_folder_choice_and_mode`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
@@ -4860,7 +4837,6 @@ mod tests {
             assert_eq!(app.controller().default_mode(), FolderMode::Copy);
         }
 
-        // Phase `desktop_review_ignores_unselected_full_os_download_status`.
         {
             let mut app = SetupApp::for_shot("setup-review");
             app.desktop_revision = app.desktop_flow.revision();
@@ -4871,7 +4847,6 @@ mod tests {
             assert_eq!(app.status, expected);
         }
 
-        // Phase `full_os_review_ignores_unselected_desktop_install_status`.
         {
             let mut app = supported_fixture();
             app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
@@ -4902,14 +4877,12 @@ mod tests {
         }
     }
 
-    /// Embedded import routing and issue pages.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn embedded_import_routes_the_live_child_and_its_public_pages() {
-        // Phase `opened_imports_replace_setup_in_the_published_tree`.
         {
             let mut app = launch(supported_fixture(), || {
                 ImportApp::for_shot("import-first-login-later")
@@ -4945,7 +4918,6 @@ mod tests {
             );
         }
 
-        // Phase `opened_imports_publicly_observe_completed_issue_pages`.
         {
             let mut app = launch(supported_fixture(), || {
                 ImportApp::for_shot("import-issue-pages")
@@ -5200,7 +5172,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn semantic_setup_operations_validate_choices_identities_and_arguments() {
-        // Phase `semantic_operations_choose_navigate_retain_and_invalidate_review`.
         {
             let mut app = supported_fixture();
             let selected = invoke_setup(
@@ -5274,7 +5245,6 @@ mod tests {
             assert_eq!(back["selection"]["folder_count"], 1);
         }
 
-        // Phase `semantic_operations_refuse_unavailable_choices_without_mutating_state`.
         {
             let mut app = SetupApp::with_capabilities(SetupCapabilities {
                 platform: Capabilities {
@@ -5312,7 +5282,6 @@ mod tests {
             assert_eq!(app.controller().page(), SetupPage::Folders);
         }
 
-        // Phase `semantic_operations_refuse_stale_identities_and_malformed_arguments`.
         {
             let mut app = supported_fixture();
             invoke_setup(
@@ -5356,7 +5325,6 @@ mod tests {
             assert_eq!(app.controller().folders(), before.as_slice());
         }
 
-        // Phase `suggested_folder_action_uses_live_choice_and_rechecks_availability`.
         {
             let mut app = supported_fixture();
             app.worker_launcher = accepted_without_completion_worker;
@@ -5400,7 +5368,6 @@ mod tests {
             assert!(invoke_encoded_setup(&mut app, &encoded).is_err());
         }
 
-        // Phase `retained_folder_action_uses_identity_after_earlier_folder_is_removed`.
         {
             let mut app = supported_fixture();
             invoke_setup(
@@ -5457,14 +5424,12 @@ mod tests {
         }
     }
 
-    /// Setup actions and resource projection.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn setup_resource_follows_visible_pages_and_projects_folder_selection() {
-        // Phase `setup_actions_follow_visible_pages_and_import_takeover`.
         {
             let mut app = supported_fixture();
             assert!(
@@ -5540,7 +5505,6 @@ mod tests {
             );
         }
 
-        // Phase `setup_resource_projects_availability_help_and_import_navigation`.
         {
             let app = SetupApp::with_capabilities(SetupCapabilities {
                 platform: Capabilities {
@@ -5676,7 +5640,6 @@ mod tests {
             );
         }
 
-        // Phase `setup_resource_browses_complete_path_free_folder_selection`.
         {
             let mut app = supported_fixture();
             for (name, bytes) in [("Documents", 4096), ("Pictures", 2048)] {
@@ -6418,7 +6381,6 @@ mod tests {
             assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 2);
         }
 
-        // Phase `full_os_shot_fixtures_pose_a_plan_blocker_and_restart`.
         {
             let review = SetupApp::for_shot("setup-full-review");
             assert!(review.on_full_os_review());

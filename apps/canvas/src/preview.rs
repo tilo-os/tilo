@@ -19,7 +19,6 @@ use crate::render::{Options, Renderer};
 pub struct VersionPreview {
     canvas: Element,
     preview: LocalState<Option<String>>,
-    /// The version shown and the artwork as it was then.
     shown: Option<(String, Artwork)>,
     /// Its own renderer: a past version's layers must not replace the live
     /// ones' simulations.

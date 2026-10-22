@@ -345,7 +345,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn native_rules_survive_cache_failures_and_admit_one_refresh() {
-        // Phase `private_refresh_does_not_recreate_root_after_helper_exit`.
         #[cfg(unix)]
         {
             let root = crate::storage::allocate_private_root().unwrap();
@@ -368,7 +367,6 @@ mod tests {
             assert!(!remained, "child left or recreated its private root");
         }
 
-        // Phase `baseline_protection_exists_without_network_or_cache`.
         {
             let dir = tempfile::tempdir().unwrap();
             let rules = cached_rules(dir.path());
@@ -376,7 +374,6 @@ mod tests {
             assert!(rules.contains("||googlesyndication.com^"));
         }
 
-        // Phase `reads_known_cached_lists_and_ignores_other_files`.
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("easylist.txt"), "||ads.fixture.test^").unwrap();
@@ -386,7 +383,6 @@ mod tests {
             assert!(!rules.contains("must-not-load"));
         }
 
-        // Phase `refresh_cache_failure_and_retry_preserve_valid_rules`.
         {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("fixture.txt"), "||cached.test^").unwrap();
@@ -418,7 +414,6 @@ mod tests {
             server.join().unwrap();
         }
 
-        // Phase `concurrent_refresh_requests_admit_only_one_worker`.
         {
             let state = Arc::new(std::sync::Mutex::new(Status::default()));
             #[allow(

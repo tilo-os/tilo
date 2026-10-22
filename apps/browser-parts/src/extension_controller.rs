@@ -406,8 +406,6 @@ impl ExtensionController {
         }
     }
 
-    // ---- Interface ------------------------------------------------------
-
     fn model(&self) -> toolbar::Model {
         toolbar::model(&self.installed, |id| self.host.action_state(id))
     }
@@ -816,7 +814,6 @@ mod tests {
             Some(Panel::Popup { size, .. }) => *size,
             _ => None,
         };
-        // A popup wider than a panel, as tall as its list.
         page.push_event(ui::webview::WebViewEvent::DocumentSize {
             width: 380.0,
             height: 430.0,

@@ -55,9 +55,6 @@ impl Pictures {
 
     /// Render the invocation's snapshot, using its window's content store.
     /// File writes stay with the completion, where the host's grants apply.
-    ///
-    /// # Errors
-    /// Returns a render or encoding failure, or an unsupported operation.
     pub fn render(
         &self,
         art: &Artwork,

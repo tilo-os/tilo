@@ -42,33 +42,25 @@ pub struct BridgePlan {
     pub threads: Vec<Value>,
     /// `send`, then `map` the message.
     pub sends: Vec<Value>,
-    /// `edit`.
     pub edits: Vec<Value>,
     /// `delete`, then `unmap` the message.
     pub deletes: Vec<Value>,
-    /// `react`.
     pub reacts: Vec<Value>,
-    /// `unreact`.
     pub unreacts: Vec<Value>,
     /// `apply-channel`, then `map` it as `kind`.
     pub apply_channels: Vec<Value>,
-    /// `delete-channel`.
     pub delete_channels: Vec<Value>,
-    /// `unmap`.
     pub unmaps: Vec<Value>,
-    /// `create-webhook`, then `map` the webhook.
     pub webhooks: Vec<Value>,
     /// `apply-role`, then `map` the role.
     pub apply_roles: Vec<Value>,
     /// `set-overwrite`.
     pub overwrites: Vec<Value>,
-    /// `set-member-roles`.
     pub member_roles: Vec<Value>,
     /// `kick`: a linked person was removed from the room.
     pub kicks: Vec<Value>,
     /// `ban`: a linked person was banned from the room.
     pub bans: Vec<Value>,
-    /// `unban`.
     pub unbans: Vec<Value>,
     /// `fetch-asset`, then `remember-avatar`.
     pub avatars: Vec<Value>,
@@ -76,27 +68,20 @@ pub struct BridgePlan {
     pub posts: Vec<Value>,
     /// `fetch-asset`, then Chat `post` with the file, then `map`.
     pub files: Vec<Value>,
-    /// Chat `edit-message`.
     pub chat_edits: Vec<Value>,
-    /// Chat `delete-message`, then `unmap`.
     pub chat_deletes: Vec<Value>,
     /// Chat `remove-message`, then `unmap`.
     pub chat_removes: Vec<Value>,
-    /// Chat `react` with the Discord user's appearance.
     pub chat_reacts: Vec<Value>,
     /// Chat `unreact` with the Discord user's appearance.
     pub chat_unreacts: Vec<Value>,
     /// `block-persona`.
     pub blocks: Vec<Value>,
-    /// `complete-link`.
     pub complete_links: Vec<Value>,
-    /// `unlink`.
     pub unlinks: Vec<Value>,
     /// `rename-link`.
     pub renames: Vec<Value>,
-    /// Chat `create-category`, then `map` it.
     pub import_categories: Vec<Value>,
-    /// Chat `create-channel`, then `map` it.
     pub import_channels: Vec<Value>,
     /// `map` of a Tilo channel or category that already matches.
     pub adopt: Vec<Value>,

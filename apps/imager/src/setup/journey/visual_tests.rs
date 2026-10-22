@@ -1,4 +1,3 @@
-//! Paint the real guided widgets offscreen, without opening an installer window.
 use super::*;
 use crate::resource::GuidedInstallerShell;
 use std::path::PathBuf;
@@ -1269,7 +1268,6 @@ fn account_decision_pages_slide_forward_back_and_block_pointer_until_settled() {
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert_eq!(preview.accounts.navigation_step(), "confirm");
         let direction = preview.slide.as_ref().unwrap().0;
-        // Hold the midpoint for deterministic pointer delivery.
         preview.slide = Some((direction, ui::motion::Presence::held_at(500)));
     })
     .unwrap();
@@ -2466,7 +2464,6 @@ fn personal_fields_enter_advances_and_password_enter_focuses_confirmation() {
             Page::Devices,
             "the interactive profile advances to Devices"
         );
-        // An older preparation can still restore the retained unlock page.
         preview.journey.page = Page::Password;
         preview.dirty = true;
     })

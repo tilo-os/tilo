@@ -732,10 +732,8 @@ mod tests {
         assert!(fresh.has_pending_operation());
     }
 
-    /// Readiness, recheck, download, progress and authorization outcomes.
     #[test]
     fn desktop_install_rechecks_downloads_and_reports_distinct_outcomes() {
-        // Phase `readiness_publishes_exact_host_version_and_already_installed_status`.
         {
             let flow = ready_flow(InstalledPackage::Installed {
                 version: "0.1.9-1.fc44".into(),
@@ -749,7 +747,6 @@ mod tests {
             assert!(selection.already_installed);
         }
 
-        // Phase `install_rechecks_and_requires_review_when_selected_version_changes`.
         {
             let mut flow = ready_flow(InstalledPackage::Absent);
             flow.start_install().unwrap();
@@ -767,7 +764,6 @@ mod tests {
             assert!(!flow.has_pending_operation());
         }
 
-        // Phase `matching_recheck_downloads_then_tracks_native_progress_to_completion`.
         {
             let mut flow = ready_flow(InstalledPackage::Absent);
             flow.start_install().unwrap();
@@ -792,7 +788,6 @@ mod tests {
             assert!(matches!(flow.state(), DesktopFlowState::Installed { .. }));
         }
 
-        // Phase `authorization_outcomes_and_package_failure_are_distinct_and_retry_rechecks`.
         {
             for (event, expected) in [
                 (
@@ -820,10 +815,8 @@ mod tests {
         }
     }
 
-    /// Cancellation and disconnection.
     #[test]
     fn desktop_download_cancellation_and_worker_loss_are_reported_truthfully() {
-        // Phase `download_cancellation_is_not_reported_as_native_transaction_cancellation`.
         {
             let mut flow = ready_flow(InstalledPackage::Absent);
             flow.begin_download_for_test();
@@ -839,7 +832,6 @@ mod tests {
             ));
         }
 
-        // Phase `accepted_download_cancellation_wins_over_a_queued_success`.
         {
             INSTALL_LAUNCHES.store(0, Ordering::SeqCst);
             let mut flow = DesktopFlow::without_start(DesktopRuntime {
@@ -866,7 +858,6 @@ mod tests {
             ));
         }
 
-        // Phase `a_disconnected_operation_reports_worker_loss_without_blocking`.
         {
             let mut flow = DesktopFlow::without_start(runtime());
             flow.start_check().unwrap();

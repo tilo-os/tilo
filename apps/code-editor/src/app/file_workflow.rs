@@ -4,8 +4,6 @@ use super::{
 };
 
 impl CodeApp {
-    // ---- saving -----------------------------------------------------------
-
     /// Write one buffer to its file.
     ///
     /// `force` is the user having answered "overwrite anyway" to a conflict; it
@@ -160,8 +158,6 @@ impl CodeApp {
             }
         }
     }
-
-    // ---- the file picker --------------------------------------------------
 
     /// Ask the host desktop for a folder to open as the project.
     ///

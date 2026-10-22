@@ -106,7 +106,6 @@ pub struct DbClientApp {
     record: Rc<Record>,
     export_rx: Option<ui::portal::PortalChannel>,
     export_snapshot: Option<crate::model::QueryResult>,
-    /// The dialog over the window, if any.
     dialog: Option<Dialog>,
     /// Potentially destructive SQL awaiting an explicit second confirmation.
     pending_query_confirmation: Option<String>,
@@ -239,7 +238,6 @@ impl DbClientApp {
         self.session.drain();
     }
 
-    /// Open the new-connection dialog.
     pub fn open_connect_dialog(&mut self) {
         self.dialog = Some(Dialog::Connect);
     }
@@ -1091,8 +1089,6 @@ mod editor_sql_tests {
         assert_eq!(sql(&app), "WITH 1 AS t;");
     }
 
-    /// Choosing a starter query replaces the editor's text with it, as one
-    /// edit of the SQL child.
     #[test]
     fn choosing_a_starter_query_loads_it_into_the_editor() {
         let mut app = workspace();
@@ -1334,7 +1330,6 @@ mod tests {
         harness.set_modifiers(&[]);
     }
 
-    /// The app starts empty with a new-connection action opening the dialog.
     #[test]
     fn start_state_is_empty_with_a_new_connection_action() {
         // --- phase: live_app_starts_empty ---
@@ -1550,7 +1545,6 @@ mod tests {
             assert!(!root.session.busy());
             assert!(harness.targets().contains_key("db.confirm-dialog"));
 
-            // Escape declines.
             harness.key("Escape");
             harness.relayout();
             let root = app(&harness);
@@ -1712,7 +1706,6 @@ mod tests {
         );
         drop(harness);
 
-        // Hosted, the saved profile opens and runs SQL.
         let mut profile = ConnectionProfile::new("Local files", Engine::Sqlite);
         profile.file_path = database.to_str().unwrap().into();
         let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();

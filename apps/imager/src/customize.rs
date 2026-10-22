@@ -311,7 +311,6 @@ mod tests {
     /// Timezone catalog and canonical values.
     #[test]
     fn customization_catalogs_match_the_embedded_profile_contract() {
-        // Phase `built_in_timezone_catalog_is_worldwide_canonical_and_safe`.
         {
             let zones = timezones();
             assert!(zones.len() >= 400, "catalog unexpectedly incomplete");
@@ -338,7 +337,6 @@ mod tests {
             }));
         }
 
-        // Phase `canonical_values_match_the_embedded_profile_contract`.
         {
             assert_eq!(
                 profile_value(CzField::Keyboard, "German (QWERTZ)"),

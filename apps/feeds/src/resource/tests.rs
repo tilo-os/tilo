@@ -431,8 +431,6 @@ fn search_finds_subscriptions_and_articles() {
     );
 }
 
-// ---- the reader, as the framework mounts it ------------------------------
-
 /// The reader on the sample library, laid out as the screenshots are.
 fn sample_app() -> TestApp<FeedsShell> {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
@@ -1021,8 +1019,6 @@ fn article_bodies_kept_as_json_strings_migrate_to_blocks() {
         "{migrated:?}"
     );
 }
-
-// ---- one library per workspace --------------------------------------------
 
 /// What a window of Feeds kept on its own before the app kept one library
 /// per workspace: a window record subscribed to `urls`.
