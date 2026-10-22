@@ -347,9 +347,13 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         let desk_dirty = self.update_desk(Instant::now());
+        // A window bar's tooltip whose dwell ran out shows on this tick: its
+        // deadline woke the loop, and a deadline alone paints nothing.
+        let tooltip_dirty = self.bar_tooltip.tick(ui::time::now());
         steps.mark("commit");
         drop(steps);
         desk_dirty
+            || tooltip_dirty
             || agent_quick_dirty
             || person_quick_dirty
             || bar_popover_dirty

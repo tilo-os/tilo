@@ -1,5 +1,50 @@
 use super::*;
 
+/// The pointer rests on a window bar's button: its tooltip's dwell is a
+/// deadline that wakes the loop, and a due deadline alone paints nothing.
+/// The tick it wakes must report the tooltip shown, or the frame that draws
+/// it never comes while the pointer stays still.
+#[test]
+fn a_bar_tooltips_dwell_running_out_asks_for_its_frame() {
+    let chrome = crate::shell::chrome_state::ChromeState::new(
+        crate::shell::state::WorkspaceTree::bootstrap_demo(),
+    );
+    let mut host =
+        ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome);
+    host.force_desk_settled(std::time::Instant::now());
+    let doc = automerge::AutoCommit::new();
+    // The first updates bring the desk's own state in; then it rests.
+    assert!(
+        (0..20).any(|_| !host.update(&doc, &automerge::ROOT)),
+        "the host comes to rest"
+    );
+    let button = vello::kurbo::Rect::new(10.0, 10.0, 40.0, 40.0);
+    host.bar_tooltip
+        .on_pointer(Some((button, "Close".into())), ui::time::now());
+    let reveal = host
+        .bar_tooltip
+        .reveal_at()
+        .expect("the resting pointer's tooltip waits for its dwell");
+    assert!(
+        host.next_wake_deadline().is_some_and(|at| at <= reveal),
+        "the dwell wakes the loop"
+    );
+    assert!(
+        !host.update(&doc, &automerge::ROOT),
+        "before the dwell runs out nothing asks for a frame"
+    );
+    let shown =
+        ui::time::testing::with_monotonic_time(reveal, || host.update(&doc, &automerge::ROOT));
+    assert!(
+        shown,
+        "the tick the dwell wakes asks for the frame that shows it"
+    );
+    assert_eq!(
+        host.bar_tooltip.visible().map(|(label, _)| label),
+        Some("Close")
+    );
+}
+
 #[test]
 fn blocked_quick_settings_read_does_not_turn_waiting_into_animation() {
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()));
