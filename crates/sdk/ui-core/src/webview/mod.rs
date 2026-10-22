@@ -723,6 +723,13 @@ pub trait WebViewEngine: Send + Sync {
         None
     }
 
+    /// The pointer shape the page last asked for where the pointer is (a
+    /// hand on a link, an I-beam on text); `None` for the default arrow, or
+    /// an engine that does not say.
+    fn cursor(&self) -> Option<winit::window::CursorIcon> {
+        self.wrapped().and_then(|engine| engine.cursor())
+    }
+
     /// The page as a display list. An engine that has one is drawn from it
     /// instead of [`frames`](Self::frames) (see [`paint`]).
     fn paint_frame(&self) -> Option<Arc<tilo_paint_stream::Frame>> {

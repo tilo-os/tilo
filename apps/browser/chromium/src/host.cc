@@ -134,6 +134,45 @@ void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr)
   fields->SetString("event",name); auto value=CefValue::Create(); value->SetDictionary(fields);
   output->Send(1,CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString());
 }
+// A pointer shape by the CSS name Tilo's toolkit takes it in.
+const char* CursorName(cef_cursor_type_t type) {
+  switch(type) {
+    case CT_HAND: return "pointer";
+    case CT_IBEAM: return "text";
+    case CT_VERTICALTEXT: return "vertical-text";
+    case CT_CROSS: return "crosshair";
+    case CT_WAIT: return "wait";
+    case CT_PROGRESS: return "progress";
+    case CT_HELP: return "help";
+    case CT_MOVE: return "move";
+    case CT_CELL: return "cell";
+    case CT_CONTEXTMENU: return "context-menu";
+    case CT_ALIAS: return "alias";
+    case CT_COPY: return "copy";
+    case CT_NODROP: return "no-drop";
+    case CT_NOTALLOWED: return "not-allowed";
+    case CT_GRAB: return "grab";
+    case CT_GRABBING: return "grabbing";
+    case CT_ZOOMIN: return "zoom-in";
+    case CT_ZOOMOUT: return "zoom-out";
+    case CT_NONE: return "none";
+    case CT_EASTRESIZE: return "e-resize";
+    case CT_WESTRESIZE: return "w-resize";
+    case CT_NORTHRESIZE: return "n-resize";
+    case CT_SOUTHRESIZE: return "s-resize";
+    case CT_NORTHEASTRESIZE: return "ne-resize";
+    case CT_NORTHWESTRESIZE: return "nw-resize";
+    case CT_SOUTHEASTRESIZE: return "se-resize";
+    case CT_SOUTHWESTRESIZE: return "sw-resize";
+    case CT_EASTWESTRESIZE: return "ew-resize";
+    case CT_NORTHSOUTHRESIZE: return "ns-resize";
+    case CT_NORTHEASTSOUTHWESTRESIZE: return "nesw-resize";
+    case CT_NORTHWESTSOUTHEASTRESIZE: return "nwse-resize";
+    case CT_COLUMNRESIZE: return "col-resize";
+    case CT_ROWRESIZE: return "row-resize";
+    default: return "default";
+  }
+}
 void StringEvent(const std::string& name,const std::string& key,const CefString& text) {
   auto d=CefDictionaryValue::Create();d->SetString(key,text);Event(name,d);
 }
@@ -407,6 +446,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!sealed_documents) return;
     auto text=value.ToString();if(text.length()>8192) text.clear();
     StringEvent("link_status","url",text);
+  }
+  // The pointer over the page takes the shape the page asks for: a hand on
+  // a link, an I-beam on text. Sent by its CSS name, once per change.
+  bool OnCursorChange(CefRefPtr<CefBrowser>,CefCursorHandle,cef_cursor_type_t type,const CefCursorInfo&) override {
+    const char* name=CursorName(type);
+    if(cursor_!=name) {cursor_=name;StringEvent("cursor","cursor",cursor_);}
+    return true;
   }
   void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,const std::vector<CefString>& urls) override {
     if(urls.empty() || urls.front().ToString().size()>8192) return;
@@ -771,10 +817,27 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
-      else if(op=="scroll") host->SendMouseWheelEvent(event,static_cast<int>(Number(d,"dx")/geometry_.scale()),static_cast<int>(Number(d,"dy")/geometry_.scale()));
+      else if(op=="scroll") {
+        // A trackpad moves in fractions of a pixel: carry what an integer
+        // wheel event cannot, so slow scrolling adds up instead of vanishing.
+        const double dx=Number(d,"dx")/geometry_.scale()+wheel_rest_x_,dy=Number(d,"dy")/geometry_.scale()+wheel_rest_y_;
+        const int whole_x=static_cast<int>(dx),whole_y=static_cast<int>(dy);
+        wheel_rest_x_=dx-whole_x;wheel_rest_y_=dy-whole_y;
+        if(whole_x||whole_y) host->SendMouseWheelEvent(event,whole_x,whole_y);
+      }
       else { std::string button=d->GetString("button");auto type=button=="right"?MBT_RIGHT:button=="middle"?MBT_MIDDLE:MBT_LEFT;bool down=d->GetBool("down");
         int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
-        if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
+        if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;
+        // A second and third press of the same button soon after, near the
+        // first, is a double and a triple click: a word, then its paragraph.
+        if(down) {
+          const auto now=std::chrono::steady_clock::now();
+          const bool again=click_count_>0 && type==click_button_ && now-click_time_<=std::chrono::milliseconds(500)
+            && std::abs(event.x-click_x_)<=4 && std::abs(event.y-click_y_)<=4;
+          click_count_=again?std::min(click_count_+1,3):1;
+          click_button_=type;click_time_=now;click_x_=event.x;click_y_=event.y;
+        }
+        host->SendMouseClickEvent(event,type,!down,std::max(click_count_,1)); }
     } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     else if(op=="edit_history") {
       auto frame=browser_->GetFocusedFrame();
@@ -1171,6 +1234,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::SiteClear> site_clear_;
   CefRefPtr<tilo::ServiceSessionImport> service_session_import_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
+  // The press a following press may continue as a double or triple click.
+  int click_count_=0,click_x_=0,click_y_=0;cef_mouse_button_type_t click_button_=MBT_LEFT;std::chrono::steady_clock::time_point click_time_;
+  // What of the wheel's last movement was less than a whole pixel.
+  double wheel_rest_x_=0,wheel_rest_y_=0;
+  // The pointer shape the page last asked for, by its CSS name.
+  std::string cursor_;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
   tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;

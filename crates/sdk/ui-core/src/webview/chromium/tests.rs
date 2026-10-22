@@ -2939,3 +2939,31 @@ fn a_governed_app_routes_page_audio_through_the_host_bridge() {
     assert_eq!(host_audio_switches(true), ["--tilo-audio-bridge"]);
     assert!(host_audio_switches(false).is_empty());
 }
+
+#[test]
+fn the_pointer_takes_the_shape_the_page_asks_for() {
+    let shared = Arc::new(Shared::default());
+    let routes: Routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let downloads = Mutex::new(VecDeque::new());
+    let (ready, _receiver) = sync_channel(1);
+    let cursor = |name: &str| {
+        route_native_event(
+            &json!({"event":"cursor","cursor":name}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .unwrap();
+        *shared.cursor.lock().unwrap()
+    };
+    assert_eq!(cursor("pointer"), Some(winit::window::CursorIcon::Pointer));
+    assert_eq!(cursor("text"), Some(winit::window::CursorIcon::Text));
+    assert_eq!(cursor("default"), None, "the arrow is the toolkit's own");
+    assert_eq!(cursor("a-shape-from-later"), None);
+    assert!(
+        shared.events.lock().unwrap().is_empty(),
+        "a shape is not a page event"
+    );
+    assert!(validate_event(&json!({"event":"cursor","cursor":""})).is_err());
+    assert!(validate_event(&json!({"event":"cursor","cursor":"x".repeat(65)})).is_err());
+}

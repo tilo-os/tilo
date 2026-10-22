@@ -63,6 +63,8 @@ struct Shared {
     guarded_edit_history: AtomicBool,
     native_caret_text_input: AtomicBool,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
+    /// The pointer shape the page last asked for.
+    cursor: Mutex<Option<winit::window::CursorIcon>>,
     frames: FrameSlot,
     events: Mutex<VecDeque<WebViewEvent>>,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -506,6 +508,7 @@ impl UnavailableEngine {
                 document_size: DocumentSizeReports::default(),
                 selection_text: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
+                cursor: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
                 waker: Mutex::new(None),
@@ -1269,6 +1272,10 @@ impl ChromiumEngine {
 }
 
 impl WebViewEngine for ChromiumEngine {
+    fn cursor(&self) -> Option<winit::window::CursorIcon> {
+        *self.shared.cursor.lock_recover()
+    }
+
     fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
         if !self.supports_text_input() || !self.shared.native_edit_history.load(Ordering::Acquire) {
             return false;
@@ -1678,6 +1685,14 @@ fn route_native_event(
             shared.audio.event(event_name, value);
             return Ok(());
         }
+        if event_name == "cursor" {
+            // A shape this toolkit has no name for is the arrow.
+            *shared.cursor.lock_recover() = value["cursor"]
+                .as_str()
+                .and_then(|name| name.parse().ok())
+                .filter(|icon| *icon != winit::window::CursorIcon::Default);
+            return Ok(());
+        }
         if matches!(event_name, "closed" | "tab_detached") {
             shared.audio.stop();
         }
@@ -1950,6 +1965,9 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             value["url"].as_str().is_some_and(|url| url.len() <= 8192)
                 && value["background"].is_boolean()
         }
+        "cursor" => value["cursor"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty() && name.len() <= 64),
         "uri" => text("url"),
         "title" => text("title"),
         "progress" => value["progress"]
