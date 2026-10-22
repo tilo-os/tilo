@@ -497,7 +497,10 @@ fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
 
     let mut edit = TestApp::<ContactsShell>::capture(Some("edit")).unwrap();
     assert_eq!(edit.state().contacts.len(), sample_book().len());
-    assert!(has_control(&mut edit, "First name"), "the edit form is open");
+    assert!(
+        has_control(&mut edit, "First name"),
+        "the edit form is open"
+    );
     assert!(
         ui::window_toolbar::declared()
             .is_some_and(|toolbar| toolbar.actions.iter().any(|action| action.name == "Save")),
