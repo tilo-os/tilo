@@ -411,6 +411,7 @@ decorator_trait! {
         fn for_each_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
         fn test_id() -> Option<&str>;
+        fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;

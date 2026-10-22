@@ -941,8 +941,19 @@ impl TabBar {
 
     /// Show the active tab's slots and lay them out where they stand now.
     fn lay_out_toolbar_row(&mut self) {
-        let toolbar = self.active_toolbar().cloned();
         let active = self.active_id;
+        let mut toolbar = self.active_toolbar().cloned();
+        // With nothing open the window is named by its app: slots that name
+        // no location show the tab's title in the location's place.
+        if let Some(toolbar) = toolbar.as_mut()
+            && toolbar.location.is_none()
+            && let Some(tab) = self.tabs.iter().find(|tab| tab.id == active)
+        {
+            toolbar.location = Some(crate::window_toolbar::ToolbarLocation {
+                label: tab.title.clone(),
+                ..crate::window_toolbar::ToolbarLocation::default()
+            });
+        }
         self.toolbar_row
             .show(active, toolbar.as_ref(), self.motion, crate::time::now());
         let rect = self.toolbar_row_rect();
