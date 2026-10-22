@@ -59,6 +59,10 @@ fn operation(name: &str, args: &ActionArgs) -> Result<PickerOperation, ActionErr
         "replace" => PickerOperation::Replace,
         "keep-existing" => PickerOperation::KeepExisting,
         "next-filter" => PickerOperation::NextFilter,
+        "search" => PickerOperation::Search {
+            query: args.text("query").unwrap_or_default().to_owned(),
+        },
+        "recent" => PickerOperation::Recent,
         _ => return Err(ActionError::Explained(t("file-picker-expired"))),
     })
 }
@@ -84,6 +88,13 @@ fn parameters(name: &str) -> Vec<ActionParam> {
             "entry",
             ParamType::Text,
             t("file-picker-entry-param"),
+        ));
+    }
+    if name == "search" {
+        params.push(ActionParam::required_owned(
+            "query",
+            ParamType::Text,
+            t("file-picker-query-param"),
         ));
     }
     if name == "filename" {
@@ -165,6 +176,8 @@ impl SearchProvider for FilePickerProvider {
             "replace",
             "keep-existing",
             "next-filter",
+            "search",
+            "recent",
         ]
         .into_iter()
         .map(|name| {

@@ -544,6 +544,44 @@ impl FilesProvider {
             .ok();
     }
 
+    /// The paths whose names match `needle`, best first, then those whose
+    /// contents do, at most `limit`: what the file chooser lists when a
+    /// person searches every place they can reach. The same index the
+    /// palette's Files answers from, so both find the same files.
+    pub fn paths_matching(&self, needle: &str, limit: usize) -> Vec<PathBuf> {
+        let needle = needle.trim().to_lowercase();
+        if needle.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        self.ensure_ready();
+        let mut found = Vec::new();
+        let mut seen = HashSet::new();
+        if let Some(index) = self.published() {
+            let needle_len = needle.len();
+            let hits = index.index.search_scored(
+                &needle,
+                tilo_search::Page::first(limit),
+                move |signals| name_score(needle_len, signals),
+            );
+            for hit in &hits.hits {
+                if let Some(entry) = index.entry(hit.key)
+                    && seen.insert(entry.path.clone())
+                {
+                    found.push(entry.path.clone());
+                }
+            }
+        }
+        if let Some(contents) = self.tantivy.get().and_then(Option::as_ref) {
+            for hit in contents.query(&needle, limit) {
+                if seen.insert(hit.path.clone()) {
+                    found.push(hit.path);
+                }
+            }
+        }
+        found.truncate(limit);
+        found
+    }
+
     fn published(&self) -> Option<RwLockReadGuard<'_, NameIndex>> {
         self.name_index.read().ok()
     }
@@ -1578,6 +1616,21 @@ mod tests {
         assert!(provider.tantivy.set(None).is_ok());
         walk_home(home, &provider.name_index);
         provider
+    }
+
+    #[test]
+    fn the_chooser_finds_paths_from_the_same_name_index() {
+        let provider = FilesProvider::with_walked_names(&[
+            "~/Documents/tax-report.pdf",
+            "~/Pictures/holiday.png",
+            "~/Documents/report-draft.txt",
+        ]);
+        let found = provider.paths_matching("report", 10);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.contains(&PathBuf::from("/home/tester/Documents/tax-report.pdf")));
+        assert!(found.contains(&PathBuf::from("/home/tester/Documents/report-draft.txt")));
+        assert_eq!(provider.paths_matching("report", 1).len(), 1);
+        assert!(provider.paths_matching("  ", 10).is_empty());
     }
 
     #[test]

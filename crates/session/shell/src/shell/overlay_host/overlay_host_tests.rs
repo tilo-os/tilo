@@ -1632,6 +1632,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             current_name: Some("before".to_string()),
             filters: Vec::new(),
             scope: None,
+            recent: Vec::new(),
             reply,
         });
         assert!(h.host.pump_file_picker());
@@ -1895,6 +1896,7 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
             roots: vec![folder.path().to_path_buf()],
             home: None,
         }),
+        recent: Vec::new(),
         reply,
     });
     assert!(h.host.pump_file_picker());

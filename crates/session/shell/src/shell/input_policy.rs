@@ -2330,6 +2330,7 @@ mod tests {
                 current_name: None,
                 filters: Vec::new(),
                 scope: None,
+                recent: Vec::new(),
                 reply,
             });
             assert!(

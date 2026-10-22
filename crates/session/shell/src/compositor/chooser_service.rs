@@ -649,6 +649,10 @@ fn answer_pick(context: &ChooserContext, caller: &PortalCaller, room: &str, pick
         };
     };
     let roots = scope.roots.clone();
+    let recent = giving
+        .as_ref()
+        .map(|(documents, key)| documents.chosen(key))
+        .unwrap_or_default();
     let (reply, chosen) = tokio::sync::oneshot::channel();
     context.pickers.spawn(FilePickerRequest {
         caller: caller.clone(),
@@ -674,6 +678,7 @@ fn answer_pick(context: &ChooserContext, caller: &PortalCaller, room: &str, pick
             })
             .collect(),
         scope: Some(scope),
+        recent,
         reply,
     });
     (context.wake)();

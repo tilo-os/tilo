@@ -37,6 +37,9 @@ pub(crate) struct FilePickerOverlay {
     /// A press the sheet took is followed to its release, wherever the
     /// pointer has gone by then.
     grabbed: bool,
+    /// The session's file index, which the chooser searches every place
+    /// the person can reach with; `None` where the session keeps none.
+    search: Option<std::rc::Rc<crate::shell::search::providers::FilesProvider>>,
 }
 
 /// Where the chooser sits this frame, as the overlay host sees the window
@@ -87,6 +90,13 @@ impl FilePickerOverlay {
 
     pub(crate) fn set_queue(&mut self, queue: crate::portal::FilePickerQueue) {
         self.queue = Some(queue);
+    }
+
+    pub(crate) fn set_search(
+        &mut self,
+        files: std::rc::Rc<crate::shell::search::providers::FilesProvider>,
+    ) {
+        self.search = Some(files);
     }
 
     pub(crate) fn widget(&self) -> Option<&ui::widget::FilePicker> {
@@ -171,7 +181,21 @@ impl FilePickerOverlay {
                     named,
                 )
             });
-            let active = ActiveFilePicker::mount(request, scope, asking);
+            let search = self.search.clone().map(|files| {
+                let search: ui::widget::file_picker::PickerSearch =
+                    std::rc::Rc::new(move |query: &str| {
+                        files.paths_matching(query, ui::widget::file_picker::SEARCH_LIMIT)
+                    });
+                search
+            });
+            let active = ActiveFilePicker::mount(
+                request,
+                Mounting {
+                    scope,
+                    asking,
+                    search,
+                },
+            );
             tracing::info!(
                 app = %active.app_id,
                 dir = %active.widget.current_dir().display(),
@@ -441,15 +465,18 @@ struct ActiveFilePicker {
 }
 
 impl ActiveFilePicker {
-    fn mount(
-        request: crate::portal::FilePickerRequest,
-        scope: crate::portal::PickerScope,
-        asking: Option<crate::shell::state::TabId>,
-    ) -> Self {
+    fn mount(request: crate::portal::FilePickerRequest, mounting: Mounting) -> Self {
         use ui::widget::file_picker::FileFilter;
         use ui::widget::{FilePicker, FilePickerMode};
+        let Mounting {
+            scope,
+            asking,
+            search,
+        } = mounting;
 
-        let mut filters = request
+        // The widget offers a type menu only when the app named more than
+        // one type, with All files after them.
+        let filters = request
             .filters
             .iter()
             .filter(|filter| !filter.is_catch_all())
@@ -462,7 +489,6 @@ impl ActiveFilePicker {
                 FileFilter::new(filter.label.clone(), &extensions)
             })
             .collect::<Vec<_>>();
-        filters.push(FileFilter::all());
 
         let mode = if request.save {
             FilePickerMode::Save
@@ -476,7 +502,10 @@ impl ActiveFilePicker {
             .with_multiple(request.multiple)
             .with_accept_label(Some(request.confirm_label()))
             .with_home(scope.home)
-            .with_filters(filters);
+            .with_filters(filters)
+            .with_requester(requester(&request.caller.app_id))
+            .with_recent(request.recent)
+            .with_search(search);
         if let Some(name) = request.current_name.as_deref() {
             widget = widget.with_filename(name);
         }
@@ -500,6 +529,27 @@ impl ActiveFilePicker {
             let _ = reply.send(picked);
         }
     }
+}
+
+/// What the shell decided about a request before mounting it: where the
+/// dialog may go, the window it is a sheet on, and the search it offers.
+struct Mounting {
+    scope: crate::portal::PickerScope,
+    asking: Option<crate::shell::state::TabId>,
+    search: Option<ui::widget::file_picker::PickerSearch>,
+}
+
+/// The app asking, as the sheet names it: its name and its icon. `None`
+/// when the shell does not know its name; the sheet then says only what is
+/// asked.
+fn requester(app_id: &str) -> Option<ui::widget::file_picker::Requester> {
+    let name = crate::shell::launcher::display_name_for_app_id_without_waiting(app_id)
+        .filter(|name| !name.trim().is_empty())?;
+    Some(ui::widget::file_picker::Requester {
+        name,
+        glyph: ui::icons::app_glyph(app_id, None),
+        image: crate::app_icons::for_window_app_id(app_id),
+    })
 }
 
 fn constrain_selection(
@@ -552,6 +602,7 @@ mod tests {
                 roots: vec![temp.path().into()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut host =
@@ -737,6 +788,7 @@ mod tests {
                 roots: vec![root.into()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut host =
@@ -1099,6 +1151,7 @@ mod tests {
                 current_name: None,
                 filters: Vec::new(),
                 scope: None,
+                recent: Vec::new(),
                 reply,
             });
 
@@ -1145,6 +1198,7 @@ mod tests {
             current_name: None,
             filters: Vec::new(),
             scope: None,
+            recent: Vec::new(),
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
@@ -1231,6 +1285,7 @@ mod tests {
                 roots: vec![root.clone()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
@@ -1308,6 +1363,7 @@ mod tests {
                 roots: vec![root],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
@@ -1361,6 +1417,7 @@ mod tests {
                 roots: vec![granted.clone()],
                 home: None,
             }),
+            recent: Vec::new(),
             reply,
         });
         let mut overlay = FilePickerOverlay::default();
