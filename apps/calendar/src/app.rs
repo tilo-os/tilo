@@ -4519,8 +4519,8 @@ impl CalendarApp {
     }
 
     /// Run what the person did in the window's bar as the calendar's own
-    /// actions; a view is chosen through the door, as a collaborator's or an
-    /// agent's choice is.
+    /// actions, as a press on the calendar's own controls runs them: the
+    /// view is this window's, chosen at once.
     fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
         use crate::window_bar::BarAction;
         for event in ui::window_toolbar::take_events() {
@@ -4536,13 +4536,6 @@ impl CalendarApp {
                 BarAction::New => Action::NewEvent,
                 BarAction::Export => Action::Export,
                 BarAction::Import => Action::Import,
-                BarAction::View(view) if self.dispatcher.is_some() => {
-                    self.invoke_effect(&crate::resource::CalendarEffect::ShowView {
-                        view: view.label().to_lowercase(),
-                    });
-                    self.dirty = true;
-                    continue;
-                }
                 BarAction::View(view) => Action::View(view),
             };
             self.apply_action(action, doc);

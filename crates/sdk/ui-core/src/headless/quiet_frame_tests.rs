@@ -285,6 +285,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
     const JUDGE_THEMSELVES: &[(&str, &str)] = &[
         ("poll_frame", "the frame itself"),
         (
+            "render_window_png",
+            "rasterises the last frame under the window bar; lays out only the bar's own row",
+        ),
+        (
             "send_host_event",
             "a wheel coalesced into the next frame counts once dispatched",
         ),

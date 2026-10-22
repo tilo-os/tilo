@@ -355,8 +355,10 @@ fn select_version(app: &mut TestApp<WordProcessorApp>, version: &[automerge::Cha
     let [hash] = version else {
         panic!("a single-author edit leaves one head");
     };
+    // History is the window bar's, beside the editor's slots: press it as
+    // the bar hands the press over.
     if !app.harness().targets().contains_key("history-back-live") {
-        app.harness().click_named("history-open").unwrap();
+        app.harness().press_window_history().unwrap();
     }
     let entry = format!("timeline-entry:{}", &hash.to_string()[..32]);
     // A typed word is a run of keystrokes; expand runs until the change shows.
@@ -430,7 +432,15 @@ fn history_previews_a_version_and_restores_it_like_a_revert() {
         ["History"],
         "the editor's own version strip is not offered beside the shared History"
     );
-    assert!(app.harness().targets().contains_key("history-open"));
+    assert_eq!(
+        app.harness().window_history_control(),
+        Some(ui::widget::HistoryControl::Closed),
+        "the window's bar offers History beside the editor's slots"
+    );
+    assert!(
+        !app.harness().targets().contains_key("history-open"),
+        "no History band of the window's own above the editor"
+    );
 
     select_version(&mut app, &v1);
     let shown = preview_text(&mut app);

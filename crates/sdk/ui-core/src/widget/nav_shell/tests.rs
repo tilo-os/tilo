@@ -2198,8 +2198,10 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
         "the app's own actions are the app's"
     );
 
-    // Narrow: the list is pushed over the mailboxes, and Back is a slot.
+    // Narrow: the panes are pushed over one another, and Back is a slot.
     settle(&mut h, 560, 800);
+    let front = h.root::<NavShell>().front_pane();
+    assert_ne!(front, NavPane::Sidebar, "a pushed pane is in front");
     let g = geometry(&h);
     assert_eq!(g.header_height, 0.0);
     assert_eq!(g.back, Rect::ZERO, "no Back button of the shell's own");
@@ -2215,5 +2217,9 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
             })
     );
     settle(&mut h, 560, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    assert_ne!(
+        h.root::<NavShell>().front_pane(),
+        front,
+        "the bar's Back pops the pane in front"
+    );
 }

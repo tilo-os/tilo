@@ -1093,14 +1093,13 @@ impl ToolbarRow {
                 let action = toolbar.leading.get(i)?;
                 Some((*self.slots.leading.get(i)?, action.name.clone()))
             }
-            // A segment says what it is.
-            Slot::View(_) => None,
             Slot::Action(i) => {
                 let action = toolbar.actions.get(i)?;
                 Some((*self.slots.actions.get(i)?, action.name.clone()))
             }
             Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
-            Slot::Location => None,
+            // A segment and the location say what they are.
+            Slot::View(_) | Slot::Location => None,
         }
     }
 

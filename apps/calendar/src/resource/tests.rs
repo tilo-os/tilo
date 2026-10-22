@@ -365,64 +365,42 @@ fn the_sample_calendar_opens_with_its_curated_notes() {
     assert!(notes.contains("Confirm the launch timeline."), "{notes}");
 }
 
+/// The view the window bar's switcher shows chosen.
+fn bar_view() -> Option<String> {
+    ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.views)
+        .map(|views| views.chosen)
+}
+
+/// Choose `view` in the window bar's switcher, as the desktop hands the
+/// press to the app, and let the app apply it.
+fn choose_view_in_bar(app: &mut TestApp<CalendarShell>, view: crate::model::View) {
+    let slot = crate::window_bar::view_slot(view);
+    assert!(
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.views)
+            .is_some_and(|views| views.choices.iter().any(|choice| choice.id == slot)),
+        "the window bar's switcher offers {slot}"
+    );
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: slot });
+    app.settle();
+}
+
+// USER REQUIREMENT (2026-10-21): "every app's primary controls live in the
+// system window bar's app slots, through the one tilo-app API Files, Notes
+// and Browser already use, and no app draws a second toolbar row."
+/// The views are the window bar's switcher: choosing one there navigates
+/// the live window at once and is no edit of the shared calendar.
 #[test]
-fn painted_view_strip_swipes_invoke_live_navigation_and_preserve_document() {
-    use winit::event::TouchPhase::{Cancelled, Ended, Started};
-    fn control(node: &ui::headless::InspectionNode, target: &str) -> Option<ui::a11y::AccessNode> {
-        fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
-            if node.action_target.as_deref() == Some(target) {
-                return Some(node.clone());
-            }
-            node.children.iter().find_map(|child| find(child, target))
-        }
-        node.semantics
-            .as_ref()
-            .and_then(|node| find(node, target))
-            .or_else(|| {
-                node.children
-                    .iter()
-                    .find_map(|child| control(child, target))
-            })
-    }
+fn the_bars_view_switcher_navigates_live_and_preserves_document() {
+    use crate::model::View;
     let mut app = TestApp::<CalendarShell>::new().unwrap();
     app.settle();
     let before = app.peer_document().get_heads();
-    let start = control(&app.harness().inspection().root, "calendar.view:week")
-        .unwrap()
-        .bounds
-        .unwrap()
-        .to_rect()
-        .center();
-    app.harness().touch(1, Started, start.x, start.y);
-    app.harness().touch(1, Ended, start.x - 90.0, start.y);
-    app.settle();
-    assert_eq!(
-        control(&app.harness().inspection().root, "calendar.view:week")
-            .unwrap()
-            .state
-            .checked,
-        Some(true)
-    );
-    app.harness().touch(2, Started, start.x, start.y);
-    app.harness().touch(2, Cancelled, start.x - 90.0, start.y);
-    app.settle();
-    assert_eq!(
-        control(&app.harness().inspection().root, "calendar.view:week")
-            .unwrap()
-            .state
-            .checked,
-        Some(true)
-    );
-    app.harness().touch(3, Started, start.x, start.y);
-    app.harness().touch(3, Ended, start.x + 90.0, start.y);
-    app.settle();
-    assert_eq!(
-        control(&app.harness().inspection().root, "calendar.view:month")
-            .unwrap()
-            .state
-            .checked,
-        Some(true)
-    );
+    choose_view_in_bar(&mut app, View::Week);
+    assert_eq!(bar_view(), Some(crate::window_bar::view_slot(View::Week)));
+    choose_view_in_bar(&mut app, View::Month);
+    assert_eq!(bar_view(), Some(crate::window_bar::view_slot(View::Month)));
     assert_eq!(app.peer_document().get_heads(), before);
     assert!(!app.undo(), "view changes create no document undo step");
 }
@@ -822,7 +800,7 @@ mod person_accounts {
 mod tasks_screen {
     use super::*;
     use tilo_actions::{ActionKind, OperationKind, RetryPolicy};
-    use ui::accesskit::{Node, NodeId, Role, Toggled};
+    use ui::accesskit::{Node, NodeId, Role};
 
     /// Effects run only in live mode; captures withhold effect runners.
     /// Seed the live test record through its published door.
@@ -979,7 +957,13 @@ mod tasks_screen {
         let mut app = sample_calendar();
         assert!(task_list(&mut app).is_none(), "Month shows no task list");
         assert!(
-            named(&mut app, "Tasks view").is_some(),
+            ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.views)
+                .is_some_and(|views| views
+                    .choices
+                    .iter()
+                    .any(|choice| choice.id
+                        == crate::window_bar::view_slot(crate::model::View::Tasks))),
             "the bar's Tasks tab is not the task list"
         );
         activate(&mut app, "Show tasks in Today");
@@ -1010,11 +994,10 @@ mod tasks_screen {
         for (item, title) in items.iter().zip(&inbox) {
             assert!(item.starts_with(title.as_str()), "{item} names {title}");
         }
-        let (_, tab) = named(&mut app, "Tasks view").expect("the Tasks tab");
         assert_eq!(
-            tab.toggled(),
-            Some(Toggled::True),
-            "the Tasks tab is chosen"
+            bar_view(),
+            Some(crate::window_bar::view_slot(crate::model::View::Tasks)),
+            "the bar's Tasks tab is chosen"
         );
 
         for view in ["month", "week", "day", "agenda"] {
@@ -1033,7 +1016,7 @@ mod tasks_screen {
     fn the_tasks_tab_and_show_tasks_reach_the_same_list() {
         let mut by_tab = sample_calendar();
         activate(&mut by_tab, "Show tasks in Inbox");
-        activate(&mut by_tab, "Tasks view");
+        choose_view_in_bar(&mut by_tab, crate::model::View::Tasks);
         let mut by_action = sample_calendar();
         by_action
             .call("show-tasks", serde_json::json!({}))

@@ -859,20 +859,24 @@ fn view_and_anchor_navigation_update_shared_state() {
             "the component interprets its target and the root updates the anchor"
         );
     }
-    // Case `clicking_a_view_segment_switches_the_view`.
+    // Case `choosing_week_in_the_bar_switches_the_view`.
     {
         let mut h = Harness::new(1280, 800);
         h.app.show_calendar();
         h.relayout();
         assert_eq!(h.app.view, View::Month);
-        let p = h
-            .hit_center(|a| matches!(a, Action::View(View::Week)))
-            .expect("Week segment present");
-        h.click(p);
+        h.press_bar_action(&crate::window_bar::view_slot(View::Week));
         assert_eq!(
             h.app.view,
             View::Week,
-            "clicking the Week segment switched the view"
+            "choosing Week in the bar switched the view"
+        );
+        assert_eq!(
+            ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.views)
+                .map(|views| views.chosen),
+            Some(crate::window_bar::view_slot(View::Week)),
+            "the bar's switcher shows Week chosen"
         );
     }
 }
@@ -947,14 +951,11 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         h.app.show_calendar();
         h.relayout();
         let before = h.app.model.events.len();
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button present");
-        h.click(p);
+        h.press_bar_action(crate::window_bar::NEW);
         assert_eq!(
             h.app.model.events.len(),
             before + 1,
-            "click created an event"
+            "the bar's New event created an event"
         );
         assert!(
             matches!(h.app.selection, Some(Sel::Event(_))),
@@ -968,10 +969,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         let mut h = Harness::new(1280, 800);
         h.app.shots_show_calendar();
         h.relayout();
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button");
-        h.click(p);
+        h.press_bar_action(crate::window_bar::NEW);
         h.relayout();
         let id = selected_event_id(&h.app);
         assert!(
@@ -999,10 +997,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         // otherwise sit over the New button behind its dismiss scrim.
         h.app.show_calendar();
         h.relayout();
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button");
-        h.click(p);
+        h.press_bar_action(crate::window_bar::NEW);
         let id = selected_event_id(&h.app);
         assert!(
             h.app.model.event(id).unwrap().title.is_empty(),
@@ -1059,10 +1054,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         // demo's open modal.
         h.app.show_calendar();
         h.relayout();
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button");
-        h.click(p);
+        h.press_bar_action(crate::window_bar::NEW);
         let id = selected_event_id(&h.app);
         assert!(
             h.app.title_input.is_focused(),
@@ -1514,46 +1506,47 @@ fn sidebar_presentation_follows_width_and_hides_via_its_toggle() {
         assert!(app.sidebar.visible());
         assert_eq!(app.content_rect.x0, expanded_content_x0);
     }
-    // Case `the_drawer_closes_through_its_own_toggle`.
+    // Case `the_drawer_closes_through_the_bars_toggle`.
     {
         let mut h = Harness::new(420, 800);
         h.app.show_calendar();
         h.app.sidebar.set_open(true);
         h.relayout();
         assert!(h.app.sidebar.visible(), "drawer is open");
-        let toggle = h
-            .app
-            .hits
-            .iter()
-            .filter(|(r, a)| {
-                matches!(a, Action::ToggleSidebar) && h.app.sidebar.rect().contains_rect(*r)
-            })
-            .map(|(r, _)| r.center())
-            .next()
-            .expect("the drawer carries its toggle");
-        h.click(toggle);
-        assert!(!h.app.sidebar.is_open(), "the toggle closed the drawer");
+        assert!(
+            !h.app
+                .hits
+                .iter()
+                .any(|(_, a)| matches!(a, Action::ToggleSidebar)),
+            "the drawer draws no toggle of its own; the bar's is the one"
+        );
+        h.press_bar(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        assert!(
+            !h.app.sidebar.is_open(),
+            "the bar's toggle closed the drawer"
+        );
     }
-    // Case `the_sidebar_toggle_hides_then_the_header_toggle_shows_it`.
+    // Case `the_bars_sidebar_toggle_hides_then_shows_it`.
     {
         let mut h = Harness::new(1280, 800);
-        // The topbar's expand chevron lives behind the modal's dismiss scrim, so
-        // exercise the sidebar collapse from the calendar screen (the state a
-        // user collapses the rail from).
+        // Collapse from the calendar screen (the state a user collapses the
+        // rail from), with no editor open over it.
         h.app.show_calendar();
         h.relayout();
         assert!(h.app.sidebar.visible(), "starts shown on a wide window");
-        let hide = h
-            .hit_center(|a| matches!(a, Action::ToggleSidebar))
-            .expect("the sidebar toggle");
-        h.click(hide);
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|toolbar| toolbar.sidebar),
+            Some(true),
+            "the bar's toggle shows the sidebar shown"
+        );
+        h.press_bar(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
         assert!(h.app.sidebar.is_collapsed());
-        h.relayout();
-        let show = h
-            .hit_center(|a| matches!(a, Action::ToggleSidebar))
-            .expect("the header carries the toggle while the sidebar is hidden");
-        assert!(show.x < 60.0, "at the leading edge of the header");
-        h.click(show);
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|toolbar| toolbar.sidebar),
+            Some(false),
+            "the bar's toggle stays to show it again"
+        );
+        h.press_bar(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
         assert!(!h.app.sidebar.is_collapsed());
         assert!(h.app.sidebar.visible());
     }
@@ -1724,9 +1717,7 @@ fn the_view_switcher_and_period_controls_are_the_window_bars_alone() {
             .and_then(|views| views.choices.iter().find(|v| v.label == "Week"))
             .map(|v| v.id.clone())
             .expect("the bar's switcher offers Week");
-        let mut state = automerge::AutoCommit::new();
-        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: week });
-        ui::widget::Widget::settle(&mut *h.app, &mut Edits::lend(&mut state), &automerge::ROOT);
+        h.press_bar_action(&week);
         assert_eq!(
             h.app.view,
             View::Week,
@@ -2670,6 +2661,33 @@ impl Harness {
     /// Press a named key (arrows, etc.) through the real keyboard path.
     fn press_named(&mut self, named: winit::keyboard::NamedKey) {
         self.dispatch(&named_key(named));
+    }
+
+    /// Press `event` in the window's bar, as the desktop hands the press to
+    /// the app, let the app apply it and draw the next frame.
+    fn press_bar(&mut self, event: ui::window_toolbar::ToolbarEvent) {
+        ui::window_toolbar::deliver(event);
+        let (app, doc) = self.parts();
+        ui::widget::Widget::settle(app, &mut Edits::lend(doc), &automerge::ROOT);
+        self.relayout();
+    }
+
+    /// Press the bar's action `id` ([`Self::press_bar`]), which the window's
+    /// bar must offer now.
+    fn press_bar_action(&mut self, id: &str) {
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let offered = toolbar
+            .leading
+            .iter()
+            .chain(&toolbar.actions)
+            .any(|action| action.id == id && action.enabled)
+            || toolbar
+                .views
+                .iter()
+                .flat_map(|views| &views.choices)
+                .any(|view| view.id == id);
+        assert!(offered, "the window's bar offers {id}: {toolbar:?}");
+        self.press_bar(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
     /// Centre of the first hit rect carrying an action matching `pred`.
