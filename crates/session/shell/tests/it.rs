@@ -107,6 +107,8 @@ mod foreign_surface_compositing;
 mod fractional_scale_protocol;
 #[path = "freeze_bench.rs"]
 mod freeze_bench;
+#[path = "gpu_loss.rs"]
+mod gpu_loss;
 #[path = "hardware_encode.rs"]
 mod hardware_encode;
 #[path = "hdr_capability_probe.rs"]
