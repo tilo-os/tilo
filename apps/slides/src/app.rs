@@ -46,8 +46,8 @@ use crate::deck::Deck as DeckRecord;
 
 use crate::help_overlay::HelpOverlay;
 use crate::model::{
-    Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
-    SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, starter_deck,
+    Background, Deck, DeckLook, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind,
+    SLIDE_H, SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, starter_deck,
 };
 use crate::overview_grid::OverviewGrid;
 use crate::presentation::{Blank, Command as PresentCommand, Presentation, PresentationFrame};
@@ -267,6 +267,8 @@ pub(super) enum Hit {
     SetLayout(Layout),
     SetBackground(Background),
     SetPalette(PaletteKind),
+    /// Make the deck light or dark.
+    SetLook(DeckLook),
     EditNotes,
     /// Toggle the collapsible slide rail (narrow-window hamburger).
     ToggleRail,
@@ -985,8 +987,10 @@ impl SlidesApp {
         self.slide()?.element(id)
     }
 
-    fn palette(&self, theme: &Theme) -> Palette {
-        Palette::resolve(self.deck.palette, theme)
+    /// The deck's own colours: its palette in its stored look, never the
+    /// UI theme, so the deck looks the same on every screen.
+    fn palette(&self) -> Palette {
+        Palette::resolve(self.deck.palette, self.deck.look)
     }
 
     // --- action dispatch ----------------------------------------------------
@@ -1301,6 +1305,9 @@ impl SlidesApp {
             }
             Hit::SetPalette(p) => {
                 self.submit(&actions::set_deck_palette_action(p));
+            }
+            Hit::SetLook(look) => {
+                self.submit(&actions::set_deck_look_action(look));
             }
             Hit::EditNotes => self.begin_notes_edit(),
             Hit::ToggleRail => self.toggle_rail_flap(),
@@ -2145,7 +2152,7 @@ impl SlidesApp {
             // Seed the picker with the element's current fill on the first frame
             // it's open (now that we hold the theme to resolve a colour role).
             if self.fill_picker_needs_init {
-                let mut pal = self.palette(theme);
+                let mut pal = self.palette();
                 if let Some(slide) = self.slide() {
                     pal = pal.on(slide.background);
                 }
@@ -2232,7 +2239,7 @@ impl SlidesApp {
     }
 
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let palette = self.palette(theme);
+        let palette = self.palette();
         // A slide's type is sized in slide units, whatever the reader's text
         // scale; the cards' own text is set in its roles.
         self.overview.draw(
@@ -2335,6 +2342,7 @@ impl SlidesApp {
                 format!("slides.control.background:{}", background.as_str())
             }
             Hit::SetPalette(palette) => format!("slides.control.palette:{}", palette.as_str()),
+            Hit::SetLook(look) => format!("slides.control.look:{}", look.as_str()),
             Hit::EditNotes => "slides.control.edit-notes".into(),
             Hit::ToggleRail => "slides.control.toggle-slides".into(),
             Hit::ToggleInspector => "slides.control.toggle-properties".into(),
@@ -2487,6 +2495,14 @@ impl SlidesApp {
                     &[("name", ArgValue::from(palette.label()))],
                 ),
                 AccessState::new().checked(self.deck.palette == *palette),
+            ),
+            Hit::SetLook(look) => (
+                Role::RadioButton,
+                tr_args(
+                    "slides-a11y-deck-look",
+                    &[("name", ArgValue::from(look.label()))],
+                ),
+                AccessState::new().checked(self.deck.look == *look),
             ),
             Hit::EditNotes => (
                 Role::Button,
@@ -4750,6 +4766,10 @@ mod tests_files;
 #[cfg(test)]
 #[path = "app/tests_editing.rs"]
 mod tests_editing;
+
+#[cfg(test)]
+#[path = "app/tests_look.rs"]
+mod tests_look;
 
 impl SlidesApp {
     fn new_layout_picker() -> Dropdown {

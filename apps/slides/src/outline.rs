@@ -89,6 +89,7 @@ mod tests {
         let deck = Deck {
             title: "Launch".into(),
             palette: crate::model::PaletteKind::ALL[0],
+            look: crate::model::DeckLook::default(),
             slides: vec![cover.clone(), agenda.clone()],
         };
         let ids = |slide: &crate::model::Slide| -> Vec<String> {

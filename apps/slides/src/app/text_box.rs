@@ -407,10 +407,10 @@ impl SlidesApp {
         else {
             return;
         };
-        // A slide's type is sized in slide units, whatever the reader's
-        // text scale, the same while its words are edited.
-        let unit = render::unit_scale(theme);
-        let theme = unit.as_ref().unwrap_or(theme);
+        // The words lay out against the deck's look, as the canvas draws
+        // them, the same while they are edited.
+        let words_theme = render::words_theme(pal.look, theme);
+        let theme = &*words_theme;
         let Some(editor) = self
             .text_editor
             .as_mut()
@@ -452,8 +452,8 @@ impl SlidesApp {
         let Some((_, element)) = self.selected_text_box() else {
             return;
         };
-        let unit = render::unit_scale(theme);
-        let theme = unit.as_ref().unwrap_or(theme);
+        let words_theme = render::words_theme(self.deck.look, theme);
+        let theme = &*words_theme;
         if let Some(editor) = self
             .text_editor
             .as_mut()

@@ -406,7 +406,7 @@ impl Presentation {
         theme: &Theme,
         frame: &PresentationFrame<'_>,
     ) {
-        let palette = Palette::resolve(frame.deck.palette, theme);
+        let palette = Palette::resolve(frame.deck.palette, frame.deck.look);
         if self.presenter_view || self.external_audience {
             self.draw_presenter(scene, transform, text, theme, frame, &palette);
             return;
@@ -585,7 +585,7 @@ impl Presentation {
         theme: &Theme,
         frame: &PresentationFrame<'_>,
     ) {
-        let palette = Palette::resolve(frame.deck.palette, theme);
+        let palette = Palette::resolve(frame.deck.palette, frame.deck.look);
         ui::paint::fill_rect(
             scene,
             transform,
@@ -1074,7 +1074,7 @@ mod tests {
             let frame =
                 PresentationFrame::new(Rect::new(0.0, 0.0, 1280.0, 720.0), &deck, 1, 7, &images);
             let theme = Theme::dark();
-            let palette = Palette::resolve(deck.palette, &theme);
+            let palette = Palette::resolve(deck.palette, deck.look);
             let destination = Rect::new(100.0, 50.0, 1180.0, 660.0);
             let mut presentation = Presentation::default();
             let mut text = TextRenderer::new();

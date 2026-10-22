@@ -18,7 +18,7 @@ use tilo_rich_text::RichTextView;
 use ui::widget::BlockEditor;
 
 use crate::assets::{ImageLookup, ImageState};
-use crate::model::{Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
+use crate::model::{DeckLook, Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
 pub use ui::paint::with_alpha;
 
 /// Map a point from slide space to destination pixels.
@@ -49,10 +49,31 @@ pub struct DeckAssets<'a> {
     pub presence: Option<&'a ui::presence::PresenceCtx>,
 }
 
-/// `theme` at unit text scale, when it is scaled: what a slide's words lay
-/// out against.
-pub fn unit_scale(theme: &ui::theme::Theme) -> Option<ui::theme::Theme> {
-    ((theme.text_scale - 1.0).abs() > f32::EPSILON).then(|| theme.clone().with_text_scale(1.0))
+/// The theme a deck's words lay out and paint against: the deck's own
+/// `look`, at unit text scale, never the reader's UI theme, so a slide
+/// shows the same on every screen, in Present and in a written file. Only
+/// the reader's own colour comes along, for their caret and selection.
+/// Built once per look and colour on a thread.
+pub fn words_theme(look: DeckLook, reader: &ui::theme::Theme) -> std::rc::Rc<ui::theme::Theme> {
+    type Key = (DeckLook, ui::tokens::colors::PresenceHue);
+    thread_local! {
+        static THEMES: RefCell<Vec<(Key, std::rc::Rc<ui::theme::Theme>)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let key = (look, reader.tokens.colors.you);
+    THEMES.with(|themes| {
+        let mut themes = themes.borrow_mut();
+        if let Some((_, theme)) = themes.iter().find(|(k, _)| *k == key) {
+            return theme.clone();
+        }
+        let preset = match look {
+            DeckLook::Light => ui::theme::Preset::Light,
+            DeckLook::Dark => ui::theme::Preset::Dark,
+        };
+        let theme = std::rc::Rc::new(ui::theme::Theme::preset(preset).with_your_colour(key.1));
+        themes.push((key, theme.clone()));
+        theme
+    })
 }
 
 /// The colour under the middle of text element `e`: the topmost filled
@@ -149,9 +170,9 @@ pub fn draw_slide_except(
         images: assets.images,
         presence: assets.presence,
     };
-    // A slide's type is sized in slide units, whatever the reader's text
-    // scale: its words lay out against a theme at unit scale.
-    let unit_theme = unit_scale(ctx.theme);
+    // A slide's words lay out and paint against the deck's look, sized in
+    // slide units whatever the reader's text scale.
+    let words_theme = words_theme(palette.look, ctx.theme);
     for el in slide.z_sorted() {
         if el.kind == ElementKind::Text {
             if editing == Some(el.id.as_str()) {
@@ -160,7 +181,7 @@ pub fn draw_slide_except(
             if el.is_blank_text() && !prompts {
                 continue;
             }
-            let theme = unit_theme.as_ref().unwrap_or(ctx.theme);
+            let theme = &*words_theme;
             let prompt = (prompts && el.is_blank_text()).then(|| prompt_for(slide, el));
             let shown = prompt.as_ref().unwrap_or(el);
             let ink = text_ink(palette, slide, shown);

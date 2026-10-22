@@ -13,7 +13,7 @@ use winit::keyboard::{Key, NamedKey};
 use super::SlidesApp;
 use crate::SlidesShell;
 use crate::actions::replace_deck_action;
-use crate::model::{Deck, PaletteKind, Slide};
+use crate::model::{Deck, DeckLook, PaletteKind, Slide};
 
 /// The window most tests use.
 pub(super) const WINDOW: (u32, u32) = (1280, 800);
@@ -146,6 +146,7 @@ pub(super) fn deck_of(slides: Vec<Slide>) -> Deck {
     Deck {
         title: "t".into(),
         palette: PaletteKind::Indigo,
+        look: DeckLook::default(),
         slides,
     }
 }
