@@ -639,7 +639,8 @@ fn identify_puts_a_numbered_card_on_every_display() {
         .iter()
         .map(|label| (label.number, label.name.as_str()))
         .collect();
-    assert_eq!(named, [(1, "Built-in display"), (2, "HDMI-A-1")]);
+    // An unnamed monitor reads as what it is, never as its port.
+    assert_eq!(named, [(1, "Built-in display"), (2, "External display")]);
     assert!(
         !host.poll_display_identify(),
         "one request shows the numbers once"
