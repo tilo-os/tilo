@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 8
+version = 9
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -546,6 +546,9 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "NeighbourMsg::IdentityHello.protocol" = "#0 u32"
 "NeighbourMsg::IdentityHello.revocations" = "#2 Vec<RevocationEntry>"
 "NeighbourMsg::IdentityHello.successions" = "#3 Vec<GovernorSuccession>"
+"NeighbourMsg::LivePresence" = "#30 struct"
+"NeighbourMsg::LivePresence.frame" = "#1 Vec<u8>"
+"NeighbourMsg::LivePresence.peer" = "#0 PeerId"
 "NeighbourMsg::MediaCapabilities" = "#21 struct"
 "NeighbourMsg::MediaCapabilities.hardware_decode" = "#1 Vec<String>"
 "NeighbourMsg::MediaCapabilities.hardware_encode" = "#3 Vec<String>"
