@@ -1643,8 +1643,8 @@ fn force_flow_fragment(
 // Fixed metadata is bounded independently from variable retained payloads.
 const MEASURE_CACHE_LIMIT: usize = 4096;
 const MEASURE_CACHE_BYTES: usize = 2 * 1024 * 1024;
-const CLAMP_CACHE_LIMIT: usize = 2048;
-const CLAMP_CACHE_BYTES: usize = 1024 * 1024;
+const ADVANCE_CACHE_LIMIT: usize = 2048;
+const ADVANCE_CACHE_BYTES: usize = 2 * 1024 * 1024;
 const SHAPE_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 /// One contiguous span of glyphs sharing a single font face, already
@@ -1706,7 +1706,11 @@ struct ShapedText {
 
 /// Each glyph of a left-to-right line with the bytes it covers and its
 /// advance ([`TextRenderer::ltr_advances`]).
-struct LineAdvances(Vec<(usize, usize, f32)>);
+struct LineAdvances {
+    glyphs: Vec<(usize, usize, f32)>,
+    /// The whole line's width, as measuring it gives.
+    line: f32,
+}
 
 /// Whitespace a wrapped line drops at its ends.
 fn collapsible_edge(character: char) -> bool {
@@ -1732,7 +1736,7 @@ fn elided(text: &str, end: usize) -> String {
 impl LineAdvances {
     /// The advances of the glyphs wholly inside bytes `start..end`.
     fn width(&self, start: usize, end: usize) -> f32 {
-        self.0
+        self.glyphs
             .iter()
             .filter(|&&(from, to, _)| from >= start && to <= end)
             .map(|&(_, _, advance)| advance)
@@ -1925,14 +1929,10 @@ pub struct TextRenderer {
     /// across a 50-widget tree; most widgets re-measure the same static
     /// strings every frame, so caching drops that to a hash lookup.
     measure_cache: TextCache<(f32, f32)>,
-    /// `(text, style, width)` → the line limit and the lines
-    /// [`Self::clamp_to_lines_style`] cut for it. Wrapping measures every
-    /// prefix at each break and eliding searches the last line's cuts, so a
-    /// grid of titles laid out again (intrinsic sizing asks each card
-    /// several times a frame) otherwise repeats dozens of measures per title.
-    clamp_cache: TextCache<(usize, Vec<String>)>,
     /// `text, style` → its glyph advances on one line, for wrapping and
-    /// eliding it at any width ([`Self::ltr_advances`]).
+    /// eliding it at any width ([`Self::ltr_advances`]): with them a clamp
+    /// costs a measure of each line it keeps, which the measure cache
+    /// answers when the same title is drawn again.
     advance_cache: TextCache<Option<Arc<LineAdvances>>>,
     /// Bumped by [`Self::bump_generation`] when locale or fonts change.
     /// Generation participates in identity; bumping it also clears retained entries.
@@ -1976,7 +1976,7 @@ pub struct TextRenderer {
     /// keyed by their hash: every text measure asks, and reading them from
     /// the catalog compares every product face's names, which made laying
     /// out a long list of cards on a page most of its main thread's work.
-    browser_font_files: rustc_hash::FxHashMap<u64, Vec<&'static str>>,
+    browser_font_files: Vec<(u64, Vec<&'static str>)>,
 }
 
 impl Default for TextRenderer {
@@ -2061,8 +2061,7 @@ impl TextRenderer {
             font_system,
             swash_cache: SwashCache::new(),
             measure_cache: TextCache::new(MEASURE_CACHE_LIMIT, MEASURE_CACHE_BYTES),
-            clamp_cache: TextCache::new(CLAMP_CACHE_LIMIT, CLAMP_CACHE_BYTES),
-            advance_cache: TextCache::new(CLAMP_CACHE_LIMIT, 2 * CLAMP_CACHE_BYTES),
+            advance_cache: TextCache::new(ADVANCE_CACHE_LIMIT, ADVANCE_CACHE_BYTES),
             generation: 0,
             layout_epoch: Arc::new(()),
             distinct_letters: false,
@@ -2077,7 +2076,7 @@ impl TextRenderer {
             ink_bounds_entries: 0,
             browser_font_demands: None,
             browser_font_assets: HashSet::new(),
-            browser_font_files: rustc_hash::FxHashMap::default(),
+            browser_font_files: Vec::new(),
         }
     }
 
@@ -2267,7 +2266,6 @@ impl TextRenderer {
         self.layout_epoch = Arc::new(());
         self.generation = self.generation.wrapping_add(1);
         self.measure_cache.clear();
-        self.clamp_cache.clear();
         self.advance_cache.clear();
         // Entries key on `generation` so stale ones would never match
         // anyway; the explicit clear reclaims their memory immediately.
@@ -2638,34 +2636,61 @@ impl TextRenderer {
         if max_lines == 0 || text.is_empty() || max_width <= 0.0 {
             return Vec::new();
         }
-        self.sync_distinct_letters();
-        let input = CacheQuery::new(text, style);
-        let key = input.key(Some(max_width), self.generation, self.text_scale);
-        if let Some((lines, clamped)) = self.clamp_cache.get(&key)
-            && *lines == max_lines
-        {
-            return clamped.clone();
+        if max_lines == 1 {
+            return vec![self.elide_to_width_style(text, max_width, style)];
         }
-        let clamped = self.clamp_to_lines_uncached(text, max_width, max_lines, style);
-        let bytes = clamped
-            .iter()
-            .map(|line| line.len().saturating_add(std::mem::size_of::<String>()))
-            .sum();
-        self.clamp_cache
-            .insert(key, (max_lines, clamped.clone()), bytes);
-        clamped
+        self.clamp_on_lines(text, max_width, max_lines, style)
     }
 
-    fn clamp_to_lines_uncached(
+    /// How many lines [`Self::clamp_to_lines_style`] cuts `text` into, for
+    /// sizing a block before it is drawn. Up to two lines this needs only
+    /// the width of the whole text, the same at every width asked: it is one
+    /// line when it fits or cannot break, and otherwise fills both.
+    pub fn clamped_line_count(
+        &mut self,
+        text: &str,
+        max_width: f32,
+        max_lines: usize,
+        style: &TextStyle,
+    ) -> usize {
+        let trimmed = text.trim_matches(collapsible_edge);
+        if max_lines == 0 || trimmed.is_empty() || max_width <= 0.0 {
+            return self
+                .clamp_to_lines_style(text, max_width, max_lines, style)
+                .len();
+        }
+        if max_lines == 1 {
+            return 1;
+        }
+        let breaks: Vec<_> = line_break_opportunities(trimmed)
+            .filter(|&(end, _)| end < trimmed.len())
+            .collect();
+        if max_lines > 2
+            || breaks
+                .iter()
+                .any(|&(_, kind)| kind == LineBreakKind::Mandatory)
+        {
+            return self
+                .clamp_to_lines_style(text, max_width, max_lines, style)
+                .len();
+        }
+        if breaks.is_empty() {
+            return 1;
+        }
+        let width = match self.ltr_advances(trimmed, style) {
+            Some(advances) => advances.line,
+            None => self.measure_style(trimmed, None, style).0,
+        };
+        if width <= max_width { 1 } else { 2 }
+    }
+
+    fn clamp_on_lines(
         &mut self,
         text: &str,
         max_width: f32,
         max_lines: usize,
         style: &TextStyle,
     ) -> Vec<String> {
-        if max_lines == 1 {
-            return vec![self.elide_to_width_style(text, max_width, style)];
-        }
         let advances = self.ltr_advances(text, style);
         // Only as many lines as are kept are wrapped: the rest is elided
         // from where the last kept line starts.
@@ -2725,11 +2750,16 @@ impl TextRenderer {
                 .iter()
                 .map(|glyph| (!glyph.level.is_rtl()).then_some((glyph.start, glyph.end, glyph.w)))
                 .collect::<Option<Vec<_>>>()
-                .map(|glyphs| Arc::new(LineAdvances(glyphs)))
+                .map(|glyphs| {
+                    Arc::new(LineAdvances {
+                        glyphs,
+                        line: run.line_w,
+                    })
+                })
         });
         let bytes = advances.as_ref().map_or(0, |advances| {
             advances
-                .0
+                .glyphs
                 .len()
                 .saturating_mul(std::mem::size_of::<(usize, usize, f32)>())
         });
@@ -3141,16 +3171,26 @@ impl TextRenderer {
             bold.hash(&mut hasher);
             hasher.finish()
         };
-        let files = self.browser_font_files.entry(key).or_insert_with(|| {
-            // A face without a bold sets bold text in its regular.
-            let files = crate::font_catalog::product_files_for(&families, style.italic, bold);
-            if files.is_empty() && bold {
-                crate::font_catalog::product_files_for(&families, style.italic, false)
-            } else {
-                files
-            }
-        });
-        for file in files.iter() {
+        let index = self
+            .browser_font_files
+            .iter()
+            .position(|(seen, _)| *seen == key)
+            .unwrap_or_else(|| {
+                // A face without a bold sets bold text in its regular.
+                let mut files =
+                    crate::font_catalog::product_files_for(&families, style.italic, bold);
+                if files.is_empty() && bold {
+                    files = crate::font_catalog::product_files_for(&families, style.italic, false);
+                }
+                self.browser_font_files.push((key, files));
+                self.browser_font_files.len().saturating_sub(1)
+            });
+        let files = self
+            .browser_font_files
+            .get(index)
+            .map(|(_, files)| files.as_slice())
+            .unwrap_or_default();
+        for file in files {
             if !self.browser_font_assets.contains(*file) {
                 demands.insert((*file).to_owned());
             }

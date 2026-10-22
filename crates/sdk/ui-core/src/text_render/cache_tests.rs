@@ -668,20 +668,19 @@ fn retained_geometry_separates_current_distinction_scope_and_restores_plain_hits
 }
 
 #[test]
-fn a_repeated_clamp_reuses_its_lines_without_measuring() {
+fn a_repeated_clamp_shapes_nothing_again() {
     let style = TextStyle::new(14.0);
     let title = "A long video title that wraps over more than two lines in a narrow card";
     let mut renderer = crate::font_catalog::fixture_renderer();
     let first = renderer.clamp_to_lines_style(title, 120.0, 2, &style);
-    let measured = (renderer.hits, renderer.misses);
+    let shaped = renderer.misses;
     assert_eq!(
         renderer.clamp_to_lines_style(title, 120.0, 2, &style),
         first
     );
     assert_eq!(
-        (renderer.hits, renderer.misses),
-        measured,
-        "the same clamp is not measured again"
+        renderer.misses, shaped,
+        "the same clamp is answered from what was measured"
     );
     // Another limit or width is its own answer, as a cold renderer cuts it.
     let mut cold = crate::font_catalog::fixture_renderer();
@@ -748,4 +747,33 @@ fn wrapping_measures_each_line_once_not_every_prefix() {
         probe.measure_style(&one_more, None, &style).0 > 140.0,
         "{one_more:?}"
     );
+}
+
+#[test]
+fn a_clamped_line_count_matches_the_lines_a_clamp_cuts() {
+    let style = TextStyle::new(14.0);
+    let texts = [
+        "",
+        "  ",
+        "Short",
+        "Supercalifragilisticexpialidocious",
+        "Two words",
+        "A title long enough to wrap onto a second line and then some more",
+        "First line\nsecond line",
+        "  padded title that wraps around  ",
+        "東京の動画のタイトルはとても長いです",
+    ];
+    let mut counted = crate::font_catalog::fixture_renderer();
+    let mut cut = crate::font_catalog::fixture_renderer();
+    for text in texts {
+        for width in [40.0, 90.0, 160.0, 600.0] {
+            for lines in 1..=3 {
+                assert_eq!(
+                    counted.clamped_line_count(text, width, lines, &style),
+                    cut.clamp_to_lines_style(text, width, lines, &style).len(),
+                    "{text:?} at {width} in {lines} lines"
+                );
+            }
+        }
+    }
 }
