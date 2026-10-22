@@ -10120,6 +10120,9 @@ pub fn run() {
     let _ = std::thread::Builder::new()
         .name("tilo-mimeapps-publish".to_string())
         .spawn(crate::shell::launcher::publish_host_mimeapps);
+    // Facts the loop asks for later that only the disk can answer.
+    super::admin_control::resolve_admin_group_in_background();
+    crate::shell::i18n::prepare_search_words_in_background();
     let mut desktop_continuation = if crate::compositor::parse_install_mode_from_args()
         == crate::compositor::InstallMode::HostDesktop
     {
