@@ -28,7 +28,7 @@ aarch64 = "aarch64"
 optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy", "notifications"]
 
 [resources]
-kinds = ["calendar.calendar", "tilo.accounts", "tilo.rich-text"]
+kinds = ["calendar.calendar", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
