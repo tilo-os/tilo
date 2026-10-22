@@ -67,6 +67,12 @@ pub fn start() {
 pub fn refresh_mounts() {
     browser::refresh_mounts();
 }
+/// Whether a mount has presented its first frame yet.
+#[cfg(target_arch = "wasm32")]
+#[must_use]
+pub fn first_frame_presented() -> bool {
+    browser::first_frame_presented()
+}
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
 #[cfg(target_arch = "wasm32")]

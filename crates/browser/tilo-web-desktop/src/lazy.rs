@@ -1,7 +1,7 @@
 //! Framework code the first frame does not need, loaded the first time
 //! something uses it: the search engine (tantivy and its codecs), the
 //! spelling dictionaries (the embedded English list and Hunspell), which
-//! the page fetches and builds in its idle time after start, the hyphenation
+//! the page fetches and builds in its idle time once its first frame is up, the hyphenation
 //! patterns, which the first hyphenated paragraph asks for, the image
 //! decoders, which the first web page image or decoded picture asks for, and
 //! the model service's clients, which the first model request or provider
@@ -178,21 +178,40 @@ fn fetch_model_clients() {
     });
 }
 
-/// How long after start the page begins on the spelling dictionaries: the
-/// first frames, fonts and the first app come first.
-const SPELLING_AFTER_START_MS: u32 = 2_000;
+/// How often the page looks again whether its first frame is up, or the
+/// dictionaries' code is in.
+const SPELLING_POLL_MS: u32 = 250;
 
-/// Fetch the spelling dictionaries' code and build the English dictionary in
-/// the page's idle time, a slice per idle period, so that no keystroke waits
-/// for either. A field typed in before then flags nothing yet, and checks
-/// again once the dictionary is built.
+/// How long after the first frame the page begins on the spelling
+/// dictionaries: the app in front, if its code is still coming, gets the
+/// link first.
+const SPELLING_AFTER_FIRST_FRAME_MS: u32 = 1_000;
+
+/// Whether the first frame is up and its grace period has been granted.
+static SPELLING_RELEASED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Once the page has drawn its first frame, fetch the spelling dictionaries'
+/// code and build the English dictionary in the page's idle time, a slice per
+/// idle period, so that neither the first frame nor any keystroke waits for
+/// either. A field typed in before then flags nothing yet, and checks again
+/// once the dictionary is built.
 fn prepare_spelling_when_idle(delay: u32) {
     let work = Closure::once_into_js(move |deadline: f64| {
+        use std::sync::atomic::Ordering;
+        if !SPELLING_RELEASED.load(Ordering::Relaxed) {
+            if tilo_browser_runtime::first_frame_presented() {
+                SPELLING_RELEASED.store(true, Ordering::Relaxed);
+                prepare_spelling_when_idle(SPELLING_AFTER_FIRST_FRAME_MS);
+            } else {
+                prepare_spelling_when_idle(SPELLING_POLL_MS);
+            }
+            return;
+        }
         match spellcheck::prepare_dictionaries(&mut || now() < deadline) {
             Some(true) => tilo_browser_runtime::refresh_mounts(),
             Some(false) => prepare_spelling_when_idle(0),
             // The code is still on its way.
-            None => prepare_spelling_when_idle(250),
+            None => prepare_spelling_when_idle(SPELLING_POLL_MS),
         }
     });
     after_idle(delay, &work);
@@ -202,7 +221,7 @@ pub(crate) fn register() {
     tilo_search::defer_engine(fetch_search);
     spellcheck::defer_dictionaries(fetch_spelling);
     spellcheck::build_dictionaries_in_steps();
-    prepare_spelling_when_idle(SPELLING_AFTER_START_MS);
+    prepare_spelling_when_idle(SPELLING_POLL_MS);
     tilo_ui::defer_hyphenation(fetch_hyphenation);
     tilo_ui::image_decoders::defer_image_decoders(fetch_page_images);
     tilo_browser_runtime::defer_model_clients(fetch_model_clients);

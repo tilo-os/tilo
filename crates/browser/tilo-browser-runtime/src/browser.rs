@@ -139,6 +139,16 @@ pub(crate) fn wake_desktops() {
     });
 }
 
+/// Whether any mount has presented a frame: code the first frame does not
+/// need (the spelling dictionaries) waits for it, so that it never shares
+/// the link or the main thread with what that frame does need.
+static FIRST_FRAME_PRESENTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn first_frame_presented() -> bool {
+    FIRST_FRAME_PRESENTED.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Code fetched on first use arrived (search, spelling, hyphenation): lay
 /// out and draw every mount again, so that what it changes shows. Runs from
 /// the loader's promise, outside any mount; a mount that is busy anyway
@@ -2613,6 +2623,9 @@ impl Mount {
                 wave.clone().unwrap_or(serde_json::Value::Null),
             );
             *self.live_wave.borrow_mut() = wave;
+        }
+        if self.error.is_none() && self.frames > 0 {
+            FIRST_FRAME_PRESENTED.store(true, std::sync::atomic::Ordering::Release);
         }
         let mut text = value.to_string();
         if let Some(crate::semantics_status::SemanticsDecision::Deliver { .. }) = decision {
