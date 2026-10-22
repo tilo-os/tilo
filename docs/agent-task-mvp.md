@@ -7,9 +7,10 @@ prerequisite for using tasks.
 
 ## Start, steer and stop
 
-Open an enrolled agent from Chat's Agents section, choose **New task**, and send
-an instruction. The full instruction is stored privately by the workspace task
-owner; the short title is only a display label. Queuing does not start execution.
+Ask an agent from the shell's **Tell an agent** composer; the request becomes
+an issue in Tasks (docs/architecture/tasks.md). The full instruction is stored
+privately by the workspace task owner; the short title is only a display label.
+Queuing does not start execution.
 Select the queued task and press **Start** to approve that execution consciously.
 Approval is not a claim that an agent has begun running. The task shows the
 actual accepted/planning/executing phase when the executor reports it.
@@ -28,7 +29,7 @@ Previously committed resources remain; cancellation of in-flight external
 operations depends on their declared cancellation support.
 
 Click a painted agent action marker to open the nearby private composer. Its
-messages address the same task-owner direction action as Chat. Open the task's
+messages address the same task-owner direction action. Open the task's
 full conversation to start queued work or inspect it. Float and return the
 conversation using the shared floating surface; its draft, selection and IME
 state travel with the retained editor, not through shared workspace text.
@@ -56,8 +57,7 @@ implemented here; this version uses the deterministic scope rule above.
 
 ## Verification and development
 
-`apps/chat/examples/README.md` describes the offscreen captures and semantic
-navigation. The broker's `native_cross_app_approval_steering_stop_and_grants`
+The broker's `native_cross_app_approval_steering_stop_and_grants`
 regression drives the enrolled owner and native task RPCs into actual Writer and
 Settings resource actions. Its planner and worker mounting are deterministic
 test adapters, not a live model or a mounted desktop session. Do not present its

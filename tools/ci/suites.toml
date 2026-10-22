@@ -69,12 +69,6 @@ inputs = ["scripts/headless-examples/spawn-headless.sh"]
 suites = ["scripts/headless-examples/test_spawn_headless.py"]
 
 [[group]]
-name = "chat-task-approval"
-requirement = { cores = 1, memory = "1GiB" }
-inputs = ["apps/chat/"]
-suites = ["apps/chat/tests/test_agent_start_surface.py"]
-
-[[group]]
 name = "runtime-dependency-closure"
 requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/verify-runtime-bundle-closure.sh", "dist/apps/package-apps.sh"]

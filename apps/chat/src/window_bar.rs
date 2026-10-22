@@ -25,7 +25,7 @@ impl ChatApp {
                 Hit::StopSharingLiveContext,
             ));
         }
-        if self.direct_person.is_some() || self.direct_agent.is_some() {
+        if self.direct_person.is_some() {
             let label = crate::i18n::t(if self.conversation_surface {
                 "chat-agent-return"
             } else {
@@ -37,31 +37,29 @@ impl ChatApp {
             ));
         }
         if self.direct_person.is_none() && self.has_other_collaborator() {
-            if self.direct_agent.is_none() {
-                if self.call.active {
-                    let name = self.channel(&self.call.channel).map_or_else(
-                        || crate::i18n::t("chat-header-call-open"),
-                        |channel| channel.name.clone(),
-                    );
-                    actions.push((
-                        ToolbarAction::new("call", "volume-2", name).on(true),
-                        Hit::StartCall,
-                    ));
-                    actions.push((
-                        ToolbarAction::new(
-                            "call-leave",
-                            "phone-off",
-                            crate::i18n::t("chat-call-leave-action"),
-                        ),
-                        Hit::CallLeave,
-                    ));
-                }
-                let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
+            if self.call.active {
+                let name = self.channel(&self.call.channel).map_or_else(
+                    || crate::i18n::t("chat-header-call-open"),
+                    |channel| channel.name.clone(),
+                );
                 actions.push((
-                    ToolbarAction::new("pins", "pin", "Pinned messages").on(pins),
-                    Hit::TogglePins,
+                    ToolbarAction::new("call", "volume-2", name).on(true),
+                    Hit::StartCall,
+                ));
+                actions.push((
+                    ToolbarAction::new(
+                        "call-leave",
+                        "phone-off",
+                        crate::i18n::t("chat-call-leave-action"),
+                    ),
+                    Hit::CallLeave,
                 ));
             }
+            let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
+            actions.push((
+                ToolbarAction::new("pins", "pin", "Pinned messages").on(pins),
+                Hit::TogglePins,
+            ));
             let people = self.right_flap_open() && self.thread_open.is_none() && !self.pins_open;
             actions.push((
                 ToolbarAction::new("people", "users", self.roster_label()).on(people),
@@ -81,7 +79,7 @@ impl ChatApp {
                 ));
             }
         }
-        if self.keeps_layout() && self.direct_person.is_none() && self.direct_agent.is_none() {
+        if self.keeps_layout() && self.direct_person.is_none() {
             actions.push((
                 ToolbarAction::new("create", "plus", "Create channel or category").in_menu(),
                 Hit::AddCategory,

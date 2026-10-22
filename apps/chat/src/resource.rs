@@ -109,10 +109,6 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "agent-long-thread",
     "agent-work",
     "bridged",
-    "agent-task",
-    "agent-task-compact",
-    "agent-task-queued",
-    "agent-task-queued-compact",
     "narrow",
     "history",
     "compact",
@@ -237,13 +233,6 @@ impl ResourceApp for ChatShell {
             }
         }
         Ok(())
-    }
-
-    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        match scenario {
-            Some("agent-task-compact" | "agent-task-queued-compact") => (420, 680),
-            _ => (1280, 800),
-        }
     }
 
     /// Every scenario but `starter` starts from the demo workspace, read by

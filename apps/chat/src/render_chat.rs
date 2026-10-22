@@ -15,7 +15,6 @@ use vello::peniko::Color;
 
 use ui::TextKind;
 use ui::Widget;
-use ui::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use ui::author::Author;
 use ui::chrome::{
     self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_item_height, nav_row_height,
@@ -31,10 +30,9 @@ use ui::tokens::TextRole;
 use ui::widget::{
     AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead,
     ControlSize, EmptyState, EmptyStateContent, ListRowFace, MediaArt, MediaAspect, MediaCardFace,
-    MediaSize, RowLeading, Segment, SegmentedFace, SegmentedStyle,
+    MediaSize, RowLeading,
 };
 
-use crate::agent_tasks::{AgentComposerIntent, AgentTaskReceipt, AgentTaskView};
 use crate::app::{ChatApp, Hit, MenuTarget};
 use crate::model::{
     self, AgentRoute, AgentStepOutcome, AgentWork, AgentWorkState, Attachment, ChannelKind,
@@ -64,72 +62,6 @@ pub(crate) struct HeaderIdentityText {
     pub(crate) name: String,
     pub(crate) kind: Option<String>,
     pub(crate) context: String,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct AgentTaskStatusLines {
-    pub(crate) primary: String,
-    pub(crate) receipt: Option<String>,
-}
-
-pub(crate) fn agent_task_status_lines(view: &AgentTaskView) -> AgentTaskStatusLines {
-    let primary = if let Some(task) = view.current() {
-        let state = match task.execution_phase() {
-            Some("accepted") => crate::i18n::t("chat-agent-task-accepted"),
-            Some("planning") => crate::i18n::t("chat-agent-task-planning"),
-            Some("executing") => crate::i18n::t("chat-agent-task-executing"),
-            _ => match task.status.as_str() {
-                "queued" => crate::i18n::t("chat-agent-task-queued"),
-                "done" => crate::i18n::t("chat-agent-task-complete"),
-                "cancelled" => crate::i18n::t("chat-agent-task-cancelled"),
-                _ => crate::i18n::t("chat-agent-task-phase-unknown"),
-            },
-        };
-        crate::i18n::t_args(
-            "chat-agent-task-status",
-            &[
-                ("state", state.into()),
-                ("title", task.title.clone().into()),
-                (
-                    "run",
-                    task.run_epoch
-                        .map_or_else(|| "—".into(), |epoch| epoch.to_string())
-                        .into(),
-                ),
-            ],
-        )
-    } else if let Some((task, epoch)) = view.selected_identity() {
-        crate::i18n::t_args(
-            "chat-agent-task-selected-unavailable",
-            &[("task", task.into()), ("run", epoch.to_string().into())],
-        )
-    } else if view.loading {
-        crate::i18n::t("chat-agent-task-loading")
-    } else if !view.complete {
-        crate::i18n::t("chat-agent-task-unavailable")
-    } else if view.tasks.is_empty() {
-        crate::i18n::t("chat-agent-task-none")
-    } else {
-        crate::i18n::t_args(
-            "chat-agent-task-choose",
-            &[(
-                "count",
-                i64::try_from(view.tasks.len()).unwrap_or(i64::MAX).into(),
-            )],
-        )
-    };
-    let receipt = match &view.receipt {
-        // Storing the direction is the system's job; only what the agent
-        // does with it is news.
-        AgentTaskReceipt::None | AgentTaskReceipt::Saving => None,
-        AgentTaskReceipt::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-waiting")),
-        AgentTaskReceipt::Applied => Some(crate::i18n::t("chat-agent-direction-applied")),
-        AgentTaskReceipt::Started => Some(crate::i18n::t("chat-agent-task-started")),
-        AgentTaskReceipt::StopRequested => Some(crate::i18n::t("chat-agent-task-stopped")),
-        AgentTaskReceipt::Queued => Some(crate::i18n::t("chat-agent-task-saved")),
-        AgentTaskReceipt::Refused => Some(crate::i18n::t("chat-agent-direction-refused")),
-    };
-    AgentTaskStatusLines { primary, receipt }
 }
 
 /// How a mention of `user` is painted on `ground`: an optional filled band, and
@@ -181,13 +113,10 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        if let Some(tasks) = self.direct_agent_tasks() {
-            self.messages = tasks.conversation_messages(&self.active_channel, &self.me.id);
-        }
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
         let width = composer_editor_width(field_w, theme, self.direct_person.is_none());
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
-        let area = self.messages_rect(tr, theme);
+        let area = self.messages_rect();
         if area.width() > 0.0 && area.height() >= self.chrome.body_line {
             push_clip(scene, tf, area);
             if self.direct_person.is_some() {
@@ -658,7 +587,7 @@ impl ChatApp {
                 );
             }
         }
-        self.draw_agent_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, first, hits)
+        y
     }
 
     /// Keep private history reachable in the channel tree, before a long
@@ -704,75 +633,6 @@ impl ChatApp {
             ));
             chrome::paint_nav_row(scene, tf, tr, theme, &face);
             ChatApp::push_hit(hits, row, Hit::DirectPerson(contact.public_key.clone()));
-            y += row_h;
-        }
-        y
-    }
-
-    /// Broker-authenticated Agents are entry points into their task conversations.
-    /// Membership does not imply liveness, so these rows identify their kind
-    /// without inventing an online or ready state.
-    fn draw_agent_navigation(
-        &self,
-        paint: PaintCtx<'_>,
-        side: Rect,
-        mut y: f64,
-        first: bool,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) -> f64 {
-        if self.room_agents.is_empty() || y > side.y1 {
-            return y;
-        }
-        let PaintCtx {
-            scene,
-            transform: tf,
-            text: tr,
-            theme,
-        } = paint;
-        let section_h = nav_section_height(theme, first);
-        let header = Rect::new(side.x0, y, side.x1, y + section_h);
-        chrome::paint_nav_section(
-            scene,
-            tf,
-            tr,
-            theme,
-            &NavSectionFace::new(header, &crate::i18n::t("chat-agents-section")),
-        );
-        y += section_h;
-        let row_h = nav_item_height(theme, true, false);
-        let kind = crate::i18n::t("chat-agent-kind");
-        for agent in &self.room_agents {
-            if y + row_h > side.y1 {
-                break;
-            }
-            let name = self.agent_display_name(agent);
-            let row = Rect::new(side.x0, y, side.x1, y + row_h);
-            let face = NavRowFace::new(row, &name)
-                .secondary(&kind)
-                .swatch(Color::TRANSPARENT)
-                .state(SelectionState::new(
-                    self.direct_agent.as_deref() == Some(agent.as_str()),
-                    self.hovered(row),
-                    false,
-                ));
-            let layout = nav_row_layout(theme, tr, &face);
-            chrome::paint_nav_row(scene, tf, tr, theme, &face);
-            if let Some(mark) = layout.icon {
-                let canonical = format!("agent:{agent}");
-                draw_agent_identity_mark(
-                    scene,
-                    tf,
-                    mark,
-                    theme
-                        .tokens
-                        .colors
-                        .presence
-                        .of_rgb(self.participant_color(&canonical)),
-                    theme,
-                    AgentIdentityStyle::Solid,
-                );
-            }
-            ChatApp::push_hit(hits, row, Hit::Agent(agent.clone()));
             y += row_h;
         }
         y
@@ -1008,10 +868,7 @@ impl ChatApp {
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        if (self.direct_agent.is_none() && self.direct_person.is_none())
-            || self.conversation_surface
-            || area.width() <= 0.0
-        {
+        if self.direct_person.is_none() || self.conversation_surface || area.width() <= 0.0 {
             return;
         }
         let control = ButtonFace::height(ControlSize::Regular, theme);
@@ -1040,16 +897,6 @@ impl ChatApp {
                 name: self.person_display_name(peer),
                 kind: Some(crate::i18n::t("chat-person-chat-private")),
                 context: String::new(),
-            };
-        }
-        if let Some(agent) = &self.direct_agent {
-            return HeaderIdentityText {
-                name: self
-                    .direct_agent_tasks()
-                    .and_then(AgentTaskView::current)
-                    .map_or_else(|| self.agent_display_name(agent), |task| task.title.clone()),
-                kind: Some(self.agent_display_name(agent)),
-                context,
             };
         }
 
@@ -1162,44 +1009,7 @@ impl ChatApp {
         self.scroll_content = 0.0;
         self.scroll_viewport = area.height().max(0.0);
         self.scroll = 0.0;
-        let agent_name = self
-            .direct_agent
-            .as_deref()
-            .map(|agent| self.agent_display_name(agent));
-        let (direct_title, direct_message) = agent_name.as_deref().map_or_else(
-            || (None, None),
-            |name| {
-                let name_arg = [("name", name.into())];
-                if !self.direct_agent_is_available() {
-                    return (
-                        Some(crate::i18n::t_args(
-                            "chat-agent-empty-unavailable-title",
-                            &name_arg,
-                        )),
-                        Some(crate::i18n::t("chat-agent-unavailable")),
-                    );
-                }
-                match self.direct_agent_intent() {
-                    AgentComposerIntent::Queue => (
-                        Some(crate::i18n::t_args(
-                            "chat-agent-empty-queue-title",
-                            &name_arg,
-                        )),
-                        Some(crate::i18n::t("chat-agent-empty-queue-message")),
-                    ),
-                    AgentComposerIntent::Steer => (
-                        Some(crate::i18n::t_args(
-                            "chat-agent-empty-steer-title",
-                            &name_arg,
-                        )),
-                        Some(crate::i18n::t("chat-agent-empty-steer-message")),
-                    ),
-                }
-            },
-        );
-        let title = if let Some(title) = direct_title.as_deref() {
-            title
-        } else if self.can_participate() {
+        let title = if self.can_participate() {
             "No messages yet"
         } else {
             "Nothing has been said here yet"
@@ -1208,8 +1018,8 @@ impl ChatApp {
         // a visitor arriving in a quiet room should know they may start it.
         let channel_message = self.empty_channel_message();
         let content = EmptyStateContent {
-            icon: self.direct_agent.is_none().then_some(Icon::Send),
-            message: direct_message.as_deref().or(channel_message.as_deref()),
+            icon: Some(Icon::Send),
+            message: channel_message.as_deref(),
             ..EmptyStateContent::new(title)
         };
         EmptyState::paint(
@@ -1223,7 +1033,7 @@ impl ChatApp {
     /// The line under an empty channel's title: its topic, else, for
     /// someone who may write, an invitation to say the first thing.
     pub(crate) fn empty_channel_message(&self) -> Option<String> {
-        if self.direct_agent.is_some() || self.direct_person.is_some() {
+        if self.direct_person.is_some() {
             return None;
         }
         let channel = self.channel(&self.active_channel)?;
@@ -2295,17 +2105,14 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let rect = self.composer_rect(tr, theme);
+        let rect = self.composer_rect();
         // With no channel open a draft would have nowhere to go, so there is
         // no composer to type into.
-        if self.direct_agent.is_none()
-            && self.direct_person.is_none()
-            && self.channel(&self.active_channel).is_none()
-        {
+        if self.direct_person.is_none() && self.channel(&self.active_channel).is_none() {
             self.composer_main.set_focus(false);
             return;
         }
-        if !self.can_participate() && self.direct_agent.is_none() && self.direct_person.is_none() {
+        if !self.can_participate() && self.direct_person.is_none() {
             self.composer_main.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);
             return;
@@ -2319,42 +2126,12 @@ impl ChatApp {
             && matches!(self.focus, crate::app::Focus::Main)
             && self.editing.is_none();
         let draft = self.composer_main.value();
-        let input = if self.direct_agent.is_some() {
-            let pad = self.chrome.composer_min_h - self.chrome.body_line;
-            let input_h = (self.composer_main.measured_height() + pad)
-                .clamp(self.chrome.composer_min_h, self.chrome.composer_max_h)
-                .min(rect.height());
-            let input = Rect::new(rect.x0, rect.y1 - input_h, rect.x1, rect.y1);
-            self.draw_agent_task_controls(
-                PaintCtx::new(scene, tf, tr, theme),
-                Rect::new(rect.x0, rect.y0, rect.x1, input.y0),
-                hits,
-            );
-            input
-        } else {
-            rect
-        };
-        if self.direct_agent.is_some() {
-            let placeholder = match self.direct_agent_intent() {
-                AgentComposerIntent::Queue => crate::i18n::t("chat-agent-task-placeholder"),
-                AgentComposerIntent::Steer => crate::i18n::t("chat-agent-steer-placeholder"),
-            };
-            // The shared editor paints its empty hint on one line. Measure
-            // against its actual text slot, not the whole composer field.
-            let width = composer_editor_width(input.width(), theme, false);
-            let placeholder = elide(tr, &placeholder, &theme.text(TextRole::Body), width);
-            self.composer_main.set_placeholder(&placeholder);
-        }
         let send_enabled = interactive && !draft.trim().is_empty();
         let inner = self.draw_input_box(
             PaintCtx::new(scene, tf, tr, theme),
-            input,
+            rect,
             &draft,
-            (
-                send_enabled,
-                self.direct_agent.is_none() && self.direct_person.is_none(),
-                interactive,
-            ),
+            (send_enabled, self.direct_person.is_none(), interactive),
             Hit::FocusMain,
             hits,
         );
@@ -2491,336 +2268,6 @@ impl ChatApp {
         ChatApp::push_hit(hits, Rect::new(x, y, x + undo_w, y + h), Hit::UndoDelete);
     }
 
-    fn draw_agent_task_controls(
-        &self,
-        mut paint: PaintCtx<'_>,
-        rect: Rect,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let Some(tasks) = self.direct_agent_tasks() else {
-            return;
-        };
-        let gap = f64::from(paint.theme.tokens.spacing.s2);
-        let row_h = SegmentedFace::height(ControlSize::Small, paint.theme);
-        let lines = agent_task_status_lines(tasks);
-        let mode_rows = self.agent_intent_picker_rows(paint.text, paint.theme, rect.width());
-        let mode_h = mode_rows as f64 * row_h + mode_rows.saturating_sub(1) as f64 * gap;
-        let mode = Rect::new(rect.x0, (rect.y1 - mode_h).max(rect.y0), rect.x1, rect.y1);
-        self.draw_agent_intent_picker(
-            paint.scene,
-            paint.transform,
-            paint.text,
-            paint.theme,
-            mode,
-            tasks,
-            hits,
-        );
-        let status_bottom = mode.y0 - gap;
-        let status_h = self.agent_task_status_height(paint.text, paint.theme, rect.width(), tasks);
-        let status = Rect::new(
-            rect.x0,
-            (status_bottom - status_h).max(rect.y0),
-            rect.x1,
-            status_bottom.max(rect.y0),
-        );
-        let action = self.agent_task_run_control(tasks);
-        let action_w = if let Some((label, _)) = &action {
-            ButtonFace::new(Rect::ZERO, label)
-                .control_size(ControlSize::Small)
-                .intrinsic_width(paint.text, paint.theme)
-        } else {
-            0.0
-        };
-        let text_right = if action.is_some() {
-            status.x1 - action_w - gap
-        } else {
-            status.x1
-        };
-        let caption = paint.theme.text(TextRole::Caption);
-        let ink = paint.theme.text_dim;
-        paint.text.draw_style(
-            paint.scene,
-            &lines.primary,
-            paint.theme.text_primary,
-            paint.transform * Affine::translate((status.x0, status.y0)),
-            Some((text_right - status.x0).max(1.0) as f32),
-            &paint.theme.text(TextRole::Body),
-        );
-        if let Some((label, hit)) = action {
-            let control = Rect::new(
-                status.x1 - action_w,
-                status.y0,
-                status.x1,
-                (status.y0 + row_h).min(status.y1),
-            );
-            Button::paint(
-                paint.scene,
-                paint.transform,
-                paint.text,
-                paint.theme,
-                &ButtonFace::new(control, &label)
-                    .control_size(ControlSize::Small)
-                    .hovered(self.hovered(control)),
-            );
-            ChatApp::push_hit(hits, control, hit);
-        }
-        let mut chooser_bottom = status.y0 - gap;
-        if let Some(receipt) = lines.receipt {
-            let row = Rect::new(
-                rect.x0,
-                (chooser_bottom
-                    - Self::agent_task_receipt_height(
-                        paint.text,
-                        paint.theme,
-                        rect.width(),
-                        tasks,
-                    ))
-                .max(rect.y0),
-                rect.x1,
-                chooser_bottom.max(rect.y0),
-            );
-            paint.text.draw_style(
-                paint.scene,
-                &receipt,
-                ink,
-                paint.transform * Affine::translate((row.x0, row.y0)),
-                Some(row.width().max(1.0) as f32),
-                &caption,
-            );
-            chooser_bottom = row.y0 - gap;
-        }
-        self.draw_agent_task_chooser(
-            &mut paint,
-            Rect::new(rect.x0, rect.y0, rect.x1, chooser_bottom.max(rect.y0)),
-            tasks,
-            hits,
-        );
-    }
-
-    fn draw_agent_task_chooser(
-        &self,
-        paint: &mut PaintCtx<'_>,
-        rect: Rect,
-        tasks: &AgentTaskView,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) -> f64 {
-        let gap = f64::from(paint.theme.tokens.spacing.s2);
-        let row_h = SegmentedFace::height(ControlSize::Small, paint.theme);
-        let mut y = rect.y0;
-        if tasks.tasks.len() > 1 {
-            let selected = tasks.current().map(|task| task.task_id.as_str());
-            for task in tasks.visible_tasks() {
-                if y + row_h > rect.y1 {
-                    break;
-                }
-                let row = Rect::new(rect.x0, y, rect.x1, y + row_h);
-                Button::paint(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    &ButtonFace::new(row, &task.title)
-                        .control_size(ControlSize::Small)
-                        .toggled(selected == Some(task.task_id.as_str()))
-                        .hovered(self.hovered(row)),
-                );
-                ChatApp::push_hit(hits, row, Hit::AgentTask(Box::new(task.clone())));
-                y = row.y1 + gap;
-            }
-            if y + row_h <= rect.y1 {
-                let remaining = tasks.remaining_after_page();
-                let row = Rect::new(rect.x0, y, rect.x1, y + row_h);
-                let more = if remaining == 0 {
-                    crate::i18n::t("chat-agent-task-first")
-                } else {
-                    crate::i18n::t_args(
-                        "chat-agent-task-more",
-                        &[("count", i64::try_from(remaining).unwrap_or(i64::MAX).into())],
-                    )
-                };
-                Button::paint(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    &ButtonFace::new(row, &more)
-                        .control_size(ControlSize::Small)
-                        .hovered(self.hovered(row)),
-                );
-                ChatApp::push_hit(hits, row, Hit::AgentTaskMore);
-                y = row.y1 + gap;
-            }
-        }
-        y
-    }
-
-    /// The same run control drives paint and its reserved caption width.
-    fn agent_task_run_control(&self, tasks: &AgentTaskView) -> Option<(String, Hit)> {
-        if !self.direct_agent_is_available() {
-            return None;
-        }
-        if tasks.can_start() {
-            Some((crate::i18n::t("chat-agent-start"), Hit::AgentStart))
-        } else if tasks.can_stop() {
-            Some((crate::i18n::t("chat-agent-stop"), Hit::AgentStop))
-        } else {
-            None
-        }
-    }
-
-    /// Reserve the measured status and run control above the shared editor.
-    fn agent_task_status_height(
-        &self,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        width: f64,
-        tasks: &AgentTaskView,
-    ) -> f64 {
-        let action_w = if let Some((label, _)) = self.agent_task_run_control(tasks) {
-            ButtonFace::new(Rect::ZERO, &label)
-                .control_size(ControlSize::Small)
-                .intrinsic_width(tr, theme)
-                + f64::from(theme.tokens.spacing.s2)
-        } else {
-            0.0
-        };
-        let (_, height) = tr.measure_style(
-            &agent_task_status_lines(tasks).primary,
-            Some((width - action_w).max(1.0) as f32),
-            &theme.text(TextRole::Body),
-        );
-        f64::from(height).max(SegmentedFace::height(ControlSize::Small, theme))
-    }
-
-    fn agent_task_receipt_height(
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        width: f64,
-        tasks: &AgentTaskView,
-    ) -> f64 {
-        let Some(receipt) = agent_task_status_lines(tasks).receipt else {
-            return 0.0;
-        };
-        let (_, height) = tr.measure_style(
-            &receipt,
-            Some(width.max(1.0) as f32),
-            &theme.text(TextRole::Caption),
-        );
-        f64::from(height)
-    }
-
-    pub(crate) fn agent_task_controls_height(
-        &self,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        width: f64,
-    ) -> f64 {
-        let Some(tasks) = self.direct_agent_tasks() else {
-            return 0.0;
-        };
-        let chooser_rows = if tasks.tasks.len() > 1 { 2 } else { 0 };
-        let receipt_rows = usize::from(agent_task_status_lines(tasks).receipt.is_some());
-        let rows = chooser_rows + self.agent_intent_picker_rows(tr, theme, width);
-        let row_h = SegmentedFace::height(ControlSize::Small, theme);
-        let gap = f64::from(theme.tokens.spacing.s2);
-        self.agent_task_status_height(tr, theme, width, tasks)
-            + Self::agent_task_receipt_height(tr, theme, width, tasks)
-            + rows as f64 * row_h
-            + (rows + receipt_rows + 1) as f64 * gap
-    }
-
-    fn draw_agent_intent_picker(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        tasks: &AgentTaskView,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let available = self.direct_agent_is_available();
-        let can_steer = available && tasks.can_steer();
-        let segments = vec![
-            Segment::new(crate::i18n::t("chat-agent-mode-queue")).with_enabled(available),
-            Segment::new(crate::i18n::t(if can_steer {
-                "chat-agent-mode-steer"
-            } else {
-                "chat-agent-mode-steer-unavailable"
-            }))
-            .with_enabled(can_steer),
-        ];
-        let selected = match self.direct_agent_intent() {
-            AgentComposerIntent::Queue => 0,
-            AgentComposerIntent::Steer => 1,
-        };
-        let stacked = self.agent_intent_picker_rows(tr, theme, rect.width()) > 1;
-        let parts = if stacked {
-            let gap = f64::from(theme.tokens.spacing.s2);
-            let row_h = SegmentedFace::height(ControlSize::Small, theme);
-            (0..segments.len())
-                .map(|index| {
-                    let y0 = rect.y0 + index as f64 * (row_h + gap);
-                    Rect::new(rect.x0, y0, rect.x1, (y0 + row_h).min(rect.y1))
-                })
-                .collect::<Vec<_>>()
-        } else {
-            SegmentedFace::partition_segments(
-                rect,
-                &segments,
-                SegmentedStyle::Segmented,
-                ControlSize::Small,
-                tr,
-                theme,
-            )
-        };
-        ui::widget::ToggleGroup::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &SegmentedFace::of_segments(&parts, &segments, selected)
-                .control_size(ControlSize::Small),
-        );
-        for (index, part) in parts.into_iter().enumerate() {
-            let intent = match index {
-                0 if available => Some(AgentComposerIntent::Queue),
-                1 if can_steer => Some(AgentComposerIntent::Steer),
-                _ => None,
-            };
-            if let Some(intent) = intent {
-                ChatApp::push_hit(hits, part, Hit::AgentIntent(intent));
-            }
-        }
-    }
-
-    pub(crate) fn agent_intent_picker_rows(
-        &self,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        available_width: f64,
-    ) -> usize {
-        let labels = [
-            crate::i18n::t("chat-agent-mode-queue"),
-            crate::i18n::t(
-                if self
-                    .direct_agent_tasks()
-                    .is_some_and(AgentTaskView::can_steer)
-                {
-                    "chat-agent-mode-steer"
-                } else {
-                    "chat-agent-mode-steer-unavailable"
-                },
-            ),
-        ];
-        let refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
-        if SegmentedFace::intrinsic_width(&refs, ControlSize::Small, tr, theme) <= available_width {
-            1
-        } else {
-            labels.len()
-        }
-    }
-
     /// Who else is writing in this composer's channel or thread, under the
     /// composer: "Ada is typing…". What they write stays theirs.
     fn draw_draft_presence(
@@ -2907,14 +2354,7 @@ impl ChatApp {
             return tilo_rich_text::ComposerFrame::layout(rect, theme, &[], &[]).editor;
         }
 
-        let send_label = if self.direct_agent.is_none() {
-            crate::i18n::t("chat-agent-send-steer")
-        } else {
-            match self.direct_agent_intent() {
-                AgentComposerIntent::Queue => crate::i18n::t("chat-agent-send-queue"),
-                AgentComposerIntent::Steer => crate::i18n::t("chat-agent-send-steer"),
-            }
-        };
+        let send_label = crate::i18n::t("chat-send");
         let send_probe = ButtonFace::icon_only(Rect::ZERO, Icon::Send, &send_label)
             .control_size(ControlSize::Regular);
         let send_w = send_probe.intrinsic_width(tr, theme);
@@ -3662,7 +3102,7 @@ impl ChatApp {
             + body_h
             + if more > 0 { caption_h + pad } else { 0.0 }
             + pad;
-        let comp = self.composer_rect(tr, theme);
+        let comp = self.composer_rect();
         let w = f64::from(theme.tokens.metrics.panel_width_list).min(self.rect.width() - 2.0 * pad);
         let x0 = comp.x0.min(self.rect.x1 - w - pad).max(self.rect.x0 + pad);
         let y1 = comp.y0 - pad;
@@ -4222,25 +3662,6 @@ mod tests {
     };
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
-
-    #[test]
-    fn explicit_start_receipt_reports_approval_not_execution() {
-        let mut view = crate::agent_tasks::AgentTaskView::default();
-        view.receipt = crate::agent_tasks::AgentTaskReceipt::Started;
-        assert_eq!(
-            super::agent_task_status_lines(&view).receipt.as_deref(),
-            Some("Start approved")
-        );
-    }
-
-    #[test]
-    fn an_empty_frontier_has_no_start_or_stop_control() {
-        let app = crate::app::ChatApp::new_ephemeral();
-        assert!(
-            app.agent_task_run_control(&crate::agent_tasks::AgentTaskView::default())
-                .is_none()
-        );
-    }
 
     #[test]
     fn media_cards_keep_the_picture_shape_inside_a_regular_card() {
