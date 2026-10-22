@@ -6,6 +6,8 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
+use std::cell::Cell;
+
 use crate::widget::{AppModel, ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -273,6 +275,41 @@ impl MenuItem {
     }
 }
 
+thread_local! {
+    static CONTEXT_GESTURE: Cell<bool> = const { Cell::new(false) };
+    static SHIFT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Observe `event` before its window dispatches it, so a menu it opens
+/// knows whether it is a context menu: one opened by a secondary click, the
+/// Menu key or Shift+F10, rather than by a button. For window hosts.
+pub fn note_input(event: &WindowEvent) {
+    match event {
+        WindowEvent::ModifiersChanged(modifiers) => {
+            SHIFT.with(|shift| shift.set(modifiers.state().shift_key()));
+        }
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button,
+            ..
+        } => CONTEXT_GESTURE.with(|gesture| gesture.set(*button == MouseButton::Right)),
+        WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } => {
+            let opens = matches!(logical_key, Key::Named(NamedKey::ContextMenu))
+                || (matches!(logical_key, Key::Named(NamedKey::F10)) && SHIFT.with(Cell::get));
+            CONTEXT_GESTURE.with(|gesture| gesture.set(opens));
+        }
+        _ => {}
+    }
+}
+
 pub struct ContextMenu {
     items: Vec<MenuItem>,
     open: bool,
@@ -325,6 +362,12 @@ pub struct ContextMenu {
     /// The pose it was last drawn in: rows are hit where they are drawn
     /// while it moves.
     drawn: crate::motion::Pose,
+    /// What the menu acts on, which its "Tell an agent…" entry attaches.
+    about: Option<crate::shared_selection::SharedSelection>,
+    /// Where the rows this menu adds itself ("Tell an agent…") begin; its
+    /// owner's rows end there, and a choice among them is never reported
+    /// through [`ContextMenu::take_selection`].
+    own_rows: Option<usize>,
 }
 
 impl Default for ContextMenu {
@@ -361,6 +404,8 @@ impl ContextMenu {
             trailing_width: 0.0,
             appear: crate::motion::Appearing::closed(),
             drawn: crate::motion::Pose::REST,
+            about: None,
+            own_rows: None,
         }
     }
 
@@ -374,6 +419,7 @@ impl ContextMenu {
     /// Replace every row (closes an open nested menu).
     pub fn set_items(&mut self, items: Vec<MenuItem>) {
         self.items = items;
+        self.own_rows = None;
         self.submenu = None;
         if self.hovered.is_some_and(|i| i >= self.items.len()) {
             self.hovered = None;
@@ -397,6 +443,13 @@ impl ContextMenu {
 
     pub fn push(&mut self, item: MenuItem) {
         self.items.push(item);
+    }
+
+    /// Say what the menu acts on (a selection, the item it was opened on,
+    /// drawn where it is), so "Tell an agent…" attaches that. Without it
+    /// the app attaches what is under the pointer, else its window.
+    pub fn set_about(&mut self, about: Option<crate::shared_selection::SharedSelection>) {
+        self.about = about;
     }
 
     pub fn items(&self) -> &[MenuItem] {
@@ -424,7 +477,14 @@ impl ContextMenu {
     /// without first running a `draw`/`apply_layout` pass — needed by
     /// consumers (like `TextInput`) that route a click to a row in the same
     /// input batch the menu opened in.
+    ///
+    /// A menu opened by the context-menu gesture (a secondary click, the
+    /// Menu key, Shift+F10: [`note_input`]) while a desktop agent can be
+    /// asked ends with "Tell an agent…", about [`Self::set_about`]'s
+    /// subject at `position`. Every app's context menus offer it with no
+    /// code of their own.
     pub fn open_at(&mut self, position: [f32; 2]) {
+        self.offer_agent(Point::new(f64::from(position[0]), f64::from(position[1])));
         self.bounds = None;
         self.scroll_offset = 0.0;
         self.open = true;
@@ -483,7 +543,17 @@ impl ContextMenu {
 
     /// Open a shared menu inside a host viewport. Geometry is immediately usable;
     /// call `layout_within` with the renderer before painting to settle text metrics.
+    ///
+    /// Opened by the context-menu gesture, it ends with "Tell an agent…" as
+    /// [`Self::open_at`] does, pointed at the anchor.
     pub fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
+        self.offer_agent(anchor.center());
+        self.show_anchored(anchor, viewport);
+    }
+
+    /// Open at `anchor` with the rows it has: a nested menu, whose parent
+    /// already offers what the menu adds itself.
+    fn show_anchored(&mut self, anchor: Rect, viewport: Rect) {
         self.open = true;
         self.appear.show(true);
         self.opened_under = None;
@@ -862,7 +932,9 @@ impl ContextMenu {
             } => {
                 let cb = action.clone();
                 cb();
-                self.selection = Some(idx);
+                if self.own_rows.is_none_or(|own| idx < own) {
+                    self.selection = Some(idx);
+                }
                 self.close();
             }
             MenuItem::Action { .. } | MenuItem::Separator | MenuItem::Caption(_) => {}
@@ -900,7 +972,7 @@ impl ContextMenu {
         menu.platform = self.platform;
         menu.text_scale = self.text_scale;
         menu.row_height = self.row_height;
-        menu.open_anchored(
+        menu.show_anchored(
             Rect::new(self.rect.x0, row.y0, self.rect.x1, row.y1),
             viewport,
         );
@@ -1017,6 +1089,34 @@ impl ContextMenu {
     /// perform a `&mut self` mutation the `Arc<dyn Fn()>` model can't express.
     pub fn take_selection(&mut self) -> Option<usize> {
         self.selection.take()
+    }
+
+    /// End a menu the context-menu gesture opened with "Tell an agent…",
+    /// replacing what an earlier opening added.
+    fn offer_agent(&mut self, at: Point) {
+        if let Some(own) = self.own_rows.take() {
+            self.items.truncate(own);
+        }
+        if !CONTEXT_GESTURE.with(Cell::get) || !crate::shared_selection::agent_host_available() {
+            return;
+        }
+        let own = self.items.len();
+        if self
+            .items
+            .last()
+            .is_some_and(|item| !matches!(item, MenuItem::Separator))
+        {
+            self.items.push(MenuItem::separator());
+        }
+        let about = self.about.clone();
+        self.items.push(
+            MenuItem::action(
+                crate::i18n::I18nManager::lookup_plain("tell-agent"),
+                move || crate::shared_selection::tell_agent_at(about.clone(), at),
+            )
+            .with_icon(Icon::Sparkles),
+        );
+        self.own_rows = Some(own);
     }
 
     pub fn hovered(&self) -> Option<usize> {

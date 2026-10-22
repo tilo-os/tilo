@@ -582,11 +582,8 @@ impl App {
             self.floating.selection_capable_sent = true;
             crate::shared_selection::set_agent_host_available(true);
         }
-        for selection in crate::shared_selection::take_agent_requests() {
-            let selection = self.selection_for_agent(selection);
-            let bounds = selection
-                .as_ref()
-                .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
+        for request in crate::shared_selection::take_agent_requests() {
+            let (selection, bounds) = self.agent_reference(request);
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
                     selection,
@@ -938,12 +935,8 @@ impl App {
                     }
                 }
                 FloatingSurfaceHostMessage::ShareSelection => {
-                    let selection = self.selection_for_agent(
-                        crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
-                    );
-                    let bounds = selection
-                        .as_ref()
-                        .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
+                    let (selection, bounds) =
+                        self.agent_reference(crate::shared_selection::AgentRequest::default());
                     if let Some(client) = &mut self.floating.client {
                         let _ = client.send(
                             &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
@@ -1085,21 +1078,20 @@ fn tab_request_message(
 }
 
 impl App {
-    /// `selection` in the resource this app publishes, when the widget that
-    /// holds it did not name one.
+    /// What `request` is about, as the shell is told: a typed reference
+    /// and where in this window it is drawn.
     #[cfg(feature = "native")]
-    fn selection_for_agent(
+    fn agent_reference(
         &self,
-        selection: Option<crate::shared_selection::SharedSelection>,
-    ) -> Option<crate::shared_selection::SharedSelection> {
-        let mut selection = selection?;
-        if selection.resource.is_none() {
-            selection.resolve_resource(&crate::resources::resources(
-                self.root_widget.as_ref(),
-                &self.state.doc,
-            ));
-        }
-        Some(selection)
+        request: crate::shared_selection::AgentRequest,
+    ) -> (
+        Option<crate::shared_selection::SharedSelection>,
+        Option<[f64; 4]>,
+    ) {
+        request.resolve(
+            crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
+            &crate::resources::resources(self.root_widget.as_ref(), &self.state.doc),
+        )
     }
 
     /// Without a desktop tab model, another instance is another window of

@@ -449,7 +449,7 @@ pub enum FloatingSurfaceClientMessage {
     /// says so is never asked.
     SelectionCapable,
     /// The person asked an agent about what they selected in this app's
-    /// window (an "Ask agent…" entry, or the shell's chord answered through
+    /// window (an "Tell an agent…" entry, or the shell's chord answered through
     /// [`FloatingSurfaceHostMessage::ShareSelection`]); `None` when nothing
     /// is selected. The shell opens its agent composer seeded with it. The
     /// app's identity is the launcher's, never the message's.

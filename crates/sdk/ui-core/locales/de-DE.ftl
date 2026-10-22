@@ -721,8 +721,8 @@ author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $inst
 author-bot-linked = Mit { $person } auf Tilo verknüpft
 author-persona-suffix = { $name } · { $service }
 
-# Context menu entry: ask the desktop agent about what is selected here.
-ask-agent-about-selection = Agent fragen…
+# Context menu entry: tell an agent to do something with what the menu is about.
+tell-agent = Einem Agenten sagen…
 
 widget-screenshot-saved = Gespeichert
 widget-screenshot-copied = Kopiert
