@@ -16,6 +16,8 @@
 //!   when dropped, including while unwinding from a failed assertion.
 //! - [`TestHome`] points `HOME` and every XDG base directory at a fresh
 //!   temporary tree.
+//! - [`runtime_tempdir`] is a private temporary directory with a path as
+//!   short as a real runtime directory's, for tests that bind sockets.
 //! - [`lock`] is the single process-wide lock both of them hold. Every
 //!   scope in the process is serialised on it, and it is re-entrant, so
 //!   scopes nest on one thread.
@@ -248,6 +250,7 @@ pub struct TestHome {
     cache: PathBuf,
     runtime: PathBuf,
     root: tempfile::TempDir,
+    _runtime_root: tempfile::TempDir,
 }
 
 impl TestHome {
@@ -265,14 +268,10 @@ impl TestHome {
         let config = home.join(".config");
         let state = home.join(".local/state");
         let cache = home.join(".cache");
-        let runtime = root.path().join("runtime");
-        for dir in [&data, &config, &state, &cache, &runtime] {
+        let runtime_root = runtime_tempdir()?;
+        let runtime = runtime_root.path().to_owned();
+        for dir in [&data, &config, &state, &cache] {
             fs::create_dir_all(dir)?;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
         }
         let mut env = ScopedEnv::new();
         env.set("HOME", &home)
@@ -290,6 +289,7 @@ impl TestHome {
             cache,
             runtime,
             root,
+            _runtime_root: runtime_root,
         })
     }
 
@@ -323,7 +323,7 @@ impl TestHome {
         &self.cache
     }
 
-    /// `$XDG_RUNTIME_DIR`.
+    /// `$XDG_RUNTIME_DIR`: a [`runtime_tempdir`], outside [`Self::root`].
     pub fn runtime(&self) -> &Path {
         &self.runtime
     }
@@ -332,6 +332,54 @@ impl TestHome {
     /// are undone with them.
     pub fn env(&mut self) -> &mut ScopedEnv {
         &mut self.env
+    }
+}
+
+/// The longest socket path, in bytes, a local socket address holds on every
+/// Unix Tilo runs on: `sun_path` is 104 bytes on macOS and 108 on Linux, one
+/// of them the terminating NUL.
+const LOCAL_SOCKET_PATH_MAX: usize = 103;
+
+/// Room left below a [`runtime_tempdir`] for the names tests put there (a
+/// service directory and its socket, a uuid-named socket).
+const RUNTIME_NAMES_BUDGET: usize = 64;
+
+/// A fresh private (`0700`) temporary directory whose path is short enough
+/// that sockets below it fit a local socket address, as below a real runtime
+/// directory (`/run/user/<uid>`).
+///
+/// A test that binds a socket in [`tempfile::tempdir`] inherits the length of
+/// `$TMPDIR`, which on macOS (`/var/folders/…/T/`) and on CI runners' per-job
+/// scratch directories leaves too little of the 104 bytes macOS allows. This
+/// is `$TMPDIR` when that leaves room for [`RUNTIME_NAMES_BUDGET`] bytes of
+/// names below it, else `/tmp`, where the directory's random name and mode
+/// keep it private like any other temporary directory.
+///
+/// # Errors
+///
+/// Returns the I/O error if the directory cannot be created.
+pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
+    const PREFIX: &str = "tilo-rt-";
+    // `/<prefix><6 random characters>`, then the names below it.
+    const LONGEST_BASE: usize =
+        LOCAL_SOCKET_PATH_MAX - RUNTIME_NAMES_BUDGET - (1 + PREFIX.len() + 6);
+    let builder = {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(PREFIX);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        builder
+    };
+    let temp = env::temp_dir();
+    // Code that canonicalizes a path sees macOS's `/var` as `/private/var`.
+    let resolved = fs::canonicalize(&temp).unwrap_or_else(|_| temp.clone());
+    if cfg!(unix) && resolved.as_os_str().len() > LONGEST_BASE {
+        builder.tempdir_in("/tmp")
+    } else {
+        builder.tempdir_in(temp)
     }
 }
 
@@ -420,6 +468,25 @@ mod tests {
 
     fn read(key: &str) -> Option<String> {
         env::var(key).ok()
+    }
+
+    #[test]
+    fn a_runtime_tempdir_leaves_room_for_sockets_and_is_private() {
+        let dir = runtime_tempdir().unwrap();
+        let resolved = fs::canonicalize(dir.path()).unwrap();
+        assert!(
+            resolved.as_os_str().len() + RUNTIME_NAMES_BUDGET <= LOCAL_SOCKET_PATH_MAX,
+            "{} leaves no room for a socket below it",
+            resolved.display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+            let socket = dir.path().join(format!("{:0>48}", "s.sock"));
+            std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        }
     }
 
     /// Setting restores an absent variable to absent; set and remove restore the prior value; nested
@@ -547,21 +614,34 @@ mod tests {
         // Phase: test_home_points_every_base_directory_into_one_temporary_tree.
         {
             let root;
+            let runtime;
             {
                 let home = TestHome::new().unwrap();
                 root = home.root().to_path_buf();
+                runtime = home.runtime().to_path_buf();
                 for (key, dir) in [
                     ("HOME", home.home()),
                     ("XDG_DATA_HOME", home.data()),
                     ("XDG_CONFIG_HOME", home.config()),
                     ("XDG_STATE_HOME", home.state()),
                     ("XDG_CACHE_HOME", home.cache()),
-                    ("XDG_RUNTIME_DIR", home.runtime()),
                 ] {
                     assert_eq!(env::var_os(key).as_deref(), Some(dir.as_os_str()), "{key}");
                     assert!(dir.is_dir(), "{key} exists");
                     assert!(dir.starts_with(&root), "{key} is inside the fixture");
                 }
+                // The runtime directory is a runtime_tempdir of its own, so
+                // its sockets fit a local socket address.
+                assert_eq!(
+                    env::var_os("XDG_RUNTIME_DIR").as_deref(),
+                    Some(runtime.as_os_str())
+                );
+                assert!(runtime.is_dir(), "XDG_RUNTIME_DIR exists");
+                assert!(
+                    fs::canonicalize(&runtime).unwrap().as_os_str().len() + RUNTIME_NAMES_BUDGET
+                        <= LOCAL_SOCKET_PATH_MAX,
+                    "XDG_RUNTIME_DIR leaves room for sockets"
+                );
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -570,6 +650,10 @@ mod tests {
                 }
             }
             assert!(!root.exists(), "the tree is removed on drop");
+            assert!(
+                !runtime.exists(),
+                "the runtime directory is removed on drop"
+            );
             let _guard = lock();
             assert!(
                 env::var_os("XDG_DATA_HOME").is_none_or(|dir| !Path::new(&dir).starts_with(&root))
