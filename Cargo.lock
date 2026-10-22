@@ -23910,7 +23910,6 @@ dependencies = [
  "num-traits",
  "object",
  "once_cell",
- "ordered-float",
  "p256 0.13.2",
  "p256 0.14.0",
  "p384 0.13.1",
