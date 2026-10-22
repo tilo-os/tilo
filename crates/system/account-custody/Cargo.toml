@@ -41,8 +41,12 @@ default = ["custody"]
 # against. Without it the crate is the client registrations and provider
 # descriptors only, for builds that must stay free of the TLS/HTTP stack.
 hints = ["dep:tilo-seal", "dep:serde_json", "dep:url", "dep:zeroize", "dep:sha2"]
+# Signing in with Hugging Face for model downloads, and renewing that
+# sign-in: what the model manager needs, without the custodian.
+hugging-face = ["tilo-oauth/client", "dep:serde_json", "dep:zeroize"]
 custody = [
     "hints",
+    "hugging-face",
     "dep:browser-continuity-core",
     "dep:tilo-seal",
     "dep:rustix",

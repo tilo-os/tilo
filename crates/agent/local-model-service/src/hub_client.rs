@@ -4,13 +4,18 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::time::Duration;
 
+use account_custody::hugging_face::{self, HubCredential, HubSignIn};
 use accounts::{CredentialRef, ServiceAuthorization, ServiceCredentials};
-use agent_provider_config::local::hub::{HUB_ORIGIN, TOKEN_ID, TOKEN_PURPOSE, TOKEN_SERVICE};
+use agent_provider_config::local::hub::{
+    HUB_ORIGIN, HubAccount, HubTokenState, TOKEN_ID, TOKEN_PURPOSE, TOKEN_SERVICE,
+};
 use local_model_service::hub::HubApi;
 use local_model_service::{HttpsTransport, ServiceError};
+use tilo_oauth::OAuthError;
+use tilo_oauth::client::OAuthClient;
 use zeroize::Zeroizing;
 
-/// Where the token Settings stored lives in the device vault.
+/// Where the token or sign-in Settings stored lives in the device vault.
 fn token_binding() -> Result<(CredentialRef, ServiceAuthorization), String> {
     let authorization = ServiceAuthorization::new(TOKEN_SERVICE, TOKEN_PURPOSE, HUB_ORIGIN)
         .map_err(|error| error.to_string())?;
@@ -20,15 +25,121 @@ fn token_binding() -> Result<(CredentialRef, ServiceAuthorization), String> {
     Ok((reference, authorization))
 }
 
-/// The person's Hugging Face token, when one is stored on this device.
+/// The token requests carry, and what Settings is told of it.
+pub(crate) struct HubCredentialRead {
+    pub(crate) token: Option<Zeroizing<String>>,
+    pub(crate) state: HubTokenState,
+}
+
+/// The person's Hugging Face credential on this device: a pasted token, or
+/// a sign-in's access token, renewed and stored back when it is due.
 ///
 /// # Errors
-/// An unreadable vault: never mistaken for "no token".
-pub(crate) fn stored_token() -> Result<Option<Zeroizing<String>>, String> {
+/// An unreadable vault (never mistaken for "no token"), or a renewal that
+/// could not reach Hugging Face.
+pub(crate) fn stored_credential() -> Result<HubCredentialRead, String> {
+    let (reference, authorization) = token_binding()?;
+    let vault = ServiceCredentials::open();
+    let Some(stored) = vault
+        .resolve(&reference, &authorization)
+        .map_err(|error| format!("the Hugging Face token cannot be read: {error}"))?
+    else {
+        return Ok(HubCredentialRead {
+            token: None,
+            state: HubTokenState::None,
+        });
+    };
+    match HubCredential::parse(&stored) {
+        HubCredential::Token(token) => Ok(HubCredentialRead {
+            token: Some(token),
+            state: HubTokenState::Pasted,
+        }),
+        HubCredential::SignedIn(sign_in) => settle(
+            sign_in,
+            |sign_in| {
+                let config = hugging_face::config().ok_or_else(|| {
+                    OAuthError::Protocol("this build has no Hugging Face sign-in".into())
+                })?;
+                sign_in.renewed(&OAuthClient::new()?, &config)
+            },
+            |renewed| {
+                vault
+                    .store(&reference, &authorization, &HubCredential::encode(renewed))
+                    .map_err(|error| {
+                        format!("the renewed Hugging Face sign-in cannot be stored: {error}")
+                    })
+            },
+        ),
+    }
+}
+
+/// A sign-in's access token: as stored while it lasts, else renewed and
+/// saved. One that cannot be renewed is ended, and requests go without it.
+fn settle(
+    sign_in: HubSignIn,
+    renew: impl FnOnce(&HubSignIn) -> Result<HubSignIn, OAuthError>,
+    save: impl FnOnce(&HubSignIn) -> Result<(), String>,
+) -> Result<HubCredentialRead, String> {
+    let account = HubAccount {
+        username: sign_in.username.clone(),
+        name: sign_in.name.clone(),
+    };
+    let sign_in = if sign_in.due() {
+        match renew(&sign_in) {
+            Ok(renewed) => {
+                save(&renewed)?;
+                renewed
+            }
+            Err(OAuthError::InvalidGrant) => {
+                return Ok(HubCredentialRead {
+                    token: None,
+                    state: HubTokenState::Ended { account },
+                });
+            }
+            Err(error) => {
+                return Err(format!(
+                    "the Hugging Face sign-in cannot be renewed: {error}"
+                ));
+            }
+        }
+    } else {
+        sign_in
+    };
+    Ok(HubCredentialRead {
+        token: Some(Zeroizing::new(sign_in.tokens.access_token)),
+        state: HubTokenState::SignedIn { account },
+    })
+}
+
+/// What `hub-account` answers: the stored credential's state, as JSON.
+pub(crate) fn account_state() -> Result<String, String> {
+    serde_json::to_string(&stored_credential()?.state).map_err(|error| error.to_string())
+}
+
+/// Sign in with Hugging Face by device code, for a device without a
+/// browser: the code and its page go to standard error, and the sign-in is
+/// stored where Settings stores one.
+pub(crate) fn sign_in_with_code() -> Result<Option<String>, String> {
+    let (provider, client) =
+        hugging_face::config().ok_or("this build has no Hugging Face sign-in")?;
+    let http = OAuthClient::new().map_err(|error| error.to_string())?;
+    let device = tilo_oauth::device::DeviceAuthorization::begin(&http, &provider, &client)
+        .map_err(|error| error.to_string())?;
+    eprintln!(
+        "To sign in with Hugging Face, open {} and enter {}",
+        device.verification_uri(),
+        device.user_code()
+    );
+    let sign_in = hugging_face::finish_device(device, hugging_face::USERINFO_ENDPOINT)
+        .map_err(|error| error.to_string())?;
     let (reference, authorization) = token_binding()?;
     ServiceCredentials::open()
-        .resolve(&reference, &authorization)
-        .map_err(|error| format!("the Hugging Face token cannot be read: {error}"))
+        .store(&reference, &authorization, &HubCredential::encode(&sign_in))
+        .map_err(|error| error.to_string())?;
+    Ok(Some(format!(
+        "Signed in to Hugging Face as {}",
+        sign_in.username
+    )))
 }
 
 /// HTTPS to the Hub, with the person's token when one is stored, so their
@@ -65,8 +176,13 @@ impl HubClient {
             .map_err(|error| ServiceError::Backend(error.to_string()))?;
         Ok(Self {
             client,
-            token: stored_token().map_err(ServiceError::Backend)?,
+            token: stored_credential().map_err(ServiceError::Backend)?.token,
         })
+    }
+
+    /// Whether requests carry the person's token.
+    pub(crate) const fn signed_in(&self) -> bool {
+        self.token.is_some()
     }
 
     fn request(&self, url: &str) -> Result<reqwest::blocking::RequestBuilder, ServiceError> {
@@ -84,7 +200,10 @@ impl HubClient {
 /// What the Hub's refusal means for the person.
 fn refusal(status: reqwest::StatusCode, signed_in: bool) -> ServiceError {
     ServiceError::Backend(match status.as_u16() {
-        401 | 403 if signed_in => format!(
+        401 if signed_in => format!(
+            "Hugging Face no longer accepts the stored sign-in or token ({status}): sign in again in Settings"
+        ),
+        403 if signed_in => format!(
             "Hugging Face refused access ({status}): accept the model's terms on its page with the account whose token is stored here"
         ),
         401 | 403 => format!(
@@ -193,4 +312,95 @@ pub(crate) fn copy_range(
         progress(count);
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_oauth::TokenSet;
+
+    use super::*;
+
+    fn sign_in(expires_in: u64, obtained_at: u64) -> HubSignIn {
+        HubSignIn {
+            tokens: TokenSet {
+                access_token: "hf_oauth_old".into(),
+                refresh_token: "refresh".into(),
+                expires_in,
+                obtained_at,
+                scope: None,
+            },
+            username: "ada".into(),
+            name: None,
+        }
+    }
+
+    fn signed_in_as_ada() -> HubTokenState {
+        HubTokenState::SignedIn {
+            account: HubAccount {
+                username: "ada".into(),
+                name: None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_current_sign_in_is_used_as_stored() {
+        let read = settle(
+            sign_in(3600, tilo_clock::unix_now()),
+            |_| panic!("nothing to renew"),
+            |_| panic!("nothing to save"),
+        )
+        .unwrap();
+        assert_eq!(
+            read.token.as_deref().map(String::as_str),
+            Some("hf_oauth_old")
+        );
+        assert_eq!(read.state, signed_in_as_ada());
+    }
+
+    #[test]
+    fn a_due_sign_in_is_renewed_and_saved() {
+        let mut saved = None;
+        let read = settle(
+            sign_in(60, 1),
+            |old| {
+                let mut renewed = old.clone();
+                renewed.tokens.access_token = "hf_oauth_new".into();
+                Ok(renewed)
+            },
+            |renewed| {
+                saved = Some(renewed.tokens.access_token.clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            read.token.as_deref().map(String::as_str),
+            Some("hf_oauth_new")
+        );
+        assert_eq!(saved.as_deref(), Some("hf_oauth_new"));
+        assert_eq!(read.state, signed_in_as_ada());
+    }
+
+    #[test]
+    fn a_sign_in_that_cannot_be_renewed_has_ended() {
+        let read = settle(
+            sign_in(60, 1),
+            |_| Err(OAuthError::InvalidGrant),
+            |_| panic!("nothing to save"),
+        )
+        .unwrap();
+        assert!(read.token.is_none());
+        assert!(
+            matches!(read.state, HubTokenState::Ended { ref account } if account.username == "ada")
+        );
+        assert!(
+            settle(
+                sign_in(60, 1),
+                |_| Err(OAuthError::Network("offline".into())),
+                |_| panic!("nothing to save"),
+            )
+            .is_err()
+        );
+    }
 }

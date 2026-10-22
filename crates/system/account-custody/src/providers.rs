@@ -257,7 +257,7 @@ impl OAuthIssuer {
                 scopes: Vec::new(),
                 authorization_params: Vec::new(),
                 refresh: Refresh::RefreshToken,
-                device_authorization_endpoint: None,
+                device_authorization_endpoint: Some("https://huggingface.co/oauth/device".into()),
             },
         }
     }
@@ -283,6 +283,9 @@ pub enum Capability {
     /// of its own, so the broad scope it may need never rides on a mail or
     /// storage token, and forgetting it leaves those untouched.
     Models,
+    /// Model weights the model manager downloads (Hugging Face's gated
+    /// models), apart from any grant the gateway calls models with.
+    ModelDownloads,
 }
 
 /// One use of an issuer's client: who signs the person in, and what for.
@@ -324,7 +327,7 @@ impl OAuthUse {
             (_, Capability::Music | Capability::MusicStreaming) => "Music",
             (OAuthIssuer::Google, Capability::Calendar) => "Google Calendar",
             (_, Capability::Calendar) => "Calendar",
-            (_, Capability::Identity)
+            (_, Capability::Identity | Capability::ModelDownloads)
             | (
                 OAuthIssuer::OpenAi | OAuthIssuer::GitHub | OAuthIssuer::HuggingFace,
                 Capability::Files | Capability::Mail,

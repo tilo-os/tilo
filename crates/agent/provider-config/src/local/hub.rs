@@ -53,6 +53,43 @@ pub const TOKEN_SERVICE: &str = "tilo-models";
 pub const TOKEN_PURPOSE: &str = "huggingface-access-token";
 pub const TOKEN_ID: &str = "huggingface";
 
+/// What the model manager reports of the Hugging Face credential stored
+/// here, without the credential itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum HubTokenState {
+    /// Nothing is stored.
+    #[default]
+    None,
+    /// An access token the person pasted.
+    Pasted,
+    /// Signed in with Hugging Face as `account`.
+    SignedIn { account: HubAccount },
+    /// `account`'s sign-in ended and could not be renewed: sign in again.
+    Ended { account: HubAccount },
+}
+
+impl HubTokenState {
+    /// Whether anything is stored, an ended sign-in included.
+    pub const fn stored(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Whether requests carry a credential.
+    pub const fn usable(&self) -> bool {
+        matches!(self, Self::Pasted | Self::SignedIn { .. })
+    }
+}
+
+/// A Hugging Face account, as its sign-in shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubAccount {
+    pub username: String,
+    /// The display name, when it differs from the username.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// Results one search asks for.
 pub const SEARCH_LIMIT: u16 = 30;
 /// The most files one variant may have; more is not a model.

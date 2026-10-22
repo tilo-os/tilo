@@ -189,6 +189,33 @@ impl OAuthClient {
         })
     }
 
+    /// The `OpenID` Connect userinfo of the person `access_token` belongs
+    /// to (`GET endpoint` with the token as a bearer).
+    ///
+    /// # Errors
+    /// [`OAuthError::InvalidGrant`] when the token is refused,
+    /// [`OAuthError::Network`] or [`OAuthError::Protocol`] otherwise.
+    pub fn userinfo(
+        &self,
+        endpoint: &str,
+        access_token: &str,
+    ) -> Result<serde_json::Value, OAuthError> {
+        let (status, body) = Self::read(
+            self.http
+                .get(endpoint)
+                .bearer_auth(access_token)
+                .header("Accept", "application/json"),
+        )?;
+        match status {
+            200..300 => serde_json::from_str(&body)
+                .map_err(|_| OAuthError::Protocol("the userinfo answer is not JSON".into())),
+            401 => Err(OAuthError::InvalidGrant),
+            _ => Err(OAuthError::Protocol(format!(
+                "userinfo endpoint answered HTTP {status}"
+            ))),
+        }
+    }
+
     /// Send `request` and read at most [`MAX_RESPONSE_BYTES`] of its answer.
     pub(crate) fn read(
         request: reqwest::blocking::RequestBuilder,

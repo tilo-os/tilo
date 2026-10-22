@@ -24,6 +24,9 @@
 //!   grant. Copilot signs in by device code
 //!   ([`Custodian::begin_device_sign_in`]); `OpenRouter` hands back an API
 //!   key instead of a grant ([`openrouter`]).
+//! - **The model manager** downloads gated Hugging Face models with a
+//!   Hugging Face sign-in Settings made for that alone
+//!   ([`Capability::ModelDownloads`], `hugging_face`).
 //! - **The daemon** reads one account's short-lived credential from the
 //!   handoff store ([`accounts::handoff`]) through
 //!   [`accounts::HandoffCredentialSource`]. When it is missing, due or
@@ -44,6 +47,8 @@ pub mod cloud_projects;
 mod custodian;
 #[cfg(feature = "hints")]
 pub mod hints;
+#[cfg(feature = "hugging-face")]
+pub mod hugging_face;
 #[cfg(feature = "custody")]
 pub mod icloud;
 #[cfg(feature = "custody")]

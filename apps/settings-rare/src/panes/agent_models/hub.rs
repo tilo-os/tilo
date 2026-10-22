@@ -4,18 +4,21 @@
 //! source: a person searches the Hub, opens any model by its id or link
 //! (their own fine-tunes and private models included), reviews each
 //! variant's files, size, fit for this device and licence, and downloads
-//! one, or adds a GGUF file from this device. Gated and private models use
-//! the person's Hugging Face access token, kept in this device's vault.
+//! one, or adds a GGUF file from this device. Gated models download with
+//! the person's Hugging Face sign-in (in the browser, or with a code entered
+//! on another device) or a pasted access token; either is kept in this
+//! device's vault, where only the model manager reads it.
 //! The model manager does every network and store operation; this module
 //! shows what it answers, and every control is an [`AgentModelsEffect`].
 
 use std::sync::Arc;
 
+use account_custody::hugging_face::{self, HUGGING_FACE_DOWNLOADS, HubCredential, HubSignIn};
 use accounts::{ServiceAuthorization, ServiceCredentials};
 use agent_provider_config::local::ModelArtifactFormat;
 use agent_provider_config::local::hub::{
-    HUB_ORIGIN, HubFitReason, HubFormat, HubModelOffer, HubRef, HubSearchResult, HubVariantOffer,
-    TOKEN_ID, TOKEN_PURPOSE, TOKEN_SERVICE, model_page_url,
+    HUB_ORIGIN, HubAccount, HubFitReason, HubFormat, HubModelOffer, HubRef, HubSearchResult,
+    HubTokenState, HubVariantOffer, TOKEN_ID, TOKEN_PURPOSE, TOKEN_SERVICE, model_page_url,
 };
 use agent_provider_config::local::snapshot::HardwareFit;
 use ui::LocalState;
@@ -29,6 +32,7 @@ use super::{
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
+use crate::panes::agent_sign_in::{self, SignInWait, Waited};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -50,12 +54,14 @@ pub(crate) struct HubBrowser {
     pub(crate) reviewing: Option<String>,
     /// A search or lookup is on its way.
     pub(crate) working: bool,
-    /// Whether a token is stored here, or why that cannot be read.
-    pub(crate) token_stored: Result<bool, String>,
+    /// What is stored here, or why that cannot be read.
+    pub(crate) token_state: Result<HubTokenState, String>,
+    /// A sign-in waiting for the person; it ends with what it stored.
+    signing_in: Option<SignInWait<HubTokenState>>,
 }
 
 impl HubBrowser {
-    pub(crate) fn new(token_stored: Result<bool, String>) -> Self {
+    pub(crate) fn new(token_state: Result<HubTokenState, String>) -> Self {
         Self {
             query: LocalState::new(String::new()),
             reference: LocalState::new(String::new()),
@@ -65,7 +71,131 @@ impl HubBrowser {
             offer: None,
             reviewing: None,
             working: false,
-            token_stored,
+            token_state,
+            signing_in: None,
+        }
+    }
+
+    /// Whether a sign-in waits for the person.
+    pub(crate) fn signing_in(&self) -> bool {
+        self.signing_in.is_some()
+    }
+
+    /// Stop the sign-in under way.
+    pub(crate) fn cancel_sign_in(&mut self) {
+        if let Some(wait) = self.signing_in.take() {
+            wait.cancel();
+        }
+    }
+
+    /// Sign in with Hugging Face: in the browser, or (`by_code`) with a code
+    /// entered on Hugging Face's page from any device. A worker waits for
+    /// the person, asks `userinfo` who signed in and stores the sign-in
+    /// through `control` where a pasted token goes.
+    ///
+    /// # Errors
+    /// Why it could not start, for the person.
+    pub(crate) fn sign_in(
+        &mut self,
+        by_code: bool,
+        custodian: &account_custody::Custodian,
+        opener: &Arc<dyn crate::panes::accounts::BrowserOpener>,
+        (userinfo, control): (&str, &Arc<dyn LocalModelControl>),
+    ) -> Result<(), String> {
+        self.cancel_sign_in();
+        let control = Arc::clone(control);
+        let store = move |sign_in: HubSignIn| {
+            let account = HubAccount {
+                username: sign_in.username.clone(),
+                name: sign_in.name.clone(),
+            };
+            control
+                .save_hub_token(&HubCredential::encode(&sign_in))
+                .map(|()| HubTokenState::SignedIn { account })
+        };
+        let failed = |error: &dyn std::fmt::Display| {
+            t_args(
+                "agent-sign-in-failed",
+                &[
+                    ("service", "Hugging Face".into()),
+                    ("error", error.to_string().into()),
+                ],
+            )
+        };
+        let userinfo = userinfo.to_owned();
+        let wait = if by_code {
+            let custodian = custodian.clone();
+            SignInWait::device(
+                opener,
+                move || {
+                    custodian
+                        .begin_device_sign_in(HUGGING_FACE_DOWNLOADS)
+                        .map_err(|error| failed(&error))
+                },
+                move |device| {
+                    hugging_face::finish_device(device, &userinfo)
+                        .map_err(|error| failed(&error))
+                        .and_then(store)
+                },
+            )
+        } else {
+            let authorization = custodian
+                .begin_sign_in_for(HUGGING_FACE_DOWNLOADS, None)
+                .map_err(|error| failed(&error))?;
+            let cancel = authorization
+                .canceller()
+                .ok_or_else(|| t("agent-sign-in-ports-busy"))?;
+            let url = authorization.url().to_owned();
+            SignInWait::browser(&url, cancel, opener, move || {
+                hugging_face::finish_browser(authorization, &userinfo)
+                    .map_err(|error| failed(&error))
+                    .and_then(store)
+            })
+        };
+        self.signing_in = Some(wait);
+        Ok(())
+    }
+
+    /// Take the sign-in's news: the notice to show when it ended, and
+    /// whether anything changed.
+    pub(crate) fn poll(&mut self) -> (bool, Option<String>) {
+        let Some(wait) = self.signing_in.as_mut() else {
+            return (false, None);
+        };
+        match wait.poll() {
+            Ok(Waited::Nothing) => (false, None),
+            Ok(Waited::Changed) => (true, None),
+            Ok(Waited::Done(state)) => (true, Some(self.signed_in(Ok(state)))),
+            Err(error) => (true, Some(self.signed_in(Err(error)))),
+        }
+    }
+
+    /// Block until the sign-in under way ended; the notice it leaves.
+    #[cfg(test)]
+    pub(crate) fn finish_sign_in_for_test(&mut self) -> Option<String> {
+        let outcome = self
+            .signing_in
+            .as_mut()?
+            .finish_for_test(tilo_test_env::hang_bound());
+        Some(self.signed_in(outcome))
+    }
+
+    /// The sign-in ended with `outcome`: what it stored, or why it failed.
+    fn signed_in(&mut self, outcome: Result<HubTokenState, String>) -> String {
+        self.signing_in = None;
+        match outcome {
+            Ok(state) => {
+                let notice = match &state {
+                    HubTokenState::SignedIn { account } => t_args(
+                        "agent-hub-signed-in-as",
+                        &[("account", account_label(account).into())],
+                    ),
+                    _ => t("agent-hub-token-saved"),
+                };
+                self.token_state = Ok(state);
+                notice
+            }
+            Err(error) => error,
         }
     }
 
@@ -300,26 +430,73 @@ impl HubBrowser {
 
     fn token_section(&self, cx: &PaneCx) -> SettingsSection {
         let mut body = vec![note(&t("agent-hub-token-caption"))];
-        let stored = match &self.token_stored {
-            Ok(stored) => *stored,
+        let state = match &self.token_state {
+            Ok(state) => state.clone(),
             Err(error) => {
                 body.push(row(crate::widgets::error_caption(&t_args(
                     "agent-hub-token-read-error",
                     &[("error", error.as_str().into())],
                 ))));
-                false
+                HubTokenState::None
             }
         };
-        if self.token_stored.is_ok() {
-            body.push(row(Box::new(
-                Text::new(&t(if stored {
-                    "agent-hub-token-stored"
-                } else {
-                    "agent-hub-token-none"
-                }))
-                .dimmed(),
-            )));
+        if self.token_state.is_ok() {
+            let status = match &state {
+                HubTokenState::None => t("agent-hub-token-none"),
+                HubTokenState::Pasted => t("agent-hub-token-stored"),
+                HubTokenState::SignedIn { account } => t_args(
+                    "agent-hub-signed-in-as",
+                    &[("account", account_label(account).into())],
+                ),
+                HubTokenState::Ended { account } => t_args(
+                    "agent-hub-sign-in-ended",
+                    &[("account", account_label(account).into())],
+                ),
+            };
+            body.push(row(Box::new(Text::new(&status).dimmed())));
         }
+        if let Some(wait) = &self.signing_in {
+            body.push(match wait.device_code() {
+                Some((code, page)) => agent_sign_in::device_code_note(code, page),
+                None => note(&t("agent-sign-in-waiting")),
+            });
+            body.push(row(Box::new(cx.bind_invocation(
+                Button::new("agent-models-hub-sign-in-cancel", &t("agent-cancel")),
+                AgentModelsEffect::CancelHuggingFaceSignIn,
+            ))));
+        } else {
+            let mut buttons = Row::new()
+                .push(Box::new(
+                    cx.bind_invocation(
+                        Button::new("agent-models-hub-sign-in", &t("agent-sign-in-huggingface"))
+                            .role(ButtonRole::Primary),
+                        AgentModelsEffect::SignInWithHuggingFace,
+                    ),
+                ))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(cx.bind_invocation(
+                    Button::new(
+                        "agent-models-hub-sign-in-code",
+                        &t("agent-hub-sign-in-code"),
+                    ),
+                    AgentModelsEffect::SignInWithHuggingFaceCode,
+                )));
+            if state.stored() {
+                let remove = if matches!(state, HubTokenState::Pasted) {
+                    "agent-hub-token-remove"
+                } else {
+                    "agent-hub-sign-out"
+                };
+                buttons = buttons
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(cx.bind_invocation(
+                        Button::new("agent-models-hub-token-remove", &t(remove)),
+                        AgentModelsEffect::RemoveHubToken,
+                    )));
+            }
+            body.push(row(Box::new(buttons)));
+        }
+        body.push(note(&t("agent-hub-token-paste-caption")));
         body.push(field_row(
             &t("agent-hub-token"),
             Box::new(
@@ -330,22 +507,10 @@ impl HubBrowser {
                     .with_placeholder(t("agent-hub-token-hint")),
             ),
         ));
-        let mut buttons = Row::new().push(Box::new(cx.bind_invocation(
+        body.push(row(Box::new(cx.bind_invocation(
             Button::new("agent-models-hub-token-save", &t("agent-hub-token-save")),
             AgentModelsEffect::SaveHubToken { token: None },
-        )));
-        if stored {
-            buttons = buttons
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(cx.bind_invocation(
-                    Button::new(
-                        "agent-models-hub-token-remove",
-                        &t("agent-hub-token-remove"),
-                    ),
-                    AgentModelsEffect::RemoveHubToken,
-                )));
-        }
-        body.push(row(Box::new(buttons)));
+        ))));
         section(&t("agent-hub-token-title"), rows(body))
     }
 
@@ -469,6 +634,7 @@ pub(crate) fn answer(
             }))
         }
         AgentModelsEffect::RemoveHubToken => {
+            model.hub.cancel_sign_in();
             let control = Arc::clone(&model.control);
             drop(model);
             Ok(token_job(cx, control, |control| {
@@ -476,6 +642,20 @@ pub(crate) fn answer(
                     .forget_hub_token()
                     .map(|()| t("agent-hub-token-removed"))
             }))
+        }
+        AgentModelsEffect::SignInWithHuggingFace | AgentModelsEffect::SignInWithHuggingFaceCode => {
+            let model = &mut *model;
+            model.hub.sign_in(
+                matches!(effect, AgentModelsEffect::SignInWithHuggingFaceCode),
+                &model.custodian,
+                &model.opener,
+                (&model.hub_userinfo, &model.control),
+            )?;
+            Ok(Effected::done())
+        }
+        AgentModelsEffect::CancelHuggingFaceSignIn => {
+            model.hub.cancel_sign_in();
+            Ok(Effected::done())
         }
         _ => Err("not a Hugging Face effect".into()),
     }
@@ -495,11 +675,11 @@ fn token_job(
             (outcome, control.hub_token())
         },
         |app: &mut SettingsApp,
-         (outcome, stored): (Result<String, String>, Result<bool, String>),
+         (outcome, stored): (Result<String, String>, Result<HubTokenState, String>),
          _| {
             let shared = area(app).ok_or_else(crate::area::missing)?.model();
             let mut model = shared.borrow_mut();
-            model.hub.token_stored = stored;
+            model.hub.token_state = stored;
             model.notice = Some(match &outcome {
                 Ok(message) | Err(message) => message.clone(),
             });
@@ -684,17 +864,21 @@ fn token_binding() -> Result<(accounts::CredentialRef, ServiceAuthorization), St
     Ok((reference, authorization))
 }
 
-/// Whether a token is stored on this device. Off the UI thread: the vault
-/// may ask the keyring.
-pub(crate) fn token_status() -> Result<bool, String> {
-    crate::device_read::off_ui_thread();
-    let (reference, authorization) = token_binding()?;
-    ServiceCredentials::open()
-        .status(&reference, &authorization)
-        .map_err(|error| error.to_string())
+/// What the model manager reports of the token or sign-in stored here; a
+/// sign-in that is due is renewed on the way.
+pub(crate) fn token_state() -> Result<HubTokenState, String> {
+    manager_answer(&["hub-account"])
 }
 
-/// Store `token` in this device's vault.
+/// A Hugging Face account as Settings names it.
+fn account_label(account: &HubAccount) -> String {
+    match &account.name {
+        Some(name) => format!("{name} ({})", account.username),
+        None => account.username.clone(),
+    }
+}
+
+/// Store `token` (a pasted one, or a sign-in) in this device's vault.
 pub(crate) fn store_token(token: &str) -> Result<(), String> {
     crate::device_read::off_ui_thread();
     let (reference, authorization) = token_binding()?;

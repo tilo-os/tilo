@@ -141,12 +141,18 @@ the model at the commit it resolved to:
   one the model can still be downloaded; it starts once one ships.
 
 Gated models need their terms accepted on Hugging Face with the person's
-account, then download with that account's access token. The token is kept in
-the device vault (`ServiceCredentials`, bound to the model manager's purpose
-and the `https://huggingface.co` origin): Settings stores it, the model
-manager reads it, and it is never put on a command line, in state or in logs.
-Sign-in through Hugging Face's OAuth is not offered yet: it needs a registered
-OAuth client, and a pasted token does the same job.
+account, then download with that account's credential: a "Sign in with
+Hugging Face" (authorization code with PKCE through the system browser and a
+one-shot loopback redirect, or a device code entered on Hugging Face's page
+for a device without a browser, also `tilo-model-manager hub-sign-in`), or a
+pasted access token. Either is kept in the same vault entry
+(`ServiceCredentials`, bound to the model manager's purpose and the
+`https://huggingface.co` origin): Settings stores it, the model manager reads
+it, and it is never put on a command line, in state or in logs. The sign-in
+asks only for `openid profile gated-repos`; Settings shows the account and
+Sign out. The model manager renews a due sign-in with its refresh token and
+reports one it cannot renew as ended, which Settings shows as "sign in
+again".
 
 ### Why weights may come from anywhere while runtimes may not
 
