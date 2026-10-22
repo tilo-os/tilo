@@ -237,6 +237,29 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         );
     }
 
+    /// `reference`, which `app` keeps in `record` (`None`: the app's own
+    /// record of the workspace), as a chip that opens it where it lives
+    /// ([`Dispatcher::open_reference`]): an issue reads `#12 Title`, a page
+    /// its name. A click, Enter or Space, and assistive technology's
+    /// activate all open it; a refusal is told like any refused action.
+    pub fn reference(
+        &self,
+        app: &str,
+        record: Option<&str>,
+        reference: &tilo_reference::ResourceRef,
+    ) -> ui_core::widget::Chip {
+        let dispatch = self.dispatch.clone();
+        let (app, record, target) = (app.to_owned(), record.map(str::to_owned), reference.clone());
+        ui_core::widget::Chip::new(reference.label.clone())
+            .with_id(format!("reference:{}", reference.id))
+            .with_lead(super::reference::LEAD)
+            .with_accessible_name(ui_core::i18n::I18nManager::format(
+                "reference-open",
+                &[("label", reference.label.clone().into())],
+            ))
+            .on_click(move || dispatch.open_reference(&app, record.as_deref(), &target))
+    }
+
     /// Open the platform search with `request`, narrowed to this app or one
     /// part of it. Usually a control does this ([`Self::search_button`]); a
     /// custom handler calls [`Dispatcher::open_search`] on its dispatcher.

@@ -170,6 +170,9 @@ pub(crate) struct DispatchCore {
     /// Each queued invocation with the effect invocation it continues,
     /// when an effect's handler or completion queued it.
     queue: Rc<RefCell<VecDeque<AttributedControlInvocation>>>,
+    /// The references the views opened ([`Dispatcher::open_reference`]),
+    /// on their way through the session's action door.
+    pub(crate) opener: super::reference::Opener,
     read_only: LocalState<bool>,
     /// The participant's permissions as the host keeps them, for an action
     /// that needs less than writing (a reply a commenter may add) or more.
@@ -232,6 +235,7 @@ impl Clone for DispatchCore {
             me: self.me.clone(),
             custody: self.custody.clone(),
             queue: self.queue.clone(),
+            opener: self.opener.clone(),
             read_only: self.read_only.clone(),
             permissions: self.permissions.clone(),
             permission_states: self.permission_states.clone(),
@@ -314,6 +318,7 @@ impl DispatchCore {
             me: me.map(Rc::from),
             custody: None,
             queue: Rc::default(),
+            opener: super::reference::Opener::default(),
             read_only: LocalState::new(read_only),
             permissions: Rc::default(),
             permission_states: Rc::default(),
@@ -353,6 +358,7 @@ impl DispatchCore {
             label,
             resource_label: LocalState::new(label.to_owned()),
             queue: Rc::clone(&self.queue),
+            opener: self.opener.clone(),
             read_only: LocalState::new(read_only || self.past),
             permissions: Rc::default(),
             permission_states: Rc::default(),
@@ -1100,6 +1106,22 @@ impl<R: Resource> Dispatcher<R> {
             ActionAddress::new(resource, tilo_resource::share::SHARE_LINK),
             serde_json::Map::new(),
         );
+    }
+
+    /// Open `reference`, which `app` keeps in its `record` (`None`: the
+    /// app's own record of the workspace), where it lives: its app opens at
+    /// it, launched first when no window shows it. The open is an action
+    /// like any other, admitted as the person under their grants; a refusal
+    /// is told in [`Self::refused`] as `open`.
+    pub fn open_reference(
+        &self,
+        app: &str,
+        record: Option<&str>,
+        reference: &tilo_reference::ResourceRef,
+    ) {
+        if let Err(reason) = self.core.opener.open(app, record, reference) {
+            self.core.refuse(super::reference::OPEN, reason);
+        }
     }
 
     /// Invoke an action published on a nested resource, such as one item of

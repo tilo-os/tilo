@@ -140,7 +140,7 @@ chat-identity-available = Available
 chat-identity-in-voice = In voice
 
 chat-resource-copy-link = Copy resource link
-chat-resource-open-link = Open resource in browser
+chat-resource-not-opened = Could not open
 chat-agent-kind = Agent
 chat-agents-section = Agents
 chat-agent-message-placeholder = Work with { $name }

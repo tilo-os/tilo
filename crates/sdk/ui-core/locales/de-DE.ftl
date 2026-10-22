@@ -849,3 +849,6 @@ text-menu-underline = Unterstrichen
 text-menu-strikethrough = Durchgestrichen
 text-menu-bulleted-list = Aufzählung
 text-menu-numbered-list = Nummerierte Liste
+
+# A reference to something another app keeps, shown as a chip; $label is its name.
+reference-open = { $label } öffnen

@@ -334,6 +334,7 @@ mod person;
 mod preview;
 mod reactive;
 mod record;
+pub mod reference;
 mod root;
 mod rows;
 mod saves;

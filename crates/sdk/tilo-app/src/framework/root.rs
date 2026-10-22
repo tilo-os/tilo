@@ -1940,6 +1940,9 @@ impl RootModel for ResourceRoot {
             self.typed.represent();
         }
         let head = self.refresh(state);
+        for reason in self.dispatch.opener.take_refusals() {
+            self.dispatch.refuse(super::reference::OPEN, reason);
+        }
         self.follow_readability();
         self.storage.refresh();
         {
@@ -2326,12 +2329,18 @@ impl ResourceRoot {
     }
 }
 
-// The root's own client for the action door (minting links) shares the
-// app's collaboration connection with whatever the view keeps there.
+// The root's own clients for the action door (minting links, opening
+// references) share the app's collaboration connection with whatever the
+// view keeps there.
 impl ui_core::widget::Collaborative for ResourceRoot {
     fn take_collab_requests(&mut self) -> Vec<ui_core::collaboration::CollabRequest> {
         let mut requests =
             ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
+        if let Some(mut door) = self.dispatch.opener.door() {
+            requests.extend(ui_core::widget::Collaborative::take_collab_requests(
+                &mut door,
+            ));
+        }
         if let Some(content) =
             capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
         {
@@ -2342,6 +2351,9 @@ impl ui_core::widget::Collaborative for ResourceRoot {
 
     fn handle_collab_event(&mut self, event: &ui_core::collaboration::CollabEvent) {
         ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
+        if let Some(mut door) = self.dispatch.opener.door() {
+            ui_core::widget::Collaborative::handle_collab_event(&mut door, event);
+        }
         if let Some(content) =
             capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
         {

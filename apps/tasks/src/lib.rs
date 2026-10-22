@@ -97,8 +97,21 @@ impl ResourceApp for App {
             opener.open(issue);
             Ok(())
         });
-        let stage = nav.clone();
         let staged = cx.value(Tracker::clone);
+        // A reference as it reads (`#12`) is the tracker's own to resolve:
+        // anyone opens the issue it names through the tracker's `open`.
+        let (numbered, opener) = (staged.clone(), nav.clone());
+        cx.on_open(move |anchor: &str| {
+            let number = model::search::number(anchor)
+                .ok_or_else(|| Refusal::new(format!("`{anchor}` names no issue")))?;
+            let tracker = numbered.get();
+            let (issue, _) = tracker
+                .by_number(number)
+                .ok_or_else(|| Refusal::new(format!("There is no issue {anchor}")))?;
+            opener.open(issue);
+            Ok::<(), Refusal>(())
+        });
+        let stage = nav.clone();
         cx.on_stage(move |scenario| sample::stage(scenario, &stage, &staged.get()));
 
         let selection = cx.local(Some(Place::List.key().to_owned()));

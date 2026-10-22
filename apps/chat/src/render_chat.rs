@@ -1726,26 +1726,44 @@ impl ChatApp {
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = ButtonFace::height(ControlSize::Regular, theme);
         self.resource_navigation.shown(&m.id);
-        for (open, hit) in [
-            (false, Hit::CopyResourceLink(m.id.clone())),
-            (true, Hit::OpenResourceLink(m.id.clone())),
-        ] {
-            *y += gap;
-            let caption = self.resource_navigation.label(&m.id, open, false);
-            let width = ButtonFace::new(Rect::ZERO, &caption)
-                .intrinsic_width(tr, theme)
-                .min(f64::from(column.text_width));
-            let rect = Rect::new(column.text_x, *y, column.text_x + width, *y + height);
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
-            );
-            ChatApp::push_hit(hits, rect, hit);
-            *y += height;
-        }
+        let width = f64::from(column.text_width);
+        // The resource as a reference chip, centred in a control's row so it
+        // keeps a control's pointer target.
+        *y += gap;
+        let label = m
+            .reference
+            .as_ref()
+            .map_or("", |reference| reference.label.as_str());
+        let lead = ui::framework::reference::LEAD;
+        let chip_w = ChipFace::intrinsic_width(label, lead, false, tr, theme).min(width);
+        let row = Rect::new(column.text_x, *y, column.text_x + chip_w, *y + height);
+        let chip_h = ChipFace::height(theme).min(height);
+        let chip = Rect::new(
+            row.x0,
+            row.center().y - chip_h / 2.0,
+            row.x1,
+            row.center().y + chip_h / 2.0,
+        );
+        ChipFace::new(chip, label)
+            .lead(lead)
+            .hovered(self.hovered(row))
+            .paint(scene, tf, tr, theme);
+        ChatApp::push_hit(hits, row, Hit::OpenResource(m.id.clone()));
+        *y += height + gap;
+        let caption = self.resource_navigation.label(&m.id, false);
+        let button_w = ButtonFace::new(Rect::ZERO, &caption)
+            .intrinsic_width(tr, theme)
+            .min(width);
+        let rect = Rect::new(column.text_x, *y, column.text_x + button_w, *y + height);
+        Button::paint(
+            scene,
+            tf,
+            tr,
+            theme,
+            &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+        );
+        ChatApp::push_hit(hits, rect, Hit::CopyResourceLink(m.id.clone()));
+        *y += height;
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
