@@ -482,8 +482,8 @@ impl SessionSettings {
         &self.paths
     }
 
-    /// The source installed for ordinary host event-loop readers. Its worker
-    /// wakes only when read; another process's write to the copy reaches it
+    /// The source installed for ordinary host event-loop readers. Reading it
+    /// touches no file; another process's write to the copy reaches it
     /// through the host's watch of the copy calling [`Self::refresh`].
     ///
     /// # Errors
@@ -495,8 +495,8 @@ impl SessionSettings {
     }
 
     /// [`Self::host_view`] for a host that could not watch the copy: the
-    /// view takes in another process's write to it every `interval` as well
-    /// as on each read, so readers that only wait for
+    /// view's worker takes in another process's write to it every
+    /// `interval`, so readers that only wait for
     /// [`SettingsSource::changes`] still hear of it.
     ///
     /// # Errors
@@ -699,10 +699,9 @@ impl SessionSettings {
     /// Whether [`Self::refresh`] may find another process's write: the
     /// copy's size or time is not what this source last wrote or read, or it
     /// is too recent for them to tell. One identity check, no storage lock: a state
-    /// held by a writer answers yes and leaves the deciding to `refresh`. A
-    /// reader asks this before waking a refresh worker, so reads of an
-    /// unchanged copy wake nobody.
-    pub(super) fn copy_may_have_changed(&self) -> bool {
+    /// held by a writer answers yes and leaves the deciding to `refresh`.
+    #[cfg(test)]
+    fn copy_may_have_changed(&self) -> bool {
         let Ok(identity) = self.copy_access.identity() else {
             return true;
         };
@@ -1570,6 +1569,9 @@ mod tests {
         let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let before = view.load();
+        // The copy's lock holds the worker's write back, so the write is
+        // seen accepted before it fails.
+        let parked = lock_copy(&session.paths.copy).unwrap();
         std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
         std::fs::create_dir(&session.paths.device).unwrap();
         std::fs::create_dir(&session.paths.person).unwrap();
@@ -1581,6 +1583,7 @@ mod tests {
             "accepted for now"
         );
         let revision = view.revision();
+        drop(parked);
         view.flush_pending();
         assert_eq!(view.load(), before, "the document went back");
         assert!(view.revision() > revision, "readers are told it went back");
@@ -1661,12 +1664,14 @@ mod tests {
     }
 
     #[test]
-    fn host_view_refreshes_external_writes_and_notifies_after_the_committed_snapshot() {
+    fn a_polling_host_view_refreshes_external_writes_and_notifies_after_the_committed_snapshot() {
         use std::sync::{Arc, mpsc};
 
         let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
-        let view = session.host_view().unwrap();
+        let view = session
+            .host_view_polling_copy(std::time::Duration::from_millis(20))
+            .unwrap();
         let initial_revision = view.revision();
         let observed_view = Arc::downgrade(&view);
         let (sender, receiver) = mpsc::channel();
@@ -1684,9 +1689,8 @@ mod tests {
             object(json!({"theme": "Light"})),
         )
         .unwrap();
-        // No file watcher or manually forced refresh: ordinary view reads
-        // supply the fallback when the host's watcher is unavailable.
-        let _ = view.revision();
+        // No file watcher, no forced refresh and no read: the view's worker
+        // looks at the copy when the host's watch is unavailable.
         let (document, revision) = tilo_test_env::recv("the refreshed view", &receiver);
         assert_eq!(document["appearance"]["theme"], json!("Light"));
         assert!(revision > initial_revision);
@@ -1711,7 +1715,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_host_view_looks_at_the_copy_only_when_read() {
+    fn a_host_view_never_looks_at_the_copy_itself() {
         use std::sync::Arc;
 
         let dir = crate::test_dir();
@@ -1726,15 +1730,18 @@ mod tests {
             object(json!({"theme": "Light"})),
         )
         .unwrap();
-        // No timer: the host's watch of the copy (or a read) takes the write
-        // in, so an idle view costs no wakeups.
-        tilo_test_env::idle::assert_stays_asleep(&worker, "unread view's refresh worker");
+        // Reading the view (as the frame loop, which never waits on the
+        // disk, does) looks at no file, and no timer does
+        // either, so an idle view costs no wakeups.
+        let _ = (view.load(), view.revision());
+        tilo_test_env::idle::assert_stays_asleep(&worker, "read view's refresh worker");
         assert!(
             rings.try_recv().is_err(),
-            "an unread view looked at the copy on its own"
+            "the view looked at the copy on its own"
         );
-        let _ = view.revision();
-        tilo_test_env::recv("a read to take the copy's write in", &rings);
+        // The host's watch of the copy takes the write in.
+        session.refresh();
+        tilo_test_env::recv("the watch's refresh to take the copy's write in", &rings);
         assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
     }
 
@@ -1806,7 +1813,8 @@ mod tests {
             object(json!({"theme": "Light"})),
         )
         .unwrap();
-        let _ = view.revision();
+        // The host's watch of the copy takes the write in.
+        session.refresh();
         rings.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
     }
