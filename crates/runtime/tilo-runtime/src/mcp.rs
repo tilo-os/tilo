@@ -1264,7 +1264,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(provider) => tilo_actions::remote::workspace_provider_room(provider).is_some(),
         };
         tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            host_answer_wait(),
             self.at_host(eager, move |host, caller| host.query(caller, query)),
         )
         .await
@@ -2543,7 +2543,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let blocking =
             tilo_actions::remote::workspace_provider_room(&request.target.provider).is_some();
         tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            host_answer_wait(),
             self.at_host(blocking, move |host, caller| host.invoke(caller, request)),
         )
         .await
@@ -2641,6 +2641,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             json!({"contents":[{"uri":a.uri,"mimeType":"application/json","text":value.to_string()}]}),
         )
     }
+}
+/// How long the host may take to answer a catalogue query or to admit an
+/// invocation before the agent is told it timed out (and that admission may be
+/// unknown, so it retries with the same invocation id).
+#[cfg(not(test))]
+fn host_answer_wait() -> std::time::Duration {
+    std::time::Duration::from_secs(5)
+}
+/// How long the host may take to answer a query or admit an invocation: in
+/// test builds, which share a loaded runner and admit on an unoptimised
+/// broker (signing, durable custody, a launch), the shared test hang bound.
+/// A fixture's broker turn that takes longer than the shipping budget is
+/// slow, not refused.
+#[cfg(test)]
+fn host_answer_wait() -> std::time::Duration {
+    tilo_test_env::hang_bound()
 }
 /// How long a workspace `open` waits at least for the host to answer with
 /// the instance it started, which it does once that instance has connected
