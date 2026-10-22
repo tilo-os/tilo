@@ -526,6 +526,10 @@ pub struct DesktopSurface {
     /// The window search was opened over (its in-app search): an action
     /// chosen there runs inside that window's app.
     search_window: Option<(StripId, GroupId)>,
+    /// For search over everything, the window publishing each resource it
+    /// lists, by resource id: an app's action chosen there runs inside the
+    /// app's window, which comes forward.
+    search_owners: HashMap<String, (StripId, GroupId)>,
     /// An action chosen over a window that hosts no app to run it, left for
     /// the host's own door, which says why it did not run.
     unrouted_control: Option<ui::tilo_actions::ControlInvocation>,
@@ -717,6 +721,7 @@ impl DesktopSurface {
             search: tilo_desktop_search::DesktopSearch::new(),
             new_tab_into: None,
             search_window: None,
+            search_owners: HashMap::new(),
             unrouted_control: None,
             search_pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
