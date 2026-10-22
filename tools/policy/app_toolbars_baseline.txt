@@ -38,7 +38,6 @@ toolbar-band 1 apps/browser/src/browser_widget.rs
 # Not toolbar rows, only the band's hairline borrowed: a panel's heading
 # (Calculator's history, Photos' side panel), Notes' pinned title, Writer's
 # ruler. Each wants a divider of its own instead.
-toolbar-band 1 apps/calculator/src/keypad.rs
 toolbar-band 1 apps/notes/src/main_panel.rs
 toolbar-band 1 apps/photos/src/app/chrome.rs
 toolbar-band 1 apps/word-processor/src/ruler.rs
