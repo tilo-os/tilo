@@ -219,3 +219,51 @@ fn a_long_formula_reaches_history_whole() {
         "the whole formula: {rows:?}"
     );
 }
+
+/// What the palette, a script or an agent passes reaches History whole:
+/// a long calculation committed through the action door reads whole in its
+/// row and is put back whole, and a long function added through it reads
+/// whole too.
+#[test]
+fn a_long_formula_passed_to_an_action_reaches_history_whole() {
+    let formula = ["x"; 60].join("+");
+    let sum = ["1"; 60].join("+");
+    let mut app = hosted();
+    app.invoke(Calculator::COMMIT_HISTORY.with((sum.clone(), "60".to_owned())))
+        .unwrap();
+    app.invoke(Calculator::ADD_FUNCTION.with(formula.clone()))
+        .unwrap();
+    app.settle();
+    app.flush().unwrap();
+    app.harness()
+        .open_history()
+        .expect("the window's History opens");
+    app.settle();
+    app.harness().relayout();
+    let rows = history_rows(&mut app);
+    assert!(
+        rows.iter()
+            .any(|(_, name)| name.ends_with(&format!("y = {formula}"))),
+        "the whole function: {rows:?}"
+    );
+    let calculation = rows
+        .iter()
+        .find(|(_, name)| name.ends_with(&format!("{sum} = 60")))
+        .map_or_else(
+            || panic!("the whole calculation: {rows:?}"),
+            |(target, _)| target.clone(),
+        );
+    app.harness()
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&calculation),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        calculator(&mut app).1.value.as_deref(),
+        Some(sum.as_str()),
+        "the calculation is put back whole"
+    );
+}
