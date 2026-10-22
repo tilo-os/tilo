@@ -55,7 +55,8 @@ impl DesktopControlSnapshot {
 
     pub fn load_at(path: &std::path::Path) -> Option<Self> {
         crate::published::note_file_read();
-        let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let bytes = tilo_files::native::bounded::read(path, MAX_SNAPSHOT_BYTES).ok()??;
+        let snapshot: Self = serde_json::from_slice(&bytes).ok()?;
         crate::hardware::publisher_live_in(
             path.parent()?,
             snapshot.publisher_pid,
@@ -83,6 +84,10 @@ impl DesktopControlSnapshot {
         tilo_files::native::atomic::write_creating_parent(path, &body)
     }
 }
+
+/// The largest desktop control snapshot read: its grants are a handful of
+/// tabs, so anything larger is not one.
+const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
 
 /// Private session state path for [`DesktopControlSnapshot`]; like the
 /// display snapshot it never falls back to a shared directory.
