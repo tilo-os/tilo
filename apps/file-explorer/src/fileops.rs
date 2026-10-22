@@ -289,6 +289,16 @@ pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
     host_fs::trash::delete(paths)
 }
 
+/// Move `path` to the trash, returning the Trash entry it became when the
+/// host says ([`host_fs::trash::trash`]).
+///
+/// # Errors
+///
+/// As [`delete_to_trash`].
+pub fn move_to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
+    host_fs::trash::trash(path)
+}
+
 /// Recursively copy `src` into the directory `dest_dir`, choosing a
 /// non-colliding name. Returns the created destination path.
 ///
