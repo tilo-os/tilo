@@ -746,14 +746,66 @@ fn relative_positions_use_the_neighbour_s_logical_extent() {
     assert!(place("Left of Nowhere", &mut portrait).is_err());
 }
 
+// USER REQUIREMENT (2026-10-22): a display is named by its model, never
+// by its port or card; two connected displays of one model are told
+// apart by the number Identify shows on each.
+#[test]
+fn identical_monitors_are_named_apart_by_number_in_settings() {
+    let first = OutputDescriptor {
+        connector: "pci:0000:01:00.0/HDMI-A-1".into(),
+        connector_label: "HDMI-A-1".into(),
+        modes: vec![],
+        hdr: false,
+        vrr: false,
+        color_profiles: vec![],
+        monitor: Some(MonitorIdentity {
+            make: "Dell".into(),
+            model: "DELL U2720Q".into(),
+            ..MonitorIdentity::default()
+        }),
+    };
+    let second = OutputDescriptor {
+        connector: "pci:0000:03:00.0/HDMI-A-1".into(),
+        ..first.clone()
+    };
+    let observed =
+        |descriptor: &OutputDescriptor| settings_store::hardware::DisplayOutputSnapshot {
+            descriptor: descriptor.clone(),
+            current_mode: OutputMode {
+                width: 3840,
+                height: 2160,
+                refresh_mhz: 60_000,
+            },
+            scale: 1.0,
+            builtin: false,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            unavailable_reason: None,
+            color_profile_labels: BTreeMap::new(),
+        };
+    let snapshot = DisplayHardwareSnapshot {
+        outputs: vec![observed(&first), observed(&second)],
+        ..DisplayHardwareSnapshot::default()
+    };
+    let labels: Vec<_> = outputs_from_snapshot(&snapshot)
+        .into_iter()
+        .map(|output| output.label)
+        .collect();
+    assert_eq!(labels, ["Dell U2720Q (1)", "Dell U2720Q (2)"]);
+    let alone = DisplayHardwareSnapshot {
+        outputs: vec![observed(&first)],
+        ..DisplayHardwareSnapshot::default()
+    };
+    assert_eq!(outputs_from_snapshot(&alone)[0].label, "Dell U2720Q");
+}
+
 /// Distinct duplicate labels, staging per connector and virtual
 /// connector filtering.
 #[test]
 fn display_connectors_are_labelled_and_filtered() {
-    // USER REQUIREMENT (2026-10-22): a display is named by its model, never
-    // by its port or card; two connected displays of one model are told
-    // apart by the number Identify shows on each.
-    // Case `identical_monitors_are_named_apart_by_number_in_settings`.
+    // Case `qualified_duplicate_connectors_stage_apart`.
     {
         let first = OutputDescriptor {
             connector: "pci:0000:01:00.0/HDMI-A-1".into(),
@@ -762,48 +814,8 @@ fn display_connectors_are_labelled_and_filtered() {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
-            monitor: Some(MonitorIdentity {
-                make: "Dell".into(),
-                model: "DELL U2720Q".into(),
-                ..MonitorIdentity::default()
-            }),
+            monitor: None,
         };
-        let second = OutputDescriptor {
-            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
-            ..first.clone()
-        };
-        let observed =
-            |descriptor: &OutputDescriptor| settings_store::hardware::DisplayOutputSnapshot {
-                descriptor: descriptor.clone(),
-                current_mode: OutputMode {
-                    width: 3840,
-                    height: 2160,
-                    refresh_mhz: 60_000,
-                },
-                scale: 1.0,
-                builtin: false,
-                sink_hdr: false,
-                hdr_unavailable_reason: None,
-                sink_vrr: false,
-                vrr_unavailable_reason: None,
-                unavailable_reason: None,
-                color_profile_labels: BTreeMap::new(),
-            };
-        let snapshot = DisplayHardwareSnapshot {
-            outputs: vec![observed(&first), observed(&second)],
-            ..DisplayHardwareSnapshot::default()
-        };
-        let labels: Vec<_> = outputs_from_snapshot(&snapshot)
-            .into_iter()
-            .map(|output| output.label)
-            .collect();
-        assert_eq!(labels, ["Dell U2720Q (1)", "Dell U2720Q (2)"]);
-        let alone = DisplayHardwareSnapshot {
-            outputs: vec![observed(&first)],
-            ..DisplayHardwareSnapshot::default()
-        };
-        assert_eq!(outputs_from_snapshot(&alone)[0].label, "Dell U2720Q");
-
         let display = DisplayOutput {
             label: "Dell U2720Q (1)".into(),
             connector: first.connector.clone(),
