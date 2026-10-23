@@ -77,7 +77,6 @@ mod share_mount_tests {
 
     #[test]
     fn share_mounts_take_secret_free_bounded_input_and_durable_generations() {
-        // Phase `mount_share_accepts_stdin_without_putting_a_bearer_in_argv`.
         {
             let cli = Cli::try_parse_from([
                 "fs",
@@ -98,7 +97,6 @@ mod share_mount_tests {
                 }
             ));
         }
-        // Phase `stdin_share_link_is_trimmed_and_strictly_bounded`.
         {
             assert_eq!(
                 parse_share_uri_input(b"tilo-file://v2/example#secret\n".to_vec(), 64).unwrap(),
@@ -108,7 +106,6 @@ mod share_mount_tests {
             assert!(parse_share_uri_input(b"\r\n".to_vec(), 64).is_err());
             assert!(parse_share_uri_input(vec![0xff], 64).is_err());
         }
-        // Phase `durable_replica_generation_is_written_before_readiness_can_use_it`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("namespace.bin");
@@ -126,7 +123,6 @@ mod share_mount_tests {
                 "a restart reopens the generation that was checkpointed"
             );
         }
-        // Phase `recipient_service_command_line_is_explicit_and_secret_free`.
         {
             let cli = Cli::try_parse_from([
                 "fs",
@@ -154,7 +150,6 @@ mod share_mount_tests {
         persist_namespace_changes(&namespace, &path).unwrap();
         assert!(path.exists(), "the first barrier writes the document");
 
-        // Removing the file shows whether the next barrier writes.
         std::fs::remove_file(&path).unwrap();
         persist_namespace_changes(&namespace, &path).unwrap();
         assert!(!path.exists(), "an unchanged document is not written again");
@@ -218,7 +213,6 @@ mod share_mount_tests {
             "a restart resumes the progress"
         );
 
-        // Phase `damaged_progress_is_ignored`.
         let mut damaged = std::fs::read(&progress).unwrap();
         let last = damaged.len() - 1;
         damaged[last] ^= 1;
@@ -229,7 +223,6 @@ mod share_mount_tests {
             "damaged progress was resumed"
         );
 
-        // Phase `progress_beside_a_recovered_document_is_ignored`.
         persist_peer_sync_states(&namespace, &progress);
         namespace
             .lock()
@@ -322,7 +315,6 @@ mod share_mount_tests {
 
     #[test]
     fn shared_snapshots_project_exactly_one_record() {
-        // Phase `shared_snapshot_projects_one_exact_record_and_updates_it_in_place`.
         {
             let dir = tempfile::tempdir().unwrap();
             let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
@@ -374,7 +366,6 @@ mod share_mount_tests {
             assert_eq!(guard.getattr(ino).unwrap().size, 456);
             drop(guard);
         }
-        // Phase `shared_snapshot_rejects_cross_record_metadata_and_history`.
         {
             let dir = tempfile::tempdir().unwrap();
             let history = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
@@ -388,7 +379,6 @@ mod share_mount_tests {
             wrong_history.versions[0].record_id = FileRecordId::new();
             assert!(apply_shared_snapshot(&namespace, &history, &wrong_history).is_err());
         }
-        // Phase `shared_namespace_refuses_any_extra_visible_node`.
         {
             let expected = FileRecordId::new();
             let mut namespace = Namespace::new("recipient").unwrap();
@@ -4271,7 +4261,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn shipped_units_serve_with_a_seeded_enforced_capability_list() {
-        // Phase `shipped_service_restarts_clean_ticket_rebinds`.
         {
             let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
                 .expect("the shipped fs.service must exist");
@@ -4286,7 +4275,6 @@ mod tests {
                 "the shipped unit must enter the serve startup path that consumes persisted tickets"
             );
         }
-        // Phase `service_command_line_parses`.
         {
             // The exact line fs.service runs, so a bad flag fails here, not on boot.
             let argv = service_exec_start();
@@ -4445,7 +4433,6 @@ mod tests {
 
     #[test]
     fn cli_parses_mount_lines_principals_and_persisted_tickets() {
-        // Phase `mount_command_line_parses`.
         {
             let cli = Cli::try_parse_from([
                 "fs",
@@ -4460,7 +4447,6 @@ mod tests {
             .expect("mount command line must parse");
             assert!(matches!(cli.command, Command::Mount { .. }));
         }
-        // Phase `principal_specs_parse_by_kind`.
         {
             assert_eq!(
                 parse_principal("room:team").unwrap(),
@@ -4473,7 +4459,6 @@ mod tests {
             assert!(parse_principal("wizard:merlin").is_err());
             assert!(parse_principal("noseparator").is_err());
         }
-        // Phase `persisted_discovered_ticket_selects_remote_record_workspace`.
         {
             let temp = tempfile::tempdir().unwrap();
             let owner =
@@ -4539,7 +4524,6 @@ mod tests {
                 "expected a read failure, got: {err:#}"
             );
         }
-        // Phase `a_malformed_capability_file_refuses_the_mount`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");
@@ -4569,7 +4553,6 @@ mod tests {
             assert!(!acl.permits(&identity, "/", Access::Read));
             assert!(!acl.permits(&identity, "/anything", Access::Write));
         }
-        // Phase `the_capability_file_round_trips_and_is_enforced`.
         {
             use collab_types::{
                 Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
@@ -4610,7 +4593,6 @@ mod tests {
             let args = acl_args_from(&["--identity", &hex::encode([0x0A; 32])]);
             assert!(resolve_acl(&args, NODE_KEY).is_err());
         }
-        // Phase `a_short_identity_is_rejected`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");

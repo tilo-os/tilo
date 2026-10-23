@@ -14,9 +14,6 @@
 use std::io;
 
 /// The session's result with an aborted connection read as a clean end.
-///
-/// # Errors
-/// The session ended with any other error.
 pub fn ended(result: io::Result<()>) -> io::Result<()> {
     match result {
         Err(error) if error.raw_os_error() == Some(libc::ECONNABORTED) => Ok(()),
@@ -26,10 +23,6 @@ pub fn ended(result: io::Result<()>) -> io::Result<()> {
 
 /// Unmounts `session` and waits for its thread, reading an aborted
 /// connection as the end it is.
-///
-/// # Errors
-/// The unmount failed, or the session's thread ended with an error or
-/// panicked.
 pub fn unmount_and_join(session: fuser::BackgroundSession) -> io::Result<()> {
     ended(session.umount_and_join())
 }

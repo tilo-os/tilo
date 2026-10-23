@@ -85,11 +85,6 @@ impl ShareAuthority {
     }
 
     /// Open and fully validate a durable share authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for I/O, oversized/malformed/unsupported state, or any
-    /// inconsistent persisted grant.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, ShareAuthorityError> {
         let path = path.into();
         let too_large = ShareAuthorityError::StateTooLarge;
@@ -204,10 +199,6 @@ impl ShareAuthority {
     }
 
     /// Revoke future access. Already-copied bytes cannot be recalled.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for poisoned state or durable persistence failure.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the writer lock intentionally spans revocation checks, durable replacement, and in-memory publication"
@@ -260,11 +251,6 @@ impl ShareAuthority {
     /// Recheck a named human's live grant for every record request. Device
     /// certification is deliberately a separate transport precondition; this
     /// method accepts the verified human root identity, never a display name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when token/recipient/permission/live authority state
-    /// fails validation or the state lock is poisoned.
     pub fn authorize_named(
         &self,
         token: &FileInviteV1,
@@ -592,7 +578,6 @@ mod tests {
 
     #[test]
     fn one_use_and_named_grants_are_exact_race_free_and_revocable() {
-        // Phase `one_use_link_survives_restart_same_actor_reconnects_and_another_is_denied`.
         {
             let (dir, issuer, invite) = limited_invite();
             let path = dir.path().join("shares.json");
@@ -617,7 +602,6 @@ mod tests {
                 Err(ShareAuthorityError::Exhausted)
             ));
         }
-        // Phase `concurrent_one_use_race_has_exactly_one_winner`.
         {
             let (dir, issuer, invite) = limited_invite();
             let authority = Arc::new(ShareAuthority::open(dir.path().join("shares.json")).unwrap());
@@ -645,7 +629,6 @@ mod tests {
                 1
             );
         }
-        // Phase `named_grants_bind_human_record_permission_and_live_revocation`.
         {
             let dir = tempfile::tempdir().unwrap();
             let (issuer_sk, issuer) = collab_types::generate_keypair();
@@ -686,7 +669,6 @@ mod tests {
 
     #[test]
     fn untrusted_skewed_or_revoked_authority_fails_closed() {
-        // Phase `release_evidence_forward_clock_skew_expires_grants_fail_closed`.
         {
             let (dir, issuer, invite) = limited_invite();
             let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
@@ -699,7 +681,6 @@ mod tests {
             assert_eq!(projection.grants.len(), 1);
             assert_eq!(projection.grants[0].status, ShareGrantStatus::Expired);
         }
-        // Phase `revocation_and_untrusted_issuers_fail_closed`.
         {
             let (dir, issuer, invite) = limited_invite();
             let authority = ShareAuthority::open(dir.path().join("shares.json")).unwrap();
@@ -722,7 +703,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn authority_projection_is_redacted_bounded_and_validated_on_restart() {
-        // Phase `redacted_projection_survives_restart_and_tracks_live_state`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("shares.json");
@@ -825,7 +805,6 @@ mod tests {
                 ShareGrantStatus::Expired
             );
         }
-        // Phase `authority_enforces_projection_cardinality_bound`.
         {
             let dir = tempfile::tempdir().unwrap();
             let (issuer_sk, issuer) = collab_types::generate_keypair();
@@ -871,7 +850,6 @@ mod tests {
                     <= fs_protocol::projection::MAX_SHARE_PROJECTION_BYTES
             );
         }
-        // Phase `restart_rejects_inconsistent_and_oversized_authority_state`.
         {
             let (dir, issuer, invite) = limited_invite();
             let path = dir.path().join("shares.json");

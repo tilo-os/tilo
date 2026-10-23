@@ -1,5 +1,3 @@
-//! The fanotify change journal on a dedicated store volume.
-
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -156,7 +154,6 @@ fn the_journal_records_changes_in_order_once_per_batch_and_across_epochs() {
             j.events_read(),
             j.kernel_mutes() > 0
         );
-        // The next batch sees the file again.
         f.write_all(b"more").unwrap();
         drop(f);
         let got = drain(&mut j);

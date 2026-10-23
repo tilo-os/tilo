@@ -1077,7 +1077,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn materialization_uses_current_signed_state_and_refuses_unknown_records() {
-        // Phase `delayed_materialization_uses_current_repository_not_captured_snapshot`.
         {
             use crate::record_repository::RecordRepositoryKey;
             let fixture = Fixture::new();
@@ -1135,7 +1134,6 @@ mod tests {
             assert_eq!(namespace.getattr(fixture.ino).unwrap().size, 42);
             drop(namespace);
         }
-        // Phase `metadata_update_resolves_renamed_record_without_touching_name_or_parent`.
         {
             let fixture = Fixture::new();
             assert!(fixture.namespace.lock().unwrap().rename(
@@ -1221,7 +1219,6 @@ mod tests {
             assert_eq!(namespace.getattr(fixture.ino).unwrap().size, 99);
             drop(namespace);
         }
-        // Phase `signed_binding_materializes_move_and_exact_replay_is_a_noop`.
         {
             let fixture = Fixture::new();
             let parent = fixture
@@ -1265,7 +1262,6 @@ mod tests {
             );
             drop(namespace);
         }
-        // Phase `unknown_tombstoned_and_wrong_scope_are_refused`.
         {
             let fixture = Fixture::new();
             let metadata = FileMetadataV1 {
@@ -1310,7 +1306,6 @@ mod tests {
                 ))
             );
         }
-        // Phase `immutable_history_is_exact_and_exact_replay_is_idempotent`.
         {
             let fixture = Fixture::new();
             let version = FileVersionV1 {
@@ -1363,7 +1358,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn conflicts_project_repository_resolution_into_typed_history() {
-        // Phase `delayed_open_conflict_projects_repository_resolution`.
         {
             use crate::record_repository::RecordRepositoryKey;
             let fixture = Fixture::new();
@@ -1444,7 +1438,6 @@ mod tests {
             assert_eq!(state.conflicts[0].status, ConflictStatus::Resolved);
             assert_eq!(state.conflicts[0].resolution, Some(resolution));
         }
-        // Phase `accepted_conflict_transitions_project_into_typed_history`.
         {
             let fixture = Fixture::new();
             let first = FileVersionV1 {
@@ -1524,7 +1517,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn remote_transactions_and_merges_materialize_exactly_and_heal_after_restart() {
-        // Phase `startup_reconciliation_heals_committed_but_unprojected_operations`.
         {
             use crate::record_repository::{RecordRepository, RecordRepositoryKey};
 
@@ -2125,7 +2117,6 @@ mod tests {
                 );
             }
         }
-        // Phase `remote_completed_merge_materializes_exact_revision_and_replays_after_restart`.
         {
             for codec in [
                 ConflictMergeCodecV1::PlainUtf8ThreeWayV1,

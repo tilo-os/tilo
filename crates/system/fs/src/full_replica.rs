@@ -205,10 +205,6 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
 }
 
 /// Atomically write the status consumed by `tilo-relay` and status tooling.
-///
-/// # Errors
-///
-/// Returns an error when serialization or atomic persistence fails.
 pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     let mut status = status.clone();
     status.updated_at_ms = tilo_clock::unix_now_ms();
@@ -223,9 +219,6 @@ pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
 /// replica left behind when it exited ([`replica_is_running`]). The kernel
 /// releases it however the process ends, crash included.
 ///
-/// This replaces restamping the status every second to keep it recent:
-/// the replica now writes its status only when the status
-/// changes, and sleeps in between.
 #[derive(Debug)]
 pub struct ReplicaLiveness {
     _lock: advisory_lock::FileLock,
@@ -621,7 +614,6 @@ mod tests {
 
     #[test]
     fn replica_topology_and_relay_ids_are_validated() {
-        // Phase `aggregate_is_ready_only_when_every_workspace_is_complete`.
         {
             let mut ready = FullReplicaStatus::syncing();
             ready.state = "ready".into();
@@ -645,7 +637,6 @@ mod tests {
             assert_eq!(aggregate.state, "syncing");
             assert_eq!(aggregate.namespace_generation, None);
         }
-        // Phase `global_files_topology_rejects_multiple_endpoint_workers`.
         {
             let workspace = HomePeerBundle {
                 ticket: "not-decoded-by-topology-validation".into(),
@@ -666,7 +657,6 @@ mod tests {
             };
             assert!(validate_home_peer_set(&many).is_err());
         }
-        // Phase `relay_workspace_ids_round_trip_high_bits`.
         {
             let high = (i64::MAX as u64) + 42;
             let bundle = HomePeerSet {

@@ -33,7 +33,6 @@ use installer::InstallerApp;
 use installer::installer_app::{ProxySlot, Step};
 use ui::widget::Widget;
 
-/// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// # Errors
@@ -195,7 +194,6 @@ mod tests {
 
     #[test]
     fn recovery_and_profile_repair_shot_states_are_renderable() {
-        // Phase `recovery_visual_states_are_renderable`.
         {
             for scenario in [
                 "finish-recovery",
@@ -205,7 +203,6 @@ mod tests {
                 assert!(build_shot(scenario).is_some(), "missing {scenario}");
             }
         }
-        // Phase `transported_profile_repair_state_is_renderable`.
         {
             assert!(build_shot("profile-locale-repair").is_some());
         }

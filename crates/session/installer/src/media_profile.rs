@@ -272,11 +272,6 @@ fn load_from_with_zoneinfo(
 /// Validate the secret-free profile object carried by a staged (USB-free)
 /// installation handoff. It is the same object Tilo Imager writes to media;
 /// `schema` may be omitted there because the handoff has its own schema.
-///
-/// # Errors
-///
-/// Returns an error for an unsupported schema or fields outside the media
-/// profile. Individual invalid values become repairs, exactly as for media.
 pub fn validate_object(
     object: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<MediaProfile, String> {
@@ -340,7 +335,6 @@ mod tests {
 
     #[test]
     fn media_profile_accepts_the_contract_and_repairs_only_bad_values() {
-        // Phase `accepts_the_imager_contract_and_rejects_destructive_fields`.
         {
             let file = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(file.path(), serde_json::to_vec(&good()).unwrap()).unwrap();
@@ -353,7 +347,6 @@ mod tests {
             std::fs::write(file.path(), serde_json::to_vec(&bad).unwrap()).unwrap();
             assert!(load_from(file.path()).is_err());
         }
-        // Phase `retains_each_sound_field_while_requesting_one_repair`.
         {
             let zones = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(zones.path().join("Europe")).unwrap();
@@ -416,7 +409,6 @@ mod tests {
                 );
             }
         }
-        // Phase `missing_values_are_repairs_but_schema_and_shape_still_fail_closed`.
         {
             let file = tempfile::NamedTempFile::new().unwrap();
             let mut missing = good();

@@ -561,8 +561,6 @@ impl CloudVolume {
         self.staging.join(name)
     }
 
-    // ---- persistence -------------------------------------------------
-
     /// Write `tree.json` if the tree or cursor changed since the last
     /// write. Items and cursor go out together in one atomic write, so a
     /// crash never leaves a cursor newer than the items it covers.
@@ -631,8 +629,6 @@ impl CloudVolume {
     fn persist_local(&self) -> Result<(), Errno> {
         self.save_local().map_err(|e| io_errno(&e))
     }
-
-    // ---- attributes and names ----------------------------------------
 
     fn attr_of(&self, inner: &mut Inner, id: &ItemId) -> Result<Attr, Errno> {
         let ino = inner.ino(id);
@@ -793,8 +789,6 @@ impl CloudVolume {
         Ok(ino)
     }
 
-    // ---- provider operations on one file ---------------------------------
-
     /// The provider id of the item at `path`, which the server must already
     /// know: an item created here and not yet uploaded has no provider
     /// history or link.
@@ -868,7 +862,6 @@ impl CloudVolume {
         Ok(())
     }
 
-    /// A share link for the file at `path`.
     pub fn share_link_at(&self, path: &str) -> Result<String, Error> {
         let _mutation = self.mutation().map_err(|_| Error::Forbidden)?;
         if !self.source.capabilities().share_links {
@@ -922,8 +915,6 @@ impl CloudVolume {
                 Some(running.saturating_sub(1))
             });
     }
-
-    // ---- reads ---------------------------------------------------------
 
     fn flight(&self, key: &RevKey) -> Arc<Mutex<()>> {
         let mut flights = self.flights.lock_recover();
@@ -1124,8 +1115,6 @@ impl CloudVolume {
         let id = self.inner().id(ino)?;
         self.read_id(&id, offset, len, 0)
     }
-
-    // ---- writes --------------------------------------------------------
 
     /// Give `id` a staged copy of its current content (or an empty one).
     fn ensure_staged(&self, id: &ItemId, truncate: bool) -> Result<(), Errno> {
@@ -1557,8 +1546,6 @@ impl CloudVolume {
         self.kick();
         Ok(())
     }
-
-    // ---- write-back ----------------------------------------------------
 
     /// Queued local changes not yet on the server.
     pub fn pending(&self) -> usize {
@@ -2113,8 +2100,6 @@ impl CloudVolume {
         Ok(changed)
     }
 
-    // ---- background work -------------------------------------------------
-
     /// Wake the uploader (a change was queued).
     pub fn kick(&self) {
         self.activity.fetch_add(1, Ordering::SeqCst);
@@ -2390,7 +2375,6 @@ mod tests {
         // Never faster than configured, never past the cap.
         assert_eq!(idle_wait(0, BASE, MAX, -100), BASE);
         assert_eq!(idle_wait(9, BASE, MAX, 100), MAX);
-        // A cap below the poll interval leaves the poll interval in force.
         assert_eq!(idle_wait(3, BASE, Duration::from_secs(5), 0), BASE);
         for _ in 0..1000 {
             let jitter = idle_jitter();

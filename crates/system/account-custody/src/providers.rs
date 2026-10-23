@@ -11,15 +11,11 @@
 use serde::Deserialize;
 use tilo_oauth::{ClientId, Provider, Refresh, Revocation};
 
-/// Account type id of a Google Drive account.
 pub const GOOGLE_DRIVE_TYPE: &str = accounts::cloud_types::GOOGLE_DRIVE;
 /// Account type id of a `OneDrive` account (personal or work/school).
 pub const ONEDRIVE_TYPE: &str = accounts::cloud_types::ONEDRIVE;
-/// Account type id of a Dropbox account.
 pub const DROPBOX_TYPE: &str = accounts::cloud_types::DROPBOX;
-/// Account type id of an `iCloud` Drive account.
 pub const ICLOUD_DRIVE_TYPE: &str = accounts::cloud_types::ICLOUD_DRIVE;
-/// Account type id of a Nextcloud account.
 pub const NEXTCLOUD_TYPE: &str = accounts::cloud_types::NEXTCLOUD;
 /// Account type id of a plain `WebDAV` account.
 pub const WEBDAV_TYPE: &str = accounts::cloud_types::WEBDAV;
@@ -385,7 +381,6 @@ impl OAuthCloud {
         self.oauth_use().label()
     }
 
-    /// Who the person signs in with.
     pub fn sign_in_with(self) -> &'static str {
         self.issuer().label()
     }

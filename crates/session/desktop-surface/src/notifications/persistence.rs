@@ -82,9 +82,6 @@ fn unix_ms(time: SystemTime) -> u64 {
 }
 
 /// Encode retained notifications, oldest first, for a host's private store.
-///
-/// # Errors
-/// Returns the JSON encoding error.
 pub fn encode_history(
     history: &[Notification],
     wall_now: SystemTime,
@@ -121,9 +118,6 @@ pub fn encode_history(
 }
 
 /// Restore bounded history with its original age and verified app attribution.
-///
-/// # Errors
-/// Returns the JSON decoding error for malformed stored history.
 pub fn decode_history(
     bytes: &[u8],
     wall_now: SystemTime,

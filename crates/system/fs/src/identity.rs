@@ -306,11 +306,6 @@ pub fn load_certified_mount_identity(
 }
 
 /// Read an already-certified device for recovery without first-boot key creation.
-///
-/// # Errors
-///
-/// Returns an error for missing, insecure or inconsistent existing credentials,
-/// or a certificate that is not valid at `now_ns`. No directory or key is made.
 pub fn load_existing_certified_mount_identity(
     paths: &IdentityPaths,
     now_ns: u64,
@@ -453,7 +448,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn certified_loading_requires_a_valid_current_certificate_for_this_device() {
-        // Phase `certified_identity_pairs_transport_key_with_human_certificate`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -485,7 +479,6 @@ mod tests {
                 cert.device_public_key
             );
         }
-        // Phase `missing_certificate_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -497,7 +490,6 @@ mod tests {
                     if io_err.kind() == std::io::ErrorKind::NotFound
             ));
         }
-        // Phase `malformed_certificate_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -508,7 +500,6 @@ mod tests {
                 CertifiedIdentityError::CertificateFile(PersistError::Canonical(_))
             ));
         }
-        // Phase `tampered_certificate_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -521,7 +512,6 @@ mod tests {
                 CertifiedIdentityError::Certificate(DeviceCertError::BadSignature)
             ));
         }
-        // Phase `expired_or_future_certificate_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -544,7 +534,6 @@ mod tests {
                 CertifiedIdentityError::Certificate(DeviceCertError::NotYetValid)
             ));
         }
-        // Phase `certificate_for_another_device_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -561,7 +550,6 @@ mod tests {
 
     #[test]
     fn workspace_share_issuers_load_only_for_the_certified_owner() {
-        // Phase `workspace_share_issuer_is_the_certified_human_root_or_absent`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -594,7 +582,6 @@ mod tests {
                 Err(WorkspaceShareIssuerError::RootKeyMismatch)
             ));
         }
-        // Phase `non_owner_device_never_loads_a_workspace_share_issuer`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());

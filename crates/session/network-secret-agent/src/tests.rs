@@ -1,7 +1,3 @@
-//! The agent over a peer-to-peer D-Bus link to a stand-in `NetworkManager`,
-//! answered by scripted sheets. The shell's tests drive the same agent into
-//! the sheet the compositor draws, in the shell's words.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

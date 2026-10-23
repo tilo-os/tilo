@@ -29,7 +29,6 @@ const FS_INFO: libc::Ioctl = 0x8400_941f;
 const SUBVOL_GETFLAGS: libc::Ioctl = 0x8008_9419;
 /// `BTRFS_IOC_SUBVOL_SETFLAGS`: `_IOW(0x94, 26, __u64)`.
 const SUBVOL_SETFLAGS: libc::Ioctl = 0x4008_941a;
-/// `BTRFS_SUBVOL_RDONLY`.
 const SUBVOL_RDONLY: u64 = 0x2;
 /// `GET_SUBVOL_INFO` reports root-item flags, not the CREATE/GETFLAGS flags.
 const ROOT_SUBVOL_RDONLY: u64 = 1;
@@ -214,12 +213,10 @@ fn copy_name(dst: &mut [u8], name: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether `path` lives on Btrfs.
 pub fn is_btrfs(path: &Path) -> io::Result<bool> {
     Ok(sys::statfs_type(path)? == sys::BTRFS_SUPER_MAGIC)
 }
 
-/// Whether `path` is the root of a Btrfs subvolume.
 pub fn is_subvolume(path: &Path) -> io::Result<bool> {
     Ok(is_btrfs(path)? && fs::symlink_metadata(path)?.ino() == SUBVOL_ROOT_INO)
 }

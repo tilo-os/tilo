@@ -56,7 +56,6 @@ impl Widget for Field {
         self.focused = focused;
     }
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        // Named by its id, as a field's node is.
         let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::TextInput)
             .with_action_target(self.id.clone());
         node.name = Some(self.id.clone());
@@ -349,7 +348,6 @@ impl ui::search::SearchProvider for Service {
 
 #[derive(Default)]
 struct SearchLog {
-    /// Each query the desktop's search asked the app.
     asked: Vec<String>,
     /// The app has taken the query in.
     answered: bool,
@@ -834,7 +832,6 @@ fn one_click_in_an_inactive_window_gives_the_control_under_it_the_keyboard() {
                 ElementState::Pressed,
                 MouseButton::Left,
             ));
-        // The page's focus leaving its text editor for the canvas.
         desk.driver
             .send_host_event(&WindowEvent::Ime(ui::winit::event::Ime::Disabled));
         desk.driver.send_host_event(&WindowEvent::Focused(true));

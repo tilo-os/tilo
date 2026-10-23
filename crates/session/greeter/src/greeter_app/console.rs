@@ -556,7 +556,6 @@ mod tests {
             }
         }
 
-        // The surface runs the same handler as the console.
         app.phase = AuthPhase::Idle;
         let resources = ui::resources::resources(&app, &AutoCommit::new());
         let encoded = ui::tilo_actions::door::resolve(

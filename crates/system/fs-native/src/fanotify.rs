@@ -93,7 +93,6 @@ pub enum FidKind {
     Object,
     /// Its parent directory, optionally with the entry name.
     Parent,
-    /// The source directory entry of a `FAN_RENAME`.
     RenameFrom,
     /// The target directory entry of a `FAN_RENAME`.
     RenameTo,
@@ -149,7 +148,6 @@ impl Event {
     }
 }
 
-/// A fanotify group.
 #[derive(Debug)]
 pub struct Group {
     fd: OwnedFd,
@@ -381,7 +379,6 @@ mod tests {
 
     #[test]
     fn fanotify_records_parse_strictly_and_deny_errno_is_encoded() {
-        // Phase `parses_dfid_name_and_range_records`.
         {
             let mut fid = Vec::new();
             fid.push(INFO_DFID_NAME);
@@ -416,12 +413,10 @@ mod tests {
             assert_eq!(n.unwrap(), "hello");
             assert_eq!(ev.range(), Some((4096, 512)));
         }
-        // Phase `rejects_truncated_events`.
         {
             let buf = record(64, FAN_CREATE, FAN_NOFD, &[]);
             assert!(parse_events(&buf).is_err());
         }
-        // Phase `deny_errno_encodes_errno_in_the_top_byte`.
         {
             assert_eq!(deny_errno(libc::EIO), FAN_DENY | (5 << 24));
         }

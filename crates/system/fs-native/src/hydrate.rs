@@ -998,7 +998,6 @@ mod tests {
 
     #[test]
     fn residency_xattrs_round_trip_and_fills_align_to_granules() {
-        // Phase `residency_xattr_round_trips`.
         {
             let mut missing = RangeSet::full(1000);
             missing.remove(0..100);
@@ -1009,7 +1008,6 @@ mod tests {
             assert_eq!(size, 1000);
             assert_eq!(back, missing);
         }
-        // Phase `fills_are_rounded_to_the_granule_and_clipped_to_the_file`.
         {
             assert_eq!(align_range(10..20, 4096, 1 << 20), 0..4096);
             assert_eq!(align_range(5000..9000, 4096, 1 << 20), 4096..12288);
@@ -1042,9 +1040,7 @@ mod readahead_tests {
             plan_readahead(&cfg, &mut st, &(2048..3072)),
             Some(6144..11264)
         );
-        // A seek resets it.
         assert_eq!(plan_readahead(&cfg, &mut st, &(500_000..501_024)), None);
-        // The window is capped.
         let mut last = None;
         let mut at = 501_024;
         for _ in 0..10 {
@@ -1060,7 +1056,6 @@ mod readahead_tests {
             r.end.saturating_sub(at) <= 64 * 1024,
             "window capped: {r:?}"
         );
-        // Disabled.
         let off = HydratorConfig {
             readahead_max: 0,
             ..cfg

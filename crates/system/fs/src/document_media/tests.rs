@@ -25,7 +25,6 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
         assert!(media.contains(&photos, hash).await);
         assert_eq!(media.len_of(&photos, hash).await, Some(8));
 
-        // Another app in the room may be handed the content by hash.
         assert!(media.contains(&scope("room-1", "so.tilo.chat"), hash).await);
 
         // Another room: the bytes are right there, and still unreadable, because
@@ -404,7 +403,6 @@ impl DeviceHarness {
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("fs-blobs.sock");
-        // The in-memory store spawns its actor on the ambient runtime.
         let daemon_store = {
             let _guard = runtime.enter();
             Arc::new(ContentStore::memory())

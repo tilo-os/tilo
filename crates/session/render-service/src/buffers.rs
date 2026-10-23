@@ -39,7 +39,6 @@ pub struct Dmabuf {
     _bo: gbm::BufferObject<()>,
 }
 
-/// One buffer and what it holds.
 pub struct Buffer {
     pub memory: Memory,
     /// The app holds it (attached, or not yet released by the compositor).
@@ -97,10 +96,6 @@ pub fn dmabuf_format(opaque: bool, accepted: &[DmabufFormat]) -> Option<DmabufFo
 impl BufferSet {
     /// [`BUFFERS`] dma-bufs of `width` × `height` in `format`, imported on
     /// `device`.
-    ///
-    /// # Errors
-    ///
-    /// When GBM or the import fails.
     #[cfg(target_os = "linux")]
     pub fn dmabufs(
         (device, allocator): (&vello::wgpu::Device, &gbm::Device<std::fs::File>),

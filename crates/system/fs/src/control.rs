@@ -408,10 +408,6 @@ impl Client {
     }
 
     /// Block until the workspace changes (a server-pushed `Changed`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the connection is lost or a malformed frame is read.
     pub async fn wait_changed(&mut self) -> std::io::Result<()> {
         loop {
             if matches!(read_msg(&mut self.stream).await?, Resp::Changed) {

@@ -73,7 +73,6 @@ const MAX_NAMESPACE_BYTES: usize = 64 * 1024 * 1024;
 const TARGET_FRAME_BYTES: usize = 1024 * 1024;
 /// Ranges in one reconciliation request.
 pub const MAX_RECONCILE_RANGES: usize = 256;
-/// Streams in one pull request.
 pub const MAX_PULL_STREAMS: usize = 1024;
 /// Receipts in one request.
 pub const MAX_REPLICA_ACKS: usize = 256;

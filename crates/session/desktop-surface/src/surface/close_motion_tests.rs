@@ -81,7 +81,6 @@ impl Desk {
             now: ui::time::now(),
         };
         strip.handle.focus_tab(strip.windows[focus].1);
-        // The reveal glides there.
         strip.frames(40);
         strip
     }

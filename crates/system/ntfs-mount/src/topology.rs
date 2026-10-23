@@ -100,10 +100,6 @@ fn is_host_bridge(dir: &Path) -> bool {
 }
 
 /// Read the topology of block device `name` (`sdb1`, `nvme0n1p3`).
-///
-/// # Errors
-///
-/// Returns the I/O error if the device is not present under `sys_root`.
 pub fn read(sys_root: &Path, name: &str) -> io::Result<Topology> {
     let device = fs::canonicalize(sys_root.join("class/block").join(name))?;
     let root = fs::canonicalize(sys_root)?;

@@ -17,7 +17,6 @@ pub enum SerializedDocumentSchema {
     TiloDoc,
 }
 
-/// How a record's content is owned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordContentKind {
     /// Bytes nobody interprets. Restoring a version puts its bytes back.

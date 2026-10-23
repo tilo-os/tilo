@@ -151,9 +151,7 @@ struct Parts {
     authors: BTreeMap<u64, String>,
     records: Vec<(TabId, String)>,
     workspaces: Vec<Workspace>,
-    /// Strips by the workspace they name.
     strips: HashMap<Option<u64>, Vec<(f64, u64, Strip)>>,
-    /// Groups by the strip they name.
     groups: HashMap<Option<u64>, Vec<(f64, u64, GroupId)>>,
     /// Windows by the group they name.
     windows: HashMap<u64, Vec<(f64, u64, Tab)>>,

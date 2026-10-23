@@ -70,7 +70,6 @@ impl Display {
 /// The per-device assignment of window groups to monitors.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutputPartition {
-    /// The monitor each group is shown on.
     #[serde(default, deserialize_with = "deserialize_id_btree_map")]
     pub home: BTreeMap<GroupId, String>,
     /// Groups moved off a monitor that went away, and that monitor. They
@@ -109,7 +108,6 @@ impl OutputPartition {
             .map(|d| d.monitor.as_str())
     }
 
-    /// The output `monitor` is connected as, if it is.
     fn output_of(&self, monitor: &str) -> Option<u32> {
         self.displays
             .iter()
@@ -193,7 +191,6 @@ impl OutputPartition {
         self.focused = Some(monitor);
     }
 
-    /// The group last focused on `display` in `strip`.
     fn last_active_on(&self, display: u32, strip: StripId) -> Option<GroupId> {
         let monitor = self.monitor_of(display)?;
         self.last_active.get(&(monitor.to_owned(), strip)).copied()
@@ -441,7 +438,6 @@ mod tests {
         p.reconcile(&ws, &docked());
         home(&mut p, &[(1, 0), (2, 1)]);
         p.reconcile(&ws, &docked()[..1]);
-        // The person moves it again on the one remaining display.
         assert!(p.move_group(&ws, 2, 0));
         p.reconcile(&ws, &docked());
         assert_eq!(p.display_of(2), Some(0));

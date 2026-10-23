@@ -123,7 +123,6 @@ impl Default for DriveConfig {
 }
 
 impl DriveConfig {
-    /// The whole of My Drive.
     pub fn my_drive() -> Self {
         Self {
             api: DEFAULT_API.to_owned(),
@@ -135,7 +134,6 @@ impl DriveConfig {
         }
     }
 
-    /// The whole of the shared drive `drive_id`.
     pub fn shared_drive(drive_id: impl Into<String>) -> Self {
         Self {
             shared_drive: Some(drive_id.into()),
@@ -280,8 +278,6 @@ impl Inner {
         self.folders.lock_recover().insert(id.to_owned(), parents);
     }
 
-    // --- HTTP -------------------------------------------------------------
-
     pub(crate) fn url(&self, segments: &[&str], query: &[(&str, &str)]) -> Result<Url> {
         let mut url =
             Url::parse(&self.config.api).map_err(|_| Error::InvalidResponse("api url"))?;
@@ -411,7 +407,6 @@ impl Inner {
         scope
     }
 
-    /// One `files.list` page for `query`.
     pub(crate) fn list_page(&self, query: &str, page: Option<&str>) -> Result<FileList> {
         let fields = format!("nextPageToken,files({})", api::FILE_FIELDS);
         let mut params = self.scope();

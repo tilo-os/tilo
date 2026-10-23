@@ -31,10 +31,6 @@ impl WorkspaceViewRequest {
         }
     }
     /// Check that the requested workspace is present in `tree`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the workspace is unavailable.
     pub fn validate(&self, tree: &DesktopTree) -> Result<(), String> {
         tree.workspaces
             .iter()

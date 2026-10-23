@@ -62,8 +62,6 @@ pub const STATUS_DOT: f64 = GLYPH / 2.0;
 /// [`control_fill`], the one definition every shell Control paints with.
 const CONTROL_FLOOR_LIFT_T: f32 = 0.35;
 
-// ---------- the Control role, painted once ----------
-
 /// A Control's fill: the shared hover tier when hovered, otherwise a quiet
 /// floor on the same ramp so tiles and rows read as surfaces rather than as
 /// bare text on the panel. Both states sit on one ordered ramp, so hover is
@@ -106,8 +104,6 @@ pub fn paint_control(
         );
     }
 }
-
-// ---------- row geometry: everything sits on the row's centre line ----------
 
 /// A `glyph`-sized box on `row`'s leading `inset`, centred on its centre
 /// line.

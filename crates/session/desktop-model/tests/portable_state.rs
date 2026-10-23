@@ -1,5 +1,3 @@
-//! A persisted desktop loads with its ids, defaults and local view intact.
-
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 use serde_json::json;
 use tilo_desktop_model::DropTarget;

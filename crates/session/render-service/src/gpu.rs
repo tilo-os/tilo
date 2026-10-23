@@ -35,10 +35,6 @@ impl Gpu {
     /// Open the device the compositor composites on, whose render node is
     /// `render_node`, build every vello pipeline now (the service exists to
     /// have them warm), and open a GBM allocator on the same node.
-    ///
-    /// # Errors
-    ///
-    /// When no adapter, renderer or allocator can be had.
     pub fn open(render_node: Option<&std::path::Path>) -> Result<Self, GpuError> {
         let mut context = ui::gpu::RenderContext::new();
         let index = pollster::block_on(context.device(None)).ok_or(GpuError::NoAdapter)?;

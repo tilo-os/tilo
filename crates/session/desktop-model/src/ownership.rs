@@ -50,9 +50,6 @@ pub struct SharedDesktop {
 
 impl SharedDesktop {
     /// The shared desktop in the JSON text a room's desktop record holds.
-    ///
-    /// # Errors
-    /// The text is not a shared desktop.
     pub fn parse(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|error| format!("read the shared desktop: {error}"))
     }
@@ -335,14 +332,12 @@ mod tests {
     #[test]
     fn closing_moving_and_reordering_ones_own_windows_touches_nobody_else() {
         let mut after = desktop();
-        // Ada moves her window past both of Ben's, then into her own strip.
         let lounge = strip_mut(&mut after, 10);
         lounge.window_groups.rotate_left(1);
         assert!(acts(&after, ADA).is_empty());
         let mine = strip_mut(&mut after, 10).window_groups.remove(2);
         strip_mut(&mut after, 20).window_groups.push(mine);
         assert!(acts(&after, ADA).is_empty());
-        // Then closes it, and opens another.
         strip_mut(&mut after, 20).window_groups.clear();
         strip_mut(&mut after, 20)
             .window_groups
@@ -364,7 +359,6 @@ mod tests {
                 owner: Some(BEN.into()),
             }]
         );
-        // Ben closing his own is his to do.
         assert!(acts(&after, BEN).is_empty());
     }
 
@@ -409,7 +403,6 @@ mod tests {
             acts(&removed, ADA),
             vec![(10, Act::Close), (2, Act::Close), (3, Act::Close)]
         );
-        // Ada's own strip is hers to remove and rename.
         let mut hers = desktop();
         strip_mut(&mut hers, 20).name = "Ada's corner".into();
         assert!(acts(&hers, ADA).is_empty());
@@ -423,7 +416,6 @@ mod tests {
         let mut unclaimed = desktop();
         unclaimed.authors.remove(&3);
         assert_eq!(acts(&unclaimed, ADA), vec![(3, Act::Attribute)]);
-        // Claiming the room's strip is one too.
         let mut strip = desktop();
         strip.authors.insert(10, ADA.into());
         assert_eq!(acts(&strip, ADA), vec![(10, Act::Attribute)]);

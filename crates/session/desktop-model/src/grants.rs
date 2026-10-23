@@ -327,7 +327,6 @@ impl PolicyEdit {
             && self.sandbox_revoked.is_empty()
     }
 
-    /// The same edit, with `other`'s too.
     #[must_use]
     pub fn and(mut self, other: Self) -> Self {
         self.members.extend(other.members);

@@ -1,4 +1,3 @@
-//! Real `CloudVolume` inode operations against an explicitly opted-in local twin.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

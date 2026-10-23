@@ -69,11 +69,6 @@ impl ContentStore {
     /// The store clones its own file into `target` when the filesystem can
     /// share extents, and copies otherwise; either way the result is a
     /// separate file, so later writes to it never reach the store.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `target` is not absolute or already exists, the
-    /// blob is absent or incomplete, or the write fails.
     pub async fn export_file(&self, hash: Hash, target: &Path) -> Result<u64> {
         anyhow::ensure!(
             target.is_absolute(),
@@ -116,10 +111,6 @@ impl ContentStore {
 
     /// Flush and close the store so another process may open the same
     /// directory. Pending writes are durable once this returns.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the final flush fails.
     pub async fn close(self) -> Result<()> {
         self.store().sync_db().await?;
         self.store().shutdown().await?;
@@ -134,7 +125,6 @@ mod tests {
 
     #[tokio::test]
     async fn files_round_trip_through_a_reopenable_store_without_clobbering_exports() {
-        // Phase `a_file_round_trips_through_the_store`.
         {
             let dir = tempfile::tempdir().unwrap();
             let store = ContentStore::open(dir.path().join("store")).await.unwrap();
@@ -162,7 +152,6 @@ mod tests {
             assert_eq!(std::fs::read(&again).unwrap(), bytes);
             store.close().await.unwrap();
         }
-        // Phase `export_refuses_to_replace_an_existing_file`.
         {
             let dir = tempfile::tempdir().unwrap();
             let store = ContentStore::open(dir.path().join("store")).await.unwrap();
@@ -173,7 +162,6 @@ mod tests {
             assert_eq!(std::fs::read(&target).unwrap(), b"mine");
             store.close().await.unwrap();
         }
-        // Phase `a_closed_store_can_be_reopened_with_its_blobs`.
         {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("store");
@@ -209,13 +197,11 @@ mod tests {
             let source = dir.path().join(format!("f{n}"));
             std::fs::write(&source, vec![n; 70_000]).unwrap();
             imported.push(store.ingest_file(&source).await.unwrap());
-            // The import left its sync to the group.
             assert_eq!(owed_sync(&store), (1, true));
         }
         store.end_deferred_sync().await.unwrap();
         assert_eq!(owed_sync(&store), (0, false));
 
-        // Outside a group an import owes nothing once it returns.
         let source = dir.path().join("alone");
         std::fs::write(&source, vec![9u8; 70_000]).unwrap();
         imported.push(store.ingest_file(&source).await.unwrap());

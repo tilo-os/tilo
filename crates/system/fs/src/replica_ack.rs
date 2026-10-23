@@ -68,10 +68,6 @@ pub enum ReplicaAckResponseV1 {
 
 impl ReplicaAckRequestV1 {
     /// Construct a validated request with a fresh nonce.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on randomness failure or invalid scope/revision.
     pub fn new(workspace_id: Uuid, revision: ContentRevisionV1) -> Result<Self, ReplicaAckError> {
         let mut nonce = [0_u8; 32];
         SysRng
@@ -107,10 +103,6 @@ impl ReplicaAckRequestV1 {
 
 impl ReplicaAckV1 {
     /// Sign a receipt for an exact request and actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid request, wrong key, or signing failure.
     pub fn signed(
         request: &ReplicaAckRequestV1,
         actor: FileActor,
@@ -149,10 +141,6 @@ impl ReplicaAckV1 {
     }
 
     /// Verify this receipt against the exact request and authenticated peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when request binding or receipt verification fails.
     pub fn verify_for(
         &self,
         request: &ReplicaAckRequestV1,
@@ -175,10 +163,6 @@ impl ReplicaAckV1 {
     /// capability-gated record protocol; the enclosing share session supplies
     /// the record scope, while the random nonce keeps independently generated
     /// receipts distinct.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid scope, identity, freshness, or signature.
     pub fn verify_claim(
         &self,
         peer: &AuthenticatedFsPeer,
@@ -230,10 +214,6 @@ impl ReplicaAckV1 {
     }
 
     /// Encode this receipt canonically.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when canonical encoding fails.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, ReplicaAckError> {
         Ok(canonical_bytes(self)?)
     }
