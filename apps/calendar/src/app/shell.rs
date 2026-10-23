@@ -87,13 +87,11 @@ pub(crate) fn sidebar(places: &NavFeed, month: &DateFeed) -> Element {
             let (w, h) = (f64::from(size.width), f64::from(size.height));
             let inset = f64::from(ui::tokens::Spacing::BASE.s3);
             let inner = (w - 2.0 * inset).max(0.0);
-            let measured = ctx.measure(
-                1,
-                taffy::Size {
-                    width: ui::widget::MeasureConstraint::Exact(ui::num::f32_of_f64(inner)),
-                    height: ui::widget::MeasureConstraint::Intrinsic,
-                },
-            )?;
+            let constraint = taffy::Size {
+                width: ui::widget::MeasureConstraint::Exact(ui::num::f32_of_f64(inner)),
+                height: ui::widget::MeasureConstraint::Intrinsic,
+            };
+            let measured = ctx.measure(1, constraint)?;
             let picker_h = f64::from(measured.size.height).min((h - 2.0 * inset).max(0.0));
             if picker_h <= 0.0 {
                 ctx.place(0, Rect::new(0.0, 0.0, w, h))?;
