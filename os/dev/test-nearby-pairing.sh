@@ -287,8 +287,32 @@ wait_onboarding() {
   done
   die "$each: the compositor did not reach first-login onboarding"
 }
+# A session the gate drives over ssh for minutes without touching its keyboard
+# locks after its idle timeout like any other. A program in it holds an idle
+# block lock as the person, the way a presentation tool does. The session
+# honours it; the lock policy and its timeout stay as they are.
+hold_awake() {
+  local each=$1
+  "$each" ssh "systemd-run --user --quiet --unit=tilo-nearby-idle-hold \
+      systemd-inhibit --what=idle --mode=block --who='nearby pairing gate' \
+        --why='drives this session over its control socket' sleep infinity" \
+    || die "$each could not take an idle lock for the rest of the run"
+  for attempt in $(seq 1 60); do
+    session_log "$each" | grep -F 'kept awake by another program' | grep -F 'nearby pairing gate' \
+      > "$out/$each-idle-hold.txt" && break
+    [ "$attempt" -lt 60 ] || {
+      "$each" ssh 'systemd-inhibit --list --no-pager' > "$out/$each-inhibitors.txt" 2>&1 || true
+      die "$each's session never counted the idle lock; see $each-inhibitors.txt"
+    }
+    sleep 2
+  done
+  note "$each's session is held awake for the rest of the run"
+}
+
 wait_onboarding vm_a
 wait_onboarding vm_b
+# B waits at onboarding while A creates its identity, then pairs.
+hold_awake vm_b
 
 # A: the ordinary Create path, exactly as the release gate makes it.
 vm_a test native-atspi-smoke.sh oobe-actions
@@ -305,24 +329,8 @@ note "VM A holds identity $identity"
 if [ "$wake" = 1 ] || [ "$unlock" = 1 ]; then
   # From here on the gate drives A over ssh and, in the --wake and --unlock
   # phases, over its control socket, for many minutes without touching its
-  # keyboard; A's session locks after its idle timeout like any other. A
-  # program on A holds an idle block lock as the person, the way a
-  # presentation tool does. The session honours it; the lock policy and its
-  # timeout stay as they are.
-  vm_a ssh "systemd-run --user --quiet --unit=tilo-nearby-idle-hold \
-      systemd-inhibit --what=idle --mode=block --who='nearby pairing gate' \
-        --why='drives this session over its control socket' sleep infinity" \
-    || die "A could not take an idle lock for the rest of the run"
-  for attempt in $(seq 1 60); do
-    session_log vm_a | grep -F 'kept awake by another program' | grep -F 'nearby pairing gate' \
-      > "$out/a-idle-hold.txt" && break
-    [ "$attempt" -lt 60 ] || {
-      vm_a ssh 'systemd-inhibit --list --no-pager' > "$out/a-inhibitors.txt" 2>&1 || true
-      die "A's session never counted the idle lock; see a-inhibitors.txt"
-    }
-    sleep 2
-  done
-  note "A's session is held awake for the rest of the run"
+  # keyboard.
+  hold_awake vm_a
 fi
 
 # --- the image owns the enrollment layout --------------------------------------
