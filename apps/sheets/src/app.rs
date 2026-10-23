@@ -42,6 +42,7 @@ use ui::widget::{
 
 mod annotations;
 mod chrome;
+mod content_files;
 mod overlays;
 #[cfg(test)]
 mod polish_tests;
@@ -460,6 +461,9 @@ pub struct SheetsApp {
     /// palette's and an agent's. `None` until the framework attaches the
     /// surface.
     dispatch: Option<ui::framework::Dispatcher<Workbook>>,
+    /// The store the host lends the window: workbooks imported from and
+    /// exported as content are read and kept there.
+    content: Option<ui::framework::content::ContentStore>,
     /// The participants' names, for the authors comments record.
     people: Option<ui::framework::People>,
     /// The search hit or `open` waiting for the next settle to show it.
@@ -576,6 +580,7 @@ impl SheetsApp {
                 palette
             },
             dispatch: None,
+            content: None,
             people: None,
             opening: Rc::default(),
             selection_decls: std::cell::RefCell::default(),
@@ -672,13 +677,11 @@ impl SheetsApp {
         }
         self.workbook = Rc::clone(state);
         self.revision = self.revision.wrapping_add(1);
-        self.sheet_names = state
-            .sheets
-            .values()
-            .map(|sheet| sheet.name.0.clone())
-            .collect();
-        self.sheet_colors = state.sheets.values().map(|sheet| sheet.color).collect();
-        self.sheet_ids = state.sheets.ids().cloned().collect();
+        // A hidden sheet has no tab; its cells still feed formulas.
+        let shown = || state.sheets.iter().filter(|(_, sheet)| !sheet.hidden);
+        self.sheet_names = shown().map(|(_, sheet)| sheet.name.0.clone()).collect();
+        self.sheet_colors = shown().map(|(_, sheet)| sheet.color).collect();
+        self.sheet_ids = shown().map(|(id, _)| id.clone()).collect();
         self.doc_settings = state.settings;
         self.pending.redraw = true;
     }
@@ -1182,7 +1185,16 @@ impl SheetsApp {
         let no_sheet = Id::default();
         let (snap, charts, comments) = match &current {
             Some((sheet, layout)) => (
-                sheet.snapshot_in(layout),
+                {
+                    // Formulas reading other sheets evaluate with the workbook.
+                    let snap = sheet.snapshot_in(layout);
+                    match self.active_sheet_id() {
+                        Some(id) if crate::formula::Book::needed(&snap.raw) => {
+                            state.snapshot_of(&id).unwrap_or(snap)
+                        }
+                        _ => snap,
+                    }
+                },
                 sheet.chart_snapshots(layout),
                 crate::workbook::Sheet::comment_snapshots(
                     self.sheet_ids.get(self.active_sheet).unwrap_or(&no_sheet),
@@ -1197,7 +1209,7 @@ impl SheetsApp {
         // The dock takes its height from the annotations, so the sheet
         // re-lays out whenever they change.
         self.relayout();
-        let values = formula::recalculate(&snap.raw);
+        let values = formula::recalculate_snapshot(&snap);
 
         // Effective per-cell formats: an explicit cell format wins; a
         // formula cell with no explicit format inherits from its operands.
@@ -1674,14 +1686,25 @@ impl SheetsApp {
             E::ExportXlsx { path } => self.export(Interchange::Xlsx, path, cx),
             E::ExportOds { path } => self.export(Interchange::Ods, path, cx),
             E::ReadCells { sheet, range } => {
+                let id = self
+                    .workbook
+                    .sheet_key(&Id::from_raw(sheet))
+                    .map_err(|refusal| refusal.0)?;
                 let snapshot = self
                     .workbook
-                    .sheet(&Id::from_raw(sheet))
-                    .ok_or_else(|| "no such sheet".to_owned())?
-                    .snapshot();
-                crate::cell_actions::read(&snapshot, range.as_deref())
-                    .map(ui::framework::Effected::value)
+                    .snapshot_of(&id)
+                    .ok_or_else(|| "no such sheet".to_owned())?;
+                crate::cell_actions::read(&snapshot, range.as_deref()).map(|mut read| {
+                    if let Some(fields) = read.as_object_mut() {
+                        fields.insert("item".into(), id.as_str().into());
+                    }
+                    ui::framework::Effected::value(read)
+                })
             }
+            E::ImportXlsxContent { content, title } => {
+                self.import_xlsx_content(&content, title, cx)
+            }
+            E::ExportXlsxContent => self.export_xlsx_content(),
             E::Commands => {
                 let resources = self.published();
                 self.open_palette_with(&resources);
@@ -1820,7 +1843,7 @@ impl SheetsApp {
         source: Option<String>,
         cx: &ui::framework::EffectCx<Workbook, Self>,
     ) -> ui::framework::EffectAnswer {
-        let built = tables.and_then(|tables| self.import_action(tables, source));
+        let built = tables.and_then(|tables| self.import_action(tables, source, None));
         let (invoke, total) = match built {
             Ok(built) => built,
             Err(error) => return self.failed(error),
@@ -1849,16 +1872,10 @@ impl SheetsApp {
         let sheets: Vec<crate::workbook::SheetSnapshot> = match format {
             Interchange::Csv => active
                 .as_ref()
-                .and_then(|id| self.workbook.sheet(id))
-                .map(crate::workbook::Sheet::snapshot)
+                .and_then(|id| self.workbook.snapshot_of(id))
                 .into_iter()
                 .collect(),
-            Interchange::Xlsx | Interchange::Ods => self
-                .workbook
-                .sheets
-                .values()
-                .map(crate::workbook::Sheet::snapshot)
-                .collect(),
+            Interchange::Xlsx | Interchange::Ods => self.workbook_snapshots(),
         };
         let Some(name) = active
             .as_ref()
@@ -1925,6 +1942,7 @@ impl SheetsApp {
         &self,
         tables: Vec<crate::xlsx::SheetTable>,
         source: Option<String>,
+        title: Option<String>,
     ) -> Result<(Invoke<Workbook>, usize), String> {
         use crate::resource::{CellWrite, ImportedSheet};
         let cur = self.default_currency();
@@ -1970,9 +1988,14 @@ impl SheetsApp {
             sheets.push(ImportedSheet {
                 name,
                 cells: writes.into_iter().map(|(_, write)| write).collect(),
+                hidden: table.hidden,
             });
         }
-        let invoke = Workbook::IMPORT_SHEETS.with(verbs::ImportSheets { sheets, source });
+        let invoke = Workbook::IMPORT_SHEETS.with(verbs::ImportSheets {
+            sheets,
+            source,
+            title,
+        });
         Ok((invoke, total))
     }
 
@@ -2064,6 +2087,7 @@ impl SheetsApp {
                 }
                 Ok(vec![crate::xlsx::SheetTable {
                     name: csv_name.to_string(),
+                    hidden: false,
                     rows,
                 }])
             }
@@ -2106,7 +2130,7 @@ impl SheetsApp {
     }
 
     fn table_from_snapshot(snap: &crate::workbook::SheetSnapshot) -> crate::xlsx::SheetTable {
-        let values = formula::recalculate(&snap.raw);
+        let values = formula::recalculate_snapshot(snap);
         let mut fmt = snap.fmt.clone();
         for (addr, raw) in &snap.raw {
             if !snap.fmt.contains_key(addr)
@@ -2126,7 +2150,7 @@ impl SheetsApp {
         doc: &mut Edits<'_>,
         tables: Vec<crate::xlsx::SheetTable>,
     ) -> Result<usize, String> {
-        let (invoke, total) = self.import_action(tables, None)?;
+        let (invoke, total) = self.import_action(tables, None, None)?;
         if !self.submit(doc, invoke) {
             return Err(self.status.clone());
         }
@@ -2153,8 +2177,10 @@ impl SheetsApp {
         self.submit(
             doc,
             Workbook::NEW_SHEET.with(verbs::NewSheet {
-                name: None,
-                after: None,
+                new: crate::resource::SheetSpec {
+                    after: None,
+                    ..crate::resource::SheetSpec::default()
+                },
             }),
         );
         // The active sheet tab is presentation, not a document change. The
@@ -4210,8 +4236,10 @@ impl SheetsApp {
                 if self.submit(
                     doc,
                     Workbook::NEW_SHEET.with(verbs::NewSheet {
-                        name: None,
-                        after: Some(id),
+                        new: crate::resource::SheetSpec {
+                            after: Some(id),
+                            ..crate::resource::SheetSpec::default()
+                        },
                     }),
                 ) {
                     self.active_sheet = idx + 1;
@@ -5421,6 +5449,7 @@ pub(crate) mod tests {
             let mut app = attached_app(&doc);
             let table = crate::xlsx::SheetTable {
                 name: "sales".into(),
+                hidden: false,
                 rows: vec![vec![Some(crate::xlsx::ImportedCell {
                     raw: "Region".into(),
                     format: CellFormat::General,

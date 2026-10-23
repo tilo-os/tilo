@@ -68,6 +68,27 @@ pub enum SheetsEffect {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
     },
+    /// Import Excel workbook from content
+    ///
+    /// Adds every sheet of an `.xlsx` workbook the room holds as content (an
+    /// attachment, a shared file, an export), with its formulas, money,
+    /// percent and date formats and hidden sheets; a new workbook's untouched
+    /// blank sheet gives way to them. The same content imported again is
+    /// not added twice.
+    #[effect(returns, audience = "agents")]
+    ImportXlsxContent {
+        #[param(content, "The workbook's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param("The workbook's title, e.g. the file's name, when it has none yet")]
+        title: Option<String>,
+    },
+    /// Export Excel workbook as content
+    ///
+    /// Keeps every sheet as an `.xlsx` workbook in the content store, with no
+    /// file to write: the caller reads, attaches or sends it by the content
+    /// address it answers.
+    #[effect(content, kind = "read", idempotent)]
+    ExportXlsxContent,
     /// Open command palette
     #[effect(view)]
     Commands,
@@ -88,7 +109,7 @@ pub enum SheetsEffect {
     /// the formulas and the bold cells by reference.
     #[effect(view, returns, audience = "agents")]
     ReadCells {
-        #[param("The sheet's id")]
+        #[param("The sheet's id or name")]
         sheet: String,
         #[param("Cell or range, e.g. A1:D6; every used cell when none")]
         range: Option<String>,

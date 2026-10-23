@@ -6,7 +6,7 @@
 //! form, and a small set of named styles for currency/percent/date cells,
 //! declared in `styles.xml`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -33,7 +33,7 @@ pub fn parse_ods(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     let parsed = OdsCodec::parse(bytes)?;
     // ODF types dates explicitly (they arrive as ISO text), so no style marks
     // a number as a date.
-    crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeSet::new())
+    crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeMap::new())
 }
 
 /// Write tables to an `.ods` document.
@@ -149,6 +149,7 @@ mod tests {
     fn sample_table() -> SheetTable {
         SheetTable {
             name: "Budget".into(),
+            hidden: false,
             rows: vec![
                 vec![
                     Some(cell("Item", CellFormat::Text)),
@@ -222,6 +223,7 @@ mod tests {
             ] {
                 let table = SheetTable {
                     name: "S".into(),
+                    hidden: false,
                     rows: vec![vec![Some(cell("12.5", CellFormat::Currency(currency)))]],
                 };
                 let xml = written_part(std::slice::from_ref(&table), "content.xml");

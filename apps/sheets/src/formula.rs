@@ -2,7 +2,8 @@
 //!
 //! Supports a practical subset of the spreadsheet formula language:
 //!   * literals: numbers, `"strings"`, `TRUE` / `FALSE`
-//!   * cell refs `A1`, absolute `$A$1`, and ranges `A1:B3`
+//!   * cell refs `A1`, absolute `$A$1`, and ranges `A1:B3`, on this sheet
+//!     or another one of the workbook (`Rates!A2:B5`, `'Q3 data'!B2`)
 //!   * arithmetic `+ - * / ^` and unary `-`/`+`
 //!   * text concatenation `&`
 //!   * comparisons `= <> < > <= >=`
@@ -30,6 +31,9 @@ use std::hash::BuildHasher;
 use ui::num::f64_of_usize;
 
 use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
+
+mod book;
+pub use book::{Book, recalculate_in_book, recalculate_snapshot};
 
 // ---------------------------------------------------------------------------
 // Character cursor
@@ -195,7 +199,8 @@ pub struct RefSpan {
 /// String literals are skipped, and an identifier immediately followed by `(`
 /// is treated as a function name rather than a reference (so `SUM` in
 /// `SUM(A1:A3)` is not tinted, but `A1:A3` is). Numeric exponents like `1e3`
-/// are never mistaken for references.
+/// are never mistaken for references. A reference to another sheet
+/// (`Rates!A2`) names no cell of this one and is not returned.
 pub fn references(body: &str) -> Vec<RefSpan> {
     let chars: Vec<char> = body.chars().collect();
     let mut scan = Scan::new(&chars);
@@ -205,6 +210,10 @@ pub fn references(body: &str) -> Vec<RefSpan> {
             scan.bump();
             scan.skip_while(|c| c != '"');
             scan.bump(); // closing quote, when the literal is terminated
+            continue;
+        }
+        if sheet_prefix(&mut scan).is_some() {
+            skip_reference(&mut scan);
             continue;
         }
         if ch != '$' && !ch.is_ascii_alphabetic() {
@@ -300,7 +309,7 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
         return raw.to_string();
     }
     let shift = |token: RefToken| token.render(token.offset(dcol, drow));
-    rewrite_refs(raw, |first, second| match second {
+    rewrite_refs(raw, true, |first, second| match second {
         Some((sep, second)) => format!("{}{sep}{}", shift(first), shift(second)),
         None => shift(first),
     })
@@ -321,7 +330,7 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
 /// preserve formula relationships in the same replayable action that moves the
 /// cells, rather than leaving stale coordinates for a later UI-only repair.
 pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
-    rewrite_refs(raw, |first, second| {
+    rewrite_refs(raw, false, |first, second| {
         let moved = match second {
             Some((sep, second)) => edit
                 .map_range(first.addr, second.addr)
@@ -334,10 +343,14 @@ pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
 
 /// Rewrite every reference in a formula through `rewrite`, which receives a
 /// lone reference or both ends of a range with the separator between them.
-/// String literals, function names, and numeric exponents (`1e3`) are copied
-/// verbatim; non-formula input (no leading `=`) is returned unchanged.
+/// String literals, sheet names, function names, and numeric exponents
+/// (`1e3`) are copied verbatim; non-formula input (no leading `=`) is
+/// returned unchanged. A reference to another sheet is rewritten only when
+/// `foreign` is set: a copy shifts it as any other, but rows and columns
+/// inserted on this sheet do not move it.
 fn rewrite_refs(
     raw: &str,
+    foreign: bool,
     mut rewrite: impl FnMut(RefToken, Option<(&str, RefToken)>) -> String,
 ) -> String {
     let Some(body) = raw.strip_prefix('=') else {
@@ -354,6 +367,15 @@ fn rewrite_refs(
             scan.skip_while(|c| c != '"');
             scan.bump();
             out.push_str(&scan.text_from(start));
+            continue;
+        }
+        if let Some(sheet) = sheet_prefix(&mut scan) {
+            out.push_str(&sheet);
+            if !foreign {
+                let start = scan.pos();
+                skip_reference(&mut scan);
+                out.push_str(&scan.text_from(start));
+            }
             continue;
         }
         if ch != '$' && !ch.is_ascii_alphabetic() {
@@ -391,6 +413,68 @@ fn rewrite_refs(
         out.push_str(&rewrite(first, None));
     }
     out
+}
+
+/// At a sheet name and its `!` (`Rates!`, `'Q3 data'!`), move `scan` past
+/// both and answer the text they span; otherwise leave it and answer `None`.
+fn sheet_prefix(scan: &mut Scan<'_>) -> Option<String> {
+    let start = scan.pos();
+    let mut ahead = *scan;
+    if ahead.peek() == Some('\'') {
+        quoted_sheet(&mut ahead)?;
+    } else {
+        // A name right after a digit is a number's exponent, not a sheet.
+        if ahead
+            .before(start)
+            .is_some_and(|prev| prev.is_ascii_alphanumeric() || prev == '.')
+        {
+            return None;
+        }
+        ahead.skip_while(is_name_char);
+        if ahead.pos() == start || ahead.bump() != Some('!') {
+            return None;
+        }
+    }
+    *scan = ahead;
+    Some(scan.text_from(start))
+}
+
+/// Move `scan` past the reference at it, and the range end after a `:`.
+fn skip_reference(scan: &mut Scan<'_>) {
+    scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+    let mut ahead = *scan;
+    ahead.skip_while(char::is_whitespace);
+    if ahead.peek() == Some(':') {
+        ahead.bump();
+        ahead.skip_while(char::is_whitespace);
+        ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+        *scan = ahead;
+    }
+}
+
+/// Whether `c` may be part of an unquoted name: a function's, a
+/// reference's or a sheet's.
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.'
+}
+
+/// A quoted sheet name and the `!` after it (`'Q3 data'!`), the scan at its
+/// opening quote: the name, a doubled quote standing for one. `None` when
+/// the quote is not closed or no `!` follows.
+fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
+    scan.bump();
+    let mut name = String::new();
+    loop {
+        match scan.bump()? {
+            '\'' if scan.peek() == Some('\'') => {
+                scan.bump();
+                name.push('\'');
+            }
+            '\'' => break,
+            c => name.push(c),
+        }
+    }
+    (scan.bump() == Some('!')).then_some(name)
 }
 
 /// One `A1`/`$A$1`-shaped token, remembering its `$` spelling so a
@@ -484,6 +568,7 @@ enum Token {
     Num(f64),
     Str(String),
     Ident(String), // function name or reference text
+    Sheet(String), // the sheet a reference after it is on: `Rates!`, `'Q3 data'!`
     Op(char),      // + - * / ^ & % ( ) , : and comparison head chars
     Lt,
     Gt,
@@ -500,6 +585,7 @@ impl std::fmt::Display for Token {
             Token::Num(n) => write!(f, "{n}"),
             Token::Str(s) => write!(f, "\"{s}\""),
             Token::Ident(id) => f.write_str(id),
+            Token::Sheet(sheet) => write!(f, "{sheet}!"),
             Token::Op(op) => write!(f, "{op}"),
             Token::Lt => f.write_str("<"),
             Token::Gt => f.write_str(">"),
@@ -532,6 +618,17 @@ impl ParseError {
     fn syntax(problem: impl Into<String>) -> Self {
         Self::new(FormulaError::Error, problem)
     }
+}
+
+/// The sheet a quoted name at `scan` names (`'Q3 data'!`).
+fn quoted_sheet_token(scan: &mut Scan<'_>) -> Result<Token, ParseError> {
+    let name = quoted_sheet(scan).ok_or_else(|| {
+        ParseError::new(
+            FormulaError::Ref,
+            "a quoted sheet name is never closed or has no `!` after it, as in `'Q3 data'!A1`",
+        )
+    })?;
+    Ok(Token::Sheet(name))
 }
 
 fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
@@ -578,11 +675,19 @@ fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
                 out.push(Token::Str(literal));
             }
             '$' | 'A'..='Z' | 'a'..='z' | '_' => {
-                // Identifier: function name or cell reference (may contain $).
+                // Identifier: function name or cell reference (may contain $),
+                // or the name of the sheet the reference after its `!` is on.
                 let start = scan.pos();
-                scan.skip_while(|c| c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.');
-                out.push(Token::Ident(scan.text_from(start)));
+                scan.skip_while(is_name_char);
+                let text = scan.text_from(start);
+                if scan.peek() == Some('!') {
+                    scan.bump();
+                    out.push(Token::Sheet(text));
+                } else {
+                    out.push(Token::Ident(text));
+                }
             }
+            '\'' => out.push(quoted_sheet_token(&mut scan)?),
             '<' => {
                 scan.bump();
                 match scan.peek() {
@@ -635,6 +740,8 @@ enum Expr {
     Bool(bool),
     Ref(Addr),
     Range(Addr, Addr),
+    /// A reference to a sheet the formula cannot reach: `#REF!`.
+    Missing,
     Unary(char, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
@@ -656,14 +763,40 @@ enum BinOp {
     Ge,
 }
 
-struct Parser {
-    tokens: Vec<Token>,
-    pos: usize,
+/// Where a formula is: the column its sheet's cells start at in the
+/// engine's address space, and the sheets it may reach by name (folded),
+/// each with the column its cells start at. A formula read on its own is at
+/// column 0 and reaches no other sheet.
+#[derive(Clone, Copy, Default)]
+struct Place<'a> {
+    base: u32,
+    sheets: Option<&'a HashMap<String, u32>>,
 }
 
-impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+impl Place<'_> {
+    /// `addr` of this place's sheet in the engine's address space; `None`
+    /// past the last column a sheet has.
+    fn at(self, base: u32, (col, row): Addr) -> Option<Addr> {
+        if self.sheets.is_some() && col >= book::SHEET_SPAN {
+            return None;
+        }
+        Some((col.checked_add(base)?, row))
+    }
+}
+
+struct Parser<'a> {
+    tokens: Vec<Token>,
+    pos: usize,
+    place: Place<'a>,
+}
+
+impl<'a> Parser<'a> {
+    fn new(tokens: Vec<Token>, place: Place<'a>) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            place,
+        }
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -698,6 +831,42 @@ impl Parser {
             (_, None) => format!("`{opened}(` is never closed: add `)`"),
             (_, Some(token)) => format!("in `{opened}(…)` `,` or `)` is expected, not `{token}`"),
         })
+    }
+
+    /// The cell or range `id` (and the `:` end after it) names on the sheet
+    /// whose cells start at column `base`.
+    fn reference(&mut self, id: &str, base: u32) -> Result<Expr, ParseError> {
+        if matches!(self.peek(), Some(Token::Op(':'))) {
+            self.next();
+            let Some(Token::Ident(end)) = self.next() else {
+                return Err(ParseError::new(
+                    FormulaError::Ref,
+                    format!("`{id}:` is followed by no cell, as in `A1:B5`"),
+                ));
+            };
+            let place = self.place;
+            let range = a1_to_addr(id)
+                .and_then(|a| place.at(base, a))
+                .zip(a1_to_addr(&end).and_then(|b| place.at(base, b)));
+            let (a, b) = range.ok_or_else(|| {
+                ParseError::new(
+                    FormulaError::Ref,
+                    format!("`{id}:{end}` is not a range of cells such as `A1:B5`"),
+                )
+            })?;
+            return Ok(Expr::Range(a, b));
+        }
+        // Single cell reference; an identifier that isn't a valid A1
+        // reference is an unknown name.
+        let addr = a1_to_addr(id)
+            .and_then(|addr| self.place.at(base, addr))
+            .ok_or_else(|| {
+                ParseError::new(
+                    FormulaError::Name,
+                    format!("`{id}` is not a cell such as `A1` nor a call such as `SUM(…)`"),
+                )
+            })?;
+        Ok(Expr::Ref(addr))
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
@@ -800,6 +969,24 @@ impl Parser {
                     found => Err(Self::unclosed("", found)),
                 }
             }
+            Some(Token::Sheet(sheet)) => {
+                let Some(Token::Ident(id)) = self.next() else {
+                    return Err(ParseError::new(
+                        FormulaError::Ref,
+                        format!("`{sheet}!` is followed by no cell, as in `{sheet}!A1`"),
+                    ));
+                };
+                let base = self
+                    .place
+                    .sheets
+                    .and_then(|sheets| sheets.get(&book::fold(&sheet)).copied());
+                let reference = self.reference(&id, base.unwrap_or_default())?;
+                Ok(if base.is_some() {
+                    reference
+                } else {
+                    Expr::Missing
+                })
+            }
             Some(Token::Ident(id)) => {
                 // Function call?
                 if matches!(self.peek(), Some(Token::Op('('))) {
@@ -828,32 +1015,7 @@ impl Parser {
                     "FALSE" => return Ok(Expr::Bool(false)),
                     _ => {}
                 }
-                // Range A1:B3 ?
-                if matches!(self.peek(), Some(Token::Op(':'))) {
-                    self.next();
-                    let Some(Token::Ident(end)) = self.next() else {
-                        return Err(ParseError::new(
-                            FormulaError::Ref,
-                            format!("`{id}:` is followed by no cell, as in `A1:B5`"),
-                        ));
-                    };
-                    let (a, b) = a1_to_addr(&id).zip(a1_to_addr(&end)).ok_or_else(|| {
-                        ParseError::new(
-                            FormulaError::Ref,
-                            format!("`{id}:{end}` is not a range of cells such as `A1:B5`"),
-                        )
-                    })?;
-                    return Ok(Expr::Range(a, b));
-                }
-                // Single cell reference; an identifier that isn't a valid A1
-                // reference is an unknown name.
-                let addr = a1_to_addr(&id).ok_or_else(|| {
-                    ParseError::new(
-                        FormulaError::Name,
-                        format!("`{id}` is not a cell such as `A1` nor a call such as `SUM(…)`"),
-                    )
-                })?;
-                Ok(Expr::Ref(addr))
+                self.reference(&id, self.place.base)
             }
             None => Err(ParseError::syntax(
                 "the formula ends where a value is expected",
@@ -868,11 +1030,16 @@ impl Parser {
 /// Parse a formula body (without the leading `=`) into an `Expr`. The
 /// returned tree can be evaluated repeatedly against changing cell data.
 fn parse(formula: &str) -> Result<Expr, ParseError> {
+    parse_in(formula, Place::default())
+}
+
+/// [`parse`] of a formula at `place`.
+fn parse_in(formula: &str, place: Place<'_>) -> Result<Expr, ParseError> {
     let tokens = tokenize(formula)?;
     if tokens.is_empty() {
         return Err(ParseError::syntax("nothing follows the `=`"));
     }
-    Parser::new(tokens).parse()
+    Parser::new(tokens, place).parse()
 }
 
 /// Why cell input `raw` is a formula that does not parse: `None` for a
@@ -893,6 +1060,9 @@ pub struct Engine<'a, S = std::collections::hash_map::RandomState> {
     raw: &'a HashMap<Addr, String, S>,
     cache: HashMap<Addr, CellValue>,
     visiting: HashSet<Addr>,
+    /// The sheets of a workbook evaluated together, by folded name, each
+    /// with the column its cells start at; `None` for one sheet alone.
+    sheets: Option<&'a HashMap<String, u32>>,
 }
 
 impl<'a, S: BuildHasher> Engine<'a, S> {
@@ -901,6 +1071,28 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             raw,
             cache: HashMap::new(),
             visiting: HashSet::new(),
+            sheets: None,
+        }
+    }
+
+    /// An engine over every sheet of a workbook at once, each sheet's cells
+    /// shifted to the column `sheets` names for it, so a formula on one
+    /// reads the others and a cycle across sheets is still found.
+    fn in_book(raw: &'a HashMap<Addr, String, S>, sheets: &'a HashMap<String, u32>) -> Self {
+        Self {
+            sheets: Some(sheets),
+            ..Self::new(raw)
+        }
+    }
+
+    /// Where the formula of the cell at `addr` is.
+    fn place_of(&self, (col, _): Addr) -> Place<'a> {
+        match self.sheets {
+            Some(sheets) => Place {
+                base: col - col % book::SHEET_SPAN,
+                sheets: Some(sheets),
+            },
+            None => Place::default(),
         }
     }
 
@@ -933,7 +1125,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
 
         let value = if let Some(body) = raw.strip_prefix('=') {
             self.visiting.insert(addr);
-            let v = match parse(body) {
+            let v = match parse_in(body, self.place_of(addr)) {
                 Ok(expr) => self.eval_expr(&expr),
                 Err(e) => CellValue::Error(e.error),
             };
@@ -953,6 +1145,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             Expr::Bool(b) => CellValue::Bool(*b),
             Expr::Ref(addr) => self.eval_cell(*addr),
             Expr::Range(_, _) => CellValue::Error(FormulaError::Value),
+            Expr::Missing => CellValue::Error(FormulaError::Ref),
             Expr::Unary(op, inner) => {
                 let v = self.eval_expr(inner);
                 if v.is_error() {
@@ -2550,7 +2743,9 @@ fn unit_of_format(fmt: CellFormat) -> Unit {
 /// Recursively determine an expression's unit.
 fn unit_of<S: BuildHasher>(expr: &Expr, formats: &HashMap<Addr, CellFormat, S>) -> Unit {
     match expr {
-        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Range(_, _) => Unit::Scalar,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Range(_, _) | Expr::Missing => {
+            Unit::Scalar
+        }
         Expr::Ref(addr) => formats
             .get(addr)
             .map_or(Unit::Scalar, |f| unit_of_format(*f)),

@@ -312,8 +312,10 @@ fn sheets_are_added_duplicated_and_the_last_is_kept() {
         "a workbook keeps one sheet"
     );
     book.apply(Workbook::NEW_SHEET.with(verbs::NewSheet {
-        name: None,
-        after: None,
+        new: crate::resource::SheetSpec {
+            after: None,
+            ..crate::resource::SheetSpec::default()
+        },
     }))
     .unwrap();
     assert_eq!(names(&book), ["Sales", "Sheet2"]);
