@@ -923,6 +923,50 @@ impl Dropdown {
         rows
     }
 
+    /// The stable key of the option whose value is `value`.
+    fn option_key(value: &str) -> u64 {
+        crate::a11y::hash_key(&("dropdown-option", value))
+    }
+
+    /// The open list as assistive technology and agents read it: each
+    /// option the filter shows, where it is drawn (rows scrolled out of
+    /// the list have no geometry), the chosen one selected and the
+    /// highlighted one focused, each choosable through
+    /// [`Widget::perform_action`] by its key.
+    fn options_access(&self) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let filtered = self.filtered();
+        let list = self.list_rect(filtered.len());
+        let rows = self.option_rows(list, filtered.len());
+        let total = filtered.len();
+        let options = filtered
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &index)| {
+                let label = self.options.get(index)?;
+                let value = self.values.get(index)?;
+                let top = rows.y0 + f64_of_usize(row) * self.item_h - f64::from(self.scroll);
+                let drawn = Rect::new(rows.x0, top, rows.x1, top + self.item_h).intersect(rows);
+                let mut option = AccessNode::new(Role::ListBoxOption)
+                    .with_name(label.clone())
+                    .with_key(Self::option_key(value))
+                    .with_position(row.saturating_add(1), total)
+                    .with_state(
+                        AccessState::new()
+                            .selected(self.menu.is_none() && *value == self.selected)
+                            .focused(self.is_focused() && row == self.highlight),
+                    );
+                if drawn.height() > 0.0 {
+                    option = option.with_bounds(drawn);
+                }
+                Some(option)
+            })
+            .collect();
+        AccessNode::new(Role::ListBox)
+            .with_bounds(list)
+            .with_children(options)
+    }
+
     /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
     fn row_at(&self, pos: Point, list: Rect, n: usize) -> Option<usize> {
         let rows = self.option_rows(list, n);
@@ -1878,6 +1922,11 @@ impl Widget for Dropdown {
         if self.open && self.supports_filter() {
             node = node.with_description(crate::i18n!("dropdown-search-description"));
         }
+        if self.open {
+            node = node
+                .with_children(vec![self.options_access()])
+                .with_keyed_action_routes(self.test_id().unwrap_or("dropdown"));
+        }
         Some(node)
     }
 
@@ -1889,13 +1938,29 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _key_path: &[u64],
+        key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if !self.effectively_enabled() {
             return false;
+        }
+        // One of the open list's options, by its key: chosen as a click on
+        // its row chooses it.
+        if let Some(&key) = key_path.last()
+            && let Some(row) = self.filtered().iter().position(|&index| {
+                self.values
+                    .get(index)
+                    .is_some_and(|value| Self::option_key(value) == key)
+            })
+        {
+            if !self.open || !matches!(action, Action::Activate) {
+                return false;
+            }
+            self.highlight = row;
+            self.select_highlighted(state.doc(), root);
+            return true;
         }
         match action {
             Action::Expand => {

@@ -133,6 +133,8 @@ pub fn map_role(role: Role) -> AkRole {
         Role::TreeItem => AkRole::TreeItem,
         Role::Menu => AkRole::Menu,
         Role::MenuItem => AkRole::MenuItem,
+        Role::ListBox => AkRole::ListBox,
+        Role::ListBoxOption => AkRole::ListBoxOption,
 
         // No dedicated "toggle button" role; a Button with `toggled` state
         // (applied in `apply_state`) is the AccessKit idiom.
@@ -1032,13 +1034,7 @@ fn apply_synthetic_bounds(
     ordinal_path: &[usize],
     scale: f64,
 ) {
-    let bounds = access.bounds.or_else(|| {
-        owner
-            .synthetic_accessibility_rect(ordinal_path)
-            .filter(|rect| rect.width() > 0.0 || rect.height() > 0.0)
-            .map(Into::into)
-    });
-    if let Some(bounds) = bounds {
+    if let Some(bounds) = crate::a11y::synthetic_bounds(access, owner, ordinal_path) {
         ak.set_bounds(AkRect::new(
             bounds.x0 * scale,
             bounds.y0 * scale,

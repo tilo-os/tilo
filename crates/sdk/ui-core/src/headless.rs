@@ -9678,6 +9678,8 @@ fn role_name(role: crate::a11y::Role) -> &'static str {
         Role::TreeItem => "tree_item",
         Role::Menu => "menu",
         Role::MenuItem => "menu_item",
+        Role::ListBox => "list_box",
+        Role::ListBoxOption => "list_box_option",
         Role::Button => "button",
         Role::ToggleButton => "toggle_button",
         Role::Checkbox => "checkbox",
@@ -9816,7 +9818,9 @@ fn collect_inspection(
             .child_clip_rect()
             .map(|r| [r.x0, r.y0, r.width(), r.height()]),
         layout: widget.layout_info(),
-        semantics: widget.accessibility(),
+        semantics: widget
+            .accessibility()
+            .map(|access| crate::a11y::with_synthetic_bounds(access, widget)),
         children,
     }
 }

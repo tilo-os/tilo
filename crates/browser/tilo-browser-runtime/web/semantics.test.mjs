@@ -33,6 +33,19 @@ test('stable semantic node removes cleared topic, role, live and focus state',()
   for(const attr of ['role','aria-description','aria-live','aria-level','aria-selected','aria-expanded','aria-disabled','aria-readonly'])assert.equal(element.getAttribute(attr),null,attr);
   assert.equal(element.tabIndex,-1);
 });
+test('a closed dialog and what it holds are not mirrored, and come back when it opens',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const dialog=hidden=>({root:{path:'desk',semantics:{role:'Group',name:'Desk'},children:[
+    {path:'desk/about',semantics:{role:'Dialog',name:'About Tilo',state:{modal:true,hidden}},children:[
+      {path:'desk/about/link',semantics:{role:'Link',name:'Get Tilo'}}]}]}});
+  const names=()=>{const out=[];const visit=el=>{if(el.getAttribute)out.push(el.getAttribute('aria-label'));el.children.forEach(visit);};root.children.forEach(visit);return out;};
+  bridge.update(dialog(true));
+  assert.deepEqual(names(),['Desk'],'only the desk while the dialog is closed');
+  bridge.update(dialog(false));
+  assert.deepEqual(names(),['Desk','About Tilo','Get Tilo']);
+  bridge.update(dialog(true));
+  assert.deepEqual(names(),['Desk']);
+});
 test('removed label does not persist on a stable node',()=>{
   const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
   bridge.update(snapshot({role:'Group',name:'Old'}));bridge.update(snapshot({role:'Group'}));
