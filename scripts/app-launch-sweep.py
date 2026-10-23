@@ -399,6 +399,9 @@ class Compositor:
             "TILO_LAUNCHER_BIN": str(self.launcher_bin),
             "RUST_LOG": "info",
             "XDG_CONFIG_HOME": self.config_home,
+            # Its own runtime directory: the desktop this runs beside keeps
+            # its sockets and session files.
+            "XDG_RUNTIME_DIR": tempfile.mkdtemp(prefix="tilo-rt-"),
         }
         for k in SCRUB:
             env.pop(k, None)
