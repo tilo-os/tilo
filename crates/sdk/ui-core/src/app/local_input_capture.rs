@@ -206,7 +206,7 @@ impl App {
         // revision: they are recorded once the next published surface can
         // be pinned (`fill_pending_revisions`), quietly. While as many
         // surfaces as may be retained are held by changes on their way, the
-        // input's actions are refused before they edit anything.
+        // input's actions still edit and report nothing, and the gap is shown.
         let revision_pending = !matches!(
             pinned,
             Some(Ok(_) | Err(action_directory_snapshot::PinRefused::Full))
