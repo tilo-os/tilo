@@ -22073,12 +22073,14 @@ dependencies = [
  "tilo-files",
  "tilo-media",
  "tilo-paths",
+ "tilo-sandbox",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-vello",
  "tilo-winit",
  "tracing",
  "uuid",
+ "wire-frame",
  "workspace-hack",
 ]
 
