@@ -349,7 +349,7 @@ pub enum ViewOp {
     ///
     /// Render the artwork at full size (or scaled) as a PNG, JPEG or WebP,
     /// written to path or kept as content.
-    #[effect(job, returns)]
+    #[effect(job, returns, kind = "read", outside_with = "path")]
     Export {
         #[param(flatten)]
         export: Export,
@@ -369,7 +369,7 @@ pub enum ViewOp {
     /// Export the artwork as SVG (plain layers as exact vectors, painted ones
     /// as pictures), written to path or kept as content (small ones
     /// answered).
-    #[effect(job, returns)]
+    #[effect(job, returns, kind = "read", outside_with = "path")]
     ExportSvg {
         #[param(flatten)]
         svg: ExportSvg,
@@ -389,7 +389,7 @@ pub enum ViewOp {
     ///
     /// Save the artwork as a .artwork file open-artwork reads: to a path, or
     /// kept as content.
-    #[effect(returns)]
+    #[effect(returns, kind = "read", outside_with = "path")]
     SaveArtwork {
         #[param(flatten)]
         save: SaveArtwork,
