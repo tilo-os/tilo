@@ -4487,6 +4487,29 @@ impl FrameBuilder {
         self.with_chrome(|st| st.set_fullscreen_group(group));
     }
 
+    /// The group of the client in its own full screen this frame, or
+    /// `None`. A client's full screen is the overlay drawn above everything
+    /// ([`Self::set_client_fullscreen_surface`]), never a layout collapse,
+    /// so another display's desktop stays visible and interactive. Except
+    /// while the shell takes the input over it (the search palette, a
+    /// sheet): the shell's surfaces would draw under the overlay unseen, so
+    /// the group is laid out full screen in the desktop itself, on its own
+    /// display, beneath them, and the top bar stays hidden.
+    pub fn set_client_fullscreen_group(&mut self, group: Option<u64>) {
+        let beneath_shell =
+            group.filter(|_| crate::shell::input_policy::chrome_captures_input(self));
+        self.set_fullscreen(beneath_shell);
+    }
+
+    /// The client in full screen, placed over `rect`: drawn as the overlay
+    /// above everything, unless [`Self::set_client_fullscreen_group`] laid
+    /// it out beneath the shell this frame. Then nothing is drawn above the
+    /// shell's surfaces and no frame of it goes straight to the display.
+    pub fn set_client_fullscreen_surface(&mut self, surface: Option<(u64, String, Rect)>) {
+        let beneath_shell = self.chrome().client_fullscreen_group().is_some();
+        self.set_fullscreen_surface(surface.filter(|_| !beneath_shell));
+    }
+
     /// The group currently promoted to full-output, or `None` in the normal
     /// tiled state. Exposed for the compositor + tests.
     pub fn fullscreen_group(&self) -> Option<u64> {

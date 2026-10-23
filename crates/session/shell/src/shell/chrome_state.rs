@@ -1017,7 +1017,9 @@ pub struct ChromeState {
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
     /// per-output overlay, so the native loop writes `None` here every
-    /// tick; do not park Super+F in this slot (W07).
+    /// tick except while the shell takes the input over it
+    /// (`FrameBuilder::set_client_fullscreen_group`); do not park Super+F
+    /// in this slot (W07).
     fullscreen_group: Option<u64>,
     /// Super+F (and the action door) park the focused group here. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
@@ -1711,6 +1713,13 @@ impl ChromeState {
 
     pub fn fullscreen_group(&self) -> Option<u64> {
         self.user_fullscreen_group.or(self.fullscreen_group)
+    }
+
+    /// The group of a client in its own full screen while it is laid out
+    /// in the desktop beneath the shell's surfaces (the search palette or a
+    /// sheet is open over it), apart from the person's Super+F.
+    pub fn client_fullscreen_group(&self) -> Option<u64> {
+        self.fullscreen_group
     }
 
     /// The group the person expanded to full screen (Super+F), apart from
