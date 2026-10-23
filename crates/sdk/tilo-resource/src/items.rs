@@ -88,6 +88,7 @@
 use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_actions::{ActionArgs, ActionParam, ActionSpec, ExecutionLocus};
@@ -686,12 +687,17 @@ pub fn item_child_id<R: Resource>(collection: &ItemCollection, id: &Id) -> Strin
 }
 
 /// [`Resource::children`] in the parts a publisher can keep between
-/// versions ([`Resource::children_parts`]): the children that are not
-/// items, then one per item of `items` carrying `item_actions`
-/// ([`item_children`]).
+/// versions ([`Resource::children_parts`]): children built afresh, children
+/// kept while they are unchanged, then one per item of `items` carrying
+/// `item_actions` ([`item_children`]).
 pub struct ChildrenParts {
-    /// The children before the items, built afresh.
+    /// The children before the kept ones, built afresh.
     pub others: Vec<tilo_actions::Resource>,
+    /// The record's nested resources and derived ones
+    /// ([`crate::derived::published`]): the very same, and each the very
+    /// same, while they are unchanged, so a publisher holding what it built
+    /// of them keeps it.
+    pub kept: Rc<[Rc<tilo_actions::Resource>]>,
     /// The record's collections, each item with its label.
     pub items: Vec<ItemCollection>,
     /// The actions offered on items.
@@ -772,12 +778,13 @@ fn nested_item(
 }
 
 /// [`Resource::children_offer_bound`] of a record whose children are
-/// `others` followed by its [`item_children`]: the declarations offered
-/// bound on `others` or on the items of a collection, known from how many
-/// items each collection holds (`sizes`, by field) without building a child
-/// per item.
+/// `others`, its `derived` resources, then its [`item_children`]: the
+/// declarations offered bound on `others`, on a derived resource or on the
+/// items of a collection, known from how many items each collection holds
+/// (`sizes`, by field) without building a child per item.
 pub fn offered_on_items<R: Resource>(
     others: &[tilo_actions::Resource],
+    derived: &crate::derived::PublishedDerived,
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
     nested: &dyn Fn(&ItemAction) -> bool,
@@ -791,7 +798,7 @@ pub fn offered_on_items<R: Resource>(
         }
         declared.push((decl.id, names));
     }
-    offered_on_items_of(others, sizes, actions, &declared, nested)
+    offered_on_items_of(others, derived, sizes, actions, &declared, nested)
 }
 
 /// [`offered_on_items`] over the declarations `declared` (id and parameter
@@ -799,6 +806,7 @@ pub fn offered_on_items<R: Resource>(
 /// `nested` says such an item is published.
 fn offered_on_items_of(
     others: &[tilo_actions::Resource],
+    derived: &crate::derived::PublishedDerived,
     sizes: &[(&'static str, usize)],
     actions: &[ItemAction],
     declared: &[(&'static str, Vec<&str>)],
@@ -833,7 +841,10 @@ fn offered_on_items_of(
                 kept < params.len() && nested(action)
             }
         });
-        if on_items || offered_bound_as(others, id, params.len()) {
+        if on_items
+            || offered_bound_as(others, id, params.len())
+            || derived.offers_bound(id, params.len())
+        {
             offered.push(*id);
         }
     }

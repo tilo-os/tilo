@@ -37,11 +37,14 @@ use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::ViewCx;
 
+mod live_head;
 mod shared_tree;
 mod typed;
 mod widget;
+use live_head::LiveHead;
 use shared_tree::{
-    ItemChildren, NestedViews, PublishedChildren, RecordChildren, RowChildren, SharedTreeCache,
+    DocumentChildren, ItemChildren, NestedViews, PublishedChildren, RecordChildren, RowChildren,
+    SharedTreeCache,
 };
 use typed::TypedRoot;
 pub(crate) use typed::{ResourceType, Typed};
@@ -113,6 +116,11 @@ pub(crate) struct ResourceRoot {
     /// What bound controls share of the publication at one head: built
     /// once per head, never copied per refresh.
     binding_base: std::cell::RefCell<Option<Rc<BindingBase>>>,
+    /// The head of the live state and what it was published from.
+    live_head: std::cell::RefCell<Option<LiveHead>>,
+    /// The document children of the live state as last published, kept
+    /// while they are unchanged.
+    document_children: std::cell::RefCell<Option<DocumentChildren>>,
     /// The view operation types of the nested resources at one live revision.
     nested_views: std::cell::RefCell<Option<NestedViews>>,
     /// Whether the resource keeps document state History shows.
@@ -483,6 +491,8 @@ impl ResourceRoot {
             row_children: std::cell::RefCell::new(None),
             binding_head: std::cell::RefCell::new(None),
             binding_base: std::cell::RefCell::new(None),
+            live_head: std::cell::RefCell::new(None),
+            document_children: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
             history: true,
             native_presentation,
@@ -664,33 +674,32 @@ impl ResourceRoot {
         self.decorate_publication(&*state, tree, Decoration::Tree)
     }
 
+    /// What the live state holds: its revision and how much of the document
+    /// it read ([`super::Live::loads`]).
+    fn version(&self) -> (u64, u64) {
+        (self.typed.revision(), self.typed.loads())
+    }
+
     /// The document-owned part of what controls bind to: the live
-    /// resource's identity and own actions, without its children. Taken
-    /// from the cached tree when it holds this change; else published
+    /// resource's identity and own actions, without its children, published
     /// without building a child, so it costs the same however many items
     /// the resource holds.
     #[inline(never)]
     fn binding_head(&self) -> BindingHead {
         let state = self.typed.state();
-        let revision = (
-            self.typed.revision(),
-            ui_core::i18n::I18nManager::revision(),
-        );
+        let version = (self.version(), ui_core::i18n::I18nManager::revision());
         let epoch = self.typed.cache_epoch(&*state);
-        let cached = epoch.as_ref().and_then(|epoch| {
-            self.publication_tree
-                .borrow()
-                .as_ref()
-                .filter(|cached| cached.revision == (revision.0, revision.1, epoch.clone()))
-                .map(|cached| cached.tree.head().clone())
-        });
-        let resource = cached.unwrap_or_else(|| {
+        let resource = if let Some(epoch) = &epoch {
+            self.live_head(&*state, epoch)
+        } else {
             let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
-            self.typed
-                .head(self.dispatch.resource_id(), &self.label, &*state)
-        });
+            Rc::new(
+                self.typed
+                    .head(self.dispatch.resource_id(), &self.label, &*state),
+            )
+        };
         BindingHead {
-            revision,
+            version,
             epoch,
             resource,
         }
@@ -730,7 +739,8 @@ impl ResourceRoot {
     /// Built once per head and kept, so a refresh shares it.
     fn binding_base(&self, head: &BindingHead) -> Rc<BindingBase> {
         let key = BaseKey {
-            revision: head.revision,
+            head: Rc::clone(&head.resource),
+            locale: head.version.1,
             epoch: head.epoch.clone(),
             causal: self.typed.has_causal_drains(),
             unreadable: self.typed.unreadable(),
@@ -743,7 +753,7 @@ impl ResourceRoot {
         {
             return Rc::clone(base);
         }
-        let mut resource = head.resource.clone();
+        let mut resource = (*head.resource).clone();
         let head_len = resource.actions.len();
         resource = self.with_presentation_specs(resource);
         let shadow_len = resource.actions.len();
@@ -843,12 +853,9 @@ impl ResourceRoot {
     #[inline(never)]
     fn refresh_bindings(&self, head: Option<BindingHead>) -> BindingHead {
         let _profile = tilo_resource::profiling::Phase::start("framework.action_bindings");
-        let revision = (
-            self.typed.revision(),
-            ui_core::i18n::I18nManager::revision(),
-        );
+        let version = (self.version(), ui_core::i18n::I18nManager::revision());
         let head = match head {
-            Some(head) if head.revision == revision => head,
+            Some(head) if head.version == version => head,
             _ => self.binding_head(),
         };
         let base = self.binding_base(&head);
@@ -1063,12 +1070,23 @@ fn surface_mut(
 }
 
 /// What [`ResourceRoot::binding_base`] is built from.
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 struct BaseKey {
-    revision: (u64, u64),
+    head: Rc<tilo_actions::Resource>,
+    locale: u64,
     epoch: Option<String>,
     causal: bool,
     unreadable: Option<String>,
+}
+
+impl PartialEq for BaseKey {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.head, &other.head)
+            && self.locale == other.locale
+            && self.epoch == other.epoch
+            && self.causal == other.causal
+            && self.unreadable == other.unreadable
+    }
 }
 
 /// The shared part of what bound controls look up, at one [`BaseKey`].
@@ -1125,14 +1143,14 @@ enum Decoration {
     Actions,
 }
 
-/// The document-owned head of the publication, at the live and locale
-/// revision it was built at.
+/// The document-owned head of the publication, at the live version and
+/// locale it was taken at.
 #[derive(Clone)]
 struct BindingHead {
-    revision: (u64, u64),
+    version: ((u64, u64), u64),
     /// [`Resource::publication_cache_epoch`] at the time.
     epoch: Option<String>,
-    resource: tilo_actions::Resource,
+    resource: Rc<tilo_actions::Resource>,
 }
 
 /// `resource` without its children, cloning nothing of them.
@@ -1234,7 +1252,7 @@ const OFF_THREAD_ENTRIES: usize = 1024;
 /// and the entries its surfaces show.
 #[derive(PartialEq)]
 struct SearchState {
-    revision: u64,
+    revision: (u64, u64),
     shown: Vec<SearchEntry>,
 }
 
@@ -2187,7 +2205,7 @@ impl ResourceRoot {
             queries.push(surface.search_queries());
         });
         let state = SearchState {
-            revision: self.typed.revision(),
+            revision: self.version(),
             shown,
         };
         (state, queries)

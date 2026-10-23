@@ -168,9 +168,17 @@ impl<R: Resource> Live<R> {
         self.inner.borrow().unreadable().cloned()
     }
 
-    /// Increases whenever the state changes.
+    /// Increases whenever what the state says changes. A view reading
+    /// more of the same document ([`Self::demand`]) is no new revision.
     pub fn revision(&self) -> u64 {
         self.inner.borrow().revision()
+    }
+
+    /// Increases whenever a demand read parts of the document the state did
+    /// not hold yet: what a view of a large resource holds moved, not what
+    /// the resource says.
+    pub fn loads(&self) -> u64 {
+        self.inner.borrow().loads()
     }
 
     /// Whether the state is `doc` as it stands: no change arrived since the
@@ -182,17 +190,14 @@ impl<R: Resource> Live<R> {
     /// Show the parts of a large resource `demand` names, reading those not
     /// read yet from `doc` — the document the view was synced with, which in
     /// History mode is the past version on screen. Returns whether the state
-    /// changed.
+    /// read more ([`Self::loads`]). What the resource says is unchanged, so
+    /// this is no revision and no change to follow.
     #[inline(never)]
     pub fn demand(&self, doc: &Doc, demand: Demand) -> Result<bool, ModelError>
     where
         R::State: Clone,
     {
-        let changed = self.inner.borrow_mut().demand(doc, demand)?;
-        if changed {
-            self.changes.borrow_mut().note(Delta::everything());
-        }
-        Ok(changed)
+        self.inner.borrow_mut().demand(doc, demand)
     }
 
     /// Ask everything bound to the state to take it again, unchanged. After
