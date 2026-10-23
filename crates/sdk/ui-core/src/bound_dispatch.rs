@@ -5594,30 +5594,8 @@ pub(crate) fn enter_traversal<const BOUND: bool>(
 }
 
 #[cfg(test)]
-mod bound_action_address_tests {
-    use super::*;
-
-    /// The public parts constructor keeps the component instance and formats
-    /// the domain address. The host still resolves that instance against its
-    /// fresh resource tree; constructing an address grants nothing.
-    #[test]
-    fn a_bound_action_address_names_one_instance_and_round_trips_its_address() {
-        let instance: crate::application::InstanceId = 42;
-        let bound = BoundActionAddress::new(instance, "notes.note:1", "edit-title")
-            .expect("a stable address");
-        assert_eq!(bound.instance_id, instance);
-        assert_eq!(
-            bound.address,
-            tilo_actions::ActionAddress::new("notes.note:1", "edit-title")
-        );
-        assert_eq!(
-            tilo_actions::ActionAddress::parse(&bound.address.encode()),
-            Some(bound.address)
-        );
-        assert!(BoundActionAddress::new(instance, "notes\u{1f}note", "edit-title").is_none());
-        assert!(BoundActionAddress::new(instance, "notes.note:1", "").is_none());
-    }
-}
+#[path = "bound_dispatch/bound_action_address_tests.rs"]
+mod bound_action_address_tests;
 
 #[cfg(test)]
 #[path = "bound_dispatch/owned_restore_tests.rs"]
@@ -5976,44 +5954,5 @@ mod device_actor_tests;
 mod native_text_tests;
 
 #[cfg(test)]
-pub(crate) mod document_admission_probe {
-    use super::*;
-    struct Observation {
-        owner: std::rc::Weak<Cell<bool>>,
-        closing: Rc<RefCell<Vec<bool>>>,
-    }
-    thread_local! { static CURRENT: RefCell<Option<Observation>> = const { RefCell::new(None) }; }
-    pub(crate) struct Probe {
-        previous: Option<Observation>,
-        closing: Rc<RefCell<Vec<bool>>>,
-    }
-    impl Probe {
-        pub(crate) fn new(binding: &CallbackBinding) -> Self {
-            let closing = Rc::new(RefCell::new(Vec::new()));
-            let previous = CURRENT.with_borrow_mut(|current| {
-                current.replace(Observation {
-                    owner: Rc::downgrade(&binding.closing),
-                    closing: closing.clone(),
-                })
-            });
-            Self { previous, closing }
-        }
-        pub(crate) fn attempts(&self) -> Vec<bool> {
-            self.closing.borrow().clone()
-        }
-    }
-    impl Drop for Probe {
-        fn drop(&mut self) {
-            CURRENT.with_borrow_mut(|current| *current = self.previous.take());
-        }
-    }
-    pub(super) fn record(binding: &CallbackBinding) {
-        CURRENT.with_borrow(|current| {
-            if let Some(current) = current
-                && std::rc::Weak::ptr_eq(&current.owner, &Rc::downgrade(&binding.closing))
-            {
-                current.closing.borrow_mut().push(binding.closing.get());
-            }
-        });
-    }
-}
+#[path = "bound_dispatch/document_admission_probe.rs"]
+pub(crate) mod document_admission_probe;
