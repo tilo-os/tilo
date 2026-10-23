@@ -5310,6 +5310,107 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A session that records what it is asked to open, as a page serves
+    /// its windows.
+    #[derive(Default)]
+    struct OpeningSession {
+        asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+    }
+
+    impl ui::tilo_actions::remote::ActionHost for OpeningSession {
+        fn query(
+            &self,
+            _caller: &ui::tilo_actions::remote::Caller,
+            _query: ui::tilo_actions::remote::CatalogueQuery,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::CataloguePage,
+                ui::tilo_actions::remote::ActionHostError,
+            >,
+        > {
+            ui::tilo_actions::remote::Pending::ready(Ok(
+                ui::tilo_actions::remote::CataloguePage::default(),
+            ))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &ui::tilo_actions::remote::Caller,
+            request: ui::tilo_actions::remote::InvokeRequest,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::InvocationReceipt,
+                ui::tilo_actions::remote::ActionHostError,
+            >,
+        > {
+            let invocation = request.invocation;
+            self.asked.lock().unwrap().push(request);
+            ui::tilo_actions::remote::Pending::ready(Ok(
+                ui::tilo_actions::remote::InvocationReceipt {
+                    invocation,
+                    status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                        output: ui::tilo_actions::ActionOutput::default(),
+                    },
+                },
+            ))
+        }
+
+        fn observe(
+            &self,
+            _caller: &ui::tilo_actions::remote::Caller,
+            _id: &ui::tilo_actions::InvocationId,
+        ) -> Option<ui::tilo_actions::remote::InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &ui::tilo_actions::remote::Caller,
+            _id: &ui::tilo_actions::InvocationId,
+        ) -> Result<(), ui::tilo_actions::remote::ActionHostError> {
+            Ok(())
+        }
+    }
+
+    /// Open Photos, in a window its host serves in process (a page), asks
+    /// that session to open Photos in the window's workspace: the same
+    /// request a native window hands its broker. Without a session it says
+    /// why instead of claiming Photos isn't there.
+    #[test]
+    fn open_photos_asks_the_window_s_session_to_open_photos() {
+        let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
+        let refused = app
+            .harness()
+            .invoke_published("camera.capture", "open-photos", &serde_json::Map::new())
+            .unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                ui::tilo_actions::DoorError::Unavailable { code, .. }
+                    if code == "authoritative_host_unavailable"
+            ),
+            "{refused}"
+        );
+
+        let session = std::sync::Arc::new(OpeningSession::default());
+        app.harness().set_session_door(
+            ui::RemoteActions::with_host(
+                session.clone(),
+                ui::tilo_actions::remote::Caller::local_app("so.tilo.camera").in_room("room"),
+            ),
+            Some("room".into()),
+        );
+        app.harness()
+            .invoke_published("camera.capture", "open-photos", &serde_json::Map::new())
+            .expect("the session opens Photos");
+        let asked = std::mem::take(&mut *session.asked.lock().unwrap());
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            asked[0].target,
+            ui::tilo_actions::remote::application_open_target("room", "so.tilo.photos")
+        );
+    }
+
     /// The camera publishes its screens as views, and the capture pipeline,
     /// the code scanner and the document scanner as rows offering only
     /// effects bound to them.

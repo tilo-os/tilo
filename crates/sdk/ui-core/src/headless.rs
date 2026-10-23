@@ -466,6 +466,9 @@ pub struct FrameHarness {
     /// Tests register document action types explicitly, just as `main` does.
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
+    /// The session this window's host serves it: where opening another app
+    /// goes ([`crate::session_door`]). `None` until the host installs one.
+    session_door: Option<crate::session_door::ClientDoor>,
     pending_control_invocations: HashSet<tilo_actions::InvocationId>,
     control_failures: Vec<String>,
     /// What stands in for the providers whose actions the app's controls
@@ -1644,6 +1647,7 @@ impl FrameHarness {
             author: author(),
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
+            session_door: None,
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
             providers: HashMap::new(),
@@ -1959,6 +1963,14 @@ impl FrameHarness {
         }
         self.action_transport = transport;
         Ok(())
+    }
+
+    /// Serve this window the session `client` stands for, in `workspace`:
+    /// where opening another app goes. A host that serves its windows in
+    /// process, such as a page, installs its own session here.
+    pub fn set_session_door(&mut self, client: crate::RemoteActions, workspace: Option<String>) {
+        self.invalidate_local();
+        self.session_door = Some(crate::session_door::ClientDoor::new(client, workspace));
     }
 
     pub fn action_registry_mut(&mut self) -> &mut tilo_actions::ActionRegistry {
@@ -2717,6 +2729,10 @@ impl FrameHarness {
             || self.search_pending
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
+            || self
+                .session_door
+                .as_ref()
+                .is_some_and(crate::session_door::ClientDoor::is_busy)
             || self.wake_pending();
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
@@ -7471,6 +7487,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(arguments),
@@ -7775,6 +7792,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(&intent.arguments),
@@ -7893,15 +7911,25 @@ impl FrameHarness {
                 arguments.as_ref(),
                 None,
             )?;
-            let result = invoke_legacy_effect(
-                self.root.as_mut(),
-                target,
-                invocation,
-                spec.kind,
-                &encoded,
-                &mut self.state.doc,
-                None,
-            )?;
+            let result = if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
+                crate::session_door::start_application_launch(
+                    session_door(&mut self.session_door),
+                    None,
+                    &encoded.payload,
+                    invocation,
+                    false,
+                )?
+            } else {
+                invoke_legacy_effect(
+                    self.root.as_mut(),
+                    target,
+                    invocation,
+                    spec.kind,
+                    &encoded,
+                    &mut self.state.doc,
+                    None,
+                )?
+            };
             match &result {
                 crate::widget::ResourceOperationStart::Accepted
                     if spec.contract.execution == tilo_actions::ExecutionMode::Immediate =>
@@ -8133,6 +8161,7 @@ impl FrameHarness {
                     &mut self.state.doc,
                     &target,
                     self.action_transport.as_mut(),
+                    session_door(&mut self.session_door),
                     crate::bound_dispatch::ResourceActionRequest {
                         argument,
                         arguments: json,
@@ -8198,15 +8227,26 @@ impl FrameHarness {
                         arguments.as_ref(),
                         argument,
                     )?;
-                    let result = invoke_legacy_effect(
-                        self.root.as_mut(),
-                        &target,
-                        invocation_id,
-                        spec.kind,
-                        &encoded,
-                        &mut self.state.doc,
-                        None,
-                    )?;
+                    let result = if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE
+                    {
+                        crate::session_door::start_application_launch(
+                            session_door(&mut self.session_door),
+                            None,
+                            &encoded.payload,
+                            invocation_id,
+                            false,
+                        )?
+                    } else {
+                        invoke_legacy_effect(
+                            self.root.as_mut(),
+                            &target,
+                            invocation_id,
+                            spec.kind,
+                            &encoded,
+                            &mut self.state.doc,
+                            None,
+                        )?
+                    };
                     match &result {
                         crate::widget::ResourceOperationStart::Accepted
                             if spec.contract.execution
@@ -8291,6 +8331,7 @@ impl FrameHarness {
                         source_invocation: None,
                         ambient: None,
                         scope: None,
+                        door: session_door(&mut self.session_door),
                     },
                 )?;
                 if let Some(before) = before {
@@ -8446,6 +8487,7 @@ impl FrameHarness {
                         source_invocation: None,
                         ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                         scope: None,
+                        door: session_door(&mut self.session_door),
                     },
                 )?;
                 if let Some(before) = before {
@@ -8554,6 +8596,7 @@ impl FrameHarness {
                 source_invocation: None,
                 ambient: None,
                 scope: None,
+                door: session_door(&mut self.session_door),
             },
         )?;
         if let Some(before) = before {
@@ -8571,6 +8614,19 @@ impl FrameHarness {
     }
 
     fn poll_control_invocations(&mut self) {
+        let finished = self
+            .session_door
+            .as_mut()
+            .map(crate::session_door::ClientDoor::take_finished)
+            .unwrap_or_default();
+        for (invocation, result) in finished {
+            self.pending_control_invocations.remove(&invocation);
+            self.bound_invocations.remove(&invocation);
+            if let Err(error) = result {
+                tracing::warn!(code = error.code(), %error, "headless: an app did not open");
+                self.refuse_visibly(&error);
+            }
+        }
         let bound = self
             .bound_invocations
             .iter()
@@ -9675,6 +9731,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(arguments),
@@ -10573,6 +10630,14 @@ fn write_headless_output(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, contents)
+}
+
+/// The session door a window's host installed, as the execution body takes it.
+fn session_door(
+    door: &mut Option<crate::session_door::ClientDoor>,
+) -> Option<&mut dyn crate::session_door::SessionDoor> {
+    door.as_mut()
+        .map(|door| door as &mut dyn crate::session_door::SessionDoor)
 }
 
 #[cfg(test)]
