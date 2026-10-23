@@ -16528,6 +16528,7 @@ dependencies = [
  "channel-crypto",
  "chat",
  "chip-design",
+ "chrono",
  "clocks",
  "collab-types",
  "contacts",
