@@ -142,6 +142,71 @@ impl Instruction {
 /// The answer that means "no exported action does what was asked".
 pub const NOTHING_FITS: &str = "none";
 
+/// The one content hash `previous` produced: the argument a step that
+/// carries is given.
+///
+/// # Errors
+///
+/// Why `previous` cannot feed a content input: it produced nothing, more
+/// than one resource, or a resource that is not `tilo.content`.
+pub fn carried_content(previous: &tilo_actions::ActionOutput) -> Result<&str, String> {
+    match previous.resources.as_slice() {
+        [] => Err("the previous action produced no content resource".into()),
+        [resource] => tilo_actions::content_hash(resource).ok_or_else(|| {
+            "the previous action produced a resource that is not tilo.content".into()
+        }),
+        _ => Err("the previous action must produce exactly one content resource".into()),
+    }
+}
+
+/// The arguments a step is invoked with: `planned` as written, or — when
+/// the operation carries content under the parameter `carries`
+/// ([`crate::surface::Offer::content_param`]) — with that input bound to
+/// what the immediately preceding action produced. With nothing before it,
+/// a content address the plan names outright (an image a step of an
+/// earlier task exported) is taken as it is.
+///
+/// # Errors
+///
+/// Why a content-consuming step cannot run: there is no preceding action
+/// result, or it does not name exactly one piece of content.
+pub fn carried_arguments(
+    planned: &serde_json::Map<String, serde_json::Value>,
+    carries: Option<&str>,
+    previous: Option<&tilo_actions::ActionOutput>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let Some(param) = carries else {
+        return Ok(planned.clone());
+    };
+    let hash = match previous.map(carried_content) {
+        Some(Ok(hash)) => hash.to_owned(),
+        unfed => named_content(planned, param).ok_or_else(|| match unfed {
+            Some(Err(error)) => error,
+            _ => "a content-consuming action has no preceding action result".to_string(),
+        })?,
+    };
+    let mut arguments = planned.clone();
+    // A model-authored value is replaced: the descriptor says the value is
+    // carried, so only the preceding application may supply it.
+    arguments.insert(param.to_owned(), serde_json::Value::String(hash));
+    Ok(arguments)
+}
+
+/// The content hash `planned` names outright under `param`: a
+/// `tilo.content:` address of a well-formed hash, not a placeholder.
+#[must_use]
+pub fn named_content(
+    planned: &serde_json::Map<String, serde_json::Value>,
+    param: &str,
+) -> Option<String> {
+    planned
+        .get(param)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !is_content_placeholder(text))
+        .and_then(tilo_actions::content_hash)
+        .map(str::to_owned)
+}
+
 /// What a plan writes for content a step before it in the same task
 /// produces (a picture an export makes), whose address no plan can know
 /// before that step has run.

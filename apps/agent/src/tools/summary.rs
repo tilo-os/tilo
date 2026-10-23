@@ -199,7 +199,7 @@ pub fn catalogue_summary_with(
 fn summary_line(catalogue: &Catalogue, offer: &Offer) -> String {
     let mut line = format!("  {} — {}", offer.id(), offer.descriptor.action_label);
     if let Some(opened) = opened_app(offer) {
-        line.push_str(&open_note(catalogue, opened));
+        line.push_str(&open_note(catalogue, offer, opened));
     }
     if let tilo_actions::Availability::Unavailable { reason, .. } =
         &offer.descriptor.contract.availability

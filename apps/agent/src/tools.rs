@@ -69,8 +69,11 @@ use serde_json::{Value, json};
 use crate::plan;
 use crate::surface::{self, APPLICATION_KIND, Catalogue, Offer};
 
+mod schema;
 mod summary;
 mod wait;
+
+pub use schema::argument_lines_compact;
 
 pub use summary::{
     MOST_LISTED_ALIKE, MOST_SUMMARISED, Naming, catalogue_summary, catalogue_summary_with,
@@ -264,18 +267,25 @@ pub fn opened_app(offer: &Offer) -> Option<&str> {
     })
 }
 
-/// What an open does, said next to it: start a closed application, or —
-/// when the application already publishes operations — a second window, as
-/// the launcher does for a person.
-fn open_note(catalogue: &Catalogue, app: &str) -> String {
-    if catalogue
+/// What an open does, said next to it: open a document the room already
+/// has, start a closed application, or — when the application already
+/// publishes operations — a second window on a new, empty document, as the
+/// launcher does for a person.
+fn open_note(catalogue: &Catalogue, offer: &Offer, app: &str) -> String {
+    if surface::opens_record(offer.address()).is_some() {
+        format!(
+            " (opens this document of {app} the room already has; its operations then appear \
+             and change it: to edit an existing document, open it this way)"
+        )
+    } else if catalogue
         .offers
         .iter()
         .any(|o| o.app == app && opened_app(o).is_none())
     {
         format!(
-            " ({app} is already open and its operations are listed: use those; this would \
-             open a second window)"
+            " ({app} is already open and its operations are listed: use those to work in the \
+             open document; this opens a second window on a new, empty document, as an import \
+             the open one refused for its content needs)"
         )
     } else {
         format!(" (opens {app} in a new window; its operations then appear)")
@@ -1303,7 +1313,7 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         revealed.reveal(o.id());
         let _ = write!(s, "  {} — {}", o.id(), o.descriptor.action_label);
         if let Some(app) = opened_app(o) {
-            s.push_str(&open_note(catalogue, app));
+            s.push_str(&open_note(catalogue, o, app));
         }
         if let tilo_actions::Availability::Unavailable { reason, .. } =
             &o.descriptor.contract.availability
