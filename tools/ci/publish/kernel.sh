@@ -14,7 +14,9 @@
 #                               signed buildroot it was built FROM (no secrets; the commit is
 #                               left as {commit} for oci-attest.sh)
 #   kernel.sh pins DIR          after publish-kernel published both, write DIR/pins.env: the
-#                               published references and the inputs they were built from
+#                               published references (each receipt's digest, which is an earlier
+#                               run's where the tag was published already) and the inputs they
+#                               were built from
 #   kernel.sh pin               write os/kernel-snapshot.env from stable's pins
 #                               (T_POINTER_KERNEL), when main builds the kernel from the same inputs
 set -euo pipefail
@@ -63,7 +65,9 @@ case ${1:-} in
     for arch in x86_64 aarch64; do
       [[ -s $dir/$arch/receipt.json ]] || die "$dir/$arch is not published"
       key=KERNEL_RPMS_$(printf '%s' "$arch" | tr '[:lower:]' '[:upper:]')_REF
-      lines+=("$key=$repository@$(cat "$dir/$arch/digest")")
+      digest=$(sed -n 's/.*"digest":"\(sha256:[0-9a-f]\{64\}\)".*/\1/p' "$dir/$arch/receipt.json")
+      [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$dir/$arch/receipt.json names no digest"
+      lines+=("$key=$repository@$digest")
     done
     printf '%s\n' "${lines[@]}" "INPUTS_SHA256=$(inputs_digest)" > "$dir/pins.env"
     cat "$dir/pins.env"

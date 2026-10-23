@@ -642,6 +642,31 @@ class ScriptTests(unittest.TestCase):
         digest = self.archive(out / "image.oci.tar", f'{{"architecture":"{arch}","os":"linux"}}'.encode())
         (out / "digest").write_text(digest + "\n")
 
+    def test_a_kernel_rebuilt_on_the_same_commit_keeps_the_published_digest_pinned(self):
+        kernel = self.tmp / "kernel"
+        published = {}
+        # The first stable run's x86_64 build stays where the stand-in registry reads it.
+        for arch, out in (("x86_64", self.tmp / "first/x86_64"), ("aarch64", kernel / "aarch64")):
+            self.build_into(out, arch)
+            published[arch] = self.sign_for(out)
+            result = self.run_script("oci-publish.sh", "release", "r.example/img", str(out),
+                                     f"once:sha-{{commit}}-{arch}", ref="stable")
+            self.assertEqual(result.returncode, 0, result.stderr)
+        # A second stable run on the commit rebuilt x86_64 into another image.
+        self.build_into(kernel / "x86_64", "amd64")
+        rebuilt = self.sign_for(kernel / "x86_64")
+        self.assertNotEqual(rebuilt, published["x86_64"])
+        result = self.run_script("oci-publish.sh", "release", "r.example/img", str(kernel / "x86_64"),
+                                 "once:sha-{commit}-x86_64", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is published already", result.stdout)
+        result = self.run_script("kernel.sh", "pins", str(kernel), ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pins = (kernel / "pins.env").read_text()
+        self.assertIn(f"KERNEL_RPMS_X86_64_REF=registry.tilo.so/tilo/tilo-kernel@{published['x86_64']}\n", pins)
+        self.assertIn(f"KERNEL_RPMS_AARCH64_REF=registry.tilo.so/tilo/tilo-kernel@{published['aarch64']}\n", pins)
+        self.assertNotIn(rebuilt, pins)
+
     def env_tools(self, mode: str, *args: str) -> subprocess.CompletedProcess:
         return self.run_script("env-tools-release.sh", mode, *args, ref="stable")
 
