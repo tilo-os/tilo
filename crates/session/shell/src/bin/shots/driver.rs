@@ -1994,21 +1994,12 @@ impl ShellDriver {
             "palette_sum" => self.scene_palette_query("2+2"),
             "palette_move" => self.scene_palette_query("move"),
             "palette_files" => self.scene_palette_query("files"),
-            "palette_finder" => {
-                self.scene_seeded_query("finder");
-            }
-            "palette_spotify" => {
-                self.scene_seeded_query("spotify");
-            }
-            "palette_youtube_cats" => {
-                self.scene_seeded_query("youtube cats");
-            }
-            "palette_github" => {
-                self.scene_seeded_query("github");
-            }
-            "palette_workbook" => {
-                self.scene_seeded_query("workbook");
-            }
+            "palette_finder" => self.scene_seeded_query("finder"),
+            "palette_spotify" => self.scene_seeded_query("spotify"),
+            "palette_youtube_cats" => self.scene_seeded_query("youtube cats"),
+            "palette_github" => self.scene_seeded_query("github"),
+            "palette_workbook" => self.scene_seeded_query("workbook"),
+            "palette_open_app" => self.scene_palette_open_app(),
             "palette_downloaded" => self.scene_downloaded_query("aseprite"),
             "palette_downloaded_missing" => self.scene_downloaded_query("ardour"),
             "launcher_downloaded" => self.scene_downloaded_launcher(),

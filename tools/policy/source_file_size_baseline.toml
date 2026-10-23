@@ -140,7 +140,7 @@
 "crates/session/greeter/src/greeter_app.rs" = 4500
 "crates/session/installer/src/installer_app.rs" = 7500
 "crates/session/shell/examples/redraw_bench.rs" = 7000
-"crates/session/shell/src/bin/shots/driver.rs" = 4500
+"crates/session/shell/src/bin/shots/driver.rs" = 4492
 "crates/session/shell/src/bin/shots/scenario.rs" = 6400
 "crates/session/shell/src/compositor/backend/drm/mod.rs" = 5000
 "crates/session/shell/src/compositor/backend/drm/runtime.rs" = 9500
