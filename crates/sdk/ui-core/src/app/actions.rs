@@ -2820,7 +2820,7 @@ impl App {
             )?;
         }
         let kind = resolved.kind;
-        if resolved.contract.is_own_device()
+        if resolved.contract.runs_on_invokers_device()
             && !crate::bound_dispatch::runs_own_device(
                 actor,
                 &self.collaboration.local_author.0,

@@ -123,7 +123,9 @@ mod schema;
 /// touching nothing shared and no one else (their clipboard, their own
 /// appearance): a room's grants have nothing to consent to. An `attended`
 /// effect needs its person attending (a chooser, a sign-in, a secret shown):
-/// whoever acts for them is always asked first. Generates `impl Effect` and one `ActionRef`
+/// whoever acts for them is always asked first, while the person's own click
+/// is their decision and, like an `own_device` effect, needs no room's
+/// consent and runs only on their own device. Generates `impl Effect` and one `ActionRef`
 /// constant per variant (`Backups::RESTORE`) for binding controls.
 #[proc_macro_derive(Effect, attributes(effect, param))]
 pub fn derive_effect(input: TokenStream) -> TokenStream {
