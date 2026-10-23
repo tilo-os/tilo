@@ -328,7 +328,8 @@ impl CalcScreen {
         // `key_max_w` per column, and a stacked display and memory row
         // narrow with it, centred in the space.
         let pad_max_w = self.cols as f64 * m.key_max_w + (self.cols as f64 - 1.0) * m.cell_gap;
-        let (chrome, grid) = if chrome == left {
+        let stacked = chrome == left;
+        let (chrome, grid) = if stacked {
             let width = left.width().min(pad_max_w);
             let x0 = left.x0 + (left.width() - width) / 2.0;
             (
@@ -345,6 +346,24 @@ impl CalcScreen {
                     grid.y1,
                 ),
             )
+        };
+        // Keys stop at `key_max_h` too, so a tall window has height left
+        // over: the pad (with a stacked display and memory row) stands in
+        // the middle of it rather than at the top above a blank half.
+        let cols = self.cols;
+        let rows = self.keys.len().div_ceil(cols);
+        let ch = ((grid.height() - m.cell_gap * (rows as f64 - 1.0)) / rows as f64)
+            .clamp(1.0, m.key_max_h.max(1.0));
+        let slack =
+            (grid.height() - (rows as f64 * ch + (rows as f64 - 1.0) * m.cell_gap)).max(0.0);
+        let dy = (slack / 2.0).floor();
+        let (chrome, grid) = if stacked {
+            (
+                Rect::new(chrome.x0, chrome.y0 + dy, chrome.x1, chrome.y1),
+                Rect::new(grid.x0, grid.y0 + dy, grid.x1, grid.y1),
+            )
+        } else {
+            (chrome, Rect::new(grid.x0, grid.y0 + dy, grid.x1, grid.y1))
         };
         self.display_rect = Rect::new(chrome.x0, chrome.y0, chrome.x1, chrome.y0 + display_h);
         let mem_top = self.display_rect.y1 + m.gap;
@@ -364,11 +383,7 @@ impl CalcScreen {
 
         // Keypad grid (column count is layout-dependent).
         self.key_rects.clear();
-        let cols = self.cols;
-        let rows = self.keys.len().div_ceil(cols);
         let cw = (grid.width() - m.cell_gap * (cols as f64 - 1.0)) / cols as f64;
-        let ch = ((grid.height() - m.cell_gap * (rows as f64 - 1.0)) / rows as f64)
-            .clamp(1.0, m.key_max_h.max(1.0));
         for idx in 0..self.keys.len() {
             let r = idx / cols;
             let c = idx % cols;
@@ -791,6 +806,13 @@ mod tests {
             (f64::midpoint(left, right) - centre).abs() < m.pad + 0.5,
             "the pad is centred"
         );
+        // ...and, its keys stopped short of the height, it stands in the
+        // middle of the window, not at the top above a blank half.
+        let bottom = s.key_rects.iter().map(|r| r.y1).fold(0.0, f64::max);
+        let above = s.display_rect.y0 - content.y0;
+        let below = content.y1 - bottom;
+        assert!(above > m.pad + 1.0, "the pad moved down: {above}");
+        assert!((above - below).abs() < 2.0, "{above} above, {below} below");
     }
 
     /// The four basic operators sit in one column in every layout, so the
