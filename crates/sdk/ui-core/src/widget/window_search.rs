@@ -336,15 +336,7 @@ impl SearchDriver {
             if session.is_stale(query, options) {
                 session.search(target, query, options, Some(0));
             }
-            let current = session
-                .position()
-                .map(|(current, _)| current.saturating_sub(1));
-            changed = if all {
-                target.replace_all(with) > 0
-            } else {
-                current.is_some_and(|current| target.replace(current, with))
-            };
-            session.search(target, query, options, current);
+            changed = session.replace(target, query, options, with, all);
         });
         let (current, total) = session.position().unwrap_or((0, session.matches()));
         self.count = Some(FilterCount::new(current, total));

@@ -306,12 +306,15 @@ impl App {
 
     /// What the search found shows on the app's next frame: matches
     /// painted, a match scrolled into view, a list narrowed, a match
-    /// replaced.
+    /// replaced (the widgets write it when they settle, in that frame's
+    /// sync).
     #[cfg(feature = "native")]
     fn window_search_touched(&mut self, touched: bool) {
         if touched {
             self.mark_semantic_tree_stale();
             self.layout.layout_dirty = true;
+            // A replacement is written when the widgets settle, in the sync.
+            self.needs_sync = true;
         }
     }
 }
