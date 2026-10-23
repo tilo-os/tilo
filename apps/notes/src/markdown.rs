@@ -414,14 +414,29 @@ pub fn parse_inline(line: &str) -> InlineText {
         // widths), so this lookup cannot fail in practice; bail out of
         // the loop rather than panicking if that invariant is ever
         // broken.
-        let Some(c) = line.get(i..).and_then(|rest| rest.chars().next()) else {
+        let Some(next) = push_literal(line, i, &mut plain) else {
             break;
         };
-        plain.push(c);
-        i += c.len_utf8();
+        i = next;
     }
     marks.sort_by_key(|m| m.range.start);
     InlineText { text: plain, marks }
+}
+
+/// Copy the character at byte `at` of `line` to `plain` as text; returns
+/// where the next one starts. A backslash before ASCII punctuation is
+/// Markdown's escape: that character, never a delimiter.
+fn push_literal(line: &str, at: usize, plain: &mut String) -> Option<usize> {
+    let c = line.get(at..)?.chars().next()?;
+    if c == '\\'
+        && let Some(&escaped) = line.as_bytes().get(at + 1)
+        && escaped.is_ascii_punctuation()
+    {
+        plain.push(char::from(escaped));
+        return Some(at + 2);
+    }
+    plain.push(c);
+    Some(at + c.len_utf8())
 }
 
 fn paired_mark_at(bytes: &[u8], at: usize) -> Option<(u8, Mark)> {
@@ -721,6 +736,9 @@ pub fn serialize_inline(text: &InlineText) -> String {
             let Some(c) = text.text.get(i..).and_then(|rest| rest.chars().next()) else {
                 break;
             };
+            if needs_escape(text, i, c, &open) {
+                out.push('\\');
+            }
             out.push(c);
             i += c.len_utf8();
         } else {
@@ -728,6 +746,38 @@ pub fn serialize_inline(text: &InlineText) -> String {
         }
     }
     out
+}
+
+/// Whether the character `c` at byte `at` of `text`, inside the `open`
+/// marks, would read back as Markdown syntax and is written escaped. Stars,
+/// backticks and brackets always would; underscores and tildes when doubled
+/// or against a mark's delimiter; a backslash before punctuation or a
+/// delimiter. Code and page-link text is read back verbatim, so is never
+/// escaped.
+fn needs_escape(text: &InlineText, at: usize, c: char, open: &[&MarkSpan]) -> bool {
+    if open
+        .iter()
+        .any(|m| matches!(m.mark, Mark::Code | Mark::Link(_) | Mark::Transclusion(_)))
+    {
+        return false;
+    }
+    let next_at = at + c.len_utf8();
+    let next = text
+        .text
+        .get(next_at..)
+        .and_then(|rest| rest.chars().next());
+    let delimiter_next = || {
+        text.marks
+            .iter()
+            .any(|m| m.range.start == next_at || m.range.end == next_at)
+    };
+    match c {
+        '*' | '`' | '[' => true,
+        ']' => open.iter().any(|m| matches!(m.mark, Mark::ExternalLink(_))),
+        '_' | '~' => next == Some(c) || delimiter_next(),
+        '\\' => next.is_some_and(|next| next.is_ascii_punctuation()) || delimiter_next(),
+        _ => false,
+    }
 }
 
 /// Parse a markdown string into a flat list of [`BlockSpec`]s.
@@ -951,6 +1001,16 @@ fn serialize_hard_breaks(text: &InlineText, continuation: &str) -> String {
     serialize_inline(text).replace('\n', &format!("  \n{continuation}"))
 }
 
+/// A paragraph's Markdown. A picture is a paragraph holding its Markdown,
+/// written as is rather than escaped into text.
+fn serialize_paragraph(text: &InlineText) -> std::borrow::Cow<'_, str> {
+    if text.marks.is_empty() && standalone_image_syntax(&text.text) {
+        text.text.as_str().into()
+    } else {
+        serialize_hard_breaks(text, "").into()
+    }
+}
+
 /// A callout as a GitHub alert: its marker line, then its quoted text.
 fn serialize_callout(out: &mut String, kind: ui::widget::CalloutKind, text: &InlineText) {
     out.push_str("> ");
@@ -1004,7 +1064,7 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
                     out.push_str(line);
                 }
             }
-            BlockSpec::Paragraph(t) => out.push_str(&serialize_hard_breaks(t, "")),
+            BlockSpec::Paragraph(t) => out.push_str(&serialize_paragraph(t)),
             BlockSpec::Quote(t) => {
                 out.push_str("> ");
                 out.push_str(&serialize_hard_breaks(t, "> "));
@@ -1667,6 +1727,55 @@ Last paragraph.
                 "{exported:?} exports the same again"
             );
         }
+    }
+
+    /// Text that happens to hold Markdown's characters — arithmetic, a
+    /// snake_case name, a backtick, brackets — exports escaped and reads back
+    /// as the same text without marks, instead of losing its stars to an
+    /// italic. A backslash before an ordinary letter stays as written.
+    #[test]
+    fn markdown_characters_typed_as_text_survive_export_and_import() {
+        for text in [
+            "5 * 3 * 2 = 30",
+            "2*3*4",
+            "snake__case__name",
+            "x___y",
+            "use `ls` here",
+            "see [[not a page]]",
+            "![[not a page]]",
+            "[label](https://example.test)",
+            "~~kept~~",
+            "a \\* b",
+            "C:\\Users\\me",
+            "ends in \\",
+            "tail_",
+            "**",
+        ] {
+            let exported = serialize_inline(&InlineText::plain(text));
+            assert_eq!(
+                parse_inline(&exported),
+                InlineText::plain(text),
+                "{text:?} exported as {exported:?}"
+            );
+        }
+        assert_eq!(
+            serialize_inline(&InlineText::plain("C:\\Users\\me")),
+            "C:\\Users\\me",
+            "a backslash before a letter needs no escape"
+        );
+        let marked = InlineText::new(
+            "a*b_ [c]",
+            vec![
+                MarkSpan::new(0..3, Mark::Bold),
+                MarkSpan::new(5..8, Mark::ExternalLink("https://example.test".into())),
+            ],
+        );
+        assert_eq!(parse_inline(&serialize_inline(&marked)), marked);
+        assert_eq!(
+            parse_inline("2\\*3\\*4"),
+            InlineText::plain("2*3*4"),
+            "a Markdown escape imports as its character"
+        );
     }
 
     #[test]
