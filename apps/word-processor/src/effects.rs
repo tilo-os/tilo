@@ -80,7 +80,7 @@ pub enum WordProcessorEffect {
     /// Markdown, HTML, RTF, by its name) the room holds as content, while
     /// the document is empty; a document someone wrote is never replaced.
     /// Undo takes it back.
-    #[effect(returns, audience = "agents")]
+    #[effect(returns, kind = "undoable", audience = "agents")]
     ImportDocxContent {
         #[param(content, "The document's content address, `tilo.content:<hash>`")]
         content: String,
@@ -398,10 +398,14 @@ pub enum WordProcessorEffect {
     /// Place image.
     ///
     /// Places an image another action produced at your caret, at `at`, or
-    /// after the heading `after` names by its text.
-    #[effect(edit, participant, audience = "agents")]
+    /// after the heading `after` names by its text. Answers with the blocks
+    /// it changed, the image's among them.
+    #[effect(edit, participant, job, returns, audience = "agents")]
     PlaceImage {
-        #[param(content, "The image another action produced, by its content hash")]
+        #[param(
+            content,
+            "The image another action produced: its content address (`tilo.content:<hash>`) or hash"
+        )]
         content: String,
         #[param(
             "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",

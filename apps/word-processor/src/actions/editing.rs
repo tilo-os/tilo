@@ -1487,13 +1487,15 @@ pub fn comment_range(view: &ParticipantView, doc: &AutoCommit) -> Result<Span, E
     })
 }
 
-/// Place the image `hash`, kept in `content`, at the caret.
+/// Place the image `hash` (or its `tilo.content:<hash>` address), kept in
+/// `content`, at the caret.
 pub fn place_image(
     view: &ParticipantView,
     doc: &AutoCommit,
     content: &tilo_content::ContentStore,
     hash: &str,
 ) -> EditResult {
+    let hash = tilo_actions::content_hash(hash.trim()).unwrap_or(hash);
     let bytes = content.read(hash).ok_or_else(|| {
         EditingError::Invalid(format!("content `{hash}` is not available on this machine"))
     })?;

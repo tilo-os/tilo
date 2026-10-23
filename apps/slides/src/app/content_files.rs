@@ -18,6 +18,12 @@ impl SlidesApp {
         cx: &EffectCx<DeckRecord, Self>,
     ) -> EffectAnswer {
         let hash = ui::tilo_actions::content_hash(content.trim())
+            // A plan that carried the content gives its bare hash.
+            .or_else(|| {
+                let bare = content.trim();
+                (bare.len() == 64 && bare.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                    .then_some(bare)
+            })
             .ok_or_else(|| format!("`{content}` names no content: give `tilo.content:<hash>`"))?
             .to_ascii_lowercase();
         if !cx.live().get().is_untouched() {

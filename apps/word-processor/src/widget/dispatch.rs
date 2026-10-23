@@ -1356,6 +1356,12 @@ impl WordProcessorWidget {
         name: Option<&str>,
     ) -> ui::framework::EffectAnswer {
         let hash = ui::tilo_actions::content_hash(content.trim())
+            // A plan that carried the content gives its bare hash.
+            .or_else(|| {
+                let bare = content.trim();
+                (bare.len() == 64 && bare.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                    .then_some(bare)
+            })
             .ok_or_else(|| format!("`{content}` names no content: give `tilo.content:<hash>`"))?
             .to_ascii_lowercase();
         let doc = cx.document().ok_or("the document is not at hand")?.clone();

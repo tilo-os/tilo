@@ -322,6 +322,7 @@ fn an_appearance_given_to_the_worker_is_recorded_on_the_change() {
 const CANVAS: &str = "so.tilo.canvas";
 const PDF: &str = "so.tilo.pdf-viewer";
 const WRITER: &str = "so.tilo.word-processor";
+const SHEETS: &str = "so.tilo.sheets";
 
 /// A new record of `app` held for an agent, lent `room`'s content when
 /// there is a room.
@@ -353,7 +354,19 @@ fn offered(agent: &ConfinedReplica, action: &str) -> Option<ActionDescriptor> {
 }
 
 fn operation(agent: &ConfinedReplica, action: &str) -> ActionDescriptor {
-    offered(agent, action).unwrap_or_else(|| panic!("the record offers {action}"))
+    offered(agent, action).unwrap_or_else(|| {
+        let offered: Vec<String> = agent
+            .survey()
+            .into_iter()
+            .map(|descriptor| {
+                format!(
+                    "{}#{}",
+                    descriptor.address.resource, descriptor.address.action
+                )
+            })
+            .collect();
+        panic!("the record offers {action}: it offers {offered:?}")
+    })
 }
 
 fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -538,11 +551,11 @@ fn an_agent_exports_its_artwork_as_content_the_room_keeps() {
     agent.take_mutation().unwrap().unwrap();
 
     let export = operation(&agent, "export").address;
-    // Exporting reaches outside the record, which an agent's grants ask
-    // its person about: the person confirmed it.
+    // An export the room keeps (no `path`) is a read: an agent's grants
+    // allow it without asking its person.
     let output = agent
-        .invoke(&export, &serde_json::Map::new(), true)
-        .expect("the worker exports the artwork");
+        .invoke(&export, &serde_json::Map::new(), false)
+        .expect("the worker exports the artwork unasked");
     let picture = produced(&room, &output);
     let (width, height) = png_size(&picture);
     assert!(
@@ -571,12 +584,80 @@ fn an_agent_exports_its_artwork_as_content_the_room_keeps() {
     .unwrap()
     .lending(room.clone());
     let again = exporting
-        .invoke(&export, &serde_json::Map::new(), true)
+        .invoke(&export, &serde_json::Map::new(), false)
         .expect("the other worker exports it");
     assert_eq!(
         produced(&room, &again),
         picture,
         "the picture the record refers to reached the other worker"
+    );
+}
+
+/// Importing a workbook the room keeps edits the record and reaches nothing
+/// outside the room: an agent does it unasked, as it exports one.
+#[test]
+fn an_agent_imports_a_workbook_the_room_keeps_unasked() {
+    let room = ContentStore::memory();
+    let source = agents_record(SHEETS, Some(&room));
+    let export = operation(&source, "export-xlsx-content");
+    let exported = source
+        .invoke(&export.address, &serde_json::Map::new(), false)
+        .expect("the agent exports the workbook unasked");
+    let [address] = exported.resources.as_slice() else {
+        panic!("one content resource: {exported:?}");
+    };
+    // The bare hash, as a step carrying the content gives it.
+    let hash = tilo_actions::content_hash(address).unwrap().to_owned();
+    let target = agents_record(SHEETS, Some(&room));
+    let import = operation(&target, "import-xlsx-content");
+    target
+        .invoke(
+            &import.address,
+            &arguments(serde_json::json!({ "content": hash })),
+            false,
+        )
+        .expect("the agent imports the workbook unasked");
+}
+
+/// Placing a picture the room keeps is an ordinary edit of the document:
+/// an agent is offered it, and it runs unasked, under the heading named.
+#[test]
+fn an_agent_places_a_picture_the_room_keeps_under_a_heading() {
+    let room = ContentStore::memory();
+    // The address an export answered with, as `tilo.content:latest` binds.
+    let hash = room.put(&png(8, 0x40)).unwrap();
+    let address = tilo_actions::content_resource(&hash).unwrap();
+    let writer = agents_record(WRITER, Some(&room));
+    let paste = operation(&writer, "paste");
+    writer
+        .invoke(
+            &paste.address,
+            &arguments(serde_json::json!({
+                "markdown": "# Summary\nSee the results below.\n# Results\nNumbers by region"
+            })),
+            false,
+        )
+        .expect("the agent writes the document");
+    writer.take_mutation().unwrap().unwrap();
+    let place = offered(&writer, "place-image").expect("an agent is offered place-image");
+    writer
+        .invoke(
+            &place.address,
+            &arguments(serde_json::json!({ "content": address, "after": "Results" })),
+            false,
+        )
+        .expect("the agent places the picture unasked");
+    assert!(
+        writer.take_mutation().unwrap().is_some(),
+        "placing the picture edits the document"
+    );
+    let body = writer
+        .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
+        .unwrap();
+    // Where it goes under the heading is the word processor's own test.
+    assert!(
+        body.contains(&hash),
+        "the document holds the picture: {body}"
     );
 }
 
