@@ -140,11 +140,6 @@ pub enum Subject {
     Bot(String),
     /// A person working from a device that is not one of theirs.
     ForeignDevice,
-    /// Everyone who acts in the room (a person, an agent, a bot) except
-    /// those it names: a Deny on a record for everyone but its readers
-    /// keeps the record to them, while each reader keeps whatever else they
-    /// hold there ([`Subject::names`]).
-    AllBut(Vec<Subject>),
 }
 
 impl Subject {
@@ -182,29 +177,6 @@ impl Subject {
     pub fn bot(id: impl Into<String>) -> Self {
         Self::Bot(id.into())
     }
-
-    /// Everyone but `except` ([`Self::AllBut`]).
-    #[must_use]
-    pub fn all_but(except: impl IntoIterator<Item = Self>) -> Self {
-        Self::AllBut(except.into_iter().collect())
-    }
-
-    /// Whether a grant for `self` is for whoever is known by `subjects`: one
-    /// of them is `self`; or, for [`Self::AllBut`], they are someone who acts
-    /// (a person, an agent or a bot) and none of them is excepted. A
-    /// delegation that is no one (a task, a Shortcut, an app, a foreign
-    /// device) is bounded by the person it acts for, never named here.
-    #[must_use]
-    pub fn names(&self, subjects: &[Self]) -> bool {
-        match self {
-            Self::AllBut(except) => {
-                subjects.iter().any(|subject| {
-                    matches!(subject, Self::Person(_) | Self::Agent(_) | Self::Bot(_))
-                }) && !subjects.iter().any(|subject| except.contains(subject))
-            }
-            _ => subjects.contains(self),
-        }
-    }
 }
 
 impl fmt::Display for Subject {
@@ -218,16 +190,6 @@ impl fmt::Display for Subject {
             Self::App(id) => write!(f, "app {id}"),
             Self::Bot(id) => write!(f, "bot {}", short(id)),
             Self::ForeignDevice => f.write_str("a device that is not theirs"),
-            Self::AllBut(except) => {
-                f.write_str("everyone but ")?;
-                for (index, subject) in except.iter().enumerate() {
-                    if index > 0 {
-                        f.write_str(", ")?;
-                    }
-                    write!(f, "{subject}")?;
-                }
-                Ok(())
-            }
         }
     }
 }

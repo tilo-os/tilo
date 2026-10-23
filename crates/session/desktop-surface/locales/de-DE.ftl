@@ -453,7 +453,6 @@ activity-grant-task = Aufgabe { $task }
 activity-grant-shortcut = Kurzbefehl { $shortcut }
 activity-grant-bot = Bot { $bot }
 activity-grant-foreign-device = Geräte, die nicht die eigenen sind
-activity-grant-all-but = alle außer { $except }
 activity-member = { $person } als { $role ->
         [owner] Eigentümer
         [moderator] Moderierende

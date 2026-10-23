@@ -435,7 +435,6 @@ activity-grant-task = task { $task }
 activity-grant-shortcut = Shortcut { $shortcut }
 activity-grant-bot = Bot { $bot }
 activity-grant-foreign-device = devices that are not their own
-activity-grant-all-but = everyone but { $except }
 activity-member = { $person } as { $role ->
         [owner] owner
         [moderator] moderator
