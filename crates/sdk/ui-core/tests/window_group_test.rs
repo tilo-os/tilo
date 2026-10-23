@@ -135,7 +135,7 @@ fn manual_resizes_track_the_pointer_and_round_trip_as_shares() {
         );
         assert_eq!(
             g.take_pending_width_change(),
-            Some(750),
+            Some(WindowWidth::Fraction(750)),
             "and hands the shell that same share to persist",
         );
 

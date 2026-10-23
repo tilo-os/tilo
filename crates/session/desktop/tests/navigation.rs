@@ -342,10 +342,28 @@ fn external_navigation_edge_drag_interrupts_an_inflight_width_animation() {
         group.resolved_width_px() > before.width() + 50.0,
         "the real reconciled width spring is still in flight"
     );
+    // The spring moves on each frame an event runs: on a clock held still
+    // the pointer reaching the edge moves it once, and the press grabs the
+    // edge where that frame left it.
+    let held = ui::time::now();
+    with_monotonic_time(held, || {
+        test.frame.send(&ui::synthetic_input::cursor_moved(
+            before.x1 - 2.0,
+            before.center().y,
+        ));
+    });
+    let before = test.surface().row(StripId(2)).unwrap().groups[0].get_rect();
+    assert!(
+        test.surface().row(StripId(2)).unwrap().groups[0].resolved_width_px()
+            > before.width() + 50.0,
+        "the spring is still in flight when the edge is grabbed"
+    );
     let point = (before.x1 - 2.0, before.center().y);
     let moved = |delta| ui::synthetic_input::cursor_moved(point.0 + delta, point.1);
-    test.frame.send(&moved(0.0));
-    test.frame.send(&ui::synthetic_input::mouse_press());
+    with_monotonic_time(held, || {
+        test.frame.send(&moved(0.0));
+        test.frame.send(&ui::synthetic_input::mouse_press());
+    });
     assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
     for delta in [20.0, 40.0, 60.0] {
         test.frame.send(&moved(delta));
@@ -807,7 +825,9 @@ fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent()
     frame.set_theme(ui::Theme::light().with_reduce_motion(true));
     frame.poll_frame().unwrap();
     let before = unsafe { (&*ptr).row(StripId(2)).unwrap().groups[0].get_rect() };
-    assert!(before.height() > 0.0 && before.x1 < 1472.0);
+    // Alone on its strip, the window takes the strip: its trailing edge is
+    // on screen, at most at the display's edge.
+    assert!(before.height() > 0.0 && before.x1 <= 1472.0);
     let point = (before.x1 - 2.0, before.center().y);
     frame.drag_at(point, (point.0 - 80.0, point.1));
     frame.poll_frame().unwrap();

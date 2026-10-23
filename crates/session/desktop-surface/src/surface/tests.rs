@@ -1418,7 +1418,22 @@ fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
     for _ in 0..4 {
         frame.relayout();
     }
+    // The window that had the strip to itself narrows to give the new ones
+    // room; its motion runs on presented frames.
+    play_frames(&mut frame, 40);
     (frame, notes)
+}
+
+/// `count` frames of a 60 Hz display, each presented, on the clock motion
+/// runs by.
+fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
+    let mut at = ui::time::now();
+    for _ in 0..count {
+        at = at.checked_add(Duration::from_millis(16)).unwrap();
+        tilo_clock::testing::with_monotonic_time(at, || {
+            assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
+        });
+    }
 }
 
 /// Someone else opening a window out of sight leaves the view where it was
