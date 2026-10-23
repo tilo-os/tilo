@@ -1618,6 +1618,14 @@ pub trait Widget {
         None
     }
 
+    /// Whether this widget is the one at `address`, or stands in the tree
+    /// for it: a [`Decorator`] stands for every widget it wraps, so a
+    /// scroller drawn inside one is found where the decorator is
+    /// ([`crate::scroll_copy::offer`]).
+    fn stands_for(&self, address: *const ()) -> bool {
+        std::ptr::from_ref(self).cast::<()>() == address
+    }
+
     /// Context that should remain visible with a focused descendant, such
     /// as a form control and its validation message. Opt-in scroll containers
     /// use this block when it fits; otherwise they prioritise the control.

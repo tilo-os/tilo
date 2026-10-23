@@ -659,6 +659,18 @@ impl PdfApp {
         self.fail_pending_selection_effect(why);
     }
 
+    /// The pages were laid out again (the shared page plan arrived or
+    /// changed): every text layer is gone and the selection with it, so a
+    /// copy of it fails. A selection effect names pages as the reader shows
+    /// them, so it waits for their text in the new layout instead.
+    pub(super) fn page_plan_replaced(&mut self, why: &str) {
+        let selecting = self
+            .pending_selection_effect
+            .take_if(|pending| matches!(pending.effect, SelectionEffect::Select { .. }));
+        self.text_layers_replaced(why);
+        self.pending_selection_effect = selecting;
+    }
+
     /// Drop text layers beyond [`MAX_TEXT_LAYERS`] that nothing shows or
     /// needs (on screen, selected, found, under the pointer), farthest from
     /// the current page first.
