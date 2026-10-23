@@ -3562,7 +3562,7 @@ impl BrowserWidget {
     }
     fn set_adblock(&self, enabled: bool) {
         if enabled {
-            crate::blocker::spawn_filter_loader(self.engine.clone());
+            crate::blocker::spawn_filter_loader(self.engine.clone(), None);
             self.install_blocking_scripts();
         } else {
             if self.engine.supports_native_filtering() {
@@ -5831,18 +5831,19 @@ impl BrowserWidget {
             if !self.headless {
                 self.engine
                     .send(WebViewCommand::SetClearOnExit(self.settings.clear_on_exit));
+                let first = (!self.explicit_navigation_requested)
+                    .then(|| WebViewCommand::Navigate(self.initial_url.clone()));
                 if self.settings.adblock_enabled {
-                    crate::blocker::spawn_filter_loader(self.engine.clone());
                     // Scriptlet-style blocking (YouTube ad-skip etc.) the
                     // declarative content filter can't express.
                     self.install_blocking_scripts();
-                }
-                if !self.settings.adblock_enabled {
+                    // The first page loads once the cached rules are in.
+                    crate::blocker::spawn_filter_loader(self.engine.clone(), first);
+                } else {
                     self.set_adblock(false);
-                }
-                if !self.explicit_navigation_requested {
-                    self.engine
-                        .send(WebViewCommand::Navigate(self.initial_url.clone()));
+                    if let Some(first) = first {
+                        self.engine.send(first);
+                    }
                 }
             }
             self.bootstrap_done = true;
