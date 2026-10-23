@@ -1056,7 +1056,7 @@ impl ToolbarRow {
             return false;
         };
         match slot {
-            Slot::Sidebar => toolbar.sidebar.is_some(),
+            Slot::Sidebar => toolbar.sidebar.is_some() && !toolbar.sidebar_unavailable,
             Slot::Back => toolbar.navigation.is_some_and(|nav| nav.back),
             Slot::Forward => toolbar.navigation.is_some_and(|nav| nav.forward),
             Slot::Leading(i) => toolbar.leading.get(*i).is_some_and(|a| a.enabled),
@@ -1769,7 +1769,7 @@ impl ToolbarRow {
                 crate::i18n::I18nManager::lookup_plain(sidebar_key(toolbar)),
                 SIDEBAR_TARGET.into(),
                 self.slots.sidebar,
-                true,
+                !toolbar.sidebar_unavailable,
             );
             toggle.role = Role::ToggleButton;
             toggle.state.checked = Some(open);
@@ -2320,7 +2320,11 @@ fn paint_slots(
             tr,
             theme,
             (slots.sidebar, Icon::PanelLeft),
-            face(Slot::Sidebar, true, shows_on(toolbar, &Slot::Sidebar)),
+            face(
+                Slot::Sidebar,
+                !toolbar.sidebar_unavailable,
+                shows_on(toolbar, &Slot::Sidebar),
+            ),
         );
     }
     if let Some(nav) = toolbar.navigation {
