@@ -15,7 +15,8 @@
 #            a third device through one without the identity key, sibling unlock and, on
 #            x86_64, wake (os/dev/test-nearby-pairing.sh); device-admin reach through a relay
 #            (os/dev/test-device-admin-reach.sh)
-#   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh)
+#   desktop  the installed desktop from the sign-in screen on, ending with a live update of a
+#            newer image (os/dev/test-installed-desktop.sh)
 #   splash   the boot splash on a panel larger than the firmware's mode (os/dev/check-boot-splash.py)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
@@ -69,7 +70,21 @@ TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=$scratch/dev-disk 
   bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
   || { tail -n 80 "$out/install.log"; die 'the dev image does not install onto a disk'; }
 unset TILO_DEV_DIRECT_BUNDLE_DIR
-podman rmi -f localhost/tilo-vm:ci >/dev/null
+# The update the live-update gate stages: the dev image with one file added, served by the
+# registry the install left running, which the guests reach as the host (10.0.2.2).
+probe=/usr/share/tilo/live-update-probe
+probe_text="live update of ${revision:0:12}"
+mkdir -p "$scratch/live-update"
+printf '%s\n' "$probe_text" > "$scratch/live-update/probe"
+printf 'FROM localhost/tilo-vm:ci\nCOPY probe %s\n' "$probe" > "$scratch/live-update/Containerfile"
+podman build -q -t localhost/tilo-vm:live-update-check "$scratch/live-update" >/dev/null
+registry_port=$(podman port tilo-disk-registry 5000/tcp | head -n 1)
+registry_port=${registry_port##*:}
+[[ $registry_port =~ ^[0-9]+$ ]] || die 'the install left no local registry for the live-update gate'
+skopeo copy -q --dest-tls-verify=false containers-storage:localhost/tilo-vm:live-update-check \
+  "docker://localhost:$registry_port/tilo-vm:live-update-check"
+live_update=(--live-update "10.0.2.2:$registry_port/tilo-vm" registry.tilo.so/tilo/tilo-vm:live-update-check "$probe" "$probe_text")
+podman rmi -f localhost/tilo-vm:ci localhost/tilo-vm:live-update-check >/dev/null
 disk=$out/disk/disk.qcow2
 mv "$scratch/dev-disk/qcow2/disk.qcow2" "$disk"
 printf '%s\n' "$revision" > "$out/disk/revision"
@@ -92,7 +107,8 @@ devices() {
   return "$rc"
 }
 desktop() {
-  bash os/dev/test-installed-desktop.sh "$disk" --out "$out/installed-desktop" --base-digest "$(cat "$image/digest")"
+  bash os/dev/test-installed-desktop.sh "$disk" --out "$out/installed-desktop" --base-digest "$(cat "$image/digest")" \
+    "${live_update[@]}"
 }
 splash() {
   python3 os/dev/check-boot-splash.py --arch "$arch" --out "$out/boot-splash" "oci:$image/oci:tilo"
