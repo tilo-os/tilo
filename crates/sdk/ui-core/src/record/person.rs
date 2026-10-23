@@ -62,6 +62,10 @@ pub struct PersonRecords {
     /// replica that syncs with it and stores nothing.
     replica: bool,
     author: UserId,
+    /// Where the person's records of other apps are kept, when not beside
+    /// these: a host that holds them itself lends them to the apps it shows
+    /// ([`Self::sharing`]).
+    others: Option<RecordOwners>,
 }
 
 impl PersonRecords {
@@ -79,6 +83,7 @@ impl PersonRecords {
             owners: owners.clone(),
             replica: false,
             author,
+            others: None,
         })
     }
 
@@ -95,6 +100,7 @@ impl PersonRecords {
             owners,
             replica: true,
             author,
+            others: None,
         })
     }
 
@@ -111,13 +117,24 @@ impl PersonRecords {
         if self.store.backend().is_none() {
             return Self::replica(package_id, self.author.clone());
         }
-        let mut owners = self.owners.clone();
+        let mut owners = self.others.clone().unwrap_or_else(|| self.owners.clone());
         Ok(Self {
             store: owners.open_person(package_id, &scope_of(&self.author))?,
             owners,
             replica: self.replica,
             author: self.author.clone(),
+            others: None,
         })
+    }
+
+    /// These records, with the person's records of other apps
+    /// ([`Self::of_package`]) opened where `others` keeps them: the host
+    /// holds those itself and lends them to every app it shows in its
+    /// process, so the process has one copy of each.
+    #[must_use]
+    pub fn sharing(mut self, others: &Self) -> Self {
+        self.others = Some(others.owners.clone());
+        self
     }
 
     /// Write out what is not stored yet, as closing the window does.

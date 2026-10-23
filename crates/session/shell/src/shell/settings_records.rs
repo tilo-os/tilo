@@ -10,77 +10,159 @@
 //! weakens the person's security asks them first, and an agent's needs
 //! their own answer.
 //!
-//! Their accounts are held here too, the record Settings keeps them in:
-//! the session's messaging changes it through its actions, and it syncs
-//! with the sections to the person's other devices.
+//! Their accounts and contacts are held here too, in the records Settings
+//! and Contacts keep them in: the apps the session shows open them here,
+//! one copy in the process; the session's messaging changes the accounts
+//! through their actions; and they sync with the sections to the person's
+//! other devices.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
-use accounts::person::{ACCOUNTS_OWNER, PersonAccounts};
+use accounts::person::PersonAccounts;
 use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, RiskLevel};
 use tilo_app::framework::SettingsRecords;
-use tilo_resource::Resource as _;
+use tilo_contact_directory::ContactDirectory;
+use tilo_resource::SharedRecord;
+use ui::record::person::PersonRecords;
 
 use crate::shell::search::action_api::ActionError;
 
 /// One piece of work on the person's records, run where they are held.
 type Job = Box<dyn FnOnce(&SettingsRecords) + Send>;
 
-/// What the thread holding the person's records is asked.
-enum Asked {
-    Job(Job),
-    /// The broker sent something for their records.
-    Wake,
-    /// Their keeper was let go.
-    Stop,
-}
-
 /// The directory of the person's records, and the person.
 type HeldFor = (Option<PathBuf>, String);
 
-/// The person's records the session keeps — Settings' sections and their
-/// accounts — held on a thread of their own, since the records are
-/// single-threaded while the palette, the broker and messaging change them
-/// from theirs. Clones share the thread; it stops once the last is let go.
-#[derive(Clone)]
-pub(crate) struct Holder(Arc<Keeper>);
+const UNAVAILABLE: &str = "the person's records are unavailable";
 
-struct Keeper {
+/// The person's records the session keeps — Settings' sections, their
+/// accounts and contacts — held on the thread that shows the session's
+/// apps, which open them there: one copy in the process. The records are
+/// single-threaded; what another thread (the broker's) asks of them runs
+/// when the holding thread next pumps them ([`pump`]). Clones share them.
+#[derive(Clone)]
+pub(crate) struct Holder(Arc<Port>);
+
+/// How a holder reaches the thread holding the records.
+struct Port {
     held_for: HeldFor,
-    jobs: mpsc::Sender<Asked>,
+    jobs: mpsc::Sender<Job>,
+    /// Whether they need pumping: work was sent, or the broker sent
+    /// something for them.
+    pending: AtomicBool,
 }
 
-impl Drop for Keeper {
-    fn drop(&mut self) {
-        let _ = self.jobs.send(Asked::Stop);
+impl Port {
+    fn wake(&self) {
+        self.pending.store(true, Ordering::Release);
+        let wake = WAKE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(wake) = wake {
+            wake();
+        }
     }
 }
 
-/// The session's holder: one per person and directory of their records;
-/// another opens them anew.
+/// Wakes the thread holding the session's records to pump them
+/// ([`pump`]), once it bound it ([`wake_with`]).
+static WAKE: Mutex<Option<crate::session_runtime::Wake>> = Mutex::new(None);
+
+/// Wake the thread holding the session's records with `wake` whenever they
+/// need it to pump them.
+pub(crate) fn wake_with(wake: crate::session_runtime::Wake) {
+    *WAKE.lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
+}
+
+/// Run what other threads asked of the session's records and keep them in
+/// step with the person's other devices: on the thread holding them, each
+/// time it is woken.
+pub(crate) fn pump() {
+    if let Ok(holder) = Holder::session()
+        && let Some(held) = holder.here()
+        && holder.0.pending.swap(false, Ordering::AcqRel)
+    {
+        held.pump();
+    }
+}
+
+/// The person's records, on the thread holding them.
+struct Held {
+    port: Arc<Port>,
+    records: SettingsRecords,
+    /// Where they are kept, which the apps shown on this thread open the
+    /// person's records of other apps in; `None` without a directory.
+    person: Option<PersonRecords>,
+    jobs: mpsc::Receiver<Job>,
+    /// Their routes to the person's other devices, when they have a room.
+    routes: RefCell<Option<ui::app::record_routes::RecordRouteParticipant>>,
+}
+
+impl Held {
+    /// Run what other threads asked, then publish what changed and merge
+    /// what the person's other devices sent.
+    fn pump(&self) {
+        for job in self.jobs.try_iter() {
+            job(&self.records);
+        }
+        if let Ok(mut routes) = self.routes.try_borrow_mut()
+            && let Some(routes) = routes.as_mut()
+        {
+            routes.pump(&self.records.history_owners());
+        }
+    }
+}
+
+thread_local! {
+    /// The person's records this thread holds, one holding per person
+    /// and directory of their records.
+    static HELD: RefCell<Vec<Rc<Held>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The session's holder.
 static HOLDER: Mutex<Option<Holder>> = Mutex::new(None);
 
 impl Holder {
-    /// The person's records as the session keeps them: in the directory
-    /// Settings keeps them in, taking in once what the session kept of them
-    /// beside the records of the apps it shows itself.
+    /// The person's records as the session keeps them, held on this thread.
     pub(crate) fn of(person: &str) -> Self {
         Self::held((person_dir(), person.to_owned()), &session_apps())
     }
 
-    /// The person's records in `dir`, held for `person`: the session's
-    /// holder when it holds those, else a holder of them that becomes it.
+    /// The person's records in `dir`, held for `person` on this thread —
+    /// opened here unless it holds them already, taking in once what the
+    /// session kept of them under `former` — and the session's from now on.
     pub(crate) fn held(held_for: HeldFor, former: &Path) -> Self {
-        let mut holder = HOLDER
+        let here = HELD.with(|held| {
+            held.borrow()
+                .iter()
+                .find(|held| held.port.held_for == held_for)
+                .map(|held| Self(Arc::clone(&held.port)))
+        });
+        let holder = here.unwrap_or_else(|| hold(held_for, former));
+        *HOLDER.lock().unwrap_or_else(PoisonError::into_inner) = Some(holder.clone());
+        holder
+    }
+
+    /// The session's holder, once the thread showing its apps holds the
+    /// person's records.
+    fn session() -> Result<Self, String> {
+        HOLDER
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(held) = holder.as_ref().filter(|held| held.0.held_for == held_for) {
-            return held.clone();
-        }
-        let held = Self(Arc::new(hold(held_for, former.to_path_buf())));
-        *holder = Some(held.clone());
-        held
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| UNAVAILABLE.to_owned())
+    }
+
+    /// The records, when this thread holds them.
+    fn here(&self) -> Option<Rc<Held>> {
+        HELD.with(|held| {
+            held.borrow()
+                .iter()
+                .find(|held| Arc::ptr_eq(&held.port, &self.0))
+                .cloned()
+        })
     }
 
     /// Run `work` on the person's records, where they are held.
@@ -88,33 +170,43 @@ impl Holder {
         &self,
         work: impl FnOnce(&SettingsRecords) -> T + Send + 'static,
     ) -> Result<T, String> {
+        if let Some(held) = self.here() {
+            let answer = work(&held.records);
+            held.pump();
+            return Ok(answer);
+        }
         let (answer, answered) = mpsc::channel();
         self.0
             .jobs
-            .send(Asked::Job(Box::new(move |records| {
+            .send(Box::new(move |records| {
                 let _ = answer.send(work(records));
-            })))
-            .map_err(|_| "the person's records are unavailable")?;
-        answered
-            .recv()
-            .map_err(|_| "the person's records are unavailable".to_owned())
+            }))
+            .map_err(|_| UNAVAILABLE)?;
+        self.0.wake();
+        answered.recv().map_err(|_| UNAVAILABLE.to_owned())
     }
 
-    /// Read the person's accounts.
-    pub(crate) fn accounts<T: Send + 'static>(
+    /// Where the records are kept, on the thread holding them: the apps it
+    /// shows open the person's records of other apps there.
+    pub(crate) fn person_records(&self) -> Option<PersonRecords> {
+        self.here()?.person.clone()
+    }
+
+    /// Read the person's shared record `P`.
+    pub(crate) fn read<P: SharedRecord, T: Send + 'static>(
         &self,
-        read: impl FnOnce(&PersonAccounts) -> T + Send + 'static,
+        read: impl FnOnce(&P::State) -> T + Send + 'static,
     ) -> Result<T, String> {
         self.run(|records| {
             records
-                .shared::<PersonAccounts>()
+                .shared::<P>()
                 .map(|record| record.with(read))
-                .ok_or_else(|| "the person's accounts are unavailable".to_owned())
+                .ok_or_else(|| UNAVAILABLE.to_owned())
         })?
     }
 
     /// Change the person's accounts by the action `invoke` names, as the
-    /// person, if `admitted` still lets it run when it does, and store the
+    /// person, if `admitted` lets it run when it does, and store the
     /// change.
     pub(crate) fn change_accounts(
         &self,
@@ -122,9 +214,7 @@ impl Holder {
         admitted: impl FnOnce() -> Result<(), String> + Send + 'static,
     ) -> Result<(), String> {
         self.run(move |records| {
-            let record = records
-                .shared::<PersonAccounts>()
-                .ok_or("the person's accounts are unavailable")?;
+            let record = records.shared::<PersonAccounts>().ok_or(UNAVAILABLE)?;
             admitted()?;
             record.invoke(&invoke).map_err(|error| error.to_string())?;
             record.record().flush();
@@ -133,15 +223,24 @@ impl Holder {
     }
 }
 
-/// Run `work` on the person's settings sections, where they are held.
+/// Run `work` on the person's settings sections, held on this thread: the
+/// session's loop, where the palette asks.
 fn with_records<T: Send + 'static>(
     work: impl FnOnce(&SettingsRecords) -> T + Send + 'static,
 ) -> Result<T, String> {
     Holder::of(&crate::shell::state::local_user_id()).run(work)
 }
 
+/// Run `work` on the person's settings sections where the session holds
+/// them, for the broker on its own thread.
+fn broker_records<T: Send + 'static>(
+    work: impl FnOnce(&SettingsRecords) -> T + Send + 'static,
+) -> Result<T, String> {
+    Holder::session()?.run(work)
+}
+
 /// Where Settings keeps the person's records on this device, which the
-/// session keeps its sections and their accounts in.
+/// session keeps its sections and their accounts and contacts in.
 pub(crate) fn person_dir() -> Option<PathBuf> {
     launcher::appdir::host_data_home()
         .map(|home| launcher::appdir::host_person_dir(&home, settings_sections::APP_ID))
@@ -154,70 +253,73 @@ pub(crate) fn session_apps() -> PathBuf {
         .join("apps")
 }
 
-/// Hold the person's records for `person`, in `dir`, on a thread that runs
-/// every job sent until its keeper is let go, and keeps their records in
-/// step with the person's other devices over their routes. What the session
-/// kept of them under `former` is taken in first.
-fn hold((dir, person): HeldFor, former: PathBuf) -> Keeper {
-    let (jobs, asked) = mpsc::channel::<Asked>();
-    let waker = jobs.clone();
-    let held_for = (dir.clone(), person.clone());
-    let spawned = std::thread::Builder::new()
-        .name("settings-records".into())
-        .spawn(move || {
-            if let Some(dir) = &dir
-                && let Err(error) = take_in_accounts(&former, dir, &person)
-            {
-                tracing::warn!(%error, "the person's accounts kept by the session were not taken in");
+/// Hold the person's records for `person`, in `dir`, on this thread, kept
+/// in step with the person's other devices over their routes. What the
+/// session kept of them under `former` is taken in first.
+fn hold((dir, person): HeldFor, former: &Path) -> Holder {
+    if let Some(dir) = &dir {
+        for taken in [
+            take_in::<PersonAccounts>(former, dir, &person),
+            take_in::<ContactDirectory>(former, dir, &person),
+        ] {
+            if let Err(error) = taken {
+                tracing::warn!(%error, "the person's records kept by the session were not taken in");
             }
-            // Without a root identity there is no person room: the records
-            // are this device's alone.
-            let room = collab_types::person_room_of(&person);
-            let records = open(dir.as_deref(), person);
-            // Held from the start, so what the person's other devices
-            // change reaches them.
-            drop(records.shared::<PersonAccounts>());
-            let mut routes = room.and_then(|room| {
-                ui::app::record_routes::RecordRouteParticipant::connect(
-                    crate::shell::in_process::session_connector(
-                        launcher::services::collab_socket(),
-                        launcher::services::identity_socket(),
-                        settings_sections::APP_ID,
-                        &room.to_string(),
-                    ),
-                    &records.history_owners(),
-                    move || {
-                        let _ = waker.send(Asked::Wake);
-                    },
-                )
-            });
-            for asked in asked {
-                match asked {
-                    Asked::Job(job) => job(&records),
-                    Asked::Wake => {}
-                    Asked::Stop => break,
-                }
-                if let Some(routes) = &mut routes {
-                    routes.pump(&records.history_owners());
-                }
-            }
-        });
-    if let Err(error) = spawned {
-        tracing::warn!(%error, "the person's settings could not be held");
+        }
     }
-    Keeper { held_for, jobs }
+    let (jobs, asked) = mpsc::channel();
+    let port = Arc::new(Port {
+        held_for: (dir.clone(), person.clone()),
+        jobs,
+        pending: AtomicBool::new(false),
+    });
+    // Without a root identity there is no person room: the records are
+    // this device's alone.
+    let room = collab_types::person_room_of(&person);
+    let (records, person) = open(dir.as_deref(), person);
+    // Held from the start, so what the person's other devices change
+    // reaches them.
+    drop(records.shared::<PersonAccounts>());
+    drop(records.shared::<ContactDirectory>());
+    let waking = Arc::downgrade(&port);
+    let routes = room.and_then(|room| {
+        ui::app::record_routes::RecordRouteParticipant::connect(
+            crate::shell::in_process::session_connector(
+                launcher::services::collab_socket(),
+                launcher::services::identity_socket(),
+                settings_sections::APP_ID,
+                &room.to_string(),
+            ),
+            &records.history_owners(),
+            move || {
+                if let Some(port) = waking.upgrade() {
+                    port.wake();
+                }
+            },
+        )
+    });
+    let held = Rc::new(Held {
+        port: Arc::clone(&port),
+        records,
+        person,
+        jobs: asked,
+        routes: RefCell::new(routes),
+    });
+    HELD.with(|here| here.borrow_mut().push(held));
+    Holder(port)
 }
 
-/// Take into the person's records in `dir` their accounts the session kept
-/// in its own records under `former`: the whole record, its history with
-/// it, merged into the one kept in `dir` and stored, then removed from
-/// `former`. Whether there was one to take in; once taken, there is none.
-fn take_in_accounts(former: &Path, dir: &Path, person: &str) -> Result<bool, String> {
-    let kind = ui::record::RecordKind::new(PersonAccounts::KIND);
+/// Take into the person's records in `dir` their shared record `P` the
+/// session kept in its own records under `former`: the whole record, its
+/// history with it, merged into the one kept in `dir` and stored, then
+/// removed from `former`. Whether there was one to take in; once taken,
+/// there is none.
+fn take_in<P: SharedRecord>(former: &Path, dir: &Path, person: &str) -> Result<bool, String> {
+    let kind = ui::record::RecordKind::new(P::KIND);
     let author = ui::permissions::UserId(person.to_owned());
-    let kept = std::rc::Rc::new(app_state::FsStore::new(former.to_path_buf()));
+    let kept = Rc::new(app_state::FsStore::new(former.to_path_buf()));
     let key = durable_store::StorageKey::record(
-        ACCOUNTS_OWNER,
+        P::OWNER,
         ui::record::person::scope_of(&author),
         ui::record::person::record_id(&kind).storage_key(),
     );
@@ -229,29 +331,25 @@ fn take_in_accounts(former: &Path, dir: &Path, person: &str) -> Result<bool, Str
     };
     let document = {
         let mut owners = ui::record::RecordOwners::with_store(kept);
-        let records =
-            ui::record::person::PersonRecords::open(&mut owners, ACCOUNTS_OWNER, author.clone())
-                .map_err(|error| error.to_string())?;
+        let records = PersonRecords::open(&mut owners, P::OWNER, author.clone())
+            .map_err(|error| error.to_string())?;
         let Some(record) = records
             .open_existing_record(kind.clone())
             .map_err(|error| error.to_string())?
         else {
             return Ok(false);
         };
-        record
-            .document()
-            .ok_or("the accounts kept are unreadable")?
+        record.document().ok_or("the record kept is unreadable")?
     };
     std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-    let mut owners = ui::record::RecordOwners::with_store(std::rc::Rc::new(
-        app_state::FsStore::new(dir.to_path_buf()),
-    ));
-    let records = ui::record::person::PersonRecords::open(&mut owners, ACCOUNTS_OWNER, author)
-        .map_err(|error| error.to_string())?;
+    let mut owners =
+        ui::record::RecordOwners::with_store(Rc::new(app_state::FsStore::new(dir.to_path_buf())));
+    let records =
+        PersonRecords::open(&mut owners, P::OWNER, author).map_err(|error| error.to_string())?;
     // The record itself, never a copy following another window's.
     records
         .open_original_record(kind, |doc| {
-            PersonAccounts::initialize(doc).map_err(|error| error.to_string())
+            P::initialize(doc).map_err(|error| error.to_string())
         })
         .map_err(|error| error.to_string())?
         .merge_peer_document(document)?;
@@ -262,18 +360,18 @@ fn take_in_accounts(former: &Path, dir: &Path, person: &str) -> Result<bool, Str
 
 /// The person's settings sections, kept in their records in `dir` as
 /// Settings' window keeps them, so each change is a step of theirs they
-/// undo and redo; without records, as stored.
-fn open(dir: Option<&Path>, person: String) -> SettingsRecords {
+/// undo and redo, with those records; without records, as stored.
+fn open(dir: Option<&Path>, person: String) -> (SettingsRecords, Option<PersonRecords>) {
     let records = dir.and_then(|dir| {
         std::fs::create_dir_all(dir)
             .map_err(
                 |error| tracing::warn!(%error, "the person's settings records are unavailable"),
             )
             .ok()?;
-        let mut owners = ui::record::RecordOwners::with_store(std::rc::Rc::new(
-            app_state::FsStore::new(dir.to_path_buf()),
-        ));
-        ui::record::person::PersonRecords::open(
+        let mut owners = ui::record::RecordOwners::with_store(Rc::new(app_state::FsStore::new(
+            dir.to_path_buf(),
+        )));
+        PersonRecords::open(
             &mut owners,
             settings_sections::APP_ID,
             ui::permissions::UserId(person),
@@ -282,14 +380,20 @@ fn open(dir: Option<&Path>, person: String) -> SettingsRecords {
         .ok()
     });
     match records {
-        Some(records) => SettingsRecords::of_person(
-            settings_sections::APP_ID,
-            settings_sections::APP_TITLE,
-            &[settings_sections::declare],
-            records,
-            this_device(),
+        Some(records) => (
+            SettingsRecords::of_person(
+                settings_sections::APP_ID,
+                settings_sections::APP_TITLE,
+                &[settings_sections::declare],
+                records.clone(),
+                this_device(),
+            ),
+            Some(records),
         ),
-        None => SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare),
+        None => (
+            SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare),
+            None,
+        ),
     }
 }
 
@@ -475,7 +579,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
             return descriptors.clone();
         }
         let Ok(descriptors) =
-            with_records(|records| tilo_actions::door::survey(&records.resources()))
+            broker_records(|records| tilo_actions::door::survey(&records.resources()))
         else {
             return Vec::new();
         };
@@ -489,7 +593,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
         argument: Option<&str>,
     ) -> Option<ActionDescriptor> {
         let (address, argument) = (address.clone(), argument.map(str::to_owned));
-        with_records(move |records| {
+        broker_records(move |records| {
             let resources = records.resources();
             let spec = tilo_actions::door::resolve(&resources, &address)?;
             let argument = argument.as_deref();
@@ -515,7 +619,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
         let arguments = arguments_of(request.argument).ok_or("the change carries no arguments")?;
         // The broker admitted it, its confirmation included.
         let (address, actor) = (request.address.clone(), request.actor.id().to_owned());
-        let output = with_records(move |records| {
+        let output = broker_records(move |records| {
             records.invoke(
                 &address,
                 &arguments,
@@ -572,6 +676,7 @@ mod tests {
     #[serial_test::serial]
     fn with_settings_closed_an_agent_weakens_the_lock_only_with_the_persons_answer() {
         let _home = tilo_test_env::TestHome::new().unwrap();
+        let _held = super::Holder::of(&crate::shell::state::local_user_id());
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
         let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
@@ -706,9 +811,9 @@ mod tests {
             record.heads()
         };
 
-        assert!(super::take_in_accounts(&former, &dir, &person).unwrap());
+        assert!(super::take_in::<PersonAccounts>(&former, &dir, &person).unwrap());
         assert!(
-            !super::take_in_accounts(&former, &dir, &person).unwrap(),
+            !super::take_in::<PersonAccounts>(&former, &dir, &person).unwrap(),
             "once taken in, none is left to take"
         );
         assert!(

@@ -612,18 +612,14 @@ impl super::InProcessApps {
                 .messaging_record_wake
                 .clone()
                 .ok_or(LaunchError::BindingMismatch)?;
-            self.messaging_records = Some(
-                records::Records::open(
-                    &mut self.owners,
-                    &self.author.0,
-                    &self.device_id,
-                    self.person_records
-                        .clone()
-                        .ok_or(LaunchError::BindingMismatch)?,
-                    wake,
-                )
-                .map_err(|_| LaunchError::BindingMismatch)?,
-            );
+            self.messaging_records = Some(records::Records::open(
+                &self.author.0,
+                &self.device_id,
+                self.person_records
+                    .clone()
+                    .ok_or(LaunchError::BindingMismatch)?,
+                wake,
+            ));
         }
         self.messaging_records
             .as_ref()

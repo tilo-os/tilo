@@ -317,7 +317,6 @@ impl Actor {
             )
             .map_err(|_| SendError::Revoked)?;
         credential.check()?;
-        super::first_account::ensure_contacts(apps, &identity)?;
         let authority = apps
             .native_messaging_authority(&identity, &credential, &scope)
             .map_err(|_| SendError::Revoked)?;
@@ -592,7 +591,6 @@ impl Actor {
         permission: super::OwnerPermission,
         credential: super::NativeMessagingCredential,
     ) -> Result<(), SendError> {
-        super::first_account::ensure_contacts(apps, &attempt.identity)?;
         let authority = apps
             .native_messaging_authority(&attempt.identity, &credential, &attempt.review.scope)
             .map_err(|_| SendError::Revoked)?;

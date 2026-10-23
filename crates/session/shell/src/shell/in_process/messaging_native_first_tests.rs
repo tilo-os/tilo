@@ -149,7 +149,7 @@ impl Peer {
         );
         assert_eq!(self.mounted.harness.dump_json(), before);
     }
-    fn contacts(&mut self, other: &Self) {
+    fn contacts(&self, other: &Self) {
         let mut directory = tilo_contact_directory::ContactDirectory::default();
         let certificate = &other.rig.admission.host.device_cert;
         let address = format!(
@@ -170,11 +170,9 @@ impl Peer {
                 "native-reviewed-device".into(),
             )
             .unwrap();
-        seed_person(&mut self.apps, &directory);
+        seed_person(&self.apps, &directory);
     }
     fn choose(&mut self) -> String {
-        // The account published reaches the app's copy over its route.
-        carry_accounts(&mut self.apps);
         effect(
             &mut self.mounted.harness,
             &MessagesEffect::OpenPerson {
