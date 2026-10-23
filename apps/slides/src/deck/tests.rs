@@ -65,6 +65,20 @@ fn words(deck: &Replica<Deck>, slide: &Id) -> Vec<String> {
         .collect()
 }
 
+/// Write on the starter slide `first`, so slides added after it keep it:
+/// only an untouched starter gives way to an added slide.
+fn keep_starter(deck: &mut Replica<Deck>, first: &Id) {
+    edit(
+        deck,
+        &Deck::paths()
+            .slides
+            .item(first)
+            .notes
+            .replace("Opening words"),
+    )
+    .unwrap();
+}
+
 fn add_slide(deck: &mut Replica<Deck>, title: &str, body: &str) -> Id {
     let before = slide_ids(deck);
     apply(
@@ -118,6 +132,7 @@ fn every_new_deck_begins_the_same() {
 fn slides_are_added_copied_moved_and_deleted() {
     let mut deck = Replica::<Deck>::new();
     let first = slide_ids(&deck)[0].clone();
+    keep_starter(&mut deck, &first);
     let agenda = add_slide(&mut deck, "Agenda", "One\nTwo");
     assert_eq!(slide_ids(&deck), [first.clone(), agenda.clone()]);
     assert_eq!(words(&deck, &agenda), ["Agenda", "One\nTwo"]);
@@ -452,6 +467,7 @@ fn hostile_or_over_limit_changes_are_refused_atomically() {
 fn ids_keep_changes_in_place_through_divergent_edits() {
     let mut left = Replica::<Deck>::new();
     let first = slide_ids(&left)[0].clone();
+    keep_starter(&mut left, &first);
     let second = add_slide(&mut left, "Second", "Body");
     let third = add_slide(&mut left, "Third", "Body");
     let mut right = left.fork();
