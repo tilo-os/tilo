@@ -108,7 +108,9 @@ impl Calendar {
     /// New event
     ///
     /// Adds an event, on the local calendar unless it names a remote one.
-    #[action]
+    /// One on the local calendar stays in the record; one on a remote
+    /// calendar is queued for its server.
+    #[action(local = calendar::NewEvent::stays_local)]
     pub fn new_event(
         &mut self,
         cx: &mut ActionCx,
@@ -1355,6 +1357,15 @@ pub(crate) fn event_at(title: &str, start: NaiveDateTime) -> Event {
 #[cfg(test)]
 pub(crate) fn at(date: chrono::NaiveDate, hour: u32, minute: u32) -> NaiveDateTime {
     date.and_hms_opt(hour, minute, 0).expect("a time of day")
+}
+
+impl calendar::NewEvent {
+    /// Whether the event goes on the local calendar, so nothing is queued
+    /// for a server: [`Calendar::new_event`]'s kind for this invocation.
+    #[must_use]
+    pub fn stays_local(&self) -> bool {
+        self.event.calendar_id.is_empty()
+    }
 }
 
 #[cfg(test)]

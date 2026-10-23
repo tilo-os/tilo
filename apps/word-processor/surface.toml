@@ -26,6 +26,13 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "replace-body"
+kind = "undoable"
+params = [
+  { name = "markdown", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "replace-text"
 kind = "undoable"
 params = [

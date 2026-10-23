@@ -1310,6 +1310,8 @@ impl AgentParticipant {
         else {
             return Ok(Performed::Done(Ok(None)));
         };
+        let (settled, arguments) = self.settle(&route, address, step.carries.as_deref(), arguments);
+        let address = &settled;
         let generation = self.generation;
         let outcome = self.invoke_step(&route, address, &arguments, false);
         if self.generation != generation {
@@ -1321,6 +1323,65 @@ impl AgentParticipant {
             }
             outcome => Performed::Done(outcome.map_err(actions::Refusal::into_text)),
         })
+    }
+
+    /// The operation `address` names on the record at `route`, as the record
+    /// offers it, and `arguments` for it. A step may name the resource by its
+    /// kind (`chat.messages`, whose messages live in a part of their own) or
+    /// by a field of the record that publishes no resource of its own
+    /// (`word-processor.document/body`): the one operation of that name
+    /// offered there is meant. Content carried under the generic prompt
+    /// (`carries: true` on a record not open when it was planned) goes under
+    /// the operation's content parameter.
+    fn settle(
+        &self,
+        route: &DocumentRoute,
+        address: &ActionAddress,
+        carries: Option<&str>,
+        mut arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> (ActionAddress, serde_json::Map<String, serde_json::Value>) {
+        let Some(app) = self.apps.get(route) else {
+            return (address.clone(), arguments);
+        };
+        let offered = app.survey();
+        let only = |matches: &mut dyn Iterator<Item = &ActionDescriptor>| match (
+            matches.next(),
+            matches.next(),
+        ) {
+            (Some(one), None) => Some(one.clone()),
+            _ => None,
+        };
+        let named = offered
+            .iter()
+            .find(|descriptor| descriptor.address == *address)
+            .cloned()
+            .or_else(|| {
+                only(&mut offered.iter().filter(|descriptor| {
+                    descriptor.address.action == address.action
+                        && descriptor.resource_kind == address.resource
+                }))
+            })
+            .or_else(|| {
+                let (parent, _) = address.resource.rsplit_once('/')?;
+                only(&mut offered.iter().filter(|descriptor| {
+                    descriptor.address.action == address.action
+                        && descriptor.address.resource == parent
+                }))
+            });
+        let Some(descriptor) = named else {
+            return (address.clone(), arguments);
+        };
+        if carries == Some(tilo_actions::PROMPTED_PARAM)
+            && !descriptor
+                .params
+                .iter()
+                .any(|param| param.name == tilo_actions::PROMPTED_PARAM)
+            && let Some(param) = descriptor.params.iter().find(|param| param.is_content())
+            && let Some(value) = arguments.remove(tilo_actions::PROMPTED_PARAM)
+        {
+            arguments.entry(param.name.to_string()).or_insert(value);
+        }
+        (descriptor.address, arguments)
     }
 
     /// Put `step` to the person through their own host, and show the agent

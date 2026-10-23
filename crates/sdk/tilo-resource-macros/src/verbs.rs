@@ -156,6 +156,10 @@ struct ActionOptions {
     /// Queues nothing though its record queues: an undoable change of the
     /// record alone (mail a room holds, which no server keeps).
     local: bool,
+    /// `local = path`: `fn(&params) -> bool`, whether one invocation stays
+    /// in the record (an event on the local calendar) or queues (one on a
+    /// remote calendar), decided from its arguments.
+    local_if: Option<syn::Path>,
     incoming_message: bool,
     answers: bool,
     item: Option<syn::Ident>,
@@ -180,6 +184,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         housekeeping: false,
         external: false,
         local: false,
+        local_if: None,
         incoming_message: false,
         answers: false,
         item: None,
@@ -218,7 +223,11 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         } else if meta.path.is_ident("external") {
             options.external = true;
         } else if meta.path.is_ident("local") {
-            options.local = true;
+            if meta.input.peek(Token![=]) {
+                options.local_if = Some(meta.value()?.parse::<syn::Path>()?);
+            } else {
+                options.local = true;
+            }
         } else if meta.path.is_ident("item") {
             let value = meta.value()?;
             let mut names = vec![value.parse::<syn::Ident>()?];
@@ -1058,13 +1067,16 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             });
         }
         let queues = !outboxes.is_empty() || options.queue.is_some();
-        if verb.options.local && !outboxes.is_empty() {
+        let local = verb.options.local || verb.options.local_if.is_some();
+        if local && !outboxes.is_empty() {
             return Err(syn::Error::new(
                 method.span(),
-                "a `local` action queues nothing: it takes no `&mut Outbox`",
+                "a `local` action queues nothing itself: it takes no `&mut Outbox`",
             ));
         }
-        let action_kind = if queues && !verb.options.local {
+        // Decided by its arguments: declared as the least it is.
+        let by_arguments = queues && verb.options.local_if.is_some();
+        let action_kind = if queues && !local {
             quote!(Outside)
         } else {
             quote!(Undoable)
@@ -1087,7 +1099,16 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 .map(|invoke| invoke.build(0).map(|action| action.operation)),
             });
         }
-        kinds.push(quote!(Self::#variant(..) => #krate::ActionKind::#action_kind,));
+        match (&verb.options.local_if, by_arguments) {
+            (Some(stays), true) => {
+                kinds.push(quote!(Self::#variant(params) => if (#stays)(params) {
+                #krate::ActionKind::Undoable
+            } else {
+                #krate::ActionKind::Outside
+            },))
+            }
+            _ => kinds.push(quote!(Self::#variant(..) => #krate::ActionKind::#action_kind,)),
+        }
         if verb.options.destructive {
             risks.push(quote!(Self::#variant(..) => #krate::__private::RiskLevel::Destructive,));
         }
@@ -1333,6 +1354,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 label: #label_text,
                 description: #description,
                 kind: #krate::ActionKind::#action_kind,
+                by_arguments: #by_arguments,
                 field: #field,
                 destructive: #destructive,
                 housekeeping: #housekeeping,

@@ -138,6 +138,9 @@ pub struct Declaration {
     pub params: Vec<ActionParam>,
     /// What the action is able to do. See [`tilo_actions::ActionContract::kind`].
     pub kind: ActionKind,
+    /// Whether one invocation's kind is decided by its arguments, `kind`
+    /// being the least it is: every gate asks the action built from them.
+    pub by_arguments: bool,
     /// The one field it writes, if only one. See [`Resource::field_of`].
     pub field: Option<&'static str>,
     pub destructive: bool,
@@ -190,6 +193,7 @@ impl Declaration {
             description: None,
             params,
             kind: ActionKind::Undoable,
+            by_arguments: false,
             field: None,
             destructive: false,
             result: None,

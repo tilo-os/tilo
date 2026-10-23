@@ -1170,3 +1170,54 @@ async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
     agent.close();
     host.relay.shutdown().await;
 }
+
+/// Steps written as a scenario writes them: the document's body named as a
+/// field of the record (`word-processor.document/body`), which the record
+/// does not publish as a resource of its own, and a picture carried from
+/// the step before into an operation of a record that was not open when
+/// the steps were read. Both run, unasked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn written_steps_name_a_records_field_and_carry_content_into_it() {
+    const WRITER: &str = "so.tilo.word-processor";
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let store = tilo_content::ContentStore::memory();
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[CANVAS, WRITER],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        store.clone(),
+    )
+    .await;
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            {"app": WRITER, "resource": "word-processor.document/body", "action": "replace-body",
+             "arguments": {"markdown": "# Summary\n\nSee below.\n\n# Results\n\nNumbers by region"}},
+            {"app": CANVAS, "resource": "canvas.artwork", "action": "draw",
+             "arguments": {"marks": [{"shape": {"kind": "rect", "x": 0, "y": 0,
+                 "width": 10, "height": 10}, "fill": "#0F4C5C"}]}},
+            {"app": CANVAS, "resource": "canvas.artwork", "action": "export",
+             "arguments": {"format": "png"}},
+            {"app": WRITER, "resource": "word-processor.document", "action": "place-image",
+             "arguments": {"after": "Results"}, "carries": true},
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(task.steps.len(), 4, "{task:?}");
+
+    agent.close();
+    host.relay.shutdown().await;
+}

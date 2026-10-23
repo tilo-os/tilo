@@ -299,6 +299,9 @@ pub mod __private {
         pub label: &'static str,
         pub description: &'static str,
         pub kind: ActionKind,
+        /// Whether one invocation's kind is decided by its arguments
+        /// (`#[action(local = path)]`); `kind` is then the least it is.
+        pub by_arguments: bool,
         pub field: Option<&'static str>,
         pub destructive: bool,
         /// A change about the record rather than to it
@@ -441,6 +444,7 @@ pub mod __private {
             build,
         );
         decl.kind = verb.kind;
+        decl.by_arguments = verb.by_arguments;
         decl.writes = crate::footprint::declared(verb.shape, verb.item_field, verb.writes);
         // What the description says beyond its first line, the label.
         let description = verb
