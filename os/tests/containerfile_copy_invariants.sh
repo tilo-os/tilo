@@ -298,7 +298,9 @@ containerfile="$repo/os/Containerfile"
 # NetworkManager's DNS cache (conf.d/25-tilo-dns-cache.conf, dnsmasq caching
 # lookups that a lossy Wi-Fi link would otherwise stall for glibc's 5 s
 # resolver timeout) is one payload row.
-expected_contract=3f36f63037484ae3780f9cd3ebc7a28cfd531586ce5a1f25f9782078adfd87fb
+# tilo-deployment-status.socket and its service answer `tilo status` for the
+# device admin: two payload rows.
+expected_contract=bab5775a1478b43f8b687522de11d4fcb695eca70bfbb3e21c370b54dea369fc
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
