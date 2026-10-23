@@ -13,7 +13,7 @@
 //!   certifies only the browsers whose pairing codes its operator admits
 //!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `--agents` on `run` and `dev` (feature `agents`) — agents on the host,
-//!   with `--agent-model settings|scripted|openai:<url>|cloud:<url>`.
+//!   with `--agent-model settings|scripted|openai:<url>|anthropic:<url>|cloud:<url>`.
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 //! - `bind-workspace <workspace_id> [--pin]` — add a workspace to

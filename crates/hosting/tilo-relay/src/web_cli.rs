@@ -168,15 +168,17 @@ pub struct AgentArgs {
     /// How agents plan natural-language tasks: `settings` (the provider
     /// selected in Settings, through tilo-model-gateway), `scripted` (a
     /// deterministic keyword planner for tests and demos),
-    /// `openai:<base url>` (an OpenAI-compatible chat-completions endpoint)
-    /// or `cloud:<base url>` (Tilo Cloud's metered
-    /// `…/api/machines/<id>/ai/v1`, billed to the machine's AI credits). The
+    /// `openai:<base url>` (an OpenAI-compatible chat-completions endpoint),
+    /// `anthropic:<base url>` (Anthropic's Messages API, e.g.
+    /// `https://api.anthropic.com`) or `cloud:<base url>` (Tilo Cloud's
+    /// metered `…/api/machines/<id>/ai/v1`, billed to the machine's AI
+    /// credits). The
     /// key comes from `TILO_AGENT_API_KEY`, or `TILO_AGENT_API_KEY_FILE`,
     /// read before every call so a rotated token needs no restart. Default
     /// `$TILO_AGENT_MODEL`, else `settings`.
     #[arg(long = "agent-model", value_name = "MODEL")]
     pub model: Option<String>,
-    /// The model id for `openai:` (required) or `cloud:` (default
+    /// The model id for `openai:` and `anthropic:` (required) or `cloud:` (default
     /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
     #[arg(long = "agent-model-name", value_name = "ID")]
     pub model_name: Option<String>,

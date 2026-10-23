@@ -122,11 +122,71 @@ fn cloud_names_the_metered_endpoint_and_needs_a_token() {
             model: CLOUD_MODEL.into(),
             api_key: key(),
             target: ApiTarget::CloudMetered,
+            vault: None,
         }
     );
     assert!(ModelChoice::parse("cloud:http://x/v1", None, ApiKey::None).is_err());
     assert!(ModelChoice::parse("openai:http://x/v1", None, ApiKey::None).is_err());
     assert!(ModelChoice::parse("cloud:ftp://x", None, key()).is_err());
+}
+
+#[test]
+fn anthropic_names_claude_by_its_messages_api_and_needs_a_model_and_key() {
+    let key = || ApiKey::File("/run/keys/anthropic".into());
+    let choice = ModelChoice::parse(
+        "anthropic:https://api.anthropic.com",
+        Some("claude-x"),
+        key(),
+    )
+    .unwrap();
+    assert_eq!(
+        choice,
+        ModelChoice::Anthropic {
+            base_url: "https://api.anthropic.com".into(),
+            model: "claude-x".into(),
+            api_key: key(),
+            vault: None,
+        }
+    );
+    let kept = choice.keeping_keys_in("/tmp/bench-vault".into());
+    assert!(
+        matches!(&kept, ModelChoice::Anthropic { vault: Some(root), .. } if root.ends_with("bench-vault"))
+    );
+    assert!(ModelChoice::parse("anthropic:https://x", None, key()).is_err());
+    assert!(ModelChoice::parse("anthropic:https://x", Some("c"), ApiKey::None).is_err());
+    assert!(ModelChoice::parse("anthropic:ftp://x", Some("c"), key()).is_err());
+}
+
+/// The usage log keeps a call's cache reads and writes and its reasoning,
+/// in the shape the benchmark's meter reads.
+#[test]
+fn the_usage_log_keeps_cached_input_and_reasoning() {
+    let mut answer = called("p1", tilo_agent::tools::PLAN, &serde_json::json!({}));
+    answer.usage = Usage {
+        input_tokens: 1000,
+        output_tokens: 30,
+        total_tokens: 1030,
+        cached_input_tokens: 900,
+        cache_write_tokens: 60,
+        reasoning_tokens: 20,
+    };
+    let line = usage_line(
+        "claude-x",
+        Some("ada"),
+        (std::time::Duration::from_millis(5), (0, 0)),
+        &Ok(answer),
+        false,
+    );
+    assert_eq!(line["usage"]["input_tokens"], 1000);
+    assert_eq!(line["usage"]["input_tokens_details"]["cached_tokens"], 900);
+    assert_eq!(
+        line["usage"]["input_tokens_details"]["cache_write_tokens"],
+        60
+    );
+    assert_eq!(
+        line["usage"]["output_tokens_details"]["reasoning_tokens"],
+        20
+    );
 }
 
 /// An endpoint answering `answers` in order, one connection each, and
