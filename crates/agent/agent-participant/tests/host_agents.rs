@@ -640,7 +640,9 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .iter()
         .map(|step| step.action.as_str())
         .collect();
-    assert_eq!(steps, ["open", "new-note"]);
+    // The room has no Notes record yet: the step names what a new one
+    // publishes and opens that record itself.
+    assert_eq!(steps, ["new-note"]);
     let agent_key: [u8; 32] = hex::decode(&info.device).unwrap().try_into().unwrap();
     browser.until_edited(NOTES, agent_key, "Groceries").await;
 
