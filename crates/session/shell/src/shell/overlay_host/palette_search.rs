@@ -712,6 +712,66 @@ impl ShellOverlayHost {
         e
     }
 
+    /// The glyph a row wears, and the artwork drawn over it once loaded.
+    /// The app's own artwork is what a person recognises it by; the kind
+    /// glyph is only the fallback, and a Tilo app wears its own symbol,
+    /// never the generic grid.
+    fn row_picture(
+        &self,
+        r: &crate::shell::search::SearchResult,
+    ) -> (ui::icons::Icon, Option<ui::icons::AppImage>) {
+        use crate::shell::search::ResourceKind;
+        let mut icon = self
+            .search_registry
+            .row_icon(r)
+            .unwrap_or_else(|| ui::search::system::icon_for_kind(&r.kind));
+        let mut image = None;
+        match &r.kind {
+            ResourceKind::HostApplication => image = crate::app_icons::for_desktop_id(&r.id),
+            ResourceKind::Application => {
+                let package = r.id.strip_prefix("app:").unwrap_or(&r.id);
+                icon = ui::icons::app_glyph(package, None);
+                image = crate::app_icons::for_window_app_id(package);
+            }
+            ResourceKind::Tab | ResourceKind::WindowGroup => {
+                if let Some(picture) = self.window_row_picture(r) {
+                    return picture;
+                }
+            }
+            _ => {}
+        }
+        // Artwork only the row's provider knows: an app this device does
+        // not have yet wears its catalogue icon.
+        if let Some(provided) = self.search_registry.row_image(r) {
+            image = Some(provided);
+        }
+        (icon, image)
+    }
+
+    /// A window wears its app's picture, the one the app's own row has;
+    /// a window of no app search knows wears the face its tab has.
+    fn window_row_picture(
+        &self,
+        r: &crate::shell::search::SearchResult,
+    ) -> Option<(ui::icons::Icon, Option<ui::icons::AppImage>)> {
+        let chrome = self.chrome.as_ref()?;
+        let app = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tilo_desktop::search::window_row_app_id(&tree.desktop, &r.id)
+        };
+        if let Some(app_row) = app.and_then(|app| self.search_registry.app_row(&app)) {
+            return Some(self.row_picture(&app_row));
+        }
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let tile = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)?;
+        Some((
+            crate::app_icons::glyph_for_tile(tile),
+            crate::app_icons::for_tile(tile),
+        ))
+    }
+
     /// One result as a palette row: its picture, its text, its state, and
     /// where it can open.
     pub(super) fn palette_entry_for(
@@ -720,46 +780,9 @@ impl ShellOverlayHost {
         id: String,
     ) -> CommandEntry {
         use crate::shell::search::ResourceKind;
-        let mut e = CommandEntry::new(id, r.title.clone()).icon(
-            self.search_registry
-                .row_icon(r)
-                .unwrap_or_else(|| ui::search::system::icon_for_kind(&r.kind)),
-        );
-        // The app's own artwork is what a person recognises it by; the kind
-        // glyph is only the fallback. A Tilo app wears its artwork or its
-        // own symbol, never the generic grid. Window rows wear the same
-        // tile face as the tab strip.
-        match &r.kind {
-            ResourceKind::HostApplication => {
-                if let Some(image) = crate::app_icons::for_desktop_id(&r.id) {
-                    e = e.image(image);
-                }
-            }
-            ResourceKind::Application => {
-                let package = r.id.strip_prefix("app:").unwrap_or(&r.id);
-                e = e.icon(ui::icons::app_glyph(package, None));
-                if let Some(image) = crate::app_icons::for_window_app_id(package) {
-                    e = e.image(image);
-                }
-            }
-            ResourceKind::Tab | ResourceKind::WindowGroup => {
-                if let Some(chrome) = &self.chrome {
-                    let state = chrome.borrow();
-                    let tree = state.tree();
-                    if let Some(tile) = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)
-                    {
-                        match crate::app_icons::for_tile(tile) {
-                            Some(image) => e = e.image(image),
-                            None => e = e.icon(crate::app_icons::glyph_for_tile(tile)),
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        // Artwork only the row's provider knows: an app this device does
-        // not have yet wears its catalogue icon.
-        if let Some(image) = self.search_registry.row_image(r) {
+        let (icon, image) = self.row_picture(r);
+        let mut e = CommandEntry::new(id, r.title.clone()).icon(icon);
+        if let Some(image) = image {
             e = e.image(image);
         }
         if !r.facts.is_empty() {
