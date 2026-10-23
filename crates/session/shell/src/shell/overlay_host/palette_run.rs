@@ -420,14 +420,18 @@ impl ShellOverlayHost {
     /// Put the step for the parameter on screen: its values as rows to pick
     /// from, or a field of its kind.
     pub(super) fn show_param_step(&mut self) {
+        let Some((param, title)) = self
+            .param_flow
+            .as_ref()
+            .and_then(|flow| Some((flow.param().cloned()?, flow.result.title.clone())))
+        else {
+            return;
+        };
+        let step = palette_flow::step_for(&param, &title, &|pick| self.param_picks(pick));
         let Some(flow) = self.param_flow.as_mut() else {
             return;
         };
-        let Some(param) = flow.param().cloned() else {
-            return;
-        };
-        let title = flow.result.title.clone();
-        match palette_flow::step_for(&param, &title) {
+        match step {
             palette_flow::Step::Choices(rows) => {
                 flow.choices = rows.iter().map(|choice| choice.value.clone()).collect();
                 let entries = rows
@@ -468,6 +472,34 @@ impl ShellOverlayHost {
         }
         self.palette.set_filter_band_shown(false);
         self.palette_layout_dirty = true;
+    }
+
+    /// What a person may pick for `pick` in the active workspace.
+    fn param_picks(&self, pick: tilo_actions::Pick) -> Vec<palette_flow::Choice> {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Vec::new();
+        };
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let Some(workspace) = tree.desktop.active_workspace() else {
+            return Vec::new();
+        };
+        let directory = super::ws_settings::SettingsDirectory {
+            room: workspace.room().to_string(),
+        };
+        tilo_desktop::workspace_settings::picks(
+            workspace,
+            &state.active_local_user(),
+            &directory,
+            pick,
+        )
+        .into_iter()
+        .map(|picked| palette_flow::Choice {
+            value: picked.value,
+            label: picked.label,
+            person: picked.person,
+        })
+        .collect()
     }
 
     /// The step on screen was answered with the value of its row `index`.
@@ -513,7 +545,7 @@ impl ShellOverlayHost {
             }
             Err(reason) => {
                 let palette_flow::Step::Field(mut spec) =
-                    palette_flow::step_for(&param, &flow.result.title)
+                    palette_flow::step_for(&param, &flow.result.title, &|_| Vec::new())
                 else {
                     return;
                 };
@@ -615,7 +647,7 @@ impl ShellOverlayHost {
             return;
         };
         let (param, title) = param;
-        match palette_flow::step_for(&param, &title) {
+        match palette_flow::step_for(&param, &title, &|pick| self.param_picks(pick)) {
             palette_flow::Step::Field(mut spec) => {
                 spec.prompt = message;
                 self.palette

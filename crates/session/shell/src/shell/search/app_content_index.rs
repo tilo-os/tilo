@@ -257,6 +257,28 @@ impl AppContentIndex {
             .map(|entry| entry.title.clone())
     }
 
+    /// Every resource `room`'s apps published an entry opening, with the
+    /// app, once each.
+    pub fn resources(&self, room: &str) -> Vec<(String, String)> {
+        let inner = self.inner.lock_recover();
+        let mut resources: Vec<(String, String)> = inner
+            .slots
+            .iter()
+            .filter(|(slot, _)| slot.room == room)
+            .flat_map(|(slot, entries)| {
+                let unlocked = inner.unlocked(&slot.app);
+                entries
+                    .values()
+                    .filter(move |entry| entry.action.is_none() && (!entry.secret || unlocked))
+                    .map(|entry| (slot.app.clone(), entry.resource.clone()))
+            })
+            .collect();
+        drop(inner);
+        resources.sort();
+        resources.dedup();
+        resources
+    }
+
     /// Whether `app` last said its secrets are unlocked.
     pub fn secrets_unlocked(&self, app: &str) -> bool {
         self.inner.lock_recover().unlocked(app)

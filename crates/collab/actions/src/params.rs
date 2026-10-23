@@ -112,6 +112,36 @@ pub const PLACE_ANNOTATION: &str = "place";
 /// see [`ActionParam::as_content`].
 pub const CONTENT_ANNOTATION: &str = "content";
 
+/// Schema annotation naming what a parameter's value picks from the
+/// workspace; see [`ActionParam::picking`]. An annotation, not an
+/// assertion: binding takes any value of the parameter's type.
+pub const PICK_ANNOTATION: &str = "pick";
+
+/// What a parameter's value names in the workspace, so a person picks it
+/// from what is there instead of typing its encoding ([`PICK_ANNOTATION`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// Who: a person, an agent or an app of the workspace, as a
+    /// `tilo_action_policy::Subject`.
+    Subject,
+    /// Where: a node of the workspace's tree, as its path below the room.
+    Node,
+    /// One of the workspace's grants, by its id.
+    Grant,
+}
+
+impl Pick {
+    const ALL: [Self; 3] = [Self::Subject, Self::Node, Self::Grant];
+
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Subject => "subject",
+            Self::Node => "node",
+            Self::Grant => "grant",
+        }
+    }
+}
+
 /// The schema of a place inside a resource ([`ActionParam::as_place`]).
 #[must_use]
 pub fn place_schema() -> serde_json::Value {
@@ -294,6 +324,25 @@ impl ActionParam {
             .map(|person| serde_json::Value::String(person.into()))
             .collect();
         self.annotate(PEOPLE_ANNOTATION, serde_json::Value::Array(people))
+    }
+
+    /// Have a person pick this parameter's value from the workspace's
+    /// `pick`s ([`PICK_ANNOTATION`]); callers that know the value still give
+    /// it as the parameter's type says.
+    #[must_use]
+    pub fn picking(self, pick: Pick) -> Self {
+        self.annotate(
+            PICK_ANNOTATION,
+            serde_json::Value::String(pick.tag().into()),
+        )
+    }
+
+    /// What this parameter's value picks from the workspace
+    /// ([`Self::picking`]).
+    #[must_use]
+    pub fn pick(&self) -> Option<Pick> {
+        let tag = self.schema.as_ref()?.get(PICK_ANNOTATION)?.as_str()?;
+        Pick::ALL.into_iter().find(|pick| pick.tag() == tag)
     }
 
     /// How `choice` reads to a person ([`Self::with_labelled_choices`]).
@@ -1468,6 +1517,7 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     CONTENT_ANNOTATION,
     CHOICE_LABELS_ANNOTATION,
     PEOPLE_ANNOTATION,
+    PICK_ANNOTATION,
 ];
 
 /// Validate the assertion vocabulary itself before a surface is published.

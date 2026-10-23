@@ -58,6 +58,11 @@ pub trait AppDirectory {
     fn resource_label(&self, _address: &str) -> Option<String> {
         None
     }
+    /// The workspace's resources the host knows, each with the app that
+    /// publishes it: what a grant may name.
+    fn resources(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// A host with no application catalogue: apps are named by their id.
@@ -371,6 +376,111 @@ fn decoded<T: serde::de::DeserializeOwned>(
     serde_json::from_value(arguments.to_json().get(name)?.clone()).ok()
 }
 
+/// The kinds of action a grant covers: a set of the kinds, each read as
+/// people say it.
+fn kinds_schema() -> serde_json::Value {
+    use tilo_action_policy::ActionKind;
+    let kinds = ActionKind::ALL.map(|kind| kind.to_string());
+    let labels: serde_json::Map<String, serde_json::Value> = ActionKind::ALL
+        .into_iter()
+        .map(|kind| {
+            (
+                kind.to_string(),
+                kinds_phrase(tilo_action_policy::KindSet::of(kind)).into(),
+            )
+        })
+        .collect();
+    serde_json::json!({
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+            "enum": kinds,
+            tilo_actions::CHOICE_LABELS_ANNOTATION: labels,
+        },
+    })
+}
+
+/// One value a person may pick for a parameter that picks from the
+/// workspace ([`tilo_actions::Pick`]): what it binds, how it reads, and for
+/// a person, the key of their avatar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picked {
+    pub value: serde_json::Value,
+    pub label: String,
+    pub person: Option<String>,
+}
+
+/// What a person may pick for `pick` in `ws`, as `local_user` sees it, with
+/// `apps` naming apps and resources: the workspace's people, agents and
+/// apps; the whole workspace, each app and each resource; or each grant
+/// they could revoke, by what it allows.
+pub fn picks(
+    ws: &Workspace,
+    local_user: &str,
+    apps: &dyn AppDirectory,
+    pick: tilo_actions::Pick,
+) -> Vec<Picked> {
+    use tilo_action_policy::{Level, TreePath};
+    match pick {
+        tilo_actions::Pick::Subject => grant_subjects(ws)
+            .into_iter()
+            .filter_map(|subject| {
+                Some(Picked {
+                    value: serde_json::to_value(subject.to_grantee()?).ok()?,
+                    label: subject.display(ws, local_user, apps),
+                    person: (subject.kind == SubjectKind::Member).then(|| subject.id.clone()),
+                })
+            })
+            .collect(),
+        tilo_actions::Pick::Node => {
+            let mut app_ids: Vec<String> = grant_subjects(ws)
+                .into_iter()
+                .filter(|subject| subject.kind == SubjectKind::App)
+                .map(|subject| subject.id)
+                .collect();
+            let resources = apps.resources();
+            app_ids.extend(resources.iter().map(|(app, _)| app.clone()));
+            app_ids.compact_sort();
+            app_ids.dedup();
+            let nodes = std::iter::once(TreePath::root())
+                .chain(app_ids.iter().map(|app| TreePath::root().app(app)))
+                .chain(resources.iter().map(|(app, resource)| {
+                    TreePath::root()
+                        .app(app)
+                        .any(Level::Kind)
+                        .resource(resource)
+                }));
+            nodes
+                .map(|node| Picked {
+                    label: node_phrase(&node, apps),
+                    value: serde_json::Value::String(if node.is_root() {
+                        String::new()
+                    } else {
+                        node.to_string()
+                    }),
+                    person: None,
+                })
+                .collect()
+        }
+        tilo_actions::Pick::Grant => listed_capabilities(ws)
+            .into_iter()
+            .filter_map(|(subject, listed)| match listed {
+                Listed::Grant(grant) => Some(Picked {
+                    value: serde_json::Value::String(grant.id.as_str().to_owned()),
+                    label: format!(
+                        "{} · {}",
+                        subject.display(ws, local_user, apps),
+                        grant_allows(grant, apps)
+                    ),
+                    person: None,
+                }),
+                Listed::Sandbox(_) => None,
+            })
+            .collect(),
+    }
+}
+
 /// The room's governance surface: granting, revoking, named grant sets and
 /// letting one app use another's action, published on the room's own
 /// resource so searches, agents and scripts reach them like any action.
@@ -421,6 +531,7 @@ pub fn governance_resource_with_access(ws: &Workspace, can_govern: bool) -> tilo
             ParamType::Object,
             "Who: {\"person\": id}, {\"agent\": id}, {\"app\": package id} or {\"role\": \"viewer\"|\"commenter\"|\"editor\"}",
         )
+        .picking(tilo_actions::Pick::Subject)
     };
     root.actions.push(
         tilo_actions::ActionSpec::typed_operation(
@@ -435,12 +546,14 @@ pub fn governance_resource_with_access(ws: &Workspace, can_govern: bool) -> tilo
                     "node",
                     ParamType::Text,
                     "Where, below the room: \"app:so.tilo.notes\", \"app:so.tilo.mail/**/action:send\", or \"\" for the whole room",
-                ),
+                )
+                .picking(tilo_actions::Pick::Node),
                 ActionParam::required_owned(
                     "kinds",
                     ParamType::Array,
                     "Which kinds of action: \"read\", \"undoable\", \"outside\"",
-                ),
+                )
+                .with_schema(kinds_schema()),
                 ActionParam::required_owned("answer", ParamType::Text, "allow, ask or deny")
                     .with_choices(["allow", "ask", "deny"]),
             ],
@@ -478,11 +591,14 @@ pub fn governance_resource_with_access(ws: &Workspace, can_govern: bool) -> tilo
             t("workspace-settings-revoke-placeholder"),
             OperationKind::Effect,
             GOVERNANCE_ACTION_TYPE,
-            vec![ActionParam::required_owned(
-                "grant",
-                ParamType::Text,
-                "The id of the grant to take back",
-            )],
+            vec![
+                ActionParam::required_owned(
+                    "grant",
+                    ParamType::Text,
+                    "The id of the grant to take back",
+                )
+                .picking(tilo_actions::Pick::Grant),
+            ],
             |arguments| {
                 encoded_governance_operation(&GovernanceOperation::Revoke {
                     grant: arguments.text("grant").unwrap_or_default().to_string(),
@@ -6022,6 +6138,55 @@ mod permissions_pane_tests {
                 assert_eq!(ws.sandbox.len(), 2, "the two grants");
             }
         }
+    }
+
+    /// What the governance actions' typed parameters pick from: the
+    /// workspace's subjects as subjects, its nodes as paths and its grants by
+    /// id, each read by name.
+    #[test]
+    fn grant_and_revoke_parameters_pick_from_the_workspace() {
+        use tilo_actions::Pick;
+        let mut ws = ws_with_grants();
+        let now = tilo_clock::unix_now();
+        let grant = tilo_action_policy::roles::app_authorship(
+            &ws.policy.room,
+            "firefox",
+            tilo_action_policy::Subject::person(OWNER),
+        );
+        ws.govern_as_at(OWNER, tilo_action_policy::Change::Grant(grant.clone()), now)
+            .expect("owner grants");
+        let governance = governance_resource_with_access(&ws, true);
+        let param = |action: &str, name: &str| {
+            governance
+                .actions
+                .iter()
+                .find(|spec| spec.id == action)
+                .and_then(|spec| spec.params().iter().find(|param| param.name == name))
+                .and_then(tilo_actions::ActionParam::pick)
+        };
+        assert_eq!(param(GRANT_ACTION_ID, "subject"), Some(Pick::Subject));
+        assert_eq!(param(GRANT_ACTION_ID, "node"), Some(Pick::Node));
+        assert_eq!(param(REVOKE_ACTION_ID, "grant"), Some(Pick::Grant));
+
+        let subjects = picks(&ws, VIEWER, &NoAppDirectory, Pick::Subject);
+        assert!(!subjects.is_empty());
+        for subject in &subjects {
+            serde_json::from_value::<tilo_action_policy::Subject>(subject.value.clone())
+                .expect("a subject binds as one");
+        }
+        let nodes = picks(&ws, VIEWER, &NoAppDirectory, Pick::Node);
+        assert_eq!(nodes[0].value, "", "the whole workspace first");
+        assert!(nodes.iter().any(|node| node.value == "app:firefox"));
+        let grants = picks(&ws, VIEWER, &NoAppDirectory, Pick::Grant);
+        let firefox = grants
+            .iter()
+            .find(|picked| picked.value == grant.id.as_str())
+            .expect("the grant is offered by name");
+        assert!(
+            !firefox.label.contains(grant.id.as_str()),
+            "{}",
+            firefox.label
+        );
     }
 
     /// A grant to the work on a resource is listed with every other grant,
