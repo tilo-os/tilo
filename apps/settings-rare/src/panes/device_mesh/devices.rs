@@ -3,13 +3,13 @@
 //! device after asking.
 
 use tilo_relay_protocol::{DeviceRole, ReplicationIntent};
-use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Toggle, Widget};
+use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
     DeviceMeshEffect, DeviceMeshModel, PairingTarget, REVOKE_REASONS, RelayRuntimeStatus,
     last_seen_label, mesh_status_shown, peer_health_badge, peer_key, personal_device_key,
     replication_description, replication_shown, revoke_shown, role_shown, runtime_status_tone,
-    shows_advanced_services, workspace_key,
+    shows_advanced_services,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
