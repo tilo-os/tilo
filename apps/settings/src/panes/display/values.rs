@@ -9,7 +9,7 @@ use super::{
 };
 use crate::i18n::t;
 use crate::prefs::DisplayPrefs;
-use crate::setting::{Follows, on_off};
+use crate::setting::{Follows, Read, on_off};
 use crate::settings_app::SettingsApp;
 
 fn prefs(app: &SettingsApp, follows: &Follows) -> DisplayPrefs {
@@ -34,22 +34,20 @@ fn selected<V>(
     read(&model, output, &config)
 }
 
-pub(crate) fn night_light(app: &SettingsApp, follows: &Follows) -> String {
-    on_off(prefs(app, follows).night_light)
-}
-
 pub(crate) fn night_light_warmth(app: &SettingsApp, follows: &Follows) -> String {
     temperature_label(prefs(app, follows).night_light_temperature)
 }
 
-pub(crate) fn auto_brightness(app: &SettingsApp, follows: &Follows) -> String {
-    let unavailable = area(app)
-        .and_then(super::DisplayArea::read)
-        .is_some_and(|model| !model.borrow().ambient_sensor_available);
-    if unavailable {
-        t("display-no-ambient")
-    } else {
-        on_off(prefs(app, follows).auto_brightness)
+/// Automatic brightness, a switch once the displays were read and one has
+/// a light sensor.
+pub(crate) fn auto_brightness(app: &SettingsApp, follows: &Follows) -> Read {
+    let on = prefs(app, follows).auto_brightness;
+    match area(app).and_then(super::DisplayArea::read) {
+        Some(model) if !model.borrow().ambient_sensor_available => {
+            Read::Value(Some(t("display-no-ambient")))
+        }
+        Some(_) => Read::Switch(on),
+        None => Read::Value(Some(on_off(on))),
     }
 }
 

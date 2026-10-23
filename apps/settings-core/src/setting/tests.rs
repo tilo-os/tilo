@@ -94,6 +94,17 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
                 "{}: it is listed by name",
                 entry.id
             ),
+            super::Shown::Switch(..) => assert!(
+                control(app.harness().root_widget(), setting, content_left())
+                    .is_some_and(|(_, checked)| checked.is_some())
+                    || widget(
+                        app.harness().root_widget(),
+                        &format!("settings.found:{}", entry.id)
+                    )
+                    .is_some(),
+                "{}: it is its switch, or listed by name while it cannot be switched",
+                entry.id
+            ),
         }
     }
 }
@@ -213,6 +224,31 @@ fn toggling_a_setting_found_by_search_applies_it_as_its_pane_does() {
         app.settings::<AppearancePrefs>().get().high_contrast,
         before
     );
+}
+
+/// A yes-or-no its pane switches only where the device lets it is a switch
+/// where search finds it once the window knows it can be switched, and
+/// flipping it runs the pane's own action.
+#[test]
+fn a_device_switch_found_by_search_runs_its_panes_action() {
+    use crate::accessibility_settings::AccessibilitySettings;
+    let setting = index::setting("a11y.screen_reader").expect("indexed");
+    let mut app = searching(&crate::i18n::t(&setting.name_key()));
+    let left = content_left();
+    let before = app.settings::<AccessibilitySettings>().get().screen_reader;
+    let (rect, checked) = control(app.harness().root_widget(), setting, left)
+        .expect("with a speech engine, the screen reader is its switch");
+    assert_eq!(checked, Some(before), "the switch shows it as it is");
+
+    app.harness().click_at(rect.center().x, rect.center().y);
+    settle(&mut app);
+    assert_eq!(
+        app.settings::<AccessibilitySettings>().get().screen_reader,
+        !before,
+        "flipping it where it was found turns the screen reader over"
+    );
+    let (_, checked) = control(app.harness().root_widget(), setting, left).expect("still found");
+    assert_eq!(checked, Some(!before), "the switch shows what it changed");
 }
 
 /// The palette flips a yes-or-no setting through the section field the

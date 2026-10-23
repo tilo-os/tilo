@@ -5,7 +5,7 @@
 use super::{AudioModel, area};
 use crate::i18n::{t, t_args};
 use crate::prefs::AudioPrefs;
-use crate::setting::{Follows, on_off};
+use crate::setting::{Follows, Read, on_off};
 use crate::settings_app::SettingsApp;
 
 fn prefs(app: &SettingsApp, follows: &Follows) -> AudioPrefs {
@@ -27,10 +27,22 @@ pub(crate) fn volume(app: &SettingsApp, _: &Follows) -> Option<String> {
     })
 }
 
-pub(crate) fn mute(app: &SettingsApp, _: &Follows) -> Option<String> {
+/// Muting, a switch once the output level was read.
+pub(crate) fn mute(app: &SettingsApp, _: &Follows) -> Read {
     read(app, |model| {
-        model.volume_error.is_none().then(|| on_off(model.muted))
+        model.volume_error.is_none().then_some(model.muted)
     })
+    .map_or(Read::Value(None), Read::Switch)
+}
+
+/// A stored yes-or-no, a switch where the area read that this device
+/// `offers` it.
+fn switch_where(app: &SettingsApp, offers: impl FnOnce(&AudioModel) -> bool, on: bool) -> Read {
+    if read(app, |model| Some(offers(model))).unwrap_or(false) {
+        Read::Switch(on)
+    } else {
+        Read::Value(Some(on_off(on)))
+    }
 }
 
 pub(crate) fn output_device(app: &SettingsApp, _: &Follows) -> Option<String> {
@@ -69,14 +81,26 @@ pub(crate) fn balance(app: &SettingsApp, follows: &Follows) -> String {
     }
 }
 
-pub(crate) fn mono(app: &SettingsApp, follows: &Follows) -> String {
-    on_off(prefs(app, follows).mono_output)
+pub(crate) fn mono(app: &SettingsApp, follows: &Follows) -> Read {
+    switch_where(
+        app,
+        AudioModel::offers_mono,
+        prefs(app, follows).mono_output,
+    )
 }
 
-pub(crate) fn echo(app: &SettingsApp, follows: &Follows) -> String {
-    on_off(prefs(app, follows).echo_cancellation)
+pub(crate) fn echo(app: &SettingsApp, follows: &Follows) -> Read {
+    switch_where(
+        app,
+        AudioModel::offers_echo_cancellation,
+        prefs(app, follows).echo_cancellation,
+    )
 }
 
-pub(crate) fn system_sounds(app: &SettingsApp, follows: &Follows) -> String {
-    on_off(prefs(app, follows).system_sounds.enabled)
+pub(crate) fn system_sounds(app: &SettingsApp, follows: &Follows) -> Read {
+    switch_where(
+        app,
+        |model| model.event_sounds_available,
+        prefs(app, follows).system_sounds.enabled,
+    )
 }
