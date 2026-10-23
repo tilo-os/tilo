@@ -998,7 +998,7 @@ export async function startEntryPage({mode}) {
     status.textContent = said;
     // Turned away for coming without an invitation: a place to open the
     // one they get.
-    if (error?.code === 'invitation-only') offerInviteLink(messages);
+    if (error?.code === 'invitation-only') offerInviteLink(messages, named);
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the room.
@@ -1134,14 +1134,24 @@ async function offerUpdate({page, status}) {
   location.reload();
 }
 
-/** On a page turned away for coming without an invitation, the field to
- * paste the invite link someone sends them into, opened in this tab. */
-function offerInviteLink(messages) {
+/** On a page turned away for coming without an invitation, the door
+ * (index.html): a heading naming the workspace `named`, how to get in, and
+ * the field to paste the invite link someone sends them into, opened in
+ * this tab; their own desktop under it. */
+function offerInviteLink(messages, named) {
+  const door = document.getElementById('arrival-door');
   const form = document.getElementById('arrival-invite');
   const field = document.getElementById('arrival-invite-link');
   const problem = document.getElementById('arrival-invite-error');
-  if (!form || !field || !problem) return;
-  const say = (key, english) => localized(messages, key, english);
+  if (!door || !form || !field || !problem) return;
+  const say = (key, english, args) => localized(messages, key, english, args);
+  document.getElementById('arrival-door-heading').textContent = named
+    ? say('arrival-door-heading', '{ $workspace } is invite-only for now', {workspace: named})
+    : say('arrival-door-heading-unnamed', 'This workspace is invite-only for now');
+  document.getElementById('arrival-door-body').textContent =
+    say('arrival-door-body', 'Ask someone in it for an invite link, then paste it here.');
+  const own = document.getElementById('arrival-own');
+  if (own) door.append(own);
   field.placeholder = say('arrival-invite-placeholder', 'Paste an invite link');
   field.setAttribute('aria-label', say('arrival-invite-link', 'Invite link'));
   form.querySelector('button').textContent = say('arrival-invite-open', 'Open');
