@@ -145,6 +145,7 @@ fn the_app_and_its_open_window_are_separate_rows_and_the_app_starts_it() {
         None,
     );
     assert_eq!(starts().len(), 1);
+    drop(host);
 }
 
 #[test]
@@ -159,6 +160,7 @@ fn enter_on_the_window_switches_to_it_and_starts_nothing() {
         None,
     );
     assert!(starts().is_empty());
+    drop(host);
 }
 
 #[test]
@@ -187,6 +189,7 @@ fn shift_enter_on_the_window_opens_a_new_window_of_its_app_here() {
         Some(ActivationModifier::Shift),
     );
     assert_eq!(starts(), [OpenTarget::Here(700)]);
+    drop(host);
 }
 
 #[test]

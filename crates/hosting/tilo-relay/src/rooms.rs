@@ -1342,18 +1342,20 @@ impl Rooms {
                 return;
             };
             let workspace_id = state.lock().await.workspace_id();
-            match rooms
+            let retained = match rooms
                 .inner
                 .host
                 .records
                 .retained_settled(workspace_id)
                 .await
             {
-                Ok(retained) => rooms.recall_retained(&mut *state.lock().await, retained),
+                Ok(retained) => retained,
                 Err(error) => {
                     tracing::warn!(%room, %error, "governed room did not replay what its members wrote");
+                    return;
                 }
-            }
+            };
+            rooms.recall_retained(&mut *state.lock().await, retained);
         });
     }
 

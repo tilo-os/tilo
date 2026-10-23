@@ -763,12 +763,14 @@ impl ShellOverlayHost {
         if let Some(app_row) = app.and_then(|app| self.search_registry.app_row(&app)) {
             return Some(self.row_picture(&app_row));
         }
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let tile = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)?;
+        let tile = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)?.clone()
+        };
         Some((
-            crate::app_icons::glyph_for_tile(tile),
-            crate::app_icons::for_tile(tile),
+            crate::app_icons::glyph_for_tile(&tile),
+            crate::app_icons::for_tile(&tile),
         ))
     }
 

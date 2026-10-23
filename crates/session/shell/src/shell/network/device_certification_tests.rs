@@ -108,14 +108,13 @@ fn pair_of_devices(root: &ed25519_dalek::SigningKey, seed: u8, held: Held) -> (D
 /// `commands`) to `to` over the personal-fabric wire, waiting for it.
 fn carry(commands: &mut mpsc::Receiver<NetCmd>, from: &DeviceId, to: &Device) {
     loop {
-        let command = commands
-            .blocking_recv()
-            .expect("the sending device keeps its transport");
         let NetCmd::PublishPersonalFabricTarget {
             target,
             payload: PersonalFabricPayload::Action(bytes),
             ..
-        } = command
+        } = commands
+            .blocking_recv()
+            .expect("the sending device keeps its transport")
         else {
             continue;
         };

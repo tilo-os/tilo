@@ -99,4 +99,5 @@ fn store_pages_join_an_open_search_when_the_store_index_lands() {
     assert_eq!(store_pages(&host), ["Spotify"]);
     assert!(!host.has_pending_visual_work());
     assert_eq!(host.palette.query(), "spotify");
+    drop(host);
 }
