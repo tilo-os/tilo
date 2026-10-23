@@ -537,6 +537,9 @@ impl Widget for Chevron {
 
 /// The shared open state of a collapsible section.
 struct Disclosure {
+    /// What the header is addressed by. It only shows what the page holds,
+    /// so its binding is semantic, never an action on the app's resources.
+    id: String,
     expanded: Rc<Cell<bool>>,
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     interaction: Interaction,
@@ -897,6 +900,7 @@ impl Widget for HeaderRow {
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.title.clone())
+                .with_action_target(disclosure.id.clone())
                 .with_bounds(self.parts.rect)
                 .with_state(
                     AccessState::new()
@@ -944,6 +948,7 @@ impl Section {
     pub fn with_header(mut self, header: SectionHeader) -> Self {
         self.header = Some(header.title.clone());
         let disclosure = self.expanded.as_ref().map(|expanded| Disclosure {
+            id: format!("disclosure:{}", header.title),
             expanded: Rc::clone(expanded),
             on_toggle: None,
             interaction: Interaction::default(),
@@ -1005,6 +1010,7 @@ impl Section {
         {
             let had_chevron = row.has_chevron;
             row.disclosure = Some(Disclosure {
+                id: format!("disclosure:{title}"),
                 expanded: Rc::clone(&state),
                 on_toggle,
                 interaction: Interaction::default(),
@@ -1029,6 +1035,25 @@ impl Section {
                 row.has_chevron = true;
             }
             row.title = title;
+        }
+        self
+    }
+
+    /// Address a collapsible section's header by `id` rather than by its
+    /// title, for a page holding several disclosures of the same title.
+    /// Call after [`Self::collapsible`] or [`Self::collapsed`].
+    #[must_use]
+    pub fn disclosure_id(mut self, id: impl Into<String>) -> Self {
+        if self.has_header
+            && let Some(disclosure) = self
+                .parts
+                .children
+                .first_mut()
+                .and_then(|first| first.as_any_mut())
+                .and_then(|any| any.downcast_mut::<HeaderRow>())
+                .and_then(|row| row.disclosure.as_mut())
+        {
+            disclosure.id = id.into();
         }
         self
     }
