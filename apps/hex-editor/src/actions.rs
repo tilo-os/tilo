@@ -32,7 +32,7 @@ pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
 #[effect(operation = "hex_editor.effects")]
 pub enum HexEffect {
     /// Open a file.
-    #[effect(job, cancellable, label = "Open file")]
+    #[effect(attended, job, cancellable, label = "Open file")]
     OpenFile {
         #[param("file to open; omit to use the system file picker")]
         path: Option<String>,

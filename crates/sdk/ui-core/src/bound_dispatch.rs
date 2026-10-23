@@ -2717,7 +2717,7 @@ pub(crate) fn execute_resource_operation(
         !broker_admitted || source_invocation.is_some(),
         "admitted operation {address:?} must retain its source invocation"
     );
-    if spec.contract.is_own_device()
+    if spec.contract.runs_on_invokers_device()
         && !runs_own_device(actor, local_author, broker_admitted, ambient)
     {
         return Err(own_device_refusal());

@@ -1239,6 +1239,45 @@ mod tests {
         assert!(!controls[2].disabled && !controls[3].disabled);
     }
 
+    /// A guest's own Sample loads the bundled sample at once, and their own
+    /// Open files goes straight to their chooser: both are the person's own
+    /// decision on their own device, so the workspace asks nothing first,
+    /// neither for the header button nor for the effect it relays.
+    #[test]
+    fn a_guests_sample_and_open_files_ask_no_workspace_consent() {
+        let mut app = TestApp::<DiffmergeShell>::new().unwrap();
+        app.settle();
+        app.set_role(ui::permissions::Role::Editor);
+        app.harness().click_named("diffmerge.load-sample").unwrap();
+        app.settle();
+        assert!(
+            app.asking().is_none(),
+            "the sample asks nothing: {:?}",
+            app.harness().asking_why()
+        );
+        assert!(
+            app.state().comparison.is_some(),
+            "the sample loaded: {:?}",
+            app.harness().control_failures()
+        );
+
+        let (services, recorder) = ui::host::HostServices::recording();
+        ui::host::scoped(&services, || {
+            app.harness().click_named("diffmerge.open-files").unwrap();
+            app.settle();
+        });
+        assert!(
+            app.asking().is_none(),
+            "the chooser is the consent: {:?}",
+            app.harness().asking_why()
+        );
+        assert!(
+            !recorder.pick_requests().is_empty(),
+            "the guest's chooser opened: {:?}",
+            app.harness().control_failures()
+        );
+    }
+
     /// The empty merge asks for what a merge is made of, not the
     /// comparison's "two files".
     #[test]
