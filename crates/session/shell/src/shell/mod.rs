@@ -15,6 +15,7 @@ pub mod app_action_consent;
 pub mod app_close;
 pub mod app_list;
 pub mod app_notice_card;
+pub mod app_opens;
 pub mod app_tabs;
 pub(crate) mod app_versions;
 pub(crate) mod audio_output;

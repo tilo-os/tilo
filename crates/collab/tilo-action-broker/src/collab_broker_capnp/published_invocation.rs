@@ -591,6 +591,11 @@ impl OriginalInvocationData {
         matches!(&self.caller, InvocationCaller::Local { admitted, .. } if admitted.agent_id.is_none())
     }
 
+    /// Whether this was delivered to application `app` in `room`.
+    pub(super) fn delivered_to(&self, app: &str, room: &str) -> bool {
+        self.route.app_id == app && self.route.cluster_id == room
+    }
+
     pub(super) fn permits_launch_in(&self, room: &str) -> bool {
         self.route.cluster_id == room
             && self.spec.contract.kind >= tilo_actions::ActionKind::Undoable

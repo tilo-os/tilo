@@ -1114,6 +1114,8 @@ launch-failed-window-lost = Ihr Fenster wurde beendet, ohne geschlossen zu werde
 launch-window-lost-title = { $app } wurde unerwartet geschlossen
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
+app-open-unavailable-title = Keine App zum Öffnen
+app-open-unavailable-body = { $app } wollte eine App öffnen, die weder auf diesem Computer noch im Store ist.
 launch-failure-title = { $app } konnte nicht geöffnet werden
 
 # An app, or a process it started, that the system ended because memory ran out
