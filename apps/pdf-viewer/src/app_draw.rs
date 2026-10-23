@@ -1151,10 +1151,23 @@ impl PdfApp {
         canvas: Rect,
     ) {
         let detail;
+        let waiting;
         let content = if self.pending_open.is_some() {
             EmptyStateContent {
                 icon: Some(Icon::FileText),
                 ..EmptyStateContent::new("Opening PDF…")
+            }
+        } else if let Some((title, message, error)) = self.source_wait_text() {
+            waiting = message;
+            EmptyStateContent {
+                icon: Some(if error {
+                    Icon::TriangleAlert
+                } else {
+                    Icon::FileText
+                }),
+                message: Some(&waiting),
+                error,
+                ..EmptyStateContent::new(title)
             }
         } else if let Some(err) = &self.load_error {
             let lower = err.to_ascii_lowercase();
@@ -1168,7 +1181,9 @@ impl PdfApp {
             EmptyStateContent {
                 icon: Some(Icon::TriangleAlert),
                 message: Some(detail),
-                action_label: Some("Open another PDF"),
+                // A window whose record marks up a document keeps it: another
+                // file opens in a window of its own, so none is offered here.
+                action_label: self.record_source.is_none().then_some("Open another PDF"),
                 error: true,
                 ..EmptyStateContent::new("Couldn't open this document")
             }
