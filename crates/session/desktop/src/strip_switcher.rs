@@ -151,7 +151,8 @@ impl SwitcherModel {
         let people: Vec<(StripId, Person)> =
             crate::collaborators::collaborator_roster_rows(desktop, local_user)
                 .into_iter()
-                .filter(|row| !row.invited && row.id != own_id && row.id != local_user)
+                .filter(|row| !row.invited && !row.own_device && row.id != own_id)
+                .filter(|row| row.id != local_user)
                 .filter_map(|row| {
                     let strip = strip_of(desktop, &row.id)?;
                     Some((

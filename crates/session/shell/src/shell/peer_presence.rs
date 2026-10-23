@@ -1222,7 +1222,8 @@ impl PeerPresence {
                     .filter(|handle| !absent.contains(handle)),
             );
             let principals = tree.room_peer_principals(ws.room());
-            let mut rows = room_roster(ws, &labels, &arrived, local, &principals);
+            let own_devices = tree.room_own_devices(ws.room());
+            let mut rows = room_roster(ws, &labels, &arrived, local, &principals, &own_devices);
             let apps = self.net.live_apps_of(&room);
             for row in &mut rows {
                 // A row named by the id its presence carries is that
@@ -1508,12 +1509,17 @@ pub const POINTER_STAYS: Duration = Duration::MAX;
 /// *called*, not who they are; it is asked only for a handle with no
 /// certified person, which covers the owner's own endpoint, labelled with
 /// its user id.
+///
+/// A handle in `own_devices` is another device of this person: its row is
+/// named by that device and marked as one, so it shows among the person's
+/// devices rather than as someone else.
 pub fn room_roster(
     ws: &crate::shell::state::Workspace,
     labels: &PeerLabels,
     arrived: &std::collections::BTreeSet<u64>,
     local: u64,
     principals: &std::collections::BTreeMap<u64, crate::shell::state::UserId>,
+    own_devices: &std::collections::BTreeMap<u64, String>,
 ) -> Vec<crate::shell::state::Collaborator> {
     let mut handles: std::collections::BTreeSet<u64> = labels.keys().copied().collect();
     handles.extend(arrived.iter().copied());
@@ -1528,7 +1534,11 @@ pub fn room_roster(
                 Some(person) => ws.role_of(person),
                 None => ws.role_of(&name),
             };
-            let who = crate::shell::state::Collaborator::new(id, name).with_session(handle);
+            let who = match own_devices.get(&handle) {
+                Some(device) => crate::shell::state::Collaborator::new(id, device).as_own_device(),
+                None => crate::shell::state::Collaborator::new(id, name),
+            }
+            .with_session(handle);
             let who = match role {
                 Some(role) => who.with_role(crate::shell::state::role_id(role)),
                 None => who,
@@ -2453,6 +2463,7 @@ mod tests {
         let bob = crate::shell::state::person_id_of([0xb0; 32]).expect("a person key");
         let handle = 7_u64;
         let arrived = std::collections::BTreeSet::from([handle]);
+        let none = std::collections::BTreeMap::new();
 
         // Phase `an_invited_member_shows_their_policy_role`. Bob was
         // invited as an editor; the room calls him "Bob" and his
@@ -2461,7 +2472,7 @@ mod tests {
             let ws = room_admitting("ada", &bob, CapRole::Editor);
             let labels = PeerLabels::from([(handle, "Bob".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
+            let rows = room_roster(&ws, &labels, &arrived, 1, &principals, &none);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].name, "Bob", "the label is still what he is called");
             assert_eq!(
@@ -2478,7 +2489,7 @@ mod tests {
             let ws = room_admitting("ada", &bob, CapRole::Viewer);
             let labels = PeerLabels::from([(handle, "ada".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
+            let rows = room_roster(&ws, &labels, &arrived, 1, &principals, &none);
             assert_eq!(
                 rows[0].role_id.as_deref(),
                 Some(role_id(CapRole::Viewer)),
@@ -2498,6 +2509,7 @@ mod tests {
                 &arrived,
                 1,
                 &std::collections::BTreeMap::new(),
+                &none,
             );
             assert_eq!(
                 rows[0].role_id.as_deref(),
@@ -2510,11 +2522,21 @@ mod tests {
             let ws = room_admitting("ada", "someone-else", CapRole::Editor);
             let labels = PeerLabels::from([(handle, "Bob".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob)]);
-            let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
+            let rows = room_roster(&ws, &labels, &arrived, 1, &principals, &none);
             assert_eq!(
                 rows[0].role_id, None,
                 "a certified person the room never admitted has no role to show",
             );
+        }
+
+        // Phase `another_device_of_this_person_is_that_device_not_someone`.
+        {
+            let ws = room_admitting("ada", "bob", CapRole::Editor);
+            let labels = PeerLabels::from([(handle, "Ada".to_string())]);
+            let own = std::collections::BTreeMap::from([(handle, "Orange Pi".to_string())]);
+            let rows = room_roster(&ws, &labels, &arrived, 1, &none, &own);
+            assert!(rows[0].own_device, "the row is one of the person's devices");
+            assert_eq!(rows[0].name, "Orange Pi", "named by the device");
         }
     }
 }

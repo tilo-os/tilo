@@ -96,6 +96,8 @@ pub struct RosterRow {
     /// The voice channel of theirs this device may join from their row:
     /// one they are in and this person is not.
     pub join: Option<VoiceChannel>,
+    /// Another device of this person, listed among their devices.
+    pub own_device: bool,
 }
 
 /// One voice channel's call, by the app, record and channel that hold it:
@@ -182,24 +184,25 @@ pub enum RosterFollowRelationship {
 }
 
 impl CollaboratorsModel<'_> {
-    /// The rows of who is here, not merely invited, as people and agents.
-    fn present_groups(&self) -> (Vec<usize>, Vec<usize>) {
-        self.rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| !row.invited)
-            .map(|(index, row)| (index, row.is_agent))
-            .fold(
-                (Vec::new(), Vec::new()),
-                |(mut people, mut agents), (index, is_agent)| {
-                    if is_agent {
-                        agents.push(index);
-                    } else {
-                        people.push(index);
-                    }
-                    (people, agents)
-                },
-            )
+    /// The rows of who is here, not merely invited, under their headings:
+    /// people, agents, and this person's own other devices.
+    fn present_groups(&self) -> [(&'static str, Vec<usize>); 3] {
+        let mut groups = [
+            ("people-panel-section-people", Vec::new()),
+            ("people-panel-section-agents", Vec::new()),
+            ("people-panel-section-devices", Vec::new()),
+        ];
+        for (index, row) in self.rows.iter().enumerate().filter(|(_, row)| !row.invited) {
+            let group = if row.own_device {
+                2
+            } else {
+                usize::from(row.is_agent)
+            };
+            if let Some((_, rows)) = groups.get_mut(group) {
+                rows.push(index);
+            }
+        }
+        groups
     }
 
     #[must_use]
@@ -410,7 +413,7 @@ impl CollaboratorsOverlay {
             .secondary("0")
             .height(text, theme);
         let control = f64::from(metrics.bar_control_height);
-        let (people, agents) = model.present_groups();
+        let groups = model.present_groups();
         let face = FloatingPanelFace::new()
             .header(header_h)
             .footer(if model.may_invite { control } else { 0.0 })
@@ -433,17 +436,14 @@ impl CollaboratorsOverlay {
             self.details_height,
         )
         .height;
-        let sections = [&people, &agents]
-            .into_iter()
-            .filter(|group| !group.is_empty())
-            .count();
+        let sections = groups.iter().filter(|(_, group)| !group.is_empty()).count();
         let mut body_h = if sections == 0 {
             row_h
         } else {
-            [&people, &agents]
-                .into_iter()
-                .filter(|group| !group.is_empty())
-                .map(|group| heading_h + row_h * ui::num::f64_of_usize(group.len()))
+            groups
+                .iter()
+                .filter(|(_, group)| !group.is_empty())
+                .map(|(_, group)| heading_h + row_h * ui::num::f64_of_usize(group.len()))
                 .sum::<f64>()
                 + f64::from(spacing.s2) * ui::num::f64_of_usize(sections.saturating_sub(1))
         };
@@ -484,8 +484,7 @@ impl CollaboratorsOverlay {
             theme,
             model,
             &RowsPlan {
-                people: &people,
-                agents: &agents,
+                groups: &groups,
                 open_index,
                 shown_changes,
                 revealed,
@@ -510,8 +509,7 @@ impl CollaboratorsOverlay {
         let heading_h = f64::from(metrics.row_single);
         let control = f64::from(metrics.bar_control_height);
         let RowsPlan {
-            people,
-            agents,
+            groups,
             open_index,
             shown_changes,
             revealed,
@@ -545,10 +543,7 @@ impl CollaboratorsOverlay {
         // Follow stands in one column down the list: where any row has a
         // chevron, every row keeps its place free.
         let any_disclosure = model.rows.iter().any(|row| !row.recent.is_empty());
-        for (key, group) in [
-            ("people-panel-section-people", people),
-            ("people-panel-section-agents", agents),
-        ] {
+        for (key, group) in groups {
             if group.is_empty() {
                 continue;
             }
@@ -642,7 +637,11 @@ impl CollaboratorsOverlay {
             index,
             rect,
             follow: if row.followable { follow } else { Rect::ZERO },
-            wave: if row.is_agent { Rect::ZERO } else { wave },
+            wave: if row.is_agent || row.own_device {
+                Rect::ZERO
+            } else {
+                wave
+            },
             join,
             ..RowPlace::default()
         };
@@ -740,7 +739,11 @@ impl CollaboratorsOverlay {
         let theme = &inner;
         let colors = &theme.tokens.colors;
         let here_text = here_line(
-            model.rows.iter().filter(|row| !row.invited).count(),
+            model
+                .rows
+                .iter()
+                .filter(|row| !row.invited && !row.own_device)
+                .count(),
             model.watching,
         );
         ui::widget::TextStackFace::new(model.workspace)
@@ -1315,7 +1318,7 @@ impl CollaboratorsOverlay {
     pub fn wave_target(&self, index: usize) -> Option<&str> {
         self.shown_rows
             .get(index)
-            .filter(|row| !row.is_agent && !row.invited)
+            .filter(|row| !row.is_agent && !row.own_device && !row.invited)
             .map(|row| row.id.as_str())
     }
 
@@ -1698,12 +1701,15 @@ pub fn collaborator_roster_rows_named(
     let joined = |id: &str| policy.and_then(|policy| policy.joined_at(id));
     let labels = ui::presence::ParticipantLabels::by_joining(
         rows.iter()
-            .filter(|row| !row.is_agent && row.id != local_user)
+            .filter(|row| !row.is_agent && !row.own_device && row.id != local_user)
             .map(|row| (row.id.as_str(), row.label.as_str()))
             .chain(own_name.map(|name| (local_user, name)))
             .map(|(id, name)| (id, name, joined(id))),
     );
-    for row in rows.iter_mut().filter(|row| !row.is_agent) {
+    for row in rows
+        .iter_mut()
+        .filter(|row| !row.is_agent && !row.own_device)
+    {
         row.label = labels.label(&row.id, &row.label);
     }
     (rows, own_name.map(|name| labels.label(local_user, name)))
@@ -1790,6 +1796,7 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
                             .map(display_role_id)
                     }),
                 invited: participant.invited,
+                own_device: participant.own_device,
                 activity: participant
                     .active_tab
                     .and_then(|tab| active_tab_title(desktop, tab))
@@ -1939,8 +1946,7 @@ fn spoken_details(row: &RosterRow) -> String {
 /// and the open row's details as the layout measured them.
 #[derive(Clone, Copy)]
 struct RowsPlan<'p> {
-    people: &'p [usize],
-    agents: &'p [usize],
+    groups: &'p [(&'static str, Vec<usize>)],
     open_index: Option<usize>,
     shown_changes: usize,
     revealed: f64,
@@ -2004,6 +2010,7 @@ mod tests {
             availability: ui::Availability::Available,
             call: None,
             join: None,
+            own_device: false,
         }
     }
 
@@ -2221,6 +2228,32 @@ mod tests {
             model.relationship_for("bob"),
             Some(RosterFollowRelationship::FollowedBy("ada".into()))
         );
+    }
+
+    /// The person's other devices are listed as theirs, under their own
+    /// heading after people, with nobody to wave at.
+    #[test]
+    fn the_roster_lists_the_person_s_other_devices_as_their_devices() {
+        let mut pi = row("peer@7", "Orange Pi");
+        pi.own_device = true;
+        let rows = vec![pi, row("ada", "Ada")];
+        let mut overlay = CollaboratorsOverlay::default();
+        paint(&mut overlay, &rows, None);
+        let order: Vec<usize> = overlay.rows.iter().map(|place| place.index).collect();
+        assert_eq!(order, vec![1, 0], "people first, then the devices");
+        assert_eq!(
+            overlay
+                .headings
+                .iter()
+                .map(|h| h.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                t("people-panel-section-people"),
+                t("people-panel-section-devices")
+            ]
+        );
+        assert_eq!(overlay.rows[1].wave, Rect::ZERO);
+        assert_eq!(overlay.wave_target(0), None);
     }
 
     /// People, then agents, each with Follow on its row and Wave for
