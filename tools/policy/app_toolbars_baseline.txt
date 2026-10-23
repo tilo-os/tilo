@@ -22,7 +22,6 @@ own-search 1 apps/api-tester/src/app.rs
 own-search 1 apps/browser/src/browser_widget/library.rs
 own-search 1 apps/browser/src/browser_widget/toolbar.rs
 own-search 1 apps/browser/src/daily_controls.rs
-own-search 1 apps/chip-design/src/view.rs
 own-search 2 apps/containers/src/view.rs
 own-search 1 apps/maps/src/offline_panel.rs
 own-search 1 apps/notes/src/app.rs
