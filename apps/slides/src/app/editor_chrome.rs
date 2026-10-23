@@ -233,14 +233,20 @@ pub(super) enum Zone {
     /// The slide sidebar.
     Rail,
     Inspector,
+    /// Under the slide: its speaker notes, while the inspector is hidden
+    /// and the column has room below the slide.
+    Content,
 }
 
-/// Where the inspector's controls and labels start in [`Chrome::buttons`]
-/// and [`Chrome::labels`]: the sidebar's come first.
+/// Where each column's controls and labels start in [`Chrome::buttons`]
+/// and [`Chrome::labels`]: the sidebar's, then the inspector's, then those
+/// under the slide.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct ZoneStarts {
     inspector_buttons: usize,
     inspector_labels: usize,
+    content_buttons: usize,
+    content_labels: usize,
 }
 
 /// The editor chrome resolved for one frame.
@@ -280,7 +286,9 @@ impl Chrome {
 
     /// The column the button at `index` belongs to.
     pub(super) fn button_zone(&self, index: usize) -> Zone {
-        if index >= self.zones.inspector_buttons {
+        if index >= self.zones.content_buttons {
+            Zone::Content
+        } else if index >= self.zones.inspector_buttons {
             Zone::Inspector
         } else {
             Zone::Rail
@@ -289,7 +297,9 @@ impl Chrome {
 
     /// The column the label at `index` belongs to.
     pub(super) fn label_zone(&self, index: usize) -> Zone {
-        if index >= self.zones.inspector_labels {
+        if index >= self.zones.content_labels {
+            Zone::Content
+        } else if index >= self.zones.inspector_labels {
             Zone::Inspector
         } else {
             Zone::Rail
@@ -447,7 +457,12 @@ impl SlidesApp {
             if inspector_docked { inspector.x0 } else { r.x1 },
             r.y1,
         );
-        let (slide_dest, scale) = self.fit_slide(content);
+        let stacked = if inspector.width() > 1.0 {
+            None
+        } else {
+            self.stacked_notes(content)
+        };
+        let (slide_dest, scale) = self.fit_slide(stacked.map_or(content, |(canvas, _)| canvas));
         let scrim = if (layout == SplitLayout::Overlay && self.rail_drawer.reveal() > 0.001)
             || (inspector_layout == SplitLayout::Overlay && self.inspector_drawer.reveal() > 0.001)
         {
@@ -465,16 +480,36 @@ impl SlidesApp {
         };
         let thumbs = self.page_sidebar.thumb_rects();
 
-        let zones = ZoneStarts {
+        let mut zones = ZoneStarts {
             inspector_buttons: buttons.len(),
             inspector_labels: labels.len(),
+            ..ZoneStarts::default()
         };
-        let (inspector_body, inspector_content_h, notes_box, font_input_rect) =
+        let (inspector_body, inspector_content_h, mut notes_box, font_input_rect) =
             if inspector.width() > 1.0 {
                 self.build_inspector(inspector, &mut buttons, &mut labels)
             } else {
                 (Rect::ZERO, 0.0, None, None)
             };
+        zones.content_buttons = buttons.len();
+        zones.content_labels = labels.len();
+        if let Some((_, area)) = stacked {
+            let mut y = area.y0;
+            Self::push_section_label(
+                &self.chrome_metrics,
+                &mut labels,
+                area.x0,
+                &mut y,
+                &tr("slides-speaker-notes"),
+            );
+            let notes = Rect::new(area.x0, y, area.x1, area.y1);
+            buttons.push(UiButton {
+                rect: notes,
+                kind: ButtonKind::Notes,
+                hit: Hit::EditNotes,
+            });
+            notes_box = Some(notes);
+        }
         let fill_picker_rect = self.fill_picker_popover_rect(inspector, r);
 
         Chrome {
@@ -496,6 +531,37 @@ impl SlidesApp {
             scrim,
             zones,
         }
+    }
+
+    /// The swatch for `role` in `rect`, in its colour as it reads on the
+    /// current slide; "no colour" is the toolkit's none swatch.
+    pub(super) fn swatch_face(&self, pal: &Palette, rect: Rect, role: &str) -> ColorSwatchFace {
+        let on_slide = self.slide().map_or(*pal, |slide| pal.on(slide.background));
+        match on_slide.resolve_role(role) {
+            Some(color) => ColorSwatchFace::new(rect, color, role_name(role)),
+            None => ColorSwatchFace::none(rect, role_name(role)),
+        }
+    }
+
+    /// With the inspector hidden, a column taller than the slide needs puts
+    /// the slide at its top and the speaker notes under it, rather than
+    /// leaving empty bands above and below the slide. Returns the slide's
+    /// canvas and the notes' area (their caption, then the field).
+    fn stacked_notes(&self, content: Rect) -> Option<(Rect, Rect)> {
+        let m = &self.chrome_metrics;
+        let slide_h = (content.width() - 2.0 * m.s6).max(1.0) * SLIDE_H / SLIDE_W + 2.0 * m.s6;
+        let notes_h = m.lh_subheading + m.s2 + 4.0 * m.lh_body + 2.0 * m.s3 + m.s6;
+        if content.height() - slide_h < notes_h {
+            return None;
+        }
+        let canvas = Rect::new(content.x0, content.y0, content.x1, content.y0 + slide_h);
+        let area = Rect::new(
+            content.x0 + m.s6,
+            canvas.y1,
+            content.x1 - m.s6,
+            content.y1 - m.s6,
+        );
+        Some((canvas, area))
     }
 
     /// Fit the 16:9 slide inside `canvas` with the content gutter round it.
@@ -731,7 +797,13 @@ impl SlidesApp {
         let mut y = y;
 
         Self::push_section_label(m, labels, x0, &mut y, &tr("slides-fill"));
-        y = self.swatch_grid(buttons, x0, x1, y, &FILL_ROLES, &el.fill, true);
+        // A shape may be left unfilled; text always has its colour.
+        let mut fills: Vec<&str> = Vec::with_capacity(FILL_ROLES.len() + 1);
+        if el.kind != ElementKind::Text {
+            fills.push("none");
+        }
+        fills.extend(FILL_ROLES);
+        y = self.swatch_grid(buttons, x0, x1, y, &fills, &el.fill, true);
         y += m.s2;
         let custom = el.fill.starts_with('#');
         buttons.push(UiButton {
@@ -785,22 +857,24 @@ impl SlidesApp {
                     Hit::ToggleList(true),
                 ),
             ];
+            // Beside the field they are squares at the row's end; under it
+            // they share the whole row, as the alignment strip does.
             let square = m.control_h;
             let count = toggles.len() as f64;
             let toggles_w = square * count + m.s1 * (count - 1.0);
-            let toggles_y = if field_w + m.s2 + toggles_w <= x1 - x0 + 0.5 {
-                y
+            let (toggles_y, mut left, cell) = if field_w + m.s2 + toggles_w <= x1 - x0 + 0.5 {
+                (y, x1 - toggles_w, square)
             } else {
-                y + m.control_h + m.s2
+                let cell = ((x1 - x0 - m.s1 * (count - 1.0)) / count).max(square);
+                (y + m.control_h + m.s2, x0, cell)
             };
-            let mut left = x1 - toggles_w;
             for (icon, name, active, hit) in toggles {
                 buttons.push(UiButton {
-                    rect: Rect::new(left, toggles_y, left + square, toggles_y + m.control_h),
+                    rect: Rect::new(left, toggles_y, left + cell, toggles_y + m.control_h),
                     kind: ButtonKind::Icon { icon, name, active },
                     hit,
                 });
-                left += square + m.s1;
+                left += cell + m.s1;
             }
             y = toggles_y + m.control_h + m.s6;
 
@@ -1066,6 +1140,13 @@ impl SlidesApp {
         self.draw_text_editor(&mut PaintCtx::new(scene, t, tr, theme), presence);
         tr.set_text_scale(reader_scale);
 
+        if let Some(notes) = chrome.notes_box
+            && chrome.inspector.width() <= 1.0
+        {
+            Self::draw_labels(scene, t, tr, theme, chrome, Zone::Content, |_| true);
+            self.draw_notes(scene, t, tr, theme, notes);
+        }
+
         if rail_docked && chrome.rail.width() > 1.0 {
             let local = self.rail_drawer.paint_panel(scene, t, theme);
             self.draw_rail_contents(scene, t, tr, &local, chrome, &pal);
@@ -1304,7 +1385,6 @@ impl SlidesApp {
         b: &UiButton,
     ) {
         let hovered = self.hovered(b.rect);
-        let ground = theme.tokens.colors.surfaces.content;
         match &b.kind {
             ButtonKind::Command { label, icon, role } => {
                 let face = ButtonFace::new(b.rect, label).role(*role).hovered(hovered);
@@ -1324,13 +1404,7 @@ impl SlidesApp {
                 self.draw_segments(scene, t, tr, theme, &[b]);
             }
             ButtonKind::Swatch { role, selected } => {
-                let mut on_slide = *pal;
-                if let Some(slide) = self.slide() {
-                    on_slide = on_slide.on(slide.background);
-                }
-                // "No stroke" shows the ground it would leave visible.
-                let color = on_slide.resolve_role(role).unwrap_or(ground);
-                ColorSwatchFace::new(b.rect, color, role_name(role))
+                self.swatch_face(pal, b.rect, role)
                     .selected(*selected)
                     .hovered(hovered)
                     .paint(scene, t, tr, theme);

@@ -127,8 +127,9 @@ fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
 }
 
 #[test]
-fn the_bar_switches_between_the_editor_and_the_overview() {
+fn the_bar_switches_between_the_editor_and_the_overview_with_the_same_slots() {
     let mut bench = Bench::sample();
+    let editor = toolbar(&mut bench);
     press(&mut bench, action(OVERVIEW));
     assert_eq!(bench.read(|app| app.mode), Mode::Overview);
     let overview = toolbar(&mut bench);
@@ -136,8 +137,16 @@ fn the_bar_switches_between_the_editor_and_the_overview() {
         overview.views.as_ref().map(|views| views.chosen.as_str()),
         Some(OVERVIEW)
     );
-    assert_eq!(overview.sidebar, None, "the overview has no slide list");
-    assert_eq!(action_ids(&overview), [PRESENT]);
+    assert_eq!(
+        overview.sidebar,
+        Some(false),
+        "the overview shows no slide list"
+    );
+    assert_eq!(
+        action_ids(&overview),
+        action_ids(&editor),
+        "the bar keeps its slots between the views"
+    );
     assert!(
         overview.location.is_some(),
         "the overview still names the deck"
@@ -145,6 +154,24 @@ fn the_bar_switches_between_the_editor_and_the_overview() {
 
     press(&mut bench, action(EDITOR));
     assert_eq!(bench.read(|app| app.mode), Mode::Edit);
+
+    press(&mut bench, action(OVERVIEW));
+    press(&mut bench, ToolbarEvent::ToggleSidebar);
+    assert_eq!(
+        bench.read(|app| (app.mode, app.rail_open())),
+        (Mode::Edit, true),
+        "the slide list's toggle returns to the editor with the list shown"
+    );
+
+    press(&mut bench, action(OVERVIEW));
+    let before = bench.deck().slides[0].elements.len();
+    press(&mut bench, action(&insert_id(ElementKind::Rect)));
+    assert_eq!(
+        bench.read(|app| app.mode),
+        Mode::Edit,
+        "Insert returns to the editor"
+    );
+    assert_eq!(bench.deck().slides[0].elements.len(), before + 1);
 }
 
 #[test]

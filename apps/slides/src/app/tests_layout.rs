@@ -975,3 +975,155 @@ fn chrome_labels_are_fluent_resolved_text() {
         }
     });
 }
+
+/// A compact window with the properties hidden shows the slide at the top
+/// of the column and its speaker notes under it, rather than empty bands
+/// above and below the slide; opening the properties takes the notes back.
+#[test]
+fn a_compact_editor_shows_the_notes_under_the_slide() {
+    let mut bench = layout_bench();
+    bench.with(|app| {
+        size(app, 420.0, 800.0);
+        assert!(!app.inspector_open());
+        let chrome = app.compute_chrome();
+        let notes = chrome.notes_box.expect("the notes show under the slide");
+        assert!(
+            notes.y0 >= chrome.slide_dest.y1,
+            "{notes:?} under {:?}",
+            chrome.slide_dest
+        );
+        assert!(notes.y1 <= app.rect.y1 && notes.x0 >= app.rect.x0 && notes.x1 <= app.rect.x1);
+        assert!(
+            notes.height() >= 4.0 * app.chrome_metrics.lh_body,
+            "the notes have room for a few lines: {notes:?}"
+        );
+        assert!(
+            chrome.slide_dest.y0 - app.rect.y0 <= 2.0 * app.chrome_metrics.s6,
+            "the slide sits at the top of the column: {:?}",
+            chrome.slide_dest
+        );
+        assert!(
+            chrome
+                .labels
+                .iter()
+                .any(|l| l.text == tr("slides-speaker-notes")
+                    && l.pos.y >= chrome.slide_dest.y1
+                    && l.pos.y <= notes.y0),
+            "the notes have their caption"
+        );
+        app.apply_hit(Hit::EditNotes);
+        assert!(app.editing_notes, "the notes under the slide edit");
+        app.editing_notes = false;
+
+        app.toggle_inspector_flap();
+        app.inspector_drawer.snap(true);
+        app.resolve_drawers();
+        let chrome = app.compute_chrome();
+        let notes = chrome.notes_box.expect("the properties hold the notes");
+        assert!(chrome.inspector.contains(notes.center()));
+    });
+
+    // A short, wide window has no room under the slide: the slide fills it.
+    let mut bench = layout_bench();
+    bench.with(|app| {
+        size(app, 820.0, 500.0);
+        assert!(!app.inspector_open());
+        assert_eq!(app.compute_chrome().notes_box, None);
+    });
+}
+
+/// "No colour" is the toolkit's none swatch, for a shape's fill and its
+/// stroke alike, whatever the slide's background; text has no unfilled
+/// choice.
+#[test]
+fn the_fill_and_stroke_offer_no_colour_as_the_none_swatch() {
+    let unfilled = |hit: &Hit, fill: bool| match hit {
+        Hit::SetFill(role) => fill && role == "none",
+        Hit::SetStroke(role) => !fill && role == "none",
+        _ => false,
+    };
+    for background in Background::ALL {
+        let mut s = Slide::new(Layout::TitleContent);
+        s.background = background;
+        let shape = s.add(Element::shape(
+            ElementKind::Rect,
+            100.0,
+            100.0,
+            200.0,
+            100.0,
+        ));
+        let text = s.add(Element::text("Hi", 100.0, 300.0, 400.0, 100.0, 40.0));
+        let mut bench = Bench::open(&deck_of(vec![s]), super::bench::WINDOW);
+        bench.with(|app| {
+            let pal = app.palette();
+            app.sel = Some(shape.clone());
+            let chrome = app.compute_chrome();
+            for fill in [true, false] {
+                let button = chrome
+                    .buttons
+                    .iter()
+                    .find(|b| unfilled(&b.hit, fill))
+                    .unwrap_or_else(|| panic!("no colour is offered on {background:?}"));
+                assert!(matches!(&button.kind, ButtonKind::Swatch { role, .. } if role == "none"));
+                assert!(app.swatch_face(&pal, button.rect, "none").is_none());
+            }
+            assert!(!app.swatch_face(&pal, Rect::ZERO, "text").is_none());
+
+            app.sel = Some(text.clone());
+            let chrome = app.compute_chrome();
+            assert!(
+                !chrome.buttons.iter().any(|b| unfilled(&b.hit, true)),
+                "text keeps its colour"
+            );
+        });
+    }
+}
+
+/// Bold, italic and the lists end where the alignment strip ends; under
+/// the size field they share the whole row rather than leaving its start
+/// empty.
+#[test]
+fn the_format_toggles_fill_their_row() {
+    for width in [1280.0, 1100.0, 900.0] {
+        let mut bench = selected_text_bench();
+        bench.with(|app| {
+            size(app, width, 800.0);
+            if !app.inspector_open() {
+                app.toggle_inspector_flap();
+            }
+            app.inspector_drawer.snap(true);
+            app.resolve_drawers();
+            let chrome = app.compute_chrome();
+            let field = chrome.font_input_rect.expect("the size field shows");
+            let toggles: Vec<Rect> = chrome
+                .buttons
+                .iter()
+                .filter(|b| {
+                    matches!(
+                        b.hit,
+                        Hit::ToggleBold | Hit::ToggleItalic | Hit::ToggleList(_)
+                    )
+                })
+                .map(|b| b.rect)
+                .collect();
+            assert_eq!(toggles.len(), 4, "at {width}");
+            let row_end = chrome
+                .buttons
+                .iter()
+                .filter(|b| matches!(b.hit, Hit::SetAlign(_)))
+                .map(|b| b.rect.x1)
+                .fold(f64::MIN, f64::max);
+            let last = toggles[3];
+            assert!(
+                (last.x1 - row_end).abs() < 0.5,
+                "at {width}: {last:?} ends at {row_end}"
+            );
+            if toggles[0].y0 > field.y0 {
+                assert!(
+                    (toggles[0].x0 - field.x0).abs() < 0.5,
+                    "at {width}: the wrapped row starts with the field: {toggles:?}"
+                );
+            }
+        });
+    }
+}
