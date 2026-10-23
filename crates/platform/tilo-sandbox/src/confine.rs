@@ -76,6 +76,26 @@ pub fn limit_address_space(bytes: u64) -> Result<bool, ConfineError> {
     sys::limit_address_space(bytes).map_err(ConfineError::Setup)
 }
 
+/// Bound the allocator's per-thread arenas, so the address space a process
+/// maps stops growing with the machine's core count. Call it first in `main`,
+/// before any thread starts, in a process that later sets
+/// [`limit_address_space`].
+///
+/// glibc gives threads arenas of their own, up to eight per core, each
+/// reserving 64 MiB of address space: a helper whose libraries start a
+/// thread per core (plugin loaders, shader compilation, a software
+/// rasterizer) maps gigabytes of reservations on a many-core machine before
+/// it allocates anything, more than a fixed cap allows. Elsewhere this does
+/// nothing.
+pub fn share_allocator_arenas() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: mallopt takes a parameter and a value; M_ARENA_MAX bounds the
+    // arenas created from then on and touches no memory.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+}
+
 /// Confine the calling process to `policy`, irreversibly, for it and every
 /// descendant. Never call this from a process that must keep running
 /// unconfined (a test harness).
