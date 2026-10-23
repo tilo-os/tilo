@@ -1,4 +1,4 @@
-# TOTP — Tilo application manifest.
+# Authenticator — Tilo application manifest.
 #
 # Holds authenticator secrets, so its store is its own directory and
 # nothing else is granted — no network (TOTP is computed locally from
@@ -9,7 +9,7 @@
 
 [package]
 id       = "so.tilo.totp"
-name     = "TOTP"
+name     = "Authenticator"
 category = "Utility"
 version  = "0.1.0"
 kind     = "app"

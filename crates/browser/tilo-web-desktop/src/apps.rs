@@ -1035,7 +1035,7 @@ mod totp_split {
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.totp", "TOTP", open);
+        registry::defer("so.tilo.totp", "Authenticator", open);
     }
 }
 
