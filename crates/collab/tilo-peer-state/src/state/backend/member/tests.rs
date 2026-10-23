@@ -220,11 +220,7 @@ fn bounded_current_member_copies_all_grant_fields() {
         TreePath::room(&room).any(tilo_action_policy::Level::App),
         roles::room_resource(&room),
     ];
-    let lifetimes = [
-        Lifetime::UntilRevoked,
-        Lifetime::Until(u64::MAX),
-        Lifetime::Task(long.clone()),
-    ];
+    let lifetimes = [Lifetime::UntilRevoked, Lifetime::Until(u64::MAX)];
     for (i, node) in nodes.into_iter().enumerate() {
         let grant = Grant {
             id: GrantId::new(format!("extra{i:02}{long}")),

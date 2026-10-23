@@ -19,7 +19,7 @@ pub struct Grant {
     pub node: TreePath,       // room › app › resource kind › resource › item › action
     pub kinds: KindSet,       // any of Read, Undoable, Outside
     pub answer: Answer,       // Allow, Ask, Deny
-    pub lifetime: Lifetime,   // Once, Task(id), Session, Until(time), UntilRevoked
+    pub lifetime: Lifetime,   // Once, Session, Until(time), UntilRevoked
     pub granted_by: Subject,
 }
 ```
@@ -127,8 +127,11 @@ it, and a person's restriction always reaches their agents.
 - **Agent default.** A new agent delegation grants Read and Undoable within the
   scope the person gives it (rooms, apps, a task), and Ask for Outside. People
   are not discouraged from granting more.
-- **Tasks.** A task carries its own grant set (lifetime `Task`), shown on the
-  task and editable as actions; it ends with the task.
+- **Issues.** The runs of an issue in the Tasks app are bounded by the room's
+  grants naming the issue (`Subject::Task` with the issue's address), given
+  and revoked like any other grant. They only narrow what the run's agent and
+  approver hold, so they need no lifetime of their own: they bound nothing
+  while no run is going.
 - **Shortcuts.** A Shortcut's grant set is stored with it and shown on import.
   An unattended run turns Ask into a refusal unless the set holds a matching
   Allow.

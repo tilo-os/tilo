@@ -381,20 +381,13 @@ fn session_grants_live_only_in_their_session() {
 }
 
 #[test]
-fn task_grants_end_with_the_task() {
-    let grants =
-        [grant("t", mail(), KindSet::ALL, Answer::Allow)
-            .with_lifetime(Lifetime::Task("t1".into()))];
-    let open = |task: &str| task == "t1";
-    let closed = |_: &str| false;
-    let with_open = cx().with_tasks(&open);
-    let with_closed = cx().with_tasks(&closed);
+fn a_grant_that_lived_while_a_task_was_open_reads_as_expired() {
+    let mut json = serde_json::to_value(grant("t", mail(), KindSet::ALL, Answer::Allow)).unwrap();
+    json["lifetime"] = serde_json::json!({"task": "t1"});
+    let stored: Grant = serde_json::from_value(json).expect("an old room still loads");
+    assert_eq!(stored.lifetime, Lifetime::Until(0));
     assert_eq!(
-        decide(&grants, &[alice()], &send(), ActionKind::Read, &with_open).answer,
-        Answer::Allow
-    );
-    assert_eq!(
-        decide(&grants, &[alice()], &send(), ActionKind::Read, &with_closed).answer,
+        decide(&[stored], &[alice()], &send(), ActionKind::Read, &cx()).answer,
         Answer::Deny
     );
 }
@@ -1208,7 +1201,7 @@ fn grants_round_trip_through_json() {
         KindSet::READ_UNDOABLE,
         Answer::Ask,
     )
-    .with_lifetime(Lifetime::Task("t1".into()));
+    .with_lifetime(Lifetime::Until(5));
     let json = serde_json::to_value(&grant).expect("serialises");
     assert_eq!(json["node"], "room:r/app:mail/resource:*");
     assert_eq!(json["kinds"], serde_json::json!(["read", "undoable"]));
@@ -1407,25 +1400,6 @@ fn a_refused_run_spends_nothing() {
         authority.decide(&send(), ActionKind::Read, &cx()).spent(),
         vec![GrantId::new("once")]
     );
-}
-
-#[test]
-fn grants_given_for_a_task_lapse_with_it() {
-    let mut room = RoomPolicy::new("r", CAROL);
-    for (id, task) in [("t1-grant", "t1"), ("t2-grant", "t2")] {
-        room.grants.push(
-            grant(id, mail(), KindSet::READ, Answer::Allow)
-                .with_lifetime(Lifetime::Task(task.into())),
-        );
-    }
-    room.grants
-        .push(grant("standing", mail(), KindSet::READ, Answer::Allow));
-    assert_eq!(
-        room.lapse_tasks(|task| task == "t2"),
-        vec![GrantId::new("t1-grant")]
-    );
-    let held: Vec<&str> = room.grants.iter().map(|grant| grant.id.as_str()).collect();
-    assert!(held.contains(&"t2-grant") && held.contains(&"standing"));
 }
 
 /// Receivers admit only what the author's grants allow outright, so the

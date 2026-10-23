@@ -93,7 +93,6 @@ glyph-join 1 apps/video-player/src/actions.rs
 glyph-join 1 apps/video-player/src/app.rs
 glyph-join 1 apps/weather/src/main.rs
 glyph-join 1 apps/word-processor/src/widget.rs
-glyph-join 3 crates/session/desktop-model/src/task.rs
 glyph-join 7 crates/session/desktop-surface/src/activity/pane.rs
 glyph-join 1 crates/session/desktop-surface/src/activity/replay.rs
 glyph-join 2 crates/session/desktop-surface/src/person_cursor.rs

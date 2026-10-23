@@ -1884,7 +1884,7 @@ pub fn lifetime_label(lifetime: &tilo_action_policy::Lifetime) -> String {
     use tilo_action_policy::Lifetime;
     t(match lifetime {
         Lifetime::Once => "workspace-settings-expiry-once",
-        Lifetime::Session(_) | Lifetime::Task(_) => "workspace-settings-expiry-session",
+        Lifetime::Session(_) => "workspace-settings-expiry-session",
         Lifetime::Until(_) => "workspace-settings-expiry-until",
         Lifetime::UntilRevoked => "workspace-settings-expiry-always",
     })

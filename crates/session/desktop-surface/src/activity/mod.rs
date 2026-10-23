@@ -64,14 +64,6 @@ impl ActivitySnapshot {
             room,
             &snapshot.doc,
         )?;
-        if let Some(workspace) = snapshot
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.room() == room)
-        {
-            workspace.tasks = tilo_desktop_model::projection::workspace_tasks_of(&snapshot.doc);
-        }
         Ok(snapshot)
     }
 }
