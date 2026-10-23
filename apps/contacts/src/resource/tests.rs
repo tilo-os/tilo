@@ -653,3 +653,54 @@ fn merging_from_the_review_asks_the_host_and_lands() {
     assert_eq!(merged.len(), 1, "the confirmed merge lands");
     assert_eq!(merged[0].org, "Analytical Engines");
 }
+
+/// An agent keeps the address book, or one card it names, as vCards in
+/// the room's content, without the confirmation a file export asks.
+#[test]
+fn export_vcard_content_keeps_every_card_or_one_by_name_as_content() {
+    let mut app = TestApp::<ContactsShell>::new().unwrap();
+    let (ada, alan) = (person("Ada", "Lovelace"), person("Alan", "Turing"));
+    app.invoke(Contacts::add_all(vec![ada, alan.clone()]))
+        .unwrap();
+    let text = |app: &TestApp<ContactsShell>, answer: &serde_json::Value| {
+        let hash = ui::tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
+        String::from_utf8(app.content().read(hash).unwrap()).unwrap()
+    };
+    let all = app
+        .call("export-vcard-content", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(all["contacts"], 2);
+    let cards = text(&app, &all);
+    assert_eq!(cards.matches("BEGIN:VCARD").count(), 2);
+    assert!(cards.contains("VERSION:4.0"));
+    let one = app
+        .call(
+            "export-vcard-content",
+            serde_json::json!({ "name": "ada lovelace" }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(one["names"], serde_json::json!(["Ada Lovelace"]));
+    let card = text(&app, &one);
+    assert!(
+        card.contains("Lovelace") && !card.contains("Turing"),
+        "{card}"
+    );
+    let by_id = app
+        .call(
+            "export-vcard-content",
+            serde_json::json!({ "contact": alan.id.to_string() }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_id["names"], serde_json::json!(["Alan Turing"]));
+    assert!(
+        app.call(
+            "export-vcard-content",
+            serde_json::json!({ "name": "Grace" })
+        )
+        .is_err(),
+        "a name no card carries is refused"
+    );
+}
