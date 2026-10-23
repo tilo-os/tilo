@@ -759,30 +759,18 @@ impl PdfApp {
         self.raster_images.begin_frame();
 
         let canvas = self.canvas_rect;
-        let scroll_y = self.scroll_y();
-        if (scroll_y - self.last_raster_scroll_y).abs() > f64::EPSILON {
-            self.scroll_heading = (scroll_y - self.last_raster_scroll_y).signum();
-            self.last_raster_scroll_y = scroll_y;
-        }
+        self.raster_heading.follow(self.scroll_y());
         let card_w_px = (self.pw() * self.zoom()).max(1.0);
         // Render a little above display resolution so pages stay crisp when
         // the compositor scales the surface.
         let page_bucket = crate::source::RasterBackend::bucket_for(
             ((card_w_px * RASTER_SS).round() as u32).clamp(96, 4096),
         );
-        // What the scroll reaches next: a screen ahead in the direction it
-        // last moved, half a screen behind.
-        let reach = canvas.height();
-        let (ahead, behind) = if self.scroll_heading < 0.0 {
-            (reach * 0.5, reach)
-        } else {
-            (reach, reach * 0.5)
-        };
         let PagesInReach {
             visible,
             prefetch,
             tiled,
-        } = self.pages_in_reach(ahead, behind);
+        } = self.pages_in_reach(self.raster_heading.reach(canvas.height()));
 
         let placeholder_bucket =
             crate::source::RasterBackend::bucket_for(crate::tiles::PLACEHOLDER_PAGE_PX);
@@ -853,15 +841,15 @@ impl PdfApp {
     /// their distance from its centre, those `ahead`/`behind` of it with
     /// their distance from its edge, each nearest first, and the on-screen
     /// pages drawn too large for one bitmap, which are drawn from tiles.
-    fn pages_in_reach(&self, ahead: f64, behind: f64) -> PagesInReach {
+    fn pages_in_reach(&self, (ahead, behind): (f64, f64)) -> PagesInReach {
         let canvas = self.canvas_rect;
-        let (mut visible, mut prefetch, mut tiled) = (Vec::new(), Vec::new(), Vec::new());
+        let mut tiled = Vec::new();
         let count = self.doc.page_count();
         let unit = self.stack_unit();
         if count == 0 || unit <= 0.0 {
             return PagesInReach {
-                visible,
-                prefetch,
+                visible: Vec::new(),
+                prefetch: Vec::new(),
                 tiled,
             };
         }
@@ -869,31 +857,29 @@ impl PdfApp {
         let content_y = |y: f64| self.viewport.screen_to_content(Point::new(canvas.x0, y)).y;
         let first = (content_y(canvas.y0 - behind) / unit).floor().max(0.0) as usize;
         let last = ((content_y(canvas.y1 + ahead) / unit).floor().max(0.0) as usize).min(count - 1);
-        let centre = canvas.center().y;
-        for i in first..=last {
-            let o = self
-                .viewport
-                .content_point_to_screen(Point::new(0.0, i as f64 * unit));
-            let (top, bottom) = (o.y, o.y + pageh);
-            if top <= canvas.y1 && bottom >= canvas.y0 {
-                match self.tile_placement(i, o) {
-                    Some(placement) => tiled.push(placement),
-                    None => visible.push((i, (f64::midpoint(top, bottom) - centre).abs())),
+        let origin = |i: usize| {
+            self.viewport
+                .content_point_to_screen(Point::new(0.0, i as f64 * unit))
+        };
+        let reach = tilo_page_raster::reach::pages_in_reach(
+            first..=last,
+            (canvas.y0, canvas.y1),
+            (ahead, behind),
+            |i| {
+                let top = origin(i).y;
+                Some((top, top + pageh))
+            },
+            |i, _| match self.tile_placement(i, origin(i)) {
+                Some(placement) => {
+                    tiled.push(placement);
+                    true
                 }
-            } else if top <= canvas.y1 + ahead && bottom >= canvas.y0 - behind {
-                let distance = if top > canvas.y1 {
-                    top - canvas.y1
-                } else {
-                    canvas.y0 - bottom
-                };
-                prefetch.push((i, distance));
-            }
-        }
-        visible.sort_by(|a, b| a.1.total_cmp(&b.1));
-        prefetch.sort_by(|a, b| a.1.total_cmp(&b.1));
+                None => false,
+            },
+        );
         PagesInReach {
-            visible,
-            prefetch,
+            visible: reach.visible,
+            prefetch: reach.prefetch,
             tiled,
         }
     }
@@ -937,27 +923,14 @@ impl PdfApp {
     /// so the open→first-paint path pays for the top page alone and the rest
     /// follow as results wake later frames.
     fn submit_page_renders(&mut self, document_id: u64, order: &[(usize, u32)]) {
-        let mut new_pages = MAX_NEW_PAGE_RASTERS_PER_FRAME;
-        let mut new_thumbs = MAX_NEW_THUMB_RASTERS_PER_FRAME;
-        let mut batch: Vec<(usize, u32)> = Vec::new();
-        for key in order {
-            if batch.contains(key) {
-                continue;
-            }
-            if self.raster_render_pending.contains(key) {
-                batch.push(*key);
-                continue;
-            }
-            let budget = if key.1 > crate::tiles::THUMB_MAX_PX {
-                &mut new_pages
-            } else {
-                &mut new_thumbs
-            };
-            if *budget > 0 {
-                *budget -= 1;
-                batch.push(*key);
-            }
-        }
+        let batch = tilo_page_raster::admit(
+            order,
+            &self.raster_render_pending,
+            tilo_page_raster::Admission {
+                pages: MAX_NEW_PAGE_RASTERS_PER_FRAME,
+                thumbnails: MAX_NEW_THUMB_RASTERS_PER_FRAME,
+            },
+        );
         if batch == self.raster_render_batch {
             return;
         }
@@ -1025,74 +998,26 @@ impl PdfApp {
         wanted: &[crate::tiles::WantedTile],
         page_tiles: &mut std::collections::HashMap<usize, render::PageTiles>,
     ) {
-        let mut batch = Vec::new();
-        let mut missing_on: HashSet<usize> = HashSet::new();
-        for tile in wanted {
-            let key = UiTileKey {
-                page: tile.page,
-                level: tile.level,
-                col: tile.col,
-                row: tile.row,
-            };
-            if let Some(image) = self.raster_tiles.get(&key) {
-                if tile.visible
-                    && let Some(entry) = page_tiles.get_mut(&(tile.page + 1))
-                {
-                    entry.tiles.push((tile.region, image));
-                }
-            } else {
-                if tile.visible {
-                    self.pending_visuals = true;
-                    missing_on.insert(tile.page);
-                }
-                if batch.len() < crate::tiles::MAX_TILE_BATCH {
-                    batch.push(crate::source::TileRequest {
-                        document_id,
-                        page: tile.page,
-                        level: tile.level,
-                        col: tile.col,
-                        row: tile.row,
-                    });
-                }
-            }
-        }
-        // Pages still missing tiles at this level paint what other levels
-        // left, nearest level last (on top).
-        for page in missing_on {
-            let Some(entry) = page_tiles.get_mut(&(page + 1)) else {
-                continue;
-            };
-            let current = entry.placement.level;
-            let mut held: Vec<UiTileKey> = self
-                .raster_tiles
-                .keys()
-                .filter(|key| key.page == page && key.level != current)
-                .copied()
-                .collect();
-            held.sort_by_key(|key| std::cmp::Reverse((key.level - current).abs()));
-            let canvas = self.canvas_rect;
-            for key in held {
-                let Some(region) =
-                    crate::tiles::tile_region(entry.placement.size, key.level, key.col, key.row)
-                else {
-                    continue;
-                };
-                let placement = crate::tiles::PagePlacement {
-                    level: key.level,
-                    screen_per_px: entry.placement.screen_per_px
-                        * f64::from(crate::tiles::level_scale(current))
-                        / f64::from(crate::tiles::level_scale(key.level)),
-                    ..entry.placement
-                };
-                let (x0, y0, x1, y1) = placement.screen_rect(region);
-                if x1 < canvas.x0 || x0 > canvas.x1 || y1 < canvas.y0 || y0 > canvas.y1 {
-                    continue;
-                }
-                if let Some(image) = self.raster_tiles.get(&key) {
-                    entry.under.push((placement.screen_per_px, region, image));
-                }
-            }
-        }
+        let canvas = self.canvas_rect;
+        let plan = crate::tiles::plan_tiles(
+            wanted,
+            &mut self.raster_tiles,
+            (canvas.x0, canvas.y0, canvas.x1, canvas.y1),
+            page_tiles,
+            1,
+        );
+        self.pending_visuals |= plan.missing;
+        let batch: Vec<crate::source::TileRequest> = plan
+            .batch
+            .iter()
+            .map(|key| crate::source::TileRequest {
+                document_id,
+                page: key.page,
+                level: key.level,
+                col: key.col,
+                row: key.row,
+            })
+            .collect();
         if batch != self.raster_tile_batch {
             let submitted = self.raster_handle.as_ref().is_some_and(|handle| {
                 handle

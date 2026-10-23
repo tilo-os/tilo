@@ -11214,6 +11214,7 @@ dependencies = [
  "tilo-cpu-raster",
  "tilo-document",
  "tilo-files",
+ "tilo-page-raster",
  "tilo-paths",
  "tilo-pdf",
  "tilo-pdf-engine",
@@ -18782,6 +18783,17 @@ dependencies = [
  "tilo-peer-state",
  "tilo-user-identity",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-page-raster"
+version = "0.1.0"
+dependencies = [
+ "tilo-clock",
+ "tilo-lock",
+ "tilo-rt",
+ "tilo-vello",
  "workspace-hack",
 ]
 
