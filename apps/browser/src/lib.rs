@@ -113,6 +113,8 @@ pub use browser_parts::service_profiles;
 pub(crate) use browser_parts::service_sessions;
 pub mod settings;
 #[cfg(not(test))]
+pub use browser_parts::page_popups;
+#[cfg(not(test))]
 pub use browser_parts::site_controls;
 #[cfg(not(test))]
 pub use browser_parts::storage;
@@ -148,6 +150,7 @@ mod parts {
     pub mod native_blocker;
     pub mod notice;
     pub mod page_menu;
+    pub mod page_popups;
     pub mod private_window;
     pub mod rows;
     pub mod service_destinations;
@@ -163,8 +166,9 @@ pub(crate) use parts::service_sessions;
 pub use parts::{
     actions, address_controls, autofill, back_hold, blocker, browsing_mode, capabilities,
     credentials, crx, downloads, effects, engine_setup, extension_controller, extension_host,
-    extension_toolbar, extensions, library, native_blocker, notice, page_menu, private_window,
-    rows, service_destinations, service_profiles, site_controls, storage, web_store,
+    extension_toolbar, extensions, library, native_blocker, notice, page_menu, page_popups,
+    private_window, rows, service_destinations, service_profiles, site_controls, storage,
+    web_store,
 };
 
 pub use browser_widget::BrowserWidget;

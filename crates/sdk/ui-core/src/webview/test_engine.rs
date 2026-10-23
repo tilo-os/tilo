@@ -47,6 +47,11 @@ struct Inner {
     selection: String,
     /// Links the page asked to open in a new window, not taken yet.
     new_tabs: Vec<(String, bool)>,
+    /// Whether it was asked for the page's popups, the popups the page
+    /// opened and not yet taken, and the engines of those adopted.
+    accepts_popups: bool,
+    popups: Vec<super::Popup>,
+    adopted: std::collections::HashMap<u32, Arc<TestEngine>>,
     /// It paints nothing new, as a busy renderer has not yet.
     holds_frames: bool,
     /// Its pages carry an end mark, as a mail's document does.
@@ -107,6 +112,31 @@ impl TestEngine {
     /// person followed does.
     pub fn push_new_tab_request(&self, url: impl Into<String>) {
         self.lock_inner().new_tabs.push((url.into(), false));
+    }
+
+    /// Say the page opened a popup, as `window.open` with a size does. An
+    /// engine nobody asked for popups ignores it, as Chromium's opens it
+    /// as a tab.
+    pub fn push_popup(&self, id: u32, url: impl Into<String>, width: u32, height: u32) {
+        let mut inner = self.lock_inner();
+        if inner.accepts_popups {
+            inner.popups.push(super::Popup {
+                id,
+                url: url.into(),
+                width,
+                height,
+            });
+        }
+    }
+
+    /// Whether it was asked for the page's popups.
+    pub fn accepts_popups(&self) -> bool {
+        self.lock_inner().accepts_popups
+    }
+
+    /// The engine a popup was adopted as.
+    pub fn adopted(&self, id: u32) -> Option<Arc<TestEngine>> {
+        self.lock_inner().adopted.get(&id).cloned()
     }
 
     /// Say the page has `text` selected: a later
@@ -398,6 +428,20 @@ impl WebViewEngine for TestEngine {
 
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.lock_inner().new_tabs)
+    }
+
+    fn accept_popups(&self) {
+        self.lock_inner().accepts_popups = true;
+    }
+
+    fn take_popups(&self) -> Vec<super::Popup> {
+        std::mem::take(&mut self.lock_inner().popups)
+    }
+
+    fn adopt_popup(&self, popup: u32) -> Result<super::SharedEngine, String> {
+        let engine = TestEngine::new();
+        self.lock_inner().adopted.insert(popup, engine.clone());
+        Ok(engine)
     }
 
     fn navigate_owned(

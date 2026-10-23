@@ -192,6 +192,8 @@ class FaviconDownload final : public CefDownloadImageCallback {
   IMPLEMENT_REFCOUNTING(FaviconDownload);
 };
 std::map<int,CefRefPtr<Client>> clients;
+// A page's popups are tabs too, numbered apart from the tabs the app opens.
+int next_popup=1<<30;
 CefRefPtr<CefRequestContext> shared_context;
 void CreateTab(int id);
 void PublishZoomLevels();
@@ -341,12 +343,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(id_==1 && tilo::StartupDiagnostics::Enabled()){startup_diagnostics_=new tilo::StartupDiagnostics(browser);startup_diagnostics_->Attach();}
     request_filter->Begin(browser->GetIdentifier(),"about:blank");
     site_clear_=new tilo::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
-    document_scripts_=new tilo::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
+    document_scripts_=new tilo::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { if(native_closing_)return;StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
     // Register before releasing navigation. A late private context must not
     // infer idle composition from the absence of an event it could not observe.
+    // A registration cut short by its tab closing (DevTools detaches with
+    // it) leaves nothing unobserved.
     composition_scripts_=new tilo::DocumentScripts(browser,[this] { ScheduleNavigation(); },
-        [this] { StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
+        [this] { if(native_closing_)return;StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
         "tilo-private-text-input");
     composition_scripts_->Attach();
     composition_scripts_->Configure(R"JS(globalThis.__tiloTextComposition = (() => {
@@ -389,7 +393,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -422,6 +426,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(service_session_import_)service_session_import_->Detach();service_session_import_=nullptr;
     browser_=nullptr;
     download_owners.Destroy(id_);
+    // Its popups go with it: nothing is left for them to answer.
+    std::vector<CefRefPtr<Client>> popups;
+    for(const auto& [id,client]:clients)if(client->opener_==id_)popups.push_back(client);
+    for(const auto& popup:popups)popup->CloseNative();
     Event("closed");clients.erase(id_);PublishDownloadRuntime();
     if(closing && clients.empty())CefQuitMessageLoop();
   }
@@ -434,8 +442,21 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
-  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
+  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
     if(sealed_documents && !user_gesture) return true;
+    // A popup window the page opens (window.open with a size: a sign-in, a
+    // payment) stays its popup, so it can answer the page that opened it.
+    // The app shows it beside the page, where it asked for them.
+    if(disposition==CEF_WOD_NEW_POPUP && popups_ && !sealed_documents && !closing && clients.size()<64 && url.length()<=8192 && next_popup<INT32_MAX) {
+      const int id=next_popup++;
+      auto popup=CefRefPtr<Client>(new Client(id));popup->opener_=id_;clients.emplace(id,popup);
+      window.SetAsWindowless(0);client=popup;
+      settings.windowless_frame_rate=kOffscreenFrameRate;settings.background_color=CefColorSetARGB(255,255,255,255);
+      auto d=CefDictionaryValue::Create();d->SetInt("popup",id);d->SetString("url",url);
+      d->SetInt("width",features.widthSet?std::clamp(features.width,0,10000):0);d->SetInt("height",features.heightSet?std::clamp(features.height,0,10000):0);
+      Event("popup",d);
+      return false;
+    }
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
   void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || url==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(url.ToString()); } main_navigation_finished_=false;++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false); } }
@@ -774,6 +795,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
+    else if(op=="popups") popups_=d->GetBool("enabled");
     else if(op=="selection_text") {
       // The renderer reads the selection; the embedder puts it on the
       // system clipboard, which an offscreen engine cannot reach.
@@ -1204,7 +1226,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     message->GetArgumentList()->SetString(1,frame->GetURL());
     frame->SendProcessMessage(PID_RENDERER,message);
   }
-  int id_;bool visible_=true,transfer_owner_=false,native_closing_=false;int key_modifiers_=0;uint64_t favicon_generation_=0;
+  int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;
   std::optional<bool> last_media_playing_;bool media_limit_reported_=false;
@@ -1535,6 +1557,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
     return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0;
   }
+  if(op=="popups") return type("enabled",VTYPE_BOOL);
   if(op=="document_size") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="enabled")return false;
