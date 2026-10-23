@@ -1181,7 +1181,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 31;
+    const VARIANT_COUNT: usize = 32;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1230,7 +1230,7 @@ mod tests {
         (
             "surface view request",
             concat!(
-                "1e032430373834386666652d313839382d346637322d383431392d3062353463",
+                "1f032430373834386666652d313839382d346637322d383431392d3062353463",
                 "3933653664616401878080808080c0f65e800ad00501046832363401800fb808",
             ),
         ),
@@ -1242,7 +1242,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b09",
+                "0b0a",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
