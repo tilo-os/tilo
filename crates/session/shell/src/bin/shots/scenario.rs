@@ -2091,7 +2091,6 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         .collect();
     let room_activity_view = match host.room_activity().view() {
         shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
-        shell::shell::room_activity::ActivityView::Tasks => "tasks",
         shell::shell::room_activity::ActivityView::Explore => "explore",
         shell::shell::room_activity::ActivityView::Replay => "replay",
     };

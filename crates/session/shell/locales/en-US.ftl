@@ -1645,7 +1645,6 @@ search-action-archived-restore-subtitle = Bring this archived workspace back to 
 search-action-archived-delete = Delete archived { $workspace }
 search-action-archived-delete-subtitle = Delete this archived workspace from this computer
 search-action-activity-catch-up-subtitle = What others changed since you last looked
-search-action-activity-tasks-subtitle = Work assigned to people and agents here
 search-action-activity-explore-subtitle = Every change here, by person, app and time
 search-action-activity-replay-subtitle = Step through how this workspace changed
 search-action-quick-settings-unavailable = Quick Settings service is unavailable
@@ -2693,19 +2692,6 @@ device-fabric-error-layout-changed = Display layout changed or unavailable. Refr
 search-action-activity-acknowledge = Mark activity as seen
 search-action-activity-acknowledge-subtitle = What you’ve looked at stops counting as new
 search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
-search-action-activity-tasks = Review workspace goals and agent work
-search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
-search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
-host-history-task-refused-title = Task could not be changed
-host-history-task-refused-body = The workspace did not accept this change. Any draft is kept; check your identity and workspace permissions before retrying.
-
-task-review-inspect = Inspect task evidence
-task-review-steer = Change task instructions
-task-review-cancel = Cancel task run
-task-review-retry = Retry task
-task-review-status = Inspect task review availability
-task-review-provider = Task review
-
 dictation-vocabulary-changed = Dictation stopped because your personal dictionary changed. Start a new session to use the updated words.
 dictation-vocabulary-draft-retained = Your personal dictionary changed. Dictation has stopped. You can copy the latest draft; it may be incomplete.
 
@@ -2717,11 +2703,6 @@ shell-window-retry = Reopen
 shell-window-app-missing = { $app } isn't on this computer
 shell-window-get-app = Get { $app }
 shell-window-close = Close
-task-review-approve = Approve task run
-
-# Shared activity label used by native task-review rendering.
-activity-task-approve-run = Approve run
-
 device-fabric-error-input-operation-unavailable = Input control is busy. Try again.
 device-fabric-error-input-decline-unavailable = Your declined input devices could not be read.
 device-fabric-error-input-decline-save-failed = Input control was revoked, but the decline could not be saved. Automatic input remains disabled.
@@ -2983,10 +2964,6 @@ agent-quick-steer-saved = Sent. { $agent } will take it into account.
 agent-quick-steer-applied = { $agent } is following your note.
 agent-quick-run-starting = Starting: { $task }
 agent-quick-run-working = Working on it: { $task }
-agent-quick-run-waiting = Waiting for your confirmation
-agent-quick-draft-confirm = Allow
-agent-quick-draft-edit = Edit
-agent-quick-draft-decline = Decline
 agent-quick-run-done = { $agent } is done.
 agent-quick-run-attention = { $agent } stopped and needs you.
 agent-quick-run-stopped = Stopped.

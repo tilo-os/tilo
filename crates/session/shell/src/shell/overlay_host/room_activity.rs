@@ -72,7 +72,7 @@ impl ShellOverlayHost {
                 )
             };
             let consumed = outcome.handled || (pointer_inside && !is_key);
-            self.apply_room_activity_outcome(&chrome, outcome);
+            Self::apply_room_activity_outcome(&chrome, outcome);
             // Pointer events over the sheet absorb regardless; keys
             // only when consumed, or an arrow key with the cursor
             // resting over the sheet would vanish.
@@ -85,57 +85,10 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn apply_room_activity_outcome(
-        &mut self,
         chrome: &Chrome,
-        mut outcome: crate::shell::room_activity::RoomActivityOutcome,
+        outcome: crate::shell::room_activity::RoomActivityOutcome,
     ) {
-        if let Some(draft) = outcome.create_native_manual.take() {
-            let tree = chrome.borrow().tree_handle();
-            match crate::shell::state::native_manual_tasks::create(&tree, draft) {
-                Ok(id) => {
-                    self.room_activity
-                        .complete_native_manual_task(id, &mut *tree.write());
-                    outcome.task_changed = true;
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "native manual task refused");
-                    outcome.task_refused = true;
-                }
-            }
-        }
-        if let Some(draft) = outcome.create_native_managed.take() {
-            let tree = chrome.borrow().tree_handle();
-            match crate::shell::state::native_manual_tasks::create_managed(&tree, draft) {
-                Ok(id) => {
-                    self.room_activity
-                        .complete_native_manual_task(id, &mut *tree.write());
-                    outcome.task_changed = true;
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "native managed task refused");
-                    outcome.task_refused = true;
-                }
-            }
-        }
-        // Every caller has released the tree by now; the broker reads it.
-        if let Some(request) = outcome.dispatch_task.take() {
-            if self.room_activity.dispatch_task(request) {
-                let tree = chrome.borrow().tree_handle();
-                self.room_activity.refresh(&mut *tree.write());
-                outcome.task_changed = true;
-            } else {
-                outcome.agent_runtime_changed = true;
-            }
-        }
-        if outcome.task_refused {
-            let mut state = chrome.borrow_mut();
-            state.push_notification(
-                t("host-history-task-refused-title"),
-                t("host-history-task-refused-body"),
-            );
-            state.bump();
-        }
-        // A full revert, comparison, name or task change is the person's own
+        // A full revert, comparison or name is the person's own
         // action and shows in History itself; only a partial undo has
         // something to say that the pane doesn't.
         if outcome.reverted {
@@ -151,13 +104,7 @@ impl ShellOverlayHost {
         if let Some(target) = outcome.open_target {
             Self::open_room_activity_target(chrome, &target);
         }
-        if outcome.compared || outcome.named || outcome.task_changed {
-            chrome.borrow_mut().bump();
-        }
-        if outcome.agent_runtime_changed {
-            // Starting or retrying a process is local, not a durable task
-            // transition. Redraw its factual lifecycle notice without
-            // claiming shared work has begun.
+        if outcome.compared || outcome.named {
             chrome.borrow_mut().bump();
         }
     }
@@ -240,7 +187,7 @@ impl ShellOverlayHost {
                 .apply_selection_history_action(&id, &mut *tree, Some(&records));
         drop(tree);
         drop(st);
-        self.apply_room_activity_outcome(&chrome, outcome);
+        Self::apply_room_activity_outcome(&chrome, outcome);
     }
 
     pub(super) fn refresh_room_activity(&mut self) {
@@ -390,11 +337,6 @@ impl ShellOverlayHost {
             self.room_activity
                 .refresh_observed_local(&tree, &records, &local, Instant::now())
         };
-        // A run newly paused at an action asking first: a banner points at
-        // it, and the person answers in Task Center when they choose.
-        for notice in self.room_activity.take_confirmation_notices() {
-            chrome.borrow_mut().push_task_confirmation(&notice);
-        }
         self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
         let away_changes = self.room_activity.away_change_count(workspace);
@@ -406,7 +348,6 @@ impl ShellOverlayHost {
                 .briefs
                 .first()
                 .map(|brief| crate::shell::chrome_state::ActivityFocus {
-                    task_id: None,
                     author: brief.authors.first().map(|author| author.name.clone()),
                     group_id: brief.group_id.clone(),
                     entry_id: None,
@@ -602,81 +543,6 @@ impl ShellOverlayHost {
     pub(super) fn ws_settings_rect(&self) -> Rect {
         // The rect `layout` placed it at: the focused display.
         WorkspaceSettingsOverlay::rect_for(self.overlay_area())
-    }
-}
-
-impl ShellOverlayHost {
-    /// Show the paused action a notification's activation asked for: in the
-    /// composer that follows its run when there is one, so the person
-    /// answers it beside their work; on its card in Task Center otherwise.
-    pub(super) fn reveal_requested_draft(&mut self) -> bool {
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
-        };
-        let Some(task_id) = chrome.borrow_mut().take_task_draft_request() else {
-            return false;
-        };
-        if self.agent_quick_composer.reveal_run(&task_id) {
-            return true;
-        }
-        chrome
-            .borrow_mut()
-            .open_room_activity(Some(crate::shell::chrome_state::ActivityFocus {
-                task_id: Some(task_id),
-                ..crate::shell::chrome_state::ActivityFocus::default()
-            }));
-        false
-    }
-
-    /// Tell the open composer what its followed run is doing now, from the
-    /// room's task review: the step it is at, and the action it waits for
-    /// the person on, which the composer shows and answers as the card
-    /// does. Returns whether the composer changed.
-    pub(super) fn pump_composer_run(&mut self) -> bool {
-        use crate::shell::agent_quick_composer::DraftAnswer;
-        let Some(owner) = self.agent_quick_composer.owner().cloned() else {
-            return false;
-        };
-        let glance = self
-            .agent_quick_composer
-            .followed()
-            .map(|run| run.task.task_id.clone())
-            .and_then(|task| self.room_activity.run_glance(&owner.room, &task));
-        let before = self.agent_quick_composer.shows_paused_any();
-        self.agent_quick_composer.glance(&owner, glance);
-        let mut changed = before != self.agent_quick_composer.shows_paused_any();
-        let answered = match self.agent_quick_composer.take_draft_answer() {
-            Some(DraftAnswer::Confirm(draft)) => Some((draft, true)),
-            Some(DraftAnswer::Decline(draft)) => Some((draft, false)),
-            Some(DraftAnswer::Edit(draft)) => {
-                if let Some(chrome) = &self.chrome {
-                    chrome.borrow_mut().open_room_activity(Some(
-                        crate::shell::chrome_state::ActivityFocus {
-                            task_id: Some(draft.task_id.clone()),
-                            ..crate::shell::chrome_state::ActivityFocus::default()
-                        },
-                    ));
-                }
-                self.room_activity.edit_paused_draft(&draft.task_id);
-                changed = true;
-                None
-            }
-            None => None,
-        };
-        // Answered only while the review still shows that exact draft, so
-        // a draft that changed meanwhile is never answered by mistake.
-        if let Some((draft, confirm)) = answered
-            && self
-                .room_activity
-                .run_glance(&draft.room, &draft.task_id)
-                .is_some_and(|glance| glance.paused.as_ref() == Some(&draft))
-        {
-            if let Err(error) = self.room_activity.answer_paused_draft(&draft, confirm) {
-                tracing::warn!(%error, "the composer could not answer the paused action");
-            }
-            changed = true;
-        }
-        changed
     }
 }
 

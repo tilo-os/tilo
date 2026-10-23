@@ -138,7 +138,6 @@ pub struct BrokerHandle {
     local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
     _personal_source: Option<Arc<NativePersonalSource>>,
     native_media: Option<super::native_media::NativeMediaService>,
-    task_review: Option<super::task_review::NativeTaskReview>,
     tracker: Option<Arc<super::broker_services::NativeTrackerRuns>>,
     realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
@@ -158,10 +157,6 @@ impl std::ops::Deref for BrokerHandle {
 }
 
 impl BrokerHandle {
-    pub(crate) fn task_review(&self) -> Option<super::task_review::NativeTaskReview> {
-        self.task_review.clone()
-    }
-
     /// The rooms' trackers, for following an issue's run in the shell.
     pub(crate) fn tracker(&self) -> Option<Arc<super::broker_services::NativeTrackerRuns>> {
         self.tracker.clone()
@@ -257,8 +252,6 @@ pub fn spawn_native_offloading(
             crate::shell::record_hydration::NetworkSource(Arc::clone(network)),
         ));
     }
-    let task_review =
-        super::task_review::NativeTaskReview::new(membership.clone(), peer_sync.clone()).ok();
     let publisher = PeerPublisher::with_optional_owner_commit(
         peer_sync
             .clone()
@@ -268,7 +261,7 @@ pub fn spawn_native_offloading(
             peer_sync.clone(),
         )),
     );
-    let mut handle = spawn_inner(
+    spawn_inner(
         capnp_socket_path,
         peer_sync.as_ref(),
         &publisher,
@@ -276,9 +269,7 @@ pub fn spawn_native_offloading(
         CertificateProvisioning::Production,
         None,
         action_offload,
-    )?;
-    handle.task_review = task_review;
-    Ok(handle)
+    )
 }
 
 /// Spawn the production broker pipeline with an explicit enrolled-device set.
@@ -1049,7 +1040,6 @@ fn spawn_inner(
             NativePersonalSource::install(personal_socket, broker, local_session.lifecycle(), host)
         });
     Ok(BrokerHandle {
-        task_review: None,
         tracker,
         inner,
         local_session,

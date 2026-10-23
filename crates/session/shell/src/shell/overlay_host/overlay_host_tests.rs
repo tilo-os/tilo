@@ -487,8 +487,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         ShellOverlayHost::open_room_activity_target(&chrome, &target);
         // The open is queued off the compositor thread: its refusal arrives
         // as a launch event that the host settles on its next drain.
-        let mut host =
-            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        let host = ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
         let deadline = tilo_test_env::hang_deadline();
         while chrome.borrow().notifications().is_empty() {
             assert!(
@@ -540,24 +539,8 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
 /// the workspace document refreshes it again.
 #[test]
 fn activity_refresh_skips_unchanged_frames() {
-    /// Counts the pane's refreshes: each asks once for the review snapshot.
-    #[derive(Default)]
-    struct CountingHost {
-        refreshes: std::cell::Cell<usize>,
-    }
-    impl tilo_desktop::activity::ActivityHost for CountingHost {
-        fn task_review_snapshot(
-            &self,
-            _room: &str,
-        ) -> Option<Result<Arc<tilo_desktop::activity::TaskReviewSnapshot>, String>> {
-            self.refreshes.set(self.refreshes.get().saturating_add(1));
-            None
-        }
-    }
-
     let mut h = build_harness();
-    let host = std::rc::Rc::new(CountingHost::default());
-    h.host.room_activity_mut().set_host(host.clone());
+    let refreshes = crate::shell::room_activity::refreshes;
     assert!(
         h.host.activity_window_rect().is_none(),
         "the Activity window is closed: only the passive awareness refreshes"
@@ -567,14 +550,14 @@ fn activity_refresh_skips_unchanged_frames() {
     let at = ui::time::now();
     let paint_at = |h: &mut Harness, at| ui::time::testing::with_monotonic_time(at, || paint(h));
     paint_at(&mut h, at);
-    let settled = host.refreshes.get();
+    let settled = refreshes();
     assert!(settled >= 1, "the first frame refreshes the awareness");
 
     for _ in 0..10 {
         paint_at(&mut h, at);
     }
     assert_eq!(
-        host.refreshes.get(),
+        refreshes(),
         settled,
         "unchanged frames do not refresh the awareness"
     );
@@ -584,7 +567,7 @@ fn activity_refresh_skips_unchanged_frames() {
         .expect("a fallback instant");
     paint_at(&mut h, fallback);
     assert_eq!(
-        host.refreshes.get(),
+        refreshes(),
         settled.saturating_add(1),
         "the fallback refreshes an unchanged awareness once its interval passed"
     );
@@ -599,10 +582,10 @@ fn activity_refresh_skips_unchanged_frames() {
         tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
         tilo_resource::history::commit_stamped(&mut tree.doc);
     }
-    let before = host.refreshes.get();
+    let before = refreshes();
     paint_at(&mut h, fallback);
     assert_eq!(
-        host.refreshes.get(),
+        refreshes(),
         before.saturating_add(1),
         "a changed workspace document refreshes the awareness once"
     );

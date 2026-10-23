@@ -453,7 +453,7 @@ pub fn remote_action_command(
 }
 
 /// The chrome as the shared stack's and centre's [`NotificationHost`]. With
-/// the Task Center's broker attached, a retained notification can be handed
+/// the room activity's broker attached, a retained notification can be handed
 /// to a live workspace agent.
 pub struct ChromeNotifications<'a> {
     chrome: &'a Chrome,

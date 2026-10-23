@@ -24,127 +24,6 @@ mod tests {
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use tilo_automerge::ApplyIncoming as _;
 
-    #[derive(Clone)]
-    struct NativeTree(WorkspaceTree);
-    impl std::ops::Deref for NativeTree {
-        type Target = tilo_desktop_model::DesktopTree;
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-    impl std::ops::DerefMut for NativeTree {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            &mut self.0
-        }
-    }
-    impl crate::activity::ActivityTree for NativeTree {
-        fn document(&self) -> &automerge::AutoCommit {
-            &self.0.doc
-        }
-        fn document_mut(&mut self) -> &mut automerge::AutoCommit {
-            &mut self.0.doc
-        }
-        fn resync_activity_cache(&mut self) -> Result<(), String> {
-            self.0.resync_cache_from_doc();
-            Ok(())
-        }
-        fn native_manual_tasks(&self, _: WorkspaceId) -> bool {
-            true
-        }
-    }
-
-    #[test]
-    fn native_manual_draft_defers_owner_write_and_closes_only_after_completion() {
-        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
-        let mut pane = native_pane();
-        pane.open_task_composer(&tree);
-        pane.task_draft = "Review mapped receipt".into();
-        tree.0
-            .doc
-            .put(automerge::ROOT, "pending_projection_edit", true)
-            .unwrap();
-        let blocked = pane.create_task_from_draft(&mut tree);
-        assert!(blocked.task_refused);
-        assert!(blocked.create_native_manual.is_none());
-        assert!(!blocked.task_changed);
-        assert!(pane.task_compose_open);
-        assert_eq!(pane.task_draft, "Review mapped receipt");
-        tree.0.doc.commit();
-        let outcome = pane.create_task_from_draft(&mut tree);
-        assert!(outcome.handled);
-        assert!(!outcome.task_changed);
-        let draft = outcome.create_native_manual.unwrap();
-        assert_eq!(draft.workspace, tree.active);
-        assert_eq!(
-            draft.room,
-            tree.active_workspace().unwrap().room().to_string()
-        );
-        assert_eq!(draft.title, "Review mapped receipt");
-        assert!(tree.active_workspace().unwrap().tasks.is_empty());
-        assert!(pane.task_compose_open);
-        assert_eq!(pane.task_draft, "Review mapped receipt");
-        let workspace = tree.active;
-        let id = tree
-            .0
-            .create_workspace_task(
-                workspace,
-                draft.title,
-                draft.actor,
-                None,
-                WorkspaceTaskRoute::Manual,
-                None,
-            )
-            .unwrap();
-        pane.complete_native_manual_task(id.clone(), &mut tree);
-        assert!(!pane.task_compose_open);
-        assert_eq!(pane.selected_task.as_deref(), Some(id.as_str()));
-    }
-
-    #[test]
-    fn native_managed_draft_defers_without_cache_fallback_or_premature_completion() {
-        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
-        let mut pane = native_pane();
-        pane.open_task_composer(&tree);
-        pane.task_draft = "Inspect operator evidence".into();
-        for route in [WorkspaceTaskRoute::Model, WorkspaceTaskRoute::RulesOnly] {
-            pane.task_route = route;
-            pane.task_agent = None;
-            let missing = pane.create_task_from_draft(&mut tree);
-            assert!(missing.task_refused);
-            assert!(missing.create_native_managed.is_none());
-            assert!(pane.task_compose_open);
-            pane.task_agent = Some("scribe".into());
-            let outcome = pane.create_task_from_draft(&mut tree);
-            assert!(outcome.create_native_manual.is_none());
-            assert!(!outcome.task_changed);
-            let request = outcome.create_native_managed.unwrap();
-            assert_eq!(request.assigned_agent, "scribe");
-            assert_eq!(request.route, route);
-            assert_eq!(request.person_draft.title, "Inspect operator evidence");
-            assert_eq!(
-                request.person_draft.room,
-                tree.active_workspace().unwrap().room().to_string()
-            );
-            assert!(tree.active_workspace().unwrap().tasks.is_empty());
-            assert!(pane.task_compose_open);
-            assert!(pane.selected_task.is_none());
-        }
-        tree.0
-            .doc
-            .put(automerge::ROOT, "pending_projection_edit", true)
-            .unwrap();
-        let blocked = pane.create_task_from_draft(&mut tree);
-        assert!(blocked.task_refused);
-        assert!(blocked.create_native_managed.is_none());
-        assert!(pane.task_compose_open);
-        assert_eq!(pane.task_draft, "Inspect operator evidence");
-        assert!(tree.active_workspace().unwrap().tasks.is_empty());
-    }
-
-    /// HIG §9.5 rest edges: the sheet's Panel border on its Panel ground,
-    /// and the derived edge of every card class the sheet paints (lift-floor
-    /// chips and group cards, the base-filled replay canvas) must register
-    /// on every shipped palette, measured as the composite over the fill.
     #[test]
     fn sheet_and_card_edges_register_on_every_palette() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
@@ -1040,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_persists_only_the_painted_page_and_keeps_waiting_tasks() {
+    fn catch_up_persists_only_the_painted_page() {
         let (mut tree, workspace, _) = peers_busy_room();
         let records = RecordStore::in_memory();
         let room_id = tree.active_workspace().expect("room").room();
@@ -1070,22 +949,6 @@ mod tests {
                 .or_default()
                 .insert(id.to_string(), kind.to_string());
         }
-        let task = tree
-            .create_workspace_task(
-                workspace,
-                "Review draft",
-                "local",
-                None,
-                WorkspaceTaskRoute::Manual,
-                None,
-            )
-            .unwrap();
-        assert!(tree.set_workspace_task_status(
-            workspace,
-            &task,
-            WorkspaceTaskStatus::Waiting,
-            "local"
-        ));
         let host = Rc::new(crate::activity::testing::TestHost::default());
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
@@ -1112,19 +975,12 @@ mod tests {
             heads,
             "review is private viewer state"
         );
-        assert_eq!(
-            tree.active_workspace().unwrap().tasks[0].status,
-            WorkspaceTaskStatus::Waiting
-        );
         let mut next = RoomActivityPane::new();
         next.set_host(host);
         next.load_frontiers();
         next.refresh(&mut tree);
         next.refresh_records(&mut tree, &records);
         assert_eq!(next.glance_signal(workspace.raw()).1, before - shown);
-        next.apply_selection_history_action(ACTIVITY_TASKS, &mut tree, Some(&records));
-        assert_eq!(next.view(), ActivityView::Tasks);
-        assert_eq!(next.tasks[0].status, WorkspaceTaskStatus::Waiting);
     }
 
     #[test]
@@ -1214,440 +1070,6 @@ mod tests {
             away_change_count_after(Duration::from_secs(45 * 60), true) > 0,
             "the exact threshold plus causally new work produces a recap"
         );
-    }
-
-    #[test]
-    fn task_center_creates_manual_work_without_a_model() {
-        let (mut tree, workspace, _) = busy_room();
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Tasks);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        pane.open_task_composer(&tree);
-        pane.task_draft = "Check the launch copy".into();
-
-        let outcome = pane.create_task_from_draft(&mut tree);
-
-        assert!(outcome.task_changed);
-        let task = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .and_then(|workspace| workspace.tasks.first())
-            .expect("task is stored on the workspace");
-        assert_eq!(task.route, WorkspaceTaskRoute::Manual);
-        assert!(task.assigned_agent.is_none());
-        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
-        assert!(!pane.task_compose_open);
-    }
-
-    #[test]
-    fn task_center_attaches_the_resource_selected_in_explore() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        let resource_entry = HistoryEntry {
-            id: HistoryEntryId([71; 16]),
-            author: ui::widget::HistoryAuthor::new("ada", 10.0, "Ada"),
-            entry_kind: EntryKind::Details,
-            artifact_kind: ArtifactKind::File,
-            timestamp: SystemTime::UNIX_EPOCH,
-            summary: "Edited launch brief".into(),
-            text_delta: None,
-            diff_payload: None,
-            redaction: None,
-            context: Some(
-                ui::tilo_actions::ActionContext::for_resource(
-                    "document:launch-brief",
-                    "document",
-                    "Launch brief",
-                )
-                .with_app("org.tilo.Writer", "Writer"),
-            ),
-        };
-        pane.timeline_mut().set_entries(vec![resource_entry]);
-        let resource_row = 0;
-        pane.timeline_mut()
-            .set_selection(Some((resource_row, resource_row)));
-        let expected = pane
-            .selection_detail()
-            .and_then(|detail| detail.resources.first().cloned())
-            .expect("selected action has a resource");
-
-        pane.set_view(ActivityView::Tasks);
-        pane.open_task_composer(&tree);
-
-        let attached = pane.task_attachment.as_ref().expect("resource is attached");
-        assert_eq!(attached.id, expected.id);
-        assert_eq!(attached.app_id, expected.app_id);
-    }
-
-    #[test]
-    fn task_accessibility_exposes_route_status_and_audit() {
-        let (mut tree, workspace, _) = busy_room();
-        tree.create_workspace_task(
-            workspace,
-            "Prepare screenshots",
-            "ada",
-            Some("studio-agent".into()),
-            WorkspaceTaskRoute::RulesOnly,
-            None,
-        )
-        .unwrap();
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Tasks);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        let snapshot = pane.accessibility_snapshot();
-        let debug = format!("{snapshot:?}");
-        assert!(debug.contains("Prepare screenshots"));
-        assert!(debug.contains("rules only"));
-        assert!(debug.contains("1 audit events"));
-    }
-
-    #[test]
-    fn task_center_resolves_creator_without_cursor_color_and_preserves_identity() {
-        let (mut tree, workspace, _) = busy_room();
-        let creator = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
-        tree.workspaces
-            .iter_mut()
-            .find(|room| room.id == workspace)
-            .unwrap()
-            .collaborators
-            .push(tilo_desktop_model::Collaborator::new(
-                creator,
-                "Ada Lovelace",
-            ));
-        tree.seed_doc_from_cache();
-        tree.create_workspace_task(
-            workspace,
-            "Review receipt",
-            creator,
-            None,
-            WorkspaceTaskRoute::Manual,
-            None,
-        )
-        .unwrap();
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Tasks);
-        pane.refresh(&mut tree);
-        let task = pane.tasks.first().unwrap();
-        let creator_label = pane.task_creator_label(task);
-        assert_eq!(creator_label, "Ada Lovelace");
-        assert!(task_assignee_label(task, &creator_label).contains("Ada Lovelace"));
-        let snapshot = format!("{:?}", pane.accessibility_snapshot());
-        assert!(snapshot.contains("Unassigned · created by Ada Lovelace"));
-        assert_eq!(task.created_by, creator);
-        assert_eq!(task.audit.first().unwrap().actor, creator);
-        let mut unidentified = task.clone();
-        unidentified.created_by =
-            "0123456789012345678901234567890123456789012345678901234567890123".into();
-        assert_eq!(
-            pane.task_creator_label(&unidentified),
-            "Unknown collaborator · 01234567"
-        );
-        unidentified.created_by = pane.local_user();
-        assert_eq!(
-            pane.task_creator_label(&unidentified),
-            pane.local_user(),
-            "the reader is named like anyone else, never \"You\""
-        );
-    }
-
-    #[test]
-    fn task_center_presents_agent_principals_without_leaking_wire_ids() {
-        let event_time = SystemTime::UNIX_EPOCH
-            .checked_add(Duration::from_secs(42))
-            .expect("fixture time");
-        let task = WorkspaceTask {
-            id: "task:review".into(),
-            title: "Review launch copy".into(),
-            created_by: "ada".into(),
-            assigned_agent: Some("agent:scribe".into()),
-            route: WorkspaceTaskRoute::RulesOnly,
-            status: WorkspaceTaskStatus::InProgress,
-            resource: None,
-            subject: None,
-            created_at: 42,
-            updated_at: 42,
-            audit: vec![
-                tilo_desktop_model::WorkspaceTaskAuditEvent::new(42, "agent:scribe", "report", [])
-                    .noting("Reviewed section 2"),
-            ],
-        };
-
-        let byline = task_assignee_label(&task, "ada");
-        let audit = task_audit_line(&task.audit[0], event_time, event_time);
-        let accessible = task_accessibility_description(&task, event_time, "ada");
-
-        assert_eq!(byline, "Agent · scribe");
-        assert!(
-            audit.starts_with("scribe · Agent · Reported progress: Reviewed section 2"),
-            "{audit}"
-        );
-        assert!(accessible.contains("Agent · scribe"));
-        assert!(accessible.contains("scribe · Agent"));
-        for rendered in [&byline, &audit, &accessible] {
-            assert!(
-                !rendered.contains("agent:"),
-                "wire principal leaked into visible copy: {rendered}"
-            );
-        }
-    }
-
-    #[test]
-    fn only_manual_tasks_offer_a_human_started_transition() {
-        let (mut tree, workspace, _) = busy_room();
-        let manual_id = tree
-            .create_workspace_task(
-                workspace,
-                "Review the brief",
-                "ada",
-                None,
-                WorkspaceTaskRoute::Manual,
-                None,
-            )
-            .expect("manual task is created");
-        let automated_id = tree
-            .create_workspace_task(
-                workspace,
-                "Prepare screenshots",
-                "ada",
-                Some("studio-agent".into()),
-                WorkspaceTaskRoute::RulesOnly,
-                None,
-            )
-            .expect("automated task is created");
-        let tasks = &tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .expect("workspace remains available")
-            .tasks;
-        let manual = tasks
-            .iter()
-            .find(|task| task.id == manual_id)
-            .expect("manual task is stored");
-        let automated = tasks
-            .iter()
-            .find(|task| task.id == automated_id)
-            .expect("automated task is stored");
-
-        assert!(task_actions(manual).contains(&TaskAction::Start));
-        assert!(!task_actions(automated).contains(&TaskAction::Start));
-        let mut pane = native_pane();
-        pane.task_room = "room".into();
-        assert!(
-            !pane
-                .task_actions_for(automated)
-                .contains(&TaskAction::Launch),
-            "membership without a live task subscription must not enable Launch"
-        );
-        assert!(
-            pane.task_actions_for(automated)
-                .contains(&TaskAction::StartAgent),
-            "offline work offers a managed agent start, never a fake task run"
-        );
-        assert_eq!(
-            pane.task_execution_notice(automated).as_deref(),
-            Some("The agent runtime is not connected, so this task has not started.")
-        );
-    }
-
-    #[test]
-    fn automated_task_cannot_be_marked_running_without_a_runtime_run() {
-        let (mut tree, workspace, _) = busy_room();
-        let task_id = tree
-            .create_workspace_task(
-                workspace,
-                "Prepare screenshots",
-                "ada",
-                Some("studio-agent".into()),
-                WorkspaceTaskRoute::Model,
-                None,
-            )
-            .expect("task is created");
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Tasks);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        pane.selected_task = Some(task_id.clone());
-
-        let outcome = pane.apply_task_action(TaskAction::Start, &mut tree);
-
-        assert!(!outcome.task_changed);
-        let task = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .and_then(|workspace| workspace.tasks.iter().find(|task| task.id == task_id))
-            .expect("task remains stored");
-        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
-        assert_eq!(task.audit.len(), 1, "no synthetic start audit was added");
-    }
-
-    /// Records each dispatch and whether the test held the tree for it.
-    #[derive(Default)]
-    struct DispatchHost {
-        tree_held: Rc<Cell<bool>>,
-        dispatched: RefCell<Vec<(String, String, bool)>>,
-        refusal: Option<String>,
-    }
-    impl ActivityHost for DispatchHost {
-        fn local_user(&self) -> String {
-            "ada".into()
-        }
-        fn mutations_available(&self) -> bool {
-            true
-        }
-        fn all_workspaces_available(&self) -> bool {
-            true
-        }
-        fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
-            true
-        }
-        fn dispatch_task(&self, room: &str, task: &str) -> Result<(), String> {
-            self.dispatched
-                .borrow_mut()
-                .push((room.into(), task.into(), self.tree_held.get()));
-            self.refusal.clone().map_or(Ok(()), Err)
-        }
-    }
-
-    fn launchable_task(host: Rc<DispatchHost>) -> (WorkspaceTree, RoomActivityPane, String) {
-        let (mut tree, workspace, _) = busy_room();
-        let task_id = tree
-            .create_workspace_task(
-                workspace,
-                "Prepare screenshots",
-                "ada",
-                Some("studio-agent".into()),
-                WorkspaceTaskRoute::RulesOnly,
-                None,
-            )
-            .expect("task is created");
-        let mut pane = RoomActivityPane::new();
-        pane.set_host(host);
-        pane.set_view(ActivityView::Tasks);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        pane.selected_task = Some(task_id.clone());
-        (tree, pane, task_id)
-    }
-
-    /// The broker that runs a task checks the room's authority against the
-    /// workspace tree. The shell holds that tree for writing while the pane
-    /// handles the click, so dispatching from inside the handler stopped the
-    /// compositor. Launch now only asks; the dispatch runs once the caller
-    /// has let go of the tree.
-    #[test]
-    fn launching_a_task_dispatches_only_after_the_tree_is_released() {
-        let host = Rc::new(DispatchHost::default());
-        let (mut tree, mut pane, task_id) = launchable_task(Rc::clone(&host));
-        let task = pane
-            .tasks
-            .iter()
-            .find(|task| task.id == task_id)
-            .cloned()
-            .expect("task is projected");
-        assert!(pane.task_actions_for(&task).contains(&TaskAction::Launch));
-
-        host.tree_held.set(true);
-        let outcome = pane.apply_task_action(TaskAction::Launch, &mut tree);
-        host.tree_held.set(false);
-
-        assert!(
-            host.dispatched.borrow().is_empty(),
-            "nothing dispatched while the tree is held"
-        );
-        let request = outcome.dispatch_task.expect("Launch asks for a dispatch");
-        assert_eq!(request.task_id, task_id);
-        assert_eq!(request.assigned_agent.as_deref(), Some("studio-agent"));
-        assert!(outcome.handled);
-        assert!(pane.dispatch_task(request), "the live agent took the run");
-        assert_eq!(
-            host.dispatched.borrow().as_slice(),
-            [(pane.task_room.clone(), task_id, false)]
-        );
-    }
-
-    #[test]
-    fn a_refused_dispatch_offers_the_agent_start_again_with_its_reason() {
-        let host = Rc::new(DispatchHost {
-            refusal: Some("the assigned agent is not live and task-capable".into()),
-            ..DispatchHost::default()
-        });
-        let (mut tree, mut pane, _) = launchable_task(Rc::clone(&host));
-        let request = pane
-            .apply_task_action(TaskAction::Launch, &mut tree)
-            .dispatch_task
-            .expect("Launch asks for a dispatch");
-        let room = request.room.clone();
-
-        assert!(!pane.dispatch_task(request));
-        assert!(matches!(
-            pane.agent_startup.get(&(room, "studio-agent".into())),
-            Some(AgentStartup::Failed { detail }) if detail.contains("not live")
-        ));
-    }
-
-    #[test]
-    fn offline_agent_start_is_deduplicated_and_failure_becomes_retry() {
-        let (mut tree, workspace, _) = busy_room();
-        let task_id = tree
-            .create_workspace_task(
-                workspace,
-                "Prepare screenshots",
-                "ada",
-                Some("studio-agent".into()),
-                WorkspaceTaskRoute::RulesOnly,
-                None,
-            )
-            .expect("task is created");
-        let mut pane = native_pane();
-        pane.refresh(&mut tree);
-        let task = pane
-            .tasks
-            .iter()
-            .find(|task| task.id == task_id)
-            .cloned()
-            .expect("task is projected");
-        assert!(
-            pane.task_actions_for(&task)
-                .contains(&TaskAction::StartAgent)
-        );
-
-        pane.agent_startup.insert(
-            (pane.task_room.clone(), "studio-agent".into()),
-            AgentStartup::Starting {
-                since: Instant::now(),
-            },
-        );
-        assert!(
-            !pane
-                .task_actions_for(&task)
-                .contains(&TaskAction::StartAgent),
-            "one pending managed launch suppresses another start click"
-        );
-
-        assert!(pane.observe_agent_launch_event(&AgentLaunchEvent {
-            managed_agent_id: Some("studio-agent".into()),
-            managed_workspace_id: Some(pane.task_room.clone()),
-            kind: AgentLaunchEventKind::SpawnFailed {
-                detail: "launcher unavailable".into(),
-            },
-        }));
-        assert!(
-            pane.task_actions_for(&task)
-                .contains(&TaskAction::StartAgent)
-        );
-        assert_eq!(
-            pane.task_action_label(TaskAction::StartAgent, &task),
-            "Retry agent"
-        );
-        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
     }
 
     #[test]
@@ -1808,7 +1230,6 @@ mod tests {
             context: Some(context),
         });
         pane.apply_deep_link(ActivityDeepLink {
-            task_id: None,
             author: None,
             group_id: None,
             entry_id: Some(*id.as_bytes()),
@@ -4022,123 +3443,70 @@ mod resume_card_tests {
 }
 
 #[cfg(test)]
-mod task_review_tests {
+mod tasks_link_tests {
     use super::*;
     use crate::activity::testing::TestTree as WorkspaceTree;
-    struct ReviewHost {
-        snapshot: RefCell<crate::activity::TaskReviewSnapshot>,
-        submitted: RefCell<Vec<crate::activity::TaskReviewRequest>>,
-        mutations: std::cell::Cell<bool>,
-        launched: RefCell<Vec<String>>,
+    #[derive(Default)]
+    struct UndoHost {
+        undos: RefCell<Vec<TaskRunUndo>>,
+        ended: RefCell<Option<Result<(), String>>>,
     }
-    impl ActivityHost for ReviewHost {
+    impl ActivityHost for UndoHost {
         fn local_user(&self) -> String {
             "local".into()
         }
         fn mutations_available(&self) -> bool {
-            self.mutations.get()
-        }
-        fn launch_agent(
-            &self,
-            agent: &str,
-            _workspace: &tilo_desktop_model::Workspace,
-        ) -> Result<(), String> {
-            self.launched.borrow_mut().push(agent.into());
-            Ok(())
-        }
-        fn task_review_required(&self, _room: &str) -> bool {
             true
         }
-        fn task_review_snapshot(
-            &self,
-            room: &str,
-        ) -> Option<Result<std::sync::Arc<crate::activity::TaskReviewSnapshot>, String>> {
-            let snapshot = self.snapshot.borrow();
-            Some(if snapshot.room == room {
-                Ok(std::sync::Arc::new(snapshot.clone()))
-            } else {
-                Err("room unavailable".into())
-            })
-        }
-        fn submit_task_review(
-            &self,
-            request: crate::activity::TaskReviewRequest,
-        ) -> Result<(), String> {
-            self.submitted.borrow_mut().push(request);
+        fn undo_task_run(&self, undo: TaskRunUndo) -> Result<(), String> {
+            self.undos.borrow_mut().push(undo);
             Ok(())
         }
+        fn poll_task_run_undo(&self, _invocation: uuid::Uuid) -> Option<Result<(), String>> {
+            self.ended.borrow_mut().take()
+        }
     }
-    fn review_fixture() -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
-        use tilo_desktop_model::{WorkspaceTaskActiveRun, WorkspaceTaskControl};
+    fn fixture() -> (WorkspaceTree, RoomActivityPane, Rc<UndoHost>) {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let active = tree.active;
-        let id = tree
-            .create_workspace_task(
-                active,
-                "Review release notes",
-                "local",
-                Some("scribe".into()),
-                WorkspaceTaskRoute::Model,
-                None,
-            )
-            .unwrap();
-        let task = tree.active_workspace().unwrap().tasks[0].clone();
-        let room = tree.active_workspace().unwrap().room().to_string();
-        let host = Rc::new(ReviewHost {
-            snapshot: RefCell::new(crate::activity::TaskReviewSnapshot {
-                room,
-                generation: 7,
-                sampled_at_secs: 100,
-                actor: "local".into(),
-                writable: true,
-                tasks: vec![task],
-                controls: std::collections::BTreeMap::from([(
-                    id.clone(),
-                    WorkspaceTaskControl {
-                        run_epoch: 3,
-                        active_run: Some(WorkspaceTaskActiveRun {
-                            agent_id: "scribe".into(),
-                            epoch: 3,
-                            started_at: 100,
-                            applied_direction_revision: 0,
-                            approval: None,
-                        }),
-                        ..Default::default()
-                    },
-                )]),
-            }),
-            submitted: RefCell::default(),
-            mutations: std::cell::Cell::new(false),
-            launched: RefCell::default(),
-        });
+        let host = Rc::new(UndoHost::default());
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
         pane.refresh(&mut tree);
-        pane.set_view(ActivityView::Tasks);
-        pane.selected_task = Some(id);
+        pane.set_view(ActivityView::Explore);
         (tree, pane, host)
     }
-    /// Once an agent's run of a task ended and history recorded what it
-    /// changed under the task, Task Center offers to undo it as one, and
-    /// that asks the host to undo the task's run in each changed document.
-    #[test]
-    fn an_ended_runs_task_offers_to_undo_it_as_one() {
-        let (mut tree, mut pane, host) = review_fixture();
-        host.mutations.set(true);
-        let id = pane.selected_task.clone().unwrap();
-        host.snapshot
-            .borrow_mut()
-            .controls
-            .get_mut(&id)
-            .unwrap()
-            .active_run = None;
-        pane.refresh(&mut tree);
-        let task = tree.active_workspace().unwrap().tasks[0].clone();
-        assert!(
-            !pane.task_actions_for(&task).contains(&TaskAction::UndoTask),
-            "nothing recorded, nothing to undo"
-        );
 
+    /// The view row ends in a link that opens the Tasks app, by pointer
+    /// and by keyboard alike.
+    #[test]
+    fn the_view_row_opens_the_tasks_app() {
+        let (mut tree, mut pane, _) = fixture();
+        pane.layout_window(Rect::new(0.0, 0.0, 1200.0, 800.0));
+        paint_header_fixture(&mut pane, &Theme::light());
+        let link = pane.tasks_link_rect.expect("the Tasks link is drawn");
+        let outcome = pane
+            .handle_pointer_click(link.center(), &mut tree, None)
+            .expect("the link takes its click");
+        assert_eq!(
+            outcome.open_target.and_then(|target| target.app_id),
+            Some(TASKS_APP.to_owned())
+        );
+        assert!(pane.focus_order().contains(&ActivityFocus::OpenTasks));
+        pane.keyboard_focus = Some(ActivityFocus::OpenTasks);
+        let outcome = pane.activate_focus(&mut tree, None);
+        assert_eq!(
+            outcome.open_target.and_then(|target| target.app_id),
+            Some(TASKS_APP.to_owned())
+        );
+        assert_eq!(pane.view(), ActivityView::Explore, "the view stays put");
+    }
+
+    /// Once an agent's run of a task recorded what it changed under the
+    /// task, undoing it asks the host to undo the run in each changed
+    /// document, and tells how that ended.
+    #[test]
+    fn an_agent_runs_task_is_undone_by_the_host_as_one() {
+        let (mut tree, mut pane, host) = fixture();
         let change = ui::history_source::entry_id_from_hash(&"ab".repeat(32));
         let doc = tree.document_mut();
         let key = ui::record_run_with_details(
@@ -4156,25 +3524,35 @@ mod task_review_tests {
             }],
         )
         .unwrap();
-        assert!(ui::history_source::runs::set_run_task(doc, &key, &id));
+        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
         doc.commit();
         pane.refresh_records(&mut tree, &RecordStore::in_memory());
-        assert!(pane.task_actions_for(&task).contains(&TaskAction::UndoTask));
 
-        assert!(
-            pane.apply_task_action(TaskAction::UndoTask, &mut tree)
-                .handled
-        );
-        let submitted = host.submitted.borrow();
+        assert!(pane.undo_task_run("task:1"));
+        let undo = host.undos.borrow().last().cloned().unwrap();
+        assert_eq!(undo.task_id, "task:1");
         assert_eq!(
-            submitted.last().map(|request| &request.command),
-            Some(&crate::activity::TaskReviewCommand::UndoRun {
-                task_id: id.clone(),
-                steps: vec![(
-                    "so.tilo.notes".to_owned(),
-                    "file:/notes/release.note".to_owned()
-                )],
-            })
+            undo.room,
+            tree.active_workspace().unwrap().room().to_string()
+        );
+        assert_eq!(
+            undo.steps,
+            vec![(
+                "so.tilo.notes".to_owned(),
+                "file:/notes/release.note".to_owned()
+            )]
+        );
+        assert!(pane.undo_task_run("task:1"));
+        assert_eq!(host.undos.borrow().len(), 1, "one undo at a time");
+
+        host.ended.replace(Some(Ok(())));
+        pane.refresh(&mut tree);
+        assert!(pane.undo_pending.is_none());
+        assert_eq!(
+            pane.agent_undo_notice
+                .as_ref()
+                .map(|(_, notice)| notice.clone()),
+            Some(t("activity-undo-task-done"))
         );
     }
 
@@ -4185,20 +3563,20 @@ mod task_review_tests {
             Theme::dark(),
             Theme::high_contrast().with_text_scale(2.0),
         ] {
-            let (_, mut pane, _) = review_fixture();
+            let (_, mut pane, _) = fixture();
             pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
             paint_header_fixture(&mut pane, &Theme::light());
             for (width, height) in [(1600.0, 900.0), (560.0, 560.0), (1600.0, 900.0)] {
                 pane.layout_window(Rect::new(0.0, 0.0, width, height));
                 paint_header_fixture(&mut pane, &theme);
+                let first = pane.painted_title.borrow().clone();
+                assert!(!first.is_empty());
+                paint_header_fixture(&mut pane, &theme);
                 assert_eq!(
                     *pane.painted_title.borrow(),
-                    t("activity-title-tasks"),
+                    first,
                     "the first frame after move/resize/scale change must retain orientation"
                 );
-                let first = pane.painted_title.borrow().clone();
-                paint_header_fixture(&mut pane, &theme);
-                assert_eq!(*pane.painted_title.borrow(), first);
             }
             pane.set_view(ActivityView::CatchUp);
             paint_header_fixture(&mut pane, &theme);
@@ -4254,10 +3632,7 @@ mod task_review_tests {
             ("hc200", Theme::high_contrast().with_text_scale(2.0)),
         ] {
             for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
-                let (mut tree, mut pane, host) = review_fixture();
-                host.snapshot.borrow_mut().sampled_at_secs =
-                    i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
-                pane.refresh(&mut tree);
+                let (_, mut pane, _) = fixture();
                 pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
                 paint_header_fixture(&mut pane, &Theme::light());
                 pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
@@ -4268,836 +3643,6 @@ mod task_review_tests {
                     theme.tokens.colors.surfaces.content,
                     output.join(format!("{name}-{size}.png")),
                 );
-            }
-        }
-    }
-
-    /// Three reviewed tasks: the one in progress was approved, carries an
-    /// instruction and reports executing; the others wait their turn.
-    fn crowded_review_fixture() -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
-        use tilo_desktop_model::{
-            WorkspaceTaskApproval, WorkspaceTaskDirection, WorkspaceTaskExecution,
-            WorkspaceTaskExecutionPhase,
-        };
-        let (mut tree, mut pane, host) = review_fixture();
-        let now = i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
-        let active = tree.active;
-        for title in [
-            "Replace the parenthesis with a real link found by web search",
-            "Summarise this week's meeting notes for the team",
-        ] {
-            tree.create_workspace_task(
-                active,
-                title,
-                "local",
-                Some("scribe".into()),
-                WorkspaceTaskRoute::Model,
-                None,
-            )
-            .unwrap();
-        }
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.sampled_at_secs = now;
-            snapshot.tasks = tree.active_workspace().unwrap().tasks.clone();
-            for (index, task) in snapshot.tasks.iter_mut().enumerate() {
-                task.status = if index == 0 {
-                    WorkspaceTaskStatus::InProgress
-                } else {
-                    WorkspaceTaskStatus::Queued
-                };
-                task.updated_at = now.saturating_sub(i64::try_from(index).unwrap());
-            }
-            let first = snapshot.tasks[0].id.clone();
-            let control = snapshot
-                .controls
-                .remove(&pane.selected_task.clone().unwrap());
-            let mut control = control.unwrap();
-            if let Some(run) = control.active_run.as_mut() {
-                run.approval = Some(WorkspaceTaskApproval {
-                    person: "local".into(),
-                    device: [0; 32],
-                    approved_at: now.saturating_sub(120),
-                    instruction_revision: 0,
-                });
-            }
-            control.execution = Some(WorkspaceTaskExecution {
-                run_epoch: 3,
-                sequence: 1,
-                phase: WorkspaceTaskExecutionPhase::Executing,
-                updated_at: now.saturating_sub(30),
-            });
-            control
-                .directions
-                .push(WorkspaceTaskDirection::owner_admitted(
-                    1,
-                    uuid::Uuid::nil(),
-                    "local".into(),
-                    "Use the https address".into(),
-                    now.saturating_sub(60),
-                ));
-            snapshot.controls.insert(first.clone(), control);
-            let rest: Vec<String> = snapshot
-                .tasks
-                .iter()
-                .skip(1)
-                .map(|task| task.id.clone())
-                .collect();
-            for id in rest {
-                snapshot
-                    .controls
-                    .insert(id, tilo_desktop_model::WorkspaceTaskControl::default());
-            }
-            pane.selected_task = Some(first);
-        }
-        pane.refresh(&mut tree);
-        (tree, pane, host)
-    }
-
-    fn review_action_rect(pane: &RoomActivityPane, action: TaskAction) -> Option<Rect> {
-        pane.task_action_rects
-            .iter()
-            .find_map(|(candidate, rect)| (*candidate == action).then_some(*rect))
-    }
-
-    #[test]
-    fn review_paging_keeps_previous_left_and_next_right() {
-        let (mut tree, mut pane, _) = crowded_review_fixture();
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
-        paint_header_fixture(&mut pane, &Theme::dark());
-        assert!(review_action_rect(&pane, TaskAction::PreviousTasks).is_none());
-        let next_first = review_action_rect(&pane, TaskAction::NextTasks).unwrap();
-        pane.apply_task_action(TaskAction::NextTasks, &mut tree);
-        paint_header_fixture(&mut pane, &Theme::dark());
-        let previous = review_action_rect(&pane, TaskAction::PreviousTasks).unwrap();
-        let next = review_action_rect(&pane, TaskAction::NextTasks).unwrap();
-        assert_eq!(next, next_first, "Next stays where it was");
-        assert!(previous.x1 < next.x0, "Previous sits left of Next");
-        pane.apply_task_action(TaskAction::NextTasks, &mut tree);
-        paint_header_fixture(&mut pane, &Theme::dark());
-        assert!(review_action_rect(&pane, TaskAction::NextTasks).is_none());
-        assert_eq!(
-            review_action_rect(&pane, TaskAction::PreviousTasks),
-            Some(previous),
-            "Previous keeps its place when Next is gone"
-        );
-    }
-
-    #[test]
-    fn review_counters_wait_behind_details() {
-        let (mut tree, mut pane, _) = crowded_review_fixture();
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
-        let task_height = |pane: &mut RoomActivityPane| {
-            paint_header_fixture(pane, &Theme::dark());
-            pane.task_rects[0].1.height()
-        };
-        let collapsed = task_height(&mut pane);
-        assert!(!pane.review_details);
-        assert!(review_action_rect(&pane, TaskAction::Details).is_some());
-        pane.apply_task_action(TaskAction::Details, &mut tree);
-        assert!(pane.review_details);
-        assert!(
-            task_height(&mut pane) > collapsed,
-            "details add the run counters under the task"
-        );
-        assert_eq!(
-            pane.access_control(&ActivityFocus::TaskAction(TaskAction::Details))
-                .unwrap()
-                .expanded,
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn task_center_has_no_workspace_scope_toggle() {
-        let (_, mut pane, _) = crowded_review_fixture();
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
-        paint_header_fixture(&mut pane, &Theme::dark());
-        assert!(
-            pane.scope_rects.is_empty(),
-            "tasks always belong to the active workspace"
-        );
-    }
-
-    #[test]
-    fn task_center_render_matrix() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/task-center-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for locale in ["en-US", "de-DE"] {
-            let _ = t("activity-title-tasks");
-            ui::i18n::I18nManager::set_locale(locale);
-            for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
-                for details in [false, true] {
-                    let (mut tree, mut pane, _) = crowded_review_fixture();
-                    pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
-                    if details {
-                        pane.apply_task_action(TaskAction::Details, &mut tree);
-                    }
-                    let scene = paint_header_fixture(&mut pane, &theme);
-                    let mut renderer = ui::offscreen::OffscreenRenderer::new(640, 640);
-                    let suffix = if details { "-details" } else { "" };
-                    renderer.render_png(
-                        &scene,
-                        theme.tokens.colors.surfaces.content,
-                        output.join(format!("{locale}-{name}{suffix}.png")),
-                    );
-                }
-            }
-        }
-        ui::i18n::I18nManager::set_locale("en-US");
-    }
-
-    #[test]
-    fn review_retry_is_offered_for_waiting_tasks_only() {
-        let (mut tree, mut pane, host) = review_fixture();
-        let id = pane.selected_task.clone().unwrap();
-        for status in [
-            WorkspaceTaskStatus::Waiting,
-            WorkspaceTaskStatus::Done,
-            WorkspaceTaskStatus::Cancelled,
-        ] {
-            {
-                let mut snapshot = host.snapshot.borrow_mut();
-                snapshot.tasks[0].status = status;
-                snapshot.controls.get_mut(&id).unwrap().active_run = None;
-            }
-            pane.refresh(&mut tree);
-            let actions = pane.task_actions_for(&pane.tasks[0]);
-            assert_eq!(
-                actions.contains(&TaskAction::RetryRun),
-                status == WorkspaceTaskStatus::Waiting
-            );
-            assert!(!actions.contains(&TaskAction::Steer));
-            if status.is_finished() {
-                assert!(!actions.contains(&TaskAction::CancelRun));
-            }
-        }
-    }
-    #[test]
-    fn an_approved_run_offers_to_start_its_offline_agent() {
-        let (mut tree, mut pane, host) = review_fixture();
-        host.mutations.set(true);
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.tasks[0].status = WorkspaceTaskStatus::InProgress;
-        }
-        pane.refresh(&mut tree);
-        assert!(
-            pane.task_actions_for(&pane.tasks[0])
-                .contains(&TaskAction::StartAgent),
-            "an approved run reaches no one until its agent is running"
-        );
-        pane.apply_task_action(TaskAction::StartAgent, &mut tree);
-        assert_eq!(*host.launched.borrow(), ["scribe"]);
-        assert!(
-            !pane
-                .task_actions_for(&pane.tasks[0])
-                .contains(&TaskAction::StartAgent),
-            "a starting agent is not offered a second start"
-        );
-        host.snapshot.borrow_mut().tasks[0].status = WorkspaceTaskStatus::Done;
-        pane.agent_startup.clear();
-        pane.refresh(&mut tree);
-        assert!(
-            !pane
-                .task_actions_for(&pane.tasks[0])
-                .contains(&TaskAction::StartAgent),
-            "a finished task has no run to start an agent for"
-        );
-    }
-    #[test]
-    fn queued_run_approval_uses_exact_frontier_and_shared_keyboard_controls() {
-        use crate::activity::TaskReviewCommand;
-        let (mut tree, mut pane, host) = review_fixture();
-        let id = pane.selected_task.clone().unwrap();
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
-            snapshot.controls.get_mut(&id).unwrap().active_run = None;
-        }
-        pane.refresh(&mut tree);
-        assert!(
-            pane.task_actions_for(&pane.tasks[0])
-                .contains(&TaskAction::ApproveRun)
-        );
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            let theme = theme.with_text_scale(2.0);
-            pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
-            pane.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            assert!(
-                pane.focus_order()
-                    .contains(&ActivityFocus::TaskAction(TaskAction::ApproveRun))
-            );
-            let rect = pane
-                .task_action_rects
-                .iter()
-                .find(|(action, _)| *action == TaskAction::ApproveRun)
-                .unwrap()
-                .1;
-            assert_eq!(rect.intersect(pane.sheet), rect);
-            assert!(
-                pane.accessibility_snapshot()
-                    .children
-                    .iter()
-                    .any(|node| node.name.as_deref()
-                        == Some(TaskAction::ApproveRun.label().as_str()))
-            );
-        }
-        pane.apply_task_action(TaskAction::ApproveRun, &mut tree);
-        assert!(
-            matches!(&host.submitted.borrow()[0].command, TaskReviewCommand::Approve {task_id,run_epoch:3,after_revision:0,..} if task_id==&id)
-        );
-        assert!(
-            pane.review_pending.is_some(),
-            "approval must await its durable receipt"
-        );
-    }
-    #[test]
-    fn approval_keeps_the_painted_frontier_when_a_new_run_is_unseen() {
-        use crate::activity::TaskReviewCommand;
-        let (mut tree, mut pane, host) = review_fixture();
-        let id = pane.selected_task.clone().unwrap();
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
-            snapshot.controls.get_mut(&id).unwrap().active_run = None;
-        }
-        pane.refresh(&mut tree);
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::light(),
-            &PresenceCtx::empty(),
-        );
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.controls.get_mut(&id).unwrap().run_epoch = 4;
-        }
-        pane.refresh(&mut tree);
-        pane.apply_task_action(TaskAction::ApproveRun, &mut tree);
-        assert!(
-            matches!(
-                &host.submitted.borrow()[0].command,
-                TaskReviewCommand::Approve {
-                    run_epoch: 3,
-                    after_revision: 0,
-                    ..
-                }
-            ),
-            "refreshing unseen state must not approve its new run frontier"
-        );
-    }
-
-    #[test]
-    fn steering_draft_keeps_observed_run_and_revision_after_refresh() {
-        use crate::activity::TaskReviewCommand;
-        let (mut tree, mut pane, host) = review_fixture();
-        pane.apply_task_action(TaskAction::Steer, &mut tree);
-        pane.direction
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text("Keep compatibility examples");
-        let id = pane.selected_task.clone().unwrap();
-        host.snapshot
-            .borrow_mut()
-            .controls
-            .get_mut(&id)
-            .unwrap()
-            .run_epoch = 4;
-        pane.refresh(&mut tree);
-        pane.apply_task_action(TaskAction::SendDirection, &mut tree);
-        assert!(
-            matches!(&host.submitted.borrow()[0].command,TaskReviewCommand::Steer {run_epoch:3,after_revision:0,text,..} if text=="Keep compatibility examples")
-        );
-        assert!(
-            pane.direction.is_some(),
-            "queued admission must retain the draft until a durable receipt"
-        );
-    }
-    #[test]
-    fn switching_workspace_clears_steering_draft_and_keeps_new_room_private() {
-        let (mut tree, mut pane, host) = review_fixture();
-        pane.apply_task_action(TaskAction::Steer, &mut tree);
-        pane.direction
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text("Private project direction");
-        tree.append_empty_workspace("Personal");
-        tree.active = tree.workspaces.last().unwrap().id;
-        pane.refresh(&mut tree);
-        assert!(pane.direction.is_none());
-        assert!(pane.tasks.is_empty());
-        assert!(host.submitted.borrow().is_empty());
-    }
-    #[test]
-    fn native_review_form_and_controls_fit_large_text_and_have_keyboard_targets() {
-        let (_tree, mut pane, _host) = review_fixture();
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            let theme = theme.with_text_scale(2.0);
-            pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
-            let mut scene = Scene::new();
-            let mut text = TextRenderer::new();
-            pane.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            assert!(
-                pane.task_action_rects
-                    .iter()
-                    .any(|(action, _)| *action == TaskAction::Steer)
-            );
-            pane.apply_review_action(TaskAction::Steer);
-            pane.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            assert!(pane.focus_order().contains(&ActivityFocus::DirectionField));
-            for (_, rect) in &pane.task_action_rects {
-                assert_eq!(rect.intersect(pane.sheet), *rect);
-            }
-            assert!(
-                pane.task_action_rects
-                    .iter()
-                    .any(|(action, _)| *action == TaskAction::SendDirection)
-            );
-            assert!(
-                pane.accessibility_snapshot()
-                    .children
-                    .iter()
-                    .any(|node| node.role == ui::a11y::Role::TextInput)
-            );
-            pane.direction = None;
-        }
-    }
-    #[test]
-    fn deleting_the_focused_task_does_not_retarget_its_controls() {
-        let (mut tree, mut pane, host) = review_fixture();
-        let task_id = pane.selected_task.clone().unwrap();
-        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::CancelRun));
-        host.snapshot.borrow_mut().tasks.clear();
-        pane.refresh(&mut tree);
-        assert_eq!(pane.requested_review_task, Some(task_id));
-        assert_eq!(pane.selected_task, None);
-        assert_eq!(
-            pane.keyboard_focus,
-            Some(ActivityFocus::View(ActivityView::Tasks))
-        );
-        pane.apply_task_action(TaskAction::CancelRun, &mut tree);
-        assert!(host.submitted.borrow().is_empty());
-    }
-
-    fn draft_descriptor(
-        label: &str,
-        params: Vec<tilo_actions::ActionParam>,
-    ) -> tilo_actions::ActionDescriptor {
-        tilo_actions::ActionDescriptor {
-            semantic_identity: None,
-            address: tilo_actions::ActionAddress::new("inbox", "do"),
-            resource_kind: "mail.mailbox".into(),
-            resource_label: "Inbox".into(),
-            action_label: label.into(),
-            description: None,
-            locus: tilo_actions::ExecutionLocus::ClientLocal,
-            kind: tilo_actions::OperationKind::Document,
-            contract: tilo_actions::ActionContract::default(),
-            input: tilo_actions::InputSpec::None,
-            params,
-            view: None,
-        }
-    }
-
-    /// A Mail message to send, as the owner records it.
-    fn mail_confirmation() -> tilo_desktop_model::WorkspaceTaskConfirmation {
-        use tilo_actions::{ActionParam, ParamType};
-        let descriptor = draft_descriptor(
-            "Send message",
-            vec![
-                ActionParam::required("account", ParamType::Text, "From"),
-                ActionParam::required("message", ParamType::Object, "The message"),
-            ],
-        );
-        let arguments = serde_json::json!({
-            "account": "ada@example.org",
-            "message": {
-                "to": "bob@example.org",
-                "cc": "",
-                "subject": "Note X: release checklist",
-                "body": "Hi Bob,\n\nhere is the release checklist we talked about. It covers the image build, the store listing and the announcement.\n\nThanks!",
-                "attachments": [{"name": "checklist.pdf"}, {"name": "notes.md"}, {"name": "screenshot.png"}]
-            }
-        });
-        confirmation_of(
-            &descriptor,
-            &arguments,
-            tilo_actions::RiskLevel::Destructive,
-            tilo_action_policy::ActionKind::Outside,
-        )
-    }
-
-    /// Files' permanent deletion, drafted generically.
-    fn files_confirmation() -> tilo_desktop_model::WorkspaceTaskConfirmation {
-        use tilo_actions::{ActionParam, ParamType};
-        let descriptor = draft_descriptor(
-            "Delete permanently",
-            vec![
-                ActionParam::required("paths", ParamType::Array, "Files"),
-                ActionParam::optional("keep_versions", ParamType::Boolean, "Keep versions"),
-            ],
-        );
-        let mut confirmation = confirmation_of(
-            &descriptor,
-            &serde_json::json!({
-                "paths": ["/home/user/Trash/report-draft.pdf", "/home/user/Trash/old-notes.md", "/home/user/Trash/scan.png", "/home/user/Trash/budget.ods"],
-                "keep_versions": false
-            }),
-            tilo_actions::RiskLevel::Destructive,
-            tilo_action_policy::ActionKind::Outside,
-        );
-        confirmation.draft.resource_label = "Trash".into();
-        confirmation
-    }
-
-    fn confirmation_of(
-        descriptor: &tilo_actions::ActionDescriptor,
-        arguments: &serde_json::Value,
-        risk: tilo_actions::RiskLevel,
-        kind: tilo_action_policy::ActionKind,
-    ) -> tilo_desktop_model::WorkspaceTaskConfirmation {
-        let arguments = arguments.as_object().unwrap();
-        let digest = tilo_actions::draft::arguments_digest(arguments);
-        tilo_desktop_model::WorkspaceTaskConfirmation {
-            id: tilo_desktop_model::WorkspaceTaskConfirmation::id_for("inbox", "do", &digest),
-            asking: uuid::Uuid::from_u128(1),
-            run_epoch: 3,
-            agent_id: "scribe".into(),
-            app: "so.tilo.mail".into(),
-            resource_kind: "mail.mailbox".into(),
-            resource: "inbox".into(),
-            action: "do".into(),
-            kind,
-            risk,
-            draft: tilo_actions::Draft::render(descriptor, arguments),
-            arguments_digest: digest,
-            requested_at: 100,
-            state: tilo_desktop_model::WorkspaceTaskConfirmationState::Waiting,
-        }
-    }
-
-    fn paused_fixture(
-        confirmation: tilo_desktop_model::WorkspaceTaskConfirmation,
-    ) -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
-        let (mut tree, mut pane, host) = review_fixture();
-        let id = pane.selected_task.clone().unwrap();
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.tasks[0].status = WorkspaceTaskStatus::InProgress;
-            snapshot.tasks[0].title = "Send note X by mail to Bob".into();
-            snapshot.controls.get_mut(&id).unwrap().confirmation = Some(confirmation);
-        }
-        tree.adopt_ownerless_workspaces(&"local".to_owned());
-        if let Some(workspace) = tree.desktop.active_workspace_mut() {
-            workspace
-                .collaborators
-                .push(tilo_desktop_model::Collaborator {
-                    id: "scribe".into(),
-                    name: "Scribe".into(),
-                    ..Default::default()
-                });
-        }
-        pane.refresh(&mut tree);
-        (tree, pane, host)
-    }
-
-    #[test]
-    fn the_card_names_the_agent_and_offers_always_allow_only_to_who_may_grant() {
-        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
-        paint(&mut pane, &Theme::light());
-        assert_eq!(pane.agent_label("scribe"), "Scribe");
-        assert_eq!(pane.take_confirmation_notices()[0].agent, "Scribe");
-        assert!(
-            pane.task_action_rects
-                .iter()
-                .any(|(action, _)| *action == TaskAction::AlwaysAllow)
-        );
-        pane.explicit_local_user = Some("visitor".into());
-        pane.refresh(&mut tree);
-        paint(&mut pane, &Theme::light());
-        assert!(
-            !pane
-                .task_action_rects
-                .iter()
-                .any(|(action, _)| *action == TaskAction::AlwaysAllow),
-            "someone who may not change agent access is not offered it"
-        );
-    }
-
-    #[test]
-    fn a_card_taller_than_the_sheet_scrolls_to_its_buttons() {
-        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        pane.layout_window(Rect::new(0.0, 0.0, 560.0, 640.0));
-        paint(&mut pane, &theme);
-        let viewport = pane.review_scroll.viewport.unwrap();
-        assert!(
-            pane.review_scroll.content > viewport.height(),
-            "the card overflows"
-        );
-        let confirm = |pane: &RoomActivityPane| {
-            pane.task_action_rects
-                .iter()
-                .find_map(|(action, rect)| (*action == TaskAction::ConfirmDraft).then_some(*rect))
-                .unwrap()
-        };
-        assert!(
-            confirm(&pane).y0 > viewport.y1,
-            "Confirm starts below the fold"
-        );
-        let wheel = WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -100.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        let outcome = pane.handle_event(
-            &wheel,
-            1.0,
-            &Modifiers::default(),
-            Some(viewport.center()),
-            &mut tree,
-        );
-        assert!(outcome.handled);
-        paint(&mut pane, &theme);
-        let last = pane
-            .task_action_rects
-            .iter()
-            .map(|(_, rect)| rect.y1)
-            .fold(f64::MIN, f64::max);
-        assert!(
-            last > viewport.y0 && last <= viewport.y1,
-            "scrolled to the end, the last button is in view"
-        );
-        pane.review_scroll.offset = 0.0;
-        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::ConfirmDraft));
-        paint(&mut pane, &theme);
-        paint(&mut pane, &theme);
-        assert!(viewport.contains(confirm(&pane).center()));
-    }
-
-    fn paint(pane: &mut RoomActivityPane, theme: &Theme) -> Scene {
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            theme,
-            &PresenceCtx::empty(),
-        );
-        scene
-    }
-
-    fn submitted_answer(host: &ReviewHost) -> crate::activity::TaskReviewCommand {
-        host.submitted.borrow().last().unwrap().command.clone()
-    }
-
-    #[test]
-    fn a_paused_run_shows_its_card_first_and_notifies_once() {
-        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
-        assert!(pane.task_needs_person(&pane.tasks[0]));
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
-        paint(&mut pane, &Theme::light());
-        let painted: Vec<TaskAction> = pane
-            .task_action_rects
-            .iter()
-            .map(|(action, _)| *action)
-            .collect();
-        for action in [
-            TaskAction::ConfirmDraft,
-            TaskAction::EditDraft,
-            TaskAction::DeclineDraft,
-            TaskAction::AlwaysAllow,
-        ] {
-            assert!(painted.contains(&action), "{action:?} is on the card");
-            assert!(
-                pane.focus_order()
-                    .contains(&ActivityFocus::TaskAction(action))
-            );
-        }
-        let notices = pane.take_confirmation_notices();
-        assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].action, "Send message");
-        pane.refresh(&mut tree);
-        assert!(pane.take_confirmation_notices().is_empty(), "noticed once");
-    }
-
-    #[test]
-    fn confirming_as_drafted_sends_no_edits() {
-        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
-        let confirmation = mail_confirmation();
-        let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
-        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
-        assert_eq!(
-            submitted_answer(&host),
-            crate::activity::TaskReviewCommand::AnswerConfirmation {
-                task_id: pane.selected_task.clone().unwrap(),
-                run_epoch: 3,
-                confirmation_id: confirmation.id,
-                answer: WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
-            }
-        );
-    }
-
-    #[test]
-    fn editing_sends_only_the_changed_fields() {
-        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
-        let (mut tree, mut pane, host) = paused_fixture(mail_confirmation());
-        pane.apply_task_action(TaskAction::EditDraft, &mut tree);
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
-        paint(&mut pane, &Theme::dark());
-        let review = pane.confirmation.as_mut().unwrap();
-        let to = review
-            .fields
-            .iter_mut()
-            .find(|field| field.path == ["message", "to"])
-            .expect("recipients are editable");
-        to.input.set_text("carol@example.org");
-        assert!(pane.focus_order().contains(&ActivityFocus::ConfirmField(0)));
-        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
-        let crate::activity::TaskReviewCommand::AnswerConfirmation {
-            answer: WorkspaceTaskConfirmationAnswer::Confirm { edits },
-            ..
-        } = submitted_answer(&host)
-        else {
-            panic!("a confirmation")
-        };
-        assert_eq!(
-            edits,
-            vec![tilo_actions::DraftEdit {
-                path: vec!["message".into(), "to".into()],
-                text: "carol@example.org".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn declining_carries_the_reason() {
-        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
-        let (mut tree, mut pane, host) = paused_fixture(files_confirmation());
-        pane.apply_task_action(TaskAction::DeclineDraft, &mut tree);
-        assert_eq!(pane.keyboard_focus, Some(ActivityFocus::DeclineReason));
-        pane.confirmation
-            .as_mut()
-            .unwrap()
-            .reason
-            .set_text("Keep the budget sheet");
-        pane.apply_task_action(TaskAction::SendDecline, &mut tree);
-        assert!(matches!(
-            submitted_answer(&host),
-            crate::activity::TaskReviewCommand::AnswerConfirmation {
-                answer: WorkspaceTaskConfirmationAnswer::Decline { reason: Some(reason) },
-                ..
-            } if reason == "Keep the budget sheet"
-        ));
-    }
-
-    #[test]
-    fn always_allowing_names_the_draft_it_confirms() {
-        let confirmation = files_confirmation();
-        let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
-        pane.apply_task_action(TaskAction::AlwaysAllow, &mut tree);
-        assert_eq!(
-            submitted_answer(&host),
-            crate::activity::TaskReviewCommand::AlwaysAllow {
-                task_id: pane.selected_task.clone().unwrap(),
-                run_epoch: 3,
-                confirmation_id: confirmation.id,
-                edits: Vec::new(),
-            }
-        );
-    }
-
-    #[test]
-    fn an_answered_draft_offers_no_second_answer() {
-        let mut confirmation = mail_confirmation();
-        confirmation.state = tilo_desktop_model::WorkspaceTaskConfirmationState::Confirmed {
-            person: "local".into(),
-            at: 101,
-            edits: Vec::new(),
-        };
-        let (mut tree, mut pane, host) = paused_fixture(confirmation);
-        assert!(!pane.task_needs_person(&pane.tasks[0]));
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
-        paint(&mut pane, &Theme::light());
-        assert!(
-            !pane
-                .task_action_rects
-                .iter()
-                .any(|(action, _)| *action == TaskAction::ConfirmDraft)
-        );
-        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
-        assert!(host.submitted.borrow().is_empty());
-    }
-
-    /// Renders the card for review; written under the target directory.
-    #[test]
-    fn confirmation_card_render_matrix() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/confirmation-card-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
-        ] {
-            for (draft, confirmation) in [
-                ("message", mail_confirmation()),
-                ("fields", files_confirmation()),
-            ] {
-                for mode in ["review", "edit", "decline"] {
-                    let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
-                    host.snapshot.borrow_mut().sampled_at_secs =
-                        i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
-                    pane.refresh(&mut tree);
-                    match mode {
-                        "edit" => {
-                            pane.apply_task_action(TaskAction::EditDraft, &mut tree);
-                        }
-                        "decline" => {
-                            pane.apply_task_action(TaskAction::DeclineDraft, &mut tree);
-                        }
-                        _ => {}
-                    }
-                    let (width, height) = (760, 1000);
-                    pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-                    paint(&mut pane, &theme);
-                    let scene = paint(&mut pane, &theme);
-                    let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
-                    renderer.render_png(
-                        &scene,
-                        theme.tokens.colors.surfaces.content,
-                        output.join(format!("{name}-{draft}-{mode}.png")),
-                    );
-                }
             }
         }
     }
@@ -5607,7 +4152,7 @@ mod morning_source_tests {
         pane.set_host(host.clone());
         let first = pane.chosen_morning_sources()[0].key();
         for index in 1..crate::activity::morning::MAX_SOURCES {
-            let room = pane.task_room.clone();
+            let room = pane.room.clone();
             pane.morning_sources
                 .get_mut(&pane.morning_workspace)
                 .unwrap()
@@ -5720,7 +4265,7 @@ mod morning_source_tests {
                     host.commands
                         .borrow()
                         .iter()
-                        .all(|(room, _, _)| *room == pane.task_room)
+                        .all(|(room, _, _)| *room == pane.room)
                 );
                 let accessible = pane
                     .access_control(&ActivityFocus::Morning(key.clone(), false))

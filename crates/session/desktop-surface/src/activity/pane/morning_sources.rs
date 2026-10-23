@@ -1,8 +1,7 @@
 //! Private source choices and provenance in the existing workspace catch-up.
 use super::{
     Affine, HistorySelectionDetail, MorningSource, Rect, RoomActivityPane, RoomScope, Scene,
-    SystemTime, TextRenderer, TextRole, Theme, at, draw_task_button, format_relative_time, t,
-    t_args, text_width,
+    SystemTime, TextRenderer, TextRole, Theme, at, format_relative_time, t, t_args, text_width,
 };
 
 /// The app a chosen source lives in, as a person would name it. Never the
@@ -35,7 +34,7 @@ impl RoomActivityPane {
     pub fn chosen_morning_sources(&self) -> &[MorningSource] {
         self.morning_sources
             .get(&self.morning_workspace)
-            .map_or(&[], |preferences| preferences.for_room(&self.task_room))
+            .map_or(&[], |preferences| preferences.for_room(&self.room))
     }
 
     pub(super) fn selected_morning_source(&self) -> Option<MorningSource> {
@@ -73,7 +72,7 @@ impl RoomActivityPane {
             .morning_sources
             .entry(self.morning_workspace)
             .or_default()
-            .toggle(&self.task_room, source)
+            .toggle(&self.room, source)
         {
             self.host.save_morning_sources(&self.morning_sources);
         }
@@ -92,7 +91,7 @@ impl RoomActivityPane {
             .morning_sources
             .entry(self.morning_workspace)
             .or_default()
-            .toggle(&self.task_room, source)
+            .toggle(&self.room, source)
         {
             self.host.save_morning_sources(&self.morning_sources);
         }
@@ -152,7 +151,7 @@ impl RoomActivityPane {
             if self.morning_evidence(key).is_some()
                 && self
                     .host
-                    .submit_morning_command(&self.task_room, source, super::MorningCommand::Open)
+                    .submit_morning_command(&self.room, source, super::MorningCommand::Open)
                     .is_ok()
             {
                 None
@@ -215,7 +214,7 @@ impl RoomActivityPane {
         }
         self.morning_command_message = self
             .host
-            .submit_morning_command(&self.task_room, &source, command)
+            .submit_morning_command(&self.room, &source, command)
             .err();
     }
     pub(super) fn morning_display_label(
@@ -230,7 +229,7 @@ impl RoomActivityPane {
             .chosen_morning_sources()
             .iter()
             .find(|source| source.key() == key)
-            .and_then(|source| self.host.morning_payload(&self.task_room, source));
+            .and_then(|source| self.host.morning_payload(&self.room, source));
         if let (Some(_), Some((target, time))) = (payload, evidence) {
             t_args(
                 "activity-morning-recorded",
@@ -254,16 +253,13 @@ impl RoomActivityPane {
         if self.scope != RoomScope::ThisRoom || self.morning_evidence(key).is_none() {
             return t("activity-morning-payload-unavailable");
         }
-        let mut text = self
-            .host
-            .morning_payload(&self.task_room, source)
-            .map_or_else(
-                || t("activity-morning-payload-unavailable"),
-                |payload| payload.text(),
-            );
+        let mut text = self.host.morning_payload(&self.room, source).map_or_else(
+            || t("activity-morning-payload-unavailable"),
+            |payload| payload.text(),
+        );
         if let Some(status) = self
             .host
-            .morning_command_status(&self.task_room, source)
+            .morning_command_status(&self.room, source)
             .or_else(|| self.morning_command_message.clone())
         {
             text.push('\n');
@@ -368,7 +364,7 @@ impl RoomActivityPane {
                 .chosen_morning_sources()
                 .iter()
                 .find(|source| source.key() == key)
-                .and_then(|source| self.host.morning_payload(&self.task_room, source))
+                .and_then(|source| self.host.morning_payload(&self.room, source))
                 .is_some_and(|payload| payload.refreshable);
         let commands = [
             super::MorningCommand::Refresh,
@@ -389,7 +385,7 @@ impl RoomActivityPane {
             return y;
         }
         let rect = Rect::new(x0, y, x1, y + h);
-        draw_task_button(
+        draw_button(
             paint.scene,
             paint.transform,
             paint.text,
@@ -411,7 +407,7 @@ impl RoomActivityPane {
         );
         let bottom = rect.y1 + caption_h;
         let rect = Rect::new(x0, bottom + tight, x1, bottom + tight + remove_h);
-        draw_task_button(
+        draw_button(
             paint.scene,
             paint.transform,
             paint.text,
@@ -437,7 +433,7 @@ impl RoomActivityPane {
         let h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
         for command in commands {
             let rect = Rect::new(self.sheet.x0 + inset, y, self.sheet.x1 - inset, y + h);
-            draw_task_button(
+            draw_button(
                 paint.scene,
                 paint.transform,
                 paint.text,
@@ -452,4 +448,26 @@ impl RoomActivityPane {
         }
         y
     }
+}
+
+fn draw_button(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    prominent: bool,
+) {
+    ui::widget::Button::paint(
+        scene,
+        transform,
+        tr,
+        theme,
+        &ui::widget::ButtonFace::new(rect, label).role(if prominent {
+            ui::widget::ButtonRole::Primary
+        } else {
+            ui::widget::ButtonRole::Secondary
+        }),
+    );
 }

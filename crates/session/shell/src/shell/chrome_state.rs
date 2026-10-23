@@ -912,9 +912,6 @@ pub struct ChromeState {
     /// The last wave at this person, which the top bar says for a moment.
     pub(crate) wave_notice: Option<tilo_desktop::chrome::WaveNotice>,
     activity_focus_request: Option<ActivityFocus>,
-    /// A paused action the person asked to see from its notification: the
-    /// composer following that run shows it, else Task Center does.
-    task_draft_request: Option<String>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
     /// The portal D-Bus backend's prompt queue drains onto the back
@@ -1130,9 +1127,6 @@ pub struct ChromeState {
     /// Notices of an app that ran out of memory, by toast id: the closed-tab
     /// serials of its windows, which Reopen puts back where they were.
     memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
-    /// Banners pointing at a task whose run waits for the person's answer,
-    /// by banner, to the task they open.
-    task_confirmation_toasts: BTreeMap<u64, String>,
     /// Notifications of new devices asking to be the person, with the
     /// request each answers and the code it shows.
     device_asking_toasts: BTreeMap<u64, ([u8; 32], String)>,
@@ -1256,7 +1250,6 @@ impl ChromeState {
             activity_glance: ActivityGlance::default(),
             wave_notice: None,
             activity_focus_request: None,
-            task_draft_request: None,
             workspace_view_request: None,
             history_action_request: None,
             pending_grants: VecDeque::new(),
@@ -1325,7 +1318,6 @@ impl ChromeState {
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
             memory_reopen_toasts: BTreeMap::new(),
-            task_confirmation_toasts: BTreeMap::new(),
             device_asking_toasts: BTreeMap::new(),
             device_asking_seen: std::collections::BTreeSet::new(),
             device_answers: Vec::new(),
@@ -2306,11 +2298,6 @@ impl ChromeState {
         self.activity_focus_request.take()
     }
 
-    /// The task whose paused action the person asked to see, once.
-    pub fn take_task_draft_request(&mut self) -> Option<String> {
-        self.task_draft_request.take()
-    }
-
     /// Open Activity and run a selected-row history action (`history.compare`,
     /// `history.undo`, `history.restore`) on the next paint.
     ///
@@ -2323,7 +2310,6 @@ impl ChromeState {
             | tilo_desktop::activity::HISTORY_UNDO
             | tilo_desktop::activity::HISTORY_RESTORE
             | tilo_desktop::activity::ACTIVITY_ACKNOWLEDGE
-            | tilo_desktop::activity::ACTIVITY_TASKS
             | tilo_desktop::activity::morning::MORNING_SOURCE => {}
             _ if [
                 tilo_desktop::activity::morning::MORNING_OPEN,
@@ -2707,24 +2693,6 @@ impl ChromeState {
             }
         }
         reopened
-    }
-
-    /// Tell the person a task's run paused at an action that asks them
-    /// first, without interrupting them: a banner whose Review opens Task
-    /// Center on that task, where they answer it.
-    pub fn push_task_confirmation(
-        &mut self,
-        notice: &tilo_desktop::activity::ConfirmationNotice,
-    ) -> u64 {
-        let (title, body) = (notice.title(), notice.body());
-        let mut toast = Notification::new(title, body)
-            .with_severity(NotificationSeverity::Info)
-            .with_icon_kind(NotificationIconKind::Permission);
-        toast.dismiss_after = tilo_desktop::notifications::PERSISTENT_DISMISS;
-        toast.actions = vec![("default".into(), notice.review_label())];
-        self.task_confirmation_toasts
-            .insert(toast.id, notice.task_id.clone());
-        self.push_notification_full(toast)
     }
 
     /// Ask the person about a new device asking to be them, once: what it
@@ -3618,7 +3586,6 @@ impl ChromeState {
         if self.workspace_undo_toasts.remove(&n.id).is_some() {
             return;
         }
-        self.task_confirmation_toasts.remove(&n.id);
         self.device_asking_toasts.remove(&n.id);
         // The windows stay among the closed tabs; only the notice's offer lapses.
         self.memory_reopen_toasts.remove(&n.id);
@@ -3731,14 +3698,6 @@ impl ChromeState {
         {
             crate::network_secrets::join(&path);
             self.record_history(removed);
-            self.bump();
-            return true;
-        }
-        if let Some(task_id) = self.task_confirmation_toasts.remove(&id) {
-            self.record_history(removed);
-            // Shown where the person asked for the work when that composer
-            // follows the run, else on its card in Task Center.
-            self.task_draft_request = Some(task_id);
             self.bump();
             return true;
         }
@@ -5345,34 +5304,6 @@ mod provisioned_identity_tests {
             chrome.borrow_mut().adopt_provisioned_identity("tester"),
             0
         );
-    }
-}
-
-#[cfg(test)]
-mod task_confirmation_toast_tests {
-    use super::*;
-
-    /// Activating the notice of a run paused for the person asks for that
-    /// task's paused action to be shown, once: the overlay shows it in the
-    /// composer following the run, else on its card in Task Center.
-    #[test]
-    fn activating_a_paused_runs_notice_asks_to_show_its_draft() {
-        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::default());
-        let mut state = chrome.borrow_mut();
-        let id = state.push_task_confirmation(&tilo_desktop::activity::ConfirmationNotice {
-            room: "room".into(),
-            task_id: "task:rename".into(),
-            task_title: "Rename files".into(),
-            agent: "scribe".into(),
-            action: "Rename an entry here".into(),
-            gist: None,
-        });
-        assert!(state.activate_notification(id));
-        assert_eq!(
-            state.take_task_draft_request().as_deref(),
-            Some("task:rename")
-        );
-        assert_eq!(state.take_task_draft_request(), None);
     }
 }
 

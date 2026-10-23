@@ -10224,9 +10224,6 @@ mod workspace_tree_lifecycle_tests {
     }
 }
 
-#[path = "state/native_manual_tasks.rs"]
-pub(crate) mod native_manual_tasks;
-
 #[cfg(test)]
 mod strip_command_tests {
     use super::*;

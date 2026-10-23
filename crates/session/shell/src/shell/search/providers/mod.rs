@@ -23,7 +23,6 @@ pub mod settings_pages;
 pub mod shortcuts;
 pub mod store_catalogue;
 pub mod system_settings;
-pub(crate) mod task_review;
 pub mod terminal_device_shell;
 pub mod tray_items;
 pub mod web;

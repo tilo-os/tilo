@@ -351,7 +351,6 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "room.activity.explore",
     "room.activity.replay",
     "room.activity.acknowledge",
-    "room.activity.tasks",
     "tab.menu",
     "tab.drag.cancel",
     "room.activity.morning.toggle",
@@ -4543,12 +4542,6 @@ impl ActionsProvider {
                 "search-action-activity-acknowledge-keywords",
             ),
             (
-                tilo_desktop::activity::ACTIVITY_TASKS,
-                "search-action-activity-tasks",
-                "search-action-catch-up-tasks-subtitle",
-                "search-action-activity-tasks-keywords",
-            ),
-            (
                 tilo_desktop::activity::HISTORY_COMPARE,
                 "search-action-history-compare",
                 "search-action-history-compare-subtitle",
@@ -5075,7 +5068,6 @@ fn workspace_view_copy(
     let activity = |view: ActivityView| {
         let subtitle = match view {
             ActivityView::CatchUp => "search-action-activity-catch-up-subtitle",
-            ActivityView::Tasks => "search-action-activity-tasks-subtitle",
             ActivityView::Explore => "search-action-activity-explore-subtitle",
             ActivityView::Replay => "search-action-activity-replay-subtitle",
         };
@@ -7282,7 +7274,6 @@ mod tests {
             "room.activity.explore",
             "room.activity.replay",
             "room.activity.acknowledge",
-            "room.activity.tasks",
         ] {
             assert!(
                 out.iter().any(|action| action.id == id

@@ -254,7 +254,7 @@ mod tests {
             state.remember_local_app_record(TAB_A, 8123);
         }
         let saved = tree.read().local_app_records.clone();
-        let (mut host, _) = crate::shell::build_tilo_overlay_host_with_records(
+        let (host, _) = crate::shell::build_tilo_overlay_host_with_records(
             tree.clone(),
             false,
             RecordStore::in_memory(),

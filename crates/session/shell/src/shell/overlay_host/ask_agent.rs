@@ -214,8 +214,7 @@ impl ShellOverlayHost {
     }
 
     /// No agent of the focused workspace takes tasks: start the one asked
-    /// last there (else its first admitted agent), as Task Center's "Start
-    /// agent" does, and open the composer about `seed` once it takes them.
+    /// last there (else its first admitted agent), and open the composer about `seed` once it takes them.
     /// Whether one is starting. Only someone who may administer the
     /// workspace starts its agents.
     fn start_admitted_agent(
