@@ -373,12 +373,15 @@ checked and the firmware's Secure Boot enforcement probed, as root in a micro-VM
 signs each architecture's image and attests its SLSA provenance (kernel-rpm/v1: the source
 commit and the buildroot it was built FROM, which os/dev/verify-kernel-provenance.sh checks),
 both with a transparency log entry, publishes them as `sha-<commit>-<arch>` and sets the
-`kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. Main publishes
+`kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. That tag is
+pushed once: a stable run again on the same commit whose rebuild differs leaves it, and the
+digest pinned from it, where they are, rather than moving the tag and leaving the earlier digest
+untagged. Main publishes
 nothing, since the OS build verifies the kernel's signature. No compiler cache reaches checks yet, so every build compiles the
 whole kernel."""
 repository = "registry.tilo.so/tilo/tilo-kernel"
 arches = ["x86_64", "aarch64"]
-release = ["sha-{commit}-{arch}"]
+release = ["once:sha-{commit}-{arch}"]
 tlog = true
 gates = ["kernel-acceptance-x86_64", "kernel-acceptance-aarch64"]
 after_publish = "bash tools/ci/publish/kernel.sh pins {dir}"
