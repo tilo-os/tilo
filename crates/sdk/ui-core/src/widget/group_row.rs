@@ -43,15 +43,6 @@ const MOVE_SETTLED_PX_PER_S: f64 = crate::tokens::motion::MOVE_SETTLED_PX_PER_S;
 /// Two pan targets closer than this are the same place on screen.
 const SNAP_SETTLED_PX: f64 = 0.5;
 
-/// How close to a lane's left or right edge a drag has to be for the strip
-/// to pan under it ([`DragReach`]).
-pub(crate) const DRAG_EDGE_BAND_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
-/// How fast the strip pans under a drag pressed right against the edge; it
-/// starts from nothing at the band's inner side and grows with depth.
-const DRAG_EDGE_PAN_PX_PER_S: f64 = crate::tokens::motion::DRAG_EDGE_PAN_PX_PER_S;
-/// Longest frame step the edge pan integrates, so a stalled frame does not
-/// fling the strip.
-const DRAG_EDGE_MAX_STEP: Duration = Duration::from_millis(50);
 /// How long a drag rests on a background tab before it comes to the front.
 pub(crate) const DRAG_SPRING_LOAD: Duration = Duration::from_millis(500);
 
@@ -64,9 +55,8 @@ pub(crate) const DRAG_SPRING_LOAD: Duration = Duration::from_millis(500);
 /// again.
 #[derive(Clone, Copy, Debug, Default)]
 struct DragReach {
-    /// When the edge pan last advanced; `None` while the drag is not in an
-    /// edge band.
-    edge_tick: Option<Instant>,
+    /// The edge pan's frame clock.
+    edge: crate::edge_autoscroll::EdgeAutoscroll,
     /// The background tab under the drag, its group, and since when.
     tab: Option<(u64, u64, Instant)>,
 }
@@ -3254,18 +3244,16 @@ impl GroupRow {
     fn drag_edge_velocity(&self, p: Point) -> f64 {
         let pan = self.pan_of_lane(self.lane_at(p).unwrap_or(self.focus_lane));
         let view = pan.viewport;
-        if !view.contains(p) || view.width() <= DRAG_EDGE_BAND_PX * 2.0 {
+        if !view.contains(p) {
             return 0.0;
         }
-        let into_left = DRAG_EDGE_BAND_PX - (p.x - view.x0);
-        let into_right = DRAG_EDGE_BAND_PX - (view.x1 - p.x);
-        if into_left > 0.0 && pan.scroll_x > 0.0 {
-            -DRAG_EDGE_PAN_PX_PER_S * (into_left / DRAG_EDGE_BAND_PX).min(1.0)
-        } else if into_right > 0.0 && pan.scroll_x < pan.max_scroll_x() {
-            DRAG_EDGE_PAN_PX_PER_S * (into_right / DRAG_EDGE_BAND_PX).min(1.0)
+        let velocity = crate::edge_autoscroll::velocity(p.x, view.x0, view.x1);
+        let room = if velocity < 0.0 {
+            pan.scroll_x > 0.0
         } else {
-            0.0
-        }
+            pan.scroll_x < pan.max_scroll_x()
+        };
+        if room { velocity } else { 0.0 }
     }
 
     /// The background tab of another window under `p`: its group and tab.
@@ -3301,19 +3289,11 @@ impl GroupRow {
         let p = self.last_cursor;
         let mut moved = false;
         let velocity = self.drag_edge_velocity(p);
-        if velocity.abs() < f64::EPSILON {
-            self.drag_reach.edge_tick = None;
-        } else {
-            let step = self
-                .drag_reach
-                .edge_tick
-                .map_or(Duration::ZERO, |last| now.saturating_duration_since(last))
-                .min(DRAG_EDGE_MAX_STEP);
-            self.drag_reach.edge_tick = Some(now);
+        let step = self.drag_reach.edge.advance(velocity, now);
+        if step != 0.0 {
             let lane = self.lane_at(p).unwrap_or(self.focus_lane);
             let pan = self.pan_of_lane_mut(lane);
-            let next =
-                (pan.scroll_x + velocity * step.as_secs_f64()).clamp(0.0, pan.max_scroll_x());
+            let next = (pan.scroll_x + step).clamp(0.0, pan.max_scroll_x());
             let travel = next - pan.scroll_x;
             if travel.abs() > f64::EPSILON {
                 pan.absolute = false;

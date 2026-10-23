@@ -10,8 +10,9 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::{DRAG_EDGE_BAND_PX, DRAG_EDGE_MAX_STEP, DRAG_EDGE_PAN_PX_PER_S, GroupRow};
-use crate::time::{Duration, Instant};
+use super::GroupRow;
+use crate::edge_autoscroll::{self, EdgeAutoscroll};
+use crate::time::Instant;
 use crate::widget::edge_resize::{
     DraggedWindow, EdgeDrag, EdgeGrab, ResizeMode, Seam, WindowEdge, seam_owner,
 };
@@ -33,8 +34,8 @@ pub(super) struct RowEdgeDrag {
     /// How far the strip has auto-scrolled under a pointer resting at the
     /// display's edge (positive: its canvas moved left).
     autoscroll: f64,
-    /// When the auto-scroll last advanced; `None` outside the edge bands.
-    edge_tick: Option<Instant>,
+    /// The auto-scroll's frame clock.
+    edge: EdgeAutoscroll,
 }
 
 impl RowEdgeDrag {
@@ -308,7 +309,7 @@ impl GroupRow {
             pointer_x: x,
             origin_scroll,
             autoscroll: 0.0,
-            edge_tick: None,
+            edge: EdgeAutoscroll::default(),
         });
         self.edge_hover = None;
         self.show_edge_hover();
@@ -393,19 +394,14 @@ impl GroupRow {
             return false;
         };
         let velocity = self.edge_autoscroll_velocity(&drag);
-        if velocity.abs() < f64::EPSILON {
-            drag.edge_tick = None;
+        let step = drag.edge.advance(velocity, now);
+        if step == 0.0 {
             self.edge_drag = Some(drag);
             return false;
         }
-        let step = drag
-            .edge_tick
-            .map_or(Duration::ZERO, |last| now.saturating_duration_since(last))
-            .min(DRAG_EDGE_MAX_STEP);
-        drag.edge_tick = Some(now);
         let before = drag.drag.resize(drag.travel());
         let mut next = drag;
-        next.autoscroll += velocity * step.as_secs_f64();
+        next.autoscroll += step;
         let after = drag.drag.resize(next.travel());
         let pan = self.pan_of_lane(drag.lane);
         let scroll = drag.origin_scroll + after.pan + next.autoscroll;
@@ -438,17 +434,6 @@ impl GroupRow {
     /// band's inner side to full speed against the edge.
     fn edge_autoscroll_velocity(&self, drag: &RowEdgeDrag) -> f64 {
         let view = self.pan_of_lane(drag.lane).viewport;
-        if view.width() <= DRAG_EDGE_BAND_PX * 2.0 {
-            return 0.0;
-        }
-        let into_left = DRAG_EDGE_BAND_PX - (drag.pointer_x - view.x0);
-        let into_right = DRAG_EDGE_BAND_PX - (view.x1 - drag.pointer_x);
-        if into_left > 0.0 {
-            -DRAG_EDGE_PAN_PX_PER_S * (into_left / DRAG_EDGE_BAND_PX).min(1.0)
-        } else if into_right > 0.0 {
-            DRAG_EDGE_PAN_PX_PER_S * (into_right / DRAG_EDGE_BAND_PX).min(1.0)
-        } else {
-            0.0
-        }
+        edge_autoscroll::velocity(drag.pointer_x, view.x0, view.x1)
     }
 }

@@ -652,8 +652,8 @@ pub struct PdfApp {
     text_hover: Option<usize>,
     /// The text layers last asked ahead of need (0-based pages).
     raster_text_batch: Vec<usize>,
-    /// When the last frame of an edge autoscroll of a selection drag ran.
-    selection_autoscroll_at: Option<ui::time::Instant>,
+    /// The frame clock of a selection drag's edge autoscroll.
+    selection_autoscroll: ui::edge_autoscroll::EdgeAutoscroll,
     /// Where on the page canvas the last frame drew something that shows
     /// the pointer's hover (see `pointer_move_is_quiet`).
     canvas_hover_zones: Vec<Rect>,
@@ -1181,7 +1181,7 @@ impl PdfApp {
             pending_selection_effect: None,
             text_hover: None,
             raster_text_batch: Vec::new(),
-            selection_autoscroll_at: None,
+            selection_autoscroll: ui::edge_autoscroll::EdgeAutoscroll::default(),
             canvas_hover_zones: Vec::new(),
             glide: ui::ScrollMomentum::new(),
             interaction: ui::interaction::InteractionEnvironment::default(),
@@ -5547,7 +5547,7 @@ impl Widget for PdfApp {
         self.tooltip_pending
             || owner_busy
             || self.page_bubble.needs_frame(ui::time::now())
-            || self.selection_autoscroll_reach() != 0.0
+            || self.selection_autoscroll_velocity() != 0.0
             || self.glide.is_active()
     }
 

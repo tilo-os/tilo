@@ -21,11 +21,6 @@ use crate::text_layer::PageText;
 /// Text layers the reader keeps beyond those on screen, selected or found.
 const MAX_TEXT_LAYERS: usize = 48;
 
-/// How close to the canvas's top or bottom edge a selection drag starts
-/// scrolling, and how fast it scrolls per pixel it reaches into that band.
-const AUTOSCROLL_EDGE: f64 = 32.0;
-const AUTOSCROLL_PX_PER_S_PER_PX: f64 = 14.0;
-
 /// A place in the document's text: a displayed page (1-based) and a caret
 /// position of its text layer, before glyph `glyph` (`glyph` = the layer's
 /// length is after its last). Ordered as the text reads.
@@ -369,7 +364,7 @@ impl PdfApp {
     /// click) is dropped, so a click leaves no one-glyph highlight.
     pub(super) fn finish_selection(&mut self) {
         self.drag_select.release();
-        self.selection_autoscroll_at = None;
+        self.selection_autoscroll.stop();
         if let Some(s) = self.selection.as_mut() {
             s.dragging = false;
             if !s.is_active() {
@@ -899,16 +894,11 @@ impl PdfApp {
     /// bottom edge (or past it), scroll that way and extend to it. Called
     /// once per frame; whether it scrolled.
     pub(super) fn autoscroll_selection(&mut self, now: ui::time::Instant) -> bool {
-        let reach = self.selection_autoscroll_reach();
-        if reach == 0.0 {
-            self.selection_autoscroll_at = None;
+        let velocity = self.selection_autoscroll_velocity();
+        let dy = self.selection_autoscroll.advance(velocity, now);
+        if dy == 0.0 {
             return false;
         }
-        let Some(since) = self.selection_autoscroll_at.replace(now) else {
-            return false;
-        };
-        let dt = now.duration_since(since).as_secs_f64();
-        let dy = reach * AUTOSCROLL_PX_PER_S_PER_PX * dt;
         let before = self.scroll_y();
         self.viewport.pan_by(0.0, dy);
         self.current_page = self.nearest_page();
@@ -920,21 +910,14 @@ impl PdfApp {
         false
     }
 
-    /// How far, in pixels, a selection drag reaches into the band at the
-    /// canvas's top (negative) or bottom (positive) edge; 0 elsewhere.
-    pub(super) fn selection_autoscroll_reach(&self) -> f64 {
+    /// How fast, in px/s, a selection drag scrolls the canvas: upwards
+    /// (negative) in the band at its top edge, downwards at its bottom.
+    pub(super) fn selection_autoscroll_velocity(&self) -> f64 {
         if !self.selection.is_some_and(|sel| sel.dragging) {
             return 0.0;
         }
         let canvas = self.canvas_rect;
-        let y = self.last_mouse.y;
-        if y < canvas.y0 + AUTOSCROLL_EDGE {
-            y - (canvas.y0 + AUTOSCROLL_EDGE)
-        } else if y > canvas.y1 - AUTOSCROLL_EDGE {
-            y - (canvas.y1 - AUTOSCROLL_EDGE)
-        } else {
-            0.0
-        }
+        ui::edge_autoscroll::velocity(self.last_mouse.y, canvas.y0, canvas.y1)
     }
 
     /// Highlight the live selection in `swatch`: one highlight per page it

@@ -69,8 +69,6 @@ struct DragState<K> {
 pub struct ReorderController<K> {
     drag: Option<DragState<K>>,
     drag_threshold: f64,
-    edge_zone: f64,
-    max_scroll_speed: f64,
     hover_expand_delay: Duration,
 }
 
@@ -85,8 +83,6 @@ impl<K> ReorderController<K> {
         Self {
             drag: None,
             drag_threshold: 4.0,
-            edge_zone: 40.0,
-            max_scroll_speed: 900.0,
             hover_expand_delay: Duration::from_millis(650),
         }
     }
@@ -94,13 +90,6 @@ impl<K> ReorderController<K> {
     #[must_use]
     pub fn with_drag_threshold(mut self, logical_pixels: f64) -> Self {
         self.drag_threshold = logical_pixels.max(0.0);
-        self
-    }
-
-    #[must_use]
-    pub fn with_edge_scroll(mut self, zone: f64, max_speed: f64) -> Self {
-        self.edge_zone = zone.max(0.0);
-        self.max_scroll_speed = max_speed.max(0.0);
         self
     }
 
@@ -172,13 +161,7 @@ impl<K> ReorderController<K> {
         if !drag.active {
             return ReorderMotion::default();
         }
-        let velocity = edge_velocity(
-            drag.cursor.y,
-            viewport.y0,
-            viewport.y1,
-            self.edge_zone,
-            self.max_scroll_speed,
-        );
+        let velocity = crate::edge_autoscroll::velocity(drag.cursor.y, viewport.y0, viewport.y1);
         let hover_expand = if !drag.hover_emitted
             && drag
                 .candidate
@@ -195,7 +178,7 @@ impl<K> ReorderController<K> {
             None
         };
         ReorderMotion {
-            scroll_delta: velocity * elapsed.as_secs_f64(),
+            scroll_delta: crate::edge_autoscroll::distance(velocity, elapsed),
             hover_expand,
         }
     }
@@ -246,21 +229,6 @@ impl<K> ReorderController<K> {
             target: drag.candidate?.target,
         })
     }
-}
-
-fn edge_velocity(cursor: f64, start: f64, end: f64, zone: f64, max_speed: f64) -> f64 {
-    if zone <= 0.0 || end <= start {
-        return 0.0;
-    }
-    if cursor < start + zone {
-        let strength = ((start + zone - cursor) / zone).clamp(0.0, 1.0);
-        return -max_speed * strength * strength;
-    }
-    if cursor > end - zone {
-        let strength = ((cursor - (end - zone)) / zone).clamp(0.0, 1.0);
-        return max_speed * strength * strength;
-    }
-    0.0
 }
 
 #[cfg(test)]
@@ -331,9 +299,7 @@ mod tests {
     fn reorder_drag_scrolls_toward_edges_and_expands_hovered_containers_once() {
         {
             let now = crate::time::now();
-            let mut reorder = ReorderController::new()
-                .with_drag_threshold(0.0)
-                .with_edge_scroll(40.0, 800.0);
+            let mut reorder = ReorderController::new().with_drag_threshold(0.0);
             reorder.begin(1, Point::new(10.0, 50.0));
             reorder.update(Point::new(10.0, 5.0), None, now, |_, _| true);
             let top = reorder.tick(
