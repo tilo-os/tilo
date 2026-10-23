@@ -3195,8 +3195,9 @@ plan = "full"
 # perf-scheduled, which compares them with the store and publishes them where
 # the run holds TILO_PACKAGES_TOKEN: the server's secret config names the
 # references that get it (`t dispatch perf-scheduled --ref main`, or `--ref
-# stable` once stable is among them). Groups run alone with `t test perf-render`; the whole run with
-# `t dispatch perf-scheduled` (inputs: accept, synthetic_series,
+# stable` once stable is among them). One group runs alone with `t test perf-render`
+# (browser and stream measure a commit: `t dispatch perf-stream --ref <branch>`); the whole
+# run with `t dispatch perf-scheduled` (inputs: accept, synthetic_series,
 # synthetic_factor). Measurements of the node they ran on, never stored results.
 
 [[check]]
@@ -3319,8 +3320,10 @@ on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting-room"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
-# 100 guests and their host on one node, as on the large Forgejo runner.
-requirement = { cores = 16, memory = "32GiB" }
+# 100 guests and their host on one node with the quota of the machine the series and
+# docs/benchmarks/room-host-capacity-2026-10.md were measured on, 40 CPUs and 36 GiB: the host
+# and the driver start a runtime worker per core, which perf-scheduled.sh holds at that 40.
+requirement = { cores = 40, memory = "36GiB" }
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/perf/hosting-room/**"]
 cache = false
@@ -3364,7 +3367,9 @@ default = false
 name = "perf-scheduled"
 run = "bash tools/ci/perf-compare.sh"
 image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
-needs = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
+# Whatever the groups' outcome, so one failing group doesn't cost the others their records:
+# perf-compare.sh fails for those T_NEEDS_FAILED names, and for any group with no records.
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
 inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh", "tools/ci/perf-compare.sh"]
 outputs = ["/target/perf/compare/**"]
 # TILO_PACKAGES_TOKEN may write tilo's generic packages, which is where the
