@@ -154,7 +154,10 @@ fn archive(installed: &Installed, publisher: &str, staging: &Path) -> Result<Pat
     .map_err(invalid)?
     .into_inner()
     .map_err(|error| invalid(error.error()))?;
-    written.sync_all().map_err(invalid)?;
+    // Not synced: the archive lives only as long as its cohort, the installer
+    // reads it on this machine through the page cache and makes its own
+    // import durable, and nothing reads it after a crash. A sync would only
+    // wait on the disk's writeback, which on a busy disk takes seconds.
     if written.metadata().map_err(invalid)?.len() > tilo_app_package::MAX_APP_TAPP_BYTES {
         return Err(invalid("a cohort archive exceeds the application bound"));
     }
