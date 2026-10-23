@@ -1,7 +1,6 @@
 # Code under crates/session and apps that still paints controls by hand,
 # joins facts with glyphs, uses symbols as icons or raw colours
 # (tools/policy/check_primitives.py). Counts only shrink.
-glyph-icon 1 apps/agent/src/session/agent_loop.rs
 glyph-icon 1 apps/canvas/src/panels/shortcuts.rs
 glyph-icon 1 apps/chip-design/src/evidence_flow_view.rs
 glyph-icon 1 apps/chip-design/src/operator_graph_view.rs

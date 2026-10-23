@@ -247,6 +247,19 @@ impl ActiveTurn {
     }
 }
 
+/// The longest prefix of `text` within `max` bytes, cut on a character
+/// boundary.
+fn head(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.get(..end).unwrap_or_default()
+}
+
 /// A completed call from a gateway `tool_call` frame, or `None` when its
 /// arguments are not a JSON object (the final body then carries it).
 fn streamed_call(output: &str, index: usize) -> Option<StreamedCall> {
@@ -276,8 +289,6 @@ pub(super) struct LoopState {
     pub(super) previous: Option<StepOutcome>,
     /// Steps that succeeded.
     pub(super) completed: usize,
-    /// One line per invoke of this task, for the conversation memory.
-    actions: Vec<String>,
     /// The request's parts, as the model listed them (or the loop implied).
     parts: Vec<tools::Part>,
     /// Successful operations in this task, by application.
@@ -482,7 +493,6 @@ impl LoopState {
             step_index: 0,
             previous: None,
             completed: 0,
-            actions: Vec::new(),
             parts: Vec::new(),
             done_apps: HashMap::new(),
             unable: Vec::new(),
@@ -617,8 +627,6 @@ enum Handled {
     /// Stop the whole loop: cancelled.
     Cancelled(String),
 }
-
-pub use crate::memory::Memory;
 
 /// How the turn asked to finish.
 struct Finishing {
@@ -869,33 +877,12 @@ impl Session {
                 .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
                 .unwrap_or_else(ui::time::now)
         });
-        // Native tasks are separate permission scopes, not messages in the
-        // legacy conversation. Keep their memory empty for the entire execution;
-        // Conversation still retains this run's turns and authenticated steering.
-        let legacy_memory = self
-            .native_task
-            .is_some()
-            .then(|| std::mem::take(&mut self.memory));
+        // Each run is its issue's own permission scope: nothing of one
+        // reaches the model in another. The conversation holds this run's
+        // turns and authenticated steering only.
         let result = self.run_task_loop_with(run, &mut state);
         self.task_deadline = None;
-        if let Some(memory) = legacy_memory {
-            // Restore before propagating any I/O error, cancellation or failure,
-            // and never remember native prompts, actions or replies globally.
-            self.memory = memory;
-            return result;
-        }
-        let end = result?;
-        let reply = match &end {
-            LoopEnd::Finished(finish, _) => finish.reply.clone().unwrap_or_default(),
-            LoopEnd::Failed(message) => format!("(failed) {message}"),
-            LoopEnd::Cancelled(message) => format!("(cancelled) {message}"),
-        };
-        self.memory.remember(
-            run.instruction(),
-            std::mem::take(&mut state.actions),
-            &reply,
-        );
-        Ok(end)
+        result
     }
 
     fn run_task_loop_with(
@@ -987,7 +974,7 @@ impl Session {
         };
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
-            task: format!("{}The request:\n\n{request}{resumed}", self.memory.render()),
+            task: format!("The request:\n\n{request}{resumed}"),
         };
         let mut conversation = if self.chooser.uses_neutral_protocol() {
             Conversation::neutral_first(LOOP_SYSTEM, &first)
@@ -1013,40 +1000,6 @@ impl Session {
             "The task did not finish within {MAX_LOOP_TURNS} model turns ({} action(s) completed)",
             state.completed
         )))
-    }
-
-    /// One line for the conversation memory: what was invoked, with a short
-    /// head of its arguments, and how it went.
-    fn action_summary(&mut self, input: &Value, report: &InvokeReport) -> String {
-        let operation = input
-            .get("operation")
-            .and_then(Value::as_str)
-            .unwrap_or("?");
-        let catalogue = self.task_catalogue();
-        let label = surface::find(&catalogue.offers, operation).map_or_else(
-            || operation.to_owned(),
-            |offer| {
-                crate::memory::action_label(
-                    &offer.descriptor.action_label,
-                    &offer.descriptor.resource_label,
-                )
-            },
-        );
-        let arguments = input
-            .get(tools::INVOKE_PARAMETERS)
-            .or_else(|| input.get("arguments"))
-            .map(Value::to_string)
-            .unwrap_or_default();
-        let arguments = crate::memory::head(&arguments, 120);
-        let outcome = match (&report.skipped, report.succeeded, &report.error) {
-            (Some(_), _, _) => "not run".to_owned(),
-            (None, true, _) => "done".to_owned(),
-            (None, false, error) => format!(
-                "failed: {}",
-                crate::memory::head(error.as_deref().unwrap_or("unknown"), 120)
-            ),
-        };
-        format!("{label} {arguments} → {outcome}")
     }
 
     /// Publish only provider-exposed presentation, never argument previews or
@@ -1176,9 +1129,7 @@ impl Session {
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
         let end = self.run_turn_calls(run, conversation, state, turn, timeout);
-        for in_flight in std::mem::take(&mut state.in_flight) {
-            self.abandon_following(&in_flight.following);
-        }
+        state.in_flight.clear();
         state.settled.clear();
         end
     }
@@ -1195,12 +1146,10 @@ impl Session {
         turn: usize,
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
-        if self.native_task.is_some() {
-            if self.task_cancelled(run)? {
-                return Ok(Some(LoopEnd::Cancelled("Cancelled before planning".into())));
-            }
-            self.incorporate_native_directions(run, conversation)?;
+        if self.task_cancelled(run)? {
+            return Ok(Some(LoopEnd::Cancelled("Cancelled before planning".into())));
         }
+        self.incorporate_native_directions(run, conversation)?;
         let body = conversation.body(&tools::typed_loop_definitions());
         // The model starts first. The cancellation poll is a round trip to
         // the host and is not waited for: its answer is read while the model
@@ -1357,7 +1306,7 @@ impl Session {
                     tracing::info!(
                         turn,
                         tool = %call.name,
-                        args = %crate::memory::head(&call.input.to_string(), 400),
+                        args = %head(&call.input.to_string(), 400),
                         "agent tool call"
                     );
                 }
@@ -1698,7 +1647,7 @@ impl Session {
         if !report.succeeded {
             tracing::info!(
                 turn = state.turn,
-                error = %crate::memory::head(
+                error = %head(
                     report.error.as_deref().unwrap_or("not run"),
                     300
                 ),
@@ -1711,9 +1660,6 @@ impl Session {
                 *state.done_apps.entry(offer.app.clone()).or_default() += 1;
             }
         }
-        state
-            .actions
-            .push(self.action_summary(&call.input, &report));
         let mut report = report;
         if !report.succeeded
             && report.skipped.is_none()
@@ -2050,7 +1996,7 @@ impl Session {
                 )
             })
             .unzip();
-        self.follow_invocations(run, &mut followed)?;
+        self.follow_native(run, &mut followed)?;
         let mut cancelled = None;
         for ((call, offer, before, index), following) in started.into_iter().zip(followed) {
             self.step_settled();
@@ -2348,7 +2294,6 @@ mod tests {
     use crate::session::Config;
     use std::sync::{Arc, Mutex};
     use std::{cell::RefCell, rc::Rc};
-    use tilo_actions::remote::RemoteActionMessage;
     use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
     use ui::collaboration::CollabRequest;
     use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
@@ -2487,7 +2432,7 @@ mod tests {
         f.session.publish_turn_presentation(&f.run).unwrap();
         let sent = f.sent.borrow();
         let CollabRequest::ReportTaskRun { update, .. } = sent.last().unwrap() else {
-            panic!("legacy progress report")
+            panic!("a progress report")
         };
         let json = serde_json::to_value(update).unwrap();
         assert_eq!(json["message"], "Readable answer");
@@ -2562,21 +2507,12 @@ mod tests {
         pace: Option<Duration>,
         /// Events delivered so far, across turns.
         emitted: Arc<std::sync::atomic::AtomicUsize>,
-        /// Host answers (reports and cancellation polls) delivered so far.
-        host_answers: Arc<std::sync::atomic::AtomicUsize>,
-        /// [`Self::host_answers`] when each turn was asked of the model.
-        host_answers_at_turn: Mutex<Vec<usize>>,
     }
 
     struct Scripted(Arc<Script>);
 
     impl TurnTransport for Scripted {
         fn start(&self, request: TurnRequest) -> Receiver<TurnEvent> {
-            self.0.host_answers_at_turn.lock().unwrap().push(
-                self.0
-                    .host_answers
-                    .load(std::sync::atomic::Ordering::SeqCst),
-            );
             self.0.timeouts.lock().unwrap().push(request.timeout);
             self.0.bodies.lock().unwrap().push(request.body);
             let (tx, rx) = std::sync::mpsc::channel();
@@ -2803,8 +2739,6 @@ mod tests {
         /// takes, on top of `cancel_delay`: a count the agent's waiting
         /// drives, where a delay is the machine's speed.
         cancel_delay_polls: usize,
-        /// Host answers delivered so far, shared with the model script.
-        host_answers: Arc<std::sync::atomic::AtomicUsize>,
         /// How the desktop's open of Writer behaves.
         opens: Opens,
         /// The record of a second Writer window (its own peer and record,
@@ -2813,9 +2747,9 @@ mod tests {
         /// A republished catalogue reaches the agent this many link polls
         /// after the step's result instead of with it.
         republish_after_polls: usize,
-        /// A legacy invocation is accepted at once and settles in its
-        /// application this long after it started: the terminal update is
-        /// pushed then, and `observe` answers it from then on.
+        /// A child of the run is accepted at once and settles in its
+        /// application this long after it started: a re-ask answers its
+        /// terminal update from then on.
         settle_after: Option<Duration>,
         /// The first this many invocations settle together, `settle_after`
         /// after the last of them started; until it has, each of them waits
@@ -2834,10 +2768,10 @@ mod tests {
         /// Actions the broker refuses to start (an authorization refusal):
         /// nothing is applied.
         deny: Vec<String>,
-        /// Every legacy invocation started: its action, when it started and
+        /// Every child started: its action, when it started and
         /// when it settles in its application.
         started: Vec<(String, ui::time::Instant, ui::time::Instant)>,
-        /// Terminal updates of legacy invocations, with when they are due.
+        /// Terminal updates of the children, with when they are due.
         settling: HashMap<
             tilo_actions::InvocationId,
             (ui::time::Instant, tilo_actions::InvocationUpdate),
@@ -3194,11 +3128,6 @@ mod tests {
     }
 
     impl Broker {
-        /// Deliver a host answer after `delay`, counting it when it arrives.
-        fn answer(&mut self, delay: Duration, event: CollabEvent) {
-            self.answer_after(delay, 0, event);
-        }
-
         /// Deliver a host answer after `delay` and `polls` more link polls.
         fn answer_after(&mut self, delay: Duration, polls: usize, event: CollabEvent) {
             self.held.push((ui::time::now() + delay, polls, event));
@@ -3222,7 +3151,7 @@ mod tests {
                         .retain(|direction| direction.revision > revision);
                     control
                 });
-                if cancelled && world.native_control.is_some() {
+                if cancelled {
                     cancel_native_children(&mut world);
                 }
                 (
@@ -3259,10 +3188,6 @@ mod tests {
                 .map(|(at, polls, event)| (at, polls.saturating_sub(1), event))
                 .partition::<Vec<_>, _>(|(at, polls, _)| *at <= now && *polls == 0);
             self.held = later;
-            self.world
-                .borrow()
-                .host_answers
-                .fetch_add(due.len(), std::sync::atomic::Ordering::SeqCst);
             self.events
                 .extend(due.into_iter().map(|(_, _, event)| event));
             self.answer_held_reasks(now);
@@ -3294,7 +3219,7 @@ mod tests {
                 } if self.world.borrow().deny.contains(action)
                     || self.world.borrow().settle_after.is_some() =>
                 {
-                    self.start_legacy(*request_id, *invocation, action, arguments);
+                    self.start_child(*request_id, *invocation, action, arguments);
                 }
                 CollabRequest::InvokeTaskAction {
                     request_id,
@@ -3356,11 +3281,6 @@ mod tests {
                         });
                     }
                 }
-                CollabRequest::RemoteAction {
-                    message:
-                        message @ (RemoteActionMessage::Observe { .. }
-                        | RemoteActionMessage::Cancel { .. }),
-                } => self.answer_remote(message),
                 CollabRequest::Presence { .. } => {}
                 other => panic!("unexpected request {other:?}"),
             }
@@ -3519,49 +3439,9 @@ mod tests {
             }
         }
 
-        /// Answer an observation of, or a request to cancel, a legacy
-        /// invocation, as the action host does.
-        fn answer_remote(&mut self, message: &RemoteActionMessage) {
-            let answer = match message {
-                RemoteActionMessage::Observe { invocation, .. } => {
-                    let state =
-                        self.world
-                            .borrow()
-                            .settling
-                            .get(invocation)
-                            .map(|(due, terminal)| {
-                                let update = if *due <= ui::time::now() {
-                                    terminal.clone()
-                                } else {
-                                    tilo_actions::InvocationUpdate::Accepted {
-                                        invocation: *invocation,
-                                    }
-                                };
-                                tilo_actions::remote::InvocationState::new(*invocation, update)
-                            });
-                    RemoteActionMessage::Update {
-                        invocation: *invocation,
-                        state,
-                    }
-                }
-                RemoteActionMessage::Cancel { invocation } => {
-                    let mut world = self.world.borrow_mut();
-                    world.cancelled.push(*invocation);
-                    world.settling.remove(invocation);
-                    RemoteActionMessage::CancelResponse {
-                        invocation: *invocation,
-                        result: Ok(()),
-                    }
-                }
-                other => panic!("unexpected remote action {other:?}"),
-            };
-            self.events
-                .push(CollabEvent::RemoteAction { message: answer });
-        }
-
         /// Once the last invocation the gate holds has started, settle
         /// every one of them at `at`.
-        fn open_the_gate(&mut self, at: ui::time::Instant) {
+        fn open_the_gate(&self, at: ui::time::Instant) {
             let mut world = self.world.borrow_mut();
             if world.gated.len() < world.settle_gate {
                 return;
@@ -3582,23 +3462,13 @@ mod tests {
                     *due = at;
                 }
             }
-            drop(world);
-            for (due, _, event) in &mut self.held {
-                if let CollabEvent::RemoteAction {
-                    message: RemoteActionMessage::Update { invocation, .. },
-                } = event
-                    && gated.contains(invocation)
-                {
-                    *due = at;
-                }
-            }
         }
 
-        /// Start a legacy invocation as the action broker does: refused
+        /// Start a child of the run as the action broker does: refused
         /// before anything runs when it is not permitted, else accepted at
-        /// once and settled in its application `settle_after` later, when
-        /// the terminal update is pushed.
-        fn start_legacy(
+        /// once and settled in its application `settle_after` later, which
+        /// a re-ask of it then answers.
+        fn start_child(
             &mut self,
             request_id: u64,
             invocation: tilo_actions::InvocationId,
@@ -3650,32 +3520,16 @@ mod tests {
             {
                 let mut world = self.world.borrow_mut();
                 world.started.push((action.to_owned(), now, due));
-                world.settling.insert(invocation, (due, terminal.clone()));
+                world.settling.insert(invocation, (due, terminal));
             }
             if gated {
                 self.world.borrow_mut().gated.push(invocation);
                 self.open_the_gate(now + settle_after);
             }
-            let due = self.world.borrow().settling[&invocation].0;
             self.events.push(CollabEvent::TaskActionInvocationResult {
                 request_id,
                 result: Ok((0, tilo_actions::InvocationUpdate::Accepted { invocation })),
             });
-            if self.world.borrow().native_control.is_some() {
-                // A native child is observed by re-asking, never pushed.
-                return;
-            }
-            self.answer(
-                due.saturating_duration_since(now),
-                CollabEvent::RemoteAction {
-                    message: RemoteActionMessage::Update {
-                        invocation,
-                        state: Some(tilo_actions::remote::InvocationState::new(
-                            invocation, terminal,
-                        )),
-                    },
-                },
-            );
         }
     }
 
@@ -3707,6 +3561,21 @@ mod tests {
         pace: Option<Duration>,
         budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     ) -> Fixture {
+        let mut world = world;
+        // The host answers every cancellation poll with the run's control
+        // frontier, as the broker does for an issue's run.
+        world
+            .native_control
+            .get_or_insert_with(|| runtime_collab::TaskRunControl {
+                version: 1,
+                task_id: "tasks.tracker/issues/loop".into(),
+                run_epoch: 1,
+                from_revision: 0,
+                applied_revision: 0,
+                latest_revision: 0,
+                directions: Vec::new(),
+                has_more: false,
+            });
         let emitted = Arc::clone(&world.emitted);
         let world = Rc::new(RefCell::new(world));
         let sent = Rc::new(RefCell::new(Vec::new()));
@@ -3716,8 +3585,6 @@ mod tests {
             timeouts: Mutex::new(Vec::new()),
             pace,
             emitted,
-            host_answers: Arc::clone(&world.borrow().host_answers),
-            host_answers_at_turn: Mutex::new(Vec::new()),
         });
         let link = crate::wire::test_link(Broker {
             world: world.clone(),
@@ -3731,12 +3598,12 @@ mod tests {
             paused: None,
             model: None,
             version: 1,
-            task_id: "task:loop".into(),
+            task_id: "tasks.tracker/issues/loop".into(),
             title: title.into(),
             instruction: None,
             subject: None,
             run_id: 7,
-            lease: "broker-minted-lease".into(),
+            lease: "native:00000000000000000000000000000000:0".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
             presentation_version: Some(1),
             execution_budget: budget,
@@ -3775,7 +3642,6 @@ mod tests {
             native_task: None,
             broker_surfaces: surfaces,
             next_broker_request: 1,
-            memory: Memory::default(),
             awaiting_companions: Vec::new(),
             broker_revision: 0,
             catalogue_cache: None,
@@ -3826,7 +3692,7 @@ mod tests {
     fn native_fixture(latest: u64) -> Fixture {
         let control = runtime_collab::TaskRunControl {
             version: 1,
-            task_id: "task:loop".into(),
+            task_id: "tasks.tracker/issues/loop".into(),
             run_epoch: 1,
             from_revision: 0,
             applied_revision: 0,
@@ -3841,16 +3707,14 @@ mod tests {
                 .collect(),
             has_more: latest > 8,
         };
-        let mut fixture = fixture(
+        fixture(
             "Prepare release notes",
             World {
                 native_control: Some(control),
                 ..Default::default()
             },
             vec![turn(&[finish("Reviewed instructions", true)], 24)],
-        );
-        fixture.run.lease = "native:00000000000000000000000000000000:0".into();
-        fixture
+        )
     }
 
     #[test]
@@ -3883,22 +3747,14 @@ mod tests {
         assert!(instruction.chars().count() > 240);
         fixture.run.instruction = Some(instruction.clone());
         fixture.session.run_task(&fixture.run).unwrap();
-        let bodies = fixture.script.bodies.lock().unwrap();
+        let bodies = fixture.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 1);
         assert!(bodies[0].to_string().contains(instruction.trim()));
-        drop(bodies);
-        assert!(fixture.session.memory.render().is_empty());
     }
 
     #[test]
-    fn native_tasks_isolate_private_memory_in_actual_model_requests() {
+    fn one_issues_run_reaches_the_model_without_another_issues() {
         let mut fixture = native_fixture(0);
-        fixture.session.memory.remember(
-            "legacy-private-prompt-secret",
-            vec!["legacy-private-action-secret".into()],
-            "legacy-private-result-secret",
-        );
-        let legacy = fixture.session.memory.render();
         let first_instruction = "first-native-private-instruction-secret";
         fixture.run.instruction = Some(first_instruction.into());
         *fixture.script.turns.lock().unwrap() = vec![turn(
@@ -3907,9 +3763,8 @@ mod tests {
         )]
         .into();
         fixture.session.run_task(&fixture.run).unwrap();
-        assert_eq!(fixture.session.memory.render(), legacy);
 
-        fixture.run.task_id = "task:second-private-scope".into();
+        fixture.run.task_id = "tasks.tracker/issues/second-private-scope".into();
         fixture.run.run_id += 1;
         fixture.run.action_context = serde_json::to_value(
             tilo_actions::ActionContext::default()
@@ -3932,7 +3787,6 @@ mod tests {
         )]
         .into();
         fixture.session.run_task(&fixture.run).unwrap();
-        assert_eq!(fixture.session.memory.render(), legacy);
 
         let bodies = fixture.script.bodies.lock().unwrap();
         assert_eq!(bodies.len(), 2, "both tasks must reach the model");
@@ -3941,11 +3795,6 @@ mod tests {
         drop(bodies);
         assert!(first.contains(first_instruction));
         assert!(second.contains(second_instruction));
-        for request in [&first, &second] {
-            assert!(!request.contains("legacy-private-prompt-secret"));
-            assert!(!request.contains("legacy-private-action-secret"));
-            assert!(!request.contains("legacy-private-result-secret"));
-        }
         assert!(!second.contains(first_instruction));
         assert!(!second.contains("first-native-private-result-secret"));
     }
@@ -4410,47 +4259,6 @@ mod tests {
         ));
     }
 
-    /// The model call is the long pole, so the first turn is asked before
-    /// the host has answered anything: the progress line and the
-    /// cancellation poll ride along without a wait.
-    #[test]
-    fn the_first_model_turn_is_asked_before_any_host_answer_arrives() {
-        let mut f = fixture(
-            "say hello",
-            World {
-                cancel_delay_polls: 20,
-                ..World::default()
-            },
-            vec![turn(&[finish("Hello!", true)], 16)],
-        );
-        f.session.run_task(&f.run).unwrap();
-
-        assert_eq!(
-            *f.script.host_answers_at_turn.lock().unwrap(),
-            [0],
-            "the first model request must not wait for any host answer"
-        );
-        let sent = f.sent.borrow();
-        assert!(
-            sent.iter()
-                .any(|request| matches!(request, CollabRequest::TaskRunCancellation { .. })),
-            "cancellation was polled"
-        );
-        assert!(
-            sent.iter()
-                .any(|request| matches!(request, CollabRequest::ReportTaskRun {
-                update: runtime_collab::TaskRunUpdate::Progress { message, .. }, ..
-            } if message == "Reviewing the permission-filtered action catalogue")),
-            "the progress line is still reported, in order"
-        );
-        assert_eq!(
-            terminal(&sent),
-            runtime_collab::TaskRunUpdate::Succeeded {
-                message: "Hello!".into()
-            }
-        );
-    }
-
     /// Not waiting for answers does not weaken cancellation: a poll already
     /// out is answered ahead of the next step, so the step waits for it and
     /// never reaches the host once the task is cancelled.
@@ -4581,11 +4389,11 @@ mod tests {
         assert!(second.contains("append-paragraph was refused"), "{second}");
         assert!(second.contains("not run"), "{second}");
         assert!(second.contains("Not finished"), "{second}");
-        // Not finishing is an answer, not a failed task: the agent stays
-        // available for the next message.
+        // Not finishing hands the issue back to its person, with the
+        // model's words.
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            runtime_collab::TaskRunUpdate::Failed {
                 message: "I could not write into the document.".into()
             }
         );
@@ -4626,12 +4434,12 @@ mod tests {
     }
 
     #[test]
-    fn explicit_owner_task_budget_reaches_transport_and_preserves_legacy_default() {
+    fn explicit_owner_task_budget_reaches_transport_and_keeps_the_default() {
         let turns = vec![turn(&[finish("Done", true)], 64)];
-        let mut legacy = fixture("finish", World::default(), turns.clone());
-        legacy.session.run_task(&legacy.run).unwrap();
+        let mut unbounded = fixture("finish", World::default(), turns.clone());
+        unbounded.session.run_task(&unbounded.run).unwrap();
         assert_eq!(
-            legacy.script.timeouts.lock().unwrap()[0],
+            unbounded.script.timeouts.lock().unwrap()[0],
             Duration::from_secs(5)
         );
         let mut bounded = execution_fixture(
@@ -4775,13 +4583,11 @@ mod tests {
         );
     }
 
-    /// Two messages to the same running agent both run and both succeed —
-    /// including one the model could not complete — and the agent is still
-    /// listening afterwards. A request the agent cannot do is answered in its
-    /// reply; it must not end the agent (a failed task marks the agent failed
-    /// and closes its conversation).
+    /// Runs of several issues by the same agent each end on their own: one
+    /// the model could not complete goes back to its person with the
+    /// model's reply, and the agent still takes the next.
     #[test]
-    fn two_messages_to_one_agent_both_succeed() {
+    fn each_issue_run_ends_on_its_own() {
         let mut f = fixture(
             "ignored",
             World::default(),
@@ -4808,10 +4614,17 @@ mod tests {
             .enumerate()
         {
             let mut task = f.run.clone();
-            task.task_id = format!("task:{index}");
+            task.task_id = format!("tasks.tracker/issues/{index}");
             task.title = title.into();
             task.run_id = 100 + u64::try_from(index).unwrap();
             bind_context(&mut task);
+            f.world
+                .borrow_mut()
+                .native_control
+                .as_mut()
+                .unwrap()
+                .task_id
+                .clone_from(&task.task_id);
             f.session.run_task(&task).unwrap();
         }
         let terminals: Vec<runtime_collab::TaskRunUpdate> = f
@@ -4837,7 +4650,7 @@ mod tests {
                 runtime_collab::TaskRunUpdate::Succeeded {
                     message: "Wrote the first line.".into()
                 },
-                runtime_collab::TaskRunUpdate::Succeeded {
+                runtime_collab::TaskRunUpdate::Failed {
                     message: "I can't create a note here: no Notes operation is available.".into()
                 },
                 runtime_collab::TaskRunUpdate::Succeeded {
@@ -4923,18 +4736,17 @@ mod tests {
         assert_eq!(f.script.bodies.lock().unwrap().len(), 2);
         assert_eq!(
             terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
+            runtime_collab::TaskRunUpdate::Failed {
                 message: "Typing was refused.".into()
             }
         );
     }
 
-    /// The agent remembers earlier messages, what it did and what it said,
-    /// and the prompt prefix (system, tools, catalogue) is byte-identical
-    /// across turns and tasks so the provider's prompt cache holds it; the
-    /// memory and the request come after it.
+    /// The prompt prefix (system, tools, catalogue) is byte-identical
+    /// across turns and runs so the provider's prompt cache holds it; the
+    /// request comes after it.
     #[test]
-    fn the_agent_remembers_across_messages_behind_a_stable_prefix() {
+    fn the_prompt_prefix_is_stable_across_turns_and_runs() {
         let mut f = fixture(
             "ignored",
             World::default(),
@@ -4965,12 +4777,7 @@ mod tests {
         let user = |body: &Value| body["messages"][1]["content"].as_str().unwrap().to_owned();
         let first = user(&bodies[0]);
         let second = user(&bodies[1]);
-        assert!(!first.contains("Earlier in this conversation"), "{first}");
-        assert!(second.contains("Earlier in this conversation"), "{second}");
-        assert!(second.contains("Person: post hello"), "{second}");
-        assert!(second.contains("You did: Type text: Brief"), "{second}");
-        assert!(second.contains("Hello chat."), "{second}");
-        assert!(second.contains("You replied: Posted hello."), "{second}");
+        assert!(!second.contains("Hello chat."), "{second}");
         assert!(second.ends_with("what did you just do?"), "{second}");
         // Stable prefix: same system and tools on every turn of every task,
         // and the catalogue opens both tasks' first message byte-identically.
@@ -4994,7 +4801,7 @@ mod tests {
     /// text block of its own with one: the first request of two different
     /// tasks is byte-identical through that block (system, tools,
     /// catalogue), and the next task reads it back from the cache instead of
-    /// prefilling it. The memory and the request follow in their own block.
+    /// prefilling it. The request follows in its own block.
     #[test]
     fn anthropic_tasks_share_the_cached_catalogue_block() {
         let mut f = fixture(
@@ -5064,7 +4871,6 @@ mod tests {
         assert!(first[1].get("cache_control").is_none());
         assert_eq!(first[1]["text"], "The request:\n\npost hello");
         let task = second[1]["text"].as_str().unwrap();
-        assert!(task.contains("Earlier in this conversation"), "{task}");
         assert!(
             task.ends_with("The request:\n\nwhat did you just do?"),
             "{task}"
@@ -5567,353 +5373,5 @@ mod tests {
                 )
             })
             .collect()
-    }
-
-    /// A Task Center run's terminal report.
-    fn legacy_terminal(sent: &[CollabRequest]) -> runtime_collab::TaskRunUpdate {
-        sent.iter()
-            .rev()
-            .find_map(|request| match request {
-                CollabRequest::ReportTaskRun { update, .. }
-                    if !matches!(update, runtime_collab::TaskRunUpdate::Progress { .. }) =>
-                {
-                    Some(update.clone())
-                }
-                _ => None,
-            })
-            .expect("a terminal report")
-    }
-
-    fn invocations_started(sent: &[CollabRequest]) -> usize {
-        sent.iter()
-            .filter(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
-            .count()
-    }
-
-    /// Steps the model marks independent, on records no running step acts
-    /// on, start without waiting for the ones before them to settle in their
-    /// applications. Each is still its own broker invocation, and the model
-    /// reads their results in the order it wrote the calls.
-    #[test]
-    fn independent_invokes_on_different_records_run_alongside_each_other() {
-        let mut f = fixture(
-            "post the standup change and start the agenda and the minutes",
-            World {
-                second_window: Some("doc-2"),
-                settle_after: Some(Duration::from_millis(10)),
-                settle_gate: 3,
-                ..World::default()
-            },
-            vec![
-                turn(&three_records(true), 24),
-                turn(&[finish("Posted and started both documents.", true)], 64),
-            ],
-        );
-        f.session.run_task(&f.run).unwrap();
-        let world = f.world.borrow();
-        let started = &world.started;
-        assert_eq!(started.len(), 3, "{started:?}");
-        let first_settles = started[0].2;
-        for (action, began, _) in started {
-            assert!(
-                *began < first_settles,
-                "{action} waited for the first step to settle: {started:?}"
-            );
-        }
-        assert_eq!(world.posts, ["Standup moved to 10."]);
-        assert_eq!(
-            invocations_started(&f.sent.borrow()),
-            3,
-            "one broker invocation per step, nothing batched"
-        );
-        let bodies = f.script.bodies.lock().unwrap().clone();
-        let results = tool_results(&bodies[1]);
-        let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["call_0", "call_1", "call_2"], "plan order");
-        for (id, result) in &results {
-            assert_eq!(result["result"], "succeeded", "{id}: {result}");
-        }
-        assert_eq!(
-            legacy_terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Succeeded {
-                message: "Posted and started both documents.".into()
-            }
-        );
-    }
-
-    /// A step that does not declare itself independent, or that acts on a
-    /// record a running step acts on, starts only after every step still
-    /// running has settled: it may read what they wrote.
-    #[test]
-    fn a_step_that_may_read_earlier_writes_waits_for_them() {
-        let mut f = fixture(
-            "post, write a heading, then type under it and confirm in Chat",
-            World {
-                settle_after: Some(Duration::from_millis(10)),
-                settle_gate: 2,
-                ..World::default()
-            },
-            vec![
-                turn(
-                    &[
-                        invoke_on(
-                            CHAT_PEER,
-                            "chat.channel:general",
-                            "post",
-                            &serde_json::json!({"message": "Writing the notes."}),
-                            true,
-                        ),
-                        invoke_on(
-                            PEER,
-                            DOC,
-                            "append-paragraph",
-                            &serde_json::json!({"text": "Notes"}),
-                            true,
-                        ),
-                        // Independent, but on the record the heading is
-                        // still being written to.
-                        invoke_on(
-                            PEER,
-                            DOC,
-                            "type-text",
-                            &serde_json::json!({"text": " (draft)"}),
-                            true,
-                        ),
-                        // Reports what the steps before it did.
-                        invoke_on(
-                            CHAT_PEER,
-                            "chat.channel:general",
-                            "post",
-                            &serde_json::json!({"message": "Notes are drafted."}),
-                            false,
-                        ),
-                    ],
-                    24,
-                ),
-                turn(&[finish("Done.", true)], 64),
-            ],
-        );
-        f.session.run_task(&f.run).unwrap();
-        let world = f.world.borrow();
-        let started = &world.started;
-        let actions: Vec<&str> = started
-            .iter()
-            .map(|(action, _, _)| action.as_str())
-            .collect();
-        assert_eq!(actions, ["post", "append-paragraph", "type-text", "post"]);
-        assert!(started[1].1 < started[0].2, "independent: alongside");
-        assert!(
-            started[2].1 >= started[0].2 && started[2].1 >= started[1].2,
-            "the same record waits for everything running: {started:?}"
-        );
-        assert!(
-            started[3].1 >= started[2].2,
-            "a dependent step waits for the one before it: {started:?}"
-        );
-        assert_eq!(world.blocks[0].1, "Notes (draft)");
-        assert_eq!(world.posts, ["Writing the notes.", "Notes are drafted."]);
-    }
-
-    /// Cancelling the run from Task Center cancels every independent step
-    /// still running, not only the one being waited on.
-    #[test]
-    fn cancelling_the_task_cancels_every_invoke_in_flight() {
-        let mut f = fixture(
-            "post the change and start the agenda",
-            World {
-                // Longer than the test may run: the steps end cancelled.
-                settle_after: Some(tilo_test_env::hang_bound()),
-                cancel_after_steps: Some(2),
-                ..World::default()
-            },
-            vec![turn(
-                &[
-                    invoke_on(
-                        CHAT_PEER,
-                        "chat.channel:general",
-                        "post",
-                        &serde_json::json!({"message": "Standup moved."}),
-                        true,
-                    ),
-                    invoke_on(
-                        PEER,
-                        DOC,
-                        "append-paragraph",
-                        &serde_json::json!({"text": "Agenda"}),
-                        true,
-                    ),
-                    finish("Done.", true),
-                ],
-                24,
-            )],
-        );
-        f.session.run_task(&f.run).unwrap();
-        let world = f.world.borrow();
-        assert_eq!(world.started.len(), 2);
-        let started: HashSet<tilo_actions::InvocationId> = f
-            .sent
-            .borrow()
-            .iter()
-            .filter_map(|request| match request {
-                CollabRequest::InvokeTaskAction { invocation, .. } => Some(*invocation),
-                _ => None,
-            })
-            .collect();
-        let cancelled: HashSet<tilo_actions::InvocationId> =
-            world.cancelled.iter().copied().collect();
-        assert_eq!(cancelled, started, "every running invocation is cancelled");
-        assert!(matches!(
-            legacy_terminal(&f.sent.borrow()),
-            runtime_collab::TaskRunUpdate::Cancelled { .. }
-        ));
-    }
-
-    /// The broker refusing one independent step (an authorization refusal)
-    /// does not stop the others; a step that did not declare itself
-    /// independent is still skipped after a failure.
-    #[test]
-    fn a_refused_independent_invoke_does_not_stop_the_others() {
-        let mut f = fixture(
-            "post the change and start the agenda",
-            World {
-                settle_after: Some(Duration::from_millis(100)),
-                deny: vec!["post".into()],
-                ..World::default()
-            },
-            vec![
-                turn(
-                    &[
-                        invoke_on(
-                            CHAT_PEER,
-                            "chat.channel:general",
-                            "post",
-                            &serde_json::json!({"message": "Standup moved."}),
-                            true,
-                        ),
-                        invoke_on(
-                            PEER,
-                            DOC,
-                            "append-paragraph",
-                            &serde_json::json!({"text": "Agenda"}),
-                            true,
-                        ),
-                        invoke_on(
-                            PEER,
-                            DOC,
-                            "type-text",
-                            &serde_json::json!({"text": " for Monday"}),
-                            false,
-                        ),
-                    ],
-                    24,
-                ),
-                turn(&[finish("Started the agenda; I may not post.", true)], 64),
-            ],
-        );
-        f.session.run_task(&f.run).unwrap();
-        let world = f.world.borrow();
-        assert!(world.posts.is_empty(), "the refused post never ran");
-        assert_eq!(world.blocks, [("p1".to_owned(), "Agenda".to_owned())]);
-        let bodies = f.script.bodies.lock().unwrap().clone();
-        let results = tool_results(&bodies[1]);
-        assert_eq!(results[0].1["result"], "failed", "{:?}", results[0]);
-        assert!(
-            results[0].1["error"]
-                .as_str()
-                .unwrap()
-                .contains("permission denied"),
-            "{:?}",
-            results[0]
-        );
-        assert_eq!(results[1].1["result"], "succeeded", "{:?}", results[1]);
-        assert_eq!(results[2].1["result"], "not run", "{:?}", results[2]);
-        assert_eq!(
-            invocations_started(&f.sent.borrow()),
-            2,
-            "each step asked the broker on its own; the skipped one never"
-        );
-    }
-
-    /// The pipelining benchmark: the same three-step plan on three records,
-    /// with every step taking `settle` in its application, run as the model
-    /// marks it (independent) and unmarked (strictly in order). Wall time is
-    /// the whole task, model turns included (the scripted model answers at
-    /// once). `TILO_AGENT_PIPELINE_SAMPLES` names a directory to write the
-    /// samples to (one ms value per line, `pipelined.txt` and
-    /// `sequential.txt`) and `TILO_AGENT_PIPELINE_REPS` how many runs of
-    /// each to take; the scheduled perf run records them.
-    #[test]
-    fn pipelined_task_benchmark() {
-        use std::fmt::Write as _;
-        let settle = Duration::from_millis(100);
-        // Measured only when asked for (the scheduled perf run): an ordinary
-        // run checks the plan runs either way, not how fast this machine is.
-        let measured: Option<usize> = std::env::var("TILO_AGENT_PIPELINE_REPS")
-            .ok()
-            .and_then(|reps| reps.parse().ok());
-        let reps = measured.unwrap_or(1);
-        let run_once = |independent: bool| {
-            let mut f = fixture(
-                "post the standup change and start the agenda and the minutes",
-                World {
-                    second_window: Some("doc-2"),
-                    settle_after: Some(settle),
-                    ..World::default()
-                },
-                vec![turn(
-                    &[
-                        three_records(independent),
-                        vec![finish("Posted and started both documents.", true)],
-                    ]
-                    .concat(),
-                    24,
-                )],
-            );
-            let began = std::time::Instant::now();
-            f.session.run_task(&f.run).unwrap();
-            let wall = began.elapsed().as_secs_f64() * 1000.0;
-            assert_eq!(f.world.borrow().started.len(), 3);
-            assert!(matches!(
-                legacy_terminal(&f.sent.borrow()),
-                runtime_collab::TaskRunUpdate::Succeeded { .. }
-            ));
-            wall
-        };
-        let mut pipelined = Vec::new();
-        let mut sequential = Vec::new();
-        for _ in 0..reps {
-            pipelined.push(run_once(true));
-            sequential.push(run_once(false));
-        }
-        let median = |samples: &[f64]| {
-            let mut sorted = samples.to_vec();
-            sorted.sort_by(f64::total_cmp);
-            sorted[sorted.len() / 2]
-        };
-        let (fast, slow) = (median(&pipelined), median(&sequential));
-        eprintln!(
-            "agent task, 3 steps x {settle:?}: pipelined {fast:.1} ms, sequential {slow:.1} ms"
-        );
-        if let Ok(dir) = std::env::var("TILO_AGENT_PIPELINE_SAMPLES") {
-            let dir = std::path::Path::new(&dir);
-            std::fs::create_dir_all(dir).unwrap();
-            for (name, samples) in [("pipelined", &pipelined), ("sequential", &sequential)] {
-                let mut lines = String::new();
-                for ms in samples {
-                    let _ = writeln!(lines, "{ms:.3}");
-                }
-                std::fs::write(dir.join(format!("{name}.txt")), lines).unwrap();
-            }
-        }
-        // Three steps each settling in `settle` cannot finish in order in
-        // less than three times it; alongside each other they need it once.
-        let floor = settle.as_secs_f64() * 1000.0;
-        assert!(slow >= 3.0 * floor, "sequential {slow:.1} ms");
-        if measured.is_some() {
-            assert!(
-                fast < 2.0 * floor,
-                "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
-            );
-        }
     }
 }
