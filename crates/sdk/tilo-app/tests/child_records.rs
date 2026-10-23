@@ -18,11 +18,6 @@ pub struct Room {
 impl Room {
     /// Rename nothing.
     #[action]
-    #[expect(
-        clippy::unused_self,
-        clippy::needless_pass_by_ref_mut,
-        reason = "an action takes the state it acts on"
-    )]
     pub fn touch(&mut self) {}
 }
 
