@@ -729,3 +729,28 @@ test('mirrored elements sit over their drawn rects, nested ones relative to the 
   bridge.update({root:{path:'desk',children:[{path:'desk/send',rect:[50,30,80,24],semantics:{role:'Button',name:'Send'}}]}});
   assert.equal(root.children[0],send);assert.deepEqual(at(send),['100px','60px','160px','48px']);
 });
+
+test('an open combobox keeps focus and names its highlighted option as its active descendant',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{});
+  document.activeElement=document.body;
+  const combobox=(open,highlight)=>({root:{path:'form',children:[{path:'form/type',semantics:{
+    semantic_key:'type',role:'ComboBox',name:'Type',action_target:'type',
+    state:{focusable:true,focused:true,expanded:open},
+    children:open?[{role:'ListBox',children:['Home','Work','Other'].map((name,i)=>({
+      role:'ListBoxOption',name,key:i+1,state:{active_descendant:i===highlight},
+    }))}]:[],
+  }}]}});
+  bridge.update(combobox(false,0));
+  const box=root.children[0];
+  assert.equal(document.activeElement,box,'the combobox holds focus');
+  assert.equal(box.getAttribute('aria-activedescendant'),null,'a closed list names no option');
+  bridge.update(combobox(true,1));
+  const option=index=>box.children[0].children[index];
+  assert.equal(document.activeElement,box,'opening the list leaves focus on the combobox');
+  assert.equal(box.getAttribute('aria-activedescendant'),option(1).id,'the highlighted option is announced');
+  bridge.update(combobox(true,2));
+  assert.equal(document.activeElement,box);
+  assert.equal(box.getAttribute('aria-activedescendant'),option(2).id,'moving the highlight moves the active descendant');
+  bridge.update(combobox(false,2));
+  assert.equal(box.getAttribute('aria-activedescendant'),null,'closing the list clears it');
+});
