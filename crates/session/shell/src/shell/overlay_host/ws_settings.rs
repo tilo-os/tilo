@@ -511,13 +511,11 @@ impl ShellOverlayHost {
             // person here by their own name: never a key.
             let own_name = crate::shell::topbar_chrome::own_person_name(&state);
             let directory = SettingsDirectory {
-                tracker: self.tracker.as_deref(),
                 room: tree
                     .desktop
                     .active_workspace()
                     .map(|workspace| workspace.room().to_string())
                     .unwrap_or_default(),
-                issues: std::cell::OnceCell::new(),
             };
             let people = tilo_desktop::collaborators::PeopleNames::of(
                 &tree.desktop,
@@ -550,16 +548,13 @@ impl ShellOverlayHost {
     }
 }
 
-/// This machine's applications, and the active room's issues by title, as
-/// workspace settings name them. The tracker is read only when a grant
-/// names an issue.
-struct SettingsDirectory<'a> {
-    tracker: Option<&'a crate::shell::broker_services::NativeTrackerRuns>,
+/// This machine's applications, and the active room's resources by the
+/// titles their apps publish, as workspace settings name them.
+struct SettingsDirectory {
     room: String,
-    issues: std::cell::OnceCell<Option<std::sync::Arc<crate::shell::broker_services::TrackerView>>>,
 }
 
-impl tilo_desktop::workspace_settings::AppDirectory for SettingsDirectory<'_> {
+impl tilo_desktop::workspace_settings::AppDirectory for SettingsDirectory {
     fn app_display_name(&self, app_id: &str) -> Option<String> {
         crate::shell::launcher::ShellApps.app_display_name(app_id)
     }
@@ -569,12 +564,7 @@ impl tilo_desktop::workspace_settings::AppDirectory for SettingsDirectory<'_> {
     }
 
     fn resource_label(&self, address: &str) -> Option<String> {
-        self.issues
-            .get_or_init(|| self.tracker?.tracker(&self.room).ok().flatten())
-            .as_ref()?
-            .titles
-            .get(address)
-            .cloned()
+        crate::shell::search::app_content_index::session().title(&self.room, address)
     }
 }
 

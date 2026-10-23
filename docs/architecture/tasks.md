@@ -123,8 +123,8 @@ Deny. The tracker records the answer they chose there, never the app's.
 Allow once grants nothing. Allow for the issue first records, as the
 person, an answer grant naming the issue for that one action
 (`agent_answers::answer_grant`), so its runs take that action without
-asking again; workspace settings list it under Issues, by the issue's
-title, with revoke.
+asking again; workspace settings list it with every other grant, the
+issue named by the title Tasks publishes for it, with revoke.
 
 A run may act in an application nobody has open: the broker launches it
 through the workspace launcher under the run's own durable custody, bound to

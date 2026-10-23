@@ -239,6 +239,24 @@ impl AppContentIndex {
         contents
     }
 
+    /// The title `room`'s apps published for the resource `resource`: the
+    /// entry that opens it, as a search would find it.
+    pub fn title(&self, room: &str, resource: &str) -> Option<String> {
+        let inner = self.inner.lock_recover();
+        inner
+            .slots
+            .iter()
+            .filter(|(slot, _)| slot.room == room)
+            .flat_map(|(slot, entries)| {
+                let unlocked = inner.unlocked(&slot.app);
+                entries
+                    .values()
+                    .filter(move |entry| !entry.secret || unlocked)
+            })
+            .find(|entry| entry.resource == resource && entry.action.is_none())
+            .map(|entry| entry.title.clone())
+    }
+
     /// Whether `app` last said its secrets are unlocked.
     pub fn secrets_unlocked(&self, app: &str) -> bool {
         self.inner.lock_recover().unlocked(app)
@@ -485,6 +503,25 @@ mod tests {
             SlotKey::new("so.tilo.notes", ROOM, "tab:0001"),
             SlotKey::new("so.tilo.notes", ROOM, "tab:00ff")
         );
+    }
+
+    #[test]
+    fn a_resource_is_named_by_the_title_its_app_published_in_its_room() {
+        let index = AppContentIndex::in_memory();
+        index.apply(
+            &SlotKey::new("so.tilo.tasks", ROOM, ""),
+            IndexDelta {
+                reset: true,
+                upsert: vec![entry("tasks.tracker/issues/1", "Prepare release notes")],
+                ..IndexDelta::default()
+            },
+        );
+        assert_eq!(
+            index.title(ROOM, "tasks.tracker/issues/1").as_deref(),
+            Some("Prepare release notes")
+        );
+        assert_eq!(index.title("another-room", "tasks.tracker/issues/1"), None);
+        assert_eq!(index.title(ROOM, "tasks.tracker/issues/2"), None);
     }
 
     #[test]

@@ -52,8 +52,9 @@ pub trait AppDirectory {
     fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
         Vec::new()
     }
-    /// The name a person knows the resource at `address` by, when the host
-    /// can read it: an issue by its title.
+    /// The name a person knows the resource at `address` by, as the
+    /// resource itself publishes it (a page or an issue by its title), when
+    /// the host has it.
     fn resource_label(&self, _address: &str) -> Option<String> {
         None
     }
@@ -1832,12 +1833,18 @@ fn kinds_phrase(kinds: tilo_action_policy::KindSet) -> String {
 }
 
 /// Where a grant applies, named the way people know the room's parts: the
-/// app by its name, then the rest of the path.
+/// app by its name, a resource or item by its own, then the rest of the
+/// path.
 pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory) -> String {
     struct Named<'a>(&'a dyn AppDirectory);
     impl tilo_action_policy::Labels for Named<'_> {
         fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
-            (level == tilo_action_policy::Level::App).then(|| app_display_name(self.0, id))
+            use tilo_action_policy::Level;
+            match level {
+                Level::App => Some(app_display_name(self.0, id)),
+                Level::Resource | Level::Item => self.0.resource_label(id),
+                _ => None,
+            }
         }
     }
     let below_room = node.within_room();
@@ -1934,11 +1941,10 @@ pub enum SubjectKind {
     AppAction,
     Member,
     Agent,
-    /// The work on an issue: what its runs may do.
-    Issue,
     Role,
-    /// Bearer token or room — surfaced so no live capability is
-    /// invisible in the panel, even though the composer can't mint one.
+    /// Bearer token, room, or the work on a resource (an issue's runs, a
+    /// shortcut) — surfaced so no live capability is invisible in the
+    /// panel, even though the composer can't mint one.
     Other,
 }
 
@@ -1949,7 +1955,6 @@ impl SubjectKind {
             SubjectKind::AppAction => "workspace-settings-section-app-actions",
             SubjectKind::Member => "workspace-settings-section-people",
             SubjectKind::Agent => "workspace-settings-section-agents",
-            SubjectKind::Issue => "workspace-settings-section-issues",
             SubjectKind::Role => "workspace-settings-section-roles",
             SubjectKind::Other => "workspace-settings-section-other",
         })
@@ -1970,10 +1975,8 @@ impl GrantSubject {
             SubjectKind::App | SubjectKind::AppAction => Some(Subject::app(self.id.clone())),
             SubjectKind::Member => Some(Subject::person(self.id.clone())),
             SubjectKind::Agent => Some(Subject::agent(self.id.clone())),
-            // A role-wide grant is a policy decision, not a per-workspace
-            // click; an issue is given its grants from the question its run
-            // asks.
-            SubjectKind::Issue | SubjectKind::Role | SubjectKind::Other => None,
+            // A role-wide grant is a policy decision, not a per-workspace click.
+            SubjectKind::Role | SubjectKind::Other => None,
         }
     }
 
@@ -1984,7 +1987,7 @@ impl GrantSubject {
             SubjectKind::App | SubjectKind::AppAction => Some(Who::App(self.id.clone())),
             SubjectKind::Member => Some(Who::Person(self.id.clone())),
             SubjectKind::Agent => Some(Who::Agent(self.id.clone())),
-            SubjectKind::Issue | SubjectKind::Role | SubjectKind::Other => None,
+            SubjectKind::Role | SubjectKind::Other => None,
         }
     }
 
@@ -1992,16 +1995,10 @@ impl GrantSubject {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => person_name(ws, local_user, &self.id),
             SubjectKind::App | SubjectKind::AppAction => app_display_name(apps, &self.id),
-            SubjectKind::Issue => apps.resource_label(&self.id).map_or_else(
-                || t("workspace-settings-subject-issue-unnamed"),
-                |title| {
-                    t_args(
-                        "workspace-settings-subject-issue",
-                        &[("title", title.into())],
-                    )
-                },
-            ),
-            _ => self.id.clone(),
+            // A subject that is a resource's work is named as the resource.
+            _ => apps
+                .resource_label(&self.id)
+                .unwrap_or_else(|| self.id.clone()),
         }
     }
 }
@@ -3800,13 +3797,9 @@ fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
                 &[("role", role_label(*role).into())],
             ),
         },
-        Who::Task(id) => GrantSubject {
-            kind: SubjectKind::Issue,
-            id: id.clone(),
-        },
-        Who::Shortcut(id) => GrantSubject {
+        Who::Task(id) | Who::Shortcut(id) => GrantSubject {
             kind: SubjectKind::Other,
-            id: short_id(id),
+            id: id.clone(),
         },
         Who::Bot(id) => GrantSubject {
             kind: SubjectKind::Other,
@@ -6029,6 +6022,55 @@ mod permissions_pane_tests {
                 assert_eq!(ws.sandbox.len(), 2, "the two grants");
             }
         }
+    }
+
+    /// A grant to the work on a resource is listed with every other grant,
+    /// the resource named as it publishes itself, and revoked like any.
+    #[test]
+    fn a_grant_naming_a_resource_is_listed_by_that_resources_name() {
+        struct Titles;
+        impl AppDirectory for Titles {
+            fn app_display_name(&self, _app_id: &str) -> Option<String> {
+                None
+            }
+            fn resource_label(&self, address: &str) -> Option<String> {
+                (address == "tasks.tracker/issues/1").then(|| "Prepare release notes".into())
+            }
+        }
+        let mut ws = ws_with_grants();
+        let now = tilo_clock::unix_now();
+        let grant = tilo_action_policy::Grant::new(
+            "issue-grant",
+            tilo_action_policy::Subject::task("tasks.tracker/issues/1"),
+            tilo_action_policy::TreePath::room(ws.policy.room.clone())
+                .app("so.tilo.notes")
+                .any(tilo_action_policy::Level::Kind)
+                .resource("tasks.tracker/issues/1"),
+            tilo_action_policy::KindSet::of(tilo_action_policy::ActionKind::Undoable),
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::person(OWNER),
+        );
+        ws.govern_as_at(OWNER, tilo_action_policy::Change::Grant(grant), now)
+            .expect("owner grants");
+        let tall = Rect::new(0.0, 0.0, 660.0, 1200.0);
+        let layout = permissions_pane_layout(&ws, tall, &Titles, VIEWER);
+        let row = layout
+            .rows
+            .iter()
+            .find(|row| row.cap_id == "issue-grant")
+            .expect("the grant has a row");
+        assert_eq!(row.title, "Prepare release notes");
+        assert!(
+            row.allows.contains("Prepare release notes"),
+            "{}",
+            row.allows
+        );
+        assert_eq!(
+            apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
+                .revoked
+                .len(),
+            1
+        );
     }
 
     #[test]
