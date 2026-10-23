@@ -480,6 +480,17 @@ impl<PI: PeerIdentity> State<PI> {
             );
             self.schedule_evict(io);
             self.lazy_push(message.clone(), &me, io);
+        } else {
+            // TILO PATCH: a neighbours-only message is for every direct
+            // neighbour. Lazy peers are neighbours too; they only stopped
+            // getting swarm messages in full because another path delivers
+            // those, which no path does for this one.
+            for peer in self.lazy_push_peers.iter().filter(|peer| **peer != me) {
+                io.push(OutEvent::SendMessage(
+                    *peer,
+                    Message::Gossip(message.clone()),
+                ));
+            }
         }
 
         self.eager_push(message.clone(), &me, io);
@@ -919,6 +930,42 @@ mod test {
         let now = now + config.message_cache_retention;
         state.handle(InEvent::TimerExpired(Timer::EvictCache), now, &mut io);
         assert_eq!(state.cache.len(), 0);
+    }
+
+    /// TILO PATCH: a neighbours-only broadcast goes to lazy neighbours too.
+    #[test]
+    fn a_neighbours_only_message_reaches_lazy_neighbours_too() {
+        let config: Config = Default::default();
+        let mut state = State::new(1, config, 1024);
+        let now = Instant::now();
+        let mut io = VecDeque::new();
+        state.handle(InEvent::NeighborUp(2), now, &mut io);
+        state.handle(InEvent::NeighborUp(3), now, &mut io);
+        // A duplicate from 3 makes it a lazy peer, as in any triangle.
+        let gossip = Gossip {
+            id: MessageId::from_content(b"swarm"),
+            content: b"swarm".to_vec().into(),
+            scope: DeliveryScope::Swarm(Round(0)),
+        };
+        state.handle(InEvent::RecvMessage(2, Message::Gossip(gossip.clone())), now, &mut io);
+        state.handle(InEvent::RecvMessage(3, Message::Gossip(gossip)), now, &mut io);
+        assert!(state.lazy_push_peers.contains(&3));
+
+        let mut io = VecDeque::new();
+        state.handle(
+            InEvent::Broadcast(b"hello".to_vec().into(), Scope::Neighbors),
+            now,
+            &mut io,
+        );
+        let mut sent: Vec<i32> = io
+            .iter()
+            .filter_map(|event| match event {
+                OutEvent::SendMessage(peer, Message::Gossip(_)) => Some(*peer),
+                _ => None,
+            })
+            .collect();
+        sent.sort_unstable();
+        assert_eq!(sent, vec![2, 3]);
     }
 
     /// TILO PATCH: the sweep is armed by the first cached message, stops once
