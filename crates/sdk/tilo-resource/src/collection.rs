@@ -821,10 +821,51 @@ pub(crate) fn edit_entries(
                 return Err(ModelError::invalid(format!("an item `{id}` exists")));
             }
             let stored = stored_entries(doc, &map);
-            let key = key_at(&stored, *at, None);
+            let key = key_at(&stored, at, None)?;
             put_entry(doc, &map, &id, key, edits.order_only, &|doc, slot| {
                 item.store_to(doc, slot)
             })
+        }
+        (
+            None,
+            EditOp::UpsertItem {
+                matching,
+                value,
+                id,
+            },
+        ) => {
+            let map = slot.object(doc, ObjType::Map)?;
+            let mut entries = Vec::new();
+            let mut candidates = Vec::new();
+            for stored in stored_entries(doc, &map) {
+                let Some(entry) = stored.entry else { continue };
+                if let Some((Value::Object(ObjType::Map), fields)) = doc.get(&entry, VALUE)? {
+                    entries.push(entry);
+                    candidates.push(crate::upsert::Candidate {
+                        id: stored.id,
+                        fields,
+                    });
+                }
+            }
+            let found = crate::upsert::matching_one(doc, &candidates, matching)?
+                .and_then(|found| candidates.iter().position(|item| item.id == found.id));
+            if let Some(index) = found
+                && let (Some(entry), Some(item)) = (entries.get(index), candidates.get(index))
+            {
+                for (key, field) in crate::upsert::changed_fields(doc, &item.fields, value)? {
+                    (edits.item)(
+                        doc,
+                        Slot::Key(entry, VALUE),
+                        &[Segment::Field(key)],
+                        &EditOp::Set { value: field },
+                        cx,
+                    )
+                    .located(item.id.as_str())?;
+                }
+                return Ok(());
+            }
+            let insert = upserted(doc, &map, matching, value, id.as_ref())?;
+            edit_entries(doc, slot, path, &insert, cx, edits)
         }
         (None, EditOp::RemoveItem { id }) => {
             let map = slot.object(doc, ObjType::Map)?;
@@ -840,7 +881,7 @@ pub(crate) fn edit_entries(
             let Some(entry) = stored.iter().find(|entry| &entry.id == id) else {
                 return Err(ModelError::invalid(format!("no item `{id}`")));
             };
-            let key = key_at(&stored, *at, Some(id));
+            let key = key_at(&stored, at, Some(id))?;
             match &entry.entry {
                 Some(entry) => {
                     Slot::Key(entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))
@@ -1103,18 +1144,46 @@ pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Vec<Stored> {
 
 /// An order key placing an item at `at` among `stored` (which may hold the
 /// item itself, `moving`, which does not count).
-pub(crate) fn key_at(stored: &[Stored], at: usize, moving: Option<&Id>) -> String {
+pub(crate) fn key_at(
+    stored: &[Stored],
+    at: &crate::At,
+    moving: Option<&Id>,
+) -> Result<String, ModelError> {
     let others: Vec<&Stored> = stored
         .iter()
         .filter(|entry| Some(&entry.id) != moving)
         .collect();
-    let at = at.min(others.len());
+    let ids: Vec<&Id> = others.iter().map(|entry| &entry.id).collect();
+    let at = at.index(&ids)?;
     let low = at
         .checked_sub(1)
         .and_then(|before| others.get(before))
         .map(|entry| entry.key.as_str());
     let high = others.get(at).map(|entry| entry.key.as_str());
-    order::between(low, high)
+    Ok(order::between(low, high))
+}
+
+/// The insert an upsert that matched no item of the map `map` makes: at the
+/// end, under `id` when given, else under the id its key mints when no item
+/// holds that one yet.
+pub(crate) fn upserted(
+    doc: &Doc,
+    map: &ObjId,
+    matching: &serde_json::Map<String, serde_json::Value>,
+    value: &serde_json::Value,
+    id: Option<&Id>,
+) -> Result<EditOp, ModelError> {
+    let minted = crate::upsert::key_id(matching);
+    let id = if let Some(id) = id {
+        Some(id.clone())
+    } else {
+        doc.get(map, minted.as_str())?.is_none().then_some(minted)
+    };
+    Ok(EditOp::InsertItem {
+        id,
+        at: crate::At::End,
+        value: crate::upsert::inserted(matching, value)?,
+    })
 }
 
 /// Indices (into `keys`) of one longest strictly increasing subsequence.
@@ -2000,7 +2069,7 @@ fn diff_entries(
                         path.to_vec(),
                         EditOp::MoveTo {
                             id: id.clone(),
-                            at: index,
+                            at: crate::At::Index(index),
                         },
                     ));
                 }
@@ -2009,7 +2078,7 @@ fn diff_entries(
                 path.to_vec(),
                 EditOp::InsertItem {
                     id: Some(id.clone()),
-                    at: index,
+                    at: crate::At::Index(index),
                     value: (item.ops.to_json)(item, next),
                 },
             )),

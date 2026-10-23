@@ -636,7 +636,13 @@ fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
     let ty = field.ty;
     match field.shape {
         crate::Shape::Collection(_) | crate::Shape::Keyed(_) => {
-            vec!["insert-item", "remove-item", "move-to", "set"]
+            vec![
+                "upsert-item",
+                "insert-item",
+                "remove-item",
+                "move-to",
+                "set",
+            ]
         }
         _ if rich => vec!["rich"],
         _ if ty.starts_with("Counter") => vec!["add", "set"],
@@ -714,6 +720,27 @@ fn edit_paths(
         properties.insert("path".into(), path);
         properties.insert("op".into(), serde_json::json!({ "enum": ops }));
         properties.insert("value".into(), value);
+        if ops.contains(&"upsert-item") {
+            properties.insert(
+                "match".into(),
+                serde_json::json!({
+                    "type": "object",
+                    "description": "upsert-item: the fields that identify the item, e.g. {\"name\": \"Ana\"}; it updates the one item holding them with `value`'s fields, else appends `value` as a new item"
+                }),
+            );
+            properties.insert(
+                "at".into(),
+                serde_json::json!({
+                    "description": "insert-item, move-to: \"end\" (the default), {\"after\": id} or {\"before\": id}",
+                    "anyOf": [
+                        { "const": "end" },
+                        { "type": "object", "properties": { "after": { "type": "string" } }, "required": ["after"] },
+                        { "type": "object", "properties": { "before": { "type": "string" } }, "required": ["before"] },
+                        { "type": "integer", "minimum": 0 }
+                    ]
+                }),
+            );
+        }
         if let Some(rich) = rich {
             properties.insert("rich".into(), rich.clone());
         }
@@ -1083,7 +1110,7 @@ fn edit_spec(
         },
     )
     .with_description(
-        "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
+        "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}. Address a collection's items by what they hold, never by position: {path: [{field: name}], op: \"upsert-item\", match: {field: value}, value: {fields}} updates the one item that matches, else appends one; insert-item and move-to place by at: \"end\" | {after: id} | {before: id}.",
     )
     // Controls and agents edit fields; a person picks named actions or edits
     // the field in place.
