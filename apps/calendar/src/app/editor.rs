@@ -232,16 +232,17 @@ fn repeat_label(event: &Event) -> String {
     let interval = event.recurrence_interval.max(1);
     let unit = match event.recurrence {
         Recurrence::None => return Recurrence::None.label().into(),
-        Recurrence::Weekdays => return Recurrence::Weekdays.label().into(),
-        Recurrence::Daily => "day",
-        Recurrence::Weekly => "week",
-        Recurrence::Monthly => "month",
-        Recurrence::Yearly => "year",
+        Recurrence::Weekdays => None,
+        Recurrence::Daily => Some("day"),
+        Recurrence::Weekly => Some("week"),
+        Recurrence::Monthly => Some("month"),
+        Recurrence::Yearly => Some("year"),
     };
-    let mut label = if interval == 1 {
-        format!("Every {unit}")
-    } else {
-        format!("Every {interval} {unit}s")
+    let mut label = match (unit, interval) {
+        (None, 1) => Recurrence::Weekdays.label().into(),
+        (None, _) => format!("Every {interval} weeks on weekdays"),
+        (Some(unit), 1) => format!("Every {unit}"),
+        (Some(unit), _) => format!("Every {interval} {unit}s"),
     };
     if let Some(count) = event.recurrence_count {
         let _ = write!(label, ", {count} times");
@@ -1380,5 +1381,40 @@ impl CalendarApp {
             .and_then(|id| self.model.task(id))
             .and_then(|task| task.due)
             .unwrap_or(self.anchor)
+    }
+}
+
+#[cfg(test)]
+mod repeat_tests {
+    use super::*;
+
+    /// A weekday series the form cannot pick reads as what it is, with its
+    /// interval and its end, rather than as plain "Every weekday", which
+    /// would offer the same words twice and drop the interval when chosen.
+    #[test]
+    fn a_custom_weekday_series_reads_with_its_interval_and_end() {
+        let mut event = Event {
+            recurrence: Recurrence::Weekdays,
+            recurrence_interval: 2,
+            ..Event::default()
+        };
+        assert_eq!(repeat_value(&event), "custom");
+        assert_eq!(repeat_label(&event), "Every 2 weeks on weekdays");
+        event.recurrence_interval = 1;
+        event.recurrence_count = Some(10);
+        assert_eq!(repeat_value(&event), "custom");
+        assert_eq!(repeat_label(&event), "Every weekday, 10 times");
+        let labels: Vec<String> = repeat_options(&event)
+            .into_iter()
+            .map(|(_, label)| label)
+            .collect();
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|label| *label == "Every weekday")
+                .count(),
+            1,
+            "{labels:?}"
+        );
     }
 }

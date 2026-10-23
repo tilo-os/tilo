@@ -701,9 +701,14 @@ impl Event {
             let base_match = match self.recurrence {
                 Recurrence::None => day == seed,
                 Recurrence::Daily => days % i64::from(interval) == 0,
+                // Weeks run Monday to Sunday (RFC 5545's default week
+                // start), so the interval counts calendar weeks from the
+                // seed's, not seven-day runs from the seed itself.
                 Recurrence::Weekdays => {
                     day.weekday().num_days_from_monday() < 5
-                        && (days / 7) % i64::from(interval) == 0
+                        && ((days + i64::from(seed.weekday().num_days_from_monday())) / 7)
+                            % i64::from(interval)
+                            == 0
                 }
                 Recurrence::Weekly => {
                     day.weekday() == seed.weekday() && (days / 7) % i64::from(interval) == 0
@@ -1455,6 +1460,44 @@ mod tests {
                 assert_eq!(Recurrence::from_rrule(&r.to_rrule()), r);
             }
         }
+    }
+
+    /// An every-other-week weekday series counts weeks as calendar weeks,
+    /// Monday to Sunday (RFC 5545's default week start), not as seven-day
+    /// runs from its first day: one that starts on a Wednesday holds that
+    /// week's Wednesday to Friday, skips the whole next week, and holds the
+    /// Monday to Friday after it. Imported from another calendar, as people
+    /// get such a series.
+    #[test]
+    fn weekday_series_with_an_interval_skip_whole_calendar_weeks() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+                   UID:4b6c3c5e-6f1a-4c1e-9a43-0d1f3a2b7c10\r\n\
+                   SUMMARY:Office days\r\n\
+                   DTSTART:20260617T090000\r\nDTEND:20260617T100000\r\n\
+                   RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,TU,WE,TH,FR\r\n\
+                   END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let (events, _) = crate::ics::parse(ics);
+        let [event] = events.as_slice() else {
+            panic!("one event imported: {events:?}");
+        };
+        assert_eq!(event.recurrence, Recurrence::Weekdays);
+        assert_eq!(event.recurrence_interval, 2);
+        // Wednesday 17 June 2026 starts it.
+        assert_eq!(
+            event.occurrences_in(date(2026, 6, 15), date(2026, 7, 12)),
+            vec![
+                date(2026, 6, 17),
+                date(2026, 6, 18),
+                date(2026, 6, 19),
+                date(2026, 6, 29),
+                date(2026, 6, 30),
+                date(2026, 7, 1),
+                date(2026, 7, 2),
+                date(2026, 7, 3),
+            ]
+        );
+        assert!(!event.occurs_on(date(2026, 6, 22)), "the week off");
+        assert!(event.occurs_on(date(2026, 6, 29)), "the Monday after it");
     }
 
     #[test]
