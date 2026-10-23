@@ -234,6 +234,56 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: target ? `${summary(target)} [ref=${data.ref}] is at ${x}, ${y}` : `${describe(hit)} is at ${x}, ${y}`, data};
   }
 
+  // What the action in progress set off. It is armed before the action's
+  // input reaches the page; once that input's dispatch and default action have
+  // run, it says whether the page began leaving the document meanwhile: by a
+  // navigation it started, or a form submission it planned, which navigates in
+  // a task of its own. A navigation the page starts later is not the action's
+  // to report: the reply says one is still possible.
+  let watch = null;
+  function arm(input) {
+    // Keys typed into a child frame dispatch where this world cannot see them.
+    const framed = input === 'key' && ['iframe', 'frame'].includes(document.activeElement?.localName);
+    watch = framed ? null : {input, dispatched: input === 'script', navigate: null, submit: null, done: null};
+    return {ok: true, message: 'Armed'};
+  }
+  const arrived = input => () => {
+    if (!watch || watch.input !== input || watch.arrived) return;
+    watch.arrived = true;
+    // The rest of this input's dispatch, and its default action, run in the
+    // current task.
+    const current = watch;
+    setTimeout(() => { current.dispatched = true; report(); });
+  };
+  for (const type of ['pointerup', 'mouseup', 'click']) addEventListener(type, arrived('pointer'), true);
+  addEventListener('keyup', arrived('key'), true);
+  addEventListener('submit', event => { if (watch) watch.submit = event; }, true);
+  navigation.addEventListener('navigate', event => {
+    if (watch && !event.destination.sameDocument && event.downloadRequest === null) watch.navigate = event;
+  });
+  function leaving(current) {
+    const event = current.navigate;
+    // A navigation the page intercepts stays in this document, at its URL.
+    if (event && !event.defaultPrevented &&
+        (!event.canIntercept || event.navigationType === 'reload' || location.href !== event.destination.url)) return true;
+    const submit = current.submit;
+    if (!submit || submit.defaultPrevented) return false;
+    const form = submit.target, submitter = submit.submitter;
+    const method = submitter?.hasAttribute('formmethod') ? submitter.formMethod : form.method;
+    const target = submitter?.hasAttribute('formtarget') ? submitter.formTarget : form.target;
+    return method !== 'dialog' && ['', '_self', '_top', '_parent'].includes(target.toLowerCase());
+  }
+  function report() {
+    const current = watch;
+    if (!current?.done || !current.dispatched) return;
+    watch = null;
+    current.done({ok: true, navigation: leaving(current) ? 'started' : 'possible'});
+  }
+  function fence() {
+    if (!watch) return {ok: true, navigation: 'possible'};
+    return new Promise(done => { watch.done = done; report(); });
+  }
+
   // Resolves once the document stops changing for `quiet` ms after it has
   // loaded, or after `timeout` ms.
   function settle(quiet, timeout) {
@@ -934,7 +984,7 @@ globalThis.__tiloPage ||= (() => {
   }
 
   return {
-    nativeTextInputElement, configureNativeTextEditor,
+    nativeTextInputElement, configureNativeTextEditor, fence,
     run(command) {
       try {
         if (!doc) doc = command.doc;
@@ -945,11 +995,17 @@ globalThis.__tiloPage ||= (() => {
           case 'changes': return changes();
           case 'at': return at(command.x, command.y);
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
-          case 'locate': return locate(command.element, command.cross_origin);
-          case 'fill': return fill(command.element, command.text, command.secret);
-          case 'select': return select(command.element, command.values);
-          case 'submit': return submit(command.element, command.cross_origin);
-          case 'focus': return focus(command.element, command.key, command.cross_origin);
+          case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
+          case 'fill': arm('script'); return fill(command.element, command.text, command.secret);
+          case 'select': arm('script'); return select(command.element, command.values);
+          case 'submit': arm('script'); return submit(command.element, command.cross_origin);
+          case 'focus': {
+            watch = null;
+            const focused = focus(command.element, command.key, command.cross_origin);
+            arm('key');
+            return focused;
+          }
+          case 'arm': return arm('key');
           case 'reader': return reader(command.enabled === true);
         }
         return failure('invalid_request', 'Unknown page action');
