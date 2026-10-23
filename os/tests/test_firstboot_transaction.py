@@ -60,8 +60,9 @@ def locked():
     assert (r / 'shadow').read_text().startswith('!'), 'delivery ran unlocked'
 """
         tools = {
-            # Flush only fixture files, not unrelated host filesystem workloads.
-            'sync': "fail('intent-sync'); fd = os.open(sys.argv[-1], os.O_RDONLY); os.fsync(fd); os.close(fd)",
+            # The built helper, unless the case fails the intent's publication,
+            # whose own syncs (record, then directory) make the intent durable.
+            'files-helper': f"fail('intent') if sys.argv[1] == 'intent' else None; os.execv({str(FILES_BINARY)!r}, [{str(FILES_BINARY)!r}] + sys.argv[1:])",
             'id': "raise SystemExit(0 if (r / 'shadow').exists() else 1)",
             'stat': "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else '0:700' if sys.argv[2] == '%u:%a' else Path(sys.argv[-1]).stat().st_size)",
             'getent': "print('fixtureuser:' + ((r / 'shadow').read_text() if sys.argv[1] == 'shadow' else 'x') + ':' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(r / 'home/fixtureuser') + ':/bin/bash')",
@@ -120,7 +121,7 @@ else:
             '/var/lib/tilo': str(r / 'state'),
             '/var/home': str(r / 'home'),
             '"/home/$user"': f'"{r}/home/$user"',
-            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"': f'FILES_HELPER="{FILES_BINARY}"',
+            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"': f'FILES_HELPER="{r}/bin/files-helper"',
             '/usr/libexec/tilo-staging-handoff': str(r / 'handoff'),
             'seed_helper=/usr/libexec/tilo-firstboot-home-seeds': f'seed_helper={r}/seeds.py',
         }.items():
@@ -241,7 +242,7 @@ else:
         self.assertTrue(self.credential.exists())
 
     def test_intent_is_durable_before_account_creation(self):
-        self.assertNotEqual(self.run_boot('intent-sync').returncode, 0)
+        self.assertNotEqual(self.run_boot('intent').returncode, 0)
         self.assertFalse((self.root / 'shadow').exists())
         self.assertTrue(self.credential.exists())
         self.assertEqual(self.run_boot().returncode, 0)
