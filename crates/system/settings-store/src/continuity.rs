@@ -383,7 +383,6 @@ mod tests {
 
     #[test]
     fn continuity_policy_keys_are_canonical_and_private_values_stay_local() {
-        // Phase `policy_keys_are_unique_and_canonical`.
         {
             let mut keys = BTreeSet::new();
             for policy in POLICIES {
@@ -395,7 +394,6 @@ mod tests {
                 );
             }
         }
-        // Phase `credentials_and_hardware_are_never_personal`.
         {
             for key in [
                 "tilo.agent_providers.api_key",
@@ -412,7 +410,6 @@ mod tests {
                 assert!(!is_personal(key), "{key} must not roam");
             }
         }
-        // Phase `continuity_privacy_choices_are_device_local_and_audit_is_derived`.
         {
             for key in [
                 "tilo.continuity.enabled",
@@ -434,7 +431,6 @@ mod tests {
                 Some(SettingScope::Derived)
             );
         }
-        // Phase `unknown_settings_fail_closed`.
         {
             assert_eq!(classify("tilo.input.future_preference"), None);
             assert!(!is_personal("tilo.input.future_preference"));
@@ -477,7 +473,6 @@ mod tests {
 
     #[test]
     fn the_typed_registry_reviews_every_writer_and_ownership_boundary() {
-        // Phase `typed_registry_projects_only_reviewed_personal_values`.
         {
             let document = serde_json::json!({
                 "appearance": {
@@ -498,7 +493,6 @@ mod tests {
                 )])
             );
         }
-        // Phase `every_cross_crate_settings_writer_has_reviewed_leaves`.
         {
             // These are the non-core writers of settings.json. Core Settings
             // structs have their own schema-derived coverage test in
@@ -542,7 +536,6 @@ mod tests {
                 Vec::<String>::new()
             );
         }
-        // Phase `registry_names_all_ownership_boundaries`.
         {
             assert!(
                 POLICIES

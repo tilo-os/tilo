@@ -28,10 +28,6 @@ pub fn hz_label(refresh_mhz: u32) -> String {
 
 /// The output `connector` names (by persisted key or by label), else the
 /// primary one, else the built-in panel, else the first.
-///
-/// # Errors
-///
-/// No display is connected, or none is called `connector`.
 pub fn target<'a>(
     outputs: &'a [DisplayOutputSnapshot],
     base: &DisplayConfig,
@@ -97,11 +93,6 @@ fn entry<'a>(next: &'a mut DisplayConfig, output: &DisplayOutputSnapshot) -> &'a
 
 /// `base` with the display `connector` (the default one when `None`) at
 /// `scale`, every other choice kept.
-///
-/// # Errors
-///
-/// `scale` is not one of [`scale_choices`], no such display, or the result
-/// does not validate for this hardware.
 pub fn plan_scale(
     outputs: &[DisplayOutputSnapshot],
     base: &DisplayConfig,
@@ -224,7 +215,6 @@ mod tests {
         assert_eq!(hz_label(59_940), "59.94");
         assert_eq!(hz_label(120_000), "120");
 
-        // The built-in panel is the default target.
         let planned = plan_scale(&outputs, &base, None, 2.0).unwrap();
         assert!((planned.outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON);
         assert!(!planned.outputs.contains_key("HDMI-A-1"));

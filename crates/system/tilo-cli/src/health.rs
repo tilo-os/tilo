@@ -22,7 +22,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde_json::{Value, json};
 
-/// Every `renderD*` under `dev_dri`.
 fn render_nodes(dev_dri: &Path) -> Vec<PathBuf> {
     let mut nodes: Vec<PathBuf> = std::fs::read_dir(dev_dri)
         .into_iter()

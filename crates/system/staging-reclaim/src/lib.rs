@@ -564,9 +564,6 @@ pub struct Plan {
 }
 
 /// Decides every step from the disk as it is now.
-///
-/// # Errors
-/// Any state that is neither the recorded one nor a resumable step of it.
 pub fn plan(host: &dyn Host, record: &Record, parts: &[Partition]) -> Result<Plan, Error> {
     let esp = staged_state(host, parts, &record.staging_esp, ESP_TYPE, "staging ESP")?;
     let root = staged_state(

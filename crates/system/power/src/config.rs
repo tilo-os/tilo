@@ -234,7 +234,6 @@ mod tests {
 
     #[test]
     fn settings_json_parses_power_sections_and_falls_back_to_defaults() {
-        // Phase `missing_file_is_settings_defaults`.
         {
             let p = policy_from_settings_json("");
             assert_eq!(p, default_policy());
@@ -250,7 +249,6 @@ mod tests {
                 "closing the lid still does"
             );
         }
-        // Phase `a_timeout_without_the_switch_stays_off`.
         {
             // A suspend timeout is written by the pane even while the switch
             // is off; it alone must not turn idle-suspend back on.
@@ -261,14 +259,11 @@ mod tests {
             );
             assert_eq!(p.idle_suspend, Some(Duration::from_secs(900)));
         }
-        // Phase `no_power_section_is_defaults`.
         {
             let p = policy_from_settings_json(r#"{"version":1,"display":{"scale":1.0}}"#);
             assert_eq!(p, default_policy());
         }
-        // Phase `full_section_parses`.
         {
-            // Exactly the shape the Settings app writes.
             let json = r#"{
                 "version": 1,
                 "power": {
@@ -293,18 +288,15 @@ mod tests {
             assert_eq!(p.critical_battery_percent, 8);
             assert_eq!(p.critical_action, PowerAction::Suspend);
         }
-        // Phase `malformed_action_falls_back_to_default`.
         {
             let json = r#"{"power":{"lid_close_action":"explode"}}"#;
             let p = policy_from_settings_json(json);
             assert_eq!(p.lid_close_action, default_policy().lid_close_action);
         }
-        // Phase `percent_is_clamped`.
         {
             let json = r#"{"power":{"low_battery_percent":250}}"#;
             assert_eq!(policy_from_settings_json(json).low_battery_percent, 100);
         }
-        // Phase `partial_section_keeps_other_defaults`.
         {
             // Only the lid action is set; everything else is the default.
             let json = r#"{"power":{"lid_close_action":"suspend"}}"#;
@@ -393,7 +385,6 @@ mod tests {
 
     #[test]
     fn power_profiles_select_their_idle_timeout_or_the_legacy_one() {
-        // Phase `active_profile_selects_its_idle_timeout`.
         {
             let section: serde_json::Value = serde_json::from_str(
                 r#"{
@@ -418,7 +409,6 @@ mod tests {
                 Some(Duration::from_secs(2220))
             );
         }
-        // Phase `unknown_profile_uses_legacy_timeout`.
         {
             let section: serde_json::Value = serde_json::from_str(
                 r#"{"auto_suspend":true,"suspend_minutes":23,"balanced_suspend_minutes":99}"#,
@@ -430,7 +420,6 @@ mod tests {
                 Some(Duration::from_secs(1380))
             );
         }
-        // Phase `each_power_source_has_its_timer`.
         {
             let section: serde_json::Value = serde_json::from_str(
                 r#"{"auto_suspend":true,"suspend_minutes":30,"battery_suspend_minutes":10}"#,

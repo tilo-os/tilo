@@ -230,7 +230,6 @@ mod tests {
 
     #[test]
     fn espeak_maps_rate_voice_name_and_idle_state() {
-        // Phase `rate_maps_to_clamped_wpm`.
         {
             // Construct a speaker by hand (bypassing the PATH probe) to test pure
             // state transitions without needing the binary.
@@ -251,7 +250,6 @@ mod tests {
             s.set_rate(f32::NAN); // guarded
             assert_eq!(s.wpm, ESPEAK_DEFAULT_WPM);
         }
-        // Phase `voice_setter_stores_value`.
         {
             let mut s = EspeakSpeaker {
                 bin: ESPEAK_BIN,
@@ -263,7 +261,6 @@ mod tests {
             s.set_voice("en-us");
             assert_eq!(s.voice.as_deref(), Some("en-us"));
         }
-        // Phase `backend_name`.
         {
             let s = EspeakSpeaker {
                 bin: ESPEAK_BIN,
@@ -273,7 +270,6 @@ mod tests {
             };
             assert_eq!(s.backend_name(), "espeak-ng");
         }
-        // Phase `not_speaking_when_no_child`.
         {
             let s = EspeakSpeaker {
                 bin: ESPEAK_BIN,

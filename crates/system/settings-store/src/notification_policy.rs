@@ -274,7 +274,6 @@ mod tests {
 
     #[test]
     fn focus_priority_and_mutes_follow_user_policy() {
-        // Phase `focus_reports_when_its_period_ends`.
         {
             let f = FocusSchedule {
                 enabled: true,
@@ -290,7 +289,6 @@ mod tests {
             };
             assert_eq!(all_day.active_until(12 * 60, 0), None);
         }
-        // Phase `overnight_focus_crosses_midnight`.
         {
             let f = FocusSchedule {
                 enabled: true,
@@ -300,7 +298,6 @@ mod tests {
             assert!(f.active_at(6 * 60, 0));
             assert!(!f.active_at(12 * 60, 0));
         }
-        // Phase `app_priority_is_user_policy_not_sender_metadata`.
         {
             let mut p = NotificationPolicy {
                 focus: FocusSchedule {
@@ -321,7 +318,6 @@ mod tests {
             assert!(!p.effective_for(Some("so.tilo.chat"), 0, 500, 0).quiet);
             assert!(p.effective_for(Some("spoofed name"), 0, 500, 0).quiet);
         }
-        // Phase `temporary_mute_expires_without_a_cleanup_write`.
         {
             let mut p = NotificationPolicy::default();
             p.per_app.insert(
@@ -338,7 +334,6 @@ mod tests {
 
     #[test]
     fn breakthroughs_require_verified_identity_and_authorized_apps() {
-        // Phase `contact_only_pierces_for_a_verified_match_and_authorized_app`.
         {
             let mut p = NotificationPolicy {
                 focus: FocusSchedule {
@@ -369,7 +364,6 @@ mod tests {
                     .quiet
             );
         }
-        // Phase `cross_device_requires_verified_identity_and_honours_per_app_policy`.
         {
             let mut policy = NotificationPolicy::default();
             assert!(

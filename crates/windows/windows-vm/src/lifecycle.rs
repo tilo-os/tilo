@@ -218,7 +218,6 @@ mod tests {
 
     #[test]
     fn lifecycle_status_and_actions_are_typed_and_never_wake_or_duplicate() {
-        // Phase `status_exposes_phase_and_managed_session_without_waking_guest`.
         {
             let directory = TempDir::new().unwrap();
             let service = service(
@@ -236,7 +235,6 @@ mod tests {
                 crate::LicenseState::DigitallyActivated
             );
         }
-        // Phase `lifecycle_actions_are_typed_and_do_not_create_another_domain`.
         {
             let directory = TempDir::new().unwrap();
             let backend = Backend {
@@ -252,7 +250,6 @@ mod tests {
                 vec![LifecycleAction::Shutdown, LifecycleAction::Resume]
             );
         }
-        // Phase `unprovisioned_start_is_rejected_before_backend_call`.
         {
             let directory = TempDir::new().unwrap();
             let store = ProvisioningStore::new(directory.path().join("state.json"));

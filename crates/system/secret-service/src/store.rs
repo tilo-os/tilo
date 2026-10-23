@@ -86,19 +86,11 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// Where the store's key comes from.
 pub trait KeySource: Send + Sync {
     /// The key, or why it cannot be released now.
-    ///
-    /// # Errors
-    ///
-    /// [`Locked`] while the identity is unavailable.
     fn release(&self) -> std::result::Result<SymmetricKey, Locked>;
 
     /// The key a caller the store cannot examine proves it holds the
     /// device identity with ([`crate::app`]). A source with no device
     /// identity behind it has none, and such callers stay refused.
-    ///
-    /// # Errors
-    ///
-    /// [`Locked`] while the identity is unavailable.
     fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
         Err(Locked::NoIdentity)
     }
@@ -267,10 +259,6 @@ impl Store {
     }
 
     /// The key callers prove they hold the device identity with.
-    ///
-    /// # Errors
-    ///
-    /// [`Locked`] while the identity is unavailable.
     pub fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
         self.keys.caller_key()
     }
@@ -377,8 +365,6 @@ impl Store {
         record.last_used = now;
         Ok(())
     }
-
-    // ---- collections ----------------------------------------------------
 
     /// Every collection: its name and label.
     ///
@@ -513,8 +499,6 @@ impl Store {
             Ok(())
         })
     }
-
-    // ---- items ----------------------------------------------------------
 
     /// The items every attribute of `query` matches, among those `caller`
     /// may see, in `collection` or in all of them.
@@ -750,8 +734,6 @@ impl Store {
         })
     }
 
-    // ---- the ledger -----------------------------------------------------
-
     /// Every identity that used the store.
     ///
     /// # Errors
@@ -823,8 +805,6 @@ impl Store {
         })
     }
 
-    // ---- the portal -----------------------------------------------------
-
     /// The master secret of a sandboxed app, minted on first use. `app` is
     /// the package id the desktop vouched for; the caller of the portal is
     /// recorded as `sandbox:<app>` and may be revoked like any other.
@@ -868,8 +848,6 @@ impl Store {
             Ok(out)
         })
     }
-
-    // ---- migration ------------------------------------------------------
 
     /// What the import of an older keyring did, if it ran.
     ///

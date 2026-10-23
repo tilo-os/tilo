@@ -178,10 +178,6 @@ fn decide(
 
 /// Execute admitted intent against the host's fresh runtime snapshot and
 /// settings source. The host derives prior state and transaction identity.
-///
-/// # Errors
-/// Refuses stale outputs, unsupported intent, expired decisions, oversized
-/// replies and persistence errors without changing other settings sections.
 pub fn execute(
     source: &dyn SettingsSource,
     observed: DisplayHardwareSnapshot,
@@ -707,7 +703,6 @@ mod compare_tests {
         let session = SessionSettings::open(paths.clone()).unwrap();
         let before = session.load();
         let copy = std::fs::read(&paths.copy).unwrap();
-        // Save the device record, then fail publication of the readable copy.
         tilo_files::native::atomic::test_support::with_failure_on_nth(
             tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
             2,

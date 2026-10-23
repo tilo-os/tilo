@@ -172,9 +172,6 @@ impl Client {
     }
 
     /// Dial the session's socket as the unconfined program `app_id`.
-    ///
-    /// # Errors
-    /// There is no session service to reach.
     pub fn connect_unconfined(socket: &std::path::Path, app_id: &str) -> std::io::Result<Self> {
         let mut stream = UnixStream::connect(socket)?;
         write_handoff(

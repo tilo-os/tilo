@@ -133,14 +133,12 @@ mod tests {
 
     #[test]
     fn vm_state_round_trips_privately_and_defaults_to_unprovisioned() {
-        // Phase `missing_file_is_not_provisioned`.
         {
             let directory = TempDir::new().unwrap();
             let store = ProvisioningStore::new(directory.path().join("state.json"));
             assert_eq!(store.load().unwrap(), ApplianceState::default());
             assert!(!store.load().unwrap().can_launch());
         }
-        // Phase `state_round_trips_privately`.
         {
             let directory = TempDir::new().unwrap();
             let store = ProvisioningStore::new(directory.path().join("state.json"));

@@ -367,7 +367,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn airplay_senders_run_without_hardware() {
-        // Phase `airplay_process_readiness_and_disconnect_are_hardware_free`.
         {
             let (root, context, events) = fixture("airplay");
             let sender = root.join("airplay-sender-simulator");
@@ -388,7 +387,6 @@ mod tests {
                 .expect("clean AirPlay disconnect");
             fs::remove_dir_all(root).expect("remove AirPlay fixture directory");
         }
-        // Phase `airplay_pairing_credentials_use_persistent_private_storage`.
         {
             let root = std::env::temp_dir().join(format!(
                 "tilo-projector-state-{}-{:?}",
@@ -409,7 +407,6 @@ mod tests {
             );
             fs::remove_dir_all(root).expect("remove state fixture");
         }
-        // Phase `airplay_sender_arguments_select_audio_and_exact_receiver`.
         {
             let airplay = airplay_command_args(
                 "[2001:db8::7]",

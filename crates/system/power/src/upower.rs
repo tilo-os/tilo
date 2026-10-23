@@ -166,11 +166,6 @@ impl UPowerMonitor {
     /// Read the aggregate power source using `UPower`'s display-device
     /// contract. No model, serial, process, or application metadata crosses
     /// into the durable history record.
-    ///
-    /// # Errors
-    ///
-    /// Property read failures fall back to defaults rather than propagating a
-    /// D-Bus error.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -307,7 +302,6 @@ mod tests {
             if !present {
                 assert!(!closed, "no lid ⇒ not closed");
             }
-            // OnBattery is a plain bool either way.
             let _ = m.on_battery().await.expect("OnBattery");
         }
         // Phase `history_samples_are_anonymous_and_in_range`.

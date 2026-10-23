@@ -60,7 +60,6 @@ fn counting_runs_in_the_background_on_the_resource_input() {
         .expect("the result replaces the spinner");
 }
 
-/// Cancelling discards the running count and returns to idle.
 #[test]
 fn a_running_count_can_be_cancelled() {
     let mut app = TestApp::<App>::new().expect("the app opens");

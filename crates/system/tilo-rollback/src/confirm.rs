@@ -89,11 +89,6 @@ pub fn save_state(path: &Path, state: &State) -> Result<()> {
 /// tokens and the state file must agree — disagreement means tampering or an interrupted
 /// prior run, and since a wrong base turns into "increment the counter a huge number of
 /// times", it's refused rather than resolved by preference.
-///
-/// # Errors
-///
-/// Returns an error if two sources (the state file, or any token) disagree on the counter
-/// base.
 pub fn load_base(state: Option<&State>, tokens: &[(u32, RollbackToken)]) -> Result<Option<i64>> {
     let mut bases: Vec<(String, i64)> = Vec::new();
     if let Some(s) = state {
@@ -253,7 +248,6 @@ mod tests {
 
     #[test]
     fn confirmation_bases_come_only_from_agreeing_sources() {
-        // Phase `base_comes_from_agreeing_sources`.
         {
             let s = State {
                 nv_index: 1,
@@ -264,7 +258,6 @@ mod tests {
             let toks = vec![tok(7, 100), tok(6, 100)];
             assert_eq!(load_base(Some(&s), &toks).unwrap(), Some(100));
         }
-        // Phase `a_disagreeing_base_is_refused`.
         {
             let s = State {
                 nv_index: 1,
@@ -276,11 +269,9 @@ mod tests {
             let e = load_base(Some(&s), &toks).unwrap_err().to_string();
             assert!(e.contains("disagrees between sources"), "{e}");
         }
-        // Phase `no_source_means_no_base_yet`.
         {
             assert_eq!(load_base(None, &[]).unwrap(), None);
         }
-        // Phase `a_base_from_tokens_alone_is_usable`.
         {
             assert_eq!(load_base(None, &[tok(7, 42)]).unwrap(), Some(42));
         }
@@ -288,7 +279,6 @@ mod tests {
 
     #[test]
     fn confirmation_plans_window_prune_floor_and_round_trip_state() {
-        // Phase `planning_confirms_the_window_and_the_prune`.
         {
             let floor = FloorState {
                 counter: 100,
@@ -299,7 +289,6 @@ mod tests {
             assert_eq!(p.keep, vec![10, 9, 8]);
             assert_eq!(p.drop, vec![7]);
         }
-        // Phase `planning_honours_a_declared_floor`.
         {
             let floor = FloorState {
                 counter: 100,
@@ -311,7 +300,6 @@ mod tests {
             // enforces, and keeping slots means a later re-enrollment doesn't rebuild from nothing.
             assert_eq!(p.keep, vec![10, 9, 8]);
         }
-        // Phase `state_round_trips`.
         {
             use std::os::unix::fs::PermissionsExt;
 

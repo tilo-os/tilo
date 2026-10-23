@@ -43,7 +43,6 @@ impl Drop for Network {
 /// What the token's sealed blob holds.
 #[derive(Serialize, Deserialize)]
 pub struct Material {
-    /// The device half, hex.
     pub device_half: String,
     /// The boot key's 32-byte Ed25519 secret, hex.
     pub boot_secret: String,
@@ -69,7 +68,6 @@ impl Drop for Material {
 }
 
 impl Material {
-    /// Material for a new enrolment.
     pub fn new(device_half: &Half, boot_key: &SigningKey, networks: Vec<Network>) -> Self {
         Self {
             device_half: hex::encode(device_half.expose()),
@@ -107,9 +105,6 @@ impl Material {
     }
 
     /// Parses unsealed material.
-    ///
-    /// # Errors
-    /// When the bytes are not the material's JSON or its secrets are malformed.
     pub fn from_json(bytes: &[u8]) -> Result<Self> {
         let material: Self =
             serde_json::from_slice(bytes).context("the unlock material is malformed")?;

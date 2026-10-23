@@ -157,7 +157,6 @@ mod tests {
 
     #[test]
     fn helper_commands_are_bounded_by_output_limits_and_deadlines() {
-        // Phase `helper_output_limits_fail_closed_on_real_subprocesses`.
         {
             assert!(which("head"), "head is required for the output-limit probe");
             let bytes = (MAX_CAPTURE_BYTES + 4096).to_string();

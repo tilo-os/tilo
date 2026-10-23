@@ -379,12 +379,6 @@ fn object_section(mut doc: Map<String, Value>, name: &str) -> Map<String, Value>
 /// whole: the framework's `ui::storage` scopes and app settings channel, the device
 /// fabric's roamed write-back, the Settings app's multi-section document writers and
 /// schema owners that name their section through their own constant.
-///
-/// # Errors
-///
-/// Returns an error if no config directory is available (see
-/// [`config_root`]), or [`update_section_at`] fails. With a host-installed
-/// [`SettingsSource`], the source's error.
 pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result<()> {
     if let Some(source) = installed_source() {
         return source.update_section(name, values);
@@ -450,9 +444,6 @@ pub fn update_section_with_at(
 }
 
 /// The canonical file path, with the same test isolation guard as writes.
-///
-/// # Errors
-/// No configuration directory exists, or this is an unisolated test process.
 pub fn file_write_path() -> std::io::Result<PathBuf> {
     let Some(path) = settings_path() else {
         return Err(std::io::Error::other("no config directory available"));
@@ -608,14 +599,12 @@ pub fn f64_in(
         .unwrap_or(default)
 }
 
-/// Read a `&str` at `section.key`.
 pub fn str_at<'a>(doc: &'a Map<String, Value>, section: &str, key: &str) -> Option<&'a str> {
     doc.get(section)
         .and_then(|s| s.get(key))
         .and_then(|v| v.as_str())
 }
 
-/// Read a `bool` at `section.key`.
 pub fn bool_at(doc: &Map<String, Value>, section: &str, key: &str) -> Option<bool> {
     doc.get(section)
         .and_then(|s| s.get(key))
@@ -682,7 +671,6 @@ mod tests {
         assert!(!home.join(".config/tilo/session/settings.json").exists());
         assert!(!home.join(".config/tilo/settings.json").exists());
 
-        // A test that names its own config directory still writes there.
         let config = home.join("own-config");
         env.set("XDG_CONFIG_HOME", &config);
         update_section("notifications", values).expect("an explicit config directory");
@@ -846,7 +834,6 @@ mod tests {
 
     #[test]
     fn the_document_lives_in_its_own_directory_and_an_old_one_moves_there() {
-        // Phase `a_fresh_root_names_the_session_directory`.
         {
             let xdg = tmpdir();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -870,7 +857,6 @@ mod tests {
             drop(env);
             std::fs::remove_dir_all(&xdg).unwrap();
         }
-        // Phase `a_document_at_the_old_path_moves_once_and_keeps_every_section`.
         {
             let xdg = tmpdir();
             let root = xdg.join("tilo");
@@ -931,7 +917,6 @@ mod tests {
             drop(env);
             std::fs::remove_dir_all(&xdg).unwrap();
         }
-        // Phase `the_session_records_stay_under_the_root`.
         {
             let xdg = tmpdir();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -950,20 +935,17 @@ mod tests {
 
     #[test]
     fn reads_forgive_broken_missing_and_mistyped_documents() {
-        // Phase `broken_documents_read_as_no_settings`.
         {
             for text in ["", "not json {", "[1,2,3]", "null", "\"a string\""] {
                 assert!(parse(text).is_empty(), "{text:?} must read as no settings");
                 assert!(section(text, "display").is_empty());
             }
         }
-        // Phase `a_missing_file_reads_as_no_settings`.
         {
             let dir = tmpdir();
             assert!(load_at(&dir.join("absent.json")).is_empty());
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `a_section_of_the_wrong_type_reads_as_absent`.
         {
             let text = r#"{"display": 3, "region": ["x"], "power": {"idle": 5}}"#;
             assert!(
@@ -976,7 +958,6 @@ mod tests {
             );
             assert_eq!(section(text, "power").get("idle"), Some(&json!(5)));
         }
-        // Phase `typed_readers_clamp_and_fall_back`.
         {
             let doc = parse(r#"{"display":{"scale":1.5,"mode":"dark","hidpi":true,"bad":"x"}}"#);
             assert_eq!(f64_in(&doc, "display", "scale", 0.5..=3.0, 1.0), 1.5);
@@ -1035,7 +1016,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn section_writes_merge_preserve_and_repair_atomically() {
-        // Phase `writing_one_section_preserves_every_other`.
         {
             // The reason writes merge: the panes are separate binaries, and one that serialised its
             // own view would drop the sections it predates.
@@ -1061,7 +1041,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `writing_a_section_merges_into_it_rather_than_replacing_it`.
         {
             let dir = tmpdir();
             let path = dir.join("settings.json");
@@ -1084,7 +1063,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `writing_creates_the_directory_and_the_file`.
         {
             let dir = tmpdir();
             let path = dir.join("nested").join("deeper").join("settings.json");
@@ -1097,7 +1075,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `writing_over_a_corrupt_file_does_not_propagate_the_corruption`.
         {
             let dir = tmpdir();
             let path = dir.join("settings.json");
@@ -1111,7 +1088,6 @@ mod tests {
             assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.25);
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `a_section_stored_as_the_wrong_type_is_replaced_on_write`.
         {
             let dir = tmpdir();
             let path = dir.join("settings.json");
@@ -1130,7 +1106,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `no_temp_file_is_left_behind`.
         {
             let dir = tmpdir();
             let path = dir.join("settings.json");

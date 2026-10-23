@@ -91,7 +91,6 @@ fn a_viewer_cannot_count() {
     assert_eq!(app.state().count, 0);
 }
 
-/// The screenshot scenario is staged through the same actions.
 #[test]
 fn the_counted_scenario_stages_through_actions() {
     let app = TestApp::<App>::capture(Some("counted")).expect("stage");

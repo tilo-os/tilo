@@ -225,9 +225,6 @@ impl Conditions {
 }
 
 /// Whether one entry goes: `Ok(())` to remove it, `Err` with why it stays.
-///
-/// # Errors
-/// The reason it stays, and for a recent entry when it becomes eligible.
 pub fn decide(
     last_used: SystemTime,
     policy: &AgePolicy,

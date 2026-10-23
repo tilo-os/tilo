@@ -17,10 +17,6 @@ pub struct CalendarCollection {
 /// The client must refuse automatic redirects. Every followed URL is checked
 /// before sending credentials; at most eight requests and three redirects per
 /// step are made, with bounded bodies and XML complexity.
-///
-/// # Errors
-/// On unsafe URLs, authentication failure, malformed replies, excessive
-/// redirects, or when the account has no readable calendars.
 pub fn calendars(client: &DavClient, server: &Url) -> Result<Vec<CalendarCollection>, String> {
     calendars_checked(client, server, &|_| Ok(()))
 }

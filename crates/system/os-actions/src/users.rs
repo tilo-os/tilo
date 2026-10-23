@@ -79,11 +79,6 @@ fn block<T>(f: impl std::future::Future<Output = Result<T, String>>) -> Result<T
 }
 
 /// Create a local login account through `AccountsService`.
-///
-/// # Errors
-///
-/// Returns an error message if `username` or `full_name` fails validation, the system bus is
-/// unreachable, or `AccountsService` refuses the request (e.g. the polkit challenge fails).
 pub fn create_user(username: &str, full_name: &str, role: AccountRole) -> Result<(), String> {
     let username = validate_username(username)?.to_string();
     let full_name = validate_real_name(full_name)?.to_string();
@@ -171,22 +166,12 @@ pub fn set_role(username: &str, role: AccountRole) -> Result<(), String> {
 }
 
 /// Enable or disable passwordless automatic login for `username`.
-///
-/// # Errors
-///
-/// Returns an error message if `username` fails validation or `AccountsService` refuses the
-/// request.
 pub fn set_automatic_login(username: &str, enabled: bool) -> Result<(), String> {
     validate_username(username)?;
     block(call_user(username, "SetAutomaticLogin", &enabled))
 }
 
 /// Read whether `username` is set up for automatic login.
-///
-/// # Errors
-///
-/// Returns an error message if `username` fails validation, the system bus is unreachable, or
-/// `AccountsService` refuses the request.
 pub fn automatic_login(username: &str) -> Result<bool, String> {
     validate_username(username)?;
     block(async move {
@@ -223,7 +208,6 @@ mod tests {
 
     #[test]
     fn account_input_is_validated_and_scrubbed_before_the_privilege_boundary() {
-        // Phase `validates_account_names_before_privilege_boundary`.
         {
             assert!(validate_username("ada").is_ok());
             assert!(validate_username("ada_2").is_ok());
@@ -232,7 +216,6 @@ mod tests {
             assert!(validate_real_name("Ada Lovelace").is_ok());
             assert!(validate_real_name("Ada\nroot").is_err());
         }
-        // Phase `password_validation_always_scrubs_the_caller_buffer`.
         {
             let mut short = b"bad".to_vec();
             assert!(set_password("ada", &mut short).is_err());
