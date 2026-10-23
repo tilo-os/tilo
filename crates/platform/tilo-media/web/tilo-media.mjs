@@ -2,7 +2,10 @@
 //
 // The element decodes (every codec the browser has, hardware where it has
 // it) and plays the audio itself. Pictures reach Rust as RGBA through a 2D
-// canvas, which is the same contract as the native engine's `VideoFrame`.
+// canvas, which is the same contract as the native engine's `VideoFrame`,
+// or stay in the element for a renderer that copies them on the GPU
+// (`takePicture`): reading every picture back costs the page's one thread
+// more than a frame's time.
 // A cross-origin source without CORS cannot load with the element's CORS
 // request: it is loaded again through the fetch proxy of the host serving the
 // page, when the page names one, else the engine reports why it failed. An
@@ -12,6 +15,9 @@
 
 const MAX_FRAME_WIDTH = 1920;
 const MAX_FRAME_HEIGHT = 1080;
+// The largest picture side a renderer copies from the element on the GPU:
+// a 4K picture fits, with room to spare, in the renderer's image atlas.
+const MAX_PICTURE_SIDE = 4096;
 
 let sessionOwner = null;
 
@@ -292,6 +298,25 @@ export class TiloMediaElement {
   }
   frameWidth() { return this.width; }
   frameHeight() { return this.height; }
+
+  // Whether the element shows a picture newer than the last one taken, for
+  // a renderer that copies it from the element on the GPU (`pictureElement`)
+  // rather than reading its pixels back here, as `frame` does.
+  takePicture() {
+    const el = this.el;
+    if (el.readyState < 2 || !el.videoWidth || !el.videoHeight) return false;
+    if (!this.dirty && !(this.isPlaying() && typeof el.requestVideoFrameCallback !== 'function')) return false;
+    this.dirty = false;
+    return true;
+  }
+  // Whether the element's pictures are small enough to copy as they are; a
+  // larger one is scaled down and read back by `frame` instead.
+  picturesFit() {
+    return this.el.videoWidth <= MAX_PICTURE_SIDE && this.el.videoHeight <= MAX_PICTURE_SIDE;
+  }
+  pictureWidth() { return this.el.videoWidth; }
+  pictureHeight() { return this.el.videoHeight; }
+  pictureElement() { return this.el; }
 
   setMetadata(title, artist, album, artwork) {
     this.metadata = {title, artist, album, artwork: artwork ? [{src: artwork}] : []};

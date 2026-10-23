@@ -52,7 +52,12 @@ web-time = "1"
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 js-sys = "=0.3.85"
-web-sys = { version = "=0.3.85", features = ["HtmlCanvasElement", "console"] }
+web-sys = { version = "=0.3.85", features = [
+    "HtmlCanvasElement",
+    "HtmlMediaElement",
+    "HtmlVideoElement",
+    "console",
+] }
 # The certified peer over HTTPS (no iroh in the bundle), its live codec and
 # the toolkit transport.
 tilo-browser-peer = { version = "0.1.0", path = "../tilo-browser-peer", default-features = false, features = ["toolkit"] }
