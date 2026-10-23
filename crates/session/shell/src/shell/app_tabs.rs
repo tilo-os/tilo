@@ -268,7 +268,7 @@ pub fn open_beside(
         }
     }
     let workspace = {
-        let mut tree = st.tree_mut();
+        let tree = st.tree();
         let active_room = tree
             .desktop
             .active_workspace()

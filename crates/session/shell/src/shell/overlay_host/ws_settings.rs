@@ -529,7 +529,6 @@ impl ShellOverlayHost {
                     people: &people,
                     editing_name: state.editing_workspace_name.as_deref(),
                     name_selection: state.editing_workspace_name_selection,
-                    governs_active_room,
                     owner_controls,
                     apps: &directory,
                     devices: &devices,

@@ -9,11 +9,9 @@
 //! tells a caller what to pass rather than leaving it to be inferred.
 
 use crate::shell::state::WorkspaceAuthority as _;
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use settings_store::display_mode::DisplayLayoutMode;
 use settings_store::hardware::ShortcutAction;
 use std::rc::Rc;
-use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};

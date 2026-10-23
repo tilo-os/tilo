@@ -171,7 +171,7 @@ impl OwnDevice {
         shown_list
             .merge(&update, &self.cert, 2)
             .expect("the same person's device");
-        shown_list.adopt_into(shown, &person.to_string());
+        shown_list.adopt_into(shown);
         let before = tab_ids(shown);
         // The room's content, as its host serves it to every member.
         let content = self

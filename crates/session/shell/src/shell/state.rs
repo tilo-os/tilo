@@ -2,7 +2,6 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
-use tilo_automerge::WriteTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
@@ -745,7 +744,7 @@ pub struct WorkspaceTree {
     /// certificate and its person's revocations. Projected from the
     /// owner, so not persisted.
     #[serde(skip)]
-    pub(crate) room_rosters: BTreeMap<RoomId, BTreeMap<String, GovernedPeerIdentity>>,
+    pub room_rosters: BTreeMap<RoomId, BTreeMap<String, GovernedPeerIdentity>>,
     /// Which version of the authorization-relevant state (grants, roster,
     /// owner, ...) this tree holds. Advanced by the released write guard that
     /// changed it ([`WorkspaceTreeHandle::write`]), from one process-wide
@@ -786,7 +785,7 @@ pub struct WorkspaceTree {
     /// to its room's governor. A room's governance changes only there, and
     /// reaches this tree as the projection of its admitted document.
     #[serde(skip)]
-    governance_requests: Vec<(RoomId, GovernanceRequest)>,
+    pub governance_requests: Vec<(RoomId, GovernanceRequest)>,
     /// Strips a person made here, waiting for their room's next projection
     /// to publish them kept while empty: a made strip reaches the others at
     /// once, not with its first window. Persisted, so a strip made just
@@ -1644,15 +1643,6 @@ impl WorkspaceTree {
         }
         roster.push(who);
         true
-    }
-
-    /// The cached workspace that addresses `room`, if this machine is in
-    /// it. First match wins, in case of a room joined twice locally.
-    fn workspace_in_room(&self, room: RoomId) -> Option<&Workspace> {
-        if room.is_nil() {
-            return None;
-        }
-        self.desktop.workspaces.iter().find(|w| w.room() == room)
     }
 
     /// Key the room document stores its peers' names under.
@@ -3991,10 +3981,6 @@ impl WorkspaceTree {
             .and_then(|bound| self.commit_command(&bound.command))
             .unwrap_or(false)
     }
-}
-
-fn public_key_user_id(key: collab_types::Ed25519PublicKey) -> UserId {
-    hex::encode(key.as_bytes())
 }
 
 /// What colour each person on `roster` is drawn in, as this process's

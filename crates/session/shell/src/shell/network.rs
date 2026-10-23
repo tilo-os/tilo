@@ -589,10 +589,6 @@ enum Reach {
     /// deferral).
     #[cfg(test)]
     LoopbackHoldingRelays,
-    /// Only this machine's, holding back these relays (a test's own, which
-    /// it runs) the way [`Self::Internet`] holds back the public ones.
-    #[cfg(test)]
-    LoopbackHolding(&'static iroh::RelayMap),
 }
 
 /// Why someone could need to dial this device, from what its session has
@@ -938,14 +934,6 @@ const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2
 /// room, an open invitation, another device) still needs its relays up.
 /// Local work over a few maps; a parked compositor does not tick at all.
 const SESSION_REACH_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
-/// The longest an invite minted on this device waits for a home relay to
-/// name in it, when the relays were not already running: about what a net
-/// report and a relay handshake take.
-const INVITE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
-/// How long after something changed a shell asks its own devices for the
-/// continuity and device fabric it is missing: made once a burst of activity
-/// settles, so a burst asks once.
-const SYNC_REPAIR_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 /// The longest a shell goes without that pull while nothing changes: the
 /// safety net under the repair pull, not a heartbeat. An idle, converged
 /// desktop asks once per this long.
@@ -1990,15 +1978,6 @@ impl ShellNetwork {
                     .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
                     .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
                 reachability_tests::unused_relays(),
-                reachability_tests::REST_AFTER,
-            ),
-            #[cfg(test)]
-            Reach::LoopbackHolding(relays) => (
-                iroh::Endpoint::builder(presets::Minimal)
-                    .relay_mode(held_back)
-                    .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-                    .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
-                relays.clone(),
                 reachability_tests::REST_AFTER,
             ),
         };
@@ -6435,7 +6414,7 @@ impl ShellNetwork {
                     changed |= workspaces.set_shown(room, device, shown);
                 }
                 // Keeping a workspace off this device takes it off at once.
-                workspaces.adopt_into(&mut tree, &person);
+                workspaces.adopt_into(&mut tree);
                 refresh_device_choices(&mut tree, &workspaces);
             }
             drop(tree);
@@ -6540,7 +6519,7 @@ impl ShellNetwork {
                 tracing::warn!(%error, peer = %origin, "refusing a workspace list");
                 return true;
             }
-            let adopted = workspaces.adopt_into(&mut tree, &person);
+            let adopted = workspaces.adopt_into(&mut tree);
             refresh_device_choices(&mut tree, &workspaces);
             drop(tree);
             let answer = local || !workspaces.covered_by(update);
@@ -6586,19 +6565,6 @@ impl ShellNetwork {
         });
         if pull {
             self.publish_sync_requests();
-        }
-    }
-
-    /// A room changed: pull [`SYNC_REPAIR_DELAY`] from now, unless a pull is
-    /// due sooner.
-    fn schedule_repair_pull(&self) {
-        let now = std::time::Instant::now();
-        let due = now.checked_add(SYNC_REPAIR_DELAY).unwrap_or(now);
-        if let Ok(mut next) = self.next_sync_pull.lock()
-            && let Some(at) = *next
-            && at > due
-        {
-            *next = Some(due);
         }
     }
 
@@ -8260,19 +8226,6 @@ pub(crate) fn native_remote_answer_for_test(
     );
 }
 
-/// Give a fixture network the worker runtime a spawned one owns, so governor
-/// invocations are answered instead of refused as "the network is not running".
-#[cfg(test)]
-pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
-    network.runtime = Some(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("fixture network runtime"),
-    );
-}
-
 /// How an own-device invocation ended, from the other device's last word
 /// on it: its output, or why it failed there or never ran.
 fn own_device_outcome(
@@ -8359,7 +8312,6 @@ mod tests {
             ])
         );
     }
-    use crate::shell::state::WorkspaceAuthority as _;
 
     #[test]
     fn a_local_tab_is_pushed_on_the_next_tick_and_an_idle_tick_sends_nothing() {
