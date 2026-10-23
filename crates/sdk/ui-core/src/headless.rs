@@ -9355,16 +9355,19 @@ impl FrameHarness {
         match action {
             Action::ClickNamed(name) => self.click_named(name),
             Action::ClickAt(x, y) => {
-                self.click_at(*x, *y);
+                let (x, y) = self.frame_point(*x, *y)?;
+                self.click_at(x, y);
                 Ok(())
             }
             Action::TapNamed(name) => self.tap_named(name),
             Action::TapAt(x, y) => {
-                self.tap_at(*x, *y);
+                let (x, y) = self.frame_point(*x, *y)?;
+                self.tap_at(x, y);
                 Ok(())
             }
             Action::SwipeAt(x0, y0, x1, y1) => {
-                self.swipe_at((*x0, *y0), (*x1, *y1));
+                let start = self.frame_point(*x0, *y0)?;
+                self.swipe_at(start, (*x1, self.frame_y(*y1)));
                 Ok(())
             }
             Action::Key(k) => {
@@ -10384,6 +10387,7 @@ fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), Stri
         let mut names: Vec<(String, [f64; 4])> = driver
             .targets()
             .into_iter()
+            .map(|(name, rect)| (name, driver.window_rect(rect)))
             .map(|(name, rect)| (name, [rect.x0, rect.y0, rect.width(), rect.height()]))
             .collect();
         names.compact_sort_by(|a, b| a.0.cmp(&b.0));

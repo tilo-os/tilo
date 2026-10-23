@@ -266,6 +266,8 @@ pub struct Spec {
     /// Draw the desktop's window bar over the app, as a Tilo session does:
     /// the app's slots, search and History are hosted in it, the app's
     /// frame stands under it and every capture shows the whole window.
+    /// Coordinates (`click_at`, `tap_at`, `swipe_at`, `targets`) are then
+    /// the window's, as a capture shows it; the bar itself takes no presses.
     pub window_bar: bool,
 }
 

@@ -155,6 +155,40 @@ impl FrameHarness {
         }
     }
 
+    /// Where a point of the window (a capture's picture, as the person sees
+    /// it) is in the app's frame under the bar. The bar is the desktop's:
+    /// a point on it is refused, never handed to the app.
+    pub(super) fn frame_point(&self, x: f64, y: f64) -> Result<(f64, f64), String> {
+        let frame_y = self.frame_y(y);
+        if frame_y < 0.0 {
+            return Err(format!(
+                "({x}, {y}) is on the window bar, which is the desktop's: invoke the \
+                 action its slot runs instead"
+            ));
+        }
+        Ok((x, frame_y))
+    }
+
+    /// [`Self::frame_point`]'s height alone, for the end of a gesture that
+    /// may leave the frame.
+    pub(super) fn frame_y(&self, y: f64) -> f64 {
+        y - self.frame_top()
+    }
+
+    /// A rect of the app's frame where the window shows it.
+    pub(super) fn window_rect(&self, rect: Rect) -> Rect {
+        rect + vello::kurbo::Vec2::new(0.0, self.frame_top())
+    }
+
+    /// Where the app's frame starts in the window.
+    fn frame_top(&self) -> f64 {
+        if self.window_bar {
+            f64::from(bar_height_px())
+        } else {
+            0.0
+        }
+    }
+
     /// The window's title and app, as its tab shows them.
     fn window_tab(&self) -> TabDescriptor {
         let bound = self
@@ -434,6 +468,37 @@ mod tests {
         harness.relayout();
         harness.send(&winit::event::WindowEvent::Focused(true));
         assert_eq!(harness.focused(), None, "never a button for being first");
+    }
+
+    /// A spec aims at the picture it captures: with the bar over the app, a
+    /// click on a control where the capture shows it presses that control.
+    #[test]
+    fn a_click_aimed_at_the_captured_window_lands_where_it_is_painted() {
+        let _hosted = HostedReset;
+        let root = crate::widget::Column::new()
+            .push(Box::new(crate::widget::Button::new("first", "First")))
+            .push(Box::new(crate::widget::Button::new("chosen", "Chosen")));
+        let mut harness = harness_of(Box::new(root));
+        harness.present_in_window_bar();
+        harness.relayout();
+        let first = harness
+            .targets()
+            .into_iter()
+            .find_map(|(name, rect)| (name == "first").then(|| harness.window_rect(rect)))
+            .expect("the first button is a target");
+        let bar = f64::from(bar_height_px());
+        assert!(first.y0 >= bar, "the app's frame starts under the bar");
+        let centre = first.center();
+        harness
+            .perform(&super::super::Action::ClickAt(centre.x, centre.y))
+            .unwrap();
+        assert_eq!(focused_name(&harness).as_deref(), Some("first"));
+        assert!(
+            harness
+                .perform(&super::super::Action::ClickAt(centre.x, bar / 2.0))
+                .is_err(),
+            "the bar is the desktop's"
+        );
     }
 
     /// An app that is only its name.
