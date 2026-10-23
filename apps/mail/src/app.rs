@@ -1015,8 +1015,8 @@ impl MailApp {
         let first_run = self.is_first_run();
         let (items, toolbar) = {
             let state = self.shared.borrow();
-            let items = crate::window_bar::bar_items(&state, first_run);
             let composing = self.compose.open.then(|| self.compose.heading());
+            let items = crate::window_bar::bar_items(&state, first_run, composing.is_some());
             let toolbar = crate::window_bar::toolbar(
                 self.nav.window_toolbar(),
                 &state,
@@ -1269,6 +1269,18 @@ impl MailApp {
                 Command::AccountSettings => self.open_account_settings(),
                 Command::Compose => {
                     self.shared.borrow_mut().push_intent(Intent::Compose);
+                }
+                Command::CloseCompose => {
+                    if self.compose.open {
+                        self.compose.close();
+                        self.close_compose(doc);
+                    }
+                }
+                Command::DiscardCompose => {
+                    if self.compose.open {
+                        self.compose.close();
+                        self.discard_compose(doc);
+                    }
                 }
                 Command::ContactRecipients => {
                     self.open_contact_recipients();
