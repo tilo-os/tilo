@@ -2785,7 +2785,7 @@ impl ChromeState {
         for notice in notices {
             match notice {
                 Notice::Post { handle, notice } => {
-                    let id = self.push_notification_full(notice);
+                    let id = self.push_notification_full(*notice);
                     if let Some(earlier) = self.consent_notices.insert(handle, id) {
                         self.dismiss_notification(earlier);
                     }
