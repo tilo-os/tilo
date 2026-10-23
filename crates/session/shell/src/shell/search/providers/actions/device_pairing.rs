@@ -1,5 +1,7 @@
 //! `identity.device.pair.discover`, `.approve` and `.reject`: pairing a
-//! nearby device through the palette, the control socket and agents.
+//! nearby device through the palette, the control socket and agents;
+//! `.asking` and `.answer`: the devices another of the person's devices
+//! found, approved here as their notification does.
 //!
 //! The steps run in [`crate::shell::device_pairing`], which the broker's
 //! door for Settings shares, so a device discovered through one door is
@@ -25,10 +27,14 @@ use crate::shell::search::{ActionReceipt, InvocationDisposition, PendingInvocati
 pub(super) const DISCOVER_ID: &str = "identity.device.pair.discover";
 pub(super) const APPROVE_ID: &str = "identity.device.pair.approve";
 pub(super) const REJECT_ID: &str = "identity.device.pair.reject";
+pub(super) const ASKING_ID: &str = "identity.device.pair.asking";
+pub(super) const ANSWER_ID: &str = "identity.device.pair.answer";
 
 pub(super) const DISCOVER_PARAMS: &[ActionParam] = engine::DISCOVER_PARAMS;
 pub(super) const APPROVE_PARAMS: &[ActionParam] = engine::APPROVE_PARAMS;
 pub(super) const REJECT_PARAMS: &[ActionParam] = engine::REJECT_PARAMS;
+pub(super) const ASKING_PARAMS: &[ActionParam] = engine::ASKING_PARAMS;
+pub(super) const ANSWER_PARAMS: &[ActionParam] = engine::ANSWER_PARAMS;
 
 /// The engine's step behind shell action `id`.
 fn step(id: &str) -> Option<&'static str> {
@@ -36,6 +42,8 @@ fn step(id: &str) -> Option<&'static str> {
         DISCOVER_ID => Some(engine::DISCOVER),
         APPROVE_ID => Some(engine::APPROVE),
         REJECT_ID => Some(engine::REJECT),
+        ASKING_ID => Some(engine::ASKING),
+        ANSWER_ID => Some(engine::ANSWER),
         _ => None,
     }
 }
@@ -107,7 +115,7 @@ mod tests {
 
     #[test]
     fn identity_device_pair_actions_are_listed_and_contracted() {
-        for id in [DISCOVER_ID, APPROVE_ID, REJECT_ID] {
+        for id in [DISCOVER_ID, APPROVE_ID, REJECT_ID, ASKING_ID, ANSWER_ID] {
             assert!(is_pair_action(id));
             assert!(
                 super::super::Action::ALL
@@ -121,20 +129,25 @@ mod tests {
                 self::contract(id),
                 "{id} has its own contract arm"
             );
-            assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
+            let kind = if id == ASKING_ID {
+                tilo_actions::ActionKind::Read
+            } else {
+                tilo_actions::ActionKind::Outside
+            };
+            assert_eq!(contract.kind, kind, "{id}");
         }
-        let approve = super::super::shell_action_contract(APPROVE_ID);
-        assert_eq!(approve.risk, tilo_actions::RiskLevel::Privileged);
-        assert_eq!(
-            approve.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
-        assert!(
-            APPROVE_PARAMS
-                .iter()
-                .any(|param| param.name.as_ref() == "confirm"),
-            "approval carries its confirmation"
-        );
+        for (id, params) in [(APPROVE_ID, APPROVE_PARAMS), (ANSWER_ID, ANSWER_PARAMS)] {
+            let approve = super::super::shell_action_contract(id);
+            assert_eq!(approve.risk, tilo_actions::RiskLevel::Privileged);
+            assert_eq!(
+                approve.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert!(
+                params.iter().any(|param| param.name.as_ref() == "confirm"),
+                "{id} carries its confirmation"
+            );
+        }
         assert_eq!(
             super::super::shell_action_contract(DISCOVER_ID).confirmation,
             tilo_actions::ConfirmationPolicy::None,
@@ -153,6 +166,15 @@ mod tests {
             (
                 REJECT_ID,
                 serde_json::json!({"device": KEY, "forgotten": true, "stopped": false}),
+            ),
+            (
+                ASKING_ID,
+                serde_json::json!({"asking": [{"ask": KEY, "device": SERVICE, "label": "Laptop",
+                                   "code": "042-917", "via": "Orange Pi", "asked_at_ms": 1}]}),
+            ),
+            (
+                ANSWER_ID,
+                serde_json::json!({"ask": KEY, "label": "Laptop", "approved": true}),
             ),
         ] {
             contract(id)

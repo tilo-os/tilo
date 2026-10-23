@@ -80,6 +80,13 @@ pub(crate) struct Asking {
     ask: Ask,
 }
 
+impl Asking {
+    /// The new device's key.
+    pub(crate) const fn device(&self) -> [u8; 32] {
+        self.ask.cert.device_public_key
+    }
+}
+
 /// One device's part in certifications.
 #[derive(Default)]
 struct State {
@@ -342,6 +349,7 @@ pub(crate) fn answer(
     }) else {
         return Ok(None);
     };
+    GENERATION.fetch_add(1, Ordering::AcqRel);
     let person = asking.ask.cert.user_public_key;
     let answer = if approve {
         let key = keys(&local).key(person)?;

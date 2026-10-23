@@ -490,6 +490,12 @@ pub mod device_pairing {
     pub const APPROVE: &str = "approve";
     /// Forget a discovered device and stop approving it (`device`).
     pub const REJECT: &str = "reject";
+    /// The devices another of the person's devices found, asking here to be
+    /// the person; answers each with the `ask` that names it.
+    pub const ASKING: &str = "asking";
+    /// Approve or decline one of them (`ask`, `approve`, `confirm`), as its
+    /// notification does.
+    pub const ANSWER: &str = "answer";
 
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {

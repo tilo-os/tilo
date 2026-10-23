@@ -629,6 +629,12 @@ impl ShellOverlayHost {
             (PeerSyncRequest::DevicesAsking, Ok(PeerSyncResponse::DevicesAsking(asking))) => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     let mut state = chrome.borrow_mut();
+                    state.retire_device_asking(
+                        &asking
+                            .iter()
+                            .map(|device| device.digest)
+                            .collect::<Vec<_>>(),
+                    );
                     for device in &asking {
                         self.device_labels
                             .insert(device.digest, device.label.clone());

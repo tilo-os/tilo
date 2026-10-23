@@ -79,6 +79,17 @@ agree, each asks, and `approve` says how many still have to. A device you
 removed is refused before anyone is asked. Home servers are added from the
 device you set up first.
 
+A device holding the key without a screen answers the same ask from a shell:
+
+```sh
+tilo-identity asking                  # the devices asking, their codes, who found them
+tilo-identity approve --code 123456   # when the new device shows that code
+tilo-identity decline --code 123456
+```
+
+`approve` answers a device asking here before it looks on the network, so the
+one command approves either way.
+
 ## Devices
 
 ```sh
@@ -114,6 +125,9 @@ device you are using; do it from another one.
   without it signs with its own certified key and names its certificate. The
   joining device accepts either, the latter only from the device that minted
   its token while the identity certified it.
+- `asking`, and `approve` or `decline` of a device asking, are the session's
+  `identity.device.pair.asking` and `.answer` actions; `.answer` signs through
+  the same step as the "A device asks to be you" notification's Approve.
 - `devices` and `revoke` are the shell's `identity.devices.list` and
   `identity.device.revoke` steps.
 
