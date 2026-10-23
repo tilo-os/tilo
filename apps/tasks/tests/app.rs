@@ -340,3 +340,48 @@ fn an_issues_model_is_picked_among_the_offered_ones() {
     app.settle();
     assert_eq!(model(&app), None);
 }
+
+/// The assignee is picked among the workspace's people and agents by name,
+/// never typed as an id; Nobody clears it.
+#[test]
+fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Draft the agenda" }))
+        .expect("create");
+    let issue = only(&app);
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    {
+        let presence = app.harness().presence_mut();
+        presence.set_display_name(ui::permissions::UserId("bob".into()), "Bob");
+        presence.set_display_name(ui::permissions::UserId("agent:scribe".into()), "Scribe");
+        presence.set_participant_kind(
+            ui::permissions::UserId("agent:scribe".into()),
+            ui::presence::ParticipantKind::Agent,
+        );
+    }
+    app.settle();
+
+    let assignee = |app: &TestApp<App>| {
+        app.state()
+            .issues
+            .get(&issue)
+            .and_then(|issue| issue.assignee.clone())
+            .map(|assignee| assignee.0)
+    };
+    let pick = |app: &mut TestApp<App>, name: &str| {
+        app.harness()
+            .perform_named(
+                "tasks-issue-assignee",
+                &ui::a11y::Action::SetValue(name.into()),
+            )
+            .unwrap_or_else(|error| panic!("pick {name}: {error:?}"));
+        app.settle();
+    };
+    pick(&mut app, "Bob");
+    assert_eq!(assignee(&app).as_deref(), Some("person:bob"));
+    pick(&mut app, "Scribe");
+    assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
+    pick(&mut app, "Nobody");
+    assert_eq!(assignee(&app), None);
+}
