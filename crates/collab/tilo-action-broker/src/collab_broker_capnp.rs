@@ -909,33 +909,41 @@ impl BrokerActor {
         let need = action.contract.need();
         let node = published_node(workspace, &surface.app_id, action);
         let (answer, spent) = self.verdict_in(workspace, &node, need.kind, need.privileged, now);
-        // Whoever acts for a person asks them before an attended action,
-        // whatever the grants allow.
-        let mut asks = match answer {
-            Answer::Allow => self.delegate().is_some() && action.contract.is_attended(),
-            Answer::Ask => true,
-            Answer::Deny => return Err(refused()),
-        };
         let agent = self
             .is_agent
             .then(|| self.id.strip_prefix("agent:").unwrap_or(&self.id));
-        match task.answer(workspace, agent, &node, need.kind, now) {
-            Some(Answer::Deny) => return Err("the task's grants do not cover this action".into()),
-            Some(Answer::Ask) => asks = true,
-            Some(Answer::Allow) | None => {}
-        }
-        if let Some(record) = record {
+        let task = task.answer(workspace, agent, &node, need.kind, now);
+        let record = record.map(|record| {
             let node = collab_types::validator::document_node(
                 &workspace.policy.room,
                 &surface.app_id,
                 &record,
             );
-            match self.answer_in(workspace, &node, need.kind, now) {
-                Answer::Allow => {}
-                Answer::Ask => asks = true,
-                Answer::Deny => return Err(refused()),
+            self.answer_in(workspace, &node, need.kind, now)
+        });
+        // The broker reaches the person on their own device to ask them
+        // ([`tilo_actions::remote::ActionHost::confirm`]).
+        let admitted = tilo_action_policy::admit(
+            tilo_action_policy::Invoked {
+                answer,
+                attended: action.contract.is_attended(),
+                task,
+                record,
+            },
+            tilo_action_policy::Asker {
+                reachable: true,
+                delegated: self.delegate().is_some(),
+            },
+        );
+        let asks = match admitted {
+            Ok(admission) => admission == tilo_action_policy::Admission::AsksFirst,
+            Err(tilo_action_policy::Refused::Task) => {
+                return Err("the task's grants do not cover this action".into());
             }
-        }
+            Err(tilo_action_policy::Refused::Action | tilo_action_policy::Refused::Record) => {
+                return Err(refused());
+            }
+        };
         Ok((asks, spent))
     }
 

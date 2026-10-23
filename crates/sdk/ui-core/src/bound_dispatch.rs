@@ -1609,13 +1609,12 @@ pub(crate) fn admit_local_action(
     confirmed: bool,
 ) -> Result<(), tilo_actions::DoorError> {
     let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
-    if !answer.admits(permissions.standing().bounds.is_empty()) {
-        return Err(denied(action));
-    }
-    if answer == tilo_action_policy::Answer::Ask && !confirmed {
-        return Err(tilo_actions::DoorError::ConfirmationRequired);
-    }
-    Ok(())
+    crate::permissions::admit_in_window(
+        answer,
+        action,
+        permissions.standing().bounds.is_empty(),
+        confirmed,
+    )
 }
 
 /// Why an invocation the person made did not run, in words for them: what
@@ -3137,16 +3136,15 @@ pub(crate) fn invoke_resource_action(
                     );
                     let direct = binding.permissions.borrow().standing().bounds.is_empty();
                     // Someone acting for the person does not get past an ask
-                    // here.
-                    if !answer.admits(direct) {
-                        return Err(denied(spec).into());
-                    }
-                    // Where the room's grants ask first, the person's
+                    // here. Where the room's grants ask first, the person's
                     // confirmation in the host is the answer; the broker took
                     // it before admitting what it delivers.
-                    if answer == tilo_action_policy::Answer::Ask && !confirmed && !broker_admitted {
-                        return Err(tilo_actions::DoorError::ConfirmationRequired.into());
-                    }
+                    crate::permissions::admit_in_window(
+                        answer,
+                        spec,
+                        direct,
+                        confirmed || broker_admitted,
+                    )?;
                     crate::invocation_scope::check_continuation(
                         spec,
                         spec.need_for(arguments.as_ref(), argument).kind,

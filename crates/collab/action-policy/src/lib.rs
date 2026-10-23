@@ -15,6 +15,7 @@
 //! through. [`agent_answers`] are the Allow, Ask first and Deny a person sets
 //! for one of their agents, per application, kind of resource or action.
 
+mod admission;
 pub mod agent_answers;
 pub mod bot;
 mod decide;
@@ -27,6 +28,7 @@ pub mod roles;
 mod room;
 mod standing;
 
+pub use admission::{Admission, Asker, Invoked, Refused, admit};
 pub use decide::{Authority, Basis, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node};
 pub use grant::{Answer, Context, Grant, GrantId, Lifetime, Role, Subject};
