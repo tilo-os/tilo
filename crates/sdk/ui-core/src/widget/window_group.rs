@@ -256,6 +256,12 @@ pub struct WindowGroup {
     /// reached for the top edge: drawn over the content, which keeps its
     /// whole size.
     fullscreen_bar_revealed: bool,
+    /// That bar fading in and out with it (`motion::CROSS_FADE`); under
+    /// reduced motion it is there or not.
+    fullscreen_bar_fade: crate::motion::Presence,
+    /// The last layout stood that bar over the content; once its fade-out
+    /// ends the next one drops it, so nothing takes input where it was.
+    fullscreen_bar_laid_out: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
@@ -565,6 +571,8 @@ impl WindowGroup {
             external_navigation: false,
             fullscreen_presentation: false,
             fullscreen_bar_revealed: false,
+            fullscreen_bar_fade: crate::motion::Presence::closed(),
+            fullscreen_bar_laid_out: false,
             edge_drag: None,
             edge_highlight: None,
             grip_dirty: false,
@@ -629,19 +637,32 @@ impl WindowGroup {
     }
 
     fn navigation_bar_visible(&self) -> bool {
-        !self.external_navigation && (!self.fullscreen_presentation || self.fullscreen_bar_revealed)
+        !self.external_navigation && (!self.fullscreen_presentation || self.fullscreen_bar_drawn())
+    }
+
+    /// Whether a fullscreen window's bar is drawn: shown, or still fading
+    /// out.
+    fn fullscreen_bar_drawn(&self) -> bool {
+        self.fullscreen_bar_revealed || self.fullscreen_bar_fade.is_visible(crate::time::now())
     }
 
     /// The bar stands over the content rather than above it: a fullscreen
     /// window's bar the person reached for.
     fn bar_over_content(&self) -> bool {
-        self.fullscreen_presentation && self.fullscreen_bar_revealed && !self.external_navigation
+        self.fullscreen_presentation && self.fullscreen_bar_drawn() && !self.external_navigation
+    }
+
+    /// Whether the window's bar is in use (its location field, its search,
+    /// a tab being dragged), so a fullscreen window's bar stays.
+    #[must_use]
+    pub fn bar_in_use(&self) -> bool {
+        self.editing_location() || self.search.is_open() || self.drag_in_flight()
     }
 
     /// Whether a fullscreen window's bar shows over it now.
     #[must_use]
     pub fn fullscreen_bar_shown(&self) -> bool {
-        self.bar_over_content()
+        self.fullscreen_presentation && self.fullscreen_bar_revealed && !self.external_navigation
     }
 
     /// The bar and the window's search under it.
@@ -669,6 +690,20 @@ impl WindowGroup {
         if self.fullscreen_bar_revealed != revealed {
             self.fullscreen_bar_revealed = revealed;
             self.style_dirty = true;
+            // It fades in place, so nothing it covers moves; under reduced
+            // motion it is there or not, as a maximized window's bar is
+            // (`TopEdgeReveal::opacity`).
+            if self.chrome_motion.reduced() {
+                self.fullscreen_bar_fade.snap(revealed);
+            } else {
+                self.fullscreen_bar_fade.show(
+                    revealed,
+                    crate::motion::CROSS_FADE,
+                    self.chrome_motion,
+                    crate::tokens::MotionSource::Pointer,
+                    crate::time::now(),
+                );
+            }
         }
     }
 
@@ -676,6 +711,10 @@ impl WindowGroup {
         if self.fullscreen_presentation != fullscreen {
             self.fullscreen_presentation = fullscreen;
             self.style_dirty = true;
+            if !fullscreen {
+                self.fullscreen_bar_revealed = false;
+                self.fullscreen_bar_fade.snap(false);
+            }
         }
     }
 
@@ -2181,6 +2220,8 @@ impl WindowGroup {
             external_navigation: false,
             fullscreen_presentation: false,
             fullscreen_bar_revealed: false,
+            fullscreen_bar_fade: crate::motion::Presence::closed(),
+            fullscreen_bar_laid_out: false,
             edge_drag: None,
             edge_highlight: None,
             grip_dirty: false,
@@ -3756,6 +3797,8 @@ impl Widget for WindowGroup {
         self.set_reduce_motion(theme.reduce_motion);
         // This is the layout a maximized frame that came to rest is owed.
         self.rest_layout_owed = false;
+        self.chrome_motion = theme.motion();
+        self.fullscreen_bar_laid_out = self.bar_over_content();
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
@@ -4029,7 +4072,23 @@ impl Widget for WindowGroup {
         // A fullscreen window's bar the person reached for stands over its
         // content.
         if bar_over {
+            let alpha =
+                crate::motion::unit_opacity(self.fullscreen_bar_fade.progress(crate::time::now()));
+            let fading = alpha < 1.0;
+            if fading {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    alpha,
+                    transform,
+                    // The window's search hangs under the bar.
+                    &self.rect,
+                );
+            }
             self.draw_bar(scene, transform, tr, theme, presence);
+            if fading {
+                scene.pop_layer();
+            }
         }
         if self.navigation_bar_visible() {
             let band = self.bar.get_rect().inflate(0.0, 6.0);
@@ -4168,6 +4227,9 @@ impl Widget for WindowGroup {
         if self.maximized_chrome_live() && self.top_edge.settle(crate::time::now()) {
             self.top_edge_changed();
         }
+        if self.fullscreen_bar_laid_out != self.bar_over_content() {
+            self.style_dirty = true;
+        }
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
         let mut active_host = false;
@@ -4300,8 +4362,11 @@ impl Widget for WindowGroup {
             .tab_fade
             .as_ref()
             .is_some_and(|fade| fade.is_moving(crate::motion::frame_now()));
+        let fullscreen_bar_fade =
+            self.fullscreen_presentation && self.fullscreen_bar_fade.is_moving(crate::time::now());
         spawn_in_flight
             || tab_fade
+            || fullscreen_bar_fade
             || top_slide
             || chrome_fade
             || close_in_flight

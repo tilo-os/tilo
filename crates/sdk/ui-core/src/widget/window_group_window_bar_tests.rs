@@ -531,3 +531,47 @@ fn an_apps_slots_live_in_the_bar_and_the_content_starts_under_it() {
         assert!(g.edit_location() && g.editing_location());
     }
 }
+
+#[test]
+fn a_fullscreen_windows_bar_fades_over_the_content_and_reduced_motion_cuts() {
+    let start = crate::time::now();
+    let at = |ms: u64, f: &mut dyn FnMut()| {
+        crate::time::testing::with_monotonic_time(start + Duration::from_millis(ms), f);
+    };
+    for reduced in [false, true] {
+        let theme = Theme::dark().with_reduce_motion(reduced);
+        let mut g = pages(1);
+        g.set_fullscreen_presentation(true);
+        let mut content = Rect::ZERO;
+        at(0, &mut || {
+            lay_out(&mut g, &theme);
+            content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
+            assert!(!g.navigation_bar_visible(), "fullscreen, the bar hides");
+            g.set_fullscreen_bar_revealed(true);
+            lay_out(&mut g, &theme);
+        });
+        let drawn =
+            |g: &mut WindowGroup| (g.bar_over_content(), g.active_host().map(Widget::get_rect));
+        at(1000, &mut || {
+            assert_eq!(
+                drawn(&mut g),
+                (true, Some(content)),
+                "over it, nothing moved"
+            );
+            g.set_fullscreen_bar_revealed(false);
+        });
+        at(1030, &mut || {
+            lay_out(&mut g, &theme);
+            assert_eq!(
+                drawn(&mut g),
+                (!reduced, Some(content)),
+                "reduced motion {reduced}: it fades out, or is gone at once"
+            );
+        });
+        at(3000, &mut || {
+            lay_out(&mut g, &theme);
+            assert_eq!(drawn(&mut g), (false, Some(content)), "gone, nothing moved");
+            assert!(!g.navigation_bar_visible(), "nor laid out to take input");
+        });
+    }
+}

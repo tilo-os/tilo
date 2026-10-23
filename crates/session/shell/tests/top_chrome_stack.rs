@@ -566,10 +566,40 @@ fn a_swipe_down_from_the_top_edge_reveals_the_bar() {
         TopBarPresence::Shown,
         "a swipe down from the top edge shows the hidden top bar"
     );
-    panel.fb.host_mut().set_hide_top_bar_for_tests(false);
-    panel.settle_motion();
+}
 
-    // A fullscreen window's bar.
+impl Panel {
+    fn fullscreen_bar_shown(&mut self) -> bool {
+        self.fb
+            .host_mut()
+            .group_row_mut_for_tests(STRIP)
+            .expect("the strip has a row")
+            .groups
+            .iter()
+            .find(|g| g.id == GROUP)
+            .is_some_and(ui::widget::WindowGroup::fullscreen_bar_shown)
+    }
+
+    /// Let the fullscreen bar's pending timer run out.
+    fn idle_fullscreen_bar(&mut self) {
+        let due = self
+            .fb
+            .host()
+            .fullscreen_bar_reveal_deadline()
+            .expect("the shown bar is due to collapse");
+        self.fb.host_mut().sync_top_bar_presence(due);
+        self.settle();
+    }
+}
+
+/// In fullscreen the window's bar shows as the window enters, collapses
+/// after a short idle, and comes back over the window, which never moves,
+/// for a swipe down from the top edge, the Super key and the pointer.
+#[test]
+fn a_fullscreen_windows_bar_collapses_when_idle_and_comes_back_over_it() {
+    use vello::kurbo::Point;
+
+    let mut panel = Panel::new();
     panel
         .fb
         .with_chrome(|chrome| chrome.set_user_fullscreen_group(Some(GROUP)));
@@ -578,29 +608,52 @@ fn a_swipe_down_from_the_top_edge_reveals_the_bar() {
         panel.fb.chrome().is_fullscreen(),
         "the window is fullscreen"
     );
-    let before = panel.group().0.group;
-    let shown = |panel: &mut Panel| {
-        panel
-            .fb
-            .host_mut()
-            .group_row_mut_for_tests(STRIP)
-            .expect("the strip has a row")
-            .groups
-            .iter()
-            .find(|g| g.id == GROUP)
-            .is_some_and(ui::widget::WindowGroup::fullscreen_bar_shown)
-    };
-    assert!(!shown(&mut panel), "fullscreen, its bar hides");
+    let window = panel.group().0.group;
+    assert!(
+        panel.fullscreen_bar_shown(),
+        "entering fullscreen shows the bar"
+    );
+    assert!(
+        panel.group().0.tab_bar.area() > 0.0,
+        "its bar is laid out: {:?}",
+        panel.group().0
+    );
+    panel.idle_fullscreen_bar();
+    assert!(!panel.fullscreen_bar_shown(), "idle, it collapses");
+    assert_eq!(panel.group().0.group, window, "and nothing moved");
+
     panel.swipe_down_from_top(700.0);
     panel.settle();
     assert!(
-        shown(&mut panel),
-        "a swipe down from the top edge shows the fullscreen window's bar"
+        panel.fullscreen_bar_shown(),
+        "a swipe down from the top edge shows it"
     );
-    let (after, _) = panel.group();
     assert_eq!(
-        after.group, before,
+        panel.group().0.group,
+        window,
         "over the window, which keeps its whole size"
     );
-    assert!(after.tab_bar.area() > 0.0, "its bar is laid out: {after:?}");
+    panel.idle_fullscreen_bar();
+    assert!(!panel.fullscreen_bar_shown());
+
+    panel.fb.host_mut().reveal_fullscreen_bar_by_key();
+    panel.settle();
+    assert!(panel.fullscreen_bar_shown(), "the key shows it");
+    panel.idle_fullscreen_bar();
+    assert!(!panel.fullscreen_bar_shown());
+
+    for y in [400.0, 300.0, 200.0, 100.0, 40.0, 0.0] {
+        panel.fb.host_mut().note_pointer(Point::new(700.0, y));
+    }
+    if !panel.fullscreen_bar_shown()
+        && let Some(due) = panel.fb.host().fullscreen_bar_reveal_deadline()
+    {
+        panel.fb.host_mut().sync_top_bar_presence(due);
+    }
+    panel.settle();
+    assert!(
+        panel.fullscreen_bar_shown(),
+        "reaching for the top shows it"
+    );
+    assert_eq!(panel.group().0.group, window, "nothing moved");
 }

@@ -75,6 +75,50 @@ pub(super) fn one_place() -> Scenario {
     }
 }
 
+/// A fullscreen window's bar: shown as the window enters, collapsed after a
+/// short idle, and back over the window, which never moves, for the key, a
+/// swipe down from the top edge and the pointer pushed to the top.
+pub(super) fn fullscreen_bar() -> Scenario {
+    Scenario {
+        name: "fullscreen_bar",
+        description: "A fullscreen window's bar: shown over the window as it enters \
+         fullscreen, collapsed after a short idle with the window unmoved, back for the \
+         Super key, for a swipe down from the top edge and for the pointer pushed to \
+         the top.",
+        actions: vec![
+            Action::MoveCursor(Point::new(800.0, 500.0)),
+            Action::WaitWall(600),
+            Action::Wait(4),
+            Action::FullScreenFocused(true),
+            Action::Wait(20),
+            Action::Snapshot("01-entering-full-screen-shows-the-bar"),
+            Action::WaitWall(2_300),
+            Action::Wait(20),
+            Action::Snapshot("02-idle-it-collapses"),
+            Action::FullscreenBarKey,
+            Action::Wait(20),
+            Action::Snapshot("03-the-key-brings-it-back"),
+            Action::WaitWall(2_300),
+            Action::Wait(20),
+            Action::TouchSwipe(Point::new(800.0, 2.0), Point::new(800.0, 90.0)),
+            Action::Wait(20),
+            Action::Snapshot("04-a-swipe-down-brings-it-back"),
+            Action::WaitWall(2_300),
+            Action::Wait(20),
+            Action::Snapshot("05-idle-again"),
+            Action::MoveCursor(Point::new(800.0, 300.0)),
+            Action::MoveCursor(Point::new(800.0, 120.0)),
+            Action::MoveCursor(Point::new(800.0, 30.0)),
+            Action::MoveCursor(Point::new(800.0, 0.0)),
+            Action::WaitWall(300),
+            Action::Wait(20),
+            Action::Snapshot("06-the-pointer-at-the-top-brings-it-back"),
+            Action::FullScreenFocused(false),
+            Action::Wait(4),
+        ],
+    }
+}
+
 /// A finger dragged from `from` to `to`, as raw touch in nine steps.
 pub(super) fn touch_swipe(driver: &mut ShellDriver, from: Point, to: Point) {
     let touch = |phase, p: Point| {

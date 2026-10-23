@@ -127,8 +127,9 @@ impl ShellOverlayHost {
                 .then(|| state.fullscreen_group())
                 .flatten()
         });
-        self.fullscreen_bar_reveal.follow(fullscreen);
-        self.fullscreen_bar_reveal.settle(now);
+        self.fullscreen_bar_reveal.follow(fullscreen, now);
+        let in_use = self.fullscreen_bar_in_use();
+        self.fullscreen_bar_reveal.settle(now, in_use);
         let bar_over = self
             .fullscreen_bar_reveal
             .shown()
@@ -143,6 +144,31 @@ impl ShellOverlayHost {
                 group.set_fills_display(presence != tilo_desktop::chrome::TopBarPresence::Docked);
                 group.set_fullscreen_bar_revealed(bar_over == Some(group.id));
             }
+        }
+    }
+
+    /// Whether the fullscreen window's bar is being used, which keeps it
+    /// shown past its idle time.
+    fn fullscreen_bar_in_use(&self) -> bool {
+        let Some(group_id) = self.fullscreen_bar_reveal.group() else {
+            return false;
+        };
+        self.group_row_ptrs.values().any(|&ptr| {
+            // SAFETY: same stable boxed-row contract as the other
+            // `group_row_ptrs` accessors; this is a read-only query.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.groups
+                .iter()
+                .any(|group| group.id == group_id && group.bar_in_use())
+        })
+    }
+
+    /// The key that asks for a fullscreen window's bar (Super) went down:
+    /// it shows for its idle time, over the window.
+    pub fn reveal_fullscreen_bar_by_key(&mut self) {
+        let now = Instant::now();
+        if self.fullscreen_bar_reveal.reveal_by_key(now) {
+            self.sync_top_bar_presence(now);
         }
     }
 
@@ -332,5 +358,10 @@ impl ShellOverlayHost {
     /// When the top bar's reveal next has something to settle.
     pub fn top_bar_reveal_deadline(&self) -> Option<Instant> {
         self.top_bar_reveal.deadline()
+    }
+
+    /// When a fullscreen window's bar next has something to settle.
+    pub fn fullscreen_bar_reveal_deadline(&self) -> Option<Instant> {
+        self.fullscreen_bar_reveal.deadline()
     }
 }
