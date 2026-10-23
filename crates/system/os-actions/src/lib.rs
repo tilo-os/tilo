@@ -154,7 +154,7 @@ pub use runtime_portal::tools::{
     AppEntry, AppKind, AppRemoval, BackupsRoute, ContainerEngine, DisksRoute, DriveEntry,
     FirewallRoute, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, TOOL_CONTEXT_ENV,
     TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute,
-    list_drives, open_tool, tool_intent_from_env,
+    invocation_hex, list_drives, open_tool, tool_intent_from_env,
 };
 pub use users::AccountRole;
 

@@ -7273,8 +7273,10 @@ impl FrameHarness {
         let started = match &delivered {
             Some(continuation) => {
                 self.acting_for.insert(invocation, continuation.clone());
-                let _invoker =
-                    crate::invocation_scope::InvokerScope::enter(continuation.invoker.clone());
+                let _invoker = crate::invocation_scope::InvokerScope::delivered(
+                    continuation.invoker.clone(),
+                    invocation,
+                );
                 self.invoke_bound_action_for(
                     address,
                     arguments,

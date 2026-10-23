@@ -26,7 +26,9 @@ const POLL: Duration = Duration::from_secs(5);
 const SETTLING_POLL: Duration = Duration::from_secs(1);
 
 pub(super) type AppLister = fn() -> Result<Vec<AppEntry>, String>;
-pub(super) type AppRequest = fn(ToolIntent) -> Result<(), String>;
+/// Ask the shell for an intent, for the broker invocation it is made for
+/// ([`runtime_portal::tools::open_tool`]).
+pub(super) type AppRequest = fn(ToolIntent, Option<[u8; 16]>) -> Result<(), String>;
 
 /// One answer of the lister: the apps, and the files of `~/Applications`.
 struct Listed {
@@ -187,11 +189,12 @@ impl FileExplorerWidget {
     fn ask_shell(&self, intents: Vec<ToolIntent>) {
         let request = self.applications.request;
         let refused = Arc::clone(&self.applications.refused);
+        let on_behalf_of = ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
         let _ = std::thread::Builder::new()
             .name("files-applications-ask".into())
             .spawn(move || {
                 for intent in intents {
-                    if let Err(error) = request(intent)
+                    if let Err(error) = request(intent, on_behalf_of)
                         && let Ok(mut slot) = refused.lock()
                     {
                         *slot = Some(error);

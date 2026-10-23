@@ -55,7 +55,7 @@ pub(crate) fn answer(
             }
             Ok(crate::device_read::job(
                 cx,
-                move || os_actions::open_tool(portable_identity_backup_intent()),
+                move || os_actions::open_tool(portable_identity_backup_intent(), None),
                 |_: &mut SettingsApp, opened: Result<(), String>, _| {
                     opened.map(|()| Effected::done())
                 },
