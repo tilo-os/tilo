@@ -501,6 +501,14 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
             refused.clear();
             carrier = id;
         }
+        // Taken before the layers asked for are read, so each layer asked
+        // for a keyframe is among them and the keyframe goes out.
+        let asked: BTreeSet<Layer> = client
+            .as_ref()
+            .map(|client| client.take_picture_keyframes(source))
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let remote: BTreeSet<Layer> = client
             .as_ref()
             .map(|client| {
@@ -539,12 +547,6 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
                 }
             }
         }
-        let asked: BTreeSet<Layer> = client
-            .as_ref()
-            .map(|client| client.take_picture_keyframes(source))
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
         let at = if fresh {
             frame.captured_at
         } else {
