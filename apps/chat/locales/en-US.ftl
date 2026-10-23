@@ -221,6 +221,7 @@ chat-introduce = Introduced themselves as { $name }
 chat-name-agent = Named an agent { $name }
 chat-create-category = Created the category { $name }
 chat-create-channel = Created the channel #{ $name }
+chat-create-channel-with-id = Created the channel #{ $name }
 chat-delete-category = Deleted the category { $item }
 chat-move-channel = { $up ->
     [true] Moved #{ $item } up
@@ -239,6 +240,7 @@ chat-start-draft = Started a draft
 chat-post = Posted: { $text }
 chat-post-file = Posted the file { $name }
 chat-share-resource = Shared a link in #{ $item }
+chat-deliver-message = Delivered a message from { $author }
 chat-edit-message = Edited a message: { $text }
 chat-delete-message = Deleted a message
 chat-react = Reacted with { $emoji }
