@@ -791,13 +791,28 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
     let shots = std::env::var_os("PDF_ZOOM_SHOTS").map(std::path::PathBuf::from);
     let mut shot_tiled = false;
     let mut next = ui::time::now();
+    let mut ctrl_held = false;
     for step in script {
         next += period;
+        // Ctrl goes down before the Ctrl+wheel and keyboard steps and stays
+        // down through them, as a hand holds it; the harness runs a frame
+        // for each event, so pressing it within a step would count frames
+        // of its own.
+        let ctrl = matches!(step, ZoomStep::CtrlWheel(_) | ZoomStep::Key(_));
+        if ctrl != ctrl_held {
+            let held: &[String] = if ctrl { &["ctrl".to_owned()] } else { &[] };
+            Framed::harness_mut(&mut app).set_modifiers(held);
+            ctrl_held = ctrl;
+        }
         let cpu = ui::rt::thread_cpu_time();
         let t = ui::time::now();
         let harness = Framed::harness_mut(&mut app);
-        send_zoom_step(harness, step);
-        harness.relayout();
+        // An event runs its own frame; a frame with no input runs one.
+        if matches!(step, ZoomStep::Idle) {
+            harness.relayout();
+        } else {
+            send_zoom_step(harness, step);
+        }
         let cpu_ms = match (cpu, ui::rt::thread_cpu_time()) {
             (Some(before), Some(after)) => after.saturating_sub(before).as_secs_f64() * 1000.0,
             _ => t.elapsed().as_secs_f64() * 1000.0,
@@ -878,23 +893,14 @@ fn send_zoom_step(harness: &mut ui::headless::FrameHarness, step: ZoomStep) {
             delta,
             phase: winit::event::TouchPhase::Moved,
         }),
-        ZoomStep::CtrlWheel(dy) => {
-            harness.set_modifiers(&["ctrl".to_owned()]);
-            harness.send(&winit::event::WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: winit::event::MouseScrollDelta::PixelDelta(
-                    winit::dpi::PhysicalPosition::new(0.0, dy),
-                ),
-                phase: winit::event::TouchPhase::Moved,
-            });
-            harness.set_modifiers(&[]);
-        }
-        ZoomStep::Key(key) => {
-            // Ctrl held, as the zoom shortcuts are typed.
-            harness.set_modifiers(&["ctrl".to_owned()]);
-            harness.key(key);
-            harness.set_modifiers(&[]);
-        }
+        ZoomStep::CtrlWheel(dy) => harness.send(&winit::event::WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+                0.0, dy,
+            )),
+            phase: winit::event::TouchPhase::Moved,
+        }),
+        ZoomStep::Key(key) => harness.key(key),
         ZoomStep::Idle => {}
     }
 }
