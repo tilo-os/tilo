@@ -29,6 +29,7 @@ pub(crate) struct Desktop {
     control: PathBuf,
     runtime_dir: PathBuf,
     log: Log,
+    door: bool,
 }
 
 /// The shell Cargo built beside an integration test, where the run put it.
@@ -81,7 +82,35 @@ impl Desktop {
         // of the session it restores, so release it before that starts, or the
         // compositor runs without its durable owner ("file lease is busy").
         drop(tree);
-        let identity_root = seed_identity(&runtime_dir);
+        seed_identity(&runtime_dir);
+        let (child, log) = Self::spawn_compositor(&runtime_dir, door);
+        let desktop = Self {
+            child,
+            control: runtime_dir.join("ctl"),
+            runtime_dir,
+            log,
+            door,
+        };
+        desktop.wait_started();
+        desktop
+    }
+
+    /// End the compositor as the session ends it (SIGTERM) and start it
+    /// again on the same login: its saved session, records and identity.
+    pub(crate) fn restart(&mut self) {
+        let pid = rustix::process::Pid::from_child(&self.child);
+        rustix::process::kill_process(pid, rustix::process::Signal::TERM)
+            .expect("ask the compositor to end");
+        self.child.wait().expect("the compositor ends");
+        let (child, log) = Self::spawn_compositor(&self.runtime_dir, self.door);
+        self.child = child;
+        self.log = log;
+        self.wait_started();
+    }
+
+    fn spawn_compositor(runtime_dir: &Path, door: bool) -> (Child, Log) {
+        let state_path = runtime_dir.join("state.json");
+        let identity_root = runtime_dir.join("identity-root");
         let control = runtime_dir.join("ctl");
 
         // Cargo supplies this at compile time for integration tests, not
@@ -103,7 +132,7 @@ impl Desktop {
         }
         command
             .args(["--mode", "native", "--backend", "headless"])
-            .env("XDG_RUNTIME_DIR", &runtime_dir)
+            .env("XDG_RUNTIME_DIR", runtime_dir)
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_STATE_HOME", runtime_dir.join("state"))
@@ -168,22 +197,19 @@ impl Desktop {
                 }
             });
         }
-        let desktop = Self {
-            child,
-            control,
-            runtime_dir,
-            log,
-        };
-        desktop.wait_for("a laid-out first frame", |targets| !targets.is_empty());
+        (child, log)
+    }
+
+    fn wait_started(&self) {
+        self.wait_for("a laid-out first frame", |targets| !targets.is_empty());
         // A compositor that cannot take its own state file's writer lease runs
         // without its durable owner and its collaboration service: nothing
         // published to the broker, and every app that waits for it stays dark.
-        let busy = matching(&desktop.log, &["file lease is busy"], 3);
+        let busy = matching(&self.log, &["file lease is busy"], 3);
         assert!(
             busy.is_empty(),
             "the compositor found its state file's writer lease taken:\n{busy}"
         );
-        desktop
     }
 
     /// The control socket.

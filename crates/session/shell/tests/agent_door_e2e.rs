@@ -35,20 +35,28 @@ impl Session {
     fn runtime_dir(&self) -> &Path {
         self.desktop.runtime_dir()
     }
+    fn restart(&mut self) {
+        self.desktop.restart();
+        self.wait_for_door();
+    }
+    fn wait_for_door(&self) {
+        self.desktop
+            .wait_for("the restored Notes notebook", |targets| {
+                targets.iter().any(|name| name == "notes.first_note")
+            });
+        let deadline = tilo_test_env::hang_deadline();
+        while !self.door().exists() {
+            assert!(Instant::now() < deadline, "the door was never served");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
 }
 
 fn spawn() -> Session {
     let desktop =
         crate::idle_wakeups::Desktop::start_with_door(crate::idle_wakeups::notes_desktop(), true);
-    desktop.wait_for("the restored Notes notebook", |targets| {
-        targets.iter().any(|name| name == "notes.first_note")
-    });
     let session = Session { desktop };
-    let deadline = tilo_test_env::hang_deadline();
-    while !session.door().exists() {
-        assert!(Instant::now() < deadline, "the door was never served");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    session.wait_for_door();
     session
 }
 
@@ -591,5 +599,167 @@ fn assert_no_opaque_id(text: &str) {
             && !text.contains('\u{1f}')
             && !text.contains("notes.notebook/"),
         "an opaque id reached the agent: {text}"
+    );
+}
+
+/// An agent admitted once by the person and granted Notes under `grant`.
+fn admitted_agent(session: &Session, grant: &str) -> McpClient {
+    let mut agent = McpClient::start(session);
+    agent.send(&initialize());
+    let prompt = waiting_prompt(&session.control());
+    decide(&session.control(), "allow-once", &prompt);
+    let initialized = agent.reply();
+    assert!(
+        initialized["result"]["serverInfo"].is_object(),
+        "the door did not answer: {initialized}"
+    );
+    let granted = control(
+        &session.control(),
+        &serde_json::json!({"op":"allow","subject":"agent:claude-code","node":"app:so.tilo.notes",
+            "kinds":["read","undoable"],"answer":"allow","id":grant}),
+    );
+    assert!(granted.get("err").is_none(), "{granted}");
+    agent
+}
+
+impl McpClient {
+    /// Run `path` until it succeeds: after a restart the app publishes its
+    /// directory a moment after it opens. Its answer.
+    fn do_until(&mut self, path: &str, args: &serde_json::Value) -> String {
+        self.tool_until(
+            "tilo_do",
+            &serde_json::json!({"path": path, "args": args}),
+            |text| text.starts_with("ok"),
+        )
+    }
+}
+
+/// The note a creating action answered with: its own id, which names it
+/// for as long as it exists.
+fn created_page(answer: &str) -> String {
+    let result: serde_json::Value = answer
+        .lines()
+        .find(|line| line.starts_with('{'))
+        .and_then(|line| serde_json::from_str(line).ok())
+        .unwrap_or_else(|| panic!("the creating action answered no result: {answer}"));
+    let page = result["page"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the result names no page: {answer}"));
+    uuid::Uuid::parse_str(page).unwrap_or_else(|_| panic!("not a page id: {answer}"));
+    page.to_owned()
+}
+
+/// An agent creates a note and is answered with the note's id; that id
+/// keeps naming the note, and the actions on it keep working, after Notes
+/// is closed and reopened and after the whole session restarts.
+#[test]
+fn the_id_a_creating_action_answers_keeps_working_across_app_and_shell_restarts() {
+    let mut session = spawn();
+    let mut agent = admitted_agent(&session, "e2e-agent-notes");
+    agent.tool_until("tilo_ls", &serde_json::json!({"path": "notes"}), |text| {
+        text.contains("#new-note")
+    });
+    let (created, failed) = agent.tool(
+        "tilo_do",
+        &serde_json::json!({"path": "notes#new-note", "args": {"title": "Kept note"}}),
+    );
+    assert!(!failed && created.starts_with("ok"), "{created}");
+    let page = created_page(&created);
+    let append = format!("notes/Notebook/{page}/body#append-paragraph");
+    agent.do_until(&append, &serde_json::json!({"text": "before any restart"}));
+
+    for close in ["tab.close", "tab.reopen"] {
+        let answer = control(
+            &session.control(),
+            &serde_json::json!({"op":"actions_invoke","provider":"actions","id":close}),
+        );
+        assert!(answer.get("err").is_none(), "{close}: {answer}");
+    }
+    agent.do_until(
+        &append,
+        &serde_json::json!({"text": "after Notes reopened"}),
+    );
+
+    drop(agent);
+    session.restart();
+    let mut agent = admitted_agent(&session, "e2e-agent-notes-again");
+    agent.do_until(
+        &append,
+        &serde_json::json!({"text": "after the session restarted"}),
+    );
+    let body = agent.tool_until(
+        "tilo_read",
+        &serde_json::json!({"path": format!("notes/Notebook/{page}/body")}),
+        |text| text.contains("after the session restarted"),
+    );
+    for line in ["before any restart", "after Notes reopened"] {
+        assert!(body.contains(line), "{line} is missing: {body}");
+    }
+}
+
+/// An agent writes a thousand paragraphs into a note as fast as the door
+/// takes them: every edit lands, collaboration stays enabled, and the next
+/// action on the note still runs.
+#[test]
+fn a_burst_of_a_thousand_agent_edits_lands_and_keeps_the_action_channel() {
+    const EDITS: usize = 1_024;
+    const STEPS: usize = 32;
+    let session = spawn();
+    let mut agent = admitted_agent(&session, "e2e-agent-notes");
+    agent.tool_until("tilo_ls", &serde_json::json!({"path": "notes"}), |text| {
+        text.contains("#new-note")
+    });
+    let (created, failed) = agent.tool(
+        "tilo_do",
+        &serde_json::json!({"path": "notes#new-note", "args": {"title": "Burst"}}),
+    );
+    assert!(!failed && created.starts_with("ok"), "{created}");
+    let page = created_page(&created);
+    let body = format!("notes/Notebook/{page}/body");
+    let append = format!("{body}#append-paragraph");
+    agent.do_until(&append, &serde_json::json!({"text": "first"}));
+
+    // Every request goes out before the first answer is read.
+    let first_id = agent.next_id.checked_add(1).expect("request ids left");
+    for batch in 0..EDITS / STEPS {
+        agent.next_id = agent.next_id.checked_add(1).expect("request ids left");
+        let calls: Vec<_> = (0..STEPS)
+            .map(|step| {
+                serde_json::json!({"path": append,
+                    "args": {"text": format!("line {}", batch * STEPS + step)}})
+            })
+            .collect();
+        agent.send(&serde_json::json!({"jsonrpc":"2.0","id":agent.next_id,
+            "method":"tools/call","params":{"name":"tilo_do","arguments":{"calls":calls}}}));
+    }
+    for id in first_id..=agent.next_id {
+        let reply = agent.reply();
+        assert_eq!(reply["id"], id, "{reply}");
+        assert!(
+            reply["result"]["isError"] != true,
+            "a step of the burst failed: {reply}"
+        );
+    }
+
+    agent.do_until(&append, &serde_json::json!({"text": "after the burst"}));
+    let read = agent.tool_until(
+        "tilo_read",
+        &serde_json::json!({"path": body, "max_chars": 100_000}),
+        |text| text.contains("after the burst"),
+    );
+    for line in 0..EDITS {
+        assert!(
+            read.contains(&format!("line {line} ")) || read.contains(&format!("line {line}\n")),
+            "line {line} is missing"
+        );
+    }
+    let disabled = crate::idle_wakeups::matching(
+        &session.log(),
+        &["disabling collaboration", "invocation stream closed"],
+        5,
+    );
+    assert!(
+        disabled.is_empty(),
+        "the burst ended collaboration:\n{disabled}"
     );
 }
