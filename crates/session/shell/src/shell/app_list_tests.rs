@@ -31,6 +31,10 @@ fn host(id: &str, name: &str, path: PathBuf) -> HostEntry {
 /// system image ships, a Flatpak of theirs and one of the system's, an
 /// `AppImage`, a menu entry of the system's and one of their own.
 fn every_kind(root: &Path) -> Vec<AppListItem> {
+    every_kind_for(root, &Person::default())
+}
+
+fn every_kind_for(root: &Path, person: &Person) -> Vec<AppListItem> {
     let places = places(root);
     let apps = places.applications();
     let tilo_apps = [
@@ -74,7 +78,7 @@ fn every_kind(root: &Path) -> Vec<AppListItem> {
             PathBuf::from("/usr/share/applications/so.tilo.notes.desktop"),
         ),
     ];
-    project(&tilo_apps, &host_entries, &places)
+    project(&tilo_apps, &host_entries, &places, person)
 }
 
 fn item<'a>(items: &'a [AppListItem], id: &str) -> &'a AppListItem {
@@ -101,12 +105,17 @@ fn every_kind_of_app_is_in_the_list() {
         item(&items, "org.gnome.Chess").source,
         AppSource::Flatpak {
             app_id: "org.gnome.Chess".into(),
-            user: true
+            installation: FlatpakInstallation::Person
         }
     );
     assert!(matches!(
         item(&items, "org.gnome.Maps").source,
-        AppSource::Flatpak { user: false, .. }
+        AppSource::Flatpak {
+            installation: FlatpakInstallation::Device {
+                administrator: false
+            },
+            ..
+        }
     ));
     assert!(matches!(
         &item(&items, "tilo-downloaded-krita").source,
@@ -145,7 +154,7 @@ fn each_kind_says_how_it_leaves() {
     assert_eq!(removal("org.gnome.TextEditor"), AppRemoval::RemoveFromApps);
     assert_eq!(removal("org.gnome.Maps"), AppRemoval::RemoveFromApps);
     assert_eq!(removal("my-script"), AppRemoval::RemoveFromApps);
-    assert_eq!(removal("so.tilo.notes"), AppRemoval::None);
+    assert_eq!(removal("so.tilo.notes"), AppRemoval::RemoveFromApps);
     let entry = item(&items, "tilo-downloaded-krita").entry();
     assert_eq!(
         entry.program.as_deref(),
@@ -288,10 +297,79 @@ fn tilo_app_data_is_untouched() {
         ])],
         "only the app goes: `app remove` keeps its saved state, and nothing is trashed"
     );
-    assert!(
-        plan(item(&items, "so.tilo.notes"), true, &places(home), home).is_err(),
-        "an app the system image ships stays"
+}
+
+#[test]
+fn a_tilo_app_of_the_system_image_is_hidden_and_then_not_listed() {
+    let home = Path::new("/home/ute");
+    let (steps, outcome) = plan(
+        item(&every_kind(home), "so.tilo.notes"),
+        true,
+        &places(home),
+        home,
+    )
+    .unwrap();
+    assert_eq!(outcome, Outcome::RemovedFromApps);
+    assert_eq!(
+        steps,
+        [Step::Hide {
+            at: places(home).applications().join("so.tilo.notes.desktop"),
+            name: "Notes".into(),
+        }]
     );
+    let person = Person {
+        administrator: false,
+        removed_from_apps: vec!["so.tilo.notes".into()],
+    };
+    let items = every_kind_for(home, &person);
+    assert!(
+        items.iter().all(|item| item.id != "so.tilo.notes"),
+        "{items:#?}"
+    );
+    assert!(items.iter().any(|item| item.id == "so.example.journal"));
+}
+
+#[test]
+fn a_device_flatpak_is_uninstalled_by_an_administrator_and_hidden_for_anyone_else() {
+    let home = Path::new("/home/ute");
+    let administrator = Person {
+        administrator: true,
+        removed_from_apps: Vec::new(),
+    };
+    let maps = item(&every_kind_for(home, &administrator), "org.gnome.Maps").clone();
+    assert_eq!(maps.removal(), AppRemoval::UninstallWithData);
+    let (steps, outcome) = plan(&maps, true, &places(home), home).unwrap();
+    assert_eq!(outcome, Outcome::UninstalledDataInTrash);
+    assert_eq!(
+        steps,
+        [
+            Step::Flatpak {
+                args: [
+                    "uninstall",
+                    "--system",
+                    "--noninteractive",
+                    "--",
+                    "org.gnome.Maps"
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+                required: true,
+            },
+            Step::Flatpak {
+                args: ["uninstall", "--system", "--unused", "--noninteractive"]
+                    .map(str::to_owned)
+                    .to_vec(),
+                required: false,
+            },
+            Step::Trash(flatpak_data_dir(home, "org.gnome.Maps")),
+        ]
+    );
+
+    let maps = item(&every_kind(home), "org.gnome.Maps").clone();
+    assert_eq!(maps.removal(), AppRemoval::RemoveFromApps);
+    let (steps, outcome) = plan(&maps, true, &places(home), home).unwrap();
+    assert_eq!(outcome, Outcome::RemovedFromApps);
+    assert!(matches!(steps.as_slice(), [Step::Hide { .. }]), "{steps:?}");
 }
 
 /// A menu entry of the operating system offers no Uninstall, only "Remove from
@@ -400,7 +478,12 @@ fn entries_no_menu_shows_are_not_apps() {
     write("no-exec", "");
     write("org.gnome.TextEditor", "Exec=gnome-text-editor\n");
     let scan = desktop_entry::scan_dirs(&[dir], &["Tilo".to_owned()]);
-    let items = project(&[], &host_entries(&scan), &places(root.path()));
+    let items = project(
+        &[],
+        &host_entries(&scan),
+        &places(root.path()),
+        &Person::default(),
+    );
     let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
     assert_eq!(ids, ["org.gnome.TextEditor"]);
 }

@@ -2025,7 +2025,9 @@ impl ShellDriver {
             name @ ("app-uninstall-flatpak"
             | "app-uninstall-tilo"
             | "app-uninstall-downloaded"
-            | "app-uninstall-system") => self.scene_app_uninstall(name),
+            | "app-uninstall-system"
+            | "app-uninstall-system-tilo"
+            | "app-uninstall-device-flatpak") => self.scene_app_uninstall(name),
             "invite-empty" => self.scene_invite_empty(),
             "invite-typing" => self.scene_invite_typing(),
             "invite-error" => self.scene_invite_error(),

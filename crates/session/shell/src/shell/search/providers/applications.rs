@@ -164,9 +164,13 @@ fn app_detail(package_id: &str, category: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The installed apps', the dynamic launchers' and the desktop entries'
+/// generations: the last carries the apps the person took off their apps.
+type Generation = (u64, u128, u64);
+
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
-    index: BackgroundIndex<(u64, u128), ApplicationsSnapshot>,
+    index: BackgroundIndex<Generation, ApplicationsSnapshot>,
     #[cfg(test)]
     source: Option<Arc<ApplicationsTestSource>>,
 }
@@ -194,9 +198,9 @@ impl ApplicationsTestSource {
         })
     }
 
-    fn generation(&self) -> (u64, u128) {
+    fn generation(&self) -> Generation {
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
-        (generation, u128::from(generation))
+        (generation, u128::from(generation), 0)
     }
 
     fn snapshot(&self) -> (u64, Vec<InstalledApp>, Vec<DynamicLauncherRecord>) {
@@ -263,7 +267,7 @@ impl ApplicationsProvider {
     }
 
     #[allow(clippy::unused_self, reason = "test builds use the injected source")]
-    fn source_generation(&self) -> (u64, u128) {
+    fn source_generation(&self) -> Generation {
         #[cfg(test)]
         if let Some(source) = &self.source {
             return source.generation();
@@ -271,6 +275,7 @@ impl ApplicationsProvider {
         (
             launcher::gui_apps_generation(),
             crate::portal::desktop_services::dynamic_launcher_generation(),
+            desktop_entry::cache::cached_scan_generation(),
         )
     }
 
@@ -280,27 +285,31 @@ impl ApplicationsProvider {
     /// keystroke into an indexing job.
     fn build_snapshot(
         #[cfg(test)] source: Option<Arc<ApplicationsTestSource>>,
-    ) -> ((u64, u128), ApplicationsSnapshot) {
+    ) -> (Generation, ApplicationsSnapshot) {
         #[cfg(test)]
         if let Some(source) = source {
             let (generation, installed, dynamic) = source.snapshot();
             return (
-                (generation, u128::from(generation)),
-                Self::snapshot_from_parts(&installed, dynamic),
+                (generation, u128::from(generation), 0),
+                Self::snapshot_from_parts(&installed, dynamic, &[]),
             );
         }
         let (installed_generation, installed) = launcher::gui_apps_snapshot();
         let (dynamic_generation, dynamic) =
             crate::portal::desktop_services::dynamic_launcher_snapshot();
+        let (entries_generation, scan) = desktop_entry::cache::cached_scan_snapshot();
         (
-            (installed_generation, dynamic_generation),
-            Self::snapshot_from_parts(&installed, dynamic),
+            (installed_generation, dynamic_generation, entries_generation),
+            Self::snapshot_from_parts(&installed, dynamic, &scan.hidden),
         )
     }
 
+    /// The index over `installed` and `dynamic`, less the installed apps
+    /// whose ids are in `removed_from_apps`.
     fn snapshot_from_parts(
         installed: &[InstalledApp],
         dynamic: Vec<DynamicLauncherRecord>,
+        removed_from_apps: &[String],
     ) -> ApplicationsSnapshot {
         let installed_ids: HashSet<String> = installed
             .iter()
@@ -308,6 +317,7 @@ impl ApplicationsProvider {
             .collect();
         let mut entries = installed
             .iter()
+            .filter(|app| !removed_from_apps.contains(&app.package_id))
             .cloned()
             .map(|app| ApplicationEntry::Installed(Arc::new(app)))
             .collect::<Vec<_>>();
@@ -323,7 +333,7 @@ impl ApplicationsProvider {
     /// The worker reads and clones every source itself; the UI tick never
     /// flattens an application corpus before spawn, and a query never starts it.
     #[allow(clippy::unused_self, reason = "test builds use the injected source")]
-    fn builder(&self) -> impl FnOnce() -> ((u64, u128), ApplicationsSnapshot) + Send + 'static {
+    fn builder(&self) -> impl FnOnce() -> (Generation, ApplicationsSnapshot) + Send + 'static {
         #[cfg(test)]
         let source = self.source.clone();
         move || {
@@ -1053,10 +1063,10 @@ impl ApplicationsProvider {
     }
 
     fn revision(&self) -> String {
-        let (installed, dynamic) = self.source_generation();
-        let ready = self.index.is_ready(&(installed, dynamic));
+        let (installed, dynamic, entries) = self.source_generation();
+        let ready = self.index.is_ready(&(installed, dynamic, entries));
         format!(
-            "{}:{installed}:{dynamic}",
+            "{}:{installed}:{dynamic}:{entries}",
             if ready { "ready" } else { "indexing" }
         )
     }
@@ -1474,6 +1484,25 @@ mod tests {
             provider.refresh_search_index(ctx);
             provider.search_revision(ctx).starts_with("ready:")
         });
+    }
+
+    #[test]
+    fn an_app_taken_off_the_persons_apps_is_not_listed() {
+        let installed = [app("so.tilo.notes", "Notes"), app("so.tilo.chess", "Chess")];
+        let snapshot = ApplicationsProvider::snapshot_from_parts(
+            &installed,
+            Vec::new(),
+            &["so.tilo.notes".to_owned()],
+        );
+        let listed: Vec<&str> = snapshot
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                ApplicationEntry::Installed(app) => app.package_id.as_str(),
+                ApplicationEntry::Dynamic(_) => "",
+            })
+            .collect();
+        assert_eq!(listed, ["so.tilo.chess"]);
     }
 
     fn app(package_id: &str, display_name: &str) -> InstalledApp {

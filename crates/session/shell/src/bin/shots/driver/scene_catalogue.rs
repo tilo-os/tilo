@@ -77,6 +77,8 @@ impl ShellDriver {
         "app-uninstall-tilo",
         "app-uninstall-downloaded",
         "app-uninstall-system",
+        "app-uninstall-system-tilo",
+        "app-uninstall-device-flatpak",
         "invite-empty",
         "invite-typing",
         "invite-error",
