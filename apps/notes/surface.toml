@@ -148,3 +148,11 @@ params = [
   { name = "note", required = false, schema = { type = ["string", "null"] } },
 ]
 
+[[resources.verbs]]
+id = "append-to-note"
+kind = "undoable"
+params = [
+  { name = "title", required = true, schema = { type = "string" } },
+  { name = "markdown", required = true, schema = { type = "string" } },
+]
+

@@ -67,6 +67,19 @@ pub enum NotesEffect {
         #[param("The note")]
         page: Uuid,
     },
+    /// Export Markdown content
+    ///
+    /// Keep a note, or the whole notebook, as a Markdown file in the room's
+    /// content, its images inside it, and answer its content address. No
+    /// file is chosen or written: an agent hands the content on (a mail
+    /// attachment, a shared file) instead of reaching this device's disk.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportMarkdownContent {
+        #[param("The note; the whole notebook when neither it nor a title is given")]
+        page: Option<Uuid>,
+        #[param("The note's title, ignoring case, in place of its id")]
+        title: Option<String>,
+    },
     /// Insert image
     ///
     /// Choose an image and add it to a note.

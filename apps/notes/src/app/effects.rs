@@ -44,6 +44,9 @@ impl NotesApp {
                 })))
             }
             NotesEffect::ExportMarkdown { page } => self.export_markdown(&state, page, cx),
+            NotesEffect::ExportMarkdownContent { page, title } => self
+                .export_markdown_content(&state, page, title.as_deref())
+                .map(Effected::value),
             NotesEffect::InsertImage { page } => {
                 state.get(page).ok_or("the note no longer exists")?;
                 Ok(Self::choose_image(page, cx))
@@ -335,6 +338,54 @@ impl NotesApp {
                 Ok(Effected::done())
             }),
         )
+    }
+
+    /// A note, or every note in notebook order, as one portable Markdown
+    /// file kept in the window's content store: its address, title, how
+    /// many notes it holds and its size.
+    fn export_markdown_content(
+        &self,
+        state: &Workspace,
+        page: Option<PageId>,
+        title: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let chosen = match (page, title.map(str::trim).filter(|title| !title.is_empty())) {
+            (Some(page), _) => Some(state.get(page).ok_or("the note no longer exists")?.id),
+            (None, Some(title)) => Some(actions::page_titled(&state.data.pages, title)?),
+            (None, None) => None,
+        };
+        let (name, markdown, notes) = match chosen {
+            Some(page) => {
+                let title = state.get(page).map_or("", |meta| meta.title.trim());
+                (title.to_owned(), actions::page_markdown(state, page), 1)
+            }
+            None => (
+                ui::i18n!("notes-title"),
+                actions::notebook_markdown(state),
+                state.data.pages.len(),
+            ),
+        };
+        let assets = self
+            .canonical_assets
+            .read()
+            .map(|assets| assets.clone())
+            .unwrap_or_default();
+        let portable = super::inline_images(&markdown, &assets);
+        let store = ui::tilo_resource::content::current()
+            .ok_or("this window keeps no content to export into")?;
+        let hash = store
+            .put(portable.as_bytes())
+            .map_err(|error| format!("the export could not be kept: {error}"))?;
+        let content =
+            tilo_actions::content_resource(&hash).ok_or("the export has no content address")?;
+        Ok(serde_json::json!({
+            "content": content,
+            "name": export_name(&name),
+            "title": name,
+            "notes": notes,
+            "bytes": portable.len(),
+            "format": "markdown",
+        }))
     }
 
     fn choose_image(page: PageId, cx: &mut Cx) -> Effected {

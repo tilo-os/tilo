@@ -3815,6 +3815,7 @@ impl NotesApp {
 
 #[cfg(test)]
 mod tests {
+    mod agent_content;
     mod search_refresh;
     use super::*;
     use tempfile::TempDir;
