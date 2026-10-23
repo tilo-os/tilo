@@ -4585,7 +4585,12 @@ fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
         assert!(control.width() > 0.0 && control.height() >= 32.0);
         assert!(control.x0 >= row.x0 && control.x1 <= row.x1);
         assert!(control.y0 >= row.y0 && control.y1 <= row.y1);
-        assert_eq!(control.x0, row.x0, "sort aligns with its overview rail");
+        let theme = Theme::light().with_text_scale(scale);
+        assert_eq!(
+            control.x0,
+            row.x0 + f64::from(theme.tokens.spacing.rhythm.tight),
+            "sort starts where the list rows' faces do"
+        );
         assert_eq!(
             control.y0 - row.y0,
             f64::from(Theme::light().tokens.spacing.s2),
@@ -4749,4 +4754,38 @@ fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     let state = exported_node(&mut viewer, "No contacts yet")
         .expect("the list beside a viewer's form names the empty book");
     assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+}
+
+#[test]
+fn the_contact_form_leaves_its_title_to_the_window_bar() {
+    let mut app = synced();
+    let shown = selected_contact(&app);
+    let bar_action = |id: &str| {
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.actions.into_iter().find(|action| action.id == id))
+            .unwrap_or_else(|| panic!("the bar offers {id}"))
+    };
+    assert_eq!(
+        bar_action(BAR_EDIT).name,
+        "Edit contact",
+        "the bar's Edit is named for the whole contact, apart from each field's pencil"
+    );
+    press_bar(&mut app, BAR_EDIT);
+    assert_eq!(app.mode, Mode::Edit, "the person is being edited");
+    assert_ne!(
+        bar_action(BAR_CANCEL).icon,
+        "x",
+        "Cancel does not wear the window's own close"
+    );
+    assert_eq!(
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.location)
+            .map(|location| location.label),
+        Some(shown.display_name()),
+        "the window bar names the person being edited"
+    );
+    assert!(
+        !named(&app, "Edit contact"),
+        "the form draws no title of its own"
+    );
 }
