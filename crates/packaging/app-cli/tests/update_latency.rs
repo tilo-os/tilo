@@ -48,9 +48,11 @@ const APPS: usize = 12;
 /// A loopback registry with a far-away registry's latency, keeping
 /// connections alive between requests as an HTTP/1.1 or HTTP/2 server does.
 #[derive(Clone, Default)]
-struct FarRegistry {
+pub(crate) struct FarRegistry {
     objects: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     requests: Arc<Mutex<Vec<String>>>,
+    /// Every request, near or far, until [`Self::take_seen`].
+    seen: Arc<Mutex<Vec<String>>>,
     connections: Arc<AtomicUsize>,
     open: Arc<AtomicUsize>,
     peak: Arc<AtomicUsize>,
@@ -59,7 +61,7 @@ struct FarRegistry {
 }
 
 impl FarRegistry {
-    fn start(&self) -> String {
+    pub(crate) fn start(&self) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let registry = self.clone();
@@ -73,7 +75,7 @@ impl FarRegistry {
         format!("http://127.0.0.1:{port}")
     }
 
-    fn put(&self, path: &str, bytes: Vec<u8>) {
+    pub(crate) fn put(&self, path: &str, bytes: Vec<u8>) {
         self.objects.lock().unwrap().insert(path.to_owned(), bytes);
     }
 
@@ -99,6 +101,7 @@ impl FarRegistry {
             }
             let path = request.split_whitespace().nth(1).unwrap_or("/");
             let path = path.split('?').next().unwrap_or(path).to_owned();
+            self.seen.lock().unwrap().push(path.clone());
             if far {
                 self.requests.lock().unwrap().push(path.clone());
                 let open = self.open.fetch_add(1, Ordering::SeqCst).saturating_add(1);
@@ -134,7 +137,12 @@ impl FarRegistry {
         }
     }
 
-    fn requests_for(&self, prefix: &str) -> usize {
+    /// The paths asked for since the last call.
+    pub(crate) fn take_seen(&self) -> Vec<String> {
+        std::mem::take(&mut *self.seen.lock().unwrap())
+    }
+
+    pub(crate) fn requests_for(&self, prefix: &str) -> usize {
         self.requests
             .lock()
             .unwrap()
@@ -144,7 +152,7 @@ impl FarRegistry {
     }
 }
 
-fn snapshot(
+pub(crate) fn snapshot(
     entries: Vec<registry_types::RegistryEntry>,
     owner: &SigningKey,
     previous: Option<&SignedRegistrySnapshot>,
