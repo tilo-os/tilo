@@ -524,7 +524,7 @@ impl DurableStore for FsStore {
             self.ensure_worker()?;
             return self.shared.read_without_waiting(key, &wake);
         }
-        tilo_files::frame_loop::assert_may_wait("reading stored state");
+        durable_store::waiting::refused("reading stored state");
         let (path, sidecar) = match target {
             Target::Document(directory) => (
                 directory.join(DOCUMENT_FILE),
@@ -770,7 +770,7 @@ impl DurableStore for FsStore {
                 .lease_without_waiting(key, &target, Access::Exclusive, &wake)
                 .map(|(lease, _)| lease);
         }
-        tilo_files::frame_loop::assert_may_wait("opening stored state");
+        durable_store::waiting::refused("opening stored state");
         match target {
             Target::Document(directory) => {
                 if lock(&self.shared.state).owners.contains_key(key) {
@@ -809,7 +809,7 @@ impl DurableStore for FsStore {
                 self.lease_without_waiting(key, &target, Access::Shared, &wake)?;
             return Ok(SharedLease { lease, primary });
         }
-        tilo_files::frame_loop::assert_may_wait("opening stored state");
+        durable_store::waiting::refused("opening stored state");
         match target {
             Target::Document(directory) => {
                 if lock(&self.shared.state)

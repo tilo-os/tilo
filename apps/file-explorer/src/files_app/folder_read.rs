@@ -233,7 +233,7 @@ impl FolderReads {
     /// returns, and its result is returned; on the frame loop it runs on a
     /// worker and [`Self::take`] hands its result over once it is done.
     pub(super) fn start(&mut self, job: Job, purpose: Purpose) -> Option<(Purpose, FolderRead)> {
-        if !tilo_files::frame_loop::on_frame_loop() {
+        if !ui::storage::waiting::forbidden() {
             self.pending = None;
             let read = job.run();
             return Some((purpose, read));

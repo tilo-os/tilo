@@ -32,6 +32,10 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
 
+/// Whether this thread may wait on storage. The compositor's frame loop,
+/// where an in-process app runs, may not: there an app reads and lists on a
+/// worker and shows the result on a later frame.
+pub use durable_store::waiting;
 pub use settings_store::{ChangeOrigin, InvokingAction};
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};

@@ -86,7 +86,6 @@ mod disk;
 ))]
 mod disk_watch;
 mod error;
-pub mod frame_loop;
 mod local;
 mod memory;
 pub mod native;

@@ -7681,7 +7681,7 @@ fn on_a_frame_loop(test: impl FnOnce() + Send) {
     std::thread::scope(|scope| {
         scope
             .spawn(|| {
-                tilo_files::frame_loop::enter();
+                let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
                 test();
             })
             .join()

@@ -9921,9 +9921,6 @@ pub fn run() {
         // From here on the loop never waits on the disk to open a tab's
         // record: the record store's thread opens it and wakes the loop.
         chrome.open_records_without_waiting(Arc::clone(&session_wake));
-        // From here on this thread is the frame loop's: a blocking file
-        // call reached on it panics in a debug build, naming its caller.
-        tilo_files::frame_loop::enter();
         if let Some(apps) = chrome.hosted_inputs.in_process() {
             apps.borrow_mut()
                 .bind_messaging_record_wake(Arc::clone(&session_wake));

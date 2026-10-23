@@ -993,7 +993,7 @@ pub(crate) fn read_dir_with_workspace_roots(
 /// `TILO_WORKSPACE_ROOTS` env). Standalone callers use [`read_dir_sync`];
 /// injected views supply workspace roots explicitly.
 fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String> {
-    tilo_files::frame_loop::assert_may_wait("listing a folder");
+    ui::storage::waiting::refused("listing a folder");
     #[cfg(test)]
     fixture_io_guard::observe_owned_listing(path, in_workspace);
     let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
