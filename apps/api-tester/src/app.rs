@@ -162,6 +162,8 @@ struct Stale {
 struct Slots {
     sidebar: sidebar::NavHandle,
     url_bar: SlotHandle,
+    /// Save and Send, which the window's bar shows as its actions.
+    request_actions: SlotHandle,
     request: SlotHandle,
     tab_panel: Option<SlotHandle>,
     panel_inner: Option<SlotHandle>,
@@ -302,6 +304,7 @@ impl ApiTesterApp {
         );
 
         let (url_slot, url_bar) = Slot::new(request::url_bar(&sink));
+        let (actions_slot, request_actions) = Slot::new(request::request_actions(&sink));
         let content = Self::content(
             url_slot,
             request_slot,
@@ -316,14 +319,12 @@ impl ApiTesterApp {
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
             .sidebar_header("", vec![sidebar::new_collection(&sink)])
             .content(content)
+            // Save and Send stand in the window bar's row beside New
+            // collection; resetting the request area is occasional and
+            // follows them, in the bar's menu.
             .content_header(
                 model.request.name.clone(),
-                vec![
-                    Box::new(ui::search::search_button(
-                        ui::search::SearchRequest::this_app(),
-                    )),
-                    Box::new(Self::reset_area(&sink)),
-                ],
+                vec![Box::new(actions_slot), Box::new(Self::reset_area(&sink))],
             );
 
         let app = Self {
@@ -348,6 +349,7 @@ impl ApiTesterApp {
             slots: Slots {
                 sidebar: sidebar_lists,
                 url_bar,
+                request_actions,
                 request,
                 tab_panel: Some(builtin.slot),
                 panel_inner: builtin.inner,
@@ -648,6 +650,9 @@ impl ApiTesterApp {
         }
         if std::mem::take(&mut self.stale.url_bar) {
             self.slots.url_bar.set(request::url_bar(&self.sink));
+            self.slots
+                .request_actions
+                .set(request::request_actions(&self.sink));
         }
         if std::mem::take(&mut self.stale.environments) {
             self.slots.environments.set(Self::environment_picker(
