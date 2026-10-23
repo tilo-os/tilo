@@ -258,9 +258,15 @@ test() {
             for subject in subjects[1:]:
                 self.assertNotIn(subject, recipe)
             self.assertIn("gnome-text-editor", recipe)
-            legacy = (ROOT / '.forgejo/workflows/ci-legacy-apps.yml').read_text()
-            script = step_script(legacy, 'Install and verify real app subjects')
-            # Execute the workflow script with package installation and subject
+            # The legacy-apps check installs them before it drives them.
+            subjects_script = 'scripts/legacy-app-subjects.sh'
+            run = CHECKS['legacy-apps']['run'].splitlines()
+            self.assertEqual(run[0], f'bash {subjects_script}')
+            self.assertIn('scripts/legacy-app-caret-e2e.py', run[1])
+            self.assertIn(subjects_script, CHECKS['legacy-apps']['inputs'])
+            self.assertNotIn('os/Containerfile.builder', CHECKS['legacy-apps']['inputs'])
+            script = (ROOT / subjects_script).read_text()
+            # Execute the script with package installation and subject
             # discovery intercepted. Missing subjects must still fail after dnf.
             stubs = r'''dnf() { printf '%s\n' "$@" > dnf-args; test "$FAIL_AT" != dnf; }
         rpm() { printf '%s\n' "$@" > rpm-args; test "$FAIL_AT" != rpm; }
