@@ -6,9 +6,10 @@
 //! the editor under the caret.
 
 use crate::model::{
-    ConfirmationState, Issue, Message, MessageKind, RunPhase, Status, Tracker, issue_resource,
-    tracker,
+    ConfirmationState, Issue, Message, MessageKind, ModelChoice, RunPhase, Status, Tracker,
+    issue_resource, tracker,
 };
+use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
 use ui::widget::{Badge, ChipStyle, Dropdown, Tone};
@@ -180,44 +181,79 @@ fn facts(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             assignee: Some(assignee),
         }),
     );
-    let model_id = id.clone();
-    let read_id = id.clone();
-    let model = cx.control_with(
-        |state| {
-            TextInput::from_state(state)
-                .with_id("tasks-issue-model")
-                .with_accessible_name(tr("tasks-field-model"))
-                .with_placeholder("tasks-issue-model-placeholder")
-        },
-        move |tracker: &Tracker| {
-            tracker
-                .issues
-                .get(&read_id)
-                .and_then(|issue| issue.model.as_ref())
-                .map(|model| format!("{}/{}", model.profile, model.model))
-                .unwrap_or_default()
-        },
-        Tracker::CHOOSE_MODEL.map(move |text: String| tracker::ChooseModel {
-            issue: model_id.clone(),
-            model: model_choice(&text),
-        }),
-    );
+    let model = model_picker(cx, id);
     Box::new(
         Row::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(labeled_field("tasks-field-status", status)))
             .push(Box::new(labeled_field("tasks-field-assignee", assignee)))
-            .push(Box::new(labeled_field("tasks-field-model", model))),
+            .push(model),
     )
 }
 
-/// The model typed as `provider/model`; nothing typed is the agent's own.
-fn model_choice(text: &str) -> Option<crate::model::ModelChoice> {
-    let (profile, model) = text.trim().split_once('/')?;
-    Some(crate::model::ModelChoice {
-        profile: profile.trim().to_owned(),
-        model: model.trim().to_owned(),
+/// The model the issue's runs plan with, picked among those the person's
+/// provider settings offer (their record of them, the same on each of their
+/// devices); the agent's own when none is picked.
+fn model_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let offered = cx.shared_person::<OfferedModels>().map_or_else(
+        || ui::LocalState::new(std::rc::Rc::default()),
+        |record| record.state(),
+    );
+    let id = id.clone();
+    cx.switch(&offered, move |cx, offered| {
+        let choices: Vec<(String, Option<ModelChoice>)> =
+            std::iter::once((tr("tasks-model-own"), None))
+                .chain(offered.models.iter().map(|offered| {
+                    let choice = ModelChoice {
+                        profile: offered.profile.clone(),
+                        model: offered.model.clone(),
+                    };
+                    (model_label(&offered.label, &offered.provider), Some(choice))
+                }))
+                .collect();
+        let labels = choices.iter().map(|(label, _)| label.clone()).collect();
+        let (read_id, chosen_id) = (id.clone(), id.clone());
+        let shown = choices.clone();
+        let picker = cx.control_with(
+            |state| {
+                Dropdown::from_state(labels, state)
+                    .with_id("tasks-issue-model")
+                    .with_accessible_name(tr("tasks-field-model"))
+            },
+            move |tracker: &Tracker| {
+                let model = tracker
+                    .issues
+                    .get(&read_id)
+                    .and_then(|issue| issue.model.clone());
+                shown
+                    .iter()
+                    .find(|(_, choice)| *choice == model)
+                    .map(|(label, _)| label.clone())
+                    // A model no provider here offers reads as what it is.
+                    .or_else(|| model.map(|model| model_label(&model.model, &model.profile)))
+                    .unwrap_or_default()
+            },
+            Tracker::CHOOSE_MODEL.map(move |label: String| tracker::ChooseModel {
+                issue: chosen_id.clone(),
+                model: choices
+                    .iter()
+                    .find(|(shown, _)| *shown == label)
+                    .and_then(|(_, choice)| choice.clone()),
+            }),
+        );
+        Box::new(labeled_field("tasks-field-model", picker))
     })
+}
+
+/// A model as pickers name it: its label and its provider's.
+fn model_label(model: &str, provider: &str) -> String {
+    ui::i18n::I18nManager::format(
+        "tasks-model-of",
+        &[
+            ("model", model.to_owned().into()),
+            ("provider", provider.to_owned().into()),
+        ],
+    )
 }
 
 /// The issue's labels, and a field to add one.

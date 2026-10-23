@@ -21,6 +21,7 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde.workspace = true
 serde_json.workspace = true
+tilo-agent-models = { path = "../../crates/platform/tilo-agent-models" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 

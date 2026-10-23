@@ -320,6 +320,7 @@ dependencies = [
  "serde_json",
  "settings-store",
  "tempfile",
+ "tilo-agent-models",
  "tilo-resource",
  "url",
  "uuid",
@@ -16132,6 +16133,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "tilo-agent-models",
  "tilo-app",
  "tilo-rich-text",
  "tilo-test-env",
@@ -16498,6 +16500,15 @@ dependencies = [
  "rustix 1.1.4",
  "tempfile",
  "tilo-test-env",
+]
+
+[[package]]
+name = "tilo-agent-models"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]

@@ -68,7 +68,11 @@ record it names.
 One window, three views over the same resource: a list that nests sub-issues
 under their parent, a board with one column per status (dragging a card is one
 `place` action: status and position), and an issue page with the markdown body
-in the shared block editor, its sub-issues, links and thread.
+in the shared block editor, its sub-issues, links and thread. Its model
+picker lists the models the person's providers offer, from their
+`tilo_agent_models::OfferedModels` record: the session keeps it from
+their provider settings, which hold endpoints and keys no app reads, and it
+syncs to each of their devices like their accounts.
 
 ## Agents
 

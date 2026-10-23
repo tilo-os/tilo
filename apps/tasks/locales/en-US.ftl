@@ -84,4 +84,5 @@ tasks-add-label = Labelled { $item } { $label }
 tasks-choose-model = Chose the model for { $item }
 tasks-ask-agent = Asked an agent: { $title }
 tasks-field-model = Model
-tasks-issue-model-placeholder = The agent's own model, or provider/model
+tasks-model-own = The agent's own model
+tasks-model-of = { $model } ({ $provider })

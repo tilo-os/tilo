@@ -6,8 +6,9 @@
 )]
 
 use serde_json::json;
-use tasks::model::{Status, issue_resource};
+use tasks::model::{ModelChoice, Status, issue_resource};
 use tasks::{App, Tracker};
+use tilo_agent_models::{OfferedModel, OfferedModels};
 use ui::prelude::*;
 
 fn open() -> TestApp<App> {
@@ -267,4 +268,75 @@ fn a_link_opens_in_the_record_it_names() {
             reference.open_target(room, "so.tilo.tasks", record)
         );
     }
+}
+
+/// Settings, which keeps the models the person's providers offer for an
+/// agent's run: Tasks reads its record without being able to change it.
+struct SettingsOwner;
+
+impl ResourceApp for SettingsOwner {
+    type Resource = OfferedModels;
+    const ID: &'static str = "so.tilo.settings";
+    const TITLE: &'static str = "Settings fixture";
+
+    fn view(_: &mut ViewCx<OfferedModels>) -> Element {
+        Box::new(Text::new("Settings fixture"))
+    }
+}
+
+/// The issue's model is picked among those the person's providers offer,
+/// read from their record of them; picking the agent's own clears it.
+#[test]
+fn an_issues_model_is_picked_among_the_offered_ones() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Summarise the notes" }))
+        .expect("create");
+    let issue = only(&app);
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+
+    let mut settings = TestApp::<SettingsOwner>::for_person("ada").expect("settings");
+    let offered = settings.shared_person::<OfferedModels>().expect("kept");
+    offered
+        .invoke(&OfferedModels::OFFER.with(vec![OfferedModel {
+            profile: "local".into(),
+            provider: "Local".into(),
+            model: "fast-1".into(),
+            label: "Fast".into(),
+        }]))
+        .expect("offer");
+    let read = app.shared_person::<OfferedModels>().expect("read");
+    read.record()
+        .merge_peer_document(offered.record().document().expect("document"))
+        .expect("merge");
+    app.settle();
+
+    let model = |app: &TestApp<App>| {
+        app.state()
+            .issues
+            .get(&issue)
+            .and_then(|issue| issue.model.clone())
+    };
+    app.harness()
+        .perform_named(
+            "tasks-issue-model",
+            &ui::a11y::Action::SetValue("Fast (Local)".into()),
+        )
+        .expect("pick the offered model");
+    app.settle();
+    assert_eq!(
+        model(&app),
+        Some(ModelChoice {
+            profile: "local".into(),
+            model: "fast-1".into(),
+        })
+    );
+    app.harness()
+        .perform_named(
+            "tasks-issue-model",
+            &ui::a11y::Action::SetValue("The agent's own model".into()),
+        )
+        .expect("pick the agent's own");
+    app.settle();
+    assert_eq!(model(&app), None);
 }

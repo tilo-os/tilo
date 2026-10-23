@@ -342,6 +342,11 @@ impl SettingsChange {
         self.0.is_empty()
     }
 
+    /// The model providers, whose models apps offer for an agent's run.
+    pub fn agent_providers(&self) -> bool {
+        self.touches(&[agent_provider_config::SETTINGS_SECTION])
+    }
+
     /// The backend's input devices: pointer and keyboard preferences
     /// (`input`), accessibility filters and cursor size (`accessibility`),
     /// and the shortcut chords tablet buttons press (`shortcuts`).
