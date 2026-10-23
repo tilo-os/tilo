@@ -10,8 +10,9 @@ catalog keeps Desktop installation unavailable; it does not block other Imager
 features or invent a release.
 
 For a qualified Desktop release, retain the exact signed RPMs and their native
-reports from `release-desktop.yml`. Package publication waits for
-`host-session-e2e`; its report records each RPM's size and SHA-256. That basic
+reports from `release-desktop.yml`. The login test of those packages is t's
+check `host-session-e2e`, which the desktop payload's publication waits for;
+its report and `source.json` record each RPM's size and SHA-256. That basic
 session test does not by itself prove return to the prior session, selected
 folder import, or source preservation. Review the full native onboarding
 journey, including graphical login and identity setup, before asserting all

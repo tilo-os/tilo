@@ -191,7 +191,7 @@ class DesktopPayloadPublicationTests(unittest.TestCase):
         # One unchanged cache predicate now covers both tag and candidate builds.
         # Signing has a separate job and cannot start a second compilation graph.
         build_job = DESKTOP_WORKFLOW.read_text().split("  package:\n", 1)[1].split("  sign-rpm:\n", 1)[0]
-        sign_job = DESKTOP_WORKFLOW.read_text().split("  sign-rpm:\n", 1)[1].split("  host-session-e2e:\n", 1)[0]
+        sign_job = DESKTOP_WORKFLOW.read_text().split("  sign-rpm:\n", 1)[1].split("  publish-os-payload:\n", 1)[0]
         self.assertNotIn("secrets.TILO_RPM_SIGNING", build_job)
         self.assertNotIn("run-package-job.sh", sign_job)
         self.assertNotIn("TILO_ENABLE_REMOTE_CACHE", sign_job)

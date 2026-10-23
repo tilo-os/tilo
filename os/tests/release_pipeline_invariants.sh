@@ -326,7 +326,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
 
 # Native package lanes have neither private keys nor OIDC. A separate tag-only
 # broker job signs only successful install-tested artifacts after exact-main proof.
-desktop_signer=$(sed -n '/^  sign-rpm:$/,/^  host-session-e2e:$/p' "$desktop")
+desktop_signer=$(sed -n '/^  sign-rpm:$/,/^  publish-os-payload:$/p' "$desktop")
 desktop_validate=$(sed -n '/^  validate:$/,/^  package:$/p' "$desktop")
 desktop_package=$(sed -n '/^  package:$/,/^  sign-rpm:$/p' "$desktop")
 signing_boundary_ok=1
@@ -342,8 +342,7 @@ grep -Fq "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/d
   && ! grep -Fq 'secrets.TILO_RPM_SIGNING' <<<"$desktop_package" \
   && grep -Fq 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' <<<"$desktop_validate" \
   && grep -Fq 'needs: validate' <<<"$desktop_package" \
-  && grep -Fq 'needs: [validate, package, sign-rpm, host-session-e2e]' "$desktop" \
-  && grep -Fq "'signed-fedora-44-amd64' || 'fedora-44-amd64'" "$desktop" \
+  && grep -Fq 'needs: [validate, package, sign-rpm]' "$desktop" \
   && ! grep -Fq -- '--env TILO_RPM_SIGNING' "$repo/dist/ci/run-package-job.sh" \
   || signing_boundary_ok=0
 if [[ $signing_boundary_ok == 1 ]]; then
