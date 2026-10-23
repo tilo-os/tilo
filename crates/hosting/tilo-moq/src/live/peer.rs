@@ -225,34 +225,17 @@ impl MemberPresence {
     #[must_use]
     pub fn follow(peer: &Peer, namespace: &str) -> Self {
         let (tx, frames) = tokio::sync::mpsc::channel(MEMBER_PRESENCE_QUEUE);
-        let origin = peer.incoming.consume();
-        let namespace = namespace.to_owned();
-        let follow = crate::Task::spawn(async move {
-            // Ends when the session's origin closes; the reader then hears
-            // nothing more.
-            while let Ok(broadcast) = origin.routed_broadcast(namespace.as_str()).await {
-                if let Ok(track) = broadcast.track(PRESENCE_TRACK)
-                    && let Ok(mut track) = track.subscribe(None).await
-                {
-                    while let Ok(Some(datagram)) = track.recv_datagram().await {
-                        if tx.is_closed() {
-                            return;
-                        }
-                        let _ = tx.try_send(datagram.payload);
+        let follow = follow_member(peer, namespace, PRESENCE_TRACK, move |mut track| {
+            let tx = tx.clone();
+            async move {
+                while let Ok(Some(datagram)) = track.recv_datagram().await {
+                    if tx.is_closed() {
+                        return false;
                     }
+                    let _ = tx.try_send(datagram.payload);
                 }
-                // The broadcast ended (the member was withdrawn): its next
-                // announcement is a new one. A broadcast that refused the
-                // subscription or ended the track while still announced
-                // (a re-announcement racing it on a slow node) is asked
-                // again shortly rather than waited on until it closes,
-                // which a live broadcast never does.
-                tokio::select! {
-                    _ = broadcast.closed() => {}
-                    () = tokio::time::sleep(MEMBER_RESUBSCRIBE) => {}
-                }
+                !tx.is_closed()
             }
-            std::future::pending::<()>().await;
         });
         Self {
             frames,
@@ -262,6 +245,91 @@ impl MemberPresence {
 
     /// The member's next presence datagram, or `None` when none arrives
     /// within `wait`.
+    pub async fn next(&mut self, wait: Duration) -> Option<bytes::Bytes> {
+        tokio::time::timeout(wait, self.frames.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+}
+
+/// Read `track` of the member under `namespace` on `peer`'s session, as a
+/// page's `subscribeTrack` under `watchMembers` does (the browser runtime's
+/// live transport): `read` is handed each subscription until it ends. The
+/// relay withdraws a member's namespace (a revoked client, a host-fed
+/// namespace idle past [`super::HOST_SLOT_IDLE`]) and announces it afresh,
+/// and a subscription can end while the broadcast stays announced (a
+/// re-announcement racing it on a slow node); either way the follower
+/// subscribes again, to the new broadcast or, shortly, to the same one.
+/// `read` returns whether anyone still listens; following stops when not.
+fn follow_member<F, R>(peer: &Peer, namespace: &str, track: &str, mut read: F) -> crate::Task
+where
+    F: FnMut(moq_net::track::Subscriber) -> R + Send + 'static,
+    R: std::future::Future<Output = bool> + Send,
+{
+    let origin = peer.incoming.consume();
+    let namespace = namespace.to_owned();
+    let track = track.to_owned();
+    crate::Task::spawn(async move {
+        // Ends when the session's origin closes; the reader then hears
+        // nothing more.
+        while let Ok(broadcast) = origin.routed_broadcast(namespace.as_str()).await {
+            if let Ok(consumer) = broadcast.track(&track)
+                && let Ok(subscription) = consumer.subscribe(None).await
+                && !read(subscription).await
+            {
+                return;
+            }
+            tokio::select! {
+                _ = broadcast.closed() => {}
+                () = tokio::time::sleep(MEMBER_RESUBSCRIBE) => {}
+            }
+        }
+        std::future::pending::<()>().await;
+    })
+}
+
+/// One room member's ops track, followed the way a page follows it
+/// (`subscribeOps` in the browser runtime's live transport): frames in
+/// order, the relay's empty seal frame skipped, a group that fails (one the
+/// publisher superseded before it was read) given up for the next, and the
+/// subscription renewed through withdrawal and re-announcement as
+/// [`MemberPresence`] renews its own. A renewed subscription starts at the
+/// track's latest group, so a reader can see that group's frames again.
+pub struct MemberOps {
+    frames: tokio::sync::mpsc::Receiver<bytes::Bytes>,
+    _follow: crate::Task,
+}
+
+impl MemberOps {
+    /// Follow ops track `track` (`ops/<hex record digest>`) of the member
+    /// publishing under `namespace` on `peer`'s session.
+    #[must_use]
+    pub fn follow(peer: &Peer, namespace: &str, track: &str) -> Self {
+        let (tx, frames) = tokio::sync::mpsc::channel(MEMBER_PRESENCE_QUEUE);
+        let follow = follow_member(peer, namespace, track, move |mut track| {
+            let tx = tx.clone();
+            async move {
+                while let Ok(Some(mut group)) = track.recv_group().await {
+                    while let Ok(Some(frame)) = group.read_frame().await {
+                        if frame.payload.is_empty() {
+                            continue;
+                        }
+                        if tx.send(frame.payload).await.is_err() {
+                            return false;
+                        }
+                    }
+                }
+                !tx.is_closed()
+            }
+        });
+        Self {
+            frames,
+            _follow: follow,
+        }
+    }
+
+    /// The track's next frame, or `None` when none arrives within `wait`.
     pub async fn next(&mut self, wait: Duration) -> Option<bytes::Bytes> {
         tokio::time::timeout(wait, self.frames.recv())
             .await
