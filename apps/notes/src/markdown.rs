@@ -362,7 +362,7 @@ pub fn parse_inline(line: &str) -> InlineText {
         // empty italic).
         if bytes.get(i) == Some(&b'*')
             && bytes.get(i + 1) == Some(&b'*')
-            && let Some(end) = find_pair(bytes, i + 2, b'*', b'*')
+            && let Some(end) = bold_close(bytes, i + 2)
         {
             // Body may contain nested italic via `*text*`. Recurse.
             let body = line.get(i + 2..end).unwrap_or_default();
@@ -382,7 +382,7 @@ pub fn parse_inline(line: &str) -> InlineText {
         }
         // Italic `*...*`.
         if bytes.get(i) == Some(&b'*')
-            && let Some(end) = find_unescaped(bytes, i + 1, b'*')
+            && let Some(end) = italic_close(bytes, i + 1)
         {
             // Empty `**` body wouldn't reach here (bold path
             // above already claimed it). A lone `*` with no
@@ -508,6 +508,67 @@ fn parse_paired_mark(
         )
     }));
     Some(end + 2)
+}
+
+/// How many `*` stand together from `at`.
+fn star_run(bytes: &[u8], at: usize) -> usize {
+    bytes
+        .get(at..)
+        .map_or(0, |rest| rest.iter().take_while(|&&b| b == b'*').count())
+}
+
+/// The byte where the `**` closing a bold opened just before `start`
+/// begins. A lone `*` inside opens or closes italic, so where a run of three
+/// stars ends both — `**bold *italic***` — the italic takes the first star
+/// and the bold the last two. Escapes and code spans are skipped.
+fn bold_close(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut italic_open = false;
+    let mut i = start;
+    while let Some(&byte) = bytes.get(i) {
+        match byte {
+            b'\\' => i += 2,
+            b'`' => i = find_unescaped(bytes, i + 1, b'`').map_or(i + 1, |end| end + 1),
+            b'*' => {
+                let run = star_run(bytes, i);
+                if run == 1 {
+                    italic_open = !italic_open;
+                } else if italic_open && run > 2 {
+                    return Some(i + 1);
+                } else {
+                    return Some(i);
+                }
+                i += run;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// The byte of the `*` closing an italic opened just before `start`. A `**`
+/// inside opens or closes bold, so `*a **b** c*` is italic throughout and
+/// where a run of three stars ends both — `*italic **bold***` — the bold takes
+/// the first two stars and the italic the last. Escapes and code spans are
+/// skipped.
+fn italic_close(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut bold_open = false;
+    let mut i = start;
+    while let Some(&byte) = bytes.get(i) {
+        match byte {
+            b'\\' => i += 2,
+            b'`' => i = find_unescaped(bytes, i + 1, b'`').map_or(i + 1, |end| end + 1),
+            b'*' => match star_run(bytes, i) {
+                1 => return Some(i),
+                2 => {
+                    bold_open = !bold_open;
+                    i += 2;
+                }
+                _ => return Some(if bold_open { i + 2 } else { i }),
+            },
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Search for `delim` in `bytes[start..]`, ignoring escaped
@@ -1484,6 +1545,63 @@ Last paragraph.
                 md,
                 "round-trip failed for {md:?}"
             );
+        }
+    }
+
+    /// Bold and italic over the same words, or one inside the other where
+    /// they end together, read back as both marks: what Notes exports for a
+    /// word made bold and italic, and what other editors write.
+    #[test]
+    fn bold_and_italic_together_read_back_as_both_marks() {
+        let cases = [
+            (
+                "***both***",
+                "both",
+                vec![
+                    MarkSpan::new(0..4, Mark::Bold),
+                    MarkSpan::new(0..4, Mark::Italic),
+                ],
+            ),
+            (
+                "**bold *italic***",
+                "bold italic",
+                vec![
+                    MarkSpan::new(0..11, Mark::Bold),
+                    MarkSpan::new(5..11, Mark::Italic),
+                ],
+            ),
+            (
+                "*italic **bold***",
+                "italic bold",
+                vec![
+                    MarkSpan::new(0..11, Mark::Italic),
+                    MarkSpan::new(7..11, Mark::Bold),
+                ],
+            ),
+            (
+                "*a **b** c*",
+                "a b c",
+                vec![
+                    MarkSpan::new(0..5, Mark::Italic),
+                    MarkSpan::new(2..3, Mark::Bold),
+                ],
+            ),
+            (
+                "**a *b* c**",
+                "a b c",
+                vec![
+                    MarkSpan::new(0..5, Mark::Bold),
+                    MarkSpan::new(2..3, Mark::Italic),
+                ],
+            ),
+        ];
+        for (md, text, marks) in cases {
+            let inline = parse_inline(md);
+            assert_eq!(inline.text, text, "text of {md:?}");
+            assert_eq!(inline.marks, marks, "marks of {md:?}");
+            let exported = serialize_inline(&InlineText::new(text, marks.clone()));
+            assert_eq!(exported, md, "export of {text:?} with {marks:?}");
+            assert_eq!(parse_inline(&exported).marks, marks, "{md:?} read back");
         }
     }
 
