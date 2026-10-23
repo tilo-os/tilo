@@ -72,6 +72,18 @@
 //                  past the old prune passes: the host still has them. The bare entry joins at no door,
 //                  and the desktop presents as the same person in the same
 //                  room (membership persists; TILO_ROOMS_INACTIVE_AFTER_DAYS)
+//   invite-door    the host started again taking people by invitation
+//                  (TILO_ROOMS_ADMISSION=invite): a fresh profile opening the
+//                  bare entry is refused at the door, saying it needs an
+//                  invitation, with a field to open an invite link, no
+//                  desktop and nothing kept (screenshots at 1440x900 and
+//                  390x844); a pasted text that is no invite link is said so
+//   invite-admits  the first person, a member, gets in as before, invites
+//                  with the desktop's Invite; that link pasted into the door
+//                  page's field asks to join, the member lets them in from
+//                  the banner, and the desktop presents as a member. Every
+//                  check before ran with the door open (TILO_ROOMS_ADMISSION
+//                  unset), as do the ones after
 //   removed-member the host started again with the person as one of the
 //                  room's moderators (TILO_ROOMS_MODERATORS: a moderator
 //                  removes the guests ranked below them); a second person
@@ -623,17 +635,25 @@ const WIDGET = id => `(() => {
  * the desktop as the bar's own children (or its More menu's items in a
  * narrow window), so they carry no test id of the app's. True once pressed,
  * null while the desktop shows no such control. */
-const PRESS_NAMED = name => `(() => {
+const PRESS_NAMED = name => PRESS_WHERE(`name => name === ${JSON.stringify(name)}`);
+
+/** In the page: press the first control whose name matches `pattern`. */
+const PRESS_MATCHING = pattern => PRESS_WHERE(`name => new RegExp(${JSON.stringify(pattern)}).test(name ?? '')`);
+
+/** In the page: press the first control whose name `named` (the source of
+ * a function of the name) takes. */
+const PRESS_WHERE = named => `(() => {
+  const named = ${named};
   const pressable = new Set(['Button', 'MenuItem']);
   const find = node => {
     if (!node) return null;
     const own = node.semantics;
-    if (own && pressable.has(own.role) && own.name === ${JSON.stringify(name)}) {
+    if (own && pressable.has(own.role) && named(own.name)) {
       return {path: node.path, target: own.action_target ?? undefined};
     }
     const synthetic = (access, path) => {
       for (const child of access?.children ?? []) {
-        if (pressable.has(child.role) && child.name === ${JSON.stringify(name)} && child.action_target) {
+        if (pressable.has(child.role) && named(child.name) && child.action_target) {
           return {path, target: child.action_target};
         }
         const found = synthetic(child, path);
@@ -1051,6 +1071,79 @@ async function main() {
       room: stack.room, keptRoom, status: returned.status, loading: returned.loading});
     if (returned.entry !== 'open') await shoot('kept-membership', returning);
     await returning.close();
+
+    // invite-door: the host started again taking people by invitation.
+    await stack.stop();
+    stack = await startStack(options, ports, {fresh: false, env: {TILO_ROOMS_ADMISSION: 'invite'}});
+    const outsider = await browser.context();
+    const door = await page(browser, outsider);
+    // Until its relay has the room back, the door answers 503 and the page
+    // watches live; asked again once it is back, it turns them away.
+    let doorTurned = await open(door, `${web}/`, settleOptions);
+    if (doorTurned.entry !== 'refused') {
+      doorTurned = await until(async () => {
+        const now = await reload(door, settleOptions);
+        return now.entry === 'refused' ? now : null;
+      }, 90_000, 3000) ?? doorTurned;
+    }
+    keepLog('invite-door', door);
+    const doorJoins = joinsTo(door.requests, api);
+    const field = await door.evaluate("getComputedStyle(document.getElementById('arrival-invite')).display === 'grid'").catch(() => false);
+    for (const [name, width, height, mobile] of [['invite-door-1440x900', 1440, 900, false], ['invite-door-390x844', 390, 844, true]]) {
+      await door.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+      await sleep(500);
+      await shoot(name, door);
+    }
+    await door.send('Emulation.clearDeviceMetricsOverride');
+    const notALink = await door.evaluate(`(() => {
+      document.getElementById('arrival-invite-link').value = 'hello';
+      document.getElementById('arrival-invite').requestSubmit();
+      return document.getElementById('arrival-invite-error').textContent;
+    })()`).catch(error => `failed: ${error.message}`);
+    check('invite-door', doorTurned.entry === 'refused' && !doorTurned.desktop && doorTurned.membership === null
+      && /need an invitation/.test(doorTurned.status) && field && doorJoins.at(-1)?.status === 403
+      && /invitation-only/.test(doorJoins.at(-1)?.body ?? '') && /isn’t an invite link/.test(notALink),
+    {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field,
+      joins: doorJoins.map(j => ({status: j.status, body: j.body})), notALink});
+
+    // invite-admits: the first person invites the stranger.
+    const inviter = await page(browser, person);
+    const inviting = await open(inviter, `${web}/`, settleOptions);
+    keepLog('inviter', inviter);
+    const invitePressed = inviting.entry === 'open' && Boolean(await until(() => inviter.evaluate(PRESS_NAMED('Invite')), 60_000));
+    const inviteLink = invitePressed ? await until(() => inviter.evaluate(
+      "document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000) : null;
+    await inviter.evaluate("document.querySelector('[data-card=share] button[type=submit]')?.click()").catch(() => {});
+    const sinceInvite = door.requests.length;
+    let invited = {entry: 'not asked'};
+    let joined = false;
+    let letIn = false;
+    if (inviteLink) {
+      await leaving(door);
+      await door.evaluate(`(() => {
+        document.getElementById('arrival-invite-link').value = ${JSON.stringify(` ${inviteLink} `)};
+        document.getElementById('arrival-invite').requestSubmit();
+      })()`).catch(() => {});
+      await door.waitFor('!globalThis.__authE2eLeft', {timeout}).catch(() => {});
+      joined = await press(door, 'Join', timeout);
+      letIn = Boolean(await until(() => inviter.evaluate(PRESS_MATCHING('^Let .+ in$')), 90_000));
+      invited = await until(async () => {
+        const now = await settle(door, settleOptions);
+        return now.entry === 'open' && now.membership ? now : null;
+      }, 90_000) ?? await settle(door, settleOptions);
+    }
+    keepLog('invite-admits', door);
+    const invitedJoins = joinsTo(door.requests.slice(sinceInvite), api);
+    check('invite-admits', inviting.entry === 'open' && inviting.membership?.userPublicKey === me && Boolean(inviteLink)
+      && /[?&]invite=/.test(inviteLink ?? '') && joined && letIn && invited.entry === 'open' && invited.arrival === 'done'
+      && /^[0-9a-f]{64}$/.test(invited.membership?.userPublicKey ?? '') && invited.membership.userPublicKey !== me
+      && invitedJoins.length === 0,
+    {inviter: {entry: inviting.entry, membership: inviting.membership, status: inviting.status}, invitePressed, inviteLink,
+      joined, letIn, entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
+      doorJoins: invitedJoins.map(j => j.status)});
+    if (invited.entry !== 'open') await shoot('invite-admits', door);
+    await door.close();
+    await inviter.close();
 
     // removed-member: the host started again with the person as one of the
     // room's moderators, and someone new in the room for them to remove.

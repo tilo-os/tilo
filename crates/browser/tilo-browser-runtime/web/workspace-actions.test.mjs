@@ -14,7 +14,7 @@ function desktop() {
 }
 
 /** Ada's page in her workspace on her own machine, as the host answers it. */
-function adasRoom({owner = true} = {}) {
+function adasRoom({owner = true, letsIn = owner} = {}) {
   const calls = [];
   let waiting = [{requestId: '02'.repeat(32), name: 'Bo', role: 'editor', userPublicKey: 'bb'.repeat(32)}];
   return {calls, peer: {
@@ -25,7 +25,10 @@ function adasRoom({owner = true} = {}) {
         if (!owner) throw new Error('only the owner lists requests');
         return {name: 'Acme', members: [{userPublicKey: ADA, owner: true}]};
       },
-      requests: async () => waiting,
+      requests: async () => {
+        if (!letsIn) throw new Error('only someone the room lets invite lists requests');
+        return waiting;
+      },
       admit: async requestId => { calls.push(['admit', requestId]); waiting = []; },
       decline: async requestId => { calls.push(['decline', requestId]); waiting = []; },
     },
@@ -57,7 +60,21 @@ test('the owner invites with a link, hears once who asks, and lets them in from 
   assert.equal(banners.at(-1).title, 'Bo joined');
 });
 
-test('someone who is not the owner may invite, and is never asked to let anyone in', async () => {
+test('a member the room lets invite hears who asks to join and lets them in', async () => {
+  const {peer, calls} = adasRoom({owner: false, letsIn: true});
+  const {mount, shown, banners} = desktop();
+  const polls = [];
+  const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
+    every: run => { polls.push(run); return () => {}; }, inviteLink: text => text, ui: {fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  assert.deepEqual(ids(shown.at(-1)), [INVITE.id, WAITING.id]);
+  assert.equal(banners.length, 1);
+  assert.equal(banners[0].title, 'Bo asks to join');
+  await actions.perform(banners[0].action.id);
+  assert.deepEqual(calls.at(-1), ['admit', '02'.repeat(32)]);
+});
+
+test('someone the room does not let invite is never asked to let anyone in', async () => {
   const {peer} = adasRoom({owner: false});
   const {mount, shown, banners} = desktop();
   let polled = false;

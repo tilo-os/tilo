@@ -16,7 +16,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {failureMessage, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING} from './arrival.mjs';
+import {failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
@@ -870,6 +870,15 @@ export async function startEntryPage({mode}) {
     hostActions?.('machine').setHostActions([SET_UP]);
     const person = () => page.peer?.userPublicKey ?? currentIdentity()?.userPublicKey;
     const roomLink = (origin, room) => page.link.format({mode: 'desktop', target: {scope: {kind: 'room', host: origin, room}}});
+    // Whether the home's door lets only its members in (`admission` in its
+    // presence): then its bare link admits nobody new, and inviting someone
+    // is an invitation of their own.
+    let inviteOnlyHome = false;
+    const homeDoor = page.entry?.home?.admission;
+    if (homeDoor) {
+      void fetch(new URL('presence', homeDoor)).then(response => (response.ok ? response.json() : null))
+        .then(presence => { inviteOnlyHome = presence?.admission === 'invite'; }, () => {});
+    }
     // Only a desktop lists host actions and shows banners.
     workspaceActions = hostActions ? createWorkspaceActions({
       peer: page.peer,
@@ -881,7 +890,7 @@ export async function startEntryPage({mode}) {
       },
       // A public workspace's link is its bare entry: anyone opening it joins
       // through the door, as a guest.
-      publicLink: () => (remembering(() => isPublicHome({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
+      publicLink: () => (!inviteOnlyHome && remembering(() => isPublicHome({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
         scope: here.kind === 'room' ? {...here, room: here.room ?? page.peer?.room} : null})) ? page.entry.base : null),
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
@@ -980,13 +989,16 @@ export async function startEntryPage({mode}) {
     // The room's name as its people last set it, where the room's desktop
     // reached the page; else the name the page was served or remembered.
     const named = (typeof admitted?.workspaceName === 'string' && admitted.workspaceName) || workspaceName;
-    const said = failureMessage(error, {workspace: named, loaded: Boolean(runtime), admitted: inside,
-      messages: await localeMessagesSoon()});
+    const messages = await localeMessagesSoon();
+    const said = failureMessage(error, {workspace: named, loaded: Boolean(runtime), admitted: inside, messages});
     // A refusal is the host's answer, which trying again does not change.
     // Marked together with its words: a page that says it was refused
     // while still reading "Loading Tilo…" tells a reader nothing.
     document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     status.textContent = said;
+    // Turned away for coming without an invitation: a place to open the
+    // one they get.
+    if (error?.code === 'invitation-only') offerInviteLink(messages);
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the room.
@@ -1120,6 +1132,26 @@ async function offerUpdate({page, status}) {
   status.textContent = 'Updating Tilo…';
   await closeRoom(page);
   location.reload();
+}
+
+/** On a page turned away for coming without an invitation, the field to
+ * paste the invite link someone sends them into, opened in this tab. */
+function offerInviteLink(messages) {
+  const form = document.getElementById('arrival-invite');
+  const field = document.getElementById('arrival-invite-link');
+  const problem = document.getElementById('arrival-invite-error');
+  if (!form || !field || !problem) return;
+  const say = (key, english) => localized(messages, key, english);
+  field.placeholder = say('arrival-invite-placeholder', 'Paste an invite link');
+  field.setAttribute('aria-label', say('arrival-invite-link', 'Invite link'));
+  form.querySelector('button').textContent = say('arrival-invite-open', 'Open');
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const target = inviteLinkTarget(field.value);
+    problem.textContent = target ? '' : say('arrival-invite-not-a-link', 'That isn’t an invite link. Paste the whole link you were sent.');
+    if (target) loadPage(target);
+  });
+  document.documentElement.dataset.inviteLink = '';
 }
 
 /** The page's own-desktop button (index.html), shown on a refusal: it opens

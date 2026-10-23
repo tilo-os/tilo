@@ -148,6 +148,14 @@ test('a door that names the person removed tells them so, whatever this browser 
   assert.equal(calls.connected.length, 0);
 });
 
+test('a door taking people by invitation tells a visitor without one so, and asks once', async () => {
+  const {calls, options} = harness({person: identity(0x44),
+    joinReply: {status: 403, body: {error: 'this room takes people by invitation for now', code: 'invitation-only'}}});
+  await assert.rejects(joinViaHost(options), error => error instanceof HostAdmissionError && error.code === 'invitation-only');
+  assert.equal(calls.posted.length, 1);
+  assert.equal(calls.connected.length, 0);
+});
+
 test('an address cooling down after a removal turns away someone who kept no membership, as the door said', async () => {
   const {calls, options} = harness({person: identity(0x22), joinReply: {status: 403, body: {error: 'cooling down'}}});
   await assert.rejects(joinViaHost(options), {name: 'HostAdmissionError', code: 'cooling-down'});
