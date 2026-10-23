@@ -288,6 +288,7 @@ impl PlayerApp {
         }
         let shown = entries.len().min(crate::actions::CONTEXTUAL_CHILD_LIMIT);
         let entries = entries.get(..shown).unwrap_or(&entries);
+        let current_state = self.current_row_state();
         let specs: Vec<RowSpec<'_>> = entries
             .iter()
             .map(|entry| {
@@ -296,7 +297,7 @@ impl PlayerApp {
                 let remove_focus = format!("library-remove-{}", entry.id);
                 RowSpec {
                     title: &entry.title,
-                    meta: active.then_some("Playing"),
+                    meta: active.then_some(current_state),
                     selected: active,
                     focused: focus == Some(entry.id.as_str())
                         || focus == Some(remove_focus.as_str()),
