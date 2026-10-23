@@ -350,6 +350,22 @@ fn history_labels(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
     }
 }
 
+/// What the person does between two sittings at the keyboard: a change of
+/// theirs that is not typing (a heading, by its shortcut) ends the History
+/// row their typing reads as, so what they type next is a version of its own.
+fn stop_typing(app: &mut TestApp<WordProcessorApp>, level: u8) {
+    let before = app.versions().len();
+    app.harness().set_modifiers(&["ctrl".to_owned()]);
+    app.harness().key(&level.to_string());
+    app.harness().set_modifiers(&[]);
+    app.flush().unwrap();
+    assert_eq!(
+        app.versions().len().checked_sub(before),
+        Some(1),
+        "the heading is one change"
+    );
+}
+
 /// Open History and select the change whose result is `version`.
 fn select_version(app: &mut TestApp<WordProcessorApp>, version: &[automerge::ChangeHash]) {
     let [hash] = version else {
@@ -411,9 +427,11 @@ fn history_previews_a_version_and_restores_it_like_a_revert() {
     app.harness().type_text("alpha");
     app.flush().unwrap();
     let v1 = heads(&app);
+    stop_typing(&mut app, 1);
     app.harness().type_text(" beta");
     app.flush().unwrap();
     let v2 = heads(&app);
+    stop_typing(&mut app, 2);
     app.harness().type_text(" gamma");
     app.flush().unwrap();
     let v3 = heads(&app);
@@ -481,6 +499,7 @@ fn a_stale_review_and_a_viewer_cannot_restore() {
     app.harness().type_text("alpha");
     app.flush().unwrap();
     let v1 = heads(&app);
+    stop_typing(&mut app, 1);
     app.harness().type_text(" beta");
     app.flush().unwrap();
 
