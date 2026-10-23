@@ -3735,6 +3735,31 @@ mod tests {
         assert_eq!(rows.first().map(|row| row.id.as_str()), Some("tube"));
     }
 
+    /// A desktop showing two Alacritty windows, one titled after the app.
+    fn two_alacritty_windows() -> ChromeState {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let window = |id: u64, title: &str| WindowGroup {
+            id: id.saturating_mul(100),
+            tabs: vec![Tab {
+                id,
+                title: title.into(),
+                tile: TileContent::Foreign {
+                    app_id: "Alacritty".into(),
+                    surface_id: id,
+                },
+            }],
+            active_tab: id,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        };
+        tree.desktop.workspaces[0].strips[0].window_groups =
+            vec![window(1, "~/src"), window(2, "Alacritty")];
+        tree.seed_doc_from_cache();
+        ChromeState::new(tree)
+    }
+
     #[test]
     fn an_open_app_is_its_own_row_beside_its_windows_and_still_starts_the_app() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -3786,27 +3811,7 @@ mod tests {
                 )]
             }
         }
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let window = |id: u64, title: &str| WindowGroup {
-            id: id.saturating_mul(100),
-            tabs: vec![Tab {
-                id,
-                title: title.into(),
-                tile: TileContent::Foreign {
-                    app_id: "Alacritty".into(),
-                    surface_id: id,
-                },
-            }],
-            active_tab: id,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        };
-        tree.desktop.workspaces[0].strips[0].window_groups =
-            vec![window(1, "~/src"), window(2, "Alacritty")];
-        tree.seed_doc_from_cache();
-        let chrome = ChromeState::new(tree);
+        let chrome = two_alacritty_windows();
         let mut reg = SearchRegistry::new();
         reg.register(Rc::new(Apps));
         reg.register(Rc::new(Actions));
@@ -3826,7 +3831,7 @@ mod tests {
             .map(|(index, _)| index)
             .collect();
         assert_eq!(windows.len(), 2, "both windows are rows of their own");
-        let mut together: Vec<usize> = windows.clone();
+        let mut together = windows;
         together.push(app);
         together.sort_unstable();
         assert!(
