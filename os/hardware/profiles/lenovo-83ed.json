@@ -8,8 +8,7 @@
     "systemd.watchdog_sec=30",
     "sbsa_gwdt.action=1",
     "softlockup_panic=1",
-    "nmi_watchdog=panic",
-    "hung_task_panic=1"
+    "nmi_watchdog=panic"
   ],
   "system_firmware": [
     "qcom/a740_sqe.fw",
