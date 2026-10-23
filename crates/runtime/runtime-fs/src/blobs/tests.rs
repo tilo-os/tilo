@@ -210,7 +210,6 @@ fn blob_reads_are_confined_to_one_principal_and_scope() {
             .app("room-1", "so.tilo.photos")
             .put(b"private", "")
             .unwrap();
-        // Apps in one room hand content to each other by hash.
         let neighbour = harness.app("room-1", "so.tilo.chat");
         assert!(neighbour.has(&stored.hash).unwrap());
         let stranger = harness.app("room-2", "so.tilo.photos");
@@ -272,7 +271,6 @@ fn blob_reads_are_confined_to_one_principal_and_scope() {
             frame.extend_from_slice(json.as_bytes());
             runtime.block_on(read_handoff(&mut frame.as_slice()))
         };
-        // The launcher's own spelling of the frame.
         assert_eq!(
             raw(r#"{"protocol":1,"principal":"app","room":"room-1","app_id":"so.tilo.notes"}"#)
                 .unwrap(),
@@ -552,7 +550,6 @@ fn recording_client() -> Recorded {
         tokio::task::LocalSet::new().block_on(&runtime, async move {
             let server_end = tokio::net::UnixStream::from_std(server_end).unwrap();
             let bootstrap: document_blobs::Client = capnp_rpc::new_client(recording);
-            // Ends when the app side closes.
             let _ = runtime_portal::serve_connected_io(server_end, bootstrap.client).await;
         });
     });

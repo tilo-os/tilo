@@ -276,8 +276,6 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
     /// # Errors
     /// Refuses native enumeration admission or revoked scope.
     fn open_cursor(&self) -> Result<Arc<dyn WorkspaceDirectoryCursorBackend>, String>;
-    /// # Errors
-    /// Returns actual held directory metadata or current authority/IO failure.
     fn metadata(&self) -> Result<DirectoryStat, String>;
     /// # Errors
     /// Observes one child without following links or opening its bytes.
@@ -297,22 +295,14 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
     /// # Errors
     /// Refuses stale cursors, revoked scope, snapshot limits or host IO.
     fn list(&self, cursor: u64) -> Result<DirectoryRows, String>;
-    /// # Errors
-    /// Returns actual native/relay rights, type, admission, revocation or IO failures.
     fn directory(&self, name: &EntryName) -> Result<Arc<dyn WorkspaceDirectoryBackend>, String>;
-    /// # Errors
-    /// Returns actual native/relay rights, type, admission, revocation or IO failures.
     fn open_file(
         &self,
         name: &EntryName,
         mode: OpenMode,
         expected: [u64; 2],
     ) -> Result<Arc<dyn WorkspaceFileBackend>, String>;
-    /// # Errors
-    /// Returns actual native/relay rights, type, admission, revocation or IO failures.
     fn create_file(&self, name: EntryName) -> Result<Arc<dyn WorkspaceJobBackend>, String>;
-    /// # Errors
-    /// Returns actual native/relay rights, type, admission, revocation or IO failures.
     fn create_directory(&self, name: EntryName) -> Result<Arc<dyn WorkspaceJobBackend>, String>;
     /// # Errors
     /// Refuses missing private owner, foreign cursor or revoked parent scope.
@@ -330,10 +320,6 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
         let _ = (recovery, name);
         Err("Native recovery owner not admitted".into())
     }
-    /// # Errors
-    /// Returns actual native rename authority, admission or IO failures.
-    /// Protected same-parent replacing save through the real signed coordinator.
-    /// Ordinary directories have no implicit replacing authority.
     fn atomic_save(
         &self,
         _temporary: &EntryName,
@@ -365,8 +351,6 @@ pub trait WorkspaceMetadataBackend: Send + Sync + 'static {
     fn live_scope(&self) -> Option<Result<(), String>> {
         None
     }
-    /// # Errors
-    /// Returns live held-object metadata or authority/IO failure.
     fn metadata(&self) -> Result<DirectoryStat, String>;
 }
 /// Real native durable outcomes (or their authenticated relay), not signed
@@ -428,8 +412,6 @@ pub trait WorkspaceJobBackend: Send + Sync + 'static {
     fn live_scope(&self) -> Option<Result<(), String>> {
         None
     }
-    /// # Errors
-    /// Returns actual native publication, revocation or authenticated relay failures.
     fn poll(&self) -> Result<JobPoll, String>;
     /// # Errors
     /// Refuses revoked scope or native/relay cancellation failures.
@@ -572,8 +554,6 @@ pub trait WorkspacePendingReplacementBackend: Send + Sync + 'static {
     /// # Errors
     /// Revalidates the genuine source and still-held zero-effect work.
     fn check(&self) -> Result<(), String>;
-    /// # Errors
-    /// Returns only actual current native intent, not publication evidence.
     fn observe(&self) -> Result<PendingReplacementObservation, String>;
     /// # Errors
     /// Consumes once through the native sealed-verifier signed-prepare gate.

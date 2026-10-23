@@ -1,4 +1,3 @@
-//! Existing filesystem wire over an owned private stream and actual live grants.
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, reason = "owned integration fixture assertions")]
 use runtime_fs::selected_file::SelectedFileBackend;
@@ -559,7 +558,6 @@ async fn existing_read_write_and_atomic_append_use_live_exact_inode_custody() {
                     .await
                     .is_err()
             );
-            // Exercise the server's independent bound, bypassing the SDK check.
             let mut raw_open = raw.open_request();
             raw_open.get().set_path("file");
             raw_open.get().set_mode(runtime_fs::raw::OpenMode::Append);

@@ -263,7 +263,6 @@ impl DocumentsFs {
         host::target(&self.documents, key, token, inner).ok_or_else(|| errno(Errno::NOENT))
     }
 
-    /// The node `name` in `parent`, when it exists.
     fn child(&self, parent: &Node, name: &OsStr) -> io::Result<Node> {
         let text = name.to_str();
         let node = match parent {

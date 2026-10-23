@@ -64,8 +64,6 @@ impl GrantedEntry {
 pub struct EntryName(OsString);
 
 impl EntryName {
-    /// # Errors
-    /// Returns `InvalidName` for empty, dot, parent, slash or NUL components.
     pub fn new(value: OsString) -> Result<Self, FsError> {
         let bytes = value.as_bytes();
         if bytes.is_empty()

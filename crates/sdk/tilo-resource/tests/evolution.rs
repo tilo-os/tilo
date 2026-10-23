@@ -1,5 +1,3 @@
-//! Storage versions, migrations, unreadable documents and the public
-//! surface.
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use automerge::ReadDoc;

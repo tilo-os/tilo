@@ -192,7 +192,6 @@ pub enum StorageRequest {
     CachePolicy,
     /// Replace the cache policy; the daemon answers with the one it applied.
     SetCachePolicy(CachePolicy),
-    /// The [`ResidencySummary`] of every workspace.
     Residency,
     /// Drop `workspace`'s cache.
     FreeCache {

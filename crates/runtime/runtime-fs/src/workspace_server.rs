@@ -85,13 +85,8 @@ pub trait WorkspaceBackend: Send + Sync + 'static {
     }
 
     /// The entries of the directory at `path`.
-    ///
-    /// # Errors
-    /// `path` is not a directory here.
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, String>;
 
-    /// # Errors
-    /// `path` is not in the workspace.
     fn stat(&self, path: &str) -> Result<Metadata, String>;
 
     /// Up to `max_len` bytes of the file at `path` from `offset`, empty at
@@ -180,14 +175,10 @@ pub struct ConnectedWorkspaceServer {
 }
 impl ConnectedWorkspaceServer {
     /// Wait for the actual RPC connection to finish without requesting stop.
-    /// # Errors
-    /// Returns the actual connection failure or worker panic.
     pub fn wait(mut self) -> io::Result<()> {
         self.join()
     }
     /// Request stop and report the actual owned worker departure.
-    /// # Errors
-    /// Returns the actual connection failure or worker panic.
     pub fn retire(mut self) -> io::Result<()> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());

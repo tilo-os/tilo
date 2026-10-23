@@ -1314,7 +1314,6 @@ mod replacement_pin_tests {
                     .restore_captured(observed.capture, EntryName::new("restored".into()).unwrap()),
                 Err(crate::FsError::Busy)
             ));
-            // Duplicate requests share the one genuine native exclusion claim.
             let duplicate = job.pin_replacement().await.unwrap();
             assert_eq!(duplicate.observe().await.unwrap(), observed);
             drop(pin);

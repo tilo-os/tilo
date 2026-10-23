@@ -1,5 +1,3 @@
-//! Real native directory capability + existing connected RPC, with same-name
-//! replacement refusing truncate and existing held handles preserving old bytes.
 #![cfg(unix)]
 #![allow(
     clippy::unwrap_used,

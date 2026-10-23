@@ -78,17 +78,11 @@ impl BrokerSigningIdentity {
     }
 
     /// Request the existing generic action grant; no local signing fallback.
-    ///
-    /// # Errors
-    /// Returns the same transport, response or authorization errors as `sign_for`.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         self.sign_for("generic", message)
     }
 
     /// Request a signature under the host's live, exact action capability.
-    ///
-    /// # Errors
-    /// Returns transport/framing errors or the broker's authorization refusal.
     pub fn sign_for(&self, action: &str, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         self.signature(&wire::Request::Sign {
             action: action.to_owned(),
@@ -99,8 +93,6 @@ impl BrokerSigningIdentity {
     /// Ask the host to sign its fixed collaboration-join domain for this route.
     ///
     /// The host checks the workspace against the connection's launch binding.
-    /// # Errors
-    /// Returns transport/framing errors or the broker's authorization refusal.
     pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
         self.signature(&wire::Request::CollaborationJoin {
             workspace_id: workspace_id.to_owned(),
@@ -110,8 +102,6 @@ impl BrokerSigningIdentity {
     /// Request signing of a typed operation, retaining every route field.
     ///
     /// The host validates the envelope and live role; this client cannot grant it.
-    /// # Errors
-    /// Returns transport/framing errors or the broker's authorization refusal.
     pub fn sign_collaboration_op(
         &self,
         workspace_id: &str,
@@ -130,9 +120,6 @@ impl BrokerSigningIdentity {
     /// Ask for the content keys of one document route. The host checks the
     /// route against the connection's launch binding and the caller's live
     /// role; it never hands out keys of another app or workspace.
-    ///
-    /// # Errors
-    /// Returns transport/framing errors or the broker's authorization refusal.
     pub fn channel_keys(
         &self,
         workspace_id: &str,
@@ -244,11 +231,9 @@ impl BrokerMetadata {
     pub fn device_certificate(&self) -> Option<&[u8]> {
         self.device_certificate.as_deref()
     }
-    /// Threshold in the host's t-of-n metadata.
     pub fn threshold(&self) -> u16 {
         self.threshold
     }
-    /// Total shares in the host's t-of-n metadata.
     pub fn total_shares(&self) -> u16 {
         self.total_shares
     }

@@ -433,7 +433,6 @@ impl Documents {
             .unwrap_or_default()
     }
 
-    /// The tokens of `key`'s view.
     pub fn tokens(&self, key: &AppKey) -> Vec<String> {
         self.loading.wait();
         self.views

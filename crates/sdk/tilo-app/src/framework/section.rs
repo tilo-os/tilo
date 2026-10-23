@@ -23,17 +23,13 @@ use super::record::{Held, RecordDoor};
 
 /// One thing a section's record asks of the section's type.
 enum SectionOp<'a> {
-    /// Make the document one of the section's model.
     Initialize(&'a mut Doc),
-    /// Write the stored value into the document's fields.
     Write(&'a mut Doc),
-    /// Store the value the document's fields hold, as the origin did.
     Store(&'a Doc, &'a ChangeOrigin),
     /// Whether the document's fields hold the stored value.
     HoldsStored(&'a Doc),
     /// The section the document holds, published under an id and a label.
     Publish(&'a Doc, &'a str, &'a str),
-    /// The section's action an encoded one is.
     Decode(&'a EncodedAction),
 }
 
@@ -53,7 +49,6 @@ pub(crate) struct SectionKind {
     pub(crate) label: &'static str,
     /// The section keeps a value per device.
     pub(crate) device_local: bool,
-    /// The type id the section's actions are encoded under.
     action_type: &'static str,
     /// The app whose settings the section is, and the document they live in.
     app_id: String,
@@ -175,7 +170,6 @@ where
     })
 }
 
-/// The record a section is kept in.
 enum Kept {
     /// A document of the window's own, which lives as long as the window: in
     /// a window that keeps nothing of the person's (a private one).
@@ -193,7 +187,6 @@ enum Kept {
         record: RefCell<Option<Box<StoredRecord>>>,
         /// The stored value, while the record is not open.
         scratch: Box<RefCell<Doc>>,
-        /// The settings document's version `scratch` last followed.
         scratch_seen: Cell<SettingsRevision>,
         /// The settings document's version the record last followed.
         seen: Cell<Option<SettingsRevision>>,
@@ -628,10 +621,6 @@ impl SettingsRecords {
     /// is recorded with both, so its history tells them apart. A change
     /// whose published action asks first, for the value it carries (a later
     /// lock), runs only once it is `confirmed`.
-    ///
-    /// # Errors
-    /// No section publishes the action, the arguments do not bind, the
-    /// change is yet to be confirmed, or the section's model refused it.
     pub fn invoke(
         &self,
         address: &tilo_actions::ActionAddress,
