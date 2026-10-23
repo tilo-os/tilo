@@ -230,6 +230,7 @@ fn declining_is_remembered_for_that_file(file: &Path, desktop_id: &str) {
 fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     let home = tilo_test_env::TestHome::new().unwrap();
     desktop_entry::cache::invalidate();
+    downloaded_apps::follow_moves();
     let first_file: PathBuf = home.home().join("Downloads/mytool");
     let first = Running::start(&first_file);
     let mut h = harness_for(&first);
@@ -294,12 +295,26 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
         .collect();
     assert_eq!(named.len(), 1, "one app, one entry: {named:?}");
     assert_eq!(named[0].downloaded.as_ref().unwrap().program, second_file);
+    assert_eq!(
+        named[0].downloaded.as_ref().unwrap().locations,
+        std::slice::from_ref(&first_file),
+        "the first copy stays known"
+    );
     drop(window);
     drop(h);
     drop(second);
 
-    // Phase `a_deleted_file_shows_as_missing_without_trying_to_start_it`.
+    // Phase `a_gone_copy_falls_back_to_the_other_copy`.
     std::fs::remove_file(&second_file).unwrap();
+    wait_for("the entry starts the copy still there", || {
+        entry(desktop_id)
+            .and_then(|app| app.downloaded)
+            .is_some_and(|downloaded| downloaded.present && downloaded.program == first_file)
+    });
+
+    // Phase `a_deleted_file_shows_as_missing_without_trying_to_start_it`.
+    let kept = home.home().join("kept-mytool");
+    std::fs::rename(&first_file, &kept).unwrap();
     wait_for("the entry says its file is gone", || {
         shell::shell::host_apps::host_apps()
             .into_iter()
@@ -309,6 +324,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     });
 
     // Phase `locate_points_it_at_the_file_where_it_is_now`.
+    std::fs::rename(&kept, &first_file).unwrap();
     downloaded_apps::locate(desktop_id, &first_file);
     assert!(downloaded_apps::settle(WAIT));
     let app = entry(desktop_id).unwrap();
@@ -316,8 +332,13 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     assert!(downloaded.present);
     assert_eq!(downloaded.program, first_file);
 
-    // Phase `remove_from_apps_takes_the_entry_and_never_the_file`, through
-    // the one action Files, search and agents share.
+    taken_off_the_apps_and_declined(desktop_id, &first_file, &icon);
+    desktop_entry::cache::invalidate();
+}
+
+/// Taking the entry off the apps through the one action Files, search and
+/// agents share leaves the file, and the file is then asked about again.
+fn taken_off_the_apps_and_declined(desktop_id: &str, first_file: &Path, icon: &Path) {
     let mut listed = None;
     wait_for("the app list holds the entry", || {
         listed = shell::shell::app_list::find(desktop_id)
@@ -329,9 +350,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     assert!(first_file.exists(), "the program's file stays where it is");
     assert!(!icon.exists());
 
-    // Phase `closing_the_question_means_that_file_is_not_asked_about_again`.
-    declining_is_remembered_for_that_file(&first_file, desktop_id);
-    desktop_entry::cache::invalidate();
+    declining_is_remembered_for_that_file(first_file, desktop_id);
 }
 
 #[test]

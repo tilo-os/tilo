@@ -79,6 +79,7 @@ impl ShellDriver {
         "app-uninstall-flatpak",
         "app-uninstall-tilo",
         "app-uninstall-downloaded",
+        "app-uninstall-downloaded-copies",
         "app-uninstall-system",
         "app-uninstall-system-tilo",
         "app-uninstall-device-flatpak",

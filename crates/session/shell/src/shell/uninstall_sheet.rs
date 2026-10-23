@@ -25,6 +25,9 @@ use crate::shell::i18n::{t, t_args};
 pub const SHEET: &str = "app-uninstall";
 /// The "Remove its data" switch's address.
 pub const REMOVE_DATA: &str = "app-uninstall.remove-data";
+/// The rows naming each copy of a downloaded program that goes to the
+/// Trash: `<this>.<index>`.
+pub const COPY: &str = "app-uninstall.copy";
 
 /// What the person answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,15 +101,25 @@ impl Asking {
                         )),
                 ));
             }
-            (AppSource::Downloaded { program, .. }, _) => {
-                let file = program.file_name().map_or_else(
-                    || program.display().to_string(),
-                    |name| name.to_string_lossy().into_owned(),
-                );
+            (
+                AppSource::Downloaded {
+                    program, locations, ..
+                },
+                _,
+            ) => {
+                let copies: Vec<&std::path::PathBuf> =
+                    std::iter::once(program).chain(locations).collect();
                 body = body.push(Box::new(Text::new(&t_args(
                     "app-uninstall-file-body",
-                    &[("file", file.into())],
+                    &[("count", copies.len().into())],
                 ))));
+                let home = tilo_paths::home();
+                for (index, copy) in copies.into_iter().enumerate() {
+                    let (name, folder) = copy_label(copy, home.as_deref());
+                    body = body.push(Box::new(
+                        ListRow::new(format!("{COPY}.{index}"), name).secondary(folder),
+                    ));
+                }
             }
             (AppSource::Tilo { .. }, _) => {
                 body = body.push(Box::new(Text::new(&t("app-uninstall-tilo-body"))));
@@ -153,4 +166,22 @@ impl Asking {
     pub fn offers_data_switch(&self) -> bool {
         self.item.removal() == AppRemoval::UninstallWithData
     }
+}
+/// A copy's file name and the folder it is in, as the person knows it:
+/// `Downloads/tilo-imager-linux` under their home, the full path elsewhere.
+fn copy_label(copy: &std::path::Path, home: Option<&std::path::Path>) -> (String, String) {
+    let name = copy.file_name().map_or_else(
+        || copy.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let folder = copy.parent().map_or_else(String::new, |folder| {
+        match home.and_then(|home| folder.strip_prefix(home).ok()) {
+            Some(inside) if inside.as_os_str().is_empty() => {
+                crate::shell::i18n::t("app-uninstall-home-folder")
+            }
+            Some(inside) => inside.display().to_string(),
+            None => folder.display().to_string(),
+        }
+    });
+    (name, folder)
 }

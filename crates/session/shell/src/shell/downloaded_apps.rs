@@ -65,8 +65,8 @@ enum Job {
     Decline(u64),
     Locate(String, PathBuf),
     /// The entry's file is gone from where it was: find where its record
-    /// moved to in the person's files.
-    Follow(String, [u8; 16]),
+    /// moved to in the person's files, else start another copy of the app.
+    Follow(String, Option<[u8; 16]>),
     /// [`Job::Follow`] every entry of the current scan whose file is gone.
     FollowAll,
     Settle(mpsc::Sender<()>),
@@ -212,16 +212,15 @@ pub fn locate(desktop_id: &str, program: &Path) {
 
 /// Have every scan hand the entries whose file is gone to the worker,
 /// which follows a file that moved or was renamed inside Tilo's filesystem
-/// to where it is now. A file elsewhere is found again by running it
-/// ([`Store::update_location`]) or by Locate.
+/// to where it is now, or else points the entry at another copy of the
+/// app still there ([`Store::fall_back`]). A file elsewhere is found again
+/// by running it ([`Store::update_location`]) or by Locate.
 pub fn follow_moves() {
     desktop_entry::cache::on_missing_program(|entry| {
-        if let Some(record) = entry
-            .downloaded
-            .as_ref()
-            .and_then(desktop_entry::downloaded::DownloadedProgram::record)
+        if let Some(downloaded) = &entry.downloaded
+            && (downloaded.record().is_some() || !downloaded.locations.is_empty())
         {
-            send(Job::Follow(entry.id.clone(), record));
+            send(Job::Follow(entry.id.clone(), downloaded.record()));
         }
     });
     // Files that moved while the session was not running: the first scan
@@ -272,31 +271,38 @@ fn run(job: Job, seen: &mut HashSet<(u32, Option<u64>)>) {
             refresh_scan();
         }
         Job::Follow(desktop_id, record) => {
-            let Some(found) = file_explorer::model::resolve_workspace_record(
-                &file_explorer::model::workspace_record_authority_roots(),
-                uuid::Uuid::from_bytes(record),
-            ) else {
+            let Some(store) = Store::for_session() else {
                 return;
             };
-            if !std::fs::metadata(&found.path).is_ok_and(|meta| meta.is_file()) {
-                return;
+            let moved = record
+                .and_then(|record| {
+                    file_explorer::model::resolve_workspace_record(
+                        &file_explorer::model::workspace_record_authority_roots(),
+                        uuid::Uuid::from_bytes(record),
+                    )
+                })
+                .map(|found| found.path)
+                .filter(|path| std::fs::metadata(path).is_ok_and(|meta| meta.is_file()));
+            let changed = match moved {
+                Some(path) => store.locate(&desktop_id, &path).map(|()| true),
+                None => store.fall_back(&desktop_id).map(|copy| copy.is_some()),
+            };
+            match changed {
+                Ok(true) => refresh_scan(),
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%desktop_id, %error, "could not follow a downloaded app's file");
+                }
             }
-            if let Some(store) = Store::for_session()
-                && let Err(error) = store.locate(&desktop_id, &found.path)
-            {
-                tracing::warn!(%desktop_id, %error, "could not follow a downloaded app's file");
-                return;
-            }
-            refresh_scan();
         }
         Job::FollowAll => {
             for entry in desktop_entry::cache::cached_scan().entries {
-                if let Some(record) = entry
+                if let Some(downloaded) = entry
                     .downloaded
                     .as_ref()
                     .filter(|downloaded| !downloaded.present)
-                    .and_then(desktop_entry::downloaded::DownloadedProgram::record)
                 {
+                    let record = downloaded.record();
                     run(Job::Follow(entry.id, record), seen);
                 }
             }
@@ -343,16 +349,18 @@ fn observe(window: &ObservedWindow) {
         if installed {
             return;
         }
-        let identity = downloaded::identify(
+        let Some(store) = Store::for_session() else {
+            return;
+        };
+        // A copy only its window names joins the entry another copy of the
+        // same program has.
+        let identity = store.identify(
             &program,
             &WindowFacts {
                 app_id: window.app_id.clone(),
                 icon: window_icon(window.surface_id),
             },
         );
-        let Some(store) = Store::for_session() else {
-            return;
-        };
         match store.update_location(&identity, &program) {
             Ok(Some(desktop_id)) => {
                 tracing::info!(%desktop_id, program = %program.path.display(), "a downloaded app now runs from another file");

@@ -497,6 +497,7 @@ fn a_record_identity_names_the_record_it_was_written_with() {
         Some("/home/me/Foo.AppImage"),
         Some("AppImage"),
         Some(&format!("record:{}", super::format_record(&id))),
+        None,
     )
     .unwrap();
     assert_eq!(written.record(), Some(id));
@@ -508,6 +509,7 @@ fn a_record_identity_names_the_record_it_was_written_with() {
         Some("/home/me/Foo.AppImage"),
         Some("AppImage"),
         Some("64769:1234"),
+        None,
     )
     .unwrap();
     assert_eq!(inode.record(), None);
@@ -631,4 +633,139 @@ fn a_program_with_no_artwork_shows_the_generic_application_icon() {
         .find(|entry| entry.id == id)
         .unwrap();
     assert_eq!(entry.icon.as_deref(), Some(GENERIC_ICON));
+}
+
+fn named(key: &str, name: &str, class: Option<&str>) -> Identity {
+    Identity {
+        key: key.into(),
+        name: name.into(),
+        icon: None,
+        comment: None,
+        categories: Vec::new(),
+        keywords: Vec::new(),
+        mime_types: Vec::new(),
+        startup_wm_class: class.map(str::to_owned),
+        field_code: None,
+    }
+}
+
+#[test]
+fn the_newest_copy_is_started_and_the_others_stay_known_until_they_are_gone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let appimage = tmp.path().join("home/Downloads/Tool-x86_64.AppImage");
+    let tarball = tmp.path().join("home/Downloads/tool-linux/tool");
+    executable(&appimage, b"\x7fELF");
+    executable(&tarball, b"\x7fELF");
+    let (store, applications) = store(tmp.path());
+    let identity = named("org.example.Tool", "Tool", None);
+    let id = store
+        .add(
+            &identity,
+            &Program {
+                path: appimage.clone(),
+                kind: ProgramKind::AppImage,
+            },
+        )
+        .unwrap();
+    let same = store
+        .add(
+            &identity,
+            &Program {
+                path: tarball.clone(),
+                kind: ProgramKind::Program,
+            },
+        )
+        .unwrap();
+    assert_eq!(same, id, "one app, one entry");
+    let downloaded = |applications: &Path| {
+        scanned(applications)
+            .into_iter()
+            .find(|entry| entry.id == id)
+            .and_then(|entry| entry.downloaded)
+            .unwrap()
+    };
+    let now = downloaded(&applications);
+    assert_eq!(
+        now.program, tarball,
+        "the copy added last is the one started"
+    );
+    assert_eq!(now.locations, std::slice::from_ref(&appimage));
+    assert_eq!(now.copies(), [tarball.clone(), appimage.clone()]);
+
+    // Phase `a_gone_copy_falls_back_to_one_still_there`.
+    std::fs::remove_file(&tarball).unwrap();
+    assert_eq!(store.fall_back(&id).unwrap(), Some(appimage.clone()));
+    let now = downloaded(&applications);
+    assert_eq!(now.program, appimage);
+    assert!(now.locations.is_empty(), "a gone copy is forgotten");
+    assert_eq!(
+        store.fall_back(&id).unwrap(),
+        None,
+        "nothing to do while the file is there"
+    );
+}
+
+#[test]
+fn a_copy_only_its_window_names_joins_the_entry_another_copy_made() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let appimage = home.join("Downloads/Tool-x86_64.AppImage");
+    let bare = home.join("Downloads/tool");
+    executable(&appimage, b"\x7fELF");
+    executable(&bare, b"\x7fELF");
+    let (store, applications) = store(tmp.path());
+    let id = store
+        .add(
+            &named("org.example.Tool", "Tool", Some("tool-window")),
+            &Program {
+                path: appimage.clone(),
+                kind: ProgramKind::AppImage,
+            },
+        )
+        .unwrap();
+    let program = Program {
+        path: bare.clone(),
+        kind: ProgramKind::Program,
+    };
+    // By the entry's StartupWMClass ...
+    let by_class = store.identify(
+        &program,
+        &WindowFacts {
+            app_id: "tool-window".into(),
+            icon: None,
+        },
+    );
+    assert_eq!(by_class.key, "org.example.Tool");
+    assert_eq!(by_class.name, "Tool");
+    // ... or by the desktop file name it was keyed by.
+    let by_stem = store.identify(
+        &program,
+        &WindowFacts {
+            app_id: "org.example.Tool".into(),
+            icon: None,
+        },
+    );
+    assert_eq!(by_stem.key, "org.example.Tool");
+    assert_eq!(
+        store.update_location(&by_class, &program).unwrap(),
+        Some(id)
+    );
+    let entries = scanned(&applications);
+    let tools: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.name == "Tool")
+        .collect();
+    assert_eq!(tools.len(), 1, "one app, one entry: {tools:?}");
+    let downloaded = tools[0].downloaded.as_ref().unwrap();
+    assert_eq!(downloaded.program, bare);
+    assert_eq!(downloaded.locations, [appimage]);
+    // A window no entry knows is its own app.
+    let other = store.identify(
+        &program,
+        &WindowFacts {
+            app_id: "org.example.Other".into(),
+            icon: None,
+        },
+    );
+    assert_eq!(other.key, "org.example.Other");
 }

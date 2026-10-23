@@ -3263,6 +3263,7 @@ app-list-invalid-entry = That entry can't be taken off your apps.
 app-list-uninstalled = Uninstalled { $name }
 app-list-uninstalled-data = Its data is in the Trash.
 app-list-uninstalled-file = Its file is in the Trash.
+app-list-uninstalled-files = All its copies are in the Trash.
 app-list-removed = Removed { $name } from your apps
 app-list-uninstall-failed = Couldn't uninstall { $name }
 app-list-remove-failed = Couldn't remove { $name } from your apps
@@ -3272,7 +3273,11 @@ app-uninstall-cancel = Cancel
 app-uninstall-remove-data = Remove its data
 app-uninstall-remove-data-detail = Your settings and saved files go to the Trash, where you can restore them.
 app-uninstall-device-body = It's removed for everyone on this computer.
-app-uninstall-file-body = { $file } goes to the Trash.
+app-uninstall-file-body = { $count ->
+    [one] Its file goes to the Trash, where you can restore it.
+   *[other] All { $count } copies go to the Trash, where you can restore them.
+}
+app-uninstall-home-folder = Home
 app-uninstall-tilo-body = Your documents stay in your workspaces.
 app-uninstall-remove-title = Remove { $name } from apps?
 app-uninstall-remove-action = Remove from apps
