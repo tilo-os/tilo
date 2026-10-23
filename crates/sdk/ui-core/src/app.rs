@@ -59,6 +59,7 @@ mod retirement_assembly;
 mod retirement_lifecycle_tests;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
+mod retained_layout;
 mod runtime;
 mod window_bar;
 use runtime::{
@@ -2555,7 +2556,9 @@ impl App {
         if change == crate::widget::StructureChange::Rebuild {
             self.layout.rebuild_described = false;
         }
-        change.rebuilds()
+        // A widget that replaced children without saying so is found here.
+        let stale = self.layout_maps_stale();
+        change.rebuilds() || stale
     }
 
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
@@ -2613,6 +2616,7 @@ impl App {
         );
         self.bindings.clear();
         self.layout.node_map.clear();
+        self.layout.adopted.clear();
         self.build_history_presentation();
         self.layout.structure_dirty = false;
         self.layout.layout_dirty = true;
@@ -2673,7 +2677,8 @@ impl App {
         // it is not another structure change.
         let _ =
             crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
-        if self.root_widget.take_structure_dirty() {
+        // A sync that replaced delegates without saying so is found too.
+        if self.root_widget.take_structure_dirty() | self.layout_maps_stale() {
             // Fresh sync can replace delegates. Rebuild before any map access.
             self.layout.request_rebuild();
             self.bindings.clear();

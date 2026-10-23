@@ -1339,6 +1339,12 @@ impl Widget for DesktopSurface {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.root.children_mut()
     }
+    /// The surface stands for its root's node; the root's own children are
+    /// laid out under it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(self.root.as_ref());
+        true
+    }
     fn name(&self) -> &'static str {
         "DesktopSurface"
     }

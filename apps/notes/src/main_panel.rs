@@ -1495,6 +1495,16 @@ impl Widget for MainPanel {
         children
     }
 
+    /// The title, header and editor keep their nodes with no page open.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.title_label);
+        if let Some(header) = self.header.built() {
+            visitor(header);
+        }
+        visitor(&self.editor);
+        true
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         ui::tilo_resource::profiling::measure("note_dates", || self.date_index.sync(state));

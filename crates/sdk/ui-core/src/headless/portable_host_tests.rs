@@ -386,6 +386,10 @@ impl Widget for Gate {
             vec![]
         }
     }
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.content);
+        true
+    }
     fn name(&self) -> &'static str {
         "gate"
     }

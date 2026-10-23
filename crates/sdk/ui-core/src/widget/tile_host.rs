@@ -2308,6 +2308,16 @@ impl Widget for TileHost {
         }
         children
     }
+    /// The app also while History keeps it inert.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if let Some(history) = &self.history {
+            visitor(history.as_ref());
+        }
+        if let TileContent::App(widget) = &self.content {
+            visitor(widget.as_ref());
+        }
+        true
+    }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.record_error.is_some() {
             return vec![];

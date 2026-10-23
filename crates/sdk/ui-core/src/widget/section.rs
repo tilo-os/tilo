@@ -1260,6 +1260,14 @@ impl Widget for Section {
         }
     }
 
+    /// The items of a collapsed section too: they keep their nodes.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        for child in &self.parts.children {
+            visitor(child.as_ref());
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let shown = self.shown();
         self.parts

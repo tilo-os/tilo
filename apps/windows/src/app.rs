@@ -2051,6 +2051,15 @@ impl ui::widget::Decorator for WindowsApp {
         }
     }
 
+    /// The app stands for the shell's node, laid out under it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.shell);
+        if let Some(dialog) = &self.dialog {
+            visitor(dialog);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children = self.shell.children_mut();
         if let Some(dialog) = self.dialog.as_mut().filter(|dialog| dialog.is_open()) {

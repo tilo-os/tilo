@@ -196,6 +196,12 @@ impl PathBar {
 }
 
 impl Widget for PathBar {
+    /// The trail has a node of its own; the bar routes and paints it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.crumbs);
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -3370,6 +3370,14 @@ impl Widget for WindowGroup {
         }
     }
 
+    /// The bar and its search as well as every tab's host.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.bar);
+        visitor(&self.search);
+        self.for_each_child(visitor);
+        true
+    }
+
     #[allow(private_interfaces, reason = "toolkit-only checked custody traversal")]
     fn visit_components(
         &mut self,

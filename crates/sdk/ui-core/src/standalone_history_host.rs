@@ -946,6 +946,19 @@ impl StandaloneHistoryHost {
         Ok(self.session.as_ref())
     }
 
+    /// Each widget [`Self::build_layout`] can lay out, for a check that a
+    /// retained layout still names only live widgets.
+    pub(crate) fn for_each_widget(&self, visit: &mut dyn FnMut(&dyn Widget)) {
+        if let Some(button) = &self.toolbar {
+            visit(button);
+        }
+        if let Some(button) = &self.search {
+            visit(button);
+        }
+        visit(&self.pane);
+        visit(&self.canvas);
+    }
+
     /// App construction and lifecycle stay with the caller. Build chrome only,
     /// then compose its nodes and the already-built app node in the same arena.
     pub(crate) fn build_layout(

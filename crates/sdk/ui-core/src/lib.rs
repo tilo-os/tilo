@@ -564,6 +564,7 @@ pub mod semantic_document_read;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;
+pub(crate) mod retained_widgets;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;

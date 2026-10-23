@@ -1504,6 +1504,11 @@ impl Widget for CheckedCompositionRoot {
         self.inner.children_mut()
     }
 
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(self.inner.as_ref());
+        true
+    }
+
     fn name(&self) -> &str {
         "checked-composition-root"
     }
