@@ -360,6 +360,7 @@ impl Relay {
                     subscribe.clone(),
                     VIEW_BYTES,
                     PICTURE_RETAIN,
+                    crate::mirror::Start::Requested,
                     Some(scopes.downlink.clone()),
                 );
                 server = server.with_publisher(view.consume());
