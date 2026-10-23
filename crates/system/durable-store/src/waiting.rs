@@ -15,6 +15,12 @@
 //! installed ([`observe`], which a compositor's audit lists), and, on a
 //! thread a test marked with [`forbid_strictly_on_this_thread`], as a panic,
 //! so the test names the caller.
+//!
+//! A commit wait ([`refused_commit`]: waiting for another thread's fsync)
+//! is the one a frame loop can never bound, and the one a caller can always
+//! avoid by asking durability instead. A test of code that still reads the
+//! disk on its thread marks it with [`forbid_commit_waits_strictly`]: reads
+//! are reported as usual, and only a commit wait fails the test.
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -26,6 +32,9 @@ enum Rule {
     Forbidden,
     /// Forbidden, and a wait reached anyway fails the test that set it.
     Strict,
+    /// Forbidden, and a commit wait reached anyway fails the test that set
+    /// it; other waits are only reported.
+    StrictCommits,
 }
 
 thread_local! {
@@ -67,6 +76,13 @@ pub fn forbid_strictly_on_this_thread() -> Forbidden {
     set(Rule::Strict)
 }
 
+/// [`forbid_on_this_thread`] for a test of code that still reads the disk
+/// here: a commit wait reached anyway panics, naming what waited, and other
+/// waits are only reported.
+pub fn forbid_commit_waits_strictly() -> Forbidden {
+    set(Rule::StrictCommits)
+}
+
 /// Whether this thread must not wait on storage.
 #[must_use]
 pub fn forbidden() -> bool {
@@ -90,6 +106,24 @@ pub fn observe(observer: fn(&str)) -> bool {
 /// On a thread a test marked with [`forbid_strictly_on_this_thread`].
 #[track_caller]
 pub fn refused(what: &str) {
+    refuse(what, false);
+}
+
+/// [`refused`] for a wait on another thread's commit (a store's writer
+/// committing and syncing): also fails a test marked with
+/// [`forbid_commit_waits_strictly`].
+///
+/// # Panics
+///
+/// On a thread a test marked with [`forbid_strictly_on_this_thread`] or
+/// [`forbid_commit_waits_strictly`].
+#[track_caller]
+pub fn refused_commit(what: &str) {
+    refuse(what, true);
+}
+
+#[track_caller]
+fn refuse(what: &str, commit: bool) {
     let rule = RULE.with(Cell::get);
     if rule == Rule::Allowed {
         return;
@@ -99,7 +133,7 @@ pub fn refused(what: &str) {
     }
     let at = std::panic::Location::caller();
     assert!(
-        rule != Rule::Strict,
+        rule != Rule::Strict && !(commit && rule == Rule::StrictCommits),
         "{at}: {what} is a storage wait on a thread that must never wait on storage; \
          move it to a worker, or for a commit use DurableStore::flush_where_allowed \
          and read the outcome from durability"
@@ -129,6 +163,13 @@ mod tests {
                     .cloned()
                     .unwrap_or_default();
                 assert!(message.contains("waiting.rs"), "names no caller: {message}");
+            }
+            {
+                let _commits = forbid_commit_waits_strictly();
+                assert!(forbidden());
+                refused("a read, only reported");
+                let commit = std::panic::catch_unwind(|| refused_commit("a commit"));
+                assert!(commit.is_err(), "a commit wait fails the test");
             }
             assert!(forbidden(), "the outer guard still holds");
             refused("tolerated again");

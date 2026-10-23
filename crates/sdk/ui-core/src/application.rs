@@ -2681,7 +2681,7 @@ mod portable_tests {
         let host = probe::ProbeHost::new();
         let root = host.root();
         let checkout = {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
             let mut component =
                 probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
             let checkout = component.record().clone();

@@ -131,6 +131,11 @@ struct Writing {
 struct Batch {
     // A queued commit keeps its view slot exclusive even after the caller drops.
     view_gate: Option<Arc<advisory_lock::FileLock>>,
+    /// The lease a document's write was accepted under, kept until it
+    /// commits: a caller that may not wait (a frame loop closing an app)
+    /// lets go of its lease before the write lands, and the document must
+    /// stay its own until then.
+    owner: Option<Arc<Owner>>,
     first: u64,
     last: u64,
     op: WriteOp,
@@ -623,6 +628,7 @@ impl DurableStore for FsStore {
             }
             let writer = writer.map(<[u8]>::to_vec);
             let view_gate = state.view_leases.get(key).cloned();
+            let owner = state.owners.get(key).and_then(|live| live.first()).cloned();
             if let Some(batch) = state.queue.get_mut(key) {
                 batch.op.coalesce(op);
                 batch.last = revision;
@@ -635,6 +641,7 @@ impl DurableStore for FsStore {
                     key.clone(),
                     Batch {
                         view_gate,
+                        owner,
                         first: revision,
                         last: revision,
                         op,
@@ -685,7 +692,7 @@ impl DurableStore for FsStore {
         {
             if !told {
                 told = true;
-                durable_store::waiting::refused(&format!(
+                durable_store::waiting::refused_commit(&format!(
                     "FsStore::flush waiting for the writer thread to commit {}",
                     key.map_or_else(|| "every key".to_owned(), ToString::to_string)
                 ));
@@ -723,7 +730,7 @@ impl DurableStore for FsStore {
             return Err(failure);
         }
         if let Some(key) = unsynced {
-            durable_store::waiting::refused(&format!("FsStore::flush syncing {key}"));
+            durable_store::waiting::refused_commit(&format!("FsStore::flush syncing {key}"));
             self.sync_existing(&key)?;
             lock(&self.shared.state).keys.entry(key).or_default().synced = true;
         }
@@ -1378,11 +1385,13 @@ fn next_work(shared: &Shared) -> Option<Work> {
                     base_len: None,
                 },
             );
-            let owner = state
-                .owners
-                .get(&key)
-                .and_then(|live| live.first())
-                .cloned();
+            let owner = batch.owner.take().or_else(|| {
+                state
+                    .owners
+                    .get(&key)
+                    .and_then(|live| live.first())
+                    .cloned()
+            });
             let poisoned = state.keys.get(&key).is_some_and(|status| status.poisoned);
             return Some(Work::Commit(Taken {
                 key,
@@ -1769,7 +1778,7 @@ mod tests {
 
     /// A frame loop reads back what it just wrote while the store's thread
     /// has yet to commit it, and while it commits: from memory, never by
-    /// waiting for that thread. The strict guard fails the test on a wait.
+    /// waiting for that thread. The guard fails the test on a commit wait.
     #[test]
     fn a_read_on_a_thread_that_must_not_wait_sees_unwritten_writes() {
         let tmp = TempDir::new().unwrap();
@@ -1780,7 +1789,7 @@ mod tests {
         fs.write(&key, WriteOp::Replace(b"ab".to_vec()), Some(b"me"))
             .unwrap();
         {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
             let stored = fs.read(&key).unwrap().unwrap();
             assert_eq!(stored.bytes, b"ab", "a queued replacement");
             assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]));
@@ -1794,7 +1803,7 @@ mod tests {
         fs.write(&key, WriteOp::Append(b"cd".to_vec()), None)
             .unwrap();
         {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
             assert!(matches!(
                 fs.flush_where_allowed(&key),
                 Err(SeamError::Pending(_))
@@ -1816,6 +1825,40 @@ mod tests {
             panic!("a record is a document");
         };
         assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"abcdef");
+    }
+
+    /// A caller that may not wait lets go of its lease while its last write
+    /// is still queued: the write lands anyway, and nobody else, in this
+    /// process or another, can lease the document until it has.
+    #[test]
+    fn a_write_outlives_its_lease_and_keeps_the_document_until_it_lands() {
+        let tmp = TempDir::new().unwrap();
+        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+        let key = record("closing");
+        let lease = fs.lease(&key).unwrap();
+        let revision = fs
+            .write(&key, WriteOp::Replace(b"last words".to_vec()), Some(b"me"))
+            .unwrap();
+        drop(lease);
+        let other = FsStore::new(tmp.path());
+        assert!(
+            matches!(other.lease(&key), Err(SeamError::Busy(_))),
+            "another process waits for the queued write"
+        );
+        assert!(
+            matches!(fs.lease(&key), Err(SeamError::Busy(_))),
+            "so does a new owner in this one"
+        );
+        fs.flush(Some(&key)).unwrap();
+        assert_eq!(fs.durability(&key, revision), Durability::Durable);
+        drop(other.lease(&key).unwrap());
+        let Target::Document(directory) = fs.target(&key).unwrap() else {
+            panic!("a record is a document");
+        };
+        assert_eq!(
+            fs::read(directory.join(DOCUMENT_FILE)).unwrap(),
+            b"last words"
+        );
     }
 
     /// A blocking flush on a thread that must not wait is reported: a test

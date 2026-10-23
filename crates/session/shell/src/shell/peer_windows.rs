@@ -632,7 +632,7 @@ pub(crate) fn set_hosted_record_reader(reader: Box<HostedRecordReader>) {
 /// in the saved view of the instance the tab launches as. `Ok(false)`
 /// while this device has not admitted the record yet.
 fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, String> {
-    use crate::shell::record_hydration::{RecordAddress, keep, reopen_on};
+    use crate::shell::record_hydration::{RecordAddress, keep, landing, reopen_on};
     let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
@@ -676,9 +676,14 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
         app_id: item.app_id.clone(),
         record,
     };
+    // Kept on an earlier pass and still reaching the disk: the app reads
+    // it from there, and keeping it again would wait for the same write.
+    if landing(&address)? {
+        return Ok(false);
+    }
     let kept = keep(&address, &data_home, &bytes)?;
     reopen_on(&address, &data_home, item.tab, Some(&kept));
-    Ok(true)
+    Ok(!landing(&address)?)
 }
 
 /// Whether any peer window is still waiting to be examined: an unanswered
@@ -1047,7 +1052,12 @@ fn bring_over_continued_record(
         }
     };
     crate::shell::record_hydration::reopen_on(&address, &data_home, instance, record.as_ref());
-    Ok(())
+    // The app reads what was kept from the disk: open it once it is there.
+    match crate::shell::record_hydration::landing(&address) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(bringing_note()),
+        Err(reason) => Err(reason),
+    }
 }
 
 /// Clear the note of every card whose record has stopped being on its way,
@@ -1083,8 +1093,9 @@ fn release_brought_over(tree: &mut WorkspaceTree) -> bool {
             local: false,
         };
         let still_waiting = continued_record(&item, room).is_some_and(|(address, _)| {
-            crate::shell::record_hydration::hydrate(&address, &data_home)
-                == crate::shell::record_hydration::Hydration::Waiting
+            crate::shell::record_hydration::landing(&address) == Ok(true)
+                || crate::shell::record_hydration::hydrate(&address, &data_home)
+                    == crate::shell::record_hydration::Hydration::Waiting
         });
         if !still_waiting {
             released |= set_note(tree, tab, String::new());

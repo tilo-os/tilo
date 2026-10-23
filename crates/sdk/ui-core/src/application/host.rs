@@ -470,7 +470,9 @@ impl NativeProfile {
     }
 
     /// Give `instance` in this profile the presentation `view` had elsewhere,
-    /// now showing `record`: what a window carried into this room reopens to.
+    /// now showing `record`: what a window carried into this room reopens to,
+    /// once the write, when there is one to wait for, has landed in
+    /// [`Self::store`].
     ///
     /// # Errors
     /// An invalid record identity or a store that refused the write.
@@ -479,7 +481,7 @@ impl NativeProfile {
         view: &SavedInstanceView,
         instance: InstanceId,
         record: &RecordCheckout,
-    ) -> Result<(), LaunchError> {
+    ) -> Result<Option<crate::record::transfer::Landing>, LaunchError> {
         let adopted = SavedInstanceView {
             device_id: self.device_id.clone(),
             workspace_id: self.workspace_id.clone(),
@@ -488,7 +490,9 @@ impl NativeProfile {
             record_kind: record.kind.as_str().to_owned(),
             ..view.clone()
         };
-        self.views.save(&adopted).map_err(LaunchError::Restore)
+        self.views
+            .save_landing(&adopted)
+            .map_err(LaunchError::Restore)
     }
 }
 
@@ -1639,7 +1643,7 @@ mod native_process_tests {
             view: View::default(),
             application: None,
         };
-        profile.adopt_view(&view, 7, &carried).unwrap();
+        let _ = profile.adopt_view(&view, 7, &carried).unwrap();
         let host = |temp: &Path| {
             ApplicationHost::new(
                 temp.to_owned(),
@@ -1668,7 +1672,7 @@ mod native_process_tests {
         assert!(matches!(prepared.restore, RestoreInput::Local(_)));
         drop(prepared);
 
-        crate::record::transfer::retire(
+        let _ = crate::record::transfer::retire(
             profile.store(),
             probe::APP,
             room,
