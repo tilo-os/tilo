@@ -715,9 +715,60 @@ enum ZoomStep {
     Idle,
 }
 
+/// The work one frame did on the UI thread, by kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FrameWork {
+    /// Calls into the PDF engine: rasterising a page or tile, reading a
+    /// page's text or links. Each can take tens of milliseconds on a heavy
+    /// page, which is why they belong on the worker.
+    engine_calls: u64,
+    /// Layouts of the window's tree rebuilt from scratch.
+    rebuilt_layouts: u64,
+    /// Layout leaves measured again.
+    measured_leaves: usize,
+    /// Text runs shaped (shape-cache misses).
+    text_shaped: u64,
+    /// Draw objects in the frame's scene.
+    draws: usize,
+}
+
+impl FrameWork {
+    /// Run `frame` on `harness`, and count what it did on this thread;
+    /// with its CPU time in milliseconds, for reports.
+    fn count(
+        harness: &mut ui::headless::FrameHarness,
+        frame: impl FnOnce(&mut ui::headless::FrameHarness),
+    ) -> (Self, f64) {
+        let _ = harness.take_text_shape_stats();
+        let engine = crate::source::engine_calls_on_this_thread();
+        let rebuilt = harness.rebuilt_frames();
+        let cpu = ui::rt::thread_cpu_time();
+        let t = ui::time::now();
+        frame(harness);
+        let cpu_ms = match (cpu, ui::rt::thread_cpu_time()) {
+            (Some(before), Some(after)) => after.saturating_sub(before).as_secs_f64() * 1000.0,
+            _ => t.elapsed().as_secs_f64() * 1000.0,
+        };
+        let (_, shaped, _) = harness.take_text_shape_stats();
+        let work = Self {
+            engine_calls: crate::source::engine_calls_on_this_thread() - engine,
+            rebuilt_layouts: harness.rebuilt_frames() - rebuilt,
+            measured_leaves: harness.last_relayout().marked_leaves,
+            text_shaped: shaped,
+            draws: harness.scene().encoding().draw_tags.len(),
+        };
+        (work, cpu_ms)
+    }
+}
+
 /// One frame of a driven zoom.
 struct ZoomSample {
+    /// The frame's CPU time on the UI thread, reported for measurements;
+    /// it varies with the machine and its load, so no test asserts on it.
     cpu_ms: f64,
+    /// What the frame did on the UI thread, counted: these are the same on
+    /// any machine under any load.
+    work: FrameWork,
     zoom: f64,
     /// The page's width bucket and whether it is drawn from tiles.
     bucket: u32,
@@ -805,19 +856,15 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
             Framed::harness_mut(&mut app).set_modifiers(held);
             ctrl_held = ctrl;
         }
-        let cpu = ui::rt::thread_cpu_time();
-        let t = ui::time::now();
-        let harness = Framed::harness_mut(&mut app);
+        let frame = samples.len();
         // The step's input is dispatched as it arrives and the window draws
         // once, on its frame clock.
-        send_zoom_step(harness, step);
-        if let Err(error) = harness.poll_frame() {
-            panic!("frame {}: {error:?}", samples.len());
-        }
-        let cpu_ms = match (cpu, ui::rt::thread_cpu_time()) {
-            (Some(before), Some(after)) => after.saturating_sub(before).as_secs_f64() * 1000.0,
-            _ => t.elapsed().as_secs_f64() * 1000.0,
-        };
+        let (work, cpu_ms) = FrameWork::count(Framed::harness_mut(&mut app), |harness| {
+            send_zoom_step(harness, step);
+            if let Err(error) = harness.poll_frame() {
+                panic!("frame {frame}: {error:?}");
+            }
+        });
         {
             let mut target = tilo_cpu_raster::Target::new(&mut pixels, w, h, w as usize * 4)
                 .expect("a frame-sized target");
@@ -848,6 +895,7 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
         }
         samples.push(ZoomSample {
             cpu_ms,
+            work,
             zoom: app.zoom(),
             bucket: crate::source::RasterBackend::bucket_for(
                 ((card_w * super::RASTER_SS).round() as u32).clamp(96, 4096),
@@ -978,12 +1026,14 @@ fn paper_showing(
 /// Zooming scales the page bitmaps already held on the GPU every frame and
 /// swaps in the sharp render when it arrives, so across every width bucket
 /// and the switch to tiles and back, by pinch, Ctrl+wheel and the keyboard,
-/// no frame shows a page (or part of one) as bare paper, and no frame's UI
-/// work exceeds the frame budget.
+/// no frame shows a page (or part of one) as bare paper, and no frame does
+/// more on the UI thread than a zoom needs: no engine call, no layout
+/// rebuilt for the zoom, and bounded measuring, shaping and drawing. The
+/// work is counted rather than timed, so a loaded machine cannot fail it
+/// and a regression fails it on any machine.
 #[test]
 #[serial_test::serial(pdfium)]
 fn zooming_across_every_breakpoint_never_shows_a_blank_page() {
-    const FRAME_BUDGET_MS: f64 = 1000.0 / 60.0;
     let dir = tempfile::tempdir().expect("temp dir");
     let path = heavy_pdf(dir.path(), 6);
     // Past the tile threshold at device scale 1 (page width / 612 pt).
@@ -1013,13 +1063,35 @@ fn zooming_across_every_breakpoint_never_shows_a_blank_page() {
             "frame {i} at zoom {:.3} (bucket {}, tiled {}) shows {} px of bare paper: {report}",
             s.zoom, s.bucket, s.tiled, s.paper_px
         );
+        let work = s.work;
         assert!(
-            s.cpu_ms <= FRAME_BUDGET_MS,
-            "frame {i} spent {:.2} ms of UI work, over the {FRAME_BUDGET_MS:.2} ms frame: {report}",
-            s.cpu_ms
+            work.engine_calls == 0
+                && work.measured_leaves <= MAX_MEASURED_LEAVES
+                && work.text_shaped <= MAX_TEXT_SHAPED
+                && work.draws <= MAX_DRAWS,
+            "frame {i} did {work:?} on the UI thread, more than a zoom frame needs: {report}"
         );
     }
+    // The first key press switches the window from pointer to keyboard
+    // modality, which lays the tree out anew once; zooming itself never does.
+    let rebuilt: u64 = samples.iter().map(|s| s.work.rebuilt_layouts).sum();
+    assert!(
+        rebuilt <= 1,
+        "the zoom rebuilt the window's layout {rebuilt} times: {report}"
+    );
 }
+
+/// Layout leaves a zoom frame may measure again: a zoom step measures one.
+const MAX_MEASURED_LEAVES: usize = 2;
+
+/// Text runs a zoom frame may shape: a zoom step shapes one, the new
+/// percentage the bar shows.
+const MAX_TEXT_SHAPED: u64 = 2;
+
+/// Draw objects a zoom frame may encode: the chrome, the visible pages and
+/// their tiles at two zoom levels while the new level arrives come to about
+/// 250; twice that means something draws far more than is on screen.
+const MAX_DRAWS: usize = 512;
 
 /// Measurement: the same zoom on `PDF_SCROLL_FILE` or the heavy fixture,
 /// when `PDF_SCROLL_ZOOM` is set.
@@ -1044,8 +1116,17 @@ fn zoom_report(samples: &[ZoomSample]) -> String {
         .iter()
         .map(|s| s.paper_px as f64 / s.sampled_px.max(1) as f64)
         .fold(0.0, f64::max);
+    let most = samples
+        .iter()
+        .fold(FrameWork::default(), |most, s| FrameWork {
+            engine_calls: most.engine_calls.max(s.work.engine_calls),
+            rebuilt_layouts: most.rebuilt_layouts.max(s.work.rebuilt_layouts),
+            measured_leaves: most.measured_leaves.max(s.work.measured_leaves),
+            text_shaped: most.text_shaped.max(s.work.text_shaped),
+            draws: most.draws.max(s.work.draws),
+        });
     let line = format!(
-        "ZOOM frames={} frames_with_paper={blank} worst_paper={:.1}% cpu p50={:.2} p95={:.2} max={:.2}",
+        "ZOOM frames={} frames_with_paper={blank} worst_paper={:.1}% cpu p50={:.2} p95={:.2} max={:.2} most work in a frame: {most:?}",
         samples.len(),
         worst * 100.0,
         percentile(&mut cpu, 0.5),
@@ -1059,8 +1140,8 @@ fn zoom_report(samples: &[ZoomSample]) -> String {
         use std::fmt::Write as _;
         let _ = write!(
             out,
-            "\n  frame {i:4} zoom={:.3} bucket={} tiled={} paper={}/{} cpu={:.2}",
-            s.zoom, s.bucket, s.tiled, s.paper_px, s.sampled_px, s.cpu_ms
+            "\n  frame {i:4} zoom={:.3} bucket={} tiled={} paper={}/{} cpu={:.2} {:?}",
+            s.zoom, s.bucket, s.tiled, s.paper_px, s.sampled_px, s.cpu_ms, s.work
         );
         out
     })
