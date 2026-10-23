@@ -152,6 +152,23 @@ fn median(sample: &mut [f64]) -> Option<f64> {
     Some(f64::midpoint(lo, hi))
 }
 
+/// `n` times ten to the `places`, moved in decimal at the 15 significant
+/// digits a spreadsheet keeps, so the digits a person typed are the digits
+/// rounded: `1.005` two places on is `100.5`, where the binary product
+/// `1.005 * 100` is `100.49999999999999` and would round to `1.00`.
+fn shift_decimal(n: f64, places: i32) -> f64 {
+    let repr = format!("{n:.14e}");
+    let Some((mantissa, exponent)) = repr.split_once('e') else {
+        return n; // infinite or NaN
+    };
+    let Ok(exponent) = exponent.parse::<i32>() else {
+        return n;
+    };
+    format!("{mantissa}e{}", exponent.saturating_add(places))
+        .parse()
+        .unwrap_or(n)
+}
+
 /// Which component `HOUR`/`MINUTE`/`SECOND` projects out of a serial.
 #[derive(Clone, Copy)]
 enum TimeComponent {
@@ -1810,14 +1827,16 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let Some(n) = v.as_number() else {
             return CellValue::Error(FormulaError::Value);
         };
-        // Past ±308 the scale factor is already 0 or infinite, so clamping
-        // there loses nothing and keeps the exponent in range.
+        // Past ±308 places no digit is left to round, so clamping there
+        // loses nothing and keeps the exponent in range.
         let digits = args.get(1).map_or(0, |a| {
             let scale = self.eval_expr(a).as_number().unwrap_or(0.0);
             i32::try_from(number_to_int(scale).clamp(-308, 308)).unwrap_or(0)
         });
-        let factor = 10f64.powi(digits);
-        let scaled = n * factor;
+        let scaled = shift_decimal(n, digits);
+        if !scaled.is_finite() {
+            return CellValue::Number(n);
+        }
         let rounded = match mode {
             RoundMode::Nearest => scaled.round(),
             RoundMode::Down => scaled.trunc(),
@@ -1829,7 +1848,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 }
             }
         };
-        CellValue::Number(rounded / factor)
+        CellValue::Number(shift_decimal(rounded, digits.saturating_neg()))
     }
 
     fn unary_text(&mut self, args: &[Expr], f: impl Fn(&str) -> String) -> CellValue {
@@ -3027,6 +3046,19 @@ mod tests {
             assert_eq!(val(&m, "A2"), CellValue::Number(2.0));
             assert_eq!(val(&m, "A3"), CellValue::Number(12.0));
             assert_eq!(val(&m, "A4"), CellValue::Number(3.14));
+            // Halves round away from zero at the digits typed, as in Excel,
+            // although 0.285 and 1.005 sit just below their halves in binary.
+            for (formula, rounded) in [
+                ("=ROUND(0.285,2)", 0.29),
+                ("=ROUND(1.005,2)", 1.01),
+                ("=ROUND(-1.005,2)", -1.01),
+                ("=ROUND(1234.5,-2)", 1200.0),
+                ("=ROUNDUP(0.1+0.2,1)", 0.3),
+                ("=ROUNDDOWN(4.35*100,0)", 435.0),
+            ] {
+                let m = run(&[("A1", formula)]);
+                assert_eq!(val(&m, "A1"), CellValue::Number(rounded), "{formula}");
+            }
             assert_eq!(val(&m, "A5"), CellValue::Number(8.0));
             assert_eq!(val(&m, "A6"), CellValue::Number(7.0));
             assert_eq!(val(&m, "A7"), CellValue::Number(24.0));
