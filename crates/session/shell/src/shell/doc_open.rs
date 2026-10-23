@@ -422,7 +422,7 @@ fn open_package(
     // starts the editor as a viewer.
     let workspace = {
         let st = chrome.borrow();
-        let mut tree = st.tree_mut();
+        let tree = st.tree();
         let workspace = tree.desktop.active_workspace().cloned();
         // The document's new read grant must reach the accepted-policy
         // publication before the launch gate checks its immutable snapshot.

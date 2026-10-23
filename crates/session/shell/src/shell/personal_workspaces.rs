@@ -37,7 +37,7 @@ use tilo_user_identity::{
     DeviceCert, DirectoryError, DirectoryUpdate, RevocationList, WorkspaceDirectory, WorkspaceMeta,
 };
 
-use crate::shell::state::{PeerOrigin, RoomId, UserId, WorkspaceTree};
+use crate::shell::state::{PeerOrigin, RoomId, WorkspaceTree};
 
 /// One workspace as the person's list holds it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,10 +398,10 @@ impl PersonalWorkspaces {
     }
 
     /// Bring what changed in the directory since the last agreement into
-    /// `tree`: join each new workspace's room as `person`'s, take new names
+    /// `tree`: join each new workspace's room, take new names
     /// and the person's order, and drop workspaces deleted on another device
     /// or no longer shown on this one. Returns whether `tree` changed.
-    pub fn adopt_into(&mut self, tree: &mut WorkspaceTree, person: &UserId) -> bool {
+    pub fn adopt_into(&mut self, tree: &mut WorkspaceTree) -> bool {
         self.published = None;
         let entries = entries_of(&self.directory);
         let mut changed = false;

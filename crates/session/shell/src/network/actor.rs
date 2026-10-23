@@ -4517,7 +4517,7 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 /// [`GOSSIP_CACHE_SWEEP`] instead, a topic with messages wakes its runtime
 /// a tenth as often. The vendored iroh-gossip (`vendor/iroh-gossip/
 /// TILO-PATCH.md`) arms it on a topic's first cached message and stops it
-/// once the caches are empty (`gossip_caches_drain_within`); a topic that
+/// once the caches are empty; a topic that
 /// never had a neighbour caches nothing ([`TopicRuntime::broadcast`]).
 const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// How long gossip keeps a message to answer a neighbour's graft for it.
@@ -4526,18 +4526,6 @@ const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// and this cache holds whole messages of up to
 /// [`MAX_GOSSIP_MESSAGE_BYTES`].
 const GOSSIP_MESSAGE_RETENTION: Duration = Duration::from_secs(20);
-
-/// How long after its last message a topic stops sweeping: the message id
-/// outlives the message itself (iroh-gossip's 90 s, to refuse a late
-/// duplicate), and the sweep that finds both gone is the last.
-#[cfg(test)]
-pub(crate) fn gossip_caches_drain_within() -> Duration {
-    let config = broadcast_config();
-    config
-        .message_id_retention
-        .max(config.message_cache_retention)
-        .saturating_add(config.cache_evict_interval)
-}
 
 /// Plumtree broadcast settings: iroh-gossip's, with the cache swept every
 /// [`GOSSIP_CACHE_SWEEP`] instead of every second.

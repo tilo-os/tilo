@@ -3556,7 +3556,7 @@ mod two_sessions {
 
             let dir = std::env::temp_dir().join(format!("tilo-roster-beat-{}", std::process::id()));
             std::fs::create_dir_all(&dir).expect("a temp dir");
-            let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+            let (host, _host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
 
             let mut quiet = PresenceCtx::default();
             assert!(host.refresh_roster(&quiet));

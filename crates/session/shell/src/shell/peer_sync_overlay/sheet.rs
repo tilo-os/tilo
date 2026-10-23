@@ -31,8 +31,7 @@ use ui::widget::{
 
 use super::{
     InviteRecipientPath, PeerSyncSnapshot, PendingInvitationSummary, RememberedInvitee,
-    elide_token, identity_fingerprint, peer_fingerprint, role_and_expiry, role_label,
-    short_pairing_link,
+    elide_token, identity_fingerprint, role_and_expiry, role_label, short_pairing_link,
 };
 use crate::network::invite::InviteRole;
 use crate::shell::i18n::{t, t_args};

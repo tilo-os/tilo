@@ -152,8 +152,7 @@ impl ShellNetwork {
     /// the host until the person does ([`Self::retry_join`]).
     pub(super) fn room_not_admitted(&self, room: RoomId) {
         let workspace = {
-            replica
-                .tree
+            self.tree
                 .read()
                 .desktop
                 .workspaces
