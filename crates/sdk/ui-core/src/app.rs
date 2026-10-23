@@ -3055,6 +3055,9 @@ mod committed_document;
 #[path = "app/document_routes.rs"]
 mod document_routes;
 
+#[path = "app/record_routes.rs"]
+pub mod record_routes;
+
 #[cfg(test)]
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;

@@ -20,13 +20,28 @@ use crate::shell::search::action_api::ActionError;
 /// One piece of work on the person's settings, run where they are held.
 type Job = Box<dyn FnOnce(&SettingsRecords) + Send>;
 
+/// What the thread holding the person's settings is asked.
+enum Asked {
+    Job(Job),
+    /// The broker sent something for their records.
+    Wake,
+    /// Their keeper was let go.
+    Stop,
+}
+
 /// Where the person's settings are held: on a thread of their own, since
 /// the person's records they are kept in are single-threaded while the
 /// palette and the broker change them from theirs. Held for one person and
 /// one directory of their records; another opens them anew.
 struct Keeper {
     held_for: (Option<std::path::PathBuf>, String),
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::Sender<Asked>,
+}
+
+impl Drop for Keeper {
+    fn drop(&mut self) {
+        let _ = self.jobs.send(Asked::Stop);
+    }
 }
 
 static KEEPER: Mutex<Option<Keeper>> = Mutex::new(None);
@@ -52,9 +67,9 @@ fn with_records<T: Send + 'static>(
             .ok_or("the person's settings are unavailable")?
     };
     let (answer, answered) = mpsc::channel();
-    jobs.send(Box::new(move |records| {
+    jobs.send(Asked::Job(Box::new(move |records| {
         let _ = answer.send(work(records));
-    }))
+    })))
     .map_err(|_| "the person's settings are unavailable")?;
     answered
         .recv()
@@ -69,16 +84,43 @@ fn person_dir() -> Option<std::path::PathBuf> {
 }
 
 /// Hold the person's settings sections for `person`, in their records in
-/// `dir`, on a thread that runs every job sent until its keeper is let go.
+/// `dir`, on a thread that runs every job sent until its keeper is let go,
+/// and keeps their records in step with the person's other devices over
+/// their routes.
 fn hold((dir, person): (Option<std::path::PathBuf>, String)) -> Keeper {
-    let (jobs, queued) = mpsc::channel::<Job>();
+    let (jobs, asked) = mpsc::channel::<Asked>();
+    let waker = jobs.clone();
     let held_for = (dir.clone(), person.clone());
     let spawned = std::thread::Builder::new()
         .name("settings-records".into())
         .spawn(move || {
+            // Without a root identity there is no person room: the records
+            // are this device's alone.
+            let room = collab_types::person_room_of(&person);
             let records = open(dir.as_deref(), person);
-            for job in queued {
-                job(&records);
+            let mut routes = room.and_then(|room| {
+                ui::app::record_routes::RecordRouteParticipant::connect(
+                    crate::shell::in_process::session_connector(
+                        launcher::services::collab_socket(),
+                        launcher::services::identity_socket(),
+                        settings_sections::APP_ID,
+                        &room.to_string(),
+                    ),
+                    &records.history_owners(),
+                    move || {
+                        let _ = waker.send(Asked::Wake);
+                    },
+                )
+            });
+            for asked in asked {
+                match asked {
+                    Asked::Job(job) => job(&records),
+                    Asked::Wake => {}
+                    Asked::Stop => break,
+                }
+                if let Some(routes) = &mut routes {
+                    routes.pump(&records.history_owners());
+                }
             }
         });
     if let Err(error) = spawned {
