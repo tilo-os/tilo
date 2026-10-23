@@ -1,0 +1,81 @@
+From: Tilo <tilo@tilo.so>
+Subject: power: reset: qcom-pon: log the PMIC's power-on and reset reasons
+
+The Yoga Slim 7x has reset itself with nothing in the kernel log. Whether
+the PMIC's watchdog, a fault, the power key, or firmware or the hypervisor
+dropping PS_HOLD reset it, the PMIC latches in its PON peripheral, and the
+registers survive the reset. Nothing reads them on mainline.
+
+At probe, log the reason windows of the PON peripheral and, on gen3 PMICs,
+of its PBS peripheral (the second "reg" entry) raw, so the next boot's
+journal says how the last one ended without trusting a register map. Only
+reads; nothing is written.
+
+diff --git a/drivers/power/reset/qcom-pon.c b/drivers/power/reset/qcom-pon.c
+--- a/drivers/power/reset/qcom-pon.c
++++ b/drivers/power/reset/qcom-pon.c
+@@ -19,6 +19,16 @@
+ 
+ #define NO_REASON_SHIFT			0
+ 
++/*
++ * The windows of a PON peripheral that hold why the PMIC last powered on,
++ * reset or powered off: 0x00-0x3f carries the revision, type and subtype and,
++ * on gen2 and gen3 PMICs, the PON, warm reset, POFF and fault reasons; 0xc0
++ * onwards carries the reasons on gen1 PMICs.
++ */
++#define PON_REASON_WINDOW_LO		0x00
++#define PON_REASON_WINDOW_HI		0xc0
++#define PON_REASON_WINDOW_LEN		0x40
++
+ struct qcom_pon {
+ 	struct device *dev;
+ 	struct regmap *regmap;
+@@ -44,9 +54,36 @@
+ 	return ret;
+ }
+ 
++/*
++ * Log the reason windows of the PON peripheral at @base. They are latched by
++ * the PMIC and survive a warm reset, so they say whether the last reset came
++ * from the power key, a PMIC watchdog or fault, PS_HOLD dropped by firmware or
++ * the hypervisor, or a loss of power, where nothing in the kernel log can.
++ * They are logged raw, so no register map has to be trusted to read them.
++ */
++static void qcom_pon_log_reasons(struct qcom_pon *pon, const char *name, u32 base)
++{
++	static const unsigned int windows[] = { PON_REASON_WINDOW_LO, PON_REASON_WINDOW_HI };
++	u8 regs[PON_REASON_WINDOW_LEN];
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < ARRAY_SIZE(windows); i++) {
++		ret = regmap_bulk_read(pon->regmap, base + windows[i], regs, sizeof(regs));
++		if (ret) {
++			dev_info(pon->dev, "%s 0x%04x+0x%02x: unreadable (%d)\n",
++				 name, base, windows[i], ret);
++			continue;
++		}
++		dev_info(pon->dev, "%s 0x%04x+0x%02x: %*ph\n",
++			 name, base, windows[i], (int)sizeof(regs), regs);
++	}
++}
++
+ static int qcom_pon_probe(struct platform_device *pdev)
+ {
+ 	struct qcom_pon *pon;
++	u32 pbs_baseaddr;
+ 	long reason_shift;
+ 	int error;
+ 
+@@ -67,6 +104,10 @@
+ 	if (error)
+ 		return error;
+ 
++	qcom_pon_log_reasons(pon, "pon", pon->baseaddr);
++	if (!of_property_read_u32_index(pdev->dev.of_node, "reg", 1, &pbs_baseaddr))
++		qcom_pon_log_reasons(pon, "pon-pbs", pbs_baseaddr);
++
+ 	reason_shift = (long)of_device_get_match_data(&pdev->dev);
+ 
+ 	if (reason_shift != NO_REASON_SHIFT) {

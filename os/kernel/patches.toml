@@ -95,3 +95,7 @@ upstream = "Tilo's own, not posted; mainline v7.3 still replays submits after a 
 [[patch]]
 file = "0021-arm64-dts-qcom-x1e80100-lenovo-yoga-slim7x-reserve-a-ramoops-region.patch"
 upstream = "Tilo's own, not posted; mainline describes no ramoops region for any X1E board"
+
+[[patch]]
+file = "0022-power-reset-qcom-pon-log-the-PMIC-s-power-on-and-reset-reasons.patch"
+upstream = "Tilo's own, not posted; mainline qcom-pon reads no reason register"
