@@ -1036,12 +1036,19 @@ impl VideoPlayer {
         let last_pts = self.last_frame_pts;
         let have_frame = self.latest_frame.is_some();
         let snapshot = self.engine.as_mut().map(|engine| {
+            // In a page the renderer copies each picture from the media
+            // element on the GPU (`element_pictures`): none is read back.
+            engine.prefer_element_pictures();
             let events = engine.poll();
+            let element_picture = engine.take_element_picture();
             // Clone the (multi-megabyte) RGBA buffer only on a real pts
             // change — the scroll path re-syncs every frame, so cloning
             // unconditionally was a per-frame memcpy this guard discards.
             let cur_pts = engine.latest_frame().map(|f| f.pts_ms);
-            let frame = if cur_pts.is_some() && (last_pts != cur_pts || !have_frame) {
+            let frame = if element_picture.is_none()
+                && cur_pts.is_some()
+                && (last_pts != cur_pts || !have_frame)
+            {
                 engine
                     .latest_frame()
                     .map(|f| (f.width, f.height, f.rgba.clone(), f.pts_ms))
@@ -1054,10 +1061,11 @@ impl VideoPlayer {
                 engine.buffering_percent(),
                 engine.is_playing(),
                 frame,
+                element_picture,
                 events,
             )
         });
-        let Some((pos, dur, buffering, playing, frame, events)) = snapshot else {
+        let Some((pos, dur, buffering, playing, frame, element_picture, events)) = snapshot else {
             return;
         };
         self.record_terminal_media_events(events);
@@ -1097,10 +1105,24 @@ impl VideoPlayer {
             self.latest_frame = Some(rgba_image(w, h, rgba));
             self.dirty = true;
         }
+        if let Some(picture) = element_picture {
+            self.show_element_picture(picture);
+        }
         // `publish` dedups sub-second position jitter, so this is quiet on the bus.
         if self.mpris.is_active() {
             self.publish_mpris();
         }
+    }
+
+    /// Show a picture the renderer copies from the page's media element
+    /// (`element_pictures`): an image of its own per picture, so the frame
+    /// that shows it differs from the last one exactly where it is drawn.
+    fn show_element_picture(&mut self, picture: media::ElementPicture) {
+        let image = rgba_image(picture.width, picture.height, Arc::new(Vec::new()));
+        crate::element_pictures::show(image.clone(), picture.element);
+        self.last_frame_pts = None;
+        self.latest_frame = Some(image);
+        self.dirty = true;
     }
 
     /// Keep the embedding observation channel bounded under normal playback.
@@ -4420,5 +4442,37 @@ mod tests {
         vp.show_controls();
         vp.open_settings_menu(Some("speed"));
         vp
+    }
+
+    /// A page's video shows each new picture as a fresh image the renderer
+    /// copies from the media element: no pixels pass through the widget,
+    /// and each picture is one registry entry, so the work per picture is a
+    /// GPU copy and a repaint of the video's rect.
+    #[test]
+    fn element_pictures_reach_the_renderer_without_pixels() {
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 320.0, 180.0);
+        let _ = crate::element_pictures::take();
+        let element: std::rc::Rc<dyn std::any::Any> = std::rc::Rc::new(());
+        const PICTURES: u64 = 12;
+        let mut ids = std::collections::BTreeSet::new();
+        for serial in 1..=PICTURES {
+            vp.dirty = false;
+            vp.show_element_picture(media::ElementPicture {
+                width: 1920,
+                height: 1080,
+                serial,
+                element: std::rc::Rc::clone(&element),
+            });
+            assert!(vp.dirty, "a new picture repaints the video");
+            let image = vp.latest_frame().expect("the picture's image");
+            assert!(image.data.is_empty(), "no pixels are read back");
+            assert_eq!((image.width, image.height), (1920, 1080));
+            let shown = crate::element_pictures::take();
+            assert_eq!(shown.len(), 1, "one copy per picture");
+            assert_eq!(shown[0].image.data.id(), image.data.id());
+            assert!(ids.insert(image.data.id()), "each picture its own image");
+        }
+        assert_eq!(ids.len(), PICTURES as usize);
     }
 }

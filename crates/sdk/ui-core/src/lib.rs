@@ -164,6 +164,7 @@ pub mod doc_source;
 #[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
 pub mod edge_autoscroll;
+pub mod element_pictures;
 pub mod evdev;
 pub mod floating_surface;
 pub mod focus_visible;

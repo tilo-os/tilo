@@ -779,6 +779,27 @@ impl MediaEngine {
         }
     }
 
+    /// Have the pictures stay where the page's media element shows them
+    /// (web): [`Self::take_element_picture`] hands them out and the engine
+    /// reads no pixels back for [`Self::latest_frame`]. A no-op elsewhere.
+    pub fn prefer_element_pictures(&mut self) {
+        #[cfg(web_page)]
+        if let Backend::Web(w) = &mut self.backend {
+            w.prefer_element_pictures();
+        }
+    }
+
+    /// The newest picture as it stays in the page's media element, once per
+    /// picture, after [`Self::prefer_element_pictures`]; `None` while nothing
+    /// new shows, and always off the web.
+    pub fn take_element_picture(&mut self) -> Option<crate::ElementPicture> {
+        match &mut self.backend {
+            #[cfg(web_page)]
+            Backend::Web(w) => w.take_element_picture(),
+            _ => None,
+        }
+    }
+
     /// Whether the held picture belongs to the most recent seek, rather than
     /// to the position before it.
     ///

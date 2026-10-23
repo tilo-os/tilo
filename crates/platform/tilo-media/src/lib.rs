@@ -155,7 +155,7 @@ pub use encode::{
     VideoCodec,
 };
 pub use engine::{EngineConfig, MediaChapter, MediaEngine, MediaTrack, SeekMode, SeekWaitError};
-pub use event::{MediaEvent, VideoFrame};
+pub use event::{ElementPicture, MediaEvent, VideoFrame};
 pub use frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 pub use hw::{DecoderKind, HwPolicy, HwReport, StreamCodec};
 pub use now_playing::{

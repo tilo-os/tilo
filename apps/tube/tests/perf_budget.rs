@@ -292,3 +292,39 @@ fn hosted_frames_while_results_land() {
     let p50 = stat("tube frame folding a result Home shows (hosted)", &mut seen);
     budget("tube frame folding a result Home shows", p50, 6_000);
 }
+
+/// A playing video on its watch page: each new frame is a picture, the same
+/// size as the last, so it repaints and lays nothing out.
+#[test]
+fn hosted_playing_video_frames_lay_nothing_out() {
+    let mut app = hosted();
+    let card = visible_card(&mut app, 0);
+    app.harness().click_named(&card).unwrap();
+    app.settle();
+    app.with_surface::<TubeApp, _>(TubeApp::play_synthesized_for_test)
+        .expect("the window shows Tube");
+    // Let the first frames land and the page settle around the player.
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.harness().poll_frame().unwrap();
+    }
+    let rebuilt = app.harness().rebuilt_frames();
+    let (mut polled, mut measured, mut leaves) = (0, 0, 0);
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        if app.harness().poll_frame().unwrap() {
+            polled += 1;
+            let stats = app.harness().last_relayout();
+            measured += usize::from(stats.measured);
+            leaves += stats.marked_leaves;
+        }
+    }
+    assert!(polled > 0, "a playing video asks for frames");
+    assert_eq!(
+        app.harness().rebuilt_frames(),
+        rebuilt,
+        "no frame recomposed the layout"
+    );
+    assert_eq!(measured, 0, "no video frame re-measured the layout");
+    assert_eq!(leaves, 0, "no leaf was marked to measure");
+}

@@ -288,6 +288,8 @@ struct SharedGpu {
     failure: Arc<Mutex<Option<String>>>,
     /// Mounts rendering with this device; a loss or error wakes each.
     mounts: Arc<Mutex<Vec<u64>>>,
+    /// Videos' pictures, copied from the page's media elements.
+    video_pictures: crate::video_pictures::VideoPictures,
 }
 
 impl SharedGpu {
@@ -2120,6 +2122,7 @@ async fn shared_gpu(
         renderer,
         failure,
         mounts,
+        video_pictures: crate::video_pictures::VideoPictures::default(),
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
     Ok((shared, surface))
@@ -2530,6 +2533,9 @@ impl Mount {
             texture: &gpu.surface.target_texture,
             view: &gpu.surface.target_view,
         };
+        shared
+            .video_pictures
+            .copy(&handle.device, &handle.queue, &mut shared.renderer);
         let rasterized = gpu.retained.raster.repaint(
             (&handle.device, &handle.queue),
             &mut shared.renderer,

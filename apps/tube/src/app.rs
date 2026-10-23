@@ -970,6 +970,25 @@ impl TubeApp {
         self
     }
 
+    /// Test hook: the watch page's player plays a synthesized source (no
+    /// decode backend), so a test can count the work each video frame does.
+    #[doc(hidden)]
+    pub fn play_synthesized_for_test(&mut self) {
+        let Route::Watch(id) = self.model.route.clone() else {
+            return;
+        };
+        {
+            let mut p = self.player.borrow_mut();
+            p.set_engine(media::MediaEngine::new_synthesized());
+            p.open(media::Source::Remote {
+                url: "https://demo.local/clip.mp4".into(),
+            });
+            p.play();
+            pump_player(&mut p);
+        }
+        self.player_video = Some(id);
+    }
+
     /// Whether the shared player has built its media engine yet.
     #[doc(hidden)]
     pub fn media_engine_started_for_test(&self) -> bool {

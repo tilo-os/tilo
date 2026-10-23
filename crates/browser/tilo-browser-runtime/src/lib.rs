@@ -123,6 +123,8 @@ mod shell;
 mod storage;
 #[cfg(target_arch = "wasm32")]
 mod throttle;
+#[cfg(target_arch = "wasm32")]
+mod video_pictures;
 // Plain arithmetic on canvas sizes: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(

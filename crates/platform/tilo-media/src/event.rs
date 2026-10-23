@@ -123,3 +123,26 @@ mod tests {
         assert_eq!(codec_name("video/x-weird", None), "video/x-weird");
     }
 }
+
+/// A picture that stays where the page's media element shows it: a renderer
+/// copies it from `element` on the GPU, instead of the engine reading its
+/// pixels back ([`crate::MediaEngine::take_element_picture`]). `element` is
+/// the page's video element (a `wasm_bindgen::JsValue`), opaque here.
+#[derive(Clone)]
+pub struct ElementPicture {
+    pub width: u32,
+    pub height: u32,
+    /// Counts the pictures the element showed: a new one, a new serial.
+    pub serial: u64,
+    pub element: std::rc::Rc<dyn std::any::Any>,
+}
+
+impl std::fmt::Debug for ElementPicture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ElementPicture")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("serial", &self.serial)
+            .finish_non_exhaustive()
+    }
+}
