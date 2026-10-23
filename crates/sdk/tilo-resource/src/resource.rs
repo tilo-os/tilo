@@ -1827,9 +1827,16 @@ fn edit_declaration(
 ) -> Declaration {
     let destructive = (vocabulary.edit)(edit.clone())
         .is_some_and(|action| action.risk() == tilo_actions::RiskLevel::Destructive);
+    let invokes = serde_json::to_value(&edit).ok().map(|edit| {
+        (
+            FIELD_EDIT.to_owned(),
+            serde_json::Map::from_iter([(EDIT_PARAM.to_owned(), edit)]),
+        )
+    });
     let build: Builds = Arc::new(move |_, now_ms| stamped_edit(vocabulary, edit.clone(), now_ms));
     let mut decl = Declaration::new(vocabulary, id, label, Vec::new(), build);
     decl.destructive = destructive;
+    decl.invokes = invokes;
     decl
 }
 

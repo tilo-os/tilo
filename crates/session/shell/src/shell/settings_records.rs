@@ -10,15 +10,127 @@
 //! weakens the person's security asks them first, and an agent's needs
 //! their own answer.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, RiskLevel};
 use tilo_app::framework::SettingsRecords;
 
 use crate::shell::search::action_api::ActionError;
 
-fn records() -> SettingsRecords {
-    SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare)
+/// One piece of work on the person's settings, run where they are held.
+type Job = Box<dyn FnOnce(&SettingsRecords) + Send>;
+
+/// Where the person's settings are held: on a thread of their own, since
+/// the person's records they are kept in are single-threaded while the
+/// palette and the broker change them from theirs. Held for one person and
+/// one directory of their records; another opens them anew.
+struct Keeper {
+    held_for: (Option<std::path::PathBuf>, String),
+    jobs: mpsc::Sender<Job>,
+}
+
+static KEEPER: Mutex<Option<Keeper>> = Mutex::new(None);
+
+/// Run `work` on the person's settings sections, where they are held.
+fn with_records<T: Send + 'static>(
+    work: impl FnOnce(&SettingsRecords) -> T + Send + 'static,
+) -> Result<T, String> {
+    let held_for = (person_dir(), crate::shell::state::local_user_id());
+    let jobs = {
+        let mut keeper = KEEPER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if keeper
+            .as_ref()
+            .is_none_or(|keeper| keeper.held_for != held_for)
+        {
+            *keeper = Some(hold(held_for));
+        }
+        keeper
+            .as_ref()
+            .map(|keeper| keeper.jobs.clone())
+            .ok_or("the person's settings are unavailable")?
+    };
+    let (answer, answered) = mpsc::channel();
+    jobs.send(Box::new(move |records| {
+        let _ = answer.send(work(records));
+    }))
+    .map_err(|_| "the person's settings are unavailable")?;
+    answered
+        .recv()
+        .map_err(|_| "the person's settings are unavailable".to_owned())
+}
+
+/// Where Settings keeps the person's records on this device, which the
+/// session keeps its sections in.
+fn person_dir() -> Option<std::path::PathBuf> {
+    launcher::appdir::host_data_home()
+        .map(|home| launcher::appdir::host_person_dir(&home, settings_sections::APP_ID))
+}
+
+/// Hold the person's settings sections for `person`, in their records in
+/// `dir`, on a thread that runs every job sent until its keeper is let go.
+fn hold((dir, person): (Option<std::path::PathBuf>, String)) -> Keeper {
+    let (jobs, queued) = mpsc::channel::<Job>();
+    let held_for = (dir.clone(), person.clone());
+    let spawned = std::thread::Builder::new()
+        .name("settings-records".into())
+        .spawn(move || {
+            let records = open(dir.as_deref(), person);
+            for job in queued {
+                job(&records);
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "the person's settings could not be held");
+    }
+    Keeper { held_for, jobs }
+}
+
+/// The person's settings sections, kept in their records in `dir` as
+/// Settings' window keeps them, so each change is a step of theirs they
+/// undo and redo; without records, as stored.
+fn open(dir: Option<&std::path::Path>, person: String) -> SettingsRecords {
+    let records = dir.and_then(|dir| {
+        std::fs::create_dir_all(dir)
+            .map_err(
+                |error| tracing::warn!(%error, "the person's settings records are unavailable"),
+            )
+            .ok()?;
+        let mut owners = ui::record::RecordOwners::with_store(std::rc::Rc::new(
+            app_state::FsStore::new(dir.to_path_buf()),
+        ));
+        ui::record::person::PersonRecords::open(
+            &mut owners,
+            settings_sections::APP_ID,
+            ui::permissions::UserId(person),
+        )
+        .map_err(|error| tracing::warn!(%error, "the person's settings records are unavailable"))
+        .ok()
+    });
+    match records {
+        Some(records) => SettingsRecords::of_person(
+            settings_sections::APP_ID,
+            settings_sections::APP_TITLE,
+            &[settings_sections::declare],
+            records,
+            this_device(),
+        ),
+        None => SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare),
+    }
+}
+
+/// This device, as the session's apps know it: a section kept per device
+/// is kept in a record of this device's.
+fn this_device() -> Option<String> {
+    let root = cli::data_home()
+        .join(crate::shell::SHELL_RECORDS_PACKAGE)
+        .join("apps");
+    std::fs::create_dir_all(&root).ok()?;
+    ui::application::NativeProfile::open(&root, None)
+        .map(|profile| profile.device_id().to_owned())
+        .map_err(|error| tracing::warn!(%error, "this device's identity is unavailable"))
+        .ok()
 }
 
 /// The action `action` of the section `kind` (`settings.power`).
@@ -54,18 +166,23 @@ pub(crate) fn change(
     invoked_by: &settings_store::InvokingAction,
 ) -> Result<(), ActionError> {
     let person = crate::shell::state::local_user_id();
-    records()
-        .invoke(
-            address,
-            arguments,
-            confirmed,
-            &ActionInvoker::actor(person),
-            Some(invoked_by),
-        )
-        .map_err(|error| match error {
-            tilo_actions::DoorError::ConfirmationRequired => ActionError::ConfirmationRequired,
-            error => ActionError::Refused(error.to_string()),
-        })
+    let (address, arguments, invoked_by) = (address.clone(), arguments.clone(), invoked_by.clone());
+    with_records(move |records| {
+        records
+            .invoke(
+                &address,
+                &arguments,
+                confirmed,
+                &ActionInvoker::actor(person),
+                Some(&invoked_by),
+            )
+            .map(drop)
+    })
+    .map_err(ActionError::Refused)?
+    .map_err(|error| match error {
+        tilo_actions::DoorError::ConfirmationRequired => ActionError::ConfirmationRequired,
+        error => ActionError::Refused(error.to_string()),
+    })
 }
 
 /// This session's door to the person's settings, for the broker.
@@ -115,7 +232,11 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
         {
             return descriptors.clone();
         }
-        let descriptors = tilo_actions::door::survey(&records().resources());
+        let Ok(descriptors) =
+            with_records(|records| tilo_actions::door::survey(&records.resources()))
+        else {
+            return Vec::new();
+        };
         *described = Some((at, descriptors.clone()));
         descriptors
     }
@@ -125,17 +246,23 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
         address: &ActionAddress,
         argument: Option<&str>,
     ) -> Option<ActionDescriptor> {
-        let resources = records().resources();
-        let spec = tilo_actions::door::resolve(&resources, address)?;
-        let need = spec.need_for(arguments_of(argument).as_ref(), argument);
-        let mut descriptor = tilo_actions::door::survey(&resources)
-            .into_iter()
-            .find(|descriptor| &descriptor.address == address)?;
-        descriptor.contract.kind = need.kind;
-        if need.privileged {
-            descriptor.contract.risk = RiskLevel::Privileged;
-        }
-        Some(descriptor)
+        let (address, argument) = (address.clone(), argument.map(str::to_owned));
+        with_records(move |records| {
+            let resources = records.resources();
+            let spec = tilo_actions::door::resolve(&resources, &address)?;
+            let argument = argument.as_deref();
+            let need = spec.need_for(arguments_of(argument).as_ref(), argument);
+            let mut descriptor = tilo_actions::door::survey(&resources)
+                .into_iter()
+                .find(|descriptor| descriptor.address == address)?;
+            descriptor.contract.kind = need.kind;
+            if need.privileged {
+                descriptor.contract.risk = RiskLevel::Privileged;
+            }
+            Some(descriptor)
+        })
+        .ok()
+        .flatten()
     }
 
     fn start(
@@ -145,18 +272,18 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
     {
         let arguments = arguments_of(request.argument).ok_or("the change carries no arguments")?;
         // The broker admitted it, its confirmation included.
-        records()
-            .invoke(
-                request.address,
+        let (address, actor) = (request.address.clone(), request.actor.id().to_owned());
+        let output = with_records(move |records| {
+            records.invoke(
+                &address,
                 &arguments,
                 true,
-                &ActionInvoker::actor(request.actor.id()),
+                &ActionInvoker::actor(actor),
                 None,
             )
-            .map_err(|error| error.to_string())?;
-        Ok(tilo_actions::remote::Pending::ready(Ok(
-            tilo_actions::ActionOutput::default(),
-        )))
+        })?
+        .map_err(|error| error.to_string())?;
+        Ok(tilo_actions::remote::Pending::ready(Ok(output)))
     }
 }
 
@@ -281,6 +408,40 @@ mod tests {
             1,
             "nothing weakened"
         );
+        drop(settings);
+    }
+
+    /// A change the person makes through the session is a step of theirs,
+    /// kept in their records: the session publishes its undo, and undoing it
+    /// stores the value before it again.
+    #[test]
+    #[serial_test::serial]
+    fn the_persons_change_through_the_session_is_a_step_they_undo() {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let paths = settings_store::SessionPaths::configured().unwrap();
+        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
+        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let palette = settings_store::InvokingAction::action("power.lock");
+        let before = settings_store::power::LOCK_MINUTES.get();
+        let sooner = if before == 1 { 2 } else { 1 };
+        super::change(
+            &super::address("settings.power", "field-edit"),
+            &super::set_field("lock_minutes", &serde_json::json!(sooner)),
+            false,
+            &palette,
+        )
+        .unwrap();
+        assert_eq!(settings_store::power::LOCK_MINUTES.get(), sooner);
+        let undo = super::address("settings.power", "undo");
+        assert!(
+            super::with_records(|records| tilo_actions::door::survey(&records.resources()))
+                .unwrap()
+                .iter()
+                .any(|descriptor| descriptor.address == undo),
+            "the session publishes the person's undo"
+        );
+        super::change(&undo, &serde_json::Map::new(), false, &palette).unwrap();
+        assert_eq!(settings_store::power::LOCK_MINUTES.get(), before);
         drop(settings);
     }
 }

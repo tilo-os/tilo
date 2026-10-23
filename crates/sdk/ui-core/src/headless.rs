@@ -284,6 +284,25 @@ pub mod test_support;
 mod tooltip_layer;
 mod window_bar;
 
+/// What answers another provider's action in a harness, in place of the
+/// workspace broker.
+pub type ServedProvider = Box<
+    dyn FnMut(
+        &ProvidedInvocation<'_>,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError>,
+>;
+
+/// One invocation of another provider's action ([`FrameHarness::serve_provider`]).
+pub struct ProvidedInvocation<'a> {
+    /// The action as the provider publishes it.
+    pub address: &'a tilo_actions::ActionAddress,
+    pub argument: &'a tilo_actions::remote::InvokeArgument,
+    /// Who invoked it.
+    pub actor: &'a str,
+    /// The person confirmed it, where its value asks first.
+    pub confirmed: bool,
+}
+
 pub struct FrameHarness {
     control_domain: crate::ControlDomain,
     bound_publication: crate::bound_dispatch::BoundPublication,
@@ -449,6 +468,9 @@ pub struct FrameHarness {
     action_transport: Box<dyn tilo_actions::ActionTransport>,
     pending_control_invocations: HashSet<tilo_actions::InvocationId>,
     control_failures: Vec<String>,
+    /// What stands in for the providers whose actions the app's controls
+    /// are bound to ([`Self::serve_provider`]), by provider.
+    providers: HashMap<String, ServedProvider>,
     bound_invocations:
         HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
     /// What each job started with [`FrameHarness::start_bound_job`] reported
@@ -1621,6 +1643,7 @@ impl FrameHarness {
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
+            providers: HashMap::new(),
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
@@ -7332,13 +7355,50 @@ impl FrameHarness {
             .filter(|s| instance.is_none_or(|id| s.binding.instance_id == id))
             .flat_map(|s| {
                 let binding = s.binding.clone();
-                s.into_resources().into_iter().map(move |r| {
-                    self.bound_publication
-                        .project(&binding, r)
-                        .map_err(crate::bound_dispatch::BoundActionError::into_door)
-                })
+                s.into_resources()
+                    .into_iter()
+                    .filter_map(crate::bound_dispatch::published_here)
+                    .map(move |r| {
+                        self.bound_publication
+                            .project(&binding, r)
+                            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+                    })
             })
             .collect()
+    }
+
+    /// Answer `provider`'s actions with `serve`, as the workspace broker
+    /// would deliver them to it: what the app's controls bound to another
+    /// provider's actions ([`tilo_actions::ActionSpec::run_by`]) invoke.
+    pub fn serve_provider(&mut self, provider: impl Into<String>, serve: ServedProvider) {
+        self.invalidate_local();
+        self.providers.insert(provider.into(), serve);
+    }
+
+    /// Carry out at its provider an invocation the door resolved as another
+    /// provider's ([`crate::bound_dispatch::BoundActionError::Hosted`]).
+    fn run_hosted(
+        &mut self,
+        started: Result<
+            crate::widget::ResourceOperationStart,
+            crate::bound_dispatch::BoundActionError,
+        >,
+    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
+    {
+        let Err(crate::bound_dispatch::BoundActionError::Hosted(hosted)) = started else {
+            return started;
+        };
+        let Some(serve) = self.providers.get_mut(&hosted.provider) else {
+            return Err(crate::bound_dispatch::BoundActionError::Hosted(hosted));
+        };
+        let output = serve(&ProvidedInvocation {
+            address: &hosted.address,
+            argument: &hosted.argument,
+            actor: &hosted.actor,
+            confirmed: hosted.confirmed,
+        })?;
+        self.invalidate_local();
+        Ok(crate::widget::ResourceOperationStart::Completed(output))
     }
 
     /// Invoke `address` as `delivered` says: under its invocation, for its
@@ -7397,7 +7457,8 @@ impl FrameHarness {
                 scope: None,
                 route: None,
             },
-        )?;
+        );
+        let started = self.run_hosted(started)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target);
         }
@@ -7700,8 +7761,10 @@ impl FrameHarness {
                 scope: None,
                 route: None,
             },
-        )
-        .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        );
+        let result = self
+            .run_hosted(result)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door);
         drop(answering);
         drop(scopes);
         self.note_continuation(on_behalf_of, &result);
@@ -8056,8 +8119,10 @@ impl FrameHarness {
                         scope: None,
                         route: None,
                     },
-                )
-                .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+                );
+                let result = self
+                    .run_hosted(result)
+                    .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
                 if matches!(result, crate::widget::ResourceOperationStart::Accepted) {
                     self.bound_invocations.insert(invocation_id, target);
                 }
@@ -9566,8 +9631,10 @@ impl FrameHarness {
                 scope: None,
                 route: None,
             },
-        )
-        .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        );
+        let started = self
+            .run_hosted(started)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target);
         }

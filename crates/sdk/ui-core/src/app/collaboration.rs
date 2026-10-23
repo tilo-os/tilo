@@ -1114,6 +1114,7 @@ impl App {
         result: Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) {
         if self.settle_follow_up(request_id, &result)
+            || self.settle_hosted(request_id, &result)
             || self.close_broker_result(request_id, &result)
         {
             return;

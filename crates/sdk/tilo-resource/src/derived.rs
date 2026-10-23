@@ -107,6 +107,14 @@ fn bound_declaration(
     }
     let all = verb.params.clone();
     let build = std::sync::Arc::clone(&verb.build);
+    let invokes = (
+        verb.id.to_owned(),
+        values
+            .iter()
+            .filter(|(_, value)| !value.is_null())
+            .cloned()
+            .collect(),
+    );
     let values = values.to_vec();
     let build: crate::vocabulary::Builds = std::sync::Arc::new(move |args, now_ms| {
         let mut arguments = args.to_json();
@@ -122,6 +130,7 @@ fn bound_declaration(
         }
     });
     let mut decl = Declaration::new(vocabulary, id, label, params, build);
+    decl.invokes = Some(invokes);
     decl.kind = verb.kind;
     decl.field = verb.field;
     decl.description.clone_from(&verb.description);

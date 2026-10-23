@@ -173,10 +173,12 @@ fn a_model_link_opens_agent_models() {
     );
 }
 
-/// Every section of the person's settings is published beside Settings with
-/// its field edits, so an agent or assistive technology changes any of it by
-/// path, without a pane showing it, and the section's own check refuses what
-/// it does not hold.
+/// Every section of the person's settings is published with its field
+/// edits, so an agent or assistive technology changes any of it by path,
+/// without a pane showing it, and the section's own check refuses what it
+/// does not hold. The session keeps and publishes the system's own; Settings
+/// publishes the rest, and its controls change the session's through the
+/// session's actions.
 #[test]
 fn every_settings_section_is_edited_by_path() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
@@ -190,16 +192,6 @@ fn every_settings_section_is_edited_by_path() {
         .filter_map(|row| row["resource"].as_str().map(str::to_owned))
         .collect();
     for kind in [
-        "settings.appearance",
-        "settings.accessibility",
-        "settings.input",
-        "settings.power",
-        "settings.updates",
-        "settings.notifications",
-        "settings.audio",
-        "settings.display",
-        "settings.locale",
-        "settings.continuity",
         "settings.desktop-controls",
         "settings.agent-providers",
         "settings.default-apps",
@@ -210,6 +202,23 @@ fn every_settings_section_is_edited_by_path() {
         assert!(
             published.contains(&format!("settings:{kind}")),
             "{kind} is published with its field edits: {published:?}"
+        );
+    }
+    for kept in [
+        "settings.appearance",
+        "settings.accessibility",
+        "settings.input",
+        "settings.power",
+        "settings.updates",
+        "settings.notifications",
+        "settings.audio",
+        "settings.display",
+        "settings.locale",
+        "settings.continuity",
+    ] {
+        assert!(
+            !published.contains(&format!("settings:{kept}")),
+            "the session publishes {kept}, not Settings: {published:?}"
         );
     }
 
