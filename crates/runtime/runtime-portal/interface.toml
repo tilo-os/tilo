@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 5
+version = 6
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -180,14 +180,20 @@ capnp = [
 "capnp:blobs.capnp:DocumentBlobs" = "interface"
 "capnp:blobs.capnp:DocumentBlobs.get" = "@2 (hash:Text,offset:UInt64,maxLen:UInt32)->(read:BlobRead)"
 "capnp:blobs.capnp:DocumentBlobs.has" = "@3 (hash:Text)->(present:Bool)"
+"capnp:blobs.capnp:DocumentBlobs.publicContent" = "@5 (name:Text)->(content:PublicContent)"
 "capnp:blobs.capnp:DocumentBlobs.put" = "@0 (bytes:Data,mime:Text)->(ref:BlobRef)"
 "capnp:blobs.capnp:DocumentBlobs.size" = "@4 (hash:Text)->(known:Bool,len:UInt64)"
 "capnp:blobs.capnp:DocumentBlobs.upload" = "@1 (mime:Text)->(upload:BlobUpload)"
+"capnp:blobs.capnp:PublicContent" = "interface"
+"capnp:blobs.capnp:PublicContent.keep" = "@0 ()->()"
+"capnp:blobs.capnp:PublicContent.read" = "@2 (offset:UInt64,maxLen:UInt32)->(read:BlobRead,hash:Text)"
+"capnp:blobs.capnp:PublicContent.release" = "@1 ()->()"
 "capnp:blobs.capnp:ReadStatus" = "enum"
 "capnp:blobs.capnp:ReadStatus.pending" = "@1"
 "capnp:blobs.capnp:ReadStatus.ready" = "@0"
 "capnp:blobs.capnp:ReadStatus.unavailable" = "@2"
 "capnp:blobs.capnp:SessionBlobs" = "interface"
+"capnp:blobs.capnp:SessionBlobs.refreshPublicContent" = "@1 ()->(refreshed:UInt32)"
 "capnp:blobs.capnp:SessionBlobs.scope" = "@0 (room:Text,app:Text)->(blobs:DocumentBlobs)"
 "capnp:collab.capnp:ActionCatalogueStream" = "interface"
 "capnp:collab.capnp:ActionCatalogueStream.read" = "@0 ()->(catalogueJson:Text)"

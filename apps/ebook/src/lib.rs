@@ -32,6 +32,7 @@
 
 pub mod actions;
 pub mod app;
+mod catalogue;
 mod commands;
 mod comment_overlay;
 pub mod component;

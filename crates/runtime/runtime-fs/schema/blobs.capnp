@@ -41,6 +41,29 @@ interface DocumentBlobs {
 
   # The content length of a readable `hash`, if this device knows it.
   size @4 (hash :Text) -> (known :Bool, len :UInt64);
+
+  # A small public file this device can keep a copy of (a book catalogue),
+  # named as the daemon knows it (`gutenberg-catalogue`). It belongs to no
+  # room and no app: one copy per device, readable from every workspace, kept
+  # while some app keeps it, evicted like any cached content and fetched again
+  # from where it came from when read. An unknown name is refused.
+  publicContent @5 (name :Text) -> (content :PublicContent);
+}
+
+interface PublicContent {
+  # Keep a copy on this device for this app; the first keeper's call starts
+  # fetching it. Answers at once: `read` says when the copy is here.
+  keep @0 () -> ();
+
+  # This app no longer needs the copy. It stays on this device until the
+  # device needs its room; a copy nobody keeps is no longer refreshed.
+  release @1 () -> ();
+
+  # Read up to `maxLen` bytes of the current copy from `offset`, and the
+  # copy's `hash` (lowercase hex BLAKE3), which changes when a newer copy
+  # replaces it. `pending` while a kept copy is being fetched; `unavailable`
+  # when no app keeps one here.
+  read @2 (offset :UInt64, maxLen :UInt32) -> (read :BlobRead, hash :Text);
 }
 
 interface BlobUpload {
@@ -74,4 +97,8 @@ struct BlobRead {
 # in another app), so it reads through that app's scope rather than around it.
 interface SessionBlobs {
   scope @0 (room :Text, app :Text) -> (blobs :DocumentBlobs);
+
+  # Ask where each kept public copy came from whether it changed, and take a
+  # newer one if so: the background refresh. Answers how many changed.
+  refreshPublicContent @1 () -> (refreshed :UInt32);
 }

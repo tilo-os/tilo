@@ -1,6 +1,7 @@
 //! The book store Books searches beside the library: Project Gutenberg's
-//! catalogue of free books, asked as the person types and never downloaded
-//! to search it. A book found there is fully usable before it is local:
+//! catalogue of free books. Where this device keeps a copy of the catalogue
+//! ([`crate::catalogue`]) the copy answers; otherwise the store is asked as
+//! the person types. A book found there is fully usable before it is local:
 //! getting it fetches the EPUB and opens it like a book picked from disk.
 
 use std::path::{Path, PathBuf};
@@ -206,8 +207,29 @@ fn store_accepts(query: &QuerySpec) -> bool {
             .any(|chip| chip.key == crate::search_provider::BOOK_FACET)
 }
 
-/// Project Gutenberg, asked over the network.
-pub(crate) struct Gutenberg;
+/// Project Gutenberg: the device's copy of its catalogue when one is here,
+/// asked over the network otherwise.
+pub(crate) struct Gutenberg {
+    catalogue: Option<Arc<crate::catalogue::DeviceCatalogue>>,
+}
+
+impl Gutenberg {
+    /// Asked from `catalogue` while it holds a copy.
+    pub(crate) fn with_catalogue(catalogue: Arc<crate::catalogue::DeviceCatalogue>) -> Self {
+        Self {
+            catalogue: Some(catalogue),
+        }
+    }
+
+    /// Always asked over the network.
+    pub(crate) fn live() -> Self {
+        Self { catalogue: None }
+    }
+
+    fn copy(&self) -> Option<Arc<crate::catalogue::CatalogueIndex>> {
+        self.catalogue.as_ref()?.index()
+    }
+}
 
 impl RemoteSource for Gutenberg {
     fn id(&self) -> &'static str {
@@ -223,9 +245,11 @@ impl RemoteSource for Gutenberg {
     }
 
     fn warm(&self) {
-        // Open the connection before the first character: the answer to
-        // nothing is small.
-        let _ = fetch(SEARCH_URL, &[("query", "")], MAX_PAGE_BYTES);
+        // Read the copy before the first character, or else open the
+        // connection: the answer to nothing is small.
+        if self.copy().is_none() {
+            let _ = fetch(SEARCH_URL, &[("query", "")], MAX_PAGE_BYTES);
+        }
     }
 
     fn search(
@@ -235,6 +259,19 @@ impl RemoteSource for Gutenberg {
         page: &mut dyn FnMut(Vec<Item>),
     ) -> Result<(), RemoteError> {
         let words = store_words(query);
+        if let Some(copy) = self.copy() {
+            let folded: Vec<String> = words
+                .split_whitespace()
+                .map(ui::search::normalize_search_text)
+                .collect();
+            page(
+                copy.search(&folded, ui::framework::views::GROUP_LIMIT)
+                    .into_iter()
+                    .map(StoreBook::item)
+                    .collect(),
+            );
+            return Ok(());
+        }
         let body =
             fetch(SEARCH_URL, &[("query", words.as_str())], MAX_PAGE_BYTES).map_err(|error| {
                 tracing::debug!(%error, "books: the store did not answer");

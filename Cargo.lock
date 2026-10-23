@@ -17901,6 +17901,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-lock",
+ "tilo-net",
  "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",

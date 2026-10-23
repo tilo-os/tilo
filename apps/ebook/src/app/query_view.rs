@@ -175,10 +175,15 @@ impl BookQuery {
         query
     }
 
-    /// The live search: Project Gutenberg over the network, waking `wake`'s
-    /// window when it answers.
-    pub(super) fn live(wake: ui::WakeHandle) -> Self {
-        let store: Arc<dyn RemoteSource> = Arc::new(crate::store::Gutenberg);
+    /// The live search: Project Gutenberg from the device's copy of its
+    /// catalogue, or over the network, waking `wake`'s window when it
+    /// answers.
+    pub(super) fn live(
+        wake: ui::WakeHandle,
+        catalogue: Arc<crate::catalogue::DeviceCatalogue>,
+    ) -> Self {
+        let store: Arc<dyn RemoteSource> =
+            Arc::new(crate::store::Gutenberg::with_catalogue(catalogue));
         let mut engine = QueryEngine::new(kinds()).with_remote(store);
         engine.set_waker(wake.clone());
         let mut query = Self::with_engine(engine, &crate::store::cover_fetcher());
@@ -515,6 +520,7 @@ impl BooksApp {
 
     /// Take in what the library and the store sent since the last frame.
     pub(super) fn poll_query(&mut self) {
+        self.follow_catalogue_setting();
         // A staged search waits for the library's entries to be built.
         if self.search_worker.is_none()
             && self.search_fingerprint != 0

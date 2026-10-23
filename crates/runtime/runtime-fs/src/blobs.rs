@@ -47,7 +47,7 @@ use tokio::io::AsyncReadExt as _;
 use wire_frame::Framing;
 
 pub use crate::blobs_capnp::{
-    ReadStatus as WireReadStatus, blob_upload, document_blobs, session_blobs,
+    ReadStatus as WireReadStatus, blob_upload, document_blobs, public_content, session_blobs,
 };
 
 /// Where the root filesystem daemon listens for document-media connections.
@@ -404,6 +404,57 @@ pub trait BlobBackend: Send + Sync + 'static {
     ) -> BlobFuture<ReadOutcome>;
     fn has(self: Arc<Self>, scope: BlobScope, hash: String) -> BlobFuture<bool>;
     fn size(self: Arc<Self>, scope: BlobScope, hash: String) -> BlobFuture<Option<u64>>;
+
+    /// Keep a copy of the public content `name` on this device for `scope`'s
+    /// app ([`PublicRead`]). A backend that keeps none refuses.
+    fn public_keep(
+        self: Arc<Self>,
+        scope: BlobScope,
+        name: String,
+    ) -> BlobFuture<Result<(), BlobError>> {
+        let _ = (scope, name);
+        Box::pin(async { Err(no_public_content()) })
+    }
+
+    /// `scope`'s app no longer keeps the public content `name`.
+    fn public_release(
+        self: Arc<Self>,
+        scope: BlobScope,
+        name: String,
+    ) -> BlobFuture<Result<(), BlobError>> {
+        let _ = (scope, name);
+        Box::pin(async { Err(no_public_content()) })
+    }
+
+    /// Read the current copy of the public content `name`.
+    fn public_read(
+        self: Arc<Self>,
+        name: String,
+        offset: u64,
+        max_len: u32,
+    ) -> BlobFuture<Result<PublicRead, BlobError>> {
+        let _ = (name, offset, max_len);
+        Box::pin(async { Err(no_public_content()) })
+    }
+
+    /// Check every kept public copy against where it came from and take a
+    /// newer one: how many changed.
+    fn refresh_public(self: Arc<Self>) -> BlobFuture<u32> {
+        Box::pin(async { 0 })
+    }
+}
+
+/// The refusal of a backend that keeps no public content.
+fn no_public_content() -> BlobError {
+    BlobError::Refused("this device keeps no public content".into())
+}
+
+/// A read of a public copy: the range, and which copy it is (its hash),
+/// when there is one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicRead {
+    pub outcome: ReadOutcome,
+    pub hash: Option<String>,
 }
 
 /// Serve `listener` on a dedicated thread. Cap'n Proto servers are `!Send`,
@@ -613,16 +664,7 @@ impl document_blobs::Server for ScopedBlobs {
                 Arc::clone(&self.backend).read(self.scope.clone(), hash, offset, max_len),
             )
             .await?;
-            let mut read = results.get().init_read();
-            match outcome {
-                ReadOutcome::Ready { bytes, total_len } => {
-                    read.set_status(WireReadStatus::Ready);
-                    read.set_bytes(&bytes);
-                    read.set_total_len(total_len);
-                }
-                ReadOutcome::Pending => read.set_status(WireReadStatus::Pending),
-                ReadOutcome::Unavailable => read.set_status(WireReadStatus::Unavailable),
-            }
+            write_read(results.get().init_read(), &outcome);
             Ok(())
         })
     }
@@ -659,6 +701,122 @@ impl document_blobs::Server for ScopedBlobs {
             let mut reply = results.get();
             reply.set_known(size.is_some());
             reply.set_len(size.unwrap_or(0));
+            Ok(())
+        })
+    }
+
+    fn public_content(
+        self: Rc<Self>,
+        params: document_blobs::PublicContentParams,
+        mut results: document_blobs::PublicContentResults,
+    ) -> Promise<(), capnp::Error> {
+        match params
+            .get()
+            .and_then(|request| text_param(request.get_name()))
+        {
+            Ok(name) => {
+                results
+                    .get()
+                    .set_content(capnp_rpc::new_client(PublicContentServer {
+                        scope: self.scope.clone(),
+                        name,
+                        backend: Arc::clone(&self.backend),
+                        runtime: self.runtime.clone(),
+                    }));
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+}
+
+/// One public copy, as an app's scope reaches it.
+struct PublicContentServer {
+    scope: BlobScope,
+    name: String,
+    backend: Arc<dyn BlobBackend>,
+    runtime: tokio::runtime::Handle,
+}
+
+fn write_read(mut read: crate::blobs_capnp::blob_read::Builder<'_>, outcome: &ReadOutcome) {
+    match outcome {
+        ReadOutcome::Ready { bytes, total_len } => {
+            read.set_status(WireReadStatus::Ready);
+            read.set_bytes(bytes);
+            read.set_total_len(*total_len);
+        }
+        ReadOutcome::Pending => read.set_status(WireReadStatus::Pending),
+        ReadOutcome::Unavailable => read.set_status(WireReadStatus::Unavailable),
+    }
+}
+
+fn read_outcome(read: crate::blobs_capnp::blob_read::Reader<'_>) -> Result<ReadOutcome, BlobError> {
+    let status = read
+        .get_status()
+        .map_err(|_| BlobError::Refused("unknown read status".into()))?;
+    Ok(match status {
+        WireReadStatus::Ready => ReadOutcome::Ready {
+            bytes: read.get_bytes()?.to_vec(),
+            total_len: read.get_total_len(),
+        },
+        WireReadStatus::Pending => ReadOutcome::Pending,
+        WireReadStatus::Unavailable => ReadOutcome::Unavailable,
+    })
+}
+
+#[allow(
+    refining_impl_trait,
+    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
+)]
+impl public_content::Server for PublicContentServer {
+    fn keep(
+        self: Rc<Self>,
+        _params: public_content::KeepParams,
+        _results: public_content::KeepResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            on_runtime(
+                &self.runtime,
+                Arc::clone(&self.backend).public_keep(self.scope.clone(), self.name.clone()),
+            )
+            .await?
+            .map_err(|error| refuse(&error))
+        })
+    }
+
+    fn release(
+        self: Rc<Self>,
+        _params: public_content::ReleaseParams,
+        _results: public_content::ReleaseResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            on_runtime(
+                &self.runtime,
+                Arc::clone(&self.backend).public_release(self.scope.clone(), self.name.clone()),
+            )
+            .await?
+            .map_err(|error| refuse(&error))
+        })
+    }
+
+    fn read(
+        self: Rc<Self>,
+        params: public_content::ReadParams,
+        mut results: public_content::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let offset = request.get_offset();
+            let max_len = request.get_max_len().min(MAX_READ_CHUNK);
+            let read = on_runtime(
+                &self.runtime,
+                Arc::clone(&self.backend).public_read(self.name.clone(), offset, max_len),
+            )
+            .await?
+            .map_err(|error| refuse(&error))?;
+            let mut reply = results.get();
+            write_read(reply.reborrow().init_read(), &read.outcome);
+            reply.set_hash(read.hash.as_deref().unwrap_or_default());
             Ok(())
         })
     }
@@ -818,6 +976,19 @@ impl session_blobs::Server for SessionServer {
             Err(error) => Promise::err(error),
         }
     }
+
+    fn refresh_public_content(
+        self: Rc<Self>,
+        _params: session_blobs::RefreshPublicContentParams,
+        mut results: session_blobs::RefreshPublicContentResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let refreshed =
+                on_runtime(&self.runtime, Arc::clone(&self.backend).refresh_public()).await?;
+            results.get().set_refreshed(refreshed);
+            Ok(())
+        })
+    }
 }
 
 type Reply<T> = std::sync::mpsc::SyncSender<Result<T, BlobError>>;
@@ -847,6 +1018,31 @@ enum Job {
     Scope {
         scope: BlobScope,
         reply: Reply<u64>,
+    },
+    Public(PublicJob),
+}
+
+/// Public content: kept, released and read by name.
+enum PublicJob {
+    Keep {
+        target: u64,
+        name: String,
+        reply: Reply<()>,
+    },
+    Release {
+        target: u64,
+        name: String,
+        reply: Reply<()>,
+    },
+    Read {
+        target: u64,
+        name: String,
+        offset: u64,
+        max_len: u32,
+        reply: Reply<PublicRead>,
+    },
+    Refresh {
+        reply: Reply<u32>,
     },
 }
 
@@ -1105,6 +1301,127 @@ impl BlobClient {
             max_len,
             reply,
         })
+    }
+
+    /// Keep a copy of the public content `name` on this device for this
+    /// app; the first keeper starts its fetch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the service's refusal (an unknown name) or a connection
+    /// error.
+    pub fn public_keep(&self, name: &str) -> Result<(), BlobError> {
+        let target = self.data_target()?;
+        let name = name.to_owned();
+        self.call(|reply| {
+            Job::Public(PublicJob::Keep {
+                target,
+                name,
+                reply,
+            })
+        })
+    }
+
+    /// This app no longer keeps the public content `name`. The copy stays
+    /// on this device until the device needs its room.
+    ///
+    /// # Errors
+    ///
+    /// Returns the service's refusal or a connection error.
+    pub fn public_release(&self, name: &str) -> Result<(), BlobError> {
+        let target = self.data_target()?;
+        let name = name.to_owned();
+        self.call(|reply| {
+            Job::Public(PublicJob::Release {
+                target,
+                name,
+                reply,
+            })
+        })
+    }
+
+    /// Read one range of the current copy of the public content `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the service's refusal or a connection error.
+    pub fn public_read(
+        &self,
+        name: &str,
+        offset: u64,
+        max_len: u32,
+    ) -> Result<PublicRead, BlobError> {
+        let target = self.data_target()?;
+        let name = name.to_owned();
+        self.call(|reply| {
+            Job::Public(PublicJob::Read {
+                target,
+                name,
+                offset,
+                max_len,
+                reply,
+            })
+        })
+    }
+
+    /// The whole current copy of the public content `name` and its hash,
+    /// verified against it; `Err` with the outcome when it is pending or
+    /// unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the service's refusal, a connection error, or a refusal when
+    /// the bytes do not hash to the copy's hash.
+    pub fn public_read_all(
+        &self,
+        name: &str,
+    ) -> Result<Result<(Vec<u8>, String), ReadOutcome>, BlobError> {
+        let first = self.public_read(name, 0, MAX_READ_CHUNK)?;
+        let (ReadOutcome::Ready { bytes, total_len }, Some(hash)) =
+            (first.outcome.clone(), first.hash.clone())
+        else {
+            return Ok(Err(first.outcome));
+        };
+        if total_len > MAX_BLOB_BYTES {
+            return Err(BlobError::TooLarge {
+                len: total_len,
+                limit: MAX_BLOB_BYTES,
+            });
+        }
+        let mut whole = bytes;
+        while (whole.len() as u64) < total_len {
+            let next = self.public_read(name, whole.len() as u64, MAX_READ_CHUNK)?;
+            match (next.outcome, next.hash) {
+                (ReadOutcome::Ready { bytes, .. }, Some(same))
+                    if same == hash && !bytes.is_empty() =>
+                {
+                    whole.extend_from_slice(&bytes);
+                }
+                // A newer copy replaced it while it was read: read that one.
+                (ReadOutcome::Ready { .. }, Some(_)) => return self.public_read_all(name),
+                (outcome, _) => return Ok(Err(outcome)),
+            }
+        }
+        if blake3::hash(&whole).to_hex().as_str() != hash {
+            return Err(BlobError::Refused(
+                "the public copy does not match its hash".into(),
+            ));
+        }
+        Ok(Ok((whole, hash)))
+    }
+
+    /// For a session client: check every kept public copy against where it
+    /// came from, taking newer ones. How many changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::InvalidScope`] for a client that is not a
+    /// session root, or a connection error.
+    pub fn refresh_public(&self) -> Result<u32, BlobError> {
+        if !self.worker.session || self.target != ROOT {
+            return Err(BlobError::InvalidScope);
+        }
+        self.call(|reply| Job::Public(PublicJob::Refresh { reply }))
     }
 
     /// A reader over `hash` that fetches [`MAX_READ_CHUNK`] ranges as it is
@@ -1455,18 +1772,7 @@ async fn run_job(job: Job, connection: &Connection) {
                     params.set_max_len(max_len);
                 }
                 let answer = request.send().promise.await?;
-                let read = answer.get()?.get_read()?;
-                let status = read
-                    .get_status()
-                    .map_err(|_| BlobError::Refused("unknown read status".into()))?;
-                Ok(match status {
-                    WireReadStatus::Ready => ReadOutcome::Ready {
-                        bytes: read.get_bytes()?.to_vec(),
-                        total_len: read.get_total_len(),
-                    },
-                    WireReadStatus::Pending => ReadOutcome::Pending,
-                    WireReadStatus::Unavailable => ReadOutcome::Unavailable,
-                })
+                read_outcome(answer.get()?.get_read()?)
             }
             .await;
             let _ = reply.send(result);
@@ -1519,6 +1825,92 @@ async fn run_job(job: Job, connection: &Connection) {
                 let id = connection.issue_id();
                 connection.scopes.borrow_mut().insert(id, client);
                 Ok(id)
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        Job::Public(job) => public(job, connection).await,
+    }
+}
+
+/// The public copy `name` as the capability `target` reaches it.
+fn public_copy(
+    connection: &Connection,
+    target: u64,
+    name: &str,
+) -> Result<public_content::Client, BlobError> {
+    let client = connection.scope(target)?;
+    let mut request = client.public_content_request();
+    request.get().set_name(name);
+    Ok(request.send().pipeline.get_content())
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
+)]
+async fn public(job: PublicJob, connection: &Connection) {
+    match job {
+        PublicJob::Keep {
+            target,
+            name,
+            reply,
+        } => {
+            let result = async {
+                let copy = public_copy(connection, target, &name)?;
+                copy.keep_request().send().promise.await?;
+                Ok(())
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        PublicJob::Release {
+            target,
+            name,
+            reply,
+        } => {
+            let result = async {
+                let copy = public_copy(connection, target, &name)?;
+                copy.release_request().send().promise.await?;
+                Ok(())
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        PublicJob::Read {
+            target,
+            name,
+            offset,
+            max_len,
+            reply,
+        } => {
+            let result = async {
+                let copy = public_copy(connection, target, &name)?;
+                let mut request = copy.read_request();
+                {
+                    let mut params = request.get();
+                    params.set_offset(offset);
+                    params.set_max_len(max_len);
+                }
+                let answer = request.send().promise.await?;
+                let answer = answer.get()?;
+                let hash = answer.get_hash()?.to_str().unwrap_or_default().to_owned();
+                Ok(PublicRead {
+                    outcome: read_outcome(answer.get_read()?)?,
+                    hash: valid_hash(&hash).then_some(hash),
+                })
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        PublicJob::Refresh { reply } => {
+            let result = async {
+                let root = connection
+                    .session_root
+                    .as_ref()
+                    .ok_or(BlobError::InvalidScope)?;
+                let answer = root.refresh_public_content_request().send().promise.await?;
+                Ok(answer.get()?.get_refreshed())
             }
             .await;
             let _ = reply.send(result);

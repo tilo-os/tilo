@@ -63,8 +63,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@5"
-tilo-fs = "optional@5"
+collab = "optional@6"
+tilo-fs = "optional@6"
 
 [entrypoint]
 bin             = "bin/video-editor"

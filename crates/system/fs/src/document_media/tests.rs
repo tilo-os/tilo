@@ -316,6 +316,137 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
     );
 }
 
+/// A public file's origin that serves one version and answers "unchanged"
+/// to a request naming it, counting what it was asked.
+struct OneVersion(Vec<u8>, Arc<std::sync::atomic::AtomicUsize>);
+
+impl crate::public_content::Origin for OneVersion {
+    fn fetch(
+        &self,
+        _url: &'static str,
+        since: Option<crate::public_content::Validator>,
+        _limit: u64,
+    ) -> runtime_fs::blobs::BlobFuture<Result<crate::public_content::Answer, String>> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let validator = crate::public_content::Validator {
+            etag: Some("\"v1\"".into()),
+            last_modified: None,
+        };
+        let answer = if since.as_ref() == Some(&validator) {
+            crate::public_content::Answer::Unchanged
+        } else {
+            crate::public_content::Answer::Changed {
+                bytes: self.0.clone(),
+                validator,
+            }
+        };
+        Box::pin(async move { Ok(answer) })
+    }
+}
+
+/// The public copy end to end: apps in different rooms keep the device's
+/// one copy through their launcher-scoped sockets, read the same bytes
+/// under the same hash; the session asks for a refresh, which leaves a copy
+/// that was just fetched alone. Released by every app, the copy stays until
+/// the device needs its room, and then comes back on the next read.
+#[test]
+fn a_public_copy_is_one_per_device_for_apps_in_every_room() {
+    const NAME: &str = "gutenberg-catalogue";
+    let catalogue = b"Text#,Type,Title\n1,Text,The Declaration of Independence\n".to_vec();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("fs-blobs.sock");
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let _guard = runtime.enter();
+    let store = Arc::new(ContentStore::memory());
+    let _server = {
+        let public = PublicContent::open(
+            &dir.path().join("public-content"),
+            Arc::clone(store.files()),
+            Arc::new(OneVersion(catalogue.clone(), Arc::clone(&asked))),
+        )
+        .unwrap();
+        serve_socket(
+            &socket,
+            DocumentMedia::with_public(Arc::clone(&store), public),
+        )
+        .unwrap()
+    };
+    let asked = || asked.load(std::sync::atomic::Ordering::SeqCst);
+
+    let books = launcher_connection(&socket, "room-1", "so.tilo.ebook");
+    let search = launcher_connection(&socket, "room-2", "so.tilo.search");
+    assert_eq!(
+        books.public_read_all(NAME).unwrap(),
+        Err(ReadOutcome::Unavailable),
+        "nobody keeps it yet"
+    );
+    assert!(books.public_keep("https://example.org/anything").is_err());
+
+    books.public_keep(NAME).unwrap();
+    let (bytes, hash) = arrived(&books, NAME);
+    assert_eq!(bytes, catalogue);
+    assert_eq!(hash, blake3::hash(&catalogue).to_hex().to_string());
+
+    search.public_keep(NAME).unwrap();
+    assert_eq!(
+        search.public_read_all(NAME).unwrap(),
+        Ok((catalogue.clone(), hash.clone())),
+        "another room reads the same copy"
+    );
+
+    let session = BlobClient::connect_session(&socket).unwrap();
+    assert_eq!(session.refresh_public().unwrap(), 0, "fetched just now");
+    assert!(
+        books.refresh_public().is_err(),
+        "only the session refreshes"
+    );
+
+    books.public_release(NAME).unwrap();
+    search.public_release(NAME).unwrap();
+    assert_eq!(
+        books.public_read_all(NAME).unwrap(),
+        Ok((catalogue.clone(), hash.clone())),
+        "released, it is still here: reopening Books downloads nothing"
+    );
+    assert_eq!(asked(), 1);
+
+    store.files().set_budget(0);
+    assert_eq!(store.files().evict_to_budget(&[]), catalogue.len() as u64);
+    store.files().set_budget(u64::MAX);
+    assert_eq!(arrived(&books, NAME), (catalogue, hash));
+    assert_eq!(asked(), 2, "evicted, it is fetched again on the next read");
+}
+
+/// The whole public copy `name` once it is here, reading again while it is
+/// on its way.
+fn arrived(client: &BlobClient, name: &str) -> (Vec<u8>, String) {
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(10))
+        .unwrap();
+    loop {
+        match client.public_read_all(name).unwrap() {
+            Ok(read) => return read,
+            Err(outcome) => {
+                assert_eq!(
+                    outcome,
+                    ReadOutcome::Pending,
+                    "a kept copy is here or on its way"
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the copy never arrived"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 /// The daemon's document media, observed: every ranged read's length is
 /// logged, and reads can be made to answer other bytes than were stored.
 struct Observed {
