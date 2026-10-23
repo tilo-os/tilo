@@ -164,7 +164,6 @@ impl Session {
     }
 }
 
-/// The sending half of a stream.
 pub struct SendStream(backend::SendStream);
 
 impl std::fmt::Debug for SendStream {

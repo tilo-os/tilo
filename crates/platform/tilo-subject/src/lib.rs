@@ -51,10 +51,6 @@ impl SubjectError {
 
 /// How much of each pixel of `picture` (straight RGBA, `width` by
 /// `height`) is its subject.
-///
-/// # Errors
-/// Returns that no model is installed or reachable, that the picture is
-/// empty, or the model's failure.
 pub fn find_subject(rgba: &[u8], width: u32, height: u32) -> Result<Subject, SubjectError> {
     let image = RgbaImage::from_raw(width, height, rgba.to_vec())
         .filter(|_| width > 0 && height > 0)

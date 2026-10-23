@@ -91,10 +91,6 @@ impl Rendezvous {
 
 impl Ownership {
     /// Starts serving other processes.
-    ///
-    /// # Errors
-    ///
-    /// The error binding or securing the socket.
     pub fn listen(&self) -> io::Result<Listener> {
         self.0.listen().map(Listener)
     }
@@ -102,10 +98,6 @@ impl Ownership {
 
 impl Listener {
     /// The next process that connected, waiting at most `wait` for one.
-    ///
-    /// # Errors
-    ///
-    /// The error accepting a connection.
     pub fn accept_within(&self, wait: Duration) -> io::Result<Option<Connection>> {
         Ok(self.0.accept_within(wait)?.map(Connection))
     }
@@ -119,10 +111,6 @@ impl Listener {
 
 impl Connection {
     /// A second handle to the same connection, for a reader and a writer.
-    ///
-    /// # Errors
-    ///
-    /// The error duplicating the handle.
     pub fn try_clone(&self) -> io::Result<Self> {
         self.0.try_clone().map(Self)
     }
@@ -133,10 +121,6 @@ impl Connection {
     }
 
     /// Bounds how long a read waits; `None` waits indefinitely.
-    ///
-    /// # Errors
-    ///
-    /// The error setting the timeout.
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.0.set_read_timeout(timeout)
     }

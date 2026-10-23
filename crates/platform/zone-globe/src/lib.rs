@@ -123,7 +123,6 @@ const fn decode_base64<const N: usize>(mut text: &[u8]) -> [u8; N] {
     out
 }
 
-/// [`WORLD_LAND`]'s bytes.
 static WORLD_LAND_BYTES: [u8; decoded_len(WORLD_LAND.as_bytes())] =
     decode_base64(WORLD_LAND.as_bytes());
 
@@ -296,7 +295,6 @@ impl Projection {
         }
     }
 
-    /// Whether `p` faces the viewer.
     fn faces(&self, p: [f64; 3]) -> bool {
         dot(p, self.forward) > 0.0
     }
@@ -321,7 +319,6 @@ impl Projection {
         )
     }
 
-    /// The place under `point`, when it is on the globe.
     fn place_at(&self, point: Point) -> Option<(f64, f64)> {
         let x = (point.x - self.centre.x) / self.radius;
         let y = -(point.y - self.centre.y) / self.radius;
@@ -1177,10 +1174,8 @@ mod tests {
                 "{place:?} came back {back:?}"
             );
         }
-        // East is to the right and north is up.
         assert!(globe.project(unit(20.0, 45.0)).x > 100.0);
         assert!(globe.project(unit(10.0, 55.0)).y < 100.0);
-        // Sydney is behind the globe, outside the disk.
         let sydney = globe.project(unit(151.2, -33.9));
         assert!(!globe.faces(unit(151.2, -33.9)));
         assert!(sydney.distance(Point::new(100.0, 100.0)) > 100.0);

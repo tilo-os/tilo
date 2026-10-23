@@ -16,7 +16,6 @@ pub struct DurableReceipt {
     pub receipt_id: String,
 }
 impl DurableReceipt {
-    /// A durable receipt for `coverage` committed at `generation`.
     pub fn new(coverage: Coverage, generation: u64) -> Result<Self, String> {
         let mut receipt = Self {
             version: 1,
@@ -132,7 +131,6 @@ pub fn canonical(doc: &AutoCommit) -> bool {
         })
     })
 }
-/// The durable receipts recorded in `doc`.
 pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, DurableReceipt>, String> {
     let rows = rows(doc)?;
     for (key, receipt) in &rows {

@@ -87,7 +87,6 @@ impl View {
         }
     }
 
-    /// The view `progress` of the way to `to`.
     fn toward(self, to: Self, progress: f64) -> Self {
         let mix = |a: f64, b: f64| a + (b - a) * progress;
         Self {
@@ -1102,7 +1101,6 @@ mod tests {
 
     #[test]
     fn a_held_speaker_snaps_to_the_centre_line_and_the_mirror_of_another() {
-        // Near the line straight ahead of the listener.
         let near_centre = snap((120, 2_400), &[], 150);
         assert_eq!(near_centre.at, (0, 2_400));
         assert_eq!(
@@ -1203,7 +1201,6 @@ mod tests {
         assert!(!node.children[0].state.selected);
         assert!(canvas.release(), "a press without a drag is just a choice");
         assert_eq!(canvas.stored(), points(), "and moves nothing");
-        // The picker choosing another speaker shows on the canvas.
         selection.set("3".into());
         assert!(canvas.accessibility().unwrap().children[3].state.selected);
     }
@@ -1348,7 +1345,6 @@ mod tests {
         let tight = View::fitting([(0.0, 300.0), (200.0, 300.0)]);
         assert!(tight.x1 - tight.x0 >= 2.0 * MIN_HALF_VIEW_MM - 1.0);
 
-        // Dragged towards the edge, the view grows to keep it in sight.
         let before = canvas.view_at(ui::motion::frame_now());
         let start = on_screen(&canvas, 3);
         assert!(canvas.press(start, None));

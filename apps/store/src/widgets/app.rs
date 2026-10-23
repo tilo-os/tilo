@@ -65,7 +65,6 @@ pub struct Primary {
     /// Says what it does with the app's name, or why it cannot run now.
     pub tooltip: String,
     pub binding: Option<ActionBinding<()>>,
-    /// Whether it can run now.
     pub enabled: bool,
     /// While it runs: what is happening, shown inline in its place.
     pub progress: Option<String>,

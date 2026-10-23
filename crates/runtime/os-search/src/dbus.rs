@@ -13,7 +13,6 @@ use zbus::zvariant::Value;
 
 use crate::{OsSearch, SearchEntry};
 
-/// The runtime's name on the session bus.
 pub const BUS_NAME: &str = "so.tilo.Runtime";
 /// Where GNOME Shell finds `org.gnome.Shell.SearchProvider2`.
 pub const GNOME_PATH: &str = "/so/tilo/Runtime/SearchProvider";

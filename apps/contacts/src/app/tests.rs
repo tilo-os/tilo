@@ -762,7 +762,6 @@ fn retained_forms_preserve_persistence_and_refusals() {
     check_importing_state_is_visible_and_announced_as_busy();
 }
 
-/// The window offers importing and exporting the book beside its actions.
 #[test]
 fn the_window_offers_import_and_export_on_the_book() {
     let mut app = Live::live_sample(1280, 800);
@@ -1813,11 +1812,9 @@ fn context_menu_opens_canonical_contact_actions() {
             "the Favorite item is labelled for the contact's current state",
         );
 
-        // Click the Favorite item in the actual shared menu.
         let rows = menu_rows(&h.app);
         h.press_left(rows[&fav_idx].center());
 
-        // The flag flipped in the store AND in the CRDT, and the menu closed.
         assert_eq!(
             h.app.store.contact(id).unwrap().favorite,
             !before,
@@ -1833,7 +1830,6 @@ fn context_menu_opens_canonical_contact_actions() {
             "the menu closes after toggling favorite"
         );
 
-        // Reopening the menu now shows the inverted label.
         assert!(h.press_right(h.row_center(0)));
         assert_eq!(
             h.app.menu.items()[fav_idx].label().unwrap(),
@@ -2070,7 +2066,6 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
     // --- phase: switching_while_editing_dirty_pops_save_modal_then_save_commits ---
     {
         let mut h = Harness::new(1280, 800);
-        // Enter edit on the selected contact and dirty a field.
         let cur = h.app.selected.unwrap();
         let c = h.app.store.contact(cur).cloned().unwrap();
         h.app.begin_edit(c, false);
@@ -2226,7 +2221,6 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             "the title field focuses on click"
         );
         h.type_text("XYZ");
-        // The keystrokes landed in the field's local buffer …
         let live = h.field_value(Slot::Title);
         assert!(
             live.contains("XYZ"),
@@ -2245,7 +2239,6 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             "CRDT doc untouched mid-edit"
         );
         assert!(h.app.form_is_dirty(), "the live-typed form reports dirty");
-        // Cancel genuinely discards the draft.
         assert!(bar_offers(BAR_CANCEL), "the Cancel button is laid out");
         h.press_bar(BAR_CANCEL);
         assert_eq!(h.app.mode, Mode::View, "Cancel leaves edit mode");
@@ -2267,7 +2260,6 @@ fn edits_commit_only_on_save_and_cancel_discards() {
         let mut h = Harness::new(1280, 800);
         let store_before = h.app.store.len();
         let doc_before = h.book().len();
-        // Start a new contact via the keyboard shortcut, focus the name, type.
         assert!(h.press_char("n"), "'n' starts a new contact");
         assert_eq!(h.app.mode, Mode::Edit);
         assert!(h.app.form.as_ref().unwrap().is_new);
@@ -2403,7 +2395,6 @@ fn open_edit_forms_ignore_bare_keys_and_start_clean() {
         );
         assert_eq!(h.app.mode, Mode::Edit, "still editing");
 
-        // Once a field IS focused, the very same key types into it normally.
         assert!(h.focus_field(Slot::First));
         h.type_text("n");
         assert!(
@@ -2567,7 +2558,6 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
                 .iter()
                 .any(|g| g.value.eq_ignore_ascii_case("Friends")),
         );
-        // The shared navigation list exposes the same group as a semantic destination.
         act_named(&mut h.app, "Friends", &ui::a11y::Action::Activate);
         assert_eq!(
             h.app.group_filter.as_deref(),
@@ -2618,7 +2608,6 @@ fn list_keyboard_and_scroll_navigation() {
     check_large_books_virtualize_rows_and_keep_keyboard_selection_in_view();
 }
 
-/// The divider resizes the split and the compact toolbar fits with tooltips at phone width.
 #[test]
 fn split_divider_and_compact_toolbar_fit_their_space() {
     // --- phase: dragging_the_divider_resizes_the_split ---
@@ -2683,7 +2672,6 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
         let base = c.phones.len();
         h.app.begin_edit(c, false);
         h.relayout();
-        // Add-phone button appends a blank row.
         assert!(
             target(&h.app, "contacts.form.add.add-phone").width() > 0.0,
             "the add-phone button is laid out"
@@ -2695,7 +2683,6 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
             "add-phone grew the draft"
         );
         h.relayout();
-        // Remove-field button on the new phone drops it again.
         let rm = target(&h.app, &format!("contacts.form.remove.phone-{base}"));
         h.press_left(rm.center());
         assert_eq!(
@@ -3260,7 +3247,6 @@ fn saved_book_persists_across_restarts_and_imports() {
         assert!(firsts.contains("Ada"));
         assert!(firsts.contains("Grace"));
 
-        // The import reached the book's document, as one step.
         app.settle();
         assert_eq!(app.book().len(), 3, "written to the doc");
         assert!(app.app.undo(), "the import is one undo step");
@@ -3958,7 +3944,6 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
     );
 }
 
-/// Shared facts read as a phrase.
 #[test]
 fn shared_facts_read_as_a_phrase() {
     use crate::actions::DuplicateReason;
@@ -4009,7 +3994,6 @@ fn every_capture_scenario_renders() {
     }
 }
 
-/// An address and its kind label read like an envelope.
 #[test]
 fn details_read_like_an_envelope() {
     let address = Address {
@@ -4616,7 +4600,6 @@ fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
         .expect("the peer's change merges");
 }
 
-/// Whether the host's confirmation of an action is up.
 fn host_confirmation_is_up(app: &mut Live) -> bool {
     app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
         node.role() == ui::accesskit::Role::Dialog && node.label() == Some("Action confirmation")

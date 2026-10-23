@@ -111,7 +111,6 @@ impl CertificationRequest {
         Ok(self)
     }
 
-    /// Sign with an in-memory device key.
     pub fn sign(self, device_key: &ed25519_dalek::SigningKey) -> Result<Self, CertificationError> {
         if device_key.verifying_key().to_bytes() != self.device_public_key {
             return Err(CertificationError::WrongDevice);

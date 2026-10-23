@@ -1,4 +1,3 @@
-//! Opt-in real root/Btrfs qualification. Missing capabilities are failures.
 use super::*;
 use std::{
     io::{BufRead, Write},

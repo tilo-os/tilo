@@ -35,7 +35,6 @@ pub struct Member {
     pub layer: String,
     /// What the layer records about its build; `None` when unreadable.
     pub provenance: Option<Provenance>,
-    /// The declaration the layer ships, if it ships one.
     pub ships: Option<Declaration>,
 }
 
@@ -336,7 +335,6 @@ mod tests {
             .iter()
             .map(|component| member(component, &current(), *component == "shell"))
             .collect();
-        // The filesystem service apps reach, swapped VM-wide from the same tree.
         let fs = [member("fs", &current(), false)];
         assert_eq!(conflict(Some(&image), &stack, &fs), None);
     }
@@ -446,7 +444,6 @@ mod tests {
             "with fs from the same tree the slot is whole"
         );
 
-        // Swapping fs in the vm slot is judged against every slot.
         let slots = vec![
             ("device".to_owned(), Vec::new()),
             ("review-a".to_owned(), stack),

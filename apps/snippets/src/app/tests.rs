@@ -149,8 +149,6 @@ fn presented_library_fills_the_list() {
     assert!(app.open_id_for_test().is_some());
 }
 
-/// The sidebar lists the library's places with their counts, and choosing
-/// one narrows the list.
 #[test]
 fn sidebar_places_narrow_the_list() {
     let mut app = demo();
@@ -399,7 +397,6 @@ fn copying_a_templated_snippet_opens_the_variables_dialog() {
     assert!(app.expand_open_for_test());
 }
 
-/// The list is one focus stop whose keys move the open snippet.
 #[test]
 fn the_list_moves_the_open_snippet_by_keys() {
     let mut app = launched(&[
@@ -543,14 +540,10 @@ fn focusing_new_snippet_does_not_activate_it() {
     );
 }
 
-// ---- responsive layout ---------------------------------------------
-
 fn framed(app: SnippetsApp, width: u32) -> Framed<SnippetsApp> {
     Framed::new(ui::State::new(), app, (width, 800), Theme::dark())
 }
 
-/// The shell docks the sidebar when wide, makes it a drawer when narrow,
-/// and pushes the snippet in front of the list when very narrow.
 #[test]
 fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
     // Case `wide_keeps_sidebar_docked_and_open`.
@@ -630,8 +623,6 @@ fn the_content_column_lays_out_its_controls() {
     let targets = Framed::harness(&app).targets();
     assert!(targets.contains_key("snippets.favorite") && targets.contains_key("snippets.more"));
 }
-
-// ---- the published tree, agents and history ------------------------------
 
 fn has_control(app: &mut TestApp<SnippetsShell>, label: &str) -> bool {
     app.harness()
@@ -879,7 +870,6 @@ fn click_label(app: &mut TestApp<SnippetsShell>, label: &str) {
     app.settle();
 }
 
-/// A pointer click on Copy copies the open snippet and counts the use.
 #[test]
 fn a_pointer_click_on_copy_copies() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);

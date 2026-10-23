@@ -147,11 +147,6 @@ pub fn list(path: &Path, observer: &dyn Observer) -> io::Result<Vec<Entry>> {
 
 /// Copy the file `member` of the archive at `path` to `out`; the bytes
 /// copied.
-///
-/// # Errors
-///
-/// As [`walk`], `NotFound` when the archive holds no such file, or the
-/// writer's error.
 pub fn read_member(
     path: &Path,
     member: &Path,

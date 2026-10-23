@@ -154,7 +154,6 @@ mod tests {
 
     #[test]
     fn a_wait_returns_for_data_a_nudge_a_hangup_and_a_dropped_nudge() {
-        // Phase `readable_socket`.
         let (compositor, wait, nudge) = waiting();
         (&compositor).write_all(&[7]).expect("write");
         let (woken, wait) = woken_within(wait);
@@ -173,12 +172,10 @@ mod tests {
         let (woken, wait) = woken_within(wait);
         assert_eq!(woken, Woken::Ready);
         assert!(wait.drain_nudges(), "both nudges were drained at once");
-        // Phase `hangup_reads_once_more_then_closes`.
         drop(compositor);
         let (woken, wait) = woken_within(wait);
         assert_eq!(woken, Woken::Ready, "one last read after a hangup");
         assert_eq!(wait.wait(), Woken::Closed);
-        // Phase `dropped_nudge_closes`.
         let (_compositor, wait, nudge) = waiting();
         drop(nudge);
         assert_eq!(woken_within(wait).0, Woken::Closed);

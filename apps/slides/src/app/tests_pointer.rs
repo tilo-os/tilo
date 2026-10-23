@@ -80,7 +80,6 @@ fn write_png(directory: &std::path::Path, name: &str, w: u32, h: u32) -> std::pa
     path
 }
 
-/// A key typed on the insert tools inserts that shape, selected.
 #[test]
 fn a_tool_key_inserts_a_shape_into_the_deck() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
@@ -147,7 +146,6 @@ fn clicking_an_overflow_menu_row_inserts_that_element() {
     );
 }
 
-/// The font-size field's + stepper raises the selected text's size.
 #[test]
 fn the_font_size_stepper_writes_the_size() {
     let mut s = Slide::new(Layout::Blank);
@@ -172,7 +170,6 @@ fn the_font_size_stepper_writes_the_size() {
     );
 }
 
-/// The fill colour picker writes a concrete hex fill.
 #[test]
 fn the_fill_colour_picker_writes_a_hex_fill() {
     let mut s = Slide::new(Layout::Blank);
@@ -208,7 +205,6 @@ fn the_fill_colour_picker_writes_a_hex_fill() {
     );
 }
 
-/// Every inspector property edit lands in the deck.
 #[test]
 fn every_inspector_property_edit_lands_in_the_deck() {
     let (mut bench, id) = selected_text();

@@ -143,7 +143,6 @@ struct PendingWriterResult {
 }
 
 pub struct ImagerApp {
-    // ---- collaborative records (cached each `sync`) ----
     source: Option<Source>,
     recent: Vec<Source>,
     profile: InstallProfile,
@@ -151,7 +150,6 @@ pub struct ImagerApp {
     wifi_psk: String,
     ssh_public_key: String,
     windows_preparation: Option<crate::windows_media::WindowsMedia>,
-    // ---- local machine/window state ----
     targets: Vec<TargetDrive>,
     /// Tilo releases offered on the Source step are a bounded local catalogue;
     /// they are never collaborative state. An offered release is a
@@ -176,7 +174,6 @@ pub struct ImagerApp {
     status: String,
     status_is_error: bool,
     step: Step,
-    // ---- transient job / portal plumbing (not in the doc) ----
     job_control: Option<JobControl>,
     pending_writer_result: Option<PendingWriterResult>,
     close_requested: bool,
@@ -197,7 +194,6 @@ pub struct ImagerApp {
     /// False until the first live sync has reconciled any persisted active
     /// phase with this process's necessarily empty worker channels.
     startup_write_state_reconciled: bool,
-    // ---- composition ----
     seeded: bool,
     /// The page the controls below were composed for.
     composed: ui::widget::Composed,
@@ -993,8 +989,6 @@ impl ImagerApp {
         row.push(Box::new(primary.control_size(ControlSize::Large)))
     }
 
-    // ---- Image -------------------------------------------------------------
-
     /// Whether a release or a shown recent entry already presents the
     /// selected image, so it is not shown twice.
     fn source_listed(&self, source: &Source) -> bool {
@@ -1159,8 +1153,6 @@ impl ImagerApp {
         Some(Box::new(row))
     }
 
-    // ---- Drive -------------------------------------------------------------
-
     fn drive_body(&self) -> Column {
         let header = Row::new()
             .no_wrap()
@@ -1220,8 +1212,6 @@ impl ImagerApp {
         body.push(Box::new(Section::new(rows)))
     }
 
-    // ---- Customize ---------------------------------------------------------
-
     fn customize_body(&self) -> Column {
         let mut body = page::body("Prepare the setup");
         if let Some(source) = &self.source {
@@ -1248,8 +1238,6 @@ impl ImagerApp {
             self.shot_timezone_open,
         )))
     }
-
-    // ---- Confirm -----------------------------------------------------------
 
     /// The facts the Confirm step reviews, in reading order.
     fn review_rows(&self) -> Vec<(&'static str, String)> {
@@ -1390,8 +1378,6 @@ impl ImagerApp {
         ))
     }
 
-    // ---- Write -------------------------------------------------------------
-
     /// The active phase, its share done, and what it is called.
     fn phase(&self) -> (f64, &'static str) {
         match (self.progress.phase, self.action) {
@@ -1458,8 +1444,6 @@ impl ImagerApp {
         }
         body
     }
-
-    // ---- Done --------------------------------------------------------------
 
     /// The success hero's headline and explanation.
     fn done_ok_copy(&self) -> (&'static str, String) {
@@ -3627,7 +3611,6 @@ mod tests {
         app.sync(&mut model, &automerge::ROOT);
     }
 
-    /// A document holding `state`.
     fn document(state: &Imager) -> AutoCommit {
         let mut doc = AutoCommit::new();
         state.write_fields(&mut doc, &automerge::ROOT).unwrap();
@@ -3712,7 +3695,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn startup_state_is_blank_local_and_reconciled_before_writes() {
-        // Phase `local_wizard_state_never_leaks_through_the_collaborative_document`.
         {
             let (mut app, mut doc) = seeded_app();
             let before = doc.save();
@@ -3740,7 +3722,6 @@ mod tests {
             assert!(peer_app.status.is_empty());
         }
 
-        // Phase `sync_reads_demo_state_at_source_step`.
         {
             let (app, _doc) = seeded_app();
             assert_eq!(app.targets.len(), 2);
@@ -3749,7 +3730,6 @@ mod tests {
             assert_eq!(app.recent.len(), 3);
         }
 
-        // Phase `live_app_starts_blank_with_no_fabricated_content`.
         {
             // The live path (no demo seed) starts genuinely empty: no drives are
             // invented and no image is pre-selected.
@@ -3762,7 +3742,6 @@ mod tests {
             assert_eq!(app.step, Step::Source);
         }
 
-        // Phase `restart_drops_unsupervised_local_write_state_and_requires_new_review`.
         {
             let (mut app, mut doc) = seeded_app();
             app.select_target(0);
@@ -3786,7 +3765,6 @@ mod tests {
             assert!(!restarted.can_advance_with_writer(Step::Drive, true));
         }
 
-        // Phase `write_operations_are_blocked_until_startup_state_is_reconciled`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
@@ -4448,7 +4426,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn wizard_advance_and_confirm_require_valid_choices_and_capability() {
-        // Phase `advancing_requires_selections`.
         {
             let (mut app, _doc) = seeded_app();
             // Source is seeded → can advance to Drive.
@@ -4465,7 +4442,6 @@ mod tests {
             assert_eq!(app.step, Step::Confirm);
         }
 
-        // Phase `privileged_helper_capability_enables_confirm_but_disabled_backend_does_not`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
@@ -4483,7 +4459,6 @@ mod tests {
             ));
         }
 
-        // Phase `invalid_media_profile_blocks_confirm_and_direct_write`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
@@ -4510,7 +4485,6 @@ mod tests {
             assert!(error.contains("Hostname"));
         }
 
-        // Phase `plain_iso_skips_customize`.
         {
             let (mut app, _doc) = seeded_app();
             let iso = app
@@ -4527,7 +4501,6 @@ mod tests {
             assert!(!app.customizable());
         }
 
-        // Phase `local_tilo_claim_cannot_unlock_preconfiguration`.
         {
             let (mut app, _doc) = seeded_app();
             let official = crate::model::sample_source();
@@ -4575,7 +4548,6 @@ mod tests {
             assert_eq!(app.step, Step::Confirm);
         }
 
-        // Phase `write_refused_without_matching_confirmation`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0); // sdb
@@ -4754,14 +4726,12 @@ mod tests {
         std::fs::remove_dir_all(staged.root).unwrap();
     }
 
-    /// Release download job presentation.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn release_download_is_local_visible_and_cancellable() {
-        // Phase `active_release_download_replaces_selection_with_an_accessible_cancel_action`.
         {
             let (mut app, _doc) = seeded_app();
             app.release_download = Some(ReleaseDownload {
@@ -4819,7 +4789,6 @@ mod tests {
             );
         }
 
-        // Phase `release_progress_reads_as_a_status_and_the_end_clears_the_job`.
         {
             let (mut app, _doc) = seeded_app();
             let progress = JobProgress {
@@ -4947,7 +4916,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn source_and_target_selection_accept_only_inspected_external_media() {
-        // Phase `a_chosen_image_is_inspected_before_it_is_reviewed`.
         {
             let (mut app, _doc) = seeded_app();
             let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
@@ -4958,7 +4926,6 @@ mod tests {
             assert!(app.status.contains("cancelled"));
         }
 
-        // Phase `drive_step_only_offers_external_installation_media`.
         {
             let (app, _doc) = seeded_app();
             // Sample has one USB (removable) + one NVMe (fixed).
@@ -4966,7 +4933,6 @@ mod tests {
             assert_eq!(app.removable_count(), 1);
         }
 
-        // Phase `authoritative_empty_rescan_clears_stale_target_and_consent`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
@@ -4979,7 +4945,6 @@ mod tests {
             assert!(app.confirm_text.is_empty());
         }
 
-        // Phase `rescan_preserves_only_the_same_physical_target`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
@@ -5023,7 +4988,6 @@ mod tests {
             assert!(app.confirm_text.is_empty());
         }
 
-        // Phase `internal_and_system_disks_can_never_be_selected`.
         {
             let mut app = ImagerApp::new();
             let mut targets = crate::model::sample_targets();
@@ -5044,7 +5008,6 @@ mod tests {
     /// Hostname typing, keyboard chooser and preview.
     #[test]
     fn profile_panel_edits_persist_through_the_real_event_path() {
-        // Phase `preview_shows_the_embedded_profile`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(1);
@@ -5421,7 +5384,6 @@ mod tests {
             "cancelled close raced into success"
         );
         assert!(!app.close_work_active());
-        // Exercise the real retained sync and one-shot close admission.
         let doc = document(&Imager::default());
         present(&mut app, &doc);
         assert!(app.take_window_close_intent());
@@ -5429,14 +5391,12 @@ mod tests {
         assert!(!app.take_window_close_intent());
     }
 
-    /// Write another, failure, cancellation and cancel races.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn write_completion_failure_and_cancel_return_to_a_truthful_state() {
-        // Phase `write_another_resets_to_source`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
@@ -5452,7 +5412,6 @@ mod tests {
             assert_eq!(app.progress.phase, JobPhase::Idle);
         }
 
-        // Phase `failed_write_keeps_its_cause_and_returns_to_a_fresh_review`.
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
@@ -5487,7 +5446,6 @@ mod tests {
             );
         }
 
-        // Phase `active_write_cancel_operation_requests_a_safe_stop`.
         {
             let (mut app, _doc) = seeded_app();
             let control = JobControl::new();
@@ -5505,7 +5463,6 @@ mod tests {
             .unwrap();
         }
 
-        // Phase `the_job_reports_bytes_of_the_active_phase_and_its_rate_follows`.
         {
             let (mut app, _doc) = seeded_app();
             let start = ui::time::now();
@@ -5537,7 +5494,6 @@ mod tests {
             assert!(app.job_control.is_none());
         }
 
-        // Phase `cancel_wins_a_race_with_an_already_queued_success`.
         {
             let (mut app, _doc) = seeded_app();
             let control = JobControl::finished_fixture();

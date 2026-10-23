@@ -99,10 +99,6 @@ impl VPath {
         Self(String::new())
     }
 
-    /// # Errors
-    ///
-    /// [`InvalidVPath`] when `path` is absolute, or has an empty, `.`, `..`
-    /// or backslash-containing component, or a NUL.
     pub fn new(path: &str) -> Result<Self, InvalidVPath> {
         if path.is_empty() {
             return Ok(Self::root());

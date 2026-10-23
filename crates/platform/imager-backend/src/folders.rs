@@ -341,7 +341,6 @@ mod tests {
     /// Enumeration, errors, cancellation and estimates.
     #[test]
     fn folder_scan_enumerates_estimates_and_rejects_bad_roots() {
-        // Phase `nested_files_and_empty_directories_are_enumerated`.
         {
             let root = tempfile::tempdir().unwrap();
             let nested = root.path().join("nested");
@@ -359,7 +358,6 @@ mod tests {
             assert!(scan.skipped.is_empty());
         }
 
-        // Phase `missing_and_non_directory_roots_are_errors`.
         {
             let root = tempfile::tempdir().unwrap();
             let missing = root.path().join("missing");
@@ -370,7 +368,6 @@ mod tests {
             assert!(scan_folder(&file).is_err());
         }
 
-        // Phase `cancelled_scan_stops_before_enumeration`.
         {
             let root = tempfile::tempdir().unwrap();
             fs::write(root.path().join("one"), b"abc").unwrap();
@@ -382,7 +379,6 @@ mod tests {
             );
         }
 
-        // Phase `a_scan_is_only_a_point_in_time_estimate`.
         {
             let root = tempfile::tempdir().unwrap();
             let file = root.path().join("changing");
@@ -481,11 +477,9 @@ mod tests {
         set_attributes(&offline_directory, FILE_ATTRIBUTE_NORMAL);
     }
 
-    /// Symlink handling and skip details.
     #[test]
     #[cfg(unix)]
     fn folder_scan_never_follows_symlinks_and_bounds_skip_details() {
-        // Phase `symbolic_links_are_skipped_and_never_traversed`.
         {
             use std::os::unix::fs::symlink;
 
@@ -504,7 +498,6 @@ mod tests {
             assert_eq!(scan.skipped[0].reason, SkipReason::SymbolicLink);
         }
 
-        // Phase `skipped_entry_details_are_bounded_but_the_total_is_exact`.
         {
             use std::os::unix::fs::symlink;
 
@@ -518,7 +511,6 @@ mod tests {
             assert_eq!(scan.skipped.len(), MAX_DIAGNOSTIC_SAMPLES);
         }
 
-        // Phase `nofollow_open_rejects_a_directory_replaced_by_a_symlink`.
         {
             use std::os::unix::fs::symlink;
 

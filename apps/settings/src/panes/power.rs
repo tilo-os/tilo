@@ -1300,9 +1300,7 @@ mod tests {
     /// Battery facts from sysfs, honest degradation without a battery, and the pane layout.
     #[test]
     fn battery_reads_sysfs_and_the_pane_lays_out() {
-        // Case `reads_battery_from_sysfs_tree`.
         {
-            // Build a throwaway /sys/class/power_supply-like tree.
             let base = std::env::temp_dir().join(format!("tilo-power-test-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             let bat = base.join("BAT0");
@@ -1326,7 +1324,6 @@ mod tests {
             let _ = std::fs::remove_dir_all(&base);
         }
 
-        // Case `missing_battery_degrades_honestly`.
         {
             let base =
                 std::env::temp_dir().join(format!("tilo-power-empty-{}", std::process::id()));
@@ -1339,7 +1336,6 @@ mod tests {
             let _ = std::fs::remove_dir_all(&base);
         }
 
-        // Case `builds_layout`.
         {
             let profile = tempfile::tempdir().unwrap();
             let cx = PaneCx::in_file(profile.path().join("settings.json"));

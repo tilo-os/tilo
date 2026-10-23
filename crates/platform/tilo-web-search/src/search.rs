@@ -54,7 +54,6 @@ pub enum EngineStatus {
     Skipped,
 }
 
-/// One engine's part in a search.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EngineReport {
     pub engine: Engine,

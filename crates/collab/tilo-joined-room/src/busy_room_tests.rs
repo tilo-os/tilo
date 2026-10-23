@@ -202,7 +202,6 @@ fn busy_room(messages_each: u64) -> BusyRoom {
             &key,
             "Author",
         );
-        // What they wrote travels ahead of the governance that admits them.
         for seq in 1..=messages_each {
             let text = format!("author {author} message {seq}");
             let written = message(&mut chat, &key, seq, &text, now);

@@ -144,7 +144,6 @@ impl ProxyFailure {
         }
     }
 
-    /// The failure for a code, if it is one.
     #[must_use]
     pub fn from_code(code: &str) -> Option<Self> {
         [
@@ -196,7 +195,6 @@ enum Decision {
 
 static ENDPOINT: RwLock<Decision> = RwLock::new(Decision::Page);
 
-/// Whether `endpoint` may be a proxy.
 fn check_endpoint(endpoint: &Url) -> Result<(), NetError> {
     if !matches!(endpoint.scheme(), "http" | "https") {
         return Err(NetError::InvalidUrl(format!(
@@ -250,7 +248,6 @@ pub fn endpoint() -> Option<Url> {
     current().map(|proxy| proxy.endpoint)
 }
 
-/// The proxy the page names.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn page_default() -> Option<Proxy> {
     use wasm_bindgen::JsCast as _;

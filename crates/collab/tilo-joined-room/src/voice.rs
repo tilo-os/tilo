@@ -37,11 +37,8 @@ use crate::{NativeCommittedView, NativeFenceSubscription, NativeWorkspaceOwner};
 /// The voice channel a call is bound to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Channel {
-    /// The chat app.
     pub app: String,
-    /// The chat record holding the channel.
     pub record: String,
-    /// The voice channel.
     pub channel: String,
 }
 
@@ -99,10 +96,6 @@ impl Participation {
     /// Join the call bound to `channel` in `room` over the room's relay
     /// `session`, opening it when none is active. `check` vets the device's
     /// custody.
-    ///
-    /// # Errors
-    /// The device is no member, the channel is no voice channel, or the
-    /// session is gone.
     pub fn open(
         owner: NativeWorkspaceOwner,
         room: RoomId,
@@ -165,9 +158,6 @@ impl Participation {
     /// of host programs they run and view each other's. It needs no governed
     /// call; the governor grants it while the room shares its layout.
     /// `check` vets the device's custody.
-    ///
-    /// # Errors
-    /// The device is no member, or the session is gone or of another room.
     pub fn open_windows(
         owner: NativeWorkspaceOwner,
         room: RoomId,
@@ -338,9 +328,6 @@ impl Participation {
 
     /// Repeat the join as this participation's heartbeat, after `check`
     /// vets the device's custody again; a failed check ends it.
-    ///
-    /// # Errors
-    /// The participation ended, the check failed or the session is gone.
     pub fn heartbeat(
         &self,
         session: &RelayCoeditSession,
@@ -376,9 +363,6 @@ impl Participation {
     /// Show `showing` besides this participation's voice from now on (its
     /// camera, a shared screen), and tell the governor over `session` when
     /// granted; without a session the next heartbeat or rejoin tells it.
-    ///
-    /// # Errors
-    /// The participation ended or the session is gone.
     pub fn show(
         &self,
         session: Option<&RelayCoeditSession>,
@@ -420,9 +404,6 @@ impl Participation {
     /// Join again over `session`, a new connection to the room's relay. The
     /// current grant stays until the governor grants the new participation;
     /// its carrier then no longer matches and is replaced.
-    ///
-    /// # Errors
-    /// The participation ended or the session is gone.
     pub fn rejoin(&self, session: &RelayCoeditSession) -> Result<(), String> {
         self.live()?;
         let call = {
@@ -544,7 +525,6 @@ impl Participation {
         Ok(Some(connection))
     }
 
-    /// The generation of the current carrier.
     #[must_use]
     pub fn carrier_generation(&self) -> Option<u64> {
         self.state
@@ -611,7 +591,6 @@ impl Participation {
             .ok_or_else(|| "the participation ended".into())
     }
 
-    /// Whether the participation is leaving.
     #[must_use]
     pub fn leaving(&self) -> bool {
         self.leaving.load(Ordering::SeqCst)
@@ -625,9 +604,6 @@ impl Participation {
 
     /// Read the current grant while the participation is live, its device
     /// still a member and its last grant unexpired.
-    ///
-    /// # Errors
-    /// Any of those no longer holds, or `read` fails.
     pub fn inspect_current<T>(
         &self,
         read: impl FnOnce(u64, &VoiceGrant) -> Result<T, String>,

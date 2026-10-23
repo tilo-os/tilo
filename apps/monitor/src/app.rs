@@ -248,7 +248,6 @@ pub struct MonitorApp {
     /// stored, which tells a change made here from one made elsewhere.
     preferences: Option<(Setting<MonitorPreferences>, MonitorPreferences)>,
 
-    // ---- the view ----
     tab: Tab,
     sort_key: SortKey,
     sort_desc: bool,
@@ -264,18 +263,15 @@ pub struct MonitorApp {
     /// feeding the inspector's sparkline.
     proc_cpu_hist: HashMap<(u32, u64), RollingSeries>,
 
-    // ---- transient chrome ----
     /// The row menu, mounted in the window's top layer by this widget.
     context: ContextMenu,
     context_pid: Option<u32>,
     context_choices: Vec<Option<MenuChoice>>,
 
-    // ---- sampling ----
     last_refresh: Instant,
     /// Never sample the live machine — the seeded snapshot is the whole model.
     sample_only: bool,
 
-    // ---- the window ----
     rect: Rect,
     shell: NavShell,
     shared: Shared,
@@ -407,8 +403,6 @@ impl MonitorApp {
         }
     }
 
-    // ---- sampling ---------------------------------------------------------
-
     /// Take the machine's newest reading. Where the session pushes them
     /// (Linux), each arrival wakes the window and is taken here; elsewhere
     /// the machine is read at most once per cadence. A capture never trips
@@ -537,8 +531,6 @@ impl MonitorApp {
         self.proc_cpu_hist.insert((pid, p.started_at), ring);
         self.stale = true;
     }
-
-    // ---- the process list -------------------------------------------------
 
     /// The filtered and sorted flat process list.
     fn visible_processes(&self) -> Vec<ProcessInfo> {
@@ -686,8 +678,6 @@ impl MonitorApp {
         self.stale = true;
     }
 
-    // ---- framework hosting ------------------------------------------------
-
     pub(crate) fn attach_actions(&self, actions: ui::framework::Actions<Monitor>) {
         let mut shared = self.shared.borrow_mut();
         shared.actions = Some(actions);
@@ -829,8 +819,6 @@ impl MonitorApp {
             .find(|process| process.pid == pid && process.started_at == started_at)
             .map(process_row)
     }
-
-    // ---- view changes -----------------------------------------------------
 
     fn commit_tab(&mut self, tab: Tab) {
         if self.tab == tab {
@@ -1048,8 +1036,6 @@ impl MonitorApp {
         self.stale = true;
     }
 
-    // ---- the cadence menu -------------------------------------------------
-
     /// Open the cadence menu under the header's button.
     fn open_cadence_menu(&mut self) {
         let Some(anchor) =
@@ -1074,8 +1060,6 @@ impl MonitorApp {
             self.set_cadence(*cadence);
         }
     }
-
-    // ---- the row menu -----------------------------------------------------
 
     /// Open the row menu for `pid` at `at`, marking its row.
     fn open_context_menu(&mut self, pid: u32, at: Point, row: Rect) {
@@ -1150,8 +1134,6 @@ impl MonitorApp {
         }
         self.context_pid = None;
     }
-
-    // ---- publishing to the views ------------------------------------------
 
     fn rows_fingerprint(rows: &[ProcessRow]) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -1451,8 +1433,6 @@ impl MonitorApp {
             }
         }
     }
-
-    // ---- captures ---------------------------------------------------------
 
     /// Stage the view state of screenshot `scenario` over the sample
     /// machine its fixture provides ([`MonitorModel::scenario`]) and the
@@ -1840,7 +1820,6 @@ mod tests {
     /// are hidden until asked for.
     #[test]
     fn process_list_sorts_filters_and_folds_the_tree() {
-        // Phase `collapsed_tree_lists_roots_by_summed_load`.
         {
             let a = app();
             let rows = a.visible_rows();
@@ -1856,7 +1835,6 @@ mod tests {
             );
         }
 
-        // Phase `expanding_shows_children_and_per_process_lowers_parents`.
         {
             let mut a = app();
             let shell = pid_named(&a, "shell");
@@ -1875,7 +1853,6 @@ mod tests {
             assert!(own < summed, "a parent shows only its own load");
         }
 
-        // Phase `filtering_a_tree_keeps_the_ancestors_open`.
         {
             let mut a = app();
             a.filter = "rustc".into();
@@ -1883,7 +1860,6 @@ mod tests {
             assert_eq!(names(&rows), ["shell", "code", "cargo", "rustc"]);
         }
 
-        // Phase `flat_list_sorts_by_the_chosen_column`.
         {
             let mut a = app();
             a.commit_tree_mode(false);
@@ -2046,7 +2022,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn process_rows_are_bounded_generation_exact_and_local() {
-        // Phase `kill_is_contract_confirmed_and_executes_through_the_effect`.
         {
             let mut a = app();
             let pid = a.selected_pid.expect("sample selects a process");
@@ -2071,7 +2046,6 @@ mod tests {
             assert!(a.selected_pid.is_none());
         }
 
-        // Phase `catalogue_is_bounded_and_an_omitted_generation_resolves`.
         {
             let mut a = app();
             let template = a.model.processes[0].clone();
@@ -2097,7 +2071,6 @@ mod tests {
             assert!(resolved.actions.iter().any(|action| action.id == "kill"));
         }
 
-        // Phase `tail_processes_are_searchable_by_their_generation`.
         {
             let mut a = app();
             let mut tail = a.model.processes[0].clone();
@@ -2123,7 +2096,6 @@ mod tests {
             );
         }
 
-        // Phase `labels_are_single_line_and_bounded`.
         {
             let mut process = app().model.processes[0].clone();
             process.name = format!(
@@ -2135,7 +2107,6 @@ mod tests {
             assert!(label.chars().count() <= MAX_PROCESS_RESOURCE_LABEL_CHARS + 16);
         }
 
-        // Phase `a_stale_generation_is_rejected_before_any_signal`.
         {
             let mut a = app();
             let process = a.model.processes[0].clone();
@@ -2146,7 +2117,6 @@ mod tests {
             assert!(a.model.processes.iter().any(|p| p.pid == process.pid));
         }
 
-        // Phase `copy_pid_selects_the_process_and_shows_a_toast`.
         {
             let mut a = app();
             let process = a.model.processes[3].clone();
@@ -2159,7 +2129,6 @@ mod tests {
             assert_eq!(a.shell.toast_text(), Some(copied.as_str()));
         }
 
-        // Phase `inspect_selects_the_process_and_an_unknown_tab_is_refused`.
         {
             let mut a = app();
             a.commit_tab(Tab::Resources);
@@ -2178,7 +2147,6 @@ mod tests {
             );
         }
 
-        // Phase `device_preferences_and_unshared_view_stay_out_of_the_document`.
         {
             let mut first = app();
             let mut second = app();
@@ -2446,7 +2414,6 @@ mod tests {
         assert!(resources.contains("Linux 7.0.9"), "the served kernel");
         click(&mut harness, "Processes");
 
-        // End app goes to the service, and the app leaves the list.
         harness
             .root_mut::<MonitorApp>()
             .answer(MonitorEffect::EndApp {

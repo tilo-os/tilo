@@ -1239,7 +1239,6 @@ fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
             }
         }
         let mut apply = RecordingApply::default();
-        // A slot another command is changing is left to that command.
         let busy = locks.slot("c").unwrap();
         assert!(reconcile_seats(&slots, &locks, &mut apply).is_empty());
         assert_eq!(apply.calls, ["allocate_seat a"]);
@@ -1329,7 +1328,6 @@ fn abi_checks_refuse_foreign_builds_and_compare_targets_and_locks() {
         layer.builder = Some("host".into());
         assert!(abi_check(&layer, &base, "x86_64").unwrap().is_empty());
 
-        // The same architecture, another triple.
         layer.target = Some("x86_64-unknown-linux-musl".into());
         let error = abi_check(&layer, &base, "x86_64").unwrap_err();
         assert_eq!(

@@ -1076,11 +1076,6 @@ impl Receiver {
     ///
     /// # Errors
     ///
-    /// Refuses an expired descriptor, a receiving identity that is not real or
-    /// private, and a descriptor that names another person's prepared package.
-    ///
-    /// # Errors
-    ///
     /// Refuses an expired descriptor, a missing or non-private identity, and a
     /// descriptor that names another person's prepared package.
     pub fn open(
@@ -1132,11 +1127,6 @@ impl Receiver {
     /// this computer's own new device key after a person approves the displayed
     /// code; the typed enrollment receipt binds that key to this exact
     /// operation and package. Nothing is written over an existing identity.
-    ///
-    /// # Errors
-    ///
-    /// Refuses an expired descriptor, an identity root that is not this
-    /// device's configured root, or a computer that already has an identity.
     pub fn join(
         handoff: PublicHandoff,
         identity: ReceiverIdentity,

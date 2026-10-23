@@ -1,5 +1,3 @@
-//! Behaviour of the reader window.
-
 #![allow(clippy::float_cmp, reason = "tests assert exact values")]
 
 use super::*;
@@ -63,7 +61,6 @@ fn sync_over(app: &mut FeedsApp, mut doc: AutoCommit) -> AutoCommit {
     doc
 }
 
-/// The library `doc` holds.
 fn loaded(doc: &AutoCommit) -> Library {
     Library::read(doc).unwrap()
 }
@@ -233,7 +230,6 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
     );
 }
 
-/// An open article brings its commands into the reader's header.
 #[test]
 fn an_open_article_offers_its_commands() {
     let mut mounted = framed(FeedsApp::new_demo());
@@ -594,7 +590,6 @@ fn the_add_dialog_field_is_native_and_submits_a_subscription() {
     check_add_dialog_an_empty_required_field_keeps_the_dialog_open();
 }
 
-/// Tags are edited through the canonical action and may be cleared.
 #[test]
 fn the_tag_editor_uses_the_canonical_action() {
     let mut a = app();
@@ -897,7 +892,6 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     assert!(dispatch(a, doc, &WindowEvent::Focused(false)) || a.core().menu.is_none());
     assert!(a.core().menu.is_none());
 
-    // Mark all as read marks the feed's articles and persists.
     a.core_mut().apply_menu_action(
         MenuAction::MarkFeedRead(feed.clone()),
         &mut ui::widget::Edits::lend(doc),
@@ -974,8 +968,6 @@ fn sidebar_counts_and_titles_follow_the_library() {
     assert_eq!(a.titles.0, title);
 }
 
-/// The reading settings open under their button and their controls change
-/// the reader.
 #[test]
 fn reading_settings_open_under_their_button() {
     let mut a = app();
@@ -999,7 +991,6 @@ fn reading_settings_open_under_their_button() {
     assert!(!a.settings_panel_open());
 }
 
-/// Lists scroll to their content and keep the open article in view.
 #[test]
 fn the_list_scrolls_and_keeps_the_open_article_in_view() {
     let a = app();
@@ -1202,7 +1193,6 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
     assert!(host.state().folders.is_empty());
 }
 
-/// The center of the control `name`, as the host places it.
 fn control_center(
     host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>,
     name: &str,

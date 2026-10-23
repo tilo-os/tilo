@@ -35,10 +35,6 @@ impl OutputBuilder {
     }
 
     /// Write a bare line to the stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn line<S: fmt::Display>(&self, text: S) -> io::Result<()> {
         self.write(|w| writeln!(w, "{text}"))
     }
@@ -46,10 +42,6 @@ impl OutputBuilder {
     /// Write text and a clickable hyperlink (OSC 8) on the same line; pipes
     /// and files fall back to `<label> [<url>]`. An empty label renders the
     /// URL itself as the anchor.
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn hyperlink(&self, label: &str, url: &str) -> io::Result<()> {
         self.write(|w| {
             if self.hyperlinks_active(w) {
@@ -66,10 +58,6 @@ impl OutputBuilder {
 
     /// Emit a `file://` hyperlink for the given path — a convenience wrapper
     /// over [`OutputBuilder::hyperlink`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the underlying I/O error if the write to the stream fails.
     pub fn hyperlink_path<P: AsRef<std::path::Path>>(
         &self,
         label: &str,
@@ -127,7 +115,6 @@ mod tests {
     fn output_defaults_to_stdout_with_hyperlinks() {
         let b = output();
         assert!(b.hyperlinks);
-        // Stream default is stdout.
         match b.stream {
             Stream::Stdout => {}
             Stream::Stderr => panic!("expected stdout default"),

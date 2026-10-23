@@ -136,7 +136,6 @@ pub trait WorkspaceAuthority: Send + Sync {
 
 const UNANSWERED: &str = "workspace authority did not answer";
 
-/// The workspace of exactly `room` in `tree`.
 #[must_use]
 pub fn room_in<'a>(tree: &'a DesktopTree, room: &str) -> Option<&'a Workspace> {
     tree.workspaces
@@ -249,10 +248,6 @@ pub trait WorkspaceMemberships: Send + Sync {
     }
 
     /// Confirm that the canonical owner's durable store is still usable.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic while owner continuity is unavailable or fenced.
     fn health(&self) -> Result<(), String> {
         Err("workspace membership owner continuity is unavailable".into())
     }
@@ -424,9 +419,6 @@ impl LaunchReadiness {
     }
 
     /// Wait for an adopted window or a terminal startup failure.
-    ///
-    /// # Errors
-    /// Returns the launcher failure, or that its observer disappeared.
     pub async fn wait(self) -> Result<(), String> {
         self.wait_with_adoption()
             .await
@@ -661,10 +653,6 @@ pub trait LauncherServices: Send + Sync {
     ///
     /// Answers what it started: a ticket the started instance presents when
     /// it connects, where the host keeps one.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the launch fails or content staging is unsupported.
     fn launch_content(
         &self,
         app: &str,
@@ -845,10 +833,6 @@ pub trait ShortcutLibraryServices: Send + Sync {
     /// Returns why the workspace cannot take the change.
     fn store(&self, request: &ShortcutLibraryRequest<'_>) -> Result<(), String>;
     /// The runtime shortcut runs execute on.
-    ///
-    /// # Errors
-    ///
-    /// Returns why no runtime is available.
     fn runtime(&self) -> Result<tokio::runtime::Handle, String>;
     /// What the desktop calls its fixed shortcut `fixed`, in the person's
     /// language: named when a keyboard trigger would take its chord.
@@ -918,7 +902,6 @@ pub type HostStepOutcome = Result<tilo_actions::ActionOutput, Box<tilo_actions::
 /// invocation against the caller's policy under [`Self::app_id`] before the
 /// host decides whether the actor may take it at all.
 pub trait HostStepServices: Send + Sync {
-    /// The provider the steps are answered under.
     fn provider(&self) -> &'static str;
     /// The application whose controls reach the steps. It reaches them as
     /// the person using it, as it does its own actions.
@@ -976,10 +959,6 @@ pub trait ContinuationServices: Send + Sync {
     /// One application instance answering a handoff request, or reporting
     /// that the document it shows arrived retired. `message` is an encoded
     /// `ui::collaboration::handoff::HandoffReport`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host does not take handoff reports.
     fn handoff(
         &self,
         room: RoomId,
@@ -1081,10 +1060,6 @@ pub trait RealtimeServices: Send + Sync {
     ) -> Result<Vec<u8>, String>;
 
     /// Subscribes to realtime continuity events for this context.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host refuses the subscription.
     fn subscribe(
         &self,
         context: &RealtimeRequestContext,
@@ -1174,11 +1149,6 @@ impl NearbyTransferRequestContext {
 /// nearby radios installs none.
 pub trait NearbyTransferServices: Send + Sync {
     /// Runs one validated Nearby Send command for `context`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host refuses the command outright, such as
-    /// when the person has turned file transfer off.
     fn command(
         &self,
         context: &NearbyTransferRequestContext,

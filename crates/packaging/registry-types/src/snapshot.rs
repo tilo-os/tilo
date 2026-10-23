@@ -277,9 +277,6 @@ pub fn within_validity_window(issued_at_unix: u64, expires_at_unix: u64, now_uni
 /// Verify owner signature, freshness, structural bounds, publisher signatures,
 /// and owner authorization. A successful return is the proof behind the Store's
 /// "verified" badge.
-///
-/// # Errors
-/// Returns the precise freshness, shape, signature, or authorization failure.
 pub fn verify_snapshot(
     snapshot: &SignedRegistrySnapshot,
     pinned_owner_pubkey_hex: &str,
@@ -492,10 +489,6 @@ fn verify_channel_authorization_scope(
 }
 
 /// Verify a root-signed channel certificate before an online key is used.
-///
-/// # Errors
-/// Returns a key, signature, shape, scope, or freshness error when the
-/// authorization is not currently valid for this registry owner.
 pub fn verify_channel_authorization(
     authorization: &ChannelAuthorization,
     pinned_owner_pubkey_hex: &str,

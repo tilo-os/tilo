@@ -166,7 +166,6 @@ mod tests {
         assert!(input.tap_to_click);
         assert!(input.touchpad_natural_scroll);
         assert!(!input.mouse_natural_scroll);
-        // Unchosen sources follow the layout the machine was set up with.
         assert_eq!(
             input.keyboard_layouts,
             settings_store::keyboard_sources::default_sources()
@@ -222,7 +221,6 @@ mod tests {
         assert_eq!(input.touchpad_scroll_method, TouchpadScrollMethod::Edge);
         assert_eq!(input.scroll_speed, 2.0);
 
-        // The compositor reads the same document.
         let root = stored("{}", &input);
         let rich = settings_store::hardware::RichInputConfig::from_section(
             root["input"].as_object().unwrap(),
@@ -253,7 +251,6 @@ mod tests {
         assert!(!back.touchpad_enabled);
         assert!(back.touchpad_disabled_on_external_mouse);
 
-        // The touchpad key and the compositor read these exact keys.
         let root = stored("{}", &input);
         assert_eq!(root["input"][TOUCHPAD_ENABLED_KEY], false);
         assert_eq!(root["input"][TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY], true);
@@ -344,7 +341,6 @@ mod tests {
         assert!(input.touchpad_natural_scroll);
         assert!(!input.mouse_natural_scroll);
 
-        // A section without a newer field loads with it defaulted.
         let p = read::<AppearancePrefs>(
             r#"{"appearance":{"mode":"dark","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#,
         );
@@ -378,8 +374,6 @@ mod tests {
     #[test]
     fn appearance_prefs_resolve_to_real_themes() {
         let p = AppearancePrefs::default();
-        // Unset, Settings shows the theme the desktop resolves an empty
-        // appearance section to.
         assert_eq!(p.theme_choice(), "Dark");
         assert_eq!(
             p.base_theme().name,
@@ -426,7 +420,6 @@ mod tests {
             assert_eq!(theme.reduce_motion, reduce_motion, "case {case}");
         }
 
-        // Every advertised preset maps to a distinct real theme.
         for name in AppearancePrefs::THEMES
             .iter()
             .filter(|name| !settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()))
@@ -435,7 +428,6 @@ mod tests {
             assert_eq!(&t.name, name, "{name} must resolve to its own theme");
         }
 
-        // UI scale folds into the resolved theme and composes with text scale.
         let base = ui::Theme::dark();
         let base_gap = base.tokens.spacing.s3;
         let base_type = base.tokens.typography.size(ui::tokens::TextRole::Body);

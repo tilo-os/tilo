@@ -196,8 +196,6 @@ pub fn render(rules: &[Rule]) -> String {
     out
 }
 
-// --- netlink ---------------------------------------------------------------
-
 const NETLINK_NETFILTER: libc::c_int = 12;
 const NFNL_SUBSYS_NFTABLES: u16 = 10;
 const NFNL_MSG_BATCH_BEGIN: u16 = 0x10;
@@ -295,7 +293,6 @@ const NFTA_REJECT_ICMP_CODE: u16 = 2;
 const NFT_REJECT_TCP_RST: u32 = 1;
 const NFT_REJECT_ICMPX_UNREACH: u32 = 2;
 const NFT_REJECT_ICMPX_ADMIN_PROHIBITED: u8 = 3;
-/// `ct state established,related`.
 const CT_STATE_ESTABLISHED_RELATED: u32 = 0x02 | 0x04;
 
 /// One `nf_tables` expression.
@@ -679,9 +676,6 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(5);
 impl Netfilter {
     /// The filter behind `sock`, a `NETLINK_NETFILTER` socket opened inside
     /// the namespace.
-    ///
-    /// # Errors
-    /// Returns the error setting the socket's receive timeout.
     pub fn new(sock: OwnedFd) -> io::Result<Self> {
         let tv = libc::timeval {
             tv_sec: libc::time_t::try_from(ACK_TIMEOUT.as_secs()).unwrap_or(5),

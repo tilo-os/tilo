@@ -678,7 +678,6 @@ mod tests {
         );
         assert!(said.iter().any(|line| line == "Writer"), "{said:#?}");
 
-        // Chosen, an app pastes the other way from what its id suggests.
         let mut input = InputPrefs::default();
         let terminal = ChosenApp {
             id: "org.example.Terminal".into(),
@@ -693,7 +692,6 @@ mod tests {
                 .map(String::as_str),
             Some("ctrl_v")
         );
-        // Chosen again, it keeps what the person set.
         input
             .set_paste_shortcut("org.example.Terminal", "ctrl_shift_v")
             .unwrap();

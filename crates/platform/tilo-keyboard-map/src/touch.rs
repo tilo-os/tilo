@@ -634,7 +634,6 @@ mod tests {
             assert_eq!(l.row_count(), 4);
             // Top row is the 10 QWERTY letters.
             assert_eq!(l.rows[0].len(), 10);
-            // The space key is the widest in the function row.
             let space = l.rows[3]
                 .iter()
                 .find(|k| k.action == KeyAction::Space)
@@ -811,8 +810,6 @@ mod tests {
         }
     }
 
-    // --- input-type layouts -------------------------------------------
-
     /// All characters a layout can emit, as single-char strings.
     fn emitted_chars(l: &KeyboardLayout) -> Vec<String> {
         l.rows
@@ -847,7 +844,6 @@ mod tests {
             }
             assert!(has_action(&l, &KeyAction::Backspace));
             assert!(!has_any_letter(&l), "numeric must have no letters");
-            // A minus sign and a decimal point are reasonable for plain numbers.
             assert!(emits(&l, "-"));
             assert!(emits(&l, "."));
         }
@@ -869,7 +865,6 @@ mod tests {
             for d in "0123456789".chars() {
                 assert!(emits(&l, &d.to_string()), "phone missing digit {d}");
             }
-            // Dialpad-specific keys.
             assert!(emits(&l, "*"));
             assert!(emits(&l, "#"));
             assert!(emits(&l, "+"));

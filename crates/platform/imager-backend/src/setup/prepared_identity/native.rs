@@ -346,12 +346,6 @@ impl PreparedIdentity {
     /// The root capability and public record a fresh destination joins before
     /// it can receive this person's prepared package. The root secret stays in
     /// this prepared-identity vault; only a signature leaves it.
-    ///
-    /// # Errors
-    ///
-    /// Refuses custody that no longer validates, an enrolled device whose
-    /// root is held elsewhere, a current identity with no reachable active
-    /// root, or an unreadable identity export.
     pub fn bootstrap_source_identity(&self) -> io::Result<tilo_handoff::SourceIdentity> {
         self.validate()?;
         if self.enrolled.is_some() {

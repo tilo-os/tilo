@@ -978,7 +978,6 @@ mod tests {
     /// tzdata parsing, keyboard access and non-empty timezones.
     #[test]
     fn timezone_map_parses_projects_and_commits_known_zones() {
-        // Case `tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids`.
         {
             let points = fixture_points();
             assert_eq!(
@@ -999,7 +998,6 @@ mod tests {
             assert_eq!(parse_iso6709_coordinate("garbage"), None);
         }
 
-        // Case `map_is_keyboard_accessible_and_only_offers_known_zones`.
         {
             let mut map = TimeZoneGlobe::new(
                 fixture_points().into(),
@@ -1101,7 +1099,6 @@ mod tests {
             "{text:#?}"
         );
 
-        // What Region & formats holds is what the page shows.
         cx.settings::<Locale>()
             .update(|locale| {
                 locale.date_format = ui::format::DateStyle::Iso;

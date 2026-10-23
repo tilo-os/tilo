@@ -170,7 +170,6 @@ pub struct Unit {
     pub footprint: u64,
     /// Everything charged to it (`memory.current`): what a reclaim works on.
     pub charged: u64,
-    /// Its own pressure.
     pub pressure: Psi,
 }
 

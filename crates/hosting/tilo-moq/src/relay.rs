@@ -143,9 +143,6 @@ pub trait SessionAuthorization: Send + Sync {
 /// Admission runs before any origin is attached. The opaque proof is passed
 /// only here and is never included in errors, URLs, tracing or counters.
 pub trait RelayAuthority: Send + Sync {
-    /// # Errors
-    ///
-    /// Returns [`Denied`] when the proof does not authorize a session.
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied>;
 }
 
@@ -1036,7 +1033,6 @@ mod status_all_tests {
         }
         fn status_all(&self) -> AuthorizationStatus {
             self.observed.fetch_add(1, Ordering::Relaxed);
-            // One of the current namespace permissions was revoked.
             AuthorizationStatus::Denied
         }
     }

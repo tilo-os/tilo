@@ -182,9 +182,6 @@ impl NativeWorkspaceOwner {
     }
 
     /// The invitations to `room` still redeemable at `now`.
-    ///
-    /// # Errors
-    /// The room is not governed here.
     pub fn pending_invitations(
         &self,
         room: RoomId,

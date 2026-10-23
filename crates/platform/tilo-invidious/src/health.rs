@@ -48,7 +48,6 @@ fn with_record<T>(use_record: impl FnOnce(&mut Record) -> T) -> T {
 struct Standing {
     /// Failures since its last answer.
     failures: u32,
-    /// When it failed last.
     failed_at: Option<Instant>,
     /// How long its last answer took.
     took: Option<Duration>,
@@ -163,7 +162,6 @@ mod tests {
             record.rank(list(), later),
             ["https://d", "https://a", "https://c", "https://b"]
         );
-        // An answer clears the failures.
         record.answered("https://b", Duration::from_millis(300));
         assert_eq!(record.rank(list(), later)[0], "https://b");
     }

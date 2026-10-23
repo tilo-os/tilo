@@ -185,11 +185,6 @@ impl Format {
 /// The test every [`Format`] past its first version carries: the step from
 /// the previous version, applied to a file that version wrote (`previous`),
 /// gives bytes `reads` accepts as the current version.
-///
-/// # Panics
-///
-/// When the format is not whole, has no step from the previous version, or
-/// the step or `reads` refuses.
 #[allow(
     clippy::panic,
     reason = "an assertion other crates' tests call; failing is its whole answer"
@@ -252,7 +247,6 @@ mod tests {
             "rollback loses nothing"
         );
 
-        // A current file is read as it is, and nothing is written.
         assert_eq!(NOTES.bring_up(&path, b"v3".to_vec(), 3).unwrap(), b"v3");
         assert_eq!(std::fs::read(&path).unwrap(), b"v1++");
     }

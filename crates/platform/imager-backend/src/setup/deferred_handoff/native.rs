@@ -1201,7 +1201,6 @@ user_pref("mail.identity.id1.fullName", "Personal");
             browser_continuity::completion::deferred_setup_digest(&plan.operation_id)
         );
         assert_eq!(completion.plan().identity_public_key, person);
-        // Nothing private is written into the installation plan metadata.
         let plan_bytes = plan.bytes().unwrap();
         assert!(!String::from_utf8_lossy(&plan_bytes).contains("person@example.test"));
         assert!(!String::from_utf8_lossy(&plan_bytes).contains("ImapMail"));
@@ -1378,7 +1377,6 @@ user_pref("mail.identity.id1.fullName", "Personal");
         assert!(Journal::open(&home, &plan).is_err());
         std::fs::write(&journal_path, &journal).unwrap();
 
-        // Replacing the source root changes the reviewed inode.
         let replacement = fixture.path().join("replacement");
         source_dir(&replacement);
         std::fs::rename(&home, fixture.path().join("old-source")).unwrap();

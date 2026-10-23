@@ -144,7 +144,6 @@ fn toolbar_names(app: &PhotosApp) -> Vec<String> {
         .collect()
 }
 
-/// The window bar's command named `name`.
 fn bar_command(app: &PhotosApp, name: &str) -> Option<ui::window_toolbar::ToolbarAction> {
     app.window_bar()
         .actions
@@ -2877,8 +2876,6 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
     );
 }
 
-/// The empty library's own Open button reaches the host's chooser through
-/// the framework's door, as the header's Open does.
 #[test]
 fn the_empty_library_open_button_asks_the_host_chooser() {
     let (services, recorder) = ui::host::HostServices::recording();

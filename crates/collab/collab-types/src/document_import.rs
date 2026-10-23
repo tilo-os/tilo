@@ -61,7 +61,6 @@ pub struct DocumentImportTerms {
 }
 
 impl DocumentImportProposalV1 {
-    /// Sign a proposal for `terms` with the proposing device's key.
     pub fn new(
         terms: &DocumentImportTerms,
         device_key: &SigningKey,

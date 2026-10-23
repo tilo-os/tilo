@@ -87,7 +87,6 @@ thread_local! {
     static NEXT_TARGET: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Write `bytes` to the target held under `key`.
 fn write_target(key: u64, bytes: &[u8]) -> SaveChannel {
     let Some(target) = TARGETS.with(|targets| targets.borrow().get(&key).cloned()) else {
         return answered(SaveOutcome::Failed(

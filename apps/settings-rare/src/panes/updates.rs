@@ -2750,7 +2750,6 @@ mod tests {
             let buttons = pane.codec_buttons();
             let offered: Vec<&str> = buttons.iter().map(|b| b.0.as_str()).collect();
             assert_eq!(offered, controls, "{json}");
-            // The card builds for every state.
             let _ = pane.codecs_card();
         }
     }
@@ -2776,7 +2775,6 @@ mod tests {
         let status = shared_status(r#"{"state":"waiting-for-network","desired":true}"#);
         let mut pane = codec_pane(Arc::clone(&status), runs, Ok(()));
         pane.poll();
-        // The device came online and the helper installed in the background.
         *status.lock().unwrap() =
             r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#.to_string();
         pane.poll();
@@ -2887,7 +2885,6 @@ mod tests {
     /// os-release, bootc staged/rollback, release notes and journal history parsing.
     #[test]
     fn update_status_parsers_accept_only_trusted_shapes() {
-        // Case `parses_pretty_name`.
         {
             assert_eq!(
                 parse_pretty_name("PRETTY_NAME=\"Tilo 42\"\n").as_deref(),
@@ -2895,7 +2892,6 @@ mod tests {
             );
         }
 
-        // Case `parse_bootc_staged_detects_and_ignores`.
         {
             let staged = r#"{"status":{"staged":{"version":"Tilo 2026.07"},"booted":{"version":"Tilo 2026.06"}}}"#;
             assert_eq!(parse_bootc_staged(staged).as_deref(), Some("Tilo 2026.07"));
@@ -2911,7 +2907,6 @@ mod tests {
             );
         }
 
-        // Case `parse_bootc_rollback_detects_and_ignores`.
         {
             let has = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:gen41"}}}}}"#;
             assert_eq!(parse_bootc_rollback(has).as_deref(), Some("tilo:gen41"));
@@ -2932,7 +2927,6 @@ mod tests {
             );
         }
 
-        // Case `release_notes_only_accept_https_image_metadata`.
         {
             let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.example.test/releases/42"}}}}}"#;
             assert_eq!(
@@ -2943,7 +2937,6 @@ mod tests {
             assert_eq!(parse_bootc_release_notes(unsafe_url), None);
         }
 
-        // Case `journal_history_is_bounded_and_control_free`.
         {
             let history = parse_update_history("2026-01-01 update complete\nline\u{0007} two\n");
             assert_eq!(history, ["2026-01-01 update complete", "line two"]);
@@ -2963,7 +2956,6 @@ mod tests {
             pane.poll();
             assert_eq!(pane.prefs().last_checked, "Never");
             assert_eq!(pane.status().staged_version, None);
-            // Press Check.
             pane.run(UpdatesEffect::CheckForUpdates, None);
             pane.poll();
             settle(&mut pane, |pane| pane.check_pending);
@@ -2979,7 +2971,6 @@ mod tests {
             );
         }
 
-        // Case `blocking_update_check_returns_promptly_and_stamps_only_on_completion`.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(None, None));
@@ -3002,7 +2993,6 @@ mod tests {
             assert!(pane.notice().is_none());
         }
 
-        // Case `failed_async_update_check_does_not_stamp_last_checked`.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(None, None).failing_check());
@@ -3017,7 +3007,6 @@ mod tests {
             );
         }
 
-        // Case `blocking_firmware_refresh_returns_promptly_and_reports_success_or_failure`.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(None, None));
@@ -3047,7 +3036,6 @@ mod tests {
             }));
         }
 
-        // Case `duplicate_update_checks_are_cleared_while_one_is_pending`.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(None, None));
@@ -3086,8 +3074,6 @@ mod tests {
     /// Restart reboots once; rollback is confirmed, reported, honestly described and absent without an image.
     #[test]
     fn restart_and_rollback_are_confirmed_and_reported() {
-        // Case `restart_reboots_once`.
-        // Restart & update reboots exactly once via the injected rebooter.
         {
             let reb = Arc::new(RecordingRebooter::default());
             let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
@@ -3447,7 +3433,6 @@ mod tests {
         // disagree.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            // A preferences file that says "off" and a timer that is on.
             let control = Arc::new(FakeControl::new(Some(true), None));
             let pane = UpdatesModel::with_parts_and_control(
                 test_cx(),
@@ -3477,8 +3462,6 @@ mod tests {
             assert_eq!(pane.timer_enabled(), Some(true));
         }
 
-        // Case `turning_automatic_updates_off_disables_the_timer`.
-        // Turning the switch off turns the timer off.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(Some(true), None));
@@ -3704,7 +3687,6 @@ mod tests {
         );
         assert_eq!(*control.set_calls.lock().unwrap(), vec![false]);
 
-        // A rollback the device takes long to make.
         gate.hold();
         model.borrow_mut().run(UpdatesEffect::RollBack, None);
         app.harness()

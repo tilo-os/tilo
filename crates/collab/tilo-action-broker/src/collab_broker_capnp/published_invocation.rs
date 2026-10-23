@@ -742,7 +742,6 @@ impl OriginalInvocation {
     pub fn policy_time(&self) -> &crate::peer_actions::PolicyTime {
         &self.data.time
     }
-    /// The original caller's device certificate.
     pub fn certificate(&self) -> Result<&tilo_user_identity::DeviceCert, String> {
         match &self.data.caller {
             // A network caller's verified device certificate is its signed

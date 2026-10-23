@@ -1183,8 +1183,6 @@ fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
         harness.enter(0, 0);
         harness.fence();
         harness.query(move |state| {
-            // Hold either the focus-check reply or the publication's
-            // confirmation, without disconnecting the shared display.
             state.hold_flush = !published;
             state.hold_flush_after_selection = published;
         });
@@ -1473,7 +1471,6 @@ fn a_copy_the_compositor_took_is_reported_as_copied_however_late_it_confirms() {
             || entered.load(Ordering::Acquire),
             "server receiving the image selection",
         );
-        // Hold the confirmation past every budget the copy waits.
         let taken = Instant::now();
         harness.wait(
             || taken.elapsed() > super::PUBLICATION_BUDGET * 3,

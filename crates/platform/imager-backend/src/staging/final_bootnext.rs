@@ -677,7 +677,6 @@ mod tests {
     /// Arming, refusals and fallback.
     #[test]
     fn final_bootnext_arms_only_verified_new_options() {
-        // Phase `arms_only_new_option_and_bootnext_and_preserves_boot_order`.
         {
             let (mut platform, receipt) = FilePlatform::new(true);
             let armed = arm(&mut platform, &receipt).unwrap();
@@ -711,7 +710,6 @@ mod tests {
             assert!(platform.writes.is_empty());
         }
 
-        // Phase `refuses_occupied_bootnext_and_identity_or_loader_mismatch`.
         {
             let (mut platform, receipt) = FilePlatform::new(true);
             std::fs::write(platform.var("BootNext"), [1, 0]).unwrap();
@@ -735,7 +733,6 @@ mod tests {
             assert!(platform.writes.is_empty());
         }
 
-        // Phase `refuses_changed_boot_or_root_geometry_after_physical_readback`.
         {
             let (mut platform, mut receipt) = FilePlatform::new(true);
             platform.disk.partitions[1].last_lba += 1;
@@ -763,7 +760,6 @@ mod tests {
             assert!(platform.writes.is_empty());
         }
 
-        // Phase `fallback_requires_primary_absence`.
         {
             let (mut platform, receipt) = FilePlatform::new(false);
             assert_eq!(arm(&mut platform, &receipt).unwrap().loader_path, FALLBACK);

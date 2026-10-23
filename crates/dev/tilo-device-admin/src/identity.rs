@@ -98,7 +98,6 @@ pub fn revocations_path(paths: &IdentityPaths) -> PathBuf {
         .join("revocations.bin")
 }
 
-/// Load and verify a revocation list.
 pub fn load_revocations(path: &Path) -> anyhow::Result<RevocationList> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,

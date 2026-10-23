@@ -2880,8 +2880,6 @@ Video
         assert_eq!(rec.calls(), vec!["profile(7,2)"]);
     }
 
-    // --- Per-application routing -------------------------------------------
-
     use media::audio::{
         AudioDevice as GDevice, AudioGraph as G, AudioHardwareDevice, AudioStream as GStream,
         DeviceProfile, GraphControl,
@@ -2984,7 +2982,6 @@ Video
     /// without owning the transform.
     #[test]
     fn audio_diagnostics_hotplug_and_transforms_stay_bounded() {
-        // Case `diagnostics_are_bounded_while_persistent_transforms_have_no_pane_owner`.
         {
             let drops = Arc::new(AtomicUsize::new(0));
             let runtime = Arc::new(RecordingRuntime {
@@ -3036,7 +3033,6 @@ Video
             );
         }
 
-        // Case `hotplug_adds_a_newly_plugged_sink`.
         {
             let mut before = graph_two_sinks_one_stream();
             before.sinks.retain(|d| d.description == "Speakers");

@@ -110,8 +110,6 @@ pub struct NativeAudio {
 }
 impl NativeAudio {
     /// Start native playback with an owned registration and a sealed grant.
-    /// # Errors
-    /// The runtime refused the worker. Session failures arrive through `error`.
     pub fn start(uri: String, account: String, output: Output) -> Result<Self, String> {
         let (commands, receiver) = tokio::sync::mpsc::channel(16);
         let status = Arc::new(Mutex::new(Status::default()));

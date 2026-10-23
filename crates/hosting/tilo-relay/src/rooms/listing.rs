@@ -155,12 +155,6 @@ fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
 impl Rooms {
     /// Make `room` public with `listing`, as `device` asks: the room's
     /// governance must let its person change the room's settings.
-    ///
-    /// # Errors
-    ///
-    /// The room is not governed here, the person may not change its
-    /// settings, the listing is not one that may be published, or it could
-    /// not be kept.
     pub async fn publish(
         &self,
         room: &str,
@@ -223,7 +217,6 @@ impl Rooms {
         Ok(())
     }
 
-    /// The listing `room` is public with, if it is.
     #[must_use]
     pub fn listing(&self, room: &str) -> Option<Listing> {
         self.inner.listings.get(room)
@@ -271,10 +264,6 @@ impl Rooms {
     /// Who of `room`'s members is in it now by `online` (user roots with an
     /// open session here): some of their faces, how many they are, and how
     /// many people belong to the room.
-    ///
-    /// # Errors
-    ///
-    /// The room is not governed here.
     pub async fn presence(
         &self,
         room: &str,
@@ -325,11 +314,6 @@ impl Rooms {
     /// invitation only they can redeem, and the token of a pre-admission at
     /// the room's default role, under the owner's listing. The door answers
     /// them as a [`tilo_relay_protocol::directory::DoorAnswer`].
-    ///
-    /// # Errors
-    ///
-    /// The room is not public here, the person is banned from it, or the
-    /// invitation could not be issued and kept.
     pub async fn admit_listed(
         &self,
         room: &str,
@@ -429,11 +413,6 @@ impl Rooms {
     /// Tell the people who run the public room `room` that someone reported
     /// it: a notice its owner and moderators read beside the room's
     /// admissions.
-    ///
-    /// # Errors
-    ///
-    /// The room is not public here, the report is not one, or it could not
-    /// be kept.
     pub async fn report_listed(
         &self,
         room: &str,
@@ -724,7 +703,6 @@ mod door_tests {
             );
         }
 
-        // The door's own grant, as the host signed it, admits.
         let (guest_key, guest) = guest_device();
         let join = DoorJoin {
             user_public_key: hex::encode(guest.user_public_key),
@@ -891,7 +869,6 @@ mod door_tests {
                 .await
                 .unwrap()
         );
-        // Whoever joins later talks too.
         let (_, later) = walk_in(rooms, &room).await;
         assert!(writes_in_chat(rooms, &room, &later).await);
 
@@ -1045,7 +1022,6 @@ mod door_tests {
         let (reply, _) = walk_in(rooms, &room).await;
         assert!(reply.is_err(), "unpublished: the door is shut again");
 
-        // A moderator handed out at the door is refused outright.
         assert!(
             rooms
                 .publish(

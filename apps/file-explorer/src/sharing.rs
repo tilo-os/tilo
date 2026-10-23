@@ -174,7 +174,6 @@ pub async fn create_named_share(
     }
 }
 
-/// Revoke one exact share grant.
 pub async fn revoke_grant(socket: &Path, grant_id: Uuid) -> Result<ShareActionResult, String> {
     transact(socket, ShareControlOperationV1::Revoke { grant_id }).await
 }

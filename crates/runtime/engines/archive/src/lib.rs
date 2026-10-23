@@ -39,7 +39,6 @@ pub fn self_check() -> Result<String, String> {
     result
 }
 
-/// The error of `step`, named.
 #[cfg(feature = "thin")]
 fn fail(step: &'static str) -> impl Fn(std::io::Error) -> String {
     move |error| format!("{step}: {error}")

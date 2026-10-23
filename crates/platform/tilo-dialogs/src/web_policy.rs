@@ -4,10 +4,6 @@
 /// Whether `uri` may be handed to `window.open`: web pages and composing
 /// links only. `javascript:`, `data:`, `blob:` and `file:` would run script
 /// in, or expose content to, the console's origin.
-///
-/// # Errors
-///
-/// Why the URI is refused.
 pub fn openable_uri(uri: &str) -> Result<(), String> {
     const OPENABLE: [&str; 4] = ["http", "https", "mailto", "tel"];
     let scheme = uri
