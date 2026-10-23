@@ -111,7 +111,7 @@ if [ -n "${suggest:-}" ] && wait "$suggest"; then
   [ -z "$opt_in" ] || note "$opt_in"
 fi
 
-# The run's id, its fixable failures that may be the change's, t's errors, and what a fix changed.
+# The run's id, its fixable failures that may be the change's, and what a fix changed.
 read_run() {
   python3 -I - "$1" "$2" <<'EOF'
 import json, sys
@@ -129,10 +129,6 @@ for line in open(path, encoding="utf-8", errors="replace"):
             and event.get("fix") and not event.get("fixed") \
             and (event.get("blame") or {}).get("kind") not in ("inherited", "flaky"):
         print(event["check"])
-    if want == "error" and kind == "error":
-        print(event.get("message", ""))
-        if event.get("hint"):
-            print(event["hint"])
     if want in ("changed", "skipped") and kind == "fixed":
         for path in event.get(want, []):
             print(path)
@@ -146,20 +142,31 @@ show_run() {
 case $status in
   0) gate_passed; note "t passed $short in ${took}s ($what)"; exit 0 ;;
   3) gate_passed; note "t passed $short in ${took}s ($what): what fails also fails on main (t main)"; exit 0 ;;
-  1) ;;
-  *)
-    note "t could not run the push gate on $short (exit $status):"
-    { read_run "$out/run.jsonl" error; tail -n 5 "$out/stderr"; } | sed 's/^/    /' >&2
-    note "push again once t answers; t status says whether the server is up"
-    exit 1
-    ;;
 esac
+
+# Every check the run did not pass, and why: a refusal names each one, whatever its outcome.
+python3 -I "$top/tools/ci/pre_push.py" unpassed --run "$out/run.jsonl" "${gate[@]}" >"$out/unpassed"
+refused() {
+  note "refused: $short in ${took}s ($what${run:+, $run}): $*"
+  if [ -s "$out/unpassed" ]; then
+    sed 's/^/    /' "$out/unpassed" >&2
+  else
+    # No check's result says why, so t's own words are all there is.
+    tail -n 5 "$out/stderr" | sed 's/^/    /' >&2
+  fi
+}
+
+if [ "$status" != 1 ]; then
+  refused "t could not finish the push gate (exit $status); a failure of t, not of the change:"
+  note "push again once t can run them; t status shows the server and its nodes"
+  exit 1
+fi
 
 show_run
 fixable=()
 while read -r check; do fixable+=("$check"); done < <(read_run "$out/run.jsonl" fixable)
 if [ "${#fixable[@]}" -eq 0 ]; then
-  note "refused: $short fails the checks above (${took}s); fix it, commit, and push again"
+  refused "fix these, commit, and push again:"
   exit 1
 fi
 

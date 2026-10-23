@@ -25,6 +25,9 @@ it; the hook says which.
       `left` (in scope, but not run before a push).
   pre_push.py opt-in --suggest SUGGEST.json
       The opt-in checks `t suggest --json` says the change touches, space-separated.
+  pre_push.py unpassed --run RUN.jsonl CHECK...
+      Every check of the gate (CHECK...) that the run (`t test --json`) did not pass, one per
+      line with why, and t's own errors: what a refused push names.
 """
 from __future__ import annotations
 
@@ -109,6 +112,68 @@ def opt_in_line(names: list[str]) -> str:
     return f"not run before a push; main runs them, or run them yourself: t test {' '.join(names[:SHOWN])}{more}"
 
 
+def excerpt(result: dict) -> str:
+    """The first line t gives of why a check did not pass."""
+    for failure in result.get("failures") or []:
+        for line in str(failure.get("excerpt") or "").splitlines():
+            if line.strip():
+                return line.strip()
+    return ""
+
+
+def unpassed(events: list[dict], asked: list[str]) -> list[str]:
+    """Each check of `asked` the run did not pass, with why, and each error t reported. A refusal
+    names every one of these: an outcome nobody prints is a refusal nobody can act on."""
+    planned: list[str] = []
+    results: dict[str, dict] = {}
+    lines: list[str] = []
+    for event in events:
+        kind = event.get("type")
+        if kind == "planned":
+            planned = list(event.get("checks") or [])
+        elif kind == "result" and event.get("check"):
+            results[event["check"]] = event
+        elif kind == "error":
+            hint = f" ({event['hint']})" if event.get("hint") else ""
+            lines.append(f"t failed, not a check: {event.get('message', '')}{hint}")
+    for check in dict.fromkeys([*asked, *planned, *results]):
+        result = results.get(check)
+        if result is None:
+            lines.append(f"{check}: no result; the run ended before t reported one, a failure of t, not of the change")
+            continue
+        outcome = result.get("outcome")
+        why = excerpt(result)
+        if outcome == "pass":
+            continue
+        if outcome == "fail":
+            blame = (result.get("blame") or {}).get("kind")
+            note = {"inherited": " (main fails it too)", "flaky": " (flaky)"}.get(blame, "")
+            text = f"{check}: fails{note}"
+        elif outcome == "error":
+            text = f"{check}: could not run, a failure of t's infrastructure, not of the change"
+        elif outcome == "cancelled":
+            text = f"{check}: cancelled before it finished"
+        elif outcome == "skipped":
+            text = f"{check}: not run, since a check it is gated on failed"
+        else:
+            text = f"{check}: {outcome or 'no outcome'}, which this hook can't tell apart from a failure"
+        lines.append(f"{text}: {why}" if why else text)
+    return lines
+
+
+def load_events(path: Path) -> list[dict]:
+    events = []
+    text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
 def load(path: Path) -> dict:
     text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
     try:
@@ -126,7 +191,14 @@ def main(argv: list[str]) -> int:
     chosen.add_argument("--changed", type=Path, required=True)
     suggested = sub.add_parser("opt-in")
     suggested.add_argument("--suggest", type=Path, required=True)
+    verdict = sub.add_parser("unpassed")
+    verdict.add_argument("--run", type=Path, required=True)
+    verdict.add_argument("checks", nargs="*")
     args = parser.parse_args(argv)
+    if args.command == "unpassed":
+        for line in unpassed(load_events(args.run), args.checks):
+            print(line)
+        return 0
     if args.command == "opt-in":
         print(opt_in_line(opt_in(load(args.suggest))))
         return 0
