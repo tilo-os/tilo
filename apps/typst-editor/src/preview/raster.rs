@@ -19,6 +19,7 @@ use tilo_page_raster::tiles::{
 };
 use tilo_page_raster::{Admission, PageKey, PageRenderer, Rendered, SUPERSAMPLE};
 
+use crate::page_text::PageText;
 use crate::pages::TypstPages;
 
 use super::PreviewPane;
@@ -114,12 +115,34 @@ impl PageRaster {
         if let Some(renderer) = &self.renderer {
             renderer.set_source(self.generation, document.clone());
         }
-        self.document = Some(document);
+        let old = self.document.replace(document);
+        self.retire(old);
+    }
+
+    /// Let go of `document`, a compile no longer shown: the renderer's
+    /// worker drops it, so tearing down its pages costs no frame.
+    fn retire(&self, document: Option<Arc<TypstPages>>) {
+        if let (Some(renderer), Some(document)) = (&self.renderer, document) {
+            renderer.retire(document);
+        }
+    }
+
+    /// The selectable text of `page` of the compile shown.
+    /// The compile shown, by address; 0 with none.
+    pub(super) fn document_address(&self) -> usize {
+        self.document
+            .as_ref()
+            .map_or(0, |document| Arc::as_ptr(document).cast::<()>().addr())
+    }
+
+    pub(super) fn text(&self, page: usize) -> Option<&PageText> {
+        self.document.as_ref().map(|document| document.text(page))
     }
 
     /// Show no pages.
     pub(super) fn clear(&mut self) {
-        self.document = None;
+        let old = self.document.take();
+        self.retire(old);
         self.images.clear();
         self.tiles.clear();
         self.pending.clear();

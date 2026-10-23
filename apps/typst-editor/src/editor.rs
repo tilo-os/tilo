@@ -283,11 +283,11 @@ impl SourceEditor {
         self.control_mut()
             .inner_mut()
             .set_content_size(Some(theme.text(ui::tokens::TextRole::Code).size));
-        let text = self.control().value().to_string();
+        let text = self.control().value();
         let spans = diags
             .iter()
             .filter_map(|d| {
-                let (b0, b1) = diag_byte_span(d, &text)?;
+                let (b0, b1) = diag_byte_span(d, text)?;
                 let severity = match d.kind {
                     DiagKind::Error => Severity::Error,
                     DiagKind::Warning => Severity::Warning,
@@ -304,6 +304,28 @@ impl SourceEditor {
         self.control_mut().set_pointer(pointer);
         self.control_mut()
             .draw_embedded(scene, transform, tr, theme);
+    }
+
+    /// The editor's damage since the frame on screen, as part of `owner`, the
+    /// widget in the tree it is drawn in.
+    pub fn collect_damage_for<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) {
+        self.control().collect_damage_for(owner, regions);
+    }
+
+    /// From the host's `mark_drawn`: the frame just drawn is on screen.
+    pub fn mark_shown(&mut self) {
+        self.control_mut().mark_shown();
+    }
+
+    /// Where the caret is, in the window.
+    #[cfg(test)]
+    pub(crate) fn caret_rect(&self) -> Option<Rect> {
+        ui::widget::Widget::ime_cursor_rect(self.control())
+    }
+
+    /// Whether the hover card of a diagnostic shows over the window.
+    pub fn shows_tooltip(&self) -> bool {
+        self.control().shows_diagnostic_card()
     }
 
     /// The hover card for the diagnostic under the pointer, drawn in the
