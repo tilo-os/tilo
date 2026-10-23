@@ -1667,6 +1667,9 @@ impl Task {
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
         let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
+        // A page that stood still beats once when it runs again, not once
+        // for every beat it missed.
+        heartbeat.set_missed_tick_behavior(n0_future::time::MissedTickBehavior::Delay);
         let renewal = renewal(client.renew_after(tilo_clock::unix_now_ns()));
         tokio::pin!(renewal);
         loop {

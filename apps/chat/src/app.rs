@@ -2812,9 +2812,16 @@ impl ChatApp {
 
     /// Who is in voice channel `channel`: this person first while they are,
     /// then everyone the room's presence places there.
+    /// Whether this person is in the call now. The call panel stays open
+    /// after the call ended for a reason, to say why; then they are no
+    /// longer in it, for their own count and for everyone else's list.
+    pub(crate) fn in_call(&self) -> bool {
+        self.call.active && !self.native_voice.ended_for_a_reason()
+    }
+
     pub(crate) fn voice_people(&self, channel: &str) -> Vec<Id> {
         let mut people = Vec::new();
-        if self.call.active && self.call.channel == channel {
+        if self.in_call() && self.call.channel == channel {
             people.push(self.me.id.clone());
         }
         // What the room's presence says, and who the room's call counts in.
@@ -5339,7 +5346,7 @@ impl ui::presence::capability::PublishesPresence for ChatApp {
     /// they are in: what the others' sidebars show under it.
     fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
         self.composer_presence().or_else(|| {
-            (self.call.active && !self.call.channel.is_empty()).then(|| {
+            (self.in_call() && !self.call.channel.is_empty()).then(|| {
                 (
                     Self::voice_presence_key(&self.call.channel),
                     ui::PresencePayload::Caret { pos: 0 },
