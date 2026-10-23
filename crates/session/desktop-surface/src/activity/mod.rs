@@ -228,7 +228,6 @@ pub trait ActivityHost {
     fn dispatch_task(&self, _room: &str, _task: &str) -> Result<(), String> {
         Err(crate::i18n::t("activity-agent-dispatch-unavailable"))
     }
-    /// Launch an agent into `workspace`.
     fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
         Err(crate::i18n::t("activity-agent-launch-unavailable"))
     }

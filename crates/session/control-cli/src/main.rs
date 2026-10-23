@@ -34,7 +34,6 @@ use tilo_control::{TEST_CONTROL_ENV, admin_socket_path, default_socket_path};
 /// what that socket is and how to get one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SocketKind {
-    /// Named by `--socket` or `$TILO_TEST_CONTROL`.
     Named,
     Admin,
     /// The default development test-control socket.

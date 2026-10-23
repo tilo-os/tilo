@@ -35,7 +35,6 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireError(pub String);
 
-/// Parse one request line.
 pub fn parse(line: &str) -> Result<Request, WireError> {
     let value: Value =
         serde_json::from_str(line).map_err(|error| WireError(format!("invalid JSON: {error}")))?;

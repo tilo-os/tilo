@@ -193,7 +193,6 @@ struct Handoff {
     app_id: String,
 }
 
-/// Encode the launcher's handoff for `app_id`.
 pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
     let json = serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": app_id }))
         .map_err(std::io::Error::other)?;

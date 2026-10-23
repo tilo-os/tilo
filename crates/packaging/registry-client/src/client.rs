@@ -31,7 +31,6 @@ impl RegistryClient {
         )
     }
 
-    /// The registry at `base`.
     pub fn new(base: &str) -> Result<Self> {
         Self::validate_url(base)?;
         let http = tilo_net::http::blocking_client()

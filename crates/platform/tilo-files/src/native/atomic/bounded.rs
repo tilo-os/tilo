@@ -186,10 +186,6 @@ impl BoundedOwnerDirectory {
             .map_err(ChildOpenError::Open)?;
         Self::admit(StorageDirectory { inner }).map_err(ChildOpenError::Admission)
     }
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidInput` when `name` is not a valid bounded child name.
     pub fn publication_allocation_bytes(name: &OsStr) -> io::Result<usize> {
         name_check(name)?;
         Ok(name.as_bytes().len().saturating_add(37))

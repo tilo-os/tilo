@@ -50,7 +50,6 @@ impl FontFiles {
         &self.roots
     }
 
-    /// The font at `path`, face `index`.
     pub fn open(&mut self, path: &str, index: u32) -> Result<FontData, WireError> {
         if path.len() > tilo_render_protocol::control::MAX_FONT_PATH || !path.starts_with('/') {
             return Err(WireError::Invalid("font path"));

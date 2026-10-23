@@ -367,7 +367,6 @@ impl<R: Resource> Replica<R> {
         history::versions(&mut self.doc)
     }
 
-    /// The state as of `heads`.
     pub fn state_at(&mut self, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
         history::read_at::<R>(&mut self.doc, heads)
     }

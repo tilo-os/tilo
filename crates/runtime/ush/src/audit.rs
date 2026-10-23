@@ -24,7 +24,6 @@ use tilo_clock::unix_now;
 pub struct AuditRecord {
     /// Seconds since the Unix epoch.
     pub at: u64,
-    /// The session that asked.
     pub session: String,
     pub environment: String,
     /// What was asked: `trust-dir`, `pkg-install`, `open-session`, …

@@ -267,7 +267,6 @@ pub trait ItemStorage: 'static {
     /// What a stored value that is not of this storage is called in errors.
     const NAME: &'static str;
 
-    /// The items stored in the map `map`.
     fn load<T: Model + Identified>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError>;
 
     /// Write `items` into `slot`.

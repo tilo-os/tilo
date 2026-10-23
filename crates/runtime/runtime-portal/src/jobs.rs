@@ -217,7 +217,6 @@ pub fn decode(message: &[u8]) -> Vec<&[u8]> {
     message.split(|byte| *byte == 0).collect()
 }
 
-/// Send one message with `fds`.
 pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
     let message = encode(fields)?;

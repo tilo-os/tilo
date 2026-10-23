@@ -253,7 +253,6 @@ fn flatten(node: &Value<'_>, prefix: &str, depth: usize, out: &mut Vec<MenuEntry
     });
 }
 
-/// Deliver `request` to the item.
 pub async fn send(address: &ItemAddress, request: TrayRequest) -> zbus::Result<()> {
     match request {
         TrayRequest::Activate { x, y } => {

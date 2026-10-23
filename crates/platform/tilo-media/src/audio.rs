@@ -638,7 +638,6 @@ pub trait GraphControl: Send + Sync {
     fn unroute_stream(&self, stream_id: u32) -> Result<(), String>;
     /// Set a node's perceptual volume (`0.0..=1.0`).
     fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String>;
-    /// Mute or unmute a node.
     fn set_node_mute(&self, node_id: u32, muted: bool) -> Result<(), String>;
     /// Switch a hardware device to one of its enumerated profiles.
     fn set_device_profile(&self, device_id: u32, profile_index: u32) -> Result<(), String>;

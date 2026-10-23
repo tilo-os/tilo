@@ -1464,7 +1464,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(())
     }
 
-    /// The resource state as stored.
     #[allow(
         clippy::expect_used,
         reason = "a test harness surfaces corruption loudly"

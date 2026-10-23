@@ -175,7 +175,6 @@ fn program_bytes(
         })
 }
 
-/// Inspect every version of a bot entry.
 pub fn review_bot_versions(
     storage: &Storage,
     entry: &RegistryEntry,

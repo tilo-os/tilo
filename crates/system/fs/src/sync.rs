@@ -1726,10 +1726,6 @@ impl Workspace {
     /// Begin hosting a new workspace, returning a ticket to share with
     /// peers. `policy` is what the sync and content planes serve *through*
     /// (see [`PeerPolicy`]); `None` hosts unenforced.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the gossip topic or protocol router fails to start.
     pub async fn host(
         endpoint: Endpoint,
         lookup: MemoryLookup,

@@ -265,7 +265,6 @@ impl IndexEntry {
             .map_err(|_| IndexError::Hex("tapp_hash is not 32 bytes".into()))
     }
 
-    /// Parse the `package_id`.
     pub fn parse_package_id(&self) -> Result<PackageId, IndexError> {
         self.package_id.parse().map_err(|e| {
             IndexError::BadIdentity(format!("package_id {:?}: {e:?}", self.package_id))

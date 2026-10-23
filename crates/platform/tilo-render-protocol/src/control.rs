@@ -197,7 +197,6 @@ pub enum ServiceMessage {
     Refused { why: Refusal },
 }
 
-/// Encode `message` for the channel.
 pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, WireError> {
     let bytes = postcard::to_allocvec(message).map_err(|_| WireError::Malformed("message"))?;
     if bytes.len() > MAX_MESSAGE_BYTES {

@@ -295,7 +295,6 @@ impl Walk {
     }
 }
 
-/// The resource as it was at `heads`.
 pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
     let past = doc.fork_at(heads)?;
     R::read(&past)

@@ -18,7 +18,6 @@ pub type Stream = tokio::net::UnixStream;
 #[cfg(not(unix))]
 pub type Stream = tokio::io::DuplexStream;
 
-/// Connect to the local service socket at `path`.
 #[cfg_attr(
     not(unix),
     expect(

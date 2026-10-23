@@ -142,7 +142,6 @@ pub enum FailureKind {
 pub struct ProbeReport {
     /// `open(path)` for reading succeeded.
     pub opened_file: bool,
-    /// Creating a file next to `path` succeeded.
     pub created_file: bool,
     pub inet_socket: bool,
     /// A Unix socket could be bound next to `path`.
