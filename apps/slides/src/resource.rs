@@ -95,6 +95,8 @@ impl ResourceApp for SlidesShell {
 
     fn scenarios() -> &'static [&'static str] {
         &[
+            // The sample deck in the editor, as it opens.
+            "editor",
             "overview",
             "present",
             "present_notes",

@@ -35,7 +35,8 @@ pub enum SlidesEffect {
     EndPresentation,
     /// Show slide list
     ///
-    /// Show or hide the list of slides beside the slide being edited.
+    /// Show or hide the list of slides beside the slide being edited;
+    /// showing it returns to the editor.
     #[effect(view)]
     ShowSlideList {
         #[param("Whether the list of slides shows")]
@@ -43,7 +44,8 @@ pub enum SlidesEffect {
     },
     /// Show properties
     ///
-    /// Show or hide the properties of the slide or the selected element.
+    /// Show or hide the properties of the slide or the selected element;
+    /// showing them returns to the editor.
     #[effect(view)]
     ShowProperties {
         #[param("Whether the properties show")]

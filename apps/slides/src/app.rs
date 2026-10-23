@@ -1775,7 +1775,9 @@ impl SlidesApp {
             chrome.inspector_body.width() as f32,
             chrome.inspector_content_h as f32,
         );
-        if let Some(notes) = chrome.notes_box {
+        if let Some(notes) = chrome.notes_box
+            && chrome.inspector.contains(notes.center())
+        {
             let overflow = (notes.y1 - chrome.inspector_body.y1).max(0.0);
             self.inspector_scroll
                 .set_offset_y(self.inspector_scroll.offset_y() + overflow as f32);
@@ -3101,11 +3103,17 @@ impl SlidesApp {
             }
             SlidesEffect::EndPresentation => self.exit_present(),
             SlidesEffect::ShowSlideList { shown } => {
+                if shown {
+                    self.mode = Mode::Edit;
+                }
                 if self.rail_open() != shown {
                     self.toggle_rail_flap();
                 }
             }
             SlidesEffect::ShowProperties { shown } => {
+                if shown {
+                    self.mode = Mode::Edit;
+                }
                 if self.inspector_open() != shown {
                     self.toggle_inspector_flap();
                 }

@@ -29,47 +29,40 @@ pub(crate) fn insert_id(kind: ElementKind) -> String {
 
 impl SlidesApp {
     /// The window bar's slots for what the editor shows now; none while it
-    /// presents.
+    /// presents. The editor and the overview declare the same slots, so the
+    /// bar keeps its place between them; the slide list, Insert and the
+    /// properties return to the editor from the overview.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         if self.mode == Mode::Present {
             return WindowToolbar::default();
         }
         let editing = self.mode == Mode::Edit;
         let may_edit = !self.dispatch.read_only();
-        let mut actions = Vec::new();
-        if editing {
-            let items = insert_tools()
-                .into_iter()
-                .map(|(label, icon, kind)| ToolbarAction::new(insert_id(kind), icon.name(), label))
-                .collect();
-            actions.push(
-                ToolbarAction::new(INSERT, "plus", tr("slides-insert"))
-                    .with_items(items)
-                    .enabled(may_edit && self.slide().is_some()),
-            );
-        }
-        actions.push(
+        let items = insert_tools()
+            .into_iter()
+            .map(|(label, icon, kind)| ToolbarAction::new(insert_id(kind), icon.name(), label))
+            .collect();
+        let properties = editing && self.inspector_open();
+        let actions = vec![
+            ToolbarAction::new(INSERT, "plus", tr("slides-insert"))
+                .with_items(items)
+                .enabled(may_edit && self.slide().is_some()),
             ToolbarAction::new(PRESENT, "play", tr("slides-a11y-start-presentation"))
                 .enabled(!self.deck.slides.is_empty()),
-        );
-        if editing {
-            let open = self.inspector_open();
-            actions.push(
-                ToolbarAction::new(
-                    PROPERTIES,
-                    "panel-right",
-                    tr(if open {
-                        "slides-hide-properties"
-                    } else {
-                        "slides-show-properties"
-                    }),
-                )
-                .on(open),
-            );
-        }
+            ToolbarAction::new(
+                PROPERTIES,
+                "panel-right",
+                tr(if properties {
+                    "slides-hide-properties"
+                } else {
+                    "slides-show-properties"
+                }),
+            )
+            .on(properties),
+        ];
         let title = self.deck.title.trim();
         WindowToolbar {
-            sidebar: editing.then(|| self.rail_open()),
+            sidebar: Some(editing && self.rail_open()),
             location: Some(ToolbarLocation {
                 label: if title.is_empty() {
                     tr("slides-untitled")
@@ -118,7 +111,7 @@ impl SlidesApp {
         }
         match event {
             ToolbarEvent::ToggleSidebar => self.dispatch.effect(&SlidesEffect::ShowSlideList {
-                shown: !self.rail_open(),
+                shown: self.mode != Mode::Edit || !self.rail_open(),
             }),
             ToolbarEvent::Commit { text } => self.rename(text),
             ToolbarEvent::Action { id } => self.run_bar_action(id),
@@ -132,16 +125,15 @@ impl SlidesApp {
             OVERVIEW => self.dispatch.effect(&SlidesEffect::Overview),
             PRESENT => self.dispatch.effect(&SlidesEffect::Present),
             PROPERTIES => self.dispatch.effect(&SlidesEffect::ShowProperties {
-                shown: !self.inspector_open(),
+                shown: self.mode != Mode::Edit || !self.inspector_open(),
             }),
             _ => {
                 let tool = insert_tools()
                     .into_iter()
                     .map(|(_, _, kind)| kind)
                     .find(|kind| insert_id(*kind) == id);
-                if let Some(kind) = tool
-                    && self.mode == Mode::Edit
-                {
+                if let Some(kind) = tool {
+                    self.mode = Mode::Edit;
                     self.apply_hit(Hit::Insert(kind));
                 }
             }
