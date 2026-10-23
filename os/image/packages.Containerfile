@@ -266,6 +266,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # live resolver state that does not exist while constructing an offline image.
     # Filter the installed inventory; querying absent names emits diagnostics on
     # stdout, which must never become removal arguments. Removal needs no mirrors.
+    # `dnsmasq` is NetworkManager's DNS cache (25-tilo-dns-cache.conf).
     && dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
@@ -279,6 +280,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     wl-clipboard \
     NetworkManager \
     NetworkManager-wifi \
+    dnsmasq \
     wireless-regdb \
     ModemManager \
     fwupd \
