@@ -554,16 +554,6 @@ fn card(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
                 .on_view(move || welcomed.set(true)),
         )
     };
-    let tip = |icon: Icon, id: &str| -> Element {
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .with_align_items(ui::taffy::AlignItems::Center)
-                .push(Box::new(ui::widget::IconWidget::new(icon).dim()))
-                .push(Box::new(Text::new(id))),
-        )
-    };
     let recents = recent_list(cx, tools);
     let body = Column::new()
         .with_no_padding()
@@ -584,10 +574,6 @@ fn card(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
                 ))
                 .push(close),
         ))
-        .push(tip(Icon::Brush, "canvas-welcome-paint"))
-        .push(tip(Icon::Square, "canvas-welcome-draw"))
-        .push(tip(Icon::Bot, "canvas-welcome-agent"))
-        .push(tip(Icon::Keyboard, "canvas-welcome-keys"))
         .push(Box::new(
             Row::new()
                 .no_wrap()
