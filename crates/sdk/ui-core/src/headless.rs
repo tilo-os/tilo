@@ -1045,7 +1045,10 @@ impl FrameHarness {
     fn pump_component_wakes_checked(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         self.readmit_owner_service_layout()?;
         self.drain_component_wakes();
-        if self.take_wake() {
+        // A host on its own frame clock takes a wake in its next frame, as
+        // the live window's redraw request does; input arriving before it
+        // is dispatched against the last frame, as there.
+        if !self.coalesce_input_frames && self.take_wake() {
             self.relayout();
         }
         self.readmit_owner_service_layout()
@@ -6456,7 +6459,13 @@ impl FrameHarness {
             self.interaction = environment;
             self.root.set_interaction_environment(environment);
             self.invalidate_layout_tree();
-            self.relayout();
+            // The live window lays out again in its next frame; a host on
+            // its own frame clock does the same.
+            if self.coalesce_input_frames {
+                self.input_frame_pending = true;
+            } else {
+                self.relayout();
+            }
         }
         if self.active_input_instance.is_some()
             && self.focused.is_none()
@@ -6674,7 +6683,7 @@ impl FrameHarness {
         }
         self.last_send_skipped_relayout = inert;
         // A host on its own frame clock takes the frame of a wheel notch, a
-        // key, a composed text or a pointer move there: they arrive faster
+        // pinch, a key, a composed text or a pointer move there: they arrive faster
         // than frames (a word typed, a drag), and each frame composed here
         // would be replaced unseen by the next, before the host's own frame
         // lays out and draws once more for the screen.
@@ -6683,6 +6692,7 @@ impl FrameHarness {
             && matches!(
                 event,
                 WindowEvent::MouseWheel { .. }
+                    | WindowEvent::PinchGesture { .. }
                     | WindowEvent::KeyboardInput { .. }
                     | WindowEvent::Ime(_)
                     | WindowEvent::CursorMoved { .. }
@@ -6702,7 +6712,7 @@ impl FrameHarness {
         }
     }
 
-    /// Leave the frame a wheel, key, composed text or pointer move asks for
+    /// Leave the frame a wheel, pinch, key, composed text or pointer move asks for
     /// to the host's next [`Self::poll_frame`] instead of composing, laying
     /// out and drawing it inside [`Self::send_host_event`]. For a host that
     /// presents on its own frame clock, as a browser page does on animation
