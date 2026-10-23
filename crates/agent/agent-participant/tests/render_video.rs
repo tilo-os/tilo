@@ -120,7 +120,11 @@ fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Va
 #[test]
 fn an_agent_is_offered_the_renders_exactly_where_its_host_renders() {
     let agent = agents_record(&timeline(None), &ContentStore::memory());
-    for action in ["export-video-content", "view-frame-content", "render"] {
+    for action in [
+        "export-video-content",
+        "view-frame-content",
+        "render-timeline",
+    ] {
         assert_eq!(
             offered(&agent, action).is_some(),
             render::available(),

@@ -5347,7 +5347,7 @@ impl VideoEditorApp {
             | VideoEditorEffect::SaveAs { path: Some(_) } => {
                 return Err("direct project I/O requires lifecycle dispatch".into());
             }
-            VideoEditorEffect::Render { .. } => {
+            VideoEditorEffect::RenderTimeline { .. } => {
                 return Err("a render is answered as a job of its own".into());
             }
             VideoEditorEffect::ExportVideoContent { .. }
@@ -7644,7 +7644,7 @@ impl VideoEditorApp {
     ) -> ui::framework::EffectAnswer {
         use crate::actions::VideoEditorEffect;
         match &effect {
-            VideoEditorEffect::Render {
+            VideoEditorEffect::RenderTimeline {
                 start,
                 end,
                 format,
@@ -9416,7 +9416,7 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
                 reason,
             ));
             statuses.push(ui::framework::EffectStatus::unavailable(
-                VideoEditorEffect::RENDER,
+                VideoEditorEffect::RENDER_TIMELINE,
                 "export_unavailable",
                 reason,
             ));
