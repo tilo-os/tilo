@@ -18,7 +18,7 @@ use winit::event::{Ime, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::chart_palette::ChartPalette;
-use ui::paint::PaintCtx;
+use ui::paint::{PaintCtx, clipped};
 use ui::surface::Region;
 use ui::text_edit::{EditCore, Motion};
 use ui::text_render::{TextRenderer, TextStyle};
@@ -26,6 +26,7 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use ui::widget::ControlSize;
+use ui::widget::paint_damage::PaintParts;
 use ui::widget::scrollbar::{ScrollMetrics, Scrollbar};
 
 use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value};
@@ -2281,8 +2282,13 @@ impl Grid {
         }
     }
 
+    /// Paint the grid into `scene`, each region its own part of `parts`, so a
+    /// host repaints what changed: a typed character the editor, a
+    /// committed cell its row, a moved selection where its marks were and
+    /// are.
     pub fn draw(
         &mut self,
+        parts: &mut PaintParts,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -2295,142 +2301,247 @@ impl Grid {
             self.rebuild_geom();
             self.needs_autofit = false;
         }
-        let body = self.body_rect();
-        let cols = self.visible_cols();
-        let rows = self.visible_rows();
+        let this = &*self;
+        let body = this.body_rect();
+        let cols = this.visible_cols();
+        let rows = this.visible_rows();
+        let ink = ui::widget::focus_ring_reach(theme);
+        let reach = |rect: Rect| rect.inflate(ink, ink).intersect(body);
 
         // The cells stand on the window's own ground; the washes (selection,
-        // referenced ranges) go under the text, the outlines over it.
-        self.draw_selection_fill(scene, transform, theme, body);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
-        self.draw_reference_washes(scene, transform, theme, body);
-        self.draw_cells(
-            &mut PaintCtx::new(scene, transform, tr, theme),
-            &cols,
-            &rows,
-            body,
-        );
-        self.draw_grid_lines(scene, transform, theme, &cols, &rows, body);
-        self.draw_active_highlight(scene, transform, theme, body);
-        self.draw_fill_handle(scene, transform, theme, body);
-        self.draw_reference_outlines(scene, transform, theme, body);
+        // referenced ranges) go under the text, the outlines over it. What
+        // the body clips is clipped in each part, so every part stands alone.
+        let selection = this.selection_rects(body);
+        if let Some(bounds) = union_of(&selection) {
+            parts.draw(scene, "sheet-selection", bounds, |scene| {
+                let fill = theme.tokens.colors.intent.selection;
+                for rect in &selection {
+                    scene.fill(Fill::NonZero, transform, fill, None, rect);
+                }
+            });
+        }
+        let references: Vec<(Rect, Color)> = this
+            .referenced_ranges(theme)
+            .into_iter()
+            .filter_map(|(range, color)| Some((intersect(range, body)?, color)))
+            .collect();
+        let reference_rects: Vec<Rect> = references.iter().map(|(rect, _)| *rect).collect();
+        if let Some(bounds) = union_of(&reference_rects) {
+            parts.draw(scene, "sheet-washes", bounds, |scene| {
+                Self::draw_reference_washes(scene, transform, theme, &references);
+            });
+        }
+        for &r in &rows {
+            let row = this.cell_screen_rect(0, r);
+            let Some(band) = intersect(Rect::new(body.x0, row.y0, body.x1, row.y1), body) else {
+                continue;
+            };
+            parts.draw(scene, format!("sheet-row-{r}"), band, |scene| {
+                clipped(scene, transform, band, |scene| {
+                    this.draw_row_cells(
+                        &mut PaintCtx::new(scene, transform, tr, theme),
+                        &cols,
+                        r,
+                        body,
+                    );
+                });
+            });
+        }
+        parts.draw(scene, "sheet-lines", body, |scene| {
+            clipped(scene, transform, body, |scene| {
+                this.draw_grid_lines(scene, transform, theme, &cols, &rows, body);
+            });
+        });
+        if let Some(active) = intersect(this.cell_screen_rect(this.active.0, this.active.1), body) {
+            parts.draw(scene, "sheet-active", reach(active), |scene| {
+                clipped(scene, transform, body, |scene| {
+                    scene.stroke(
+                        &Stroke::new(2.0),
+                        transform,
+                        theme.tokens.colors.intent.you,
+                        None,
+                        &active,
+                    );
+                });
+            });
+        }
+        if let Some(mark) = this.fill_mark(body) {
+            parts.draw(scene, "sheet-fill", reach(mark.outline()), |scene| {
+                clipped(scene, transform, body, |scene| {
+                    Self::draw_fill_mark(scene, transform, theme, mark);
+                });
+            });
+        }
+        if this.reference_outlines_visible()
+            && let Some(bounds) = union_of(&reference_rects)
+        {
+            parts.draw(scene, "sheet-outlines", reach(bounds), |scene| {
+                clipped(scene, transform, body, |scene| {
+                    for (rect, color) in &references {
+                        scene.stroke(&Stroke::new(1.5), transform, *color, None, rect);
+                    }
+                });
+            });
+        }
+        self.draw_edge_fades(parts, scene, transform, theme, (&cols, &rows));
+
+        self.draw_headers_and_bars(parts, scene, transform, tr, theme, (&cols, &rows));
+    }
+
+    /// The fades where the body's edge cuts a column or a row, each its own
+    /// part; `visible` is the visible columns and rows.
+    fn draw_edge_fades(
+        &self,
+        parts: &mut PaintParts,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        visible: (&[u32], &[u32]),
+    ) {
+        let (cols, rows) = visible;
+        let body = self.body_rect();
         // A column the body's edge cuts fades out there, so a number cut
         // short reads as running on past the edge rather than as a shorter
         // number.
-        if cols
-            .last()
-            .is_some_and(|&c| self.cell_screen_rect(c, 0).x1 > body.x1 + 0.5)
-        {
-            ui::surface::content_edge_fade(
-                scene,
-                transform,
-                body,
+        let ground = theme.tokens.colors.surfaces.content;
+        let cut = [
+            (
+                "sheet-fade-trailing",
                 ui::surface::ContentEdge::Trailing,
-                theme.tokens.colors.surfaces.content,
-            );
-        }
-        if rows
-            .last()
-            .is_some_and(|&r| self.cell_screen_rect(0, r).y1 > body.y1 + 0.5)
-        {
-            ui::surface::content_edge_fade(
-                scene,
-                transform,
-                body,
+                cols.last()
+                    .is_some_and(|&c| self.cell_screen_rect(c, 0).x1 > body.x1 + 0.5),
+            ),
+            (
+                "sheet-fade-bottom",
                 ui::surface::ContentEdge::Bottom,
-                theme.tokens.colors.surfaces.content,
-            );
-        }
-        scene.pop_layer();
-
-        // --- headers (painted on top, never clipped by the body) ---
-        self.draw_headers(scene, transform, tr, theme, &cols, &rows);
-
-        self.draw_scrollbars(scene, transform, theme);
-
-        // --- in-cell editor overlay ---
-        if self.edit.is_some() {
-            self.draw_editor(scene, transform, tr, theme);
+                rows.last()
+                    .is_some_and(|&r| self.cell_screen_rect(0, r).y1 > body.y1 + 0.5),
+            ),
+        ];
+        for (key, edge, _) in cut.into_iter().filter(|(_, _, cut)| *cut) {
+            parts.draw(scene, key, body, |scene| {
+                clipped(scene, transform, body, |scene| {
+                    ui::surface::content_edge_fade(scene, transform, body, edge, ground);
+                });
+            });
         }
     }
 
-    /// The library's thumbs, one per overflowing axis; the gutter itself is
-    /// bare ground.
-    fn draw_scrollbars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical] {
+    /// The header strips, the scroll bars and the in-cell editor, each its
+    /// own part, over the body's parts; `visible` is the visible columns and
+    /// rows.
+    fn draw_headers_and_bars(
+        &self,
+        parts: &mut PaintParts,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        visible: (&[u32], &[u32]),
+    ) {
+        let (cols, rows) = visible;
+        let body = self.body_rect();
+        let ink = ui::widget::focus_ring_reach(theme);
+        let reach = |rect: Rect| rect.inflate(ink, ink).intersect(body);
+        // --- headers (painted on top, never clipped by the body) ---
+        let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.grid_y0());
+        parts.draw(scene, "sheet-col-headers", col_strip, |scene| {
+            self.draw_col_headers(scene, transform, tr, theme, cols, col_strip);
+        });
+        let row_strip = Rect::new(self.rect.x0, self.grid_y0(), self.grid_x0(), self.rect.y1);
+        parts.draw(scene, "sheet-row-headers", row_strip, |scene| {
+            self.draw_row_headers(scene, transform, tr, theme, rows, row_strip);
+        });
+        let corner = Rect::new(self.rect.x0, self.rect.y0, self.grid_x0(), self.grid_y0());
+        parts.draw(scene, "sheet-corner", corner, |scene| {
+            ui::surface::region(scene, transform, corner, Region::Sidebar, theme);
+        });
+        parts.draw(scene, "sheet-header-rules", self.rect, |scene| {
+            self.header_rules(scene, transform, theme);
+        });
+
+        // The library's thumbs, one per overflowing axis; the gutter itself
+        // is bare ground.
+        for (key, axis) in [
+            ("sheet-bar-x", ScrollAxis::Horizontal),
+            ("sheet-bar-y", ScrollAxis::Vertical),
+        ] {
             if self.bar_shown(axis) {
-                self.bar(axis).draw(
-                    scene,
-                    transform,
-                    self.bar_track(axis),
-                    self.bar_metrics(axis),
-                    theme,
-                    false,
-                );
+                let track = self.bar_track(axis);
+                let bounds = track.inflate(ink, ink);
+                parts.draw(scene, key, bounds, |scene| {
+                    self.bar(axis).draw(
+                        scene,
+                        transform,
+                        track,
+                        self.bar_metrics(axis),
+                        theme,
+                        false,
+                    );
+                });
             }
         }
+
+        // --- in-cell editor overlay ---
+        if let Some(edit_rect) = self.editor_rect(tr, theme) {
+            parts.draw(scene, "sheet-editor", reach(edit_rect), |scene| {
+                self.draw_editor(scene, transform, tr, theme, edit_rect);
+            });
+        }
     }
 
-    /// Selection ranges (a lift of the ground) under the cells. Every
-    /// discontiguous range paints; overlaps are the same lift.
-    fn draw_selection_fill(&self, scene: &mut Scene, transform: Affine, theme: &Theme, body: Rect) {
-        let fill = theme.tokens.colors.intent.selection;
-        for range in self
-            .extra_ranges
+    /// Each selection range's screen rect inside `body`: every discontiguous
+    /// range paints; overlaps are the same lift.
+    fn selection_rects(&self, body: Rect) -> Vec<Rect> {
+        self.extra_ranges
             .iter()
             .copied()
             .chain(std::iter::once(self.current_range()))
-        {
-            let sr = self.range_screen_rect(range);
-            if let Some(cr) = intersect(sr, body) {
-                scene.fill(Fill::NonZero, transform, fill, None, &cr);
-            }
-        }
+            .filter_map(|range| intersect(self.range_screen_rect(range), body))
+            .collect()
     }
 
-    /// Paint each visible cell's value/formula text, elided with an ellipsis
-    /// where it does not fit the cell or the edge of the body.
-    fn draw_cells(&self, ctx: &mut PaintCtx<'_>, cols: &[u32], rows: &[u32], body: Rect) {
+    /// Paint each visible cell's value/formula text in row `r`, elided with
+    /// an ellipsis where it does not fit the cell or the edge of the body.
+    fn draw_row_cells(&self, ctx: &mut PaintCtx<'_>, cols: &[u32], r: u32, body: Rect) {
         let theme = ctx.theme;
         let colors = &theme.tokens.colors;
-        for &r in rows {
-            for &c in cols {
-                let cell = self.cell_screen_rect(c, r);
-                // Skip while editing this exact cell — the editor overlay
-                // paints it instead.
-                if let Some(e) = &self.edit
-                    && e.addr == (c, r)
-                {
+        for &c in cols {
+            let cell = self.cell_screen_rect(c, r);
+            // Skip while editing this exact cell — the editor overlay
+            // paints it instead.
+            if let Some(e) = &self.edit
+                && e.addr == (c, r)
+            {
+                continue;
+            }
+            // Formula view: show the raw input verbatim, set as code, so
+            // it reads as "source" rather than a result.
+            if self.show_formulas
+                && let Some(raw) = self.raw.get(&(c, r))
+                && !raw.is_empty()
+            {
+                let style = self.cell_style(theme, (c, r), false);
+                self.draw_cell_text(ctx, raw, &style, colors.text_primary, (cell, body), false);
+                continue;
+            }
+            if let Some(val) = self.values.get(&(c, r)) {
+                if val.is_empty() {
                     continue;
                 }
-                // Formula view: show the raw input verbatim, set as code, so
-                // it reads as "source" rather than a result.
-                if self.show_formulas
-                    && let Some(raw) = self.raw.get(&(c, r))
-                    && !raw.is_empty()
-                {
-                    let style = self.cell_style(theme, (c, r), false);
-                    self.draw_cell_text(ctx, raw, &style, colors.text_primary, (cell, body), false);
+                let fmt = self.fmt.get(&(c, r)).copied().unwrap_or_default();
+                let text = format_value(val, fmt);
+                if text.is_empty() {
                     continue;
                 }
-                if let Some(val) = self.values.get(&(c, r)) {
-                    if val.is_empty() {
-                        continue;
-                    }
-                    let fmt = self.fmt.get(&(c, r)).copied().unwrap_or_default();
-                    let text = format_value(val, fmt);
-                    if text.is_empty() {
-                        continue;
-                    }
-                    let color = if val.is_error() {
-                        colors.semantic.danger
-                    } else {
-                        colors.text_primary
-                    };
-                    let right_align = val.is_numeric() && fmt != CellFormat::Text;
-                    let style = self.cell_style(theme, (c, r), val.is_numeric());
-                    self.draw_cell_text(ctx, &text, &style, color, (cell, body), right_align);
-                }
+                let color = if val.is_error() {
+                    colors.semantic.danger
+                } else {
+                    colors.text_primary
+                };
+                let right_align = val.is_numeric() && fmt != CellFormat::Text;
+                let style = self.cell_style(theme, (c, r), val.is_numeric());
+                self.draw_cell_text(ctx, &text, &style, color, (cell, body), right_align);
             }
         }
     }
@@ -2501,52 +2612,42 @@ impl Grid {
         }
     }
 
-    /// Active-cell highlight border, in your colour.
-    fn draw_active_highlight(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        body: Rect,
-    ) {
-        if let Some(ar) = intersect(self.cell_screen_rect(self.active.0, self.active.1), body) {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.tokens.colors.intent.you,
-                None,
-                &ar,
-            );
+    /// The fill handle or its drag preview inside `body`, if either shows.
+    fn fill_mark(&self, body: Rect) -> Option<FillMark> {
+        if let Some(fd) = self.fill_drag {
+            let (_, _, dtl, dbr) = Self::fill_region(fd.src, fd.target)?;
+            let tl = self.cell_screen_rect(dtl.0, dtl.1);
+            let br = self.cell_screen_rect(dbr.0, dbr.1);
+            intersect(Rect::new(tl.x0, tl.y0, br.x1, br.y1), body).map(FillMark::Preview)
+        } else {
+            let ring = self.fill_handle_rect()?;
+            let square = intersect(ring, body)?;
+            Some(FillMark::Handle { ring, square })
         }
     }
 
     /// Fill handle + drag preview. While dragging, a dashed outline shows
     /// the region the pattern will extend into; at rest, a small solid
     /// square sits on the selection's bottom-right corner.
-    fn draw_fill_handle(&self, scene: &mut Scene, transform: Affine, theme: &Theme, body: Rect) {
+    fn draw_fill_mark(scene: &mut Scene, transform: Affine, theme: &Theme, mark: FillMark) {
         let colors = &theme.tokens.colors;
-        if let Some(fd) = self.fill_drag {
-            if let Some((_, _, dtl, dbr)) = Self::fill_region(fd.src, fd.target) {
-                let tl = self.cell_screen_rect(dtl.0, dtl.1);
-                let br = self.cell_screen_rect(dbr.0, dbr.1);
-                if let Some(cr) = intersect(Rect::new(tl.x0, tl.y0, br.x1, br.y1), body) {
-                    let dashed = Stroke::new(1.5).with_dashes(0.0, [4.0, 3.0]);
-                    scene.stroke(&dashed, transform, colors.intent.you, None, &cr);
-                }
+        match mark {
+            FillMark::Preview(region) => {
+                let dashed = Stroke::new(1.5).with_dashes(0.0, [4.0, 3.0]);
+                scene.stroke(&dashed, transform, colors.intent.you, None, &region);
             }
-        } else if let Some(hr) = self.fill_handle_rect()
-            && let Some(cr) = intersect(hr, body)
-        {
-            // A thin ground-coloured ring keeps the square legible on any
-            // cell fill underneath.
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                colors.surfaces.content,
-                None,
-                &hr,
-            );
-            scene.fill(Fill::NonZero, transform, colors.intent.you, None, &cr);
+            FillMark::Handle { ring, square } => {
+                // A thin ground-coloured ring keeps the square legible on any
+                // cell fill underneath.
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    colors.surfaces.content,
+                    None,
+                    &ring,
+                );
+                scene.fill(Fill::NonZero, transform, colors.intent.you, None, &square);
+            }
         }
     }
 
@@ -2574,27 +2675,25 @@ impl Grid {
             .collect()
     }
 
-    /// A faint wash of each reference's colour over its cells, under the text.
+    /// A faint wash of each reference's colour over its cells, under the
+    /// text; `references` are already clipped to the body.
     fn draw_reference_washes(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        body: Rect,
+        references: &[(Rect, Color)],
     ) {
         let colors = &theme.tokens.colors;
-        for (range, color) in self.referenced_ranges(theme) {
-            if let Some(cr) = intersect(range, body) {
-                let wash = colors
-                    .tinted_chip_on(
-                        colors.surfaces.content,
-                        color,
-                        0.18,
-                        ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-                    )
-                    .fill;
-                scene.fill(Fill::NonZero, transform, wash, None, &cr);
-            }
+        for (rect, color) in references {
+            let wash = colors
+                .tinted_chip_on(
+                    colors.surfaces.content,
+                    *color,
+                    0.18,
+                    ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                )
+                .fill;
+            scene.fill(Fill::NonZero, transform, wash, None, rect);
         }
     }
 
@@ -2604,24 +2703,6 @@ impl Grid {
     /// wash.
     pub(crate) fn reference_outlines_visible(&self) -> bool {
         self.edit.is_some()
-    }
-
-    /// The outline of each referenced range, over the cells.
-    fn draw_reference_outlines(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        body: Rect,
-    ) {
-        if !self.reference_outlines_visible() {
-            return;
-        }
-        for (range, color) in self.referenced_ranges(theme) {
-            if let Some(cr) = intersect(range, body) {
-                scene.stroke(&Stroke::new(1.5), transform, color, None, &cr);
-            }
-        }
     }
 
     /// Absolute screen rect spanning one selection range (may lie off-body;
@@ -2672,24 +2753,6 @@ impl Grid {
         ctx.text(&shown, style, color, Point::new(tx, ty), None);
     }
 
-    fn draw_headers(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        cols: &[u32],
-        rows: &[u32],
-    ) {
-        self.draw_col_headers(scene, transform, tr, theme, cols);
-        self.draw_row_headers(scene, transform, tr, theme, rows);
-
-        // Corner box.
-        let corner = Rect::new(self.rect.x0, self.rect.y0, self.grid_x0(), self.grid_y0());
-        ui::surface::region(scene, transform, corner, Region::Sidebar, theme);
-        self.header_rules(scene, transform, theme);
-    }
-
     /// The headers' two hairlines, on the strips' own ground: under the
     /// column labels and beside the row labels.
     fn header_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
@@ -2728,11 +2791,10 @@ impl Grid {
         tr: &mut TextRenderer,
         theme: &Theme,
         cols: &[u32],
+        col_strip: Rect,
     ) {
         let colors = &theme.tokens.colors;
         let style = theme.text(TextRole::Caption).numeric();
-
-        let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.grid_y0());
         let ground = ui::surface::region(scene, transform, col_strip, Region::Sidebar, theme);
         scene.push_layer(
             Fill::NonZero,
@@ -2796,11 +2858,10 @@ impl Grid {
         tr: &mut TextRenderer,
         theme: &Theme,
         rows: &[u32],
+        row_strip: Rect,
     ) {
         let colors = &theme.tokens.colors;
         let style = theme.text(TextRole::Caption).numeric();
-
-        let row_strip = Rect::new(self.rect.x0, self.grid_y0(), self.grid_x0(), self.rect.y1);
         let ground = ui::surface::region(scene, transform, row_strip, Region::Sidebar, theme);
         scene.push_layer(
             Fill::NonZero,
@@ -2891,34 +2952,38 @@ impl Grid {
 
     /// Like Excel: the active edit is a floating field aligned to the cell
     /// that grows rightward into **empty** neighbours only, stopping at the
-    /// first occupied cell or the grid's right edge. It is always clipped to
-    /// the grid body so it never paints over the headers.
+    /// first occupied cell or the grid's right edge. `None` while nothing is
+    /// edited or the edited cell scrolled out from under the body.
+    fn editor_rect(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<Rect> {
+        let e = self.edit.as_ref()?;
+        let (ec, er) = e.addr;
+        let cell = self.cell_screen_rect(ec, er);
+        let body = self.body_rect();
+        if cell.y1 <= body.y0 || cell.x1 <= body.x0 || cell.x0 >= body.x1 || cell.y0 >= body.y1 {
+            return None;
+        }
+        let desired = self.editor_desired_width(&e.shown(), tr, &theme.text(TextRole::Body));
+        // Grow rightward across empty neighbours until we have enough room or
+        // we hit an occupied cell / the last column / the grid edge.
+        let right = self.editor_right_extent((ec, er), desired, body.x1);
+        Some(Rect::new(cell.x0.max(body.x0), cell.y0, right, cell.y1))
+    }
+
+    /// The editor in `edit_rect` ([`Self::editor_rect`]), clipped to the
+    /// grid body so it never paints over the headers.
     fn draw_editor(
         &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        edit_rect: Rect,
     ) {
         let Some(e) = &self.edit else { return };
         let colors = &theme.tokens.colors;
-        let (ec, er) = e.addr;
-        let cell = self.cell_screen_rect(ec, er);
         let body = self.body_rect();
-
-        // Don't paint an editor that scrolled out from under the body.
-        if cell.y1 <= body.y0 || cell.x1 <= body.x0 || cell.x0 >= body.x1 || cell.y0 >= body.y1 {
-            return;
-        }
-
         let style = theme.text(TextRole::Body);
         let text = e.shown();
-        let desired = self.editor_desired_width(&text, tr, &style);
-
-        // Grow rightward across empty neighbours until we have enough room or
-        // we hit an occupied cell / the last column / the grid edge.
-        let right = self.editor_right_extent((ec, er), desired, body.x1);
-        let edit_rect = Rect::new(cell.x0.max(body.x0), cell.y0, right, cell.y1);
 
         // Clip everything to the body so the floating editor stays inside the
         // grid even when it overflows past where data ends.
@@ -3142,6 +3207,29 @@ pub(crate) fn draw_formula_line(
 }
 
 /// Intersection of two rects, or `None` if they don't overlap.
+/// Where the fill handle paints: at rest a square on the selection's corner
+/// (its ring unclipped, its fill clipped to the body), while dragging the
+/// dashed outline of the region the pattern extends into.
+#[derive(Clone, Copy)]
+enum FillMark {
+    Preview(Rect),
+    Handle { ring: Rect, square: Rect },
+}
+
+impl FillMark {
+    /// The rect its strokes outline.
+    fn outline(self) -> Rect {
+        match self {
+            Self::Preview(rect) | Self::Handle { ring: rect, .. } => rect,
+        }
+    }
+}
+
+/// The smallest rect holding every one of `rects`; `None` with none.
+fn union_of(rects: &[Rect]) -> Option<Rect> {
+    rects.iter().copied().reduce(|a, b| a.union(b))
+}
+
 fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     let x0 = a.x0.max(b.x0);
     let y0 = a.y0.max(b.y0);

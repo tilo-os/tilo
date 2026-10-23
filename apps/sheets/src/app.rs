@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
+use ui::widget::paint_damage::PaintParts;
 use ui::widget::{AppModel, Edits, ModelPath};
 
 use automerge::ObjId;
@@ -428,6 +429,9 @@ pub struct SheetsApp {
     /// sheet-tab strip free of status text so it reads purely as the sheet
     /// switcher.
     status_bubble: ui::StatusBubble,
+    /// The last frame's drawing, part by part, so a frame reports where it
+    /// differs from it.
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     /// A staged capture pins the bubble open so a still frame shows it.
     staged_status: bool,
     /// The part of a screenshot scenario staged against the document, done
@@ -560,6 +564,7 @@ impl SheetsApp {
             active_sheet: 0,
             status: "Ready".into(),
             status_bubble: ui::StatusBubble::new(),
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             staged_status: false,
             staged: None,
             pending: Pending { redraw: true },
@@ -2749,22 +2754,45 @@ impl Widget for SheetsApp {
         // anchors to what is painted (and the More menu knows whether the bar
         // overflowed).
         self.apply_staged_overlay();
-        self.draw_chrome(scene, transform, text_renderer, theme, presence);
-        self.grid.draw(scene, transform, text_renderer, theme);
-        self.draw_comment_markers(scene, transform, theme);
-        self.draw_cell_presence(scene, transform, text_renderer, theme, presence);
-        self.draw_annotation_dock(scene, transform, text_renderer, theme);
+        // Each region is a part of its own, so the frame reports as damage
+        // the regions whose drawing changed: a typed character repaints the
+        // editor and the formula bar, not the window.
+        let window = self.rect;
+        let tr = text_renderer;
+        let mut parts = PaintParts::new(scene);
+        self.draw_chrome(&mut parts, scene, transform, tr, theme, presence);
+        self.grid.draw(&mut parts, scene, transform, tr, theme);
+        parts.draw(scene, "sheet-comment-markers", window, |scene| {
+            self.draw_comment_markers(scene, transform, theme);
+        });
+        parts.draw(scene, "sheet-cell-presence", window, |scene| {
+            self.draw_cell_presence(scene, transform, tr, theme, presence);
+        });
+        parts.draw(scene, "sheet-annotations", window, |scene| {
+            self.draw_annotation_dock(scene, transform, tr, theme);
+        });
         // The open comment floats over the cells beside its own.
-        self.draw_comment_popover(scene, transform, text_renderer, theme);
+        parts.draw(scene, "sheet-comment", window, |scene| {
+            self.draw_comment_popover(scene, transform, tr, theme);
+        });
         // The transient floating status bubble sits above the grid and the
         // tab strip, below the top layer.
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
-        self.draw_tab_rename(scene, transform, text_renderer, theme);
+        let bubble = self.status_bubble_bounds(tr, theme);
+        parts.draw(scene, "sheet-status", bubble, |scene| {
+            self.draw_status_bubble(scene, transform, tr, theme);
+        });
+        parts.draw(scene, "sheet-tab-rename", window, |scene| {
+            self.draw_tab_rename(scene, transform, tr, theme);
+        });
         // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
         // glow that sheet's tab in their colour so you can see where they
         // went ("Alice is on Q2"). Painted after the chrome so it reads on
         // top of the tab surface.
-        self.draw_sheet_tab_presence(scene, transform, theme, presence);
+        parts.draw(scene, "sheet-tab-presence", window, |scene| {
+            self.draw_sheet_tab_presence(scene, transform, theme, presence);
+        });
+        self.paint_damage
+            .record(window, parts.finish(scene, vec![window], transform, theme));
     }
 
     fn draw_overlay(
@@ -3270,9 +3298,27 @@ impl Widget for SheetsApp {
         self.pending.redraw || self.grid.dirty()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+
+    fn damage_covers_own_box(&self) -> bool {
+        self.paint_damage.covers_own_bounds()
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
         self.pending.redraw = false;
         self.grid.mark_drawn();
+        self.paint_damage.mark_drawn();
     }
 
     /// The grid fills its node and places everything in it in

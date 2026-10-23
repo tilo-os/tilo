@@ -17,6 +17,7 @@ use super::{
 use ui::icons::Icon;
 use ui::num::f64_of_usize;
 use ui::surface::separator;
+use ui::widget::paint_damage::PaintParts;
 use ui::widget::{
     ButtonFace, ColorSwatchFace, ControlSize, FieldFace, SegmentedFace, SegmentedStyle,
 };
@@ -312,6 +313,7 @@ impl SheetsApp {
     /// the framework painted it already.
     pub(super) fn draw_chrome(
         &mut self,
+        parts: &mut PaintParts,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -319,9 +321,22 @@ impl SheetsApp {
         presence: &PresenceCtx,
     ) {
         let _ = presence;
-        self.draw_name_box(scene, transform, tr, theme);
-        self.draw_formula_field(scene, transform, tr, theme);
-        self.draw_sheet_tabs_strip(scene, transform, tr, theme);
+        let reach = ui::widget::focus_ring_reach(theme);
+        let name_box = self.name_box_rect.inflate(reach, reach);
+        parts.draw(scene, "sheet-name-box", name_box, |scene| {
+            self.draw_name_box(scene, transform, tr, theme);
+        });
+        let formula = self
+            .fx_rect
+            .union(self.formula_field_rect)
+            .inflate(reach, reach);
+        parts.draw(scene, "sheet-formula", formula, |scene| {
+            self.draw_formula_field(scene, transform, tr, theme);
+        });
+        let tabs = self.tabs_rect.inflate(reach, reach);
+        parts.draw(scene, "sheet-tabs", tabs, |scene| {
+            self.draw_sheet_tabs_strip(scene, transform, tr, theme);
+        });
     }
 
     /// The field face of the formula bar: its raised ground with the derived
@@ -555,6 +570,13 @@ impl SheetsApp {
             self.grid_rect.x1 - self.grid.scrollbar_thickness(),
             self.grid_rect.y1 - self.grid.scrollbar_thickness(),
         )
+    }
+
+    /// Every pixel the status bubble paints where it floats now, its shadow
+    /// included.
+    pub(super) fn status_bubble_bounds(&self, tr: &mut TextRenderer, theme: &Theme) -> Rect {
+        let rect = self.status_bubble.rect_in(self.status_area(), tr, theme);
+        ui::widget::floating_surface::painted_bounds(rect, theme)
     }
 
     /// Paint the transient status bubble over the grid's bottom-trailing

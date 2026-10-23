@@ -2878,7 +2878,7 @@ pub use layout::{
 };
 
 mod button;
-pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors};
+pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors, focus_ring_reach};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;

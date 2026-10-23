@@ -205,13 +205,25 @@ impl PaintParts {
     pub fn draw<R>(
         &mut self,
         scene: &mut Scene,
-        key: &'static str,
+        key: impl Into<String>,
         bounds: Rect,
         draw: impl FnOnce(&mut Scene) -> R,
     ) -> R {
+        self.draw_bounded(scene, key, |scene| (bounds, draw(scene)))
+    }
+
+    /// [`Self::draw`] for a part whose bounds its drawing decides (a bar
+    /// that measures itself as it paints): `draw` returns them with its
+    /// result.
+    pub fn draw_bounded<R>(
+        &mut self,
+        scene: &mut Scene,
+        key: impl Into<String>,
+        draw: impl FnOnce(&mut Scene) -> (Rect, R),
+    ) -> R {
         self.outside |= scene.encoding().draw_tags.len() != self.drawn;
         let mut part = Scene::new();
-        let result = draw(&mut part);
+        let (bounds, result) = draw(&mut part);
         scene.append(&part, None);
         self.drawn = scene.encoding().draw_tags.len();
         self.parts
@@ -442,7 +454,7 @@ mod tests {
         let mut scene = Scene::new();
         let mut parts = PaintParts::new(&scene);
         for (key, top) in KEYS.iter().zip(rows) {
-            parts.draw(&mut scene, key, row(*top), |scene| {
+            parts.draw(&mut scene, *key, row(*top), |scene| {
                 scene.append(&filled(row(*top)), None);
             });
             if ink {

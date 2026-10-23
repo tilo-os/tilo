@@ -159,6 +159,27 @@ pub fn snap_rect(rect: Rect) -> Rect {
     )
 }
 
+/// Paint `draw` clipped to `clip` (under `transform`), in a layer of its
+/// own: a region drawn as a part of its own ([`crate::widget::paint_damage::PaintParts`])
+/// carries its clip with it.
+pub fn clipped<R>(
+    scene: &mut Scene,
+    transform: Affine,
+    clip: Rect,
+    draw: impl FnOnce(&mut Scene) -> R,
+) -> R {
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &clip,
+    );
+    let result = draw(scene);
+    scene.pop_layer();
+    result
+}
+
 /// Fill `rect` with a solid colour.
 pub fn fill_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, transform, color, None, &rect);
