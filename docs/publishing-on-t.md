@@ -351,12 +351,7 @@ Deleted:
 | `ci-filesystem.yml` | `real-fuse`, `real-fuse-privileged`, `files-ux`, `native-tier1`; the cloud-source conformance suite's server layers as `cloud-conformance-build`, `cloud-servers` (containers in a micro-VM step) and `cloud-live` (live accounts, nightly) | `cloud-servers` r0e79c3d184 (38 tests against real WebDAV and Nextcloud); `cloud-live` dispatched on main r24d0e7c476 (38 tests against the live accounts) |
 | `ci-legacy-apps.yml` | `legacy-apps-build`, `legacy-apps` (nightly and dispatched, micro-VM step) | r0e79c3d184: GNOME Text Editor, Qt 6 and LibreOffice Writer passed |
 | `build-env-tools.yml` | `env-tools-binaries-<arch>`, `env-tools-<arch>`, `env-tools-plan`, `seal-env-tools`, `image-env-tools`, `image-env-tools-preview`, `sign-env-tools`, `publish-env-tools` | binaries and catalogs on both architectures (r8673ba882c), sealed for the publisher and imaged from a working tree (r26f07821f0); checks in t.toml; Forgejo Actions no longer runs |
-
-Still here, with what is missing:
-
-| workflow | checks on t | passed on t | missing |
-|---|---|---|---|
-| `resolve-builder.yml` | none needed | | a reusable workflow other workflows call; retires with its callers |
+| `resolve-builder.yml` | none: a reusable workflow that looked the CI builder up for the workflows above, retired with the last of them; `tools/ci/resolve_builder.py` stays for `release-apps.yml` | obsolete |
 
 ## Inventory
 
@@ -418,7 +413,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 
 These only build or test, and become ordinary or `default = false` checks. Those t's checks
 already run are deleted (the table [above](#moved-to-t)). Still here:
-`dev-disk-boot-diagnostic.yml` and `resolve-builder.yml`.
+`dev-disk-boot-diagnostic.yml`.
 
 ## Identity tokens and secrets
 
