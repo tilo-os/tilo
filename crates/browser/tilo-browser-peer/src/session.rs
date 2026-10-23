@@ -282,6 +282,10 @@ pub struct PeerStatus {
     /// The joined rooms whose layout is personal, as their governance says:
     /// the page keeps its strips and windows to itself there.
     pub personal_rooms: BTreeSet<String>,
+    /// The members each joined room's governance lists, by room, by person
+    /// id: what someone no longer among them made on the room's desktop is
+    /// released ([`tilo_desktop_model::ownership::released`]).
+    pub room_members: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Something the session produced for its consumers.
@@ -653,6 +657,7 @@ impl PeerHandle {
                 generation: 0,
                 channels: String::new(),
                 personal_rooms: BTreeSet::new(),
+                room_members: BTreeMap::new(),
             },
             queues: Vec::new(),
             wakes: Vec::new(),
@@ -2660,6 +2665,17 @@ impl Task {
             // The room's topology, for whether it shares its members' layout.
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
                 let personal = self.room_layouts.hear(&room, &changes).is_personal();
+                let members = self.room_layouts.members(&room);
+                if self.status().room_members.get(&room) != members.as_ref() {
+                    self.update(|status| match members {
+                        Some(members) => {
+                            status.room_members.insert(room.clone(), members);
+                        }
+                        None => {
+                            status.room_members.remove(&room);
+                        }
+                    });
+                }
                 if self.status().personal_rooms.contains(&room) != personal {
                     self.update(|status| {
                         if personal {
@@ -3440,6 +3456,7 @@ mod tests {
             generation: 0,
             channels: String::new(),
             personal_rooms: BTreeSet::new(),
+            room_members: BTreeMap::new(),
         }
     }
 

@@ -213,7 +213,8 @@ impl DesktopChromeSource for PageChrome {
 
 impl PageChrome {
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
-        let standing = self.shared.standing_of(&self.room.author);
+        let members = self.shared.members.borrow();
+        let standing = self.shared.standing_of(&self.room.author, members.as_ref());
         let authors = self.room.authors.borrow();
         self.handle.read(|tree| {
             let workspace = tree
@@ -227,14 +228,16 @@ impl PageChrome {
     /// Whether this desktop's person may add a workspace to the room, by the
     /// desktop's one policy.
     fn may_create_workspace(&self) -> Result<(), String> {
-        let standing = self.shared.standing_of(&self.room.author);
+        let members = self.shared.members.borrow();
+        let standing = self.shared.standing_of(&self.room.author, members.as_ref());
         tilo_desktop_model::commands::may_create_workspace(&standing)
             .map_err(|refusal| refusal.to_string())
     }
 
     /// What this desktop's person may change about the active workspace.
     fn offered_edits(&self) -> OfferedEdits {
-        let standing = self.shared.standing_of(&self.room.author);
+        let members = self.shared.members.borrow();
+        let standing = self.shared.standing_of(&self.room.author, members.as_ref());
         let authors = self.room.authors.borrow();
         self.handle
             .read(|tree| offered_edits(&standing, &authors, tree))
@@ -1951,6 +1954,7 @@ mod tests {
             person,
             role,
             layout_shared: true,
+            members: None,
         }
     }
 
@@ -2003,6 +2007,32 @@ mod tests {
         }
     }
 
+    /// A window whose opener has left the room holds nobody: once the
+    /// room's members are heard without them, it offers its close.
+    #[test]
+    fn a_window_of_someone_who_left_offers_its_close() {
+        let (tree, authors) = lounge();
+        let shared = crate::desktop::Shared::default();
+        shared.authors.borrow_mut().clone_from(&authors);
+        shared.standing.set(Some(Role::Editor));
+        let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
+        shared
+            .members
+            .replace(Some([GUEST, OTHER_GUEST].map(str::to_owned).into()));
+        assert!(
+            !shared
+                .holders(&tree, GUEST, "Lounge", &mut person)
+                .is_empty(),
+            "the other guest is still here"
+        );
+        shared.members.replace(Some([GUEST.to_owned()].into()));
+        let held = shared.holders(&tree, GUEST, "Lounge", &mut person);
+        assert!(
+            held.values().all(|holder| holder.name != OTHER_GUEST),
+            "the other guest left: {held:?}"
+        );
+    }
+
     /// A public room shares no member's layout: once it said so, every
     /// window on the visitor's desktop is theirs to close (nothing is ever
     /// undone), and the workspace's name and desks are offered to nobody.
@@ -2021,7 +2051,7 @@ mod tests {
         );
         for role in [Role::Editor, Role::Moderator] {
             shared.standing.set(Some(role));
-            let edits = offered_edits(&shared.standing_of(GUEST), &authors, &tree);
+            let edits = offered_edits(&shared.standing_of(GUEST, None), &authors, &tree);
             assert_eq!(edits, OfferedEdits::default(), "{role:?}");
         }
     }

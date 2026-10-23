@@ -183,12 +183,16 @@ impl Rooms {
             }
         };
         let room_id = governed.room().to_owned();
+        let members = governed
+            .peer()
+            .admitted_room()
+            .and_then(tilo_desktop_model::projection::room_members);
         let allows = |act: &tilo_desktop_model::ownership::Touched| {
             member.allows(&act_node(&room_id, act), ActionKind::Undoable, now)
         };
         let guard = governed.desktop_guard().await?;
         guard
-            .decide(&mutation, &member.person, &allows)
+            .decide(&mutation, &member.person, members.as_ref(), &allows)
             .map_err(|refusal| refusal.to_string())
     }
 }

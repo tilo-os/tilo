@@ -10,12 +10,18 @@
 //! can grant anyone ([`act_node`]). What nobody made (a strip the room
 //! itself lists) is nobody's own, so only moderation changes it.
 //!
+//! What someone who has left the room made is released ([`released`]):
+//! it is no longer anyone's own, and whoever writes there closes or moves
+//! it as their own, so a window of someone gone never stays stuck on
+//! everyone's desktop. Who is still in the room is its governance's member
+//! list ([`crate::projection::room_members`]).
+//!
 //! [`foreign_acts`] names what one desktop value did to another's strips
 //! and windows that its writer did not make. A relay decides every write of
 //! a shared desktop with it, and a desktop asks [`may_rearrange`] before it
 //! offers to close or move a window, so the offer and the decision agree.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
@@ -127,6 +133,18 @@ pub fn made_by(authors: &Authors, id: u64, person: &str) -> bool {
     authors.get(&id).is_some_and(|author| author == person)
 }
 
+/// Whether the strip or window `id` is released: someone made it who is no
+/// longer among the room's `members`. `None` while the members are not
+/// known: then nothing is released, so nobody's window is taken early.
+#[must_use]
+pub fn released(authors: &Authors, id: u64, members: Option<&BTreeSet<String>>) -> bool {
+    members.is_some_and(|members| {
+        authors
+            .get(&id)
+            .is_some_and(|author| !members.contains(author))
+    })
+}
+
 /// Where a window is: its workspace, strip and group.
 type Place = (WorkspaceId, StripId, GroupId);
 
@@ -152,14 +170,21 @@ fn index(tree: &DesktopTree) -> Index {
 }
 
 /// What `after` did to the strips and windows of `before` that `writer` did
-/// not make, each once, in the order `before` holds them: windows closed or
+/// not make and that are not [`released`] (`members`: the room's current
+/// members, when known), each once, in the order `before` holds them: windows closed or
 /// moved, strips removed or renamed, and anything whose maker changed. A
 /// window `writer` opened, or one opened since `before`, is theirs to
 /// arrange; so is the order of their own windows among others', since a
 /// state cannot tell moving one's own window past another from the reverse.
 #[must_use]
-pub fn foreign_acts(before: &SharedDesktop, after: &SharedDesktop, writer: &str) -> Vec<Touched> {
-    let foreign = |id: u64| !made_by(&before.authors, id, writer);
+pub fn foreign_acts(
+    before: &SharedDesktop,
+    after: &SharedDesktop,
+    writer: &str,
+    members: Option<&BTreeSet<String>>,
+) -> Vec<Touched> {
+    let foreign =
+        |id: u64| !made_by(&before.authors, id, writer) && !released(&before.authors, id, members);
     let owner = |id: u64| before.authors.get(&id).cloned();
     let was = index(&before.tree);
     let now = index(&after.tree);
@@ -323,10 +348,38 @@ mod tests {
     }
 
     fn acts(after: &SharedDesktop, writer: &str) -> Vec<(u64, Act)> {
-        foreign_acts(&desktop(), after, writer)
+        foreign_acts(&desktop(), after, writer, None)
             .into_iter()
             .map(|t| (t.id, t.act))
             .collect()
+    }
+
+    /// Ben has left the room: closing his window is no act on anyone's,
+    /// while the strip nobody made stays the room's.
+    #[test]
+    fn what_someone_who_left_made_is_released() {
+        let mut after = desktop();
+        strip_mut(&mut after, 10)
+            .window_groups
+            .retain(|g| g.id != 200);
+        let members: BTreeSet<String> = [ADA.to_owned()].into();
+        assert_eq!(acts(&after, ADA), vec![(2, Act::Close)], "Ben still counts");
+        assert!(
+            foreign_acts(&desktop(), &after, ADA, Some(&members)).is_empty(),
+            "Ben left: his window is released"
+        );
+        let mut removed = desktop();
+        removed.tree.workspaces[0]
+            .strips
+            .retain(|s| s.id != StripId(10));
+        assert_eq!(
+            foreign_acts(&desktop(), &removed, ADA, Some(&members))
+                .into_iter()
+                .map(|t| (t.id, t.act))
+                .collect::<Vec<_>>(),
+            vec![(10, Act::Close)],
+            "the room's own strip is nobody's to release"
+        );
     }
 
     #[test]
@@ -350,7 +403,7 @@ mod tests {
     fn closing_someone_elses_window_is_named_with_its_owner() {
         let mut after = desktop();
         strip_mut(&mut after, 10).window_groups.remove(1);
-        let touched = foreign_acts(&desktop(), &after, ADA);
+        let touched = foreign_acts(&desktop(), &after, ADA, None);
         assert_eq!(
             touched,
             vec![Touched {
