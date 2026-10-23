@@ -3,7 +3,8 @@
 //! The programs that were `/usr/bin/tilo-<name>` live in [`LIBEXEC`] now,
 //! off `PATH`; each old name is a link to `tilo`, which runs the program
 //! under the name it was called by, adding nothing. Scripts, units and
-//! habits keep working while people learn `tilo <noun> <verb>`.
+//! habits keep working while people learn `tilo <noun> <verb>`. The few in
+//! [`DIRECT`] are links straight to their program instead.
 
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
@@ -45,8 +46,15 @@ pub const MOVED: &[&str] = &[
     "tilo-speech-worker",
     "tilo-test-registry",
     "tilo-vm",
-    "tilo-vmd",
 ];
+
+/// The old `/usr/bin` names whose program moved to [`LIBEXEC`] but whose
+/// link names that program itself, not `tilo`. `tilo-vmd` is swapped onto
+/// older images to give them the daemon they need, and such an image's
+/// `tilo` runs no programs by name (`os/components.toml`, component `vmd`).
+/// `tilo` never reads this list; the image-layout test holds it to the image.
+#[cfg(test)]
+pub const DIRECT: &[&str] = &["tilo-vmd"];
 
 /// The old name argv[0] is, if it is one.
 pub fn moved(args: &[OsString]) -> Option<&'static str> {
@@ -105,7 +113,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::ffi::OsString;
 
-    use super::{LIBEXEC, MOVED, moved};
+    use super::{DIRECT, LIBEXEC, MOVED, moved};
 
     /// The image's files: (destination, link target or build output).
     fn manifest() -> Vec<(String, String)> {
@@ -138,8 +146,9 @@ mod tests {
     }
 
     /// Every program that left /usr/bin is in /usr/libexec/tilo, its old
-    /// name is a link to `tilo`, and `tilo` knows where it went; nothing
-    /// Tilo builds is on PATH under a `tilo-` name except those links.
+    /// name is a link to `tilo` (or, for [`DIRECT`], to the program itself),
+    /// and `tilo` knows where each `tilo` link went; nothing Tilo builds is
+    /// on PATH under a `tilo-` name except those links.
     #[test]
     fn every_old_name_is_a_link_to_tilo_and_its_program_is_off_path() {
         let files = manifest();
@@ -160,13 +169,38 @@ mod tests {
             .copied()
             .filter(|name| !nouns.contains(name))
             .collect();
-        assert_eq!(old, MOVED.iter().copied().collect::<BTreeSet<_>>());
+        let moved_names: BTreeSet<&str> = MOVED.iter().copied().collect();
+        let direct: BTreeSet<&str> = DIRECT.iter().copied().collect();
+        assert!(
+            moved_names.is_disjoint(&direct),
+            "a name links to tilo or to its program, not both"
+        );
+        assert_eq!(old, &moved_names | &direct);
         for (to, from) in &files {
             if let Some(name) = to.strip_prefix("/usr/bin/")
                 && name.starts_with("tilo-")
             {
-                assert_eq!(from, "tilo", "{to} must be a link to tilo");
+                if direct.contains(name) {
+                    assert_eq!(
+                        *from,
+                        format!("../libexec/tilo/{name}"),
+                        "{to} must be a link to its program"
+                    );
+                } else {
+                    assert_eq!(from, "tilo", "{to} must be a link to tilo");
+                }
             }
+        }
+        for name in DIRECT {
+            let place = std::path::Path::new(LIBEXEC)
+                .join(name)
+                .display()
+                .to_string();
+            assert!(
+                files.iter().any(|(to, from)| *to == place && from == name),
+                "{name} must be installed at {place}"
+            );
+            assert_eq!(moved(&[OsString::from(format!("/usr/bin/{name}"))]), None);
         }
         for name in MOVED {
             let place = std::path::Path::new(LIBEXEC)
