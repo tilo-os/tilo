@@ -135,6 +135,10 @@ pub enum RoomEvent {
         /// The person was removed from the room within the day: the door
         /// tells them so, as it tells anyone from the address they joined from.
         removed: bool,
+        /// The room takes people by invitation only and the person is not a
+        /// member: the door tells them they need an invitation.
+        #[serde(default, skip_serializing_if = "is_false")]
+        invite_only: bool,
     },
     /// The certificate for a [`OperatorCommand::Spectate`].
     SpectatorCertified {
@@ -268,6 +272,15 @@ fn is_zero(count: &u32) -> bool {
     *count == 0
 }
 
+/// Whether a flag is unset, which the line leaves out.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hands the field by reference"
+)]
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +335,13 @@ mod tests {
                 token_sha256: "ab".repeat(32),
                 reason: "too many pre-admissions are open".into(),
                 removed: false,
+                invite_only: false,
+            },
+            RoomEvent::PreAdmitRefused {
+                token_sha256: "ab".repeat(32),
+                reason: "the room takes people by invitation only".into(),
+                removed: false,
+                invite_only: true,
             },
             RoomEvent::SpectatorCertified {
                 device_public_key: "ef".repeat(32),

@@ -400,8 +400,9 @@ async function ask({workspace, path, body, fetch}) {
   const retry = Number(response.headers.get('retry-after'));
   const hasRetry = response.headers.get('retry-after') != null && Number.isFinite(retry);
   // A 503 without Retry-After is the host failing, not the room being full.
-  // A 403 naming the person (`removed`) rather than their address.
-  const code = response.status === 403 && reply.code === 'removed' ? 'removed'
+  // A 403 naming the person (`removed`) rather than their address, or a
+  // room that takes people by invitation (`invitation-only`).
+  const code = response.status === 403 && ['removed', 'invitation-only'].includes(reply.code) ? reply.code
     : response.status === 503 && !hasRetry ? 'unavailable' : (CODES[response.status] ?? 'unavailable');
   throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null);
 }

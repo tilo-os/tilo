@@ -216,6 +216,10 @@ export const FAILURES = {
     'You were removed from { $workspace }. To come back, ask someone in it for a new invitation.',
     'You were removed from this workspace. To come back, ask someone in it for a new invitation.',
   ],
+  'invitation-only': [
+    'You need an invitation to join { $workspace } for now. Ask someone in it for an invite link, then open it here.',
+    'You need an invitation to join this workspace for now. Ask someone in it for an invite link, then open it here.',
+  ],
   'cooling-down': [
     '{ $workspace } is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
     'This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.',
@@ -244,10 +248,25 @@ function failure(kind, workspace, messages) {
 
 /** Whether `error` is a host's door turning this visitor away for a while
  * (`cooling-down`: the address someone removed from the room joined from;
- * `removed`: the person themselves),
+ * `removed`: the person themselves; `invitation-only`: a room that takes
+ * people by invitation, and this visitor came without one),
  * which trying again does not change. */
 export function refusedByHost(error) {
-  return error?.name === 'HostAdmissionError' && ['cooling-down', 'removed'].includes(error.code);
+  return error?.name === 'HostAdmissionError' && ['cooling-down', 'removed', 'invitation-only'].includes(error.code);
+}
+
+/** The page to open for `text`, an invite link a person pasted, or `null`
+ * when it is not one: a web address carrying an invitation. */
+export function inviteLinkTarget(text, base = globalThis.location?.href) {
+  let url;
+  try {
+    url = new URL(String(text ?? '').trim(), base);
+  } catch {
+    return null;
+  }
+  if (!['https:', 'http:'].includes(url.protocol)) return null;
+  const carries = part => new URLSearchParams(part.slice(part.indexOf('?') + 1)).has('invite');
+  return (url.hash.includes('?') && carries(url.hash)) || carries(url.search) ? url.href : null;
 }
 
 /** Whether `error` is the network failing: a fetch that never answered, a
@@ -272,6 +291,10 @@ export function failureMessage(error, {workspace = null, loaded = true, admitted
   if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'removed') {
     return failure('removed', workspace, messages);
   }
+  // A room taking people by invitation, opened without one.
+  if (['AdmissionError', 'HostAdmissionError'].includes(error?.name) && error.code === 'invitation-only') {
+    return failure('invitation-only', workspace, messages);
+  }
   if (error?.name === 'AdmissionError') return error.message;
   if (error?.name === 'CustodyError' && error.code === 'custody-busy') {
     // Each tab is a device of its own; this is only said where this tab
@@ -279,7 +302,6 @@ export function failureMessage(error, {workspace = null, loaded = true, admitted
     // certify another).
     return failure('custody-busy', workspace, messages);
   }
-  if (error?.name === 'HostAdmissionError' && error.code === 'invitation-only') return error.message;
   if (refusedByHost(error)) return failure('cooling-down', workspace, messages);
   const name = workspace || (loaded ? null : 'Tilo');
   if (unreachable(error)) return failure('unreachable', name, messages);

@@ -13,8 +13,10 @@
  *   owner lets them in. A public workspace (anyone may join it as a guest)
  *   needs no invitation: inviting copies its own link and says so.
  * - `waiting-to-join`: the people who asked, each to let in or turn away
- *   (`membership.requests`, `admit`, `decline`). While the owner is in the
- *   room, each new request is also offered on a banner to let them in.
+ *   (`membership.requests`, `admit`, `decline`), for the owner and anyone
+ *   else the host lets see who asks (whoever it lets invite). While they
+ *   are in the room, each new request is also offered on a banner to let
+ *   them in.
  *
  * Every step is the host's decision: a refusal is said, never worked
  * around.
@@ -58,7 +60,7 @@ export function createWorkspaceActions({
   onError = error => console.warn('workspaces:', error),
 }) {
   let mount;
-  let owner = false;
+  let lettingIn = false;
   let workspaceName = null;
   let stop = null;
   const offered = new Set();
@@ -67,7 +69,7 @@ export function createWorkspaceActions({
   const actions = () => [
     ...(ownHost(peer) || (!peer && machines().length) ? [NEW_WORKSPACE] : []),
     ...(inRoom ? [publicLink() ? INVITE_PUBLIC : INVITE] : []),
-    ...(owner ? [WAITING] : []),
+    ...(lettingIn ? [WAITING] : []),
   ];
   const refresh = () => mount?.setHostActions?.(actions());
   const say = (error, what) => {
@@ -145,22 +147,26 @@ export function createWorkspaceActions({
     actions,
     /** Whether `id` is one of these actions. */
     handles: id => [NEW_WORKSPACE.id, INVITE.id, WAITING.id].includes(id) || id.startsWith(ADMIT),
-    /** Show the actions in `mount`'s desktop; an owner in the room hears
-     * who asks to join from now on. */
+    /** Show the actions in `mount`'s desktop; someone who lets people in
+     * hears who asks to join from now on. */
     async attach(target) {
       mount = target;
       refresh();
       if (!inRoom) return;
+      let owner = false;
       try {
         const room = await peer.membership.list();
         workspaceName = room.name;
         owner = room.members.some(member => member.owner && member.userPublicKey === peer.userPublicKey);
       } catch {
-        // Only the owner may list who waits: anyone else invites, if the host lets them.
-        owner = false;
+        // The host may keep its member list to the owner.
       }
+      // The host shows who asks to join to whoever it lets invite, and
+      // they let in whom they invited: the owner, and members of a room
+      // that has its members invite people.
+      lettingIn = owner || await peer.membership.requests().then(() => true, () => false);
       refresh();
-      if (owner && !stop) {
+      if (lettingIn && !stop) {
         stop = every(() => { void askWaiting(); }, WAITING_POLL_MS);
         await askWaiting();
       }
@@ -174,9 +180,9 @@ export function createWorkspaceActions({
       try {
         if (id === NEW_WORKSPACE.id) await newWorkspace();
         else if (id === INVITE.id) await invite();
-        else if (id === WAITING.id && owner) {
+        else if (id === WAITING.id && lettingIn) {
           await ui.waitingList({load: () => peer.membership.requests(), admit, decline: requestId => peer.membership.decline(requestId)});
-        } else if (id.startsWith(ADMIT) && owner) await admit(id.slice(ADMIT.length));
+        } else if (id.startsWith(ADMIT) && lettingIn) await admit(id.slice(ADMIT.length));
       } catch (error) {
         say(error, 'That did not work');
       }

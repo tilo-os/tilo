@@ -524,6 +524,7 @@ impl Service {
                 JoinRefusal::TooMany { .. } => JoinFailure::RateLimited,
                 JoinRefusal::Full { .. } => JoinFailure::Full,
                 JoinRefusal::Unavailable => JoinFailure::RelayUnavailable,
+                JoinRefusal::InviteOnly => JoinFailure::Refused,
             });
         }
         let (status, message, retry_after) = match refusal {
@@ -536,6 +537,11 @@ impl Service {
             JoinRefusal::Removed => (
                 StatusCode::FORBIDDEN,
                 "you were removed from this room; you can join again tomorrow",
+                None,
+            ),
+            JoinRefusal::InviteOnly => (
+                StatusCode::FORBIDDEN,
+                "this room takes people by invitation for now; ask someone in it for an invite",
                 None,
             ),
             JoinRefusal::TooMany { retry_after_secs } => (
@@ -555,12 +561,15 @@ impl Service {
             ),
         };
         // The person themselves, rather than their address, is named apart,
-        // so the page says they were removed instead of blaming their network.
-        let mut response = if matches!(refusal, JoinRefusal::Removed) {
-            Self::json(
-                status,
-                &serde_json::json!({"error": message, "code": "removed"}),
-            )
+        // so the page says they were removed instead of blaming their network;
+        // and a room taking people by invitation, so it says they need one.
+        let code = match refusal {
+            JoinRefusal::Removed => Some("removed"),
+            JoinRefusal::InviteOnly => Some("invitation-only"),
+            _ => None,
+        };
+        let mut response = if let Some(code) = code {
+            Self::json(status, &serde_json::json!({"error": message, "code": code}))
         } else {
             Self::error(status, message)
         };
@@ -702,6 +711,9 @@ impl Service {
             (&Method::GET, ["presence"]) => {
                 let mut response = Self::json(
                     StatusCode::OK,
+                    // `admission`: whether the door lets anyone in as a
+                    // guest (`open`) or only the room's members (`invite`),
+                    // so a member's page offers an invitation, not the link.
                     &serde_json::json!({
                         "online": persistent.online(),
                         "watching": persistent.watching(),
@@ -709,6 +721,7 @@ impl Service {
                         // page reloads to join only then.
                         "open": ops::get().is_none_or(|ops| ops.mode().allows_joins())
                             && persistent.seat_free(),
+                        "admission": if persistent.invite_only() { "invite" } else { "open" },
                     }),
                 );
                 response.headers_mut().insert(
