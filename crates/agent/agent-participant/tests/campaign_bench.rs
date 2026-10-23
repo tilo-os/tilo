@@ -47,14 +47,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::InvocationId;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    RemoteActionTarget,
+    CataloguePage, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, RemoteActionTarget, application_open_target,
 };
-use tilo_agent_participant::{AgentHost, ApiKey, AppCatalogue, ModelChoice};
-use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_actions::{ActionOutput, InvocationId};
+use tilo_agent_participant::{AgentHost, ApiKey, AppCatalogue, ModelChoice, record_provider};
+use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
@@ -221,11 +221,15 @@ fn approve_agents(
     })
 }
 
-/// A browser session driving the host's agent supervisor.
+/// A browser session driving the host's agent supervisor, and the room's
+/// records through the host's room actions as the room's owner.
 struct Browser {
     peer: PeerHandle,
     events: PeerEvents,
     host_key: [u8; 32],
+    /// How many changes the page has received of each record: an owner's
+    /// change is heard in the room before the agents act on it.
+    heard: std::sync::Mutex<BTreeMap<DocumentRoute, usize>>,
 }
 
 impl Browser {
@@ -247,7 +251,93 @@ impl Browser {
             peer,
             events,
             host_key: host.cert.device_public_key,
+            heard: std::sync::Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Take what the page received: the host's answers `pick` accepts (the
+    /// first one), and the records' changes, counted.
+    fn pump<T>(&self, pick: &impl Fn(RemoteActionMessage) -> Option<T>) -> Option<T> {
+        let mut picked = None;
+        for event in self.events.drain() {
+            match event {
+                PeerEvent::RemoteAction { from, frame, .. } if from == self.host_key => {
+                    if picked.is_none() {
+                        picked = pick(RemoteActionFrame::decode(&frame).unwrap().message);
+                    }
+                }
+                PeerEvent::Document(document) => {
+                    *self
+                        .heard
+                        .lock()
+                        .unwrap()
+                        .entry(document.route.clone())
+                        .or_default() += 1;
+                }
+                PeerEvent::RemoteActionUndeliverable { reason, .. } => {
+                    panic!("undeliverable: {reason}")
+                }
+                _ => {}
+            }
+        }
+        picked
+    }
+
+    /// Send `message` to the host and wait for the answer `pick` accepts.
+    async fn exchange<T>(
+        &self,
+        message: RemoteActionMessage,
+        what: &str,
+        pick: impl Fn(RemoteActionMessage) -> Option<T>,
+    ) -> T {
+        let frame = RemoteActionFrame::new(message).encode().unwrap();
+        self.peer
+            .send_remote_action(workspace(), self.host_key, frame)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            assert!(Instant::now() < deadline, "no answer: {what}");
+            if let Some(answer) = self.pump(&pick) {
+                return answer;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// One remote action to the host: to `provider` (the agent supervisor,
+    /// a record of the room, the room itself).
+    async fn invoke(
+        &self,
+        provider: &str,
+        address: ActionAddress,
+        argument: InvokeArgument,
+    ) -> Result<ActionOutput, String> {
+        let invocation = InvocationId::new();
+        let what = format!("{provider} {}#{}", address.resource, address.action);
+        let request = RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target: RemoteActionTarget {
+                provider: provider.into(),
+                address,
+            },
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        });
+        self.exchange(request, &what, |message| match message {
+            RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
+                Some(match receipt.status {
+                    ReceiptStatus::Completed { output } => Ok(output),
+                    other => Err(format!("{other:?}")),
+                })
+            }
+            _ => None,
+        })
+        .await
     }
 
     /// One remote action to the host's agent supervisor.
@@ -257,55 +347,51 @@ impl Browser {
         action: &str,
         argument: InvokeArgument,
     ) -> Result<serde_json::Value, String> {
-        let invocation = InvocationId::new();
-        let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
-            on_behalf_of: None,
-            invocation,
-            target: RemoteActionTarget {
-                provider: AGENTS_PROVIDER.into(),
-                address: ActionAddress::new(resource, action),
-            },
+        self.invoke(
+            AGENTS_PROVIDER,
+            ActionAddress::new(resource, action),
             argument,
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        }))
-        .encode()
-        .unwrap();
-        self.peer
-            .send_remote_action(workspace(), self.host_key, frame)
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
+        )
+        .await
+        .map(|output| output.value.unwrap_or_default())
+    }
+
+    /// The host's catalogue of the room's records and their actions.
+    async fn catalogue(&self, query: CatalogueQuery) -> Result<CataloguePage, String> {
+        static CORRELATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let correlation = CORRELATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.exchange(
+            RemoteActionMessage::CatalogueRequest { correlation, query },
+            "the room's catalogue",
+            |message| match message {
+                RemoteActionMessage::CatalogueResponse {
+                    correlation: got,
+                    result,
+                } if got == correlation => Some(result.map_err(|error| format!("{error:?}"))),
+                _ => None,
+            },
+        )
+        .await
+    }
+
+    /// How many changes of `route` the page has received.
+    fn heard(&self, route: &DocumentRoute) -> usize {
+        self.heard.lock().unwrap().get(route).copied().unwrap_or(0)
+    }
+
+    /// Wait until the page has received more than `past` changes of
+    /// `route`; `false` when none came in time.
+    async fn until_heard(&self, route: &DocumentRoute, past: usize) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            assert!(
-                Instant::now() < deadline,
-                "no receipt for {resource}#{action}"
-            );
-            // Documents the page receives are not the benchmark's to keep.
-            for event in self.events.drain() {
-                match event {
-                    PeerEvent::RemoteAction { from, frame, .. } if from == self.host_key => {
-                        if let RemoteActionMessage::Receipt(receipt) =
-                            RemoteActionFrame::decode(&frame).unwrap().message
-                            && receipt.invocation == invocation
-                        {
-                            return match receipt.status {
-                                ReceiptStatus::Completed { output } => {
-                                    Ok(output.value.unwrap_or_default())
-                                }
-                                other => Err(format!("{other:?}")),
-                            };
-                        }
-                    }
-                    PeerEvent::RemoteActionUndeliverable { reason, .. } => {
-                        panic!("undeliverable: {reason}")
-                    }
-                    _ => {}
-                }
+            let _: Option<()> = self.pump(&|_| None);
+            if self.heard(route) > past {
+                return true;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
@@ -368,7 +454,41 @@ struct Role {
 struct Stage {
     id: String,
     after: Vec<usize>,
-    tasks: Vec<(String, String)>,
+    tasks: Vec<Task>,
+}
+
+/// One task of a step: `text` for `agent`, or written steps the room's owner
+/// carries out (`"as": "owner"` on the task or on its step).
+struct Task {
+    agent: String,
+    text: String,
+    actor: Actor,
+}
+
+/// Who carries out a task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Actor {
+    /// The agent it names, as its grant allows.
+    Agent,
+    /// The room's owner, through the host's room actions: setup an agent's
+    /// grant does not reach (making a Chat channel is the room's moderation,
+    /// and an agent acts as an Editor at most). The agent the task names is
+    /// whom the scenario has it stand for; it is not asked.
+    Owner,
+}
+
+impl Actor {
+    /// The actor `item`'s `as` names, else `inherited`.
+    fn of(item: &serde_json::Value, inherited: Self) -> Self {
+        match item["as"].as_str() {
+            None => inherited,
+            Some("owner") => Self::Owner,
+            Some("agent") => Self::Agent,
+            Some(other) => {
+                panic!("a scenario's task runs as an agent or as the owner, not {other:?}")
+            }
+        }
+    }
 }
 
 /// A fault the harness causes `at` after the clock starts.
@@ -449,7 +569,11 @@ impl Scenario {
                     .as_array()
                     .expect("a step's tasks")
                     .iter()
-                    .map(|task| (field(task, "agent"), field(task, "text")))
+                    .map(|task| Task {
+                        agent: field(task, "agent"),
+                        text: field(task, "text"),
+                        actor: Actor::of(task, Actor::of(step, Actor::Agent)),
+                    })
                     .collect(),
             })
             .collect();
@@ -719,6 +843,201 @@ fn produced(log: &[serde_json::Value], step: &str, agent: &str) -> Option<String
         .next_back()
 }
 
+/// Who the action log and `tasks.json` name for what the room's owner did.
+const OWNER: &str = "owner";
+
+/// What the room's owner did for one task: each of its written steps through
+/// the host's room actions, in order, until one failed.
+#[derive(Default)]
+struct OwnerRun {
+    actions: Vec<String>,
+    apps: Vec<String>,
+    resources: Vec<String>,
+    error: Option<String>,
+}
+
+impl OwnerRun {
+    /// Its `tasks.json` row, as an agent's task has one (`as` says who did it).
+    fn row(&self, step: &str, agent: &str, text: &str, launched_ms: u128) -> serde_json::Value {
+        serde_json::json!({
+            "step": step,
+            "agent": agent,
+            "agent_id": OWNER,
+            "as": OWNER,
+            "task_id": "",
+            "task": text,
+            "state": if self.error.is_none() { "Completed" } else { "Failed" },
+            "error": self.error,
+            "actions": self.actions,
+            "apps": self.apps,
+            "resources": self.resources,
+            "content": [],
+            "content_actions": [],
+            "restarted": 0,
+            "step_seen_unix_ms": [],
+            "launched_at_unix_ms": launched_ms,
+            "ended_at_unix_ms": unix_ms(),
+        })
+    }
+}
+
+/// Carry out the written steps `text` as the room's owner: each through the
+/// host's room actions on the room's record of its app (opened first when
+/// the room has none), as a person acting on a record nobody has open. Then
+/// wait until the room has heard every change, so agents act on them.
+async fn run_as_owner(browser: &Browser, text: &str) -> OwnerRun {
+    let steps: Vec<serde_json::Value> = serde_json::from_str(text)
+        .unwrap_or_else(|error| panic!("an owner's task is written steps: {error}"));
+    let mut run = OwnerRun::default();
+    let mut changed: BTreeMap<DocumentRoute, usize> = BTreeMap::new();
+    for step in &steps {
+        let app = app_id(step["app"].as_str().expect("a written step's app"));
+        let resource = step["resource"].as_str().unwrap_or_default().to_owned();
+        let action = step["action"]
+            .as_str()
+            .expect("a written step's action")
+            .to_owned();
+        let arguments = step["arguments"].as_object().cloned().unwrap_or_default();
+        let started_ms = unix_ms();
+        let route = owner_record(browser, &app).await;
+        let outcome = match &route {
+            Ok(route) => {
+                let past = browser.heard(route);
+                let outcome = browser
+                    .invoke(
+                        &record_provider(route),
+                        ActionAddress::new(resource.clone(), action.clone()),
+                        InvokeArgument::Json(arguments.clone()),
+                    )
+                    .await;
+                if outcome.is_ok() {
+                    changed.entry(route.clone()).or_insert(past);
+                }
+                outcome
+            }
+            Err(error) => Err(error.clone()),
+        };
+        log_owner_action(
+            route.as_ref().ok(),
+            &app,
+            &resource,
+            &action,
+            &arguments,
+            started_ms,
+            &outcome,
+        );
+        run.actions.push(action.clone());
+        run.apps.push(app);
+        run.resources.push(resource);
+        if let Err(error) = outcome {
+            run.error = Some(format!("{action}: {error}"));
+            break;
+        }
+    }
+    for (route, past) in &changed {
+        if !browser.until_heard(route, *past).await {
+            eprintln!(
+                "bench: the owner's change to {} {} was not heard in time",
+                route.app_id, route.record
+            );
+        }
+    }
+    // The agents hear the room as the page does, over the same host.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    run
+}
+
+/// The room's record of `app` an owner's written step acts on: the one the
+/// room holds, else one the host opens for the owner.
+async fn owner_record(browser: &Browser, app: &str) -> Result<DocumentRoute, String> {
+    let page = browser.catalogue(CatalogueQuery::default()).await?;
+    let held: Vec<DocumentRoute> = page
+        .providers
+        .iter()
+        .filter(|provider| provider.app_id == app && !provider.record_id.is_empty())
+        .filter(|provider| {
+            ui::record::RecordId::parse(&provider.record_id)
+                .is_none_or(|id| id.chain_part().is_none())
+        })
+        .map(|provider| DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: ROOM.to_owned(),
+            record: provider.record_id.clone(),
+        })
+        .collect();
+    match held.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => {
+            let open = application_open_target(ROOM, app);
+            let opened = browser
+                .invoke(&open.provider, open.address, InvokeArgument::None)
+                .await?;
+            let record = opened
+                .value
+                .as_ref()
+                .and_then(|value| value["record"].as_str())
+                .ok_or_else(|| format!("the host opened no record of {app}"))?;
+            Ok(DocumentRoute {
+                app_id: app.to_owned(),
+                cluster_id: ROOM.to_owned(),
+                record: record.to_owned(),
+            })
+        }
+        many => Err(format!(
+            "the room holds {} records of {app}; an owner's written step names none",
+            many.len()
+        )),
+    }
+}
+
+/// One line of `TILO_AGENT_ACTION_LOG` for an action the owner ran, as an
+/// agent's are written, `as` saying who ran it: a replay runs it as the
+/// owner too.
+fn log_owner_action(
+    route: Option<&DocumentRoute>,
+    app: &str,
+    resource: &str,
+    action: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    started_ms: u128,
+    outcome: &Result<ActionOutput, String>,
+) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("TILO_AGENT_ACTION_LOG") else {
+        return;
+    };
+    let output = outcome.as_ref().ok();
+    let line = serde_json::json!({
+        "started_unix_ms": started_ms,
+        "ended_unix_ms": unix_ms(),
+        "agent": OWNER,
+        "as": OWNER,
+        "app": app,
+        "record": route.map_or("", |route| route.record.as_str()),
+        "resource": resource,
+        "action": action,
+        "arguments": arguments,
+        "ok": outcome.is_ok(),
+        "error": outcome.as_ref().err(),
+        "produced": output.map(|output| {
+            output
+                .resources
+                .iter()
+                .filter(|resource| tilo_actions::content_hash(resource).is_some())
+                .cloned()
+                .collect::<Vec<_>>()
+        }).unwrap_or_default(),
+        "resources": output.map(|output| output.resources.clone()),
+        "value": output.and_then(|output| output.value.clone()),
+    });
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()))
+        .unwrap();
+}
+
 /// Environment:
 /// - `TILO_BENCH_OUT`: run directory (outputs, `tasks.json`, `timing.json`,
 ///   `content/`).
@@ -831,6 +1150,9 @@ async fn campaign_bench() {
     let mut faults_done = vec![false; scenario.faults.len()];
     let mut events_done = vec![false; scenario.events.len()];
     let mut fault_log = Vec::new();
+    // The rows of the tasks the owner carried out, by step, kept with the
+    // step's agents' when it ends.
+    let mut owner_rows: BTreeMap<usize, Vec<serde_json::Value>> = BTreeMap::new();
     while finished_steps.len() < scenario.steps.len() {
         for (index, stage) in scenario.steps.iter().enumerate() {
             if launched.contains_key(&index)
@@ -841,8 +1163,30 @@ async fn campaign_bench() {
             {
                 continue;
             }
+            // The owner's tasks first, carried out here and heard in the
+            // room before the step's agents are asked to act on what they
+            // made.
+            let mut rows = Vec::new();
+            for task in stage.tasks.iter().filter(|task| task.actor == Actor::Owner) {
+                let launched_ms = unix_ms();
+                let text = fill(&task.text);
+                let run = run_as_owner(&browser, &text).await;
+                eprintln!(
+                    "bench: step {}: the owner ran {} written step(s) for {}{}",
+                    stage.id,
+                    run.actions.len(),
+                    task.agent,
+                    run.error
+                        .as_ref()
+                        .map_or_else(String::new, |error| format!("; failed: {error}"))
+                );
+                rows.push(run.row(&stage.id, &task.agent, &text, launched_ms));
+            }
+            owner_rows.insert(index, rows);
             let mut issued = Vec::new();
-            for (agent, text) in &stage.tasks {
+            for Task { agent, text, .. } in
+                stage.tasks.iter().filter(|task| task.actor == Actor::Agent)
+            {
                 let grant = grants
                     .get(agent)
                     .unwrap_or_else(|| panic!("step {} names an unknown agent {agent}", stage.id))
@@ -935,6 +1279,11 @@ async fn campaign_bench() {
                 continue;
             }
             finished_steps.insert(index, run_started.elapsed().as_secs_f64());
+            for mut row in owner_rows.remove(&index).unwrap_or_default() {
+                row["step_seconds"] = step_started.elapsed().as_secs_f64().into();
+                row["ended_at_seconds"] = run_started.elapsed().as_secs_f64().into();
+                log.push(row);
+            }
             for one in issued {
                 let task = task_in(&status, &one.grant, &one.task);
                 log.push(task_row(
