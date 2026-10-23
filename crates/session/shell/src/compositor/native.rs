@@ -9917,6 +9917,9 @@ pub fn run() {
         .set_desk_wake(Arc::clone(&session_wake));
     // The network, once the loop installs it, takes the same wake and
     // binds the hosted apps that use it.
+    // What the broker asks of the person's records the session holds
+    // wakes the loop, which runs it.
+    crate::shell::settings_records::wake_with(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         // From here on the loop never waits on the disk to open a tab's
         // record: the record store's thread opens it and wakes the loop.

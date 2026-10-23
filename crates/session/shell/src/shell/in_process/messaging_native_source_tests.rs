@@ -97,79 +97,28 @@ fn await_private_reply(harness: &mut ui::headless::FrameHarness, mut pump: impl 
     );
 }
 
+/// Write `value` into the person's record of `P` the session holds, which
+/// the apps it shows read.
 fn seed_person<P: Resource<State = P> + Fields + SharedRecord + Clone + Send + 'static>(
-    apps: &mut super::super::super::InProcessApps,
+    apps: &super::super::super::InProcessApps,
     value: &P,
 ) {
-    if P::OWNER == accounts::person::ACCOUNTS_OWNER {
-        let value = value.clone();
-        apps.person_records
-            .as_ref()
-            .unwrap()
-            .run(move |records| {
-                let record = records.shared::<P>().unwrap();
-                record.record().edit(false, |doc| {
-                    value
-                        .write_fields(doc, &automerge::ROOT)
-                        .map_err(|error| error.to_string())
-                })?;
-                record.record().flush();
-                Ok::<_, String>(())
-            })
-            .unwrap()
-            .unwrap();
-        carry_accounts(apps);
-        return;
-    }
-    let records = ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        P::OWNER,
-        ui::permissions::UserId(apps.author.0.clone()),
-    )
-    .unwrap();
-    let record = records
-        .open_record(ui::record::RecordKind::new(P::KIND), &|doc| {
-            P::initialize(doc).map_err(|error| error.to_string())
-        })
-        .unwrap();
-    record
-        .edit(false, |doc| {
-            value
-                .write_fields(doc, &automerge::ROOT)
-                .map_err(|error| error.to_string())
-        })
-        .unwrap();
-    records.flush().unwrap();
-}
-/// Carry the person's accounts the session keeps to the copy the apps it
-/// shows keep, as the record's route does between them.
-fn carry_accounts(apps: &mut super::super::super::InProcessApps) {
-    let document = apps
-        .person_records
+    let value = value.clone();
+    apps.person_records
         .as_ref()
         .unwrap()
-        .run(|records| {
-            records
-                .shared::<accounts::person::PersonAccounts>()
-                .unwrap()
-                .record()
-                .document()
-                .unwrap()
+        .run(move |records| {
+            let record = records.shared::<P>().unwrap();
+            record.record().edit(false, |doc| {
+                value
+                    .write_fields(doc, &automerge::ROOT)
+                    .map_err(|error| error.to_string())
+            })?;
+            record.record().flush();
+            Ok::<_, String>(())
         })
+        .unwrap()
         .unwrap();
-    ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        accounts::person::ACCOUNTS_OWNER,
-        apps.author.clone(),
-    )
-    .unwrap()
-    .open_record(
-        ui::record::RecordKind::new(accounts::person::PersonAccounts::KIND),
-        &|doc| accounts::person::PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
-    )
-    .unwrap()
-    .merge_peer_document(document)
-    .unwrap();
 }
 fn effect(
     harness: &mut ui::headless::FrameHarness,
@@ -1262,7 +1211,9 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
         .unwrap();
     assert_eq!(published.account, ServiceAccount::new("signal", &id));
     assert_eq!(published.scope, format!("signal:{OWN_ACI}"));
-    let state = person.accounts(Clone::clone).unwrap();
+    let state = person
+        .read::<accounts::person::PersonAccounts, _>(Clone::clone)
+        .unwrap();
     assert_eq!(state.accounts.len(), 2);
     assert!(
         state
@@ -1289,7 +1240,12 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
         apps.publish_native_signal_enrollment(candidate, "Duplicate".into())
             .is_err()
     );
-    assert_eq!(person.accounts(Clone::clone).unwrap(), before);
+    assert_eq!(
+        person
+            .read::<accounts::person::PersonAccounts, _>(Clone::clone)
+            .unwrap(),
+        before
+    );
     enrollment.cancel();
     duplicate.cancel();
     provider.join().unwrap();
@@ -1428,10 +1384,7 @@ fn exercise_verified_enrollment_profile(include_ram: bool) {
         .publish_native_signal_enrollment(candidate, "Fixture Signal".into())
         .unwrap();
     assert_eq!(linked.account.account, owner.account);
-    seed_person(
-        &mut apps,
-        &tilo_contact_directory::ContactDirectory::default(),
-    );
+    seed_person(&apps, &tilo_contact_directory::ContactDirectory::default());
     apps.bind_messaging_record_wake(Arc::new(|| {}));
     let authority = apps
         .native_messaging_authority(&identity, &credential, &linked.scope)
@@ -1682,7 +1635,7 @@ fn retired_native_enrollment_publishes_no_account() {
         apps.person_records
             .as_ref()
             .unwrap()
-            .accounts(|state| state.accounts.is_empty())
+            .read::<accounts::person::PersonAccounts, _>(|state| state.accounts.is_empty())
             .unwrap(),
         "retired evidence published no account"
     );

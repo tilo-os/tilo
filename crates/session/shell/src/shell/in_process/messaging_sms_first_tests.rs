@@ -488,8 +488,6 @@ fn receive_reply(
     account: &ServiceAccount,
     evidence: &Mutex<Evidence>,
 ) -> (String, MessagesEffect) {
-    // The account published reaches the app's copy over its route.
-    carry_accounts(apps);
     effect(
         &mut mounted.harness,
         &MessagesEffect::OpenPerson {

@@ -47,8 +47,10 @@ pub struct InProcessApps {
     first_accounts: Option<Rc<dyn messaging::first_account::FirstAccounts>>,
     messaging_registry: Option<std::sync::Arc<dyn tilo_messaging::MessagingRegistry>>,
     credential_owner: Option<accounts::CredentialOwner>,
-    /// The person's records the session keeps (their accounts among them),
-    /// held where its settings are; `None` keeps the apps from them.
+    /// The person's records the session keeps (their accounts and contacts
+    /// among them), held on this thread where its settings are: the apps
+    /// open the person's records of other apps there. `None` keeps the
+    /// session's messaging from them.
     person_records: Option<crate::shell::settings_records::Holder>,
     messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
     messaging_record_wake: Option<crate::session_runtime::Wake>,
@@ -542,7 +544,16 @@ impl InProcessApps {
             definition.app_id,
             self.author.clone(),
         ) {
-            context.provide_person_records(person);
+            // The person's records of other apps (their accounts and
+            // contacts) are the ones the session holds.
+            let held = self
+                .person_records
+                .as_ref()
+                .and_then(crate::shell::settings_records::Holder::person_records);
+            context.provide_person_records(match held {
+                Some(held) => person.sharing(&held),
+                None => person,
+            });
         }
         if definition.app_id == "so.tilo.messages" {
             #[cfg(target_os = "linux")]

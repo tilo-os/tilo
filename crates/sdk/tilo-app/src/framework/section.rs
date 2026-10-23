@@ -705,7 +705,8 @@ impl SettingsRecords {
         person.owners()
     }
 
-    /// The person's shared record `P` (their accounts), held beside the sections and synced with them
+    /// The person's shared record `P` (their accounts, their contacts),
+    /// held beside the sections and synced with them
     /// ([`Self::history_owners`]), opened on first use; not published here.
     /// `None` where the sections are not kept in the person's records.
     #[must_use]

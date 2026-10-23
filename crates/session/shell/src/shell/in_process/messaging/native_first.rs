@@ -293,7 +293,6 @@ impl Actor {
                 &attempt.review.scope,
             )
             .map_err(|_| SendError::Revoked)?;
-            super::first_account::ensure_contacts(apps, &attempt.identity)?;
             self.start(
                 apps,
                 attempt.identity.clone(),
@@ -435,7 +434,6 @@ impl Actor {
                     )
                     .map_err(|_| SendError::Revoked)?;
                 credential.check()?;
-                super::first_account::ensure_contacts(apps, &identity)?;
                 self.start(apps, identity, credential, scope)
             })();
             if result.is_err() {

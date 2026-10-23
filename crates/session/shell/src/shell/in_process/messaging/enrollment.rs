@@ -88,7 +88,6 @@ impl super::super::InProcessApps {
         name: String,
         jid: String,
     ) -> Result<(), LaunchError> {
-        identity.check().map_err(|_| LaunchError::BindingMismatch)?;
         let owner = &identity.owner;
         if owner.principal != self.author.0
             || owner.device != self.device_id
@@ -106,14 +105,13 @@ impl super::super::InProcessApps {
             identity,
         )
     }
-    /// Change the person's accounts by `invoke` while `identity`'s
-    /// admission lasts: checked before the change, as it runs and after.
+    /// Change the person's accounts by `invoke` if `identity`'s admission
+    /// still lets it, checked as the change is applied.
     fn change_accounts(
         &self,
         invoke: tilo_resource::Invoke<PersonAccounts>,
         identity: &NativeMessagingIdentity,
     ) -> Result<(), LaunchError> {
-        identity.check().map_err(|_| LaunchError::BindingMismatch)?;
         let admitted = identity.clone();
         self.person_records
             .as_ref()
@@ -123,8 +121,7 @@ impl super::super::InProcessApps {
                     .check()
                     .map_err(|_| "original native admission retired".to_owned())
             })
-            .map_err(LaunchError::Operation)?;
-        identity.check().map_err(|_| LaunchError::BindingMismatch)
+            .map_err(LaunchError::Operation)
     }
     /// Prepare private key custody only for the exact unpublished enrollment
     /// that passed provider self-identity verification. The protected Passwords
@@ -213,7 +210,6 @@ impl super::super::InProcessApps {
         name: String,
         scope: &str,
     ) -> Result<(), LaunchError> {
-        identity.check().map_err(|_| LaunchError::BindingMismatch)?;
         if identity.owner.service != service
             || identity.owner.principal != self.author.0
             || identity.owner.device != self.device_id

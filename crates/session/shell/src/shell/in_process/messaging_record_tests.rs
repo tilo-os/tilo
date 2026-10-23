@@ -41,20 +41,20 @@ impl Fixture {
             wakes,
         }
     }
-    fn metadata(&mut self, enabled: bool, generation: u64) {
+    fn metadata(&self, enabled: bool, generation: u64) {
         let mut metadata = accounts::person::PersonAccounts::default();
         metadata.save_account(
             "fixture-signal".into(), "signal".into(), "Synthetic Signal".into(),
             serde_json::json!({"messaging_scope":route().scope,"linking_generation":generation}),
             enabled, 0,
         ).unwrap();
-        seed_person(&mut self.apps, &metadata);
+        seed_person(&self.apps, &metadata);
     }
 }
 
 #[test]
 fn native_current_records_refuse_changed_account_generation_and_contacts_without_file_reopen() {
-    let mut fixture = Fixture::new();
+    let fixture = Fixture::new();
     assert_eq!(
         SignalAuthority::authorize(fixture.authority.as_ref(), &route())
             .unwrap()
@@ -105,7 +105,7 @@ fn native_current_records_refuse_changed_account_generation_and_contacts_without
     contacts
         .remove_contact(tilo_resource::Id::from_raw(PERSON))
         .unwrap();
-    seed_person(&mut fixture.apps, &contacts);
+    seed_person(&fixture.apps, &contacts);
     assert!(
         SignalAuthority::check_account(fixture.authority.as_ref()).is_ok(),
         "transport readiness does not invent a recipient association"

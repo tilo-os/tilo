@@ -145,6 +145,7 @@ impl Widget for ShellOverlayHost {
         let marker_dirty = self
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
+        crate::shell::settings_records::pump();
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
