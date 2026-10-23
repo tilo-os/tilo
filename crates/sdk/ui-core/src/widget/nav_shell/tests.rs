@@ -2311,3 +2311,86 @@ fn a_header_the_bar_cannot_show_keeps_its_row() {
         "and leaves them as declared"
     );
 }
+
+/// A content that continues on another device and answers a diagnostic
+/// input with its own state.
+struct ResumableContent(crate::widget::Spacer);
+
+impl crate::widget::Decorator for ResumableContent {
+    type Inner = crate::widget::Spacer;
+
+    fn inner(&self) -> &crate::widget::Spacer {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut crate::widget::Spacer {
+        &mut self.0
+    }
+
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn crate::widget::Continuable>() {
+            request.provide::<dyn crate::widget::Continuable>(self);
+        }
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn crate::widget::Continuable>() {
+            request.provide::<dyn crate::widget::Continuable>(self);
+        }
+    }
+
+    fn native_input_snapshot(
+        &self,
+        _state: &AppModel,
+        _path: &ModelPath,
+    ) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "caret_line": 3 }))
+    }
+}
+
+impl crate::widget::Continuable for ResumableContent {
+    fn continuation_metadata(
+        &self,
+        _state: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        Some(crate::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: b"line 3".to_vec(),
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        _metadata: &crate::collaboration::ContinuationMetadata,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> bool {
+        true
+    }
+}
+
+#[test]
+fn the_shell_continues_and_reports_input_as_its_content() {
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Box::new(ResumableContent(crate::widget::Spacer::new())));
+    let mut h = harness(shell, 900, 600, Theme::dark());
+    settle(&mut h, 900, 600);
+    let document = automerge::AutoCommit::new();
+    let metadata =
+        crate::widget::capability::capability::<dyn crate::widget::Continuable>(h.root_widget())
+            .and_then(|continuable| continuable.continuation_metadata(&document, &automerge::ROOT))
+            .expect("the content's continuation");
+    assert_eq!(metadata.bytes, b"line 3");
+    assert!(
+        crate::widget::capability::capability_mut::<dyn crate::widget::Continuable>(
+            h.root_mut::<NavShell>()
+        )
+        .is_some()
+    );
+    assert_eq!(
+        h.native_input_snapshot(),
+        Some(serde_json::json!({ "caret_line": 3 }))
+    );
+}

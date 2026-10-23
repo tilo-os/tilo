@@ -3948,10 +3948,35 @@ fn place_header(
 }
 
 impl Widget for NavShell {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn WindowHeader
-    );
+    // The shell frames the app; what continues on another device, and what
+    // a diagnostic input reads, is the content it frames.
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+        } else if request.wants::<dyn WindowHeader>() {
+            request.provide::<dyn WindowHeader>(self);
+        } else if request.wants::<dyn crate::widget::Continuable>() {
+            self.content.provide(request);
+        }
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+        } else if request.wants::<dyn WindowHeader>() {
+            request.provide::<dyn WindowHeader>(self);
+        } else if request.wants::<dyn crate::widget::Continuable>() {
+            self.content.provide_mut(request);
+        }
+    }
+
+    fn native_input_snapshot(
+        &self,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> Option<serde_json::Value> {
+        self.content.native_input_snapshot(state, path)
+    }
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.conventions = conventions;
