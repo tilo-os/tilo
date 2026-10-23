@@ -396,6 +396,41 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
         .await;
 }
 
+/// A held ask ends when its run stops, with no clock: the stop is
+/// announced with the tracker's publication.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_ask_ends_when_its_run_stops() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, _stream) = append_target(&f).await;
+            ask_first_for_notes(&f);
+            ask_append(&f, "Draft line");
+
+            let line = serde_json::json!({ "text": "Draft line" }).to_string();
+            let held = tokio::task::spawn_local({
+                let (agent, run) = (agent.clone(), run.clone());
+                async move { append_held(&agent, &run, 9151, line, u32::MAX).await }
+            });
+            tokio::task::yield_now().await;
+            assert!(!held.is_finished(), "the ask is held while nobody answered");
+
+            f.stop();
+            tilo_identity_host::policy_change::announce();
+            let error = tilo_test_env::within("the stopped run's answer", held)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert!(error.to_string().contains("cancelled"), "{error}");
+            assert!(nothing_delivered());
+            drop(f);
+        })
+        .await;
+}
+
 /// An ask that waits for its person is held by the host, not asked again
 /// on a clock: it runs as soon as the person's answer is announced.
 #[tokio::test(flavor = "current_thread")]

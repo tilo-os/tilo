@@ -13998,7 +13998,10 @@ async fn serve_broker_thread(
         tilo_identity_host::policy_change::Watch::new(move || turn.notify_one())
     };
     let mut policy = crate::policy_schedule::PolicySchedule::default();
-    let mut next_native_task_refresh = std::time::Instant::now();
+    // Runs are delivered, and their questions told, as the room's record
+    // that holds them announces each publication: the epoch they were last
+    // delivered at.
+    let mut delivered = None;
     loop {
         let now = std::time::Instant::now();
         let epoch = tilo_identity_host::policy_change::epoch();
@@ -14006,9 +14009,9 @@ async fn serve_broker_thread(
             let clocked = state.refresh_policy_surfaces();
             policy.checked(now, epoch, clocked);
         }
-        if state.has_native_task_subscribers() && now >= next_native_task_refresh {
+        if state.has_native_task_subscribers() && delivered != Some(epoch) {
             state.refresh_native_task_delivery();
-            next_native_task_refresh = now.checked_add(Duration::from_secs(1)).unwrap_or(now);
+            delivered = Some(epoch);
         }
         #[cfg(test)]
         {
@@ -14063,23 +14066,20 @@ async fn serve_broker_thread(
         // invocation about to expire. Everything else the turn handles wakes
         // it at once: queued directory work, in-process door calls and quit
         // through `local_turn`, admitted workers through `worker_admitted`,
-        // policy announcements through `policy_turn`; connected apps run as
+        // policy announcements, and with them runs to deliver, through
+        // `policy_turn`; connected apps run as
         // tasks of this LocalSet.
         let now = std::time::Instant::now();
         let mut recheck = policy.due(now, tilo_identity_host::policy_change::epoch());
-        if recheck.is_none() && policy_watch.arm() != policy.epoch() {
-            // Announced between the check above and arming: nothing will
+        let armed = policy_watch.arm();
+        if (recheck.is_none() && armed != policy.epoch())
+            || (state.has_native_task_subscribers() && delivered != Some(armed))
+        {
+            // Announced between the checks above and arming: nothing will
             // wake the turn for it.
             recheck = Some(now);
         }
-        let deadline = broker_turn_deadline(recheck, state.next_invocation_deadline())
-            .into_iter()
-            .chain(
-                state
-                    .has_native_task_subscribers()
-                    .then_some(next_native_task_refresh),
-            )
-            .min();
+        let deadline = broker_turn_deadline(recheck, state.next_invocation_deadline());
         let stream = tokio::select! {
             biased;
             () = sleep_until(deadline), if deadline.is_some() => {

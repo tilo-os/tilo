@@ -80,7 +80,7 @@ previewed as a message) and records it in the task's control sidecar, so the
 pause outlives restarts. The person sees it on the task's issue in the Tasks
 app ([tasks.md](tasks.md)), and confirms (optionally editing the draft's
 fields), declines with a reason, or always allows it; the published `answer-confirmation` task
-action does the same without the card. The agent's step waits and asks again
+action does the same without the card. The agent's step waits and asks once more
 with the same arguments, an ask the broker holds until the person answers, a
 grant that decides it changes or the run stops (each announced through
 `policy_change`), never on a clock; the broker runs exactly those arguments with the
