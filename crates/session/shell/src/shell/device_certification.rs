@@ -154,12 +154,12 @@ fn ask_action(ask: &Ask) -> Result<PersonalFabricAction, String> {
     })
 }
 
-fn reply(network: &ShellNetwork, to: &DeviceId, answer: Answer) -> Result<(), String> {
+fn reply(network: &ShellNetwork, to: &DeviceId, answer: &Answer) -> Result<(), String> {
     send(
         network,
         to,
         PersonalFabricAction::CertifyAnswer {
-            answer: postcard::to_allocvec(&answer).map_err(|error| error.to_string())?,
+            answer: postcard::to_allocvec(answer).map_err(|error| error.to_string())?,
         },
     )
 }
@@ -171,7 +171,7 @@ pub(crate) fn pump(network: &ShellNetwork) {
     };
     let outbox = with_state(&local, |state| std::mem::take(&mut state.outbox));
     for (to, answer) in outbox {
-        if let Err(error) = reply(network, &to, answer) {
+        if let Err(error) = reply(network, &to, &answer) {
             tracing::warn!(%error, "could not answer a device certification ask");
         }
     }
@@ -360,7 +360,7 @@ pub(crate) fn answer(
     reply(
         network,
         &asking.from,
-        Answer {
+        &Answer {
             session: asking.ask.session,
             reply: answer,
         },
@@ -409,7 +409,7 @@ pub(crate) fn certify(
     let mut asked = 0_usize;
     for device in network.personal_route_devices() {
         match send(network, &device, ask_action(gathering.ask())?) {
-            Ok(()) => asked += 1,
+            Ok(()) => asked = asked.saturating_add(1),
             Err(error) => tracing::debug!(%error, "a device of the person could not be asked"),
         }
     }
@@ -428,7 +428,9 @@ pub(crate) fn certify(
                 .into(),
         );
     }
-    let deadline = Instant::now() + APPROVAL_WINDOW;
+    let deadline = Instant::now()
+        .checked_add(APPROVAL_WINDOW)
+        .ok_or("the approval window does not fit this clock")?;
     let mut without_key = 0_usize;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -439,7 +441,7 @@ pub(crate) fn certify(
             ));
         };
         if matches!(answer.reply, Reply::HoldsNoKey) {
-            without_key += 1;
+            without_key = without_key.saturating_add(1);
         }
         match gathering.answer(from, answer) {
             Progress::Certified(cert) => return Ok(cert),

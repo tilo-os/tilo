@@ -386,7 +386,7 @@ impl Gathering {
             Reply::Declined => {
                 self.declined.insert(from);
                 self.commitments.remove(&from);
-                if self.declined.len() > usize::from(self.total - self.threshold) {
+                if self.declined.len() > usize::from(self.total.saturating_sub(self.threshold)) {
                     Progress::Failed(
                         "the device was declined on another of your devices".to_string(),
                     )
@@ -448,7 +448,7 @@ impl Gathering {
         }
     }
 
-    fn finish(&mut self, signature: [u8; 64]) -> Progress {
+    fn finish(&self, signature: [u8; 64]) -> Progress {
         let mut cert = self.ask.cert.clone();
         cert.signature = signature;
         match verify_device_cert(&cert) {

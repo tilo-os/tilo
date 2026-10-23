@@ -450,6 +450,7 @@ impl Admission {
         let cert = crate::shell::device_certification::certify(
             &network, proposal, service, threshold, total,
         )?;
+        drop(network);
         if stop.load(Ordering::Acquire) {
             return Err("stopped".into());
         }
