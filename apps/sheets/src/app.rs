@@ -338,6 +338,9 @@ pub struct SheetsApp {
     command_slot: CommandSlot,
     /// The window bar's slot ids, and the command each runs.
     bar_commands: Vec<(String, MenuItem)>,
+    /// The file the workbook was opened from, which names it; `None` for
+    /// one never saved.
+    file: Option<PathBuf>,
     /// The theme the chrome was last measured in, for laying the bar out
     /// between frames.
     chrome_theme: Theme,
@@ -567,7 +570,9 @@ impl SheetsApp {
             pending_reveal: None,
             clipboard: None,
             palette: {
+                // window-bar: picker, type-ahead in the Ctrl+K command palette
                 let mut palette = CommandPalette::commands();
+                // window-bar: picker, the command palette's own query
                 palette.set_query_placeholder("Search commands\u{2026}");
                 palette
             },
@@ -576,7 +581,13 @@ impl SheetsApp {
             people: None,
             opening: Rc::default(),
             selection_decls: std::cell::RefCell::default(),
+            file: None,
         }
+    }
+
+    /// The window shows the workbook of the file at `path`.
+    pub(crate) fn show_file_of(&mut self, path: PathBuf) {
+        self.file = Some(path);
     }
 
     /// Take part in the framework: submit workbook edits through its dispatcher.

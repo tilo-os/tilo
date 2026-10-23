@@ -31,7 +31,7 @@ use crate::workbook::{
     Sheet, Workbook,
 };
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// The most cells one write, sort or import changes.
 pub const MAX_WRITES: usize = 16 * 1024;
@@ -1400,6 +1400,9 @@ impl ResourceSurface<Workbook, SheetsEffect> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Workbook>) {
         self.attach_content(cx.content());
+        if let Some(path) = cx.launch_arguments().first() {
+            self.show_file_of(std::path::PathBuf::from(path));
+        }
         self.attach_framework(cx.dispatcher(), cx.live());
         self.attach_people(cx.people());
         self.follow_locale(cx.settings::<tilo_locale::Locale>());
