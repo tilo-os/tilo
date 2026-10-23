@@ -8,7 +8,6 @@ history-in-row 2 apps/typst-editor/src/chrome.rs
 history-in-row 2 apps/video-editor/src/app.rs
 history-in-row 1 apps/video-editor/src/app/layout.rs
 history-in-row 2 apps/video-player/src/app.rs
-nav-header-actions 1 apps/feeds/src/app.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/cloud_browse.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/window_bar.rs
 nav-header-actions 2 apps/logs/src/app.rs
@@ -26,7 +25,6 @@ own-search 1 apps/browser/src/browser_widget/toolbar.rs
 own-search 1 apps/browser/src/daily_controls.rs
 own-search 1 apps/chip-design/src/view.rs
 own-search 2 apps/containers/src/view.rs
-own-search 1 apps/feeds/src/app.rs
 own-search 1 apps/logs/src/app.rs
 own-search 1 apps/maps/src/offline_panel.rs
 own-search 1 apps/notes/src/app.rs
