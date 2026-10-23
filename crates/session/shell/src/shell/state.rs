@@ -4961,14 +4961,34 @@ impl WorkspaceTree {
                         )
                     }
                 };
-                let exists = workspace.strips.iter().any(|strip| {
-                    strip
-                        .window_groups
-                        .iter()
-                        .flat_map(|group| &group.tabs)
-                        .any(|tab| tab.id == app.id.0)
-                });
+                let at = workspace
+                    .strips
+                    .iter()
+                    .enumerate()
+                    .find_map(|(strip_index, strip)| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .enumerate()
+                            .find_map(|(group_index, group)| {
+                                let index = group.tabs.iter().position(|tab| tab.id == app.id.0)?;
+                                Some((strip_index, group_index, index, group))
+                            })
+                    });
+                let exists = at.is_some();
                 if exists && !existing_continuation_tabs.contains(&app.id.0) {
+                    continue;
+                }
+                // Every checkpoint offers every card again: one already
+                // projected as offered stays, so an offer that moved nothing
+                // changes nothing.
+                if let Some((strip_index, group_index, index, group)) = at
+                    && strip_index == app.placement.strip as usize
+                    && group_index == app.placement.group as usize
+                    && index == (app.placement.tab as usize).min(group.tabs.len().saturating_sub(1))
+                    && group.tabs[index].title == title
+                    && group.tabs[index].tile == tile_content
+                {
                     continue;
                 }
                 // An offer is a projection of its source placement, not a
@@ -9873,10 +9893,21 @@ mod workspace_tree_lifecycle_tests {
             "Laptop",
             &WorkspaceContinuation {
                 room,
-                apps: vec![app],
+                apps: vec![app.clone()],
             },
         ));
         assert!(!tree.continuation_file_references.contains_key(&id.0));
+        // Every checkpoint offers it again; one that moved nothing changes
+        // nothing, so no document or save follows.
+        let heads = tree.current_heads();
+        assert!(!tree.materialize_continuation_workspace(
+            "Laptop",
+            &WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            },
+        ));
+        assert_eq!(tree.current_heads(), heads);
         let replacement = tree
             .desktop
             .workspaces
