@@ -444,10 +444,6 @@ impl Desktop {
 
     /// Every path the main thread walked since
     /// [`Self::forbid_main_thread_files`], with where it was.
-    ///
-    /// # Panics
-    ///
-    /// When the audit does not answer.
     #[track_caller]
     pub fn main_thread_files(&self) -> Vec<shell::compositor::liveness::FileWalk> {
         match self.liveness(r#"{"op":"main_thread_files"}"#) {
@@ -534,7 +530,6 @@ impl Desktop {
         self.ok(&json!({"op": "pointer_move", "x": x, "y": y}));
     }
 
-    /// Type `text`.
     #[track_caller]
     pub fn type_text(&self, text: &str) {
         self.ok(&json!({"op": "type", "text": text}));

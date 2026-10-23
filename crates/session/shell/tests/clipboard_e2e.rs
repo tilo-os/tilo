@@ -537,7 +537,6 @@ impl Compositor {
                     ("tilo compositor test_control listening on ", "control"),
                 ] {
                     if let Some(rest) = line.split_once(marker).map(|(_, r)| r) {
-                        // The compositor prints an `OsString` in `Debug` form.
                         let value = rest
                             .trim()
                             .trim_start_matches('"')
@@ -1870,7 +1869,6 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
             if seen.as_deref() == Some(payload) {
                 break;
             }
-            // Serve the compositor's `send` request as soon as it arrives.
             dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
         }
         assert_eq!(
@@ -3627,7 +3625,6 @@ impl Dispatch<WlDataSource, RichSource> for ClientState {
                     write_and_close(fd, &payload.plain);
                 }
             }
-            // The compositor taking the copy over supersedes this source.
             wl_data_source::Event::Cancelled => state.source_cancelled = true,
             _ => {}
         }
@@ -5269,7 +5266,6 @@ fn primary_selection_crosses_every_boundary_without_aliasing_the_clipboard() {
             if seen.as_deref() == Some(payload) {
                 break;
             }
-            // Serve the compositor's `send` request as soon as it arrives.
             dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
         }
         assert_eq!(
@@ -6267,7 +6263,6 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
         .find(|n| n.starts_with("foreign-surface-"))
         .expect("the word processor's tile is laid out");
     let [tx, ty, tw, th] = compositor.named_rect(&tile_name).expect("tile rect");
-    // Drop into the page body, below the app's toolbar.
     let (drop_x, drop_y) = (tx + tw / 2.0, ty + th * 0.6);
 
     compositor.pointer_move(row.0, row.1);

@@ -433,7 +433,6 @@ fn padded_wayland_shm_buffers_reach_streaming_and_worker_capture_without_pixel_c
         (wl_shm::Format::Argb8888, false, 0x53_48_4d_01),
         (wl_shm::Format::Xrgb8888, true, 0x53_48_4d_02),
     ] {
-        // Odd width, nonzero pool offset, row padding, and varying alpha.
         let mut bytes = vec![0xde; 247];
         let mut expected = Vec::new();
         for y in 0_usize..3 {

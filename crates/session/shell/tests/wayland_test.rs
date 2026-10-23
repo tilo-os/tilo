@@ -72,7 +72,6 @@ fn test_wayland_handshake_fixed() {
         let mut server_state =
             WaylandServer::new(&display.handle(), tx).expect("WaylandServer::new");
 
-        // Serve for as long as the test may wait on the client below.
         let serve_until = tilo_test_env::hang_deadline();
         while Instant::now() < serve_until {
             // Must dispatch clients manually if not using a source.

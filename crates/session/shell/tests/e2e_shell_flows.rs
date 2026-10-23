@@ -851,7 +851,6 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
         // Phase `e2e_super_k_opens_search_palette_in_live_binary_path`.
         {
             let _guard = TEST_LOCK.lock_recover();
-            // Use the concrete-type sibling of what the live binary builds.
             let tree = WorkspaceTree::bootstrap_demo();
             let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
             assert!(!host.palette_visible(), "palette starts closed");
@@ -1026,13 +1025,11 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             let mut h = Harness::new(&tree);
             assert!(!h.chrome.borrow().overlays.quick_settings);
 
-            // A draw pass populates `tray_pill_rect`, which handle_event hit-tests.
             h.draw_to(
                 renderer_opt.as_mut(),
                 &out_dir.join("e2e-06-quick-settings-pre.png"),
             );
 
-            // The click reaches TopBarChrome.
             let hit = tray_pill_hit(&tree, &theme, h.chrome.clone());
             h.click(hit.x, hit.y);
             assert!(
@@ -1176,7 +1173,6 @@ fn assert_maximized_tile_golden(
         );
         let rendered = out_dir.join("e2e-maximized-tile-controls.png");
         assert_png_nonempty(&rendered);
-        // The maximized window's bar is what regresses if its controls drift.
         SnapshotAssertion::new(
             rendered,
             pinned_golden_path(goldens_dir().join("e2e-maximized-tile-controls.png")),

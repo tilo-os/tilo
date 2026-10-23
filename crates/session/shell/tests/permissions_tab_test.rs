@@ -318,7 +318,6 @@ fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
         }
         assert_eq!(chrome.borrow().ws_grant_draft.subject_index, target);
 
-        // Drive the capability picker to "Microphone".
         while chrome.borrow().ws_grant_draft.choice().label() != "Microphone" {
             let rect = host.grant_composer_rects().unwrap().capability;
             click(&mut host, rect);
