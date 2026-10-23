@@ -256,7 +256,7 @@ async fn next(track: &mut moq_net::track::Subscriber) -> Next {
 
 /// SUBSCRIBE can exchange consumer handles. Match the shared relay's existing
 /// unused-demand grace; the caller then closes atomically with demand.
-async fn unused(output: &moq_net::track::Producer) {
+pub(crate) async fn unused(output: &moq_net::track::Producer) {
     loop {
         if output.unused().await.is_err() {
             return;

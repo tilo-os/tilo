@@ -2154,6 +2154,13 @@ impl DeviceFabricRuntime {
         self.enforce_policy(network, selection, policy);
     }
 
+    /// Hold the periodic sample back for good: from here on a pump samples
+    /// only for a change it was told about, however long it takes.
+    #[cfg(test)]
+    pub(crate) fn hold_periodic_sample_for_test(&mut self) {
+        self.last_sample = Instant::now().checked_add(Duration::from_secs(3600));
+    }
+
     fn enforce_policy(
         &mut self,
         network: &ShellNetwork,

@@ -33,12 +33,24 @@ fn starting_host(dir: &Path) -> std::path::PathBuf {
     std::fs::write(
         &host,
         format!(
-            "#!/bin/sh\necho spawned >> '{}'\nexec 3>&1\nexec cat >/dev/null\n",
+            "#!/bin/sh\n[ \"$1\" = --warm ] && exit 0\n\
+             echo spawned >> '{}'\nexec 3>&1\nexec cat >/dev/null\n",
             dir.join("spawns").display()
         ),
     )
     .unwrap();
     std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // macOS assesses a newly written executable on its first launch, which
+    // on a busy machine has taken longer than the engine waits for a host:
+    // launch it once here, so what is measured is the window, not the
+    // assessment.
+    assert!(
+        std::process::Command::new(&host)
+            .arg("--warm")
+            .status()
+            .unwrap()
+            .success()
+    );
     host
 }
 

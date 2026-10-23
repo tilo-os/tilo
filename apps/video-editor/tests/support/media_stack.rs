@@ -39,15 +39,26 @@ pub fn media_stack() -> bool {
     missing.is_empty() || require_media(&format!("missing {}", missing.join(", ")))
 }
 
-/// The H.264 encoders footage is written with, in preference order, each with
-/// the property that takes its keyframe interval in frames. Linux CI carries
-/// `OpenH264`; macOS has none (Cisco's binary only ever reaches a machine as its
-/// owner's own download), and there the system's encoders write the footage.
-const H264_ENCODERS: [(&str, &str); 4] = [
-    ("openh264enc", "gop-size"),
-    ("x264enc", "key-int-max"),
-    ("vtenc_h264_hw", "max-keyframe-interval"),
-    ("vtenc_h264", "max-keyframe-interval"),
+/// The H.264 encoders footage is written with, in preference order: each
+/// with the property that takes its keyframe interval in frames, and the
+/// settings that keep frames in presentation order as `OpenH264`'s Baseline
+/// profile does (no B-frames), so a decoded frame's time is its source
+/// frame's. Linux CI carries `OpenH264`; macOS has none (Cisco's binary only
+/// ever reaches a machine as its owner's own download), and there the
+/// system's encoders write the footage.
+const H264_ENCODERS: [(&str, &str, &str); 4] = [
+    ("openh264enc", "gop-size", ""),
+    ("x264enc", "key-int-max", "bframes=0"),
+    (
+        "vtenc_h264_hw",
+        "max-keyframe-interval",
+        "allow-frame-reordering=false",
+    ),
+    (
+        "vtenc_h264",
+        "max-keyframe-interval",
+        "allow-frame-reordering=false",
+    ),
 ];
 
 /// The `gst-launch` fragment of the first installed [`H264_ENCODERS`] entry,
@@ -58,13 +69,15 @@ const H264_ENCODERS: [(&str, &str); 4] = [
     reason = "this file is included by several test binaries; not every one encodes H.264 itself"
 )]
 pub fn h264_encoder_with_keyframes_every(keyframe_interval: u32) -> Option<String> {
-    h264_encoder().map(|(element, property)| format!("{element} {property}={keyframe_interval}"))
+    h264_encoder().map(|(element, property, in_order)| {
+        format!("{element} {property}={keyframe_interval} {in_order}")
+    })
 }
 
-fn h264_encoder() -> Option<(&'static str, &'static str)> {
+fn h264_encoder() -> Option<(&'static str, &'static str, &'static str)> {
     H264_ENCODERS
         .into_iter()
-        .find(|(element, _)| gstreamer::ElementFactory::find(element).is_some())
+        .find(|(element, _, _)| gstreamer::ElementFactory::find(element).is_some())
 }
 
 fn require_media(problem: &str) -> bool {

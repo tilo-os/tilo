@@ -106,6 +106,8 @@ struct PictureOut {
     group: Option<moq_net::group::Producer>,
     next_group: u64,
     in_group: u64,
+    /// Ends the track once nobody reads it ([`watch_unused`]).
+    _unused: crate::Task,
 }
 impl PictureOut {
     /// Write one encoded picture: a keyframe starts a group.
@@ -1009,17 +1011,6 @@ async fn run(
                     let mut state = shared.state.lock_recover();
                     if state.status != Status::Live { break; }
                     state.expire(Instant::now());
-                    // A layer nobody shows any more is no longer encoded.
-                    let asked = state.pictures_out.len();
-                    state.pictures_out.retain(|_, out| out.track.is_used());
-                    let changed = state.pictures_out.len() != asked;
-                    if changed {
-                        state.pictures_revision = state.pictures_revision.saturating_add(1);
-                    }
-                    drop(state);
-                    if changed {
-                        shared.wake();
-                    }
                 }
                 // A new grant may admit someone the relay already offers, or
                 // no longer admit someone being read.
@@ -1051,7 +1042,7 @@ async fn run(
 
 /// Serve the relay's request for one of this publication's picture tracks,
 /// while the owner lets it publish.
-fn accept_picture(shared: &Shared, request: moq_net::track::Request) {
+fn accept_picture(shared: &Arc<Shared>, request: moq_net::track::Request) {
     let publishes = shared.scope.publication.as_deref().is_some_and(|name| {
         shared
             .authority
@@ -1067,6 +1058,7 @@ fn accept_picture(shared: &Shared, request: moq_net::track::Request) {
     if let Some(track) = video::Track::parse(&name) {
         state.keyframes.insert(track);
     }
+    let unused = watch_unused(shared, name.clone(), track.clone());
     state.pictures_out.insert(
         name,
         PictureOut {
@@ -1074,11 +1066,49 @@ fn accept_picture(shared: &Shared, request: moq_net::track::Request) {
             group: None,
             next_group: 0,
             in_group: 0,
+            _unused: unused,
         },
     );
     state.pictures_revision = state.pictures_revision.saturating_add(1);
     drop(state);
     shared.wake();
+}
+
+/// A picture track nobody reads any more is ended and no longer encoded.
+/// A track is accepted before its reader attaches, so it is ended only
+/// once it stays unread past the relay's grace and `abort_unused` finds no
+/// reader came back: a track ended in that gap would take the keyframe
+/// asked for with it.
+fn watch_unused(
+    shared: &Arc<Shared>,
+    name: String,
+    track: moq_net::track::Producer,
+) -> crate::Task {
+    let shared = Arc::downgrade(shared);
+    crate::Task::spawn(async move {
+        loop {
+            crate::mirror::unused(&track).await;
+            let Some(shared) = shared.upgrade() else {
+                return;
+            };
+            let mut state = shared.state.lock_recover();
+            if !state
+                .pictures_out
+                .get(&name)
+                .is_some_and(|out| out.track.is_clone(&track))
+            {
+                return;
+            }
+            if track.clone().abort_unused(moq_net::Error::Cancel).is_err() {
+                continue;
+            }
+            state.pictures_out.remove(&name);
+            state.pictures_revision = state.pictures_revision.saturating_add(1);
+            drop(state);
+            shared.wake();
+            return;
+        }
+    })
 }
 
 /// The publications one carrier reads, as the relay offers them.

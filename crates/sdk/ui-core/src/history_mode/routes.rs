@@ -87,17 +87,14 @@ fn load(bytes: &[u8]) -> Result<AutoCommit, RemoteApplyError> {
     AutoCommit::load(bytes).map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 
-/// Load an incremental stream into `doc`. Automerge's incremental loader
-/// accepts a valid prefix on partial parse errors, so the whole stream is
-/// first loaded strictly on its own. MissingDeps comes only after a complete
-/// parse and is expected for deltas that need the receiver's history.
-fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
-    match AutoCommit::load(bytes) {
-        Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
-        Err(error) => return Err(RemoteApplyError::InvalidMutation(error.to_string())),
-    }
-    doc.load_incoming(bytes)
-        .map(|_| ())
+/// Apply an incremental stream to `doc`, whole or not at all. Automerge's
+/// incremental loader takes a valid prefix of a stream that stops parsing,
+/// so every chunk is parsed first; the parsed changes are then applied, and
+/// the ones that need history `doc` lacks wait for it, as every delta's may.
+pub(crate) fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
+    let changes = automerge::Automerge::parse_changes(bytes)
+        .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+    doc.apply_incoming(changes)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 fn mutation_bytes(mutation: &DocumentMutation) -> usize {

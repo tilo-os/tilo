@@ -1224,6 +1224,9 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
     }
 }
 
+/// The profiling scope of setting one block ([`ChapterLayouter::next_block`]).
+pub const LAY_BLOCK_PHASE: &str = "ebook.lay_block";
+
 /// Lays a chapter out one block at a time, breaking pages as it goes, so a
 /// caller can hand over each stretch as soon as it is set. Every page break
 /// it has taken is final: [`Self::take_pages`] returns only those.
@@ -1273,6 +1276,8 @@ impl<'a> ChapterLayouter<'a> {
     pub fn next_block(&mut self, tr: &mut TextRenderer) -> Option<LaidBlock> {
         let index = self.next;
         let block = self.request.blocks.get(index)?;
+        // Counted per thread: tests hold the UI thread to setting none.
+        let _phase = ui::tilo_resource::profiling::Phase::start(LAY_BLOCK_PHASE);
         self.next += 1;
         let laid = self.lay_block(tr, index, block);
         self.y = laid.bottom.max(self.y);

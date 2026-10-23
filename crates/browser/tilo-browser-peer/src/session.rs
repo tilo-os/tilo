@@ -1721,15 +1721,18 @@ impl Task {
                             }
                             continue;
                         }
-                        let admitted = matches!(envelope, Envelope::Ready { .. });
-                        if let Envelope::Ready { workspace_id, .. } = &envelope
-                            && !self.announce(&client, *workspace_id)
+                        let admitted = match &envelope {
+                            Envelope::Ready { workspace_id, .. } => Some(*workspace_id),
+                            _ => None,
+                        };
+                        if let Some(workspace_id) = admitted
+                            && !self.announce(&client, workspace_id)
                         {
                             return Exit::Lost("host session saturated".into());
                         }
                         self.inbound(envelope);
-                        if admitted {
-                            self.check_admission();
+                        if let Some(workspace_id) = admitted {
+                            self.admitted(workspace_id, &client);
                         }
                     }
                     None => return Exit::Lost("the host closed the session".into()),
@@ -2572,8 +2575,10 @@ impl Task {
                 self.update(|status| {
                     status.rooms.insert(workspace_id, true);
                 });
-                self.emit(&PeerEvent::Ready { workspace_id });
+                // The replay's documents reach the page before its `Ready`,
+                // as they arrived.
                 self.decide_held(workspace_id);
+                self.emit(&PeerEvent::Ready { workspace_id });
             }
             Envelope::NotAuthorised { reason, .. } => {
                 self.fail("permission-required", reason);
@@ -2788,13 +2793,7 @@ impl Task {
     /// now that its governance is known: cleartext its channels admit
     /// opens, cleartext they require sealed is refused, the rest waits on.
     fn decide_held(&mut self, workspace_id: u64) {
-        let routes: Vec<DocumentRoute> = self
-            .held_inbound
-            .keys()
-            .filter(|route| route.workspace_id().ok() == Some(workspace_id))
-            .cloned()
-            .collect();
-        for route in routes {
+        for route in self.held_routes(workspace_id) {
             let held = self
                 .held_inbound
                 .get_mut(&route)
@@ -2809,6 +2808,33 @@ impl Task {
                 self.inbound_body(body, author);
             }
         }
+    }
+
+    /// The host answered `Ready` for `workspace_id`: what the replay brought
+    /// before it and a full hold let go of is paged again, where the route
+    /// now opens it.
+    fn admitted(&mut self, workspace_id: u64, client: &Link) {
+        self.check_admission();
+        for route in self.held_routes(workspace_id) {
+            let opens = self.ciphers.contains_key(&route)
+                || self
+                    .channels
+                    .admission(&route, (true, false), None)
+                    .admits_cleartext()
+                    == Some(true);
+            if opens {
+                self.replay_owed(&route, Some(client));
+            }
+        }
+    }
+
+    /// The routes of `workspace_id` holding documents, or owing them.
+    fn held_routes(&self, workspace_id: u64) -> Vec<DocumentRoute> {
+        self.held_inbound
+            .keys()
+            .filter(|route| route.workspace_id().ok() == Some(workspace_id))
+            .cloned()
+            .collect()
     }
 
     /// Hold a document until its route's keys change, its room's governance
