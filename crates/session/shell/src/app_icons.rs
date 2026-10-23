@@ -426,6 +426,18 @@ pub fn set_wake(wake: crate::session_runtime::Wake) {
     *resolver().wake.lock_recover() = Some(wake);
 }
 
+/// Artwork found off the loop for a window (an X11 program's own icon):
+/// the chrome is built again with it, as for artwork it asked for.
+pub fn artwork_arrived() {
+    let resolver = resolver();
+    resolver.artwork.fetch_add(1, Ordering::AcqRel);
+    resolver.arrived.store(true, Ordering::Release);
+    let wake = resolver.wake.lock_recover().clone();
+    if let Some(wake) = wake {
+        wake();
+    }
+}
+
 /// Moves each time artwork arrives: rows built before it hold no picture
 /// for it, and are built again when this changes.
 pub fn artwork_generation() -> u64 {
