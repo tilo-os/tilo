@@ -1084,8 +1084,9 @@ impl ApplicationsProvider {
 
 pub(crate) use ui::search::system::PACKAGE_ID_WEIGHT;
 
-/// Applications match words spread over their fields, and typos in names.
-const APPLICATION_MATCHING: Matching = Matching::LOOSE;
+/// Applications match words spread over their fields and typos in names,
+/// and a short query only their names.
+const APPLICATION_MATCHING: Matching = Matching::NAMES;
 
 /// Each app's provider score for `needle`, for tests building rows from a
 /// bare list.

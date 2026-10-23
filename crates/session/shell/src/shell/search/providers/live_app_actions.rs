@@ -3522,6 +3522,7 @@ fn index_actions(
     let mut index = SearchIndex::new(Matching {
         spanning: true,
         typos: false,
+        names_first: false,
     });
     index.replace_all(
         entries
