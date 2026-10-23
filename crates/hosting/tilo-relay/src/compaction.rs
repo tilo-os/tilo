@@ -760,7 +760,7 @@ impl Compactor {
 
 /// Run `operation` on the workspace's persistence owner, serialized with
 /// every other retained write.
-async fn owner_run<T: Send + 'static>(
+pub(crate) async fn owner_run<T: Send + 'static>(
     workspace: &SharedWorkspace,
     operation: impl FnOnce(&crate::store::WorkspaceStore) -> Result<T, crate::store::StoreError>
     + Send

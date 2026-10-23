@@ -1,6 +1,7 @@
 //! Room-policy leaves shared by the shell and certified browser peer.
 mod admit;
 mod adopt;
+pub mod base;
 pub(crate) mod delivery_policy;
 pub(crate) mod key_hex;
 pub mod media;

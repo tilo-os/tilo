@@ -2713,10 +2713,7 @@ impl ShellNetwork {
         {
             return Some(personal_continuity_topic_id(user_public_key));
         }
-        if let NeighbourMsg::PersonalWorkspaces {
-            user_public_key, ..
-        } = msg
-        {
+        if let Some(user_public_key) = msg.personal_lane() {
             return Some(personal_continuity_topic_id(user_public_key));
         }
         let room = match msg {
@@ -7958,6 +7955,7 @@ impl ShellNetwork {
         }
         if self.dispatch_personal_continuity(ws, &origin, &msg)
             || self.dispatch_personal_workspaces(ws, &origin, &msg)
+            || self.dispatch_room_archive(ws, &origin, &msg)
         {
             return;
         }
@@ -8365,7 +8363,8 @@ impl ShellNetwork {
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
-            | NeighbourMsg::PersonalWorkspaces { .. } => None,
+            | NeighbourMsg::PersonalWorkspaces { .. }
+            | NeighbourMsg::RoomArchive { .. } => None,
         }
     }
 

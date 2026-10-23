@@ -885,6 +885,28 @@ impl StatePeer {
         self.core.room_doc.as_deref()
     }
 
+    /// Start the room's document over from a base ([`room::base`]), as its
+    /// authority does when the room admits someone new. Returns whether it
+    /// did: a document holding nothing past its base stays as it is.
+    ///
+    /// # Errors
+    ///
+    /// The document does not copy.
+    pub fn rebase_room(&mut self) -> Result<bool, String> {
+        let Some(held) = self.core.room_doc.as_deref() else {
+            return Ok(false);
+        };
+        let mut doc = held.clone();
+        let heads = doc.get_heads();
+        if heads.is_empty() || room::base::root(&mut doc).is_some_and(|root| heads == [root]) {
+            return Ok(false);
+        }
+        let actor = doc.get_actor().clone();
+        let base = room::base::rebase(&doc, actor).map_err(err)?;
+        self.core.room_doc = Some(base.into());
+        Ok(true)
+    }
+
     /// Read permission for an exact canonical record using the same governed
     /// actor/resource vocabulary as document mutation admission.
     pub fn check_document_read(
@@ -1651,7 +1673,11 @@ impl StatePeer {
         let pinned = hex::encode(self.core.authority.device_public_key);
         let from = hex::encode(source);
         // The one room admission the shell's workspace tree runs too.
-        let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
+        let room::AdmittedRoom {
+            candidate,
+            media,
+            rebased,
+        } = room::admit_room_changes(
             room::RoomAdmission {
                 before: self.core.room_doc.as_deref(),
                 room: &self.core.room,
@@ -1670,11 +1696,12 @@ impl StatePeer {
         // the room document omits them.
         let mut receipts = self.core.receipts.clone();
         room::admit_receipts(&mut receipts, &candidate).map_err(err)?;
-        let changed = self
-            .core
-            .room_doc
-            .as_deref()
-            .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
+        let changed = rebased
+            || self
+                .core
+                .room_doc
+                .as_deref()
+                .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
         if let Some(policy) = &media {
             self.validate_media_bindings(policy, false)?;
         }
