@@ -1412,16 +1412,6 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
                 "a transport button must name itself on hover"
             );
         }
-        for (name, rect) in [
-            ("export", r.export_btn),
-            ("import", r.import_btn),
-            ("split", r.split_btn),
-        ] {
-            assert!(
-                app.tooltip_at(rect.center()).is_some(),
-                "the {name} button must name itself on hover"
-            );
-        }
         assert_eq!(app.tooltip_at(r.lanes.center()), None);
     }
     // Case `the_pointer_says_what_each_region_does`.
@@ -1452,10 +1442,6 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         assert_eq!(
             app.cursor_shape(r.ruler.center()),
             Some(CursorIcon::ColResize)
-        );
-        assert_eq!(
-            app.cursor_shape(r.export_btn.center()),
-            Some(CursorIcon::Pointer)
         );
         // A locked track refuses, and says so.
         let lane = app
@@ -2062,9 +2048,10 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             r.preview.x0 >= r.bin.x1 - 0.5,
             "docked preview begins at the bin's right edge"
         );
-        assert!(
-            r.menu_btn.width() > 0.0,
-            "the media toggle is offered while docked too"
+        assert_eq!(
+            app.window_toolbar().sidebar,
+            Some(true),
+            "the window bar offers the media toggle while docked too"
         );
         assert!(r.scrim.width() == 0.0, "no scrim while docked");
     }
@@ -2079,9 +2066,10 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             r.bin_overlay,
             "narrow window collapses the bin to an overlay"
         );
-        assert!(
-            r.menu_btn.width() > 0.0,
-            "narrow window shows the hamburger"
+        assert_eq!(
+            app.window_toolbar().sidebar,
+            Some(false),
+            "the window bar offers the closed overlay's toggle"
         );
         // Closed by default: the bin sits fully off the left edge and the
         // preview reclaims the full editor width.
@@ -2131,16 +2119,17 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             "opening moves focus into the bin"
         );
 
-        // The scrim must swallow a covered top-bar action rather than opening
-        // an export dialog the user cannot see. A pointer press dismisses the
-        // flap and restores the invoking pane, just like Escape.
+        // The scrim must swallow a press on the covered ruler rather than
+        // moving a playhead the user cannot see. A pointer press dismisses
+        // the flap and restores the invoking pane, just like Escape.
         let regions = app.regions();
-        app.last_mouse = regions.export_btn.center();
+        let playhead = app.playhead;
+        app.last_mouse = Point::new(regions.ruler.x1 - 40.0, regions.ruler.center().y);
         app.handle_press(&doc, &regions, false);
         assert!(!app.bin_overlay_is_open());
         assert!(
-            !app.presentation.export_open,
-            "the covered Export button is inert"
+            (app.playhead - playhead).abs() < 1e-9,
+            "the covered ruler is inert"
         );
         assert_eq!(app.focus.pane, Pane::Timeline);
 
@@ -2233,7 +2222,7 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
     // Regression: the scrim scaled its alpha by `surfaces.scrim.components[3]`,
     // meaning to honour a token-carried translucency — but every theme builds
     // that token opaque, so the multiply was a no-op and a fully-revealed flap
-    // painted a 100%-opaque slab from the topbar to the bottom of the window.
+    // painted a 100%-opaque slab from the top to the bottom of the window.
     // The preview, transport, inspector and timeline all still drew, underneath
     // it, and every window size "rendered without panicking".
     {
@@ -3214,29 +3203,22 @@ fn unsaved_badge_follows_the_document() {
         assert!(!app.project_is_dirty());
         assert!(app.project_status_line().contains("empty project"));
     }
-    // Case `the_reader_hears_the_same_project_state_the_badge_shows`.
+    // Case `the_reader_hears_whether_the_project_is_written_down`.
     {
-        // A screen-reader user must not get the tidier story. The dot means
-        // "unsaved"; so must the node.
+        // A screen-reader user must not get the tidier story: the editor's
+        // own node says whether the project is saved to a file.
         let dir = scratch("a11yproj");
         let (mut app, doc) = app_and_doc();
         assert!(app.project_is_dirty());
-        let node = app.a11y_project();
-        assert_eq!(node.description.as_deref(), Some(PROJECT_UNSAVED));
-        assert!(
-            node.value
-                .as_deref()
-                .is_some_and(|v| v.contains("not saved to a file yet"))
-        );
+        let spoken = |app: &VideoEditorApp| {
+            Widget::accessibility(app)
+                .and_then(|node| node.value)
+                .unwrap_or_default()
+        };
+        assert!(spoken(&app).contains("not saved to a file yet"));
 
         app.write_project_to(&doc, dir.join("A.qvp"));
-        let node = app.a11y_project();
-        assert_eq!(node.description, None, "saved: no unsaved claim");
-        assert!(
-            node.value
-                .as_deref()
-                .is_some_and(|v| v.contains("saved at"))
-        );
+        assert!(spoken(&app).contains("saved at"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }
@@ -3414,11 +3396,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-#[expect(
-    clippy::float_cmp,
-    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
-)]
-fn project_shortcuts_and_menu_open_save_and_recents() {
+fn project_shortcuts_and_picker_rows_open_save_and_recents() {
     // Case `ctrl_o_opens_a_project_and_ctrl_shift_o_imports`.
     {
         // Ctrl+O used to import. It means "open a document" in every app a
@@ -3540,7 +3518,7 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         ));
         assert!(app.project_rx.is_some(), "Save As asks where again");
     }
-    // Case `the_project_menu_offers_open_save_save_as_and_the_recents_that_are_not_already_open`.
+    // Case `the_project_picker_offers_open_save_save_as_and_the_recents_that_are_not_already_open`.
     {
         let (mut app, _doc) = app_and_doc();
         let open = PathBuf::from("/p/Open.qvp");
@@ -3564,79 +3542,6 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         app.project_path = None;
         assert_eq!(app.project_menu_rows()[1].1, "Save…");
     }
-    // Case `a_menu_click_resolves_past_the_separator_to_the_row_it_landed_on`.
-    {
-        // The separator takes a row in the menu and none in the intent list.
-        // Assuming the two indices match picks the wrong project to open.
-        let (mut app, _doc) = app_and_doc();
-        let a = PathBuf::from("/p/A.qvp");
-        let b = PathBuf::from("/p/B.qvp");
-        app.recents = vec![a.clone(), b.clone()];
-        app.open_project_menu(Point::new(10.0, 50.0));
-
-        let labels: Vec<String> = app
-            .project_menu
-            .items()
-            .iter()
-            .map(|i| i.label().unwrap_or("—").to_string())
-            .collect();
-        assert_eq!(
-            labels.len(),
-            6,
-            "three actions, a separator, two recents: {labels:?}"
-        );
-        assert_eq!(app.project_menu_intent(0), Some(ProjectMenuItem::Open));
-        assert_eq!(app.project_menu_intent(2), Some(ProjectMenuItem::SaveAs));
-        assert_eq!(
-            app.project_menu_intent(3),
-            None,
-            "the separator does nothing"
-        );
-        assert_eq!(app.project_menu_intent(4), Some(ProjectMenuItem::Recent(a)));
-        assert_eq!(app.project_menu_intent(5), Some(ProjectMenuItem::Recent(b)));
-    }
-    // Case `the_project_button_is_dropped_rather_than_clipped_and_the_reader_is_told`.
-    {
-        // A name cut to a few characters states a *different* project name,
-        // which is worse than no button — but a reader must then be told the
-        // control is not there and what to press instead.
-        let (mut app, _doc) = app_and_doc();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let wide = app.regions().project_btn;
-        assert!(wide.width() >= PROJECT_BTN_MIN_W, "there is room at 1280");
-
-        // A compact header row keeps the button as its icon alone — a whole
-        // control, never a clipped name — and a row with no room for even
-        // that drops it.
-        app.rect = Rect::new(0.0, 0.0, 460.0, 640.0);
-        assert!(app.topbar_is_compact(), "460 is a compact header row");
-        let compact = app.regions();
-        assert!(
-            compact.project_btn.width() == 0.0
-                || (compact.project_btn.width() - compact.project_btn.height()).abs() < 1e-6,
-            "a compact row shows the icon or nothing: {:?}",
-            compact.project_btn
-        );
-        app.rect = Rect::new(0.0, 0.0, 220.0, 640.0);
-        let narrow = app.regions();
-        assert_eq!(narrow.project_btn.width(), 0.0, "no room, so no button");
-        assert!(
-            !narrow.project_btn.contains(narrow.import_btn.center()),
-            "and nothing overlapping Import",
-        );
-        let node = app.a11y_project();
-        assert!(
-            !node.state.focusable,
-            "a control that is not painted is not a stop"
-        );
-        assert!(
-            node.description
-                .as_deref()
-                .is_some_and(|d| d.contains("Ctrl+O")),
-            "the reader is pointed at the keys instead: {:?}",
-            node.description,
-        );
-    }
 }
 
 #[test]
@@ -3655,7 +3560,7 @@ fn export_failures_are_accessible_and_wrap() {
         };
 
         // With the dialog closed, the status is a complete assertive live
-        // region, not the ellipsized text painted in the compact topbar chip.
+        // region, not only the window bar's Export saying that it failed.
         let closed = app.accessibility().expect("editor semantics");
         let status = a11y_find(&closed, "Export failed");
         assert_eq!(status.len(), 1);
@@ -5565,7 +5470,6 @@ fn timeline_chrome_regions_stay_ordered_at_every_size() {
             let (app, _doc) = app_sized(w, h);
             let r = app.regions();
             for (name, rect) in [
-                ("topbar", r.topbar),
                 ("preview", r.preview),
                 ("canvas", r.canvas),
                 ("transport", r.transport),
@@ -5905,12 +5809,11 @@ fn render_status_is_painted_cached_and_announced() {
             );
         }
     }
-    // Case `a_render_outside_its_dialog_is_painted_and_leads_back_to_it`:
-    // The pixel half of the same defect, plus the way back: the chip under
-    // the Export button paints a dismissed render's progress and its outcome,
-    // and pressing it reopens the dialog it is reporting for.
+    // Case `the_window_bar_export_leads_back_to_the_render_and_its_progress`:
+    // The window bar's Export says Export whatever the render is doing,
+    // reads as on while one runs, and pressing it reopens the dialog that
+    // shows the render's progress, outcome and Cancel.
     {
-        let theme = Theme::dark();
         let states = [
             ExportStatus::Rendering { progress: 0.42 },
             ExportStatus::Done {
@@ -5921,118 +5824,36 @@ fn render_status_is_painted_cached_and_announced() {
             },
         ];
         for status in states {
-            let (mut app, mut doc) = app_sized(1280.0, 800.0);
+            let (mut app, _doc) = app_sized(1280.0, 800.0);
             app.export_status = status.clone();
-            let painted = render_pixels(&mut app, 1280, 800, &theme);
-            let chip = app.regions().export_chip;
-            // The same frame with nothing to report: whatever the chip draws
-            // has to be the difference between these two.
-            app.export_status = ExportStatus::Idle;
-            let quiet = render_pixels(&mut app, 1280, 800, &theme);
-            assert!(
-                region_diff(&painted, &quiet, 1280, 800, chip) > 400,
-                "{status:?} is not painted anywhere outside the dialog",
+            let export = app
+                .window_toolbar()
+                .actions
+                .into_iter()
+                .find(|action| action.id == window_bar::EXPORT)
+                .expect("Export is a window bar action");
+            assert_eq!(export.name, "Export", "{status:?}");
+            let rendering = matches!(status, ExportStatus::Rendering { .. });
+            assert_eq!(
+                export.on, rendering,
+                "{status:?}: Export reads as on while it renders",
             );
-
-            // A 176px chip elides a long reason, so the hover has to carry
-            // the whole of it rather than leaving it to the dialog alone.
-            app.export_status = status.clone();
-            let hover = app
-                .tooltip_at(chip.center())
-                .map(ToString::to_string)
-                .expect("the chip names itself on hover");
-            match &status {
-                ExportStatus::Failed { reason } => assert_eq!(
-                    &hover, reason,
-                    "the hover carries the failure's whole reason",
-                ),
-                ExportStatus::Done { path } => {
-                    assert_eq!(&hover, path, "and a finished render's whole path");
-                }
-                _ => assert!(
-                    hover.contains("Export"),
-                    "and says what is going on: {hover}"
-                ),
-            }
-
-            // And it is a control, not a decoration.
-            render(&mut app);
-            click(&mut app, &mut doc, chip.center().x, chip.center().y);
+            app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
+                id: window_bar::EXPORT.into(),
+            });
             assert!(
                 app.presentation.export_open,
-                "{status:?}: the chip must lead back to the render it reports",
+                "{status:?}: Export must lead back to the render it reports",
             );
+            let root = Widget::accessibility(&app).expect("the editor's semantics");
+            let progress = a11y_find(&root, "Export progress");
+            if rendering {
+                assert_eq!(progress.len(), 1, "the dialog shows the render's progress");
+                assert_eq!(progress[0].value.as_deref(), Some("42%"));
+            } else {
+                assert!(progress.is_empty(), "{status:?}: no render, no progress");
+            }
         }
-    }
-    // Case `the_export_chip_caches_its_words_without_ever_showing_stale_ones`:
-    // A render holds animation frames open for its whole duration, so the
-    // chip is on the hot path: its words must be formatted and elided when
-    // they change, not once per encoded frame. The cache that buys that must
-    // not be able to go stale, which is the half worth asserting.
-    {
-        // Two encoded frames inside the same whole percent paint the same
-        // chip, so they must not cost a reformat.
-        assert!(
-            chip_text_matches(
-                &ExportStatus::Rendering { progress: 0.420_1 },
-                &ExportStatus::Rendering { progress: 0.420_4 },
-            ),
-            "the same painted percentage is the same picture",
-        );
-        // A percent that moved, or any other change, is not.
-        assert!(
-            !chip_text_matches(
-                &ExportStatus::Rendering { progress: 0.42 },
-                &ExportStatus::Rendering { progress: 0.43 },
-            ),
-            "a percentage that moved must be repainted",
-        );
-        assert!(
-            !chip_text_matches(
-                &ExportStatus::Done {
-                    path: "/a.mp4".into()
-                },
-                &ExportStatus::Done {
-                    path: "/b.mp4".into()
-                },
-            ),
-            "a different file is a different outcome",
-        );
-        assert!(!chip_text_matches(
-            &ExportStatus::Rendering { progress: 1.0 },
-            &ExportStatus::Done {
-                path: "/a.mp4".into()
-            },
-        ));
-
-        // …and the painted pixels really do follow the render, cache or not.
-        let theme = Theme::dark();
-        let (mut app, _doc) = app_sized(1280.0, 800.0);
-        app.export_status = ExportStatus::Rendering { progress: 0.10 };
-        let early = render_pixels(&mut app, 1280, 800, &theme);
-        let chip = app.regions().export_chip;
-        app.export_status = ExportStatus::Rendering { progress: 0.90 };
-        let late = render_pixels(&mut app, 1280, 800, &theme);
-        assert!(
-            region_diff(&early, &late, 1280, 800, chip) > 400,
-            "the chip must repaint when the render moves on",
-        );
-        app.export_status = ExportStatus::Done {
-            path: "/home/you/Videos/Reel.mp4".into(),
-        };
-        let finished = render_pixels(&mut app, 1280, 800, &theme);
-        assert!(
-            region_diff(&late, &finished, 1280, 800, chip) > 400,
-            "and when it finishes",
-        );
-        // Nothing to say leaves nothing behind, so the words cannot outlive
-        // the render they described.
-        app.export_status = ExportStatus::Idle;
-        render(&mut app);
-        assert!(
-            app.export_chip_text.is_none(),
-            "an idle editor holds no chip text at all",
-        );
     }
 }
 
@@ -6076,35 +5897,7 @@ fn unexportable_project() -> Project {
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-fn topbar_and_transport_degrade_gracefully_when_narrow() {
-    // Case `the_topbar_buttons_never_collide_with_other_topbar_content`.
-    {
-        // The centred project-meta string used to run under these buttons at
-        // 720px — the narrow capture width itself. It now lives in the
-        // transport, so the topbar holds only the hamburger and the buttons.
-        for (w, h) in SIZES {
-            let (app, _doc) = app_sized(w, h);
-            let r = app.regions();
-            let btns: Vec<Rect> = [r.import_btn, r.split_btn, r.export_btn]
-                .into_iter()
-                .filter(|rect| rect.width() > 0.0)
-                .collect();
-            for (i, a) in btns.iter().enumerate() {
-                for b in btns.iter().skip(i + 1) {
-                    assert!(
-                        a.x1 <= b.x0 || b.x1 <= a.x0,
-                        "topbar buttons overlap at {w}x{h}: {a:?} vs {b:?}",
-                    );
-                }
-                if r.menu_btn.width() > 0.0 {
-                    assert!(
-                        r.menu_btn.x1 <= a.x0,
-                        "the hamburger clears the buttons at {w}x{h}",
-                    );
-                }
-            }
-        }
-    }
+fn transport_degrades_gracefully_when_narrow() {
     // Case `the_transport_readout_drops_parts_it_cannot_draw_whole`:
     // A number cut in half by the pane edge is not a clipped number, it is a
     // wrong one.
@@ -6302,14 +6095,18 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         app.navigation.flap_settled = true;
         app.inspector_flap.snap(false);
         let r = app.regions();
-        assert!(
-            r.inspector_btn.width() > 0.0,
-            "a collapsed inspector offers a toggle"
-        );
+        let toggle = app
+            .window_toolbar()
+            .actions
+            .into_iter()
+            .find(|action| action.id == window_bar::INSPECTOR)
+            .expect("a collapsed inspector offers a toggle in the window bar");
+        assert!(!toggle.on);
         assert!(!app.inspector_is_visible(&r));
         // Press the toggle: it opens.
-        app.last_mouse = r.inspector_btn.center();
-        app.handle_press(&doc, &r, false);
+        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
+            id: window_bar::INSPECTOR.into(),
+        });
         app.inspector_flap.snap(true);
         let r = app.regions();
         assert!(app.inspector_is_visible(&r));
@@ -6324,102 +6121,47 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         assert!(!app.inspector_is_visible(&app.regions()));
         let (mut wide, _d) = app_sized(1280.0, 800.0);
         wide.navigation.flap_settled = true;
-        assert!(wide.regions().inspector_btn.width() > 0.0);
+        assert!(
+            wide.window_toolbar()
+                .actions
+                .iter()
+                .any(|action| action.id == window_bar::INSPECTOR && action.on),
+            "a docked inspector's toggle reads as on"
+        );
     }
-    // Case `compact_topbar_keeps_independent_touch_targets_and_semantics`.
+    // Case `the_compact_window_keeps_every_control_in_the_window_bar`.
     {
-        // At 420px the old 28px menu and inspector icons were exactly on top
-        // of one another. Hiding the redundant Split button leaves room for
-        // both side panes, and the toolbar tree follows the painted layout.
-        let (mut app, mut doc) = app_sized(420.0, 560.0);
+        // At 420px the window bar holds the same controls as at 1280px; the
+        // editor paints none of them. A bar press while the bin's overlay is
+        // open closes the overlay before it acts, so nothing changes behind
+        // a scrim.
+        let (mut app, _doc) = app_sized(420.0, 560.0);
         app.advance_flap();
-        let r = app.regions();
-        assert_eq!(r.split_btn, Rect::ZERO, "Split yields to its S shortcut");
-        let controls = [
-            ("media bin", r.menu_btn),
-            ("inspector", r.inspector_btn),
-            ("import", r.import_btn),
-            ("export", r.export_btn),
-        ];
-        let target = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
-        for (name, rect) in controls {
-            assert!(
-                rect.width() >= target && rect.height() >= target,
-                "{name} target is too small for touch: {rect:?}",
-            );
-        }
-        for (i, (_, a)) in controls.iter().enumerate() {
-            for (_, b) in controls.iter().skip(i + 1) {
-                assert!(
-                    a.x1 <= b.x0 || b.x1 <= a.x0,
-                    "compact topbar controls overlap: {a:?} vs {b:?}",
-                );
-            }
-        }
-
-        let toolbar = app.a11y_topbar();
-        let names: Vec<&str> = toolbar
-            .children
-            .iter()
-            .filter_map(|node| node.name.as_deref())
-            .collect();
-        assert!(names.contains(&"Toggle media bin"));
-        assert!(names.contains(&"Toggle inspector"));
-        assert!(names.contains(&"Import media"));
-        assert!(names.contains(&"Export video"));
-        assert!(
-            !names.contains(&"Split at playhead"),
-            "a hidden button must not stay reachable only to assistive technology",
+        let toolbar = app.window_toolbar();
+        assert_eq!(toolbar.sidebar, Some(false));
+        let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                window_bar::SPLIT,
+                window_bar::EXPORT,
+                window_bar::INSPECTOR,
+                window_bar::IMPORT
+            ]
         );
-
-        let activate = ui::a11y::Action::Activate;
-        assert!(app.perform_action(
-            &activate,
-            &[
-                ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
-                ui::a11y::hash_key(&TOPBAR_BIN_KEY),
-            ],
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
-        assert!(app.bin_flap.is_open(app.bin_layout()));
-        assert!(
-            !app.perform_action(
-                &activate,
-                &[
-                    ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
-                    ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
-                ],
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ),
-            "the open bin scrim makes other topbar actions unavailable"
-        );
-        assert!(app.perform_action(
-            &activate,
-            &[
-                ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
-                ui::a11y::hash_key(&TOPBAR_BIN_KEY),
-            ],
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
-        assert!(!app.bin_flap.is_open(app.bin_layout()));
-        assert!(app.perform_action(
-            &activate,
-            &[
-                ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
-                ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
-            ],
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
+        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        app.bin_flap.snap(true);
+        assert!(app.bin_overlay_is_open());
+        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
+            id: window_bar::INSPECTOR.into(),
+        });
+        assert!(!app.bin_overlay_is_open(), "the press closes the overlay");
         assert!(app.inspector_flap.is_open(app.inspector_split()));
     }
 }
 
 #[test]
-fn resting_chrome_omits_placeholders_and_centres_the_unsaved_mark() {
+fn resting_chrome_omits_placeholders() {
     for theme in [Theme::dark(), Theme::light()] {
         let theme = theme.with_ui_scale(1.5);
         let (mut app, _) = app_and_doc();
@@ -6455,20 +6197,6 @@ fn resting_chrome_omits_placeholders_and_centres_the_unsaved_mark() {
             master.readout.y1,
         );
         uniform(peak);
-
-        assert!(app.project_is_dirty());
-        app.saved_heads = Some(app.doc_heads.clone());
-        let saved = render_pixels(&mut app, 1440, 810, &theme);
-        let mark = Point::new(r.project_btn.x1 - S1, r.project_btn.center().y);
-        let centre = Rect::new(mark.x - S2, mark.y - S2, mark.x + S2, mark.y + S2);
-        assert_ne!(crop(&resting, 1440, centre), crop(&saved, 1440, centre));
-        let corner = Rect::new(
-            centre.x0,
-            r.project_btn.y0,
-            centre.x1,
-            r.project_btn.y0 + S3,
-        );
-        assert_eq!(crop(&resting, 1440, corner), crop(&saved, 1440, corner));
 
         // Removing resting copy must not remove actual mix measurements.
         let (tid, _, lane) = lanes
@@ -6656,8 +6384,8 @@ fn scrolled_clips_and_hud_keep_their_labels_visible() {
             }
         }
         assert_eq!(whites, 0, "HUD text is painted over the corner inset");
-        // The one HUD readout that stays is per-frame information, and it is
-        // pinned to the left so it cannot reach a right-hand inset.
+        // The playhead's time is the transport's and the ruler's to show; the
+        // picture carries no readout of its own.
         assert!(r.canvas.width() > 0.0);
     }
 }
@@ -9598,71 +9326,12 @@ fn two_x_text_keeps_canvas_bands_and_inspector_usable() {
     {
         // Regression for the first accessibility-scale pass: only the side
         // pane breakpoint used effective width, leaving 2× text painted
-        // through the top bar, transport, ruler and fixed-height tracks.
-        let (mut app, mut doc) = app_sized(1440.0, 960.0);
+        // through the transport, ruler and fixed-height tracks.
+        let (mut app, _doc) = app_sized(1440.0, 960.0);
         app.text_scale = 2.0;
         let r = app.regions();
-        assert!(app.topbar_is_compact());
-        assert!(r.topbar.height() > f64::from(Theme::dark().tokens.metrics.header_height));
         assert!(r.transport.height() > TRANSPORT_H);
         assert!(r.ruler.height() > RULER_H);
-
-        let commands = [
-            ("bin", r.menu_btn),
-            ("project", r.project_btn),
-            ("inspector", r.inspector_btn),
-            ("import", r.import_btn),
-            ("export", r.export_btn),
-        ];
-        for (name, rect) in commands {
-            assert!(
-                rect.width() + 0.01 >= app.topbar_target()
-                    && rect.height() + 0.01 >= app.topbar_target(),
-                "{name} remains a full compact command target: {rect:?}"
-            );
-        }
-        for (i, (_, a)) in commands.iter().enumerate() {
-            for (_, b) in commands.iter().skip(i + 1) {
-                assert!(
-                    a.x1 <= b.x0 || b.x1 <= a.x0,
-                    "2× topbar controls overlap: {a:?} vs {b:?}"
-                );
-            }
-        }
-        let toolbar = app.a11y_topbar();
-        let names: Vec<&str> = toolbar
-            .children
-            .iter()
-            .filter_map(|node| node.name.as_deref())
-            .collect();
-        assert!(names.contains(&"Import media"));
-        assert!(names.contains(&"Export video"));
-        assert!(!names.contains(&"Split at playhead"));
-        assert_eq!(
-            app.tooltip_at(r.import_btn.center()),
-            Some("Import media (Ctrl+Shift+O)")
-        );
-        assert_eq!(
-            app.tooltip_at(r.export_btn.center()),
-            Some("Export video (Ctrl+E)")
-        );
-        assert!(
-            app.a11y_project().state.focusable,
-            "the compact film icon opens the project menu"
-        );
-        assert!(app.perform_action(
-            &ui::a11y::Action::Activate,
-            &[
-                ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
-                ui::a11y::hash_key(&TOPBAR_EXPORT_KEY),
-            ],
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
-        assert!(
-            app.presentation.export_open,
-            "the accessible compact export icon invokes the same dialog"
-        );
 
         let transport = app.transport_buttons(&r);
         for (i, (_, a)) in transport.iter().enumerate() {
@@ -11034,20 +10703,15 @@ fn the_timeline_resizes_against_the_preview_and_its_lanes_scroll() {
 
 #[test]
 fn a_fresh_project_reads_as_ready_to_start() {
-    // Case `an_empty_project_starts_at_zero_and_leads_with_import`:
+    // Case `an_empty_project_starts_at_zero`:
     // The empty editor used to park the playhead ten seconds into a project
-    // of zero, read "00:10:00 / 00:00:00", drop a new title after ten seconds
-    // of nothing, and make Export its accent button with nothing to export.
+    // of zero, read "00:10:00 / 00:00:00" and drop a new title after ten
+    // seconds of nothing.
     {
         let mut app = editor();
         assert!(
             app.playhead.abs() < 1e-9,
             "a new project starts at its start"
-        );
-        assert_eq!(
-            app.topbar_roles(),
-            (ButtonRole::Primary, ButtonRole::Secondary),
-            "with nothing on the timeline, Import is the next step",
         );
         app.playhead = 10.0;
         app.add_title();
@@ -11060,16 +10724,6 @@ fn a_fresh_project_reads_as_ready_to_start() {
         assert!(
             clip.start.abs() < 1e-9,
             "a title never lands after a gap of nothing"
-        );
-        let expect = if crate::export::unavailable_reason().is_some() {
-            (ButtonRole::Primary, ButtonRole::Secondary)
-        } else {
-            (ButtonRole::Secondary, ButtonRole::Primary)
-        };
-        assert_eq!(
-            app.topbar_roles(),
-            expect,
-            "Export leads only once it can run"
         );
     }
     // Case `a_title_or_a_kept_import_is_on_this_device`:

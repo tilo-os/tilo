@@ -839,7 +839,7 @@ impl VideoEditorApp {
                 draw_toggle_button(
                     &mut PaintCtx::new(scene, tf, tr, theme),
                     *rect,
-                    ToggleContent::Label(""),
+                    "",
                     on,
                     hovered,
                 );
@@ -1270,7 +1270,7 @@ impl VideoEditorApp {
             draw_toggle_button(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                ToggleContent::Label(words),
+                words,
                 on,
                 rect.contains(self.last_mouse),
             );

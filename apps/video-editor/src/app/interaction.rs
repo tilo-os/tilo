@@ -39,8 +39,8 @@ impl VideoEditorApp {
         }
         if self.presentation.export_open {
             if matches!(key, Key::Named(NamedKey::Escape)) {
-                // Esc closes the dialog, not the render: the chip under the
-                // Export button carries the job on.
+                // Esc closes the dialog, not the render: the window bar's
+                // Export carries the job on.
                 self.presentation.export_open = false;
                 return true;
             }
@@ -494,57 +494,18 @@ impl VideoEditorApp {
         if self.press_scrollbars(r, p) {
             return;
         }
-        // The export chip floats over whatever pane is under it, so it is hit
-        // first. It is the way back into the render it is reporting: the full
-        // path, the failure's own words and Cancel all live in the dialog.
-        if self.export_chip_is_shown() && r.export_chip.contains(p) {
-            self.presentation.export_open = true;
-            return;
-        }
-        // The media bin's show/hide toggle, in every layout.
-        if r.menu_btn.contains(p) {
-            self.toggle_bin();
-            return;
-        }
-        // An open bin overlay owns every click outside its flap. This check
-        // must precede the other top-bar controls: otherwise the scrim could
-        // look modal while Import, Export, or the inspector still changed
-        // behind it.
+        // An open bin overlay owns every click outside its flap: the scrim
+        // must not look modal while the preview or timeline behind it still
+        // changed.
         let bin_visible = self.bin_is_visible(r);
-        if r.bin_overlay && bin_visible && !r.bin.contains(p) && !r.menu_btn.contains(p) {
+        if r.bin_overlay && bin_visible && !r.bin.contains(p) {
             self.close_bin_overlay();
-            return;
-        }
-        // The inspector's show/hide toggle, in every layout.
-        if r.inspector_btn.contains(p) {
-            self.toggle_inspector();
             return;
         }
         // An open inspector overlay owns its own rect, before the preview and
         // timeline underneath it get a look.
         if r.inspector_overlay && self.inspector_is_visible(r) && r.inspector.contains(p) {
             self.press_inspector(r, p);
-            return;
-        }
-        // Top bar buttons.
-        if r.project_btn.width() > 0.0 && r.project_btn.contains(p) {
-            if self.project_menu.is_open() {
-                self.project_menu.close();
-            } else {
-                self.open_project_menu(Point::new(r.project_btn.x0, r.project_btn.y1 + 4.0));
-            }
-            return;
-        }
-        if r.export_btn.contains(p) {
-            self.presentation.export_open = true;
-            return;
-        }
-        if r.import_btn.contains(p) {
-            self.trigger_import();
-            return;
-        }
-        if r.split_btn.contains(p) {
-            self.split_selected();
             return;
         }
         // Empty-bin "Import media" affordance.
@@ -1264,8 +1225,8 @@ impl VideoEditorApp {
         match l.modal.hit(p) {
             // The close control, or a click outside the card, dismisses. A
             // render in flight is not abandoned by that: it keeps reporting
-            // from the topbar chip and its own live region, and the chip is
-            // the way back in here.
+            // from the window bar's Export and its own live region, and
+            // Export is the way back in here.
             Some(ModalHit::Close | ModalHit::Scrim) => {
                 self.presentation.export_open = false;
             }
