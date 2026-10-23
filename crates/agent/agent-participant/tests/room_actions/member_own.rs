@@ -132,6 +132,32 @@ async fn a_member_links_their_discord_account_through_the_host() {
         reading["pending"], true,
         "the record holds the member's pending link: {reading}"
     );
+    // The bridge's bot reads the governor's copy of the record when `/link`
+    // arrives; the pending link must be there, not only in the host's own.
+    let deadline = tilo_test_env::hang_deadline();
+    let guest_person = hex::encode(guest_device.cert.user_public_key);
+    loop {
+        let saved = rooms
+            .record_document(&room.room, "so.tilo.discord", "")
+            .await
+            .unwrap()
+            .expect("the governor holds the Discord record");
+        let mut doc = automerge::AutoCommit::load(&saved).unwrap();
+        let governors = tilo_relay::room_bots::opened::<discord::record::Guild>(&mut doc).unwrap();
+        if governors
+            .pending_links
+            .iter()
+            .any(|pending| pending.person == guest_person)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the governor's copy never took the member's pending link: {:?}",
+            governors.pending_links.iter().collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let owners_view = value(
         &answered(
             &mut owner_browser,
@@ -159,6 +185,81 @@ async fn a_member_links_their_discord_account_through_the_host() {
     );
 
     visitor.peer.close();
+    owner_browser.peer.close();
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
+}
+
+/// What the room's governor commits itself (connecting the bridge, a bot
+/// completing a link a member started) reaches the room actions the host
+/// runs, which read the room through a session of the host's own device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hosts_room_actions_read_what_the_governor_commits() {
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Bridge host", 1);
+    let host = enrol(
+        &owner,
+        "bridge-node",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&owner, &host, state.path()).await;
+    let rooms = hosted.relay.rooms().unwrap();
+    let room = rooms.create("Bridged room").await.unwrap();
+    rooms
+        .prepare_application(
+            &room.room,
+            &host.cert,
+            &common::catalogue(),
+            "so.tilo.discord",
+            "",
+        )
+        .await
+        .unwrap();
+    let mut owner_browser = Browser::open_room(&hosted, &owner_device, &host, &room.room).await;
+    let reading = value(
+        &answered(
+            &mut owner_browser,
+            on_guild(&room.room, "my-link", serde_json::json!({})),
+        )
+        .await,
+    );
+    assert_eq!(reading["connected"], false, "{reading}");
+
+    tilo_relay::room_bots::discord::connect(
+        rooms,
+        &room.room,
+        &host.cert,
+        &tilo_relay::room_bots::discord::DiscordLink {
+            guild_id: "1".into(),
+            only_channel: None,
+            name: "Tilo".into(),
+            mirror_channels: false,
+            map_roles: false,
+        },
+    )
+    .await
+    .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let reading = value(
+            &answered(
+                &mut owner_browser,
+                on_guild(&room.room, "my-link", serde_json::json!({})),
+            )
+            .await,
+        );
+        if reading["connected"] == true {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the host's room actions never read the governor's commit: {reading}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     owner_browser.peer.close();
     drop(hosted.web);
     hosted.agents.shutdown();
