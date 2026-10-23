@@ -49,7 +49,7 @@ fn tree_of(rooms: &[(&str, RoomId)]) -> WorkspaceTree {
         let id = WorkspaceId(index);
         tree.desktop
             .workspaces
-            .push(Workspace::in_room(id, *room, name));
+            .push(Workspace::in_room(id, *room, *name));
         tree.desktop.active = id;
     }
     tree

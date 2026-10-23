@@ -1,6 +1,6 @@
 //! This device hosting the rooms placed on it.
 //!
-//! Every device runs the room host a relay runs (`tilo_room_host::RoomHost`)
+//! Every device runs the room host a relay runs (`tilo_relay::host::RoomHost`)
 //! in process, in [`HostMode::Device`]: the device governing its rooms
 //! terminates their service itself, with no host capability. It opens only
 //! once this device hosts a room: when the first workspace is placed here,
@@ -25,11 +25,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::network::local_host::room_host::{self, HostConfig, HostMode, RoomHost};
 use tilo_actions::remote::{Caller, RemoteActionMessage};
 use tilo_relay_session::rooms::{
     CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
 };
-use tilo_room_host::{HostConfig, HostMode, RoomHost};
 
 use super::{
     NetCmd, RoomId, ShellNetwork, personal_continuity_topic_id, relay_rooms, room_topic_id,
@@ -205,12 +205,8 @@ impl ShellNetwork {
                 .insert(entry)
                 .map_err(|error| error.to_string())?;
         }
-        let config = HostConfig {
-            state_root: root,
-            mode: HostMode::Device,
-            ..HostConfig::default()
-        };
-        let host_identity = tilo_room_host::HostIdentity {
+        let config = HostConfig::new(root, HostMode::Device);
+        let host_identity = room_host::HostIdentity {
             user_public_key: certificate.user_public_key,
             device_signing_key: identity.device_signing_key.clone(),
             device_cert: certificate,

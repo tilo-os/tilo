@@ -827,6 +827,10 @@ const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
+    /// Rooms of workspaces made here whose room the network has not yet
+    /// created on its host: drained by placement.
+    #[serde(default)]
+    pub pending_placements: BTreeSet<RoomId>,
     /// Native authority is never re-derived from desktop caches.
     #[serde(default)]
     pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
@@ -1007,6 +1011,7 @@ pub struct WorkspaceTree {
 impl Default for WorkspaceTree {
     fn default() -> Self {
         Self {
+            pending_placements: BTreeSet::new(),
             desktop: DesktopTree::default(),
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
