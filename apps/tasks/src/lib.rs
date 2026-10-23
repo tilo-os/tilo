@@ -7,9 +7,6 @@
 //! page edits the description in the shared block editor and holds the
 //! thread. An issue assigned to an agent is that agent's task: its runs are
 //! the issue's actions, approved, steered and answered from the issue page.
-//! A private issue is kept in a tracker of its own that only its readers
-//! read ([`model::private`]); for them it shows among the others, on the
-//! list, the board and in search, and its page edits its own record.
 //!
 //! Storage, sync, history, undo, search and permissions are the framework's.
 
@@ -55,63 +52,11 @@ impl Place {
 pub(crate) struct Nav {
     pub(crate) place: LocalState<Place>,
     pub(crate) open: LocalState<Option<Id>>,
-    /// Every issue this person reads, private ones among the others.
-    pub(crate) shown: LocalState<Shown>,
-    /// The private issues' trackers, in a window someone uses.
-    pub(crate) private: Option<ui::framework::Children<Tracker>>,
 }
 
 impl Nav {
     pub(crate) fn open(&self, issue: &Id) {
         self.open.set(Some(issue.clone()));
-    }
-
-    /// The private tracker `issue` is kept in, when it is private.
-    pub(crate) fn home(&self, issue: &Id) -> Option<Id> {
-        self.shown.with(|shown| shown.private.get(issue).cloned())
-    }
-
-    /// Submit `invoke` about `issue` to the tracker that keeps it: its
-    /// private tracker's door, or `workspace`'s.
-    pub(crate) fn submit(
-        &self,
-        workspace: &ui::framework::Dispatcher<Tracker>,
-        issue: &Id,
-        invoke: Invoke<Tracker>,
-    ) {
-        match self
-            .home(issue)
-            .zip(self.private.as_ref())
-            .and_then(|(home, private)| private.dispatcher(&home))
-        {
-            Some(dispatcher) => dispatcher.submit(invoke),
-            None => workspace.submit(invoke),
-        }
-    }
-}
-
-/// The tracker as this person reads it: the workspace's issues and those of
-/// every private tracker they read, in one, and which private tracker keeps
-/// each private one.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Shown {
-    pub(crate) tracker: Tracker,
-    pub(crate) private: std::collections::BTreeMap<Id, Id>,
-}
-
-impl Shown {
-    fn of(tracker: &Tracker, private: &[(Id, std::rc::Rc<Tracker>)]) -> Self {
-        let mut shown = Self {
-            tracker: tracker.clone(),
-            private: std::collections::BTreeMap::new(),
-        };
-        for (home, kept) in private {
-            for (id, issue) in kept.issues.iter() {
-                shown.tracker.issues.push(id.clone(), issue.clone());
-                shown.private.insert(id.clone(), home.clone());
-            }
-        }
-        shown
     }
 }
 
@@ -142,21 +87,10 @@ impl ResourceApp for App {
         sample::scenario(name)
     }
 
-    fn records(records: &mut ui::framework::Records<'_>) {
-        records.children::<Tracker>();
-    }
-
     fn view(cx: &mut ViewCx<Tracker>) -> Element {
-        let private = cx.children::<Tracker>();
-        let shown = match &private {
-            Some(private) => cx.value_with_children(private, Shown::of),
-            None => cx.value(|tracker: &Tracker| Shown::of(tracker, &[])),
-        };
         let nav = Nav {
             place: cx.local(Place::List),
             open: cx.local(None),
-            shown,
-            private,
         };
         let opener = nav.clone();
         cx.on_open_item(move |issue| {
@@ -166,11 +100,11 @@ impl ResourceApp for App {
         let staged = cx.value(Tracker::clone);
         // A reference as it reads (`#12`) is the tracker's own to resolve:
         // anyone opens the issue it names through the tracker's `open`.
-        let opener = nav.clone();
+        let (numbered, opener) = (staged.clone(), nav.clone());
         cx.on_open(move |anchor: &str| {
             let number = model::search::number(anchor)
                 .ok_or_else(|| Refusal::new(format!("`{anchor}` names no issue")))?;
-            let tracker = opener.shown.get().tracker;
+            let tracker = numbered.get();
             let (issue, _) = tracker
                 .by_number(number)
                 .ok_or_else(|| Refusal::new(format!("There is no issue {anchor}")))?;
@@ -206,7 +140,7 @@ impl ResourceApp for App {
         let content_nav = nav.clone();
         let content = cx.switch(&nav.open, move |cx, open| {
             if let Some(issue) = open {
-                return issue::open(cx, issue, &content_nav);
+                return issue::page(cx, issue.clone(), &content_nav);
             }
             let nav = content_nav.clone();
             cx.switch(&content_nav.place, move |cx, place| match place {

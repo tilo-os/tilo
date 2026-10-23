@@ -59,11 +59,6 @@ fields = [
   { path = "issues.*.run.confirmation.answered_by", type = "String" },
   { path = "numbers", type = "Counter", readonly = true },
   { path = "imported", type = "Set<String>", readonly = true },
-  { path = "private", type = "tilo_resource::children::Children", stored = "collection" },
-  { path = "private.*.kind", type = "Atom", readonly = true },
-  { path = "private.*.group", type = "Option<Id>" },
-  { path = "private.*.trashed", type = "Option<Trashed>", stored = "record" },
-  { path = "private.*.trashed.at", type = "i64" },
 ]
 
 [[resources.verbs]]

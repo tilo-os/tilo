@@ -10,7 +10,6 @@
 //! (the agent runner) reads this module.
 
 mod issue;
-pub mod private;
 mod record;
 pub mod run;
 pub mod search;

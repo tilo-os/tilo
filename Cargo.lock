@@ -16129,7 +16129,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-app",
- "tilo-automerge",
  "tilo-rich-text",
  "tilo-test-env",
  "workspace-hack",

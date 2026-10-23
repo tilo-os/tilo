@@ -172,9 +172,6 @@ impl Session {
         arguments: &Map<String, Value>,
     ) -> Result<()> {
         let catalogue = self.task_catalogue();
-        // A private issue is kept in a tracker of its own, published under
-        // the issue's id; every other issue is in the workspace's tracker.
-        let own = issue_of(run).map(|issue| format!("{TRACKER_KIND}/{issue}"));
         let offered = catalogue
             .offers
             .iter()
@@ -182,10 +179,7 @@ impl Session {
                 offer.descriptor.resource_kind == TRACKER_KIND
                     && offer.descriptor.address.action == action
             })
-            .min_by_key(|offer| {
-                let resource = &offer.descriptor.address.resource;
-                (own.as_ref() != Some(resource), resource != TRACKER_KIND)
-            })
+            .min_by_key(|offer| offer.descriptor.address.resource != TRACKER_KIND)
             .map(|offer| task_action_from_offer(offer, arguments.clone()));
         let step = match offered {
             Some(Ok(step)) => step,
