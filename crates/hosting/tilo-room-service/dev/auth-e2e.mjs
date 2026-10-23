@@ -546,10 +546,35 @@ export const CHAT_CHANNEL = `(async () => {
   return channel ? {window, resource: post.address.resource, channel} : null;
 })()`;
 
+/** In the page: why `CHAT_CHANNEL` finds nothing, step by step, for a
+ * failure's report. */
+const CHAT_WHY = `(async () => {
+  const shown = tiloMount.navigation.getSnapshot();
+  const entry = shown.entries.find(entry => entry.app === 'so.tilo.chat');
+  const window = entry?.route?.tab;
+  if (!window) return {step: 'window', apps: shown.entries.map(entry => entry.app)};
+  let actions;
+  try {
+    actions = tiloMount.actions(undefined, {window}).map(action => action.address.resource + ' ' + action.address.action);
+  } catch (error) {
+    return {step: 'actions', error: String(error?.message ?? error)};
+  }
+  if (!actions.some(action => action.endsWith(' post'))) return {step: 'post', actions: actions.slice(0, 40)};
+  let room;
+  try {
+    room = await tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window});
+  } catch (error) {
+    return {step: 'read-room', error: String(error?.message ?? error)};
+  }
+  const channels = room?.output?.value?.channels;
+  return {step: 'channel', state: room?.state ?? null, error: room?.error ?? null,
+    channels: Array.isArray(channels) ? channels.map(({id, value}) => ({id, kind: value?.kind, archived: value?.archived, with: value?.conversation_with})) : channels ?? null};
+})()`;
+
 /** Post `text` in Chat from `tab`: `{channel}` it went to, or `{error}`. */
 async function postInChat(tab, text) {
   const chat = await until(() => tab.evaluate(CHAT_CHANNEL), 60_000);
-  if (!chat) return {error: 'no Chat channel to post in'};
+  if (!chat) return {error: 'no Chat channel to post in', why: await tab.evaluate(CHAT_WHY).catch(error => error.message)};
   return tab.evaluate(`(async () => {
     const result = await tiloMount.invokeAction(${JSON.stringify(chat.resource)}, 'post',
       {channel: ${JSON.stringify(chat.channel)}, text: ${JSON.stringify(text)}}, {window: ${JSON.stringify(chat.window)}});
@@ -588,6 +613,43 @@ const WIDGET = id => `(() => {
     value: node.semantics?.value ?? null, focused: Boolean(node.semantics?.state?.focused)};
 })()`;
 
+/** In the page: press the control a reader knows as a button or menu item
+ * named `name`, through assistive technology, as automation driving the
+ * desktop by role does. Apps' toolbars are the window bar's slots, drawn by
+ * the desktop as the bar's own children (or its More menu's items in a
+ * narrow window), so they carry no test id of the app's. True once pressed,
+ * null while the desktop shows no such control. */
+const PRESS_NAMED = name => `(() => {
+  const pressable = new Set(['Button', 'MenuItem']);
+  const find = node => {
+    if (!node) return null;
+    const own = node.semantics;
+    if (own && pressable.has(own.role) && own.name === ${JSON.stringify(name)}) {
+      return {path: node.path, target: own.action_target ?? undefined};
+    }
+    const synthetic = (access, path) => {
+      for (const child of access?.children ?? []) {
+        if (pressable.has(child.role) && child.name === ${JSON.stringify(name)} && child.action_target) {
+          return {path, target: child.action_target};
+        }
+        const found = synthetic(child, path);
+        if (found) return found;
+      }
+      return null;
+    };
+    const inside = synthetic(own, node.path);
+    if (inside) return inside;
+    for (const child of node.children ?? []) {
+      const found = find(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const control = find(tiloMount.state()?.semantics?.root);
+  if (!control) return null;
+  return tiloMount.semantic(control.path, control.target, 'activate', '', 0, 0) === true || null;
+})()`;
+
 /** Click at `at` in `tab`, as a person's pointer does. */
 async function click(tab, at) {
   for (const type of ['mousePressed', 'mouseReleased']) {
@@ -603,9 +665,9 @@ async function typeInNewContact(tab, text) {
     const shown = tiloMount.navigation.getSnapshot();
     await tiloMount.navigation.dispatch({kind: 'open', app: 'so.tilo.contacts', generation: shown.generation});
   })()`).catch(() => {});
-  const start = await until(() => tab.evaluate(WIDGET('contacts.new')), 60_000);
-  if (!start) return {error: 'Contacts showed no New contact'};
-  await click(tab, start);
+  if (!await until(() => tab.evaluate(PRESS_NAMED('New contact')), 60_000)) {
+    return {error: 'Contacts showed no New contact'};
+  }
   const field = await until(() => tab.evaluate(WIDGET('contacts.form.first')), 30_000);
   if (!field) return {error: 'New contact showed no first name field'};
   await click(tab, field);
