@@ -466,7 +466,7 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             let state = chrome.borrow();
             let tree = state.tree();
-            let acting_user = state.active_local_user();
+            let acting_user = state.active_local_user_in(&tree);
             let governs_active_room = tree
                 .desktop
                 .active_workspace()
