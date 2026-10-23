@@ -2800,7 +2800,11 @@ mod tests {
         let keyed = AccessNode::new(Role::Window)
             .with_children(vec![control().with_action_target("camera.shutter")]);
         let keyed = painted.describe(Some(keyed), &host).unwrap();
-        assert_eq!(keyed.children.len(), 2, "the painted state joins the controls");
+        assert_eq!(
+            keyed.children.len(),
+            2,
+            "the painted state joins the controls"
+        );
         assert!(
             keyed.children.iter().all(|child| child.key.is_some()),
             "beside keyed controls it is keyed too"
