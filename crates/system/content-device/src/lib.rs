@@ -38,7 +38,7 @@ pub enum PublicState {
 /// never one.
 #[cfg(not(unix))]
 #[derive(Clone)]
-pub enum PublicCopy {}
+pub struct PublicCopy(std::convert::Infallible);
 
 #[cfg(not(unix))]
 impl PublicCopy {
@@ -46,28 +46,28 @@ impl PublicCopy {
     ///
     /// Never: there is no copy to keep.
     pub fn keep(&self) -> std::io::Result<()> {
-        match *self {}
+        match self.0 {}
     }
 
     /// # Errors
     ///
     /// Never.
     pub fn release(&self) -> std::io::Result<()> {
-        match *self {}
+        match self.0 {}
     }
 
     /// # Errors
     ///
     /// Never.
     pub fn here(&self) -> std::io::Result<Option<String>> {
-        match *self {}
+        match self.0 {}
     }
 
     /// # Errors
     ///
     /// Never.
     pub fn read(&self) -> std::io::Result<PublicState> {
-        match *self {}
+        match self.0 {}
     }
 }
 
