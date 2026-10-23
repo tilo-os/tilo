@@ -94,7 +94,7 @@ fn listed_controls(vp: &VideoPlayer) -> Vec<String> {
 }
 
 #[test]
-fn controls_that_hid_or_faded_leave_the_tree_before_the_next_frame() {
+fn controls_that_hid_or_faded_leave_the_tree_with_the_frame_that_hides_them() {
     let mut engine = media::MediaEngine::new_synthesized();
     engine.open(media::Source::Remote {
         url: "v.mp4".into(),
@@ -115,20 +115,21 @@ fn controls_that_hid_or_faded_leave_the_tree_before_the_next_frame() {
     );
 
     // The auto-hide deadline passes; no frame has been drawn since, so
-    // the rects still hold where the controls were.
+    // the screen still shows the controls, and the tree with it.
     vp.controls_visible_until = Some(crate::time::now());
-    assert!(vp.scrub_track_rect.width() > 0.0, "the frame is stale");
-    assert_eq!(
-        listed_controls(&vp),
-        Vec::<String>::new(),
-        "hidden controls are not read from a stale frame"
+    assert!(
+        listed_controls(&vp)
+            .iter()
+            .any(|name| name == "Playback position"),
+        "the controls on screen are listed until a frame takes them off"
     );
     draw_once(&mut vp);
     assert_eq!(
-        vp.scrub_track_rect,
-        Rect::ZERO,
-        "nor hit after the next one"
+        listed_controls(&vp),
+        Vec::<String>::new(),
+        "the frame that hides them takes them out of the tree"
     );
+    assert_eq!(vp.scrub_track_rect, Rect::ZERO, "and nothing is hit there");
     assert!(
         vp.progress_line_painted.height() > 0.0,
         "the progress line shows meanwhile"
@@ -151,6 +152,48 @@ fn controls_that_hid_or_faded_leave_the_tree_before_the_next_frame() {
             .iter()
             .any(|name| name == "Playback position"),
         "shown again, they are listed again"
+    );
+}
+
+#[test]
+fn a_reveal_reaches_the_screen_even_when_the_next_frame_comes_after_its_deadline() {
+    let mut engine = media::MediaEngine::new_synthesized();
+    engine.open(media::Source::Remote {
+        url: "v.mp4".into(),
+    });
+    let mut vp = VideoPlayer::new().with_engine(engine);
+    vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    let doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    vp.engine_mut().unwrap().play();
+    vp.sync(&doc, &root);
+    // Playback starting shows the controls; once drawn, they hide.
+    draw_once(&mut vp);
+    vp.controls_visible_until = None;
+    draw_once(&mut vp);
+    assert_eq!(
+        listed_controls(&vp),
+        Vec::<String>::new(),
+        "hidden while playing"
+    );
+
+    // The pointer moves; the page is so busy its next frame comes only
+    // after the auto-hide deadline.
+    vp.show_controls();
+    vp.controls_visible_until = Some(crate::time::now());
+    draw_once(&mut vp);
+    assert!(
+        vp.scrub_track_rect.width() > 0.0
+            && listed_controls(&vp)
+                .iter()
+                .any(|name| name == "Playback position"),
+        "that frame still draws the controls the pointer asked for"
+    );
+    draw_once(&mut vp);
+    assert_eq!(
+        listed_controls(&vp),
+        Vec::<String>::new(),
+        "and the frame after hides them"
     );
 }
 
