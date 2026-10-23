@@ -313,3 +313,114 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
     assert_eq!(pushes(&mut commands), 1, "the deferred change goes out");
     assert_eq!(net.next_deadline(), None);
 }
+
+/// Whether `tree` holds the tab `tab` in any of its workspaces.
+fn holds_tab(tree: &crate::shell::state::WorkspaceTreeHandle, tab: u64) -> bool {
+    tree.read()
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .any(|held| held.id == tab)
+}
+
+/// A peer's batch for a room is admitted by decoding it in a worker process
+/// and checking a copy of the room's whole document: on a slow machine that
+/// is longer than many frames. The loop hands it to the peer-sync worker and
+/// goes on, and the tree stays free for the loop while the batch waits.
+#[test]
+fn a_peers_room_batch_merges_off_the_loop() {
+    use crate::shell::state::{
+        AppKind, PeerOrigin, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    };
+    const LAPTOP: u16 = 0x1A97;
+    const BOARD: u16 = 0xB0A2;
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32])
+        .verifying_key()
+        .to_bytes();
+    let person = crate::shell::state::person_id_of(root).unwrap();
+    let laptop_key = iroh::SecretKey::from_bytes(&[0x42; 32]);
+    let room = RoomId::new();
+
+    let mut laptop = WorkspaceTree::default();
+    laptop.set_salt_override(LAPTOP);
+    laptop.local_person = Some(root);
+    let id = WorkspaceId(tilo_desktop_model::compose_id(LAPTOP, 1));
+    let mut workspace = Workspace::in_room(id, room, "Research");
+    workspace.set_owner(person.clone());
+    let tab = tilo_desktop_model::compose_id(LAPTOP, 30);
+    let mut strip = Strip::new(StripId(tilo_desktop_model::compose_id(LAPTOP, 10)), "Main");
+    strip.window_groups.push(WindowGroup {
+        id: tilo_desktop_model::compose_id(LAPTOP, 20),
+        tabs: vec![Tab {
+            id: tab,
+            title: "Draft".into(),
+            tile: TileContent::AppPlaceholder {
+                kind: AppKind::Other("Notes".into()),
+                label: "Draft".into(),
+            },
+        }],
+        active_tab: tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    workspace.strips.push(strip);
+    laptop.desktop.workspaces.push(workspace);
+    laptop.desktop.active = id;
+    laptop.sync_room_doc(room);
+    let changes = laptop.export_room_changes_since(room, &[]).unwrap();
+
+    let mut board = WorkspaceTree::default();
+    board.set_salt_override(BOARD);
+    board.local_person = Some(root);
+    board
+        .authenticated_persons
+        .insert(PeerOrigin::peer(&laptop_key.public()), root);
+    assert!(board.adopt_personal_room(room, "Research", &person, None));
+    let tree = board.shared();
+    let (net, _commands) = super::shell_network_for_test(tree.clone(), 0xB0A2);
+    let net = Arc::new(net);
+    net.start_peer_sync_worker();
+
+    // The worker is busy with something else when the batch arrives.
+    let (release, parked) = mpsc::channel::<()>();
+    let (started, running) = mpsc::channel::<()>();
+    assert!(
+        net.run_off_loop(Box::new(move || {
+            started.send(()).unwrap();
+            let _ = parked.recv();
+        }))
+        .is_ok()
+    );
+    running.recv().unwrap();
+    net.event_tx
+        .try_send(crate::network::NetEvent::Msg {
+            ws: super::room_topic_id(room),
+            peer: laptop_key.public(),
+            membership_epoch: None,
+            replayed: false,
+            msg: NeighbourMsg::SyncResp {
+                changes,
+                room: room.to_string(),
+            },
+        })
+        .unwrap();
+    net.frame_tick();
+    assert!(
+        !holds_tab(&tree, tab),
+        "the loop hands the batch over rather than admitting it itself"
+    );
+    drop(tree.write());
+
+    release.send(()).unwrap();
+    let (done, finished) = mpsc::channel::<()>();
+    assert!(
+        net.run_off_loop(Box::new(move || done.send(()).unwrap()))
+            .is_ok()
+    );
+    finished.recv().unwrap();
+    assert!(holds_tab(&tree, tab), "the batch landed from the worker");
+}

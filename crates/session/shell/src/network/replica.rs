@@ -183,10 +183,58 @@ impl WorkspaceTreeReplica {
         self.pending_outgoing.lock_recover().extend(msgs);
     }
 
+    /// What follows a peer's batch for `room_id` once
+    /// [`WorkspaceTree::merge_room_changes`] merged it, which needs no lock
+    /// on this replica: a caller off the compositor's loop merges first and
+    /// takes the replica only for this.
+    pub fn room_batch_merged(
+        &mut self,
+        room_id: RoomId,
+        sender: &PeerOrigin,
+        change_count: usize,
+        result: Result<bool, automerge::AutomergeError>,
+    ) {
+        if let Err(err) = result {
+            tracing::error!(
+                target: "shell::network::replica",
+                sender = %sender,
+                room = %room_id,
+                change_count,
+                ?err,
+                "WorkspaceTreeReplica::apply_room_changes failed; \
+                 peer-sync round produced no doc mutation (C-9)",
+            );
+            return;
+        }
+        // Recorded only once accepted — a refused document must not leave a participant behind it.
+        self.note_participant(room_id, sender);
+        // A batch whose predecessors never arrived (a push this
+        // machine missed) waits in the document unapplied. Ask the
+        // room for them now rather than at the next safety pull.
+        let missing = self.tree.read().room_missing_deps(room_id);
+        if !missing.is_empty() && self.pull_back_due(room_id, &missing) {
+            self.request_sync_of(&[room_id]);
+        }
+    }
+
     /// Drain pending outbound messages so a test (or Hub-driver) can broadcast them; stable FIFO order.
     pub fn drain_outgoing(&self) -> Vec<NeighbourMsg> {
         std::mem::take(&mut *self.pending_outgoing.lock_recover())
     }
+}
+
+/// The room a `SyncResp` from `sender` names; `None`, logged, for one that
+/// names none.
+pub fn batch_room(sender: &PeerOrigin, room: &str) -> Option<RoomId> {
+    let room = RoomId::parse(room).filter(|r| !r.is_nil());
+    if room.is_none() {
+        tracing::warn!(
+            target: "shell::network::replica",
+            sender = %sender,
+            "SyncResp names no room; dropped",
+        );
+    }
+    room
 }
 
 impl TopicSubscriber for WorkspaceTreeReplica {
@@ -290,39 +338,13 @@ impl WorkspaceTreeReplica {
                 }
             }
             NeighbourMsg::SyncResp { changes, room } => {
-                // Failures log via `tracing::error!` rather than propagate; the connection
-                // stays alive. `apply_room_changes` refuses a room we're not in before
-                // storing anything, then folds an accepted room into the shared tree.
-                let Some(room_id) = RoomId::parse(room).filter(|r| !r.is_nil()) else {
-                    tracing::warn!(
-                        target: "shell::network::replica",
-                        sender = %sender,
-                        "SyncResp names no room; dropped",
-                    );
+                let Some(room_id) = batch_room(sender, room) else {
                     return;
                 };
-                let result = self.tree.write().apply_room_changes(room_id, changes, from);
-                if let Err(err) = result {
-                    tracing::error!(
-                        target: "shell::network::replica",
-                        sender = %sender,
-                        room = %room_id,
-                        change_count = changes.len(),
-                        ?err,
-                        "WorkspaceTreeReplica::apply_room_changes failed; \
-                         peer-sync round produced no doc mutation (C-9)",
-                    );
-                    return;
-                }
-                // Recorded only once accepted — a refused document must not leave a participant behind it.
-                self.note_participant(room_id, sender);
-                // A batch whose predecessors never arrived (a push this
-                // machine missed) waits in the document unapplied. Ask the
-                // room for them now rather than at the next safety pull.
-                let missing = self.tree.read().room_missing_deps(room_id);
-                if !missing.is_empty() && self.pull_back_due(room_id, &missing) {
-                    self.request_sync_of(&[room_id]);
-                }
+                let result = crate::shell::state::WorkspaceTree::merge_room_changes(
+                    &self.tree, room_id, changes, from,
+                );
+                self.room_batch_merged(room_id, sender, changes.len(), result);
             }
             _ => {}
         }

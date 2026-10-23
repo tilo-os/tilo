@@ -451,6 +451,76 @@ impl std::fmt::Display for PeerOrigin {
     }
 }
 
+/// What a peer's batch for one room is admitted against, taken from the
+/// tree so the admission can run without holding it
+/// ([`WorkspaceTree::merge_room_changes`]).
+struct RoomBatchBasis {
+    room: RoomId,
+    /// The room document's heads when this was taken.
+    heads: Vec<ChangeHash>,
+    /// The room document the candidate is built on: a copy of the one held,
+    /// with a local rename staged.
+    before: Option<AutoCommit>,
+    terms: RoomBatchTerms,
+    local_salt: u16,
+    caps_now: u64,
+}
+
+/// What, besides the room's document, decides a batch.
+#[derive(PartialEq, Eq)]
+struct RoomBatchTerms {
+    standing: tilo_peer_state::room::Standing,
+    authority: RoomAuthority,
+    local_person: Option<[u8; 32]>,
+    same_person_governs: bool,
+    staged_name: Option<String>,
+}
+
+impl RoomBatchBasis {
+    /// Admit `changes` from `from`: what the tree's lock need not cover.
+    fn admit(
+        &self,
+        changes: &[Vec<u8>],
+        from: &PeerOrigin,
+    ) -> Result<tilo_peer_state::room::AdmittedRoom, tilo_peer_state::room::RoomRefusal> {
+        use tilo_peer_state::room::{
+            AuthorityPin, ContentOwnership, RoomAdmission, Writer, admit_room_changes,
+        };
+        let terms = &self.terms;
+        let authority = match &terms.authority {
+            // We administer the room; only another device of the person who
+            // owns it governs it alongside us.
+            RoomAuthority::Local => match terms.local_person.as_ref() {
+                Some(person) if terms.same_person_governs => AuthorityPin::Person(person),
+                _ => AuthorityPin::Local,
+            },
+            RoomAuthority::Peer(pinned) => AuthorityPin::Device(pinned.as_str()),
+            // A person's room: any of that person's authenticated devices.
+            RoomAuthority::Person(person) => AuthorityPin::Person(person),
+            RoomAuthority::Unpinned => AuthorityPin::Unpinned,
+        };
+        let room = self.room.to_string();
+        // Applied to a copy first: a check that runs after the merge has
+        // already happened is not a check.
+        admit_room_changes(
+            RoomAdmission {
+                before: self.before.as_ref(),
+                room: &room,
+                source: Writer {
+                    key: from.as_str(),
+                    standing: terms.standing,
+                },
+                authority,
+                contents: ContentOwnership::Salted {
+                    local_salt: self.local_salt,
+                },
+                caps_now: self.caps_now,
+            },
+            changes,
+        )
+    }
+}
+
 /// Who may write a room's governance — its owner and capability list —
 /// as this machine knows it. Automerge merges a map key
 /// last-writer-wins with no per-key ACL, so without this record
@@ -2638,37 +2708,6 @@ impl WorkspaceTree {
         }
     }
 
-    /// Who may write `room`'s governance — its owner and capability list,
-    /// which together control the whole security policy — for a batch from
-    /// `from`. Only what this machine pinned from an invite, its own minting
-    /// or the person's devices counts; nothing in the batch does.
-    /// [`RoomAuthority::Unpinned`] names nobody, so a room joined without an
-    /// invite naming its administrator refuses every governance change: the
-    /// first peer to answer does not become its governor.
-    fn room_authority_pin<'a>(
-        &self,
-        room: RoomId,
-        authority: &'a RoomAuthority,
-        local_person: Option<&'a [u8; 32]>,
-        from: &PeerOrigin,
-    ) -> tilo_peer_state::room::AuthorityPin<'a> {
-        use tilo_peer_state::room::AuthorityPin;
-        match authority {
-            // We administer the room; only another device of the person who
-            // owns it governs it alongside us.
-            RoomAuthority::Local => match local_person {
-                Some(person) if self.same_person_governs(room, from) => {
-                    AuthorityPin::Person(person)
-                }
-                _ => AuthorityPin::Local,
-            },
-            RoomAuthority::Peer(pinned) => AuthorityPin::Device(pinned.as_str()),
-            // A person's room: any of that person's authenticated devices.
-            RoomAuthority::Person(person) => AuthorityPin::Person(person),
-            RoomAuthority::Unpinned => AuthorityPin::Unpinned,
-        }
-    }
-
     /// A media snapshot cannot bootstrap its own authority. The invite path
     /// verifies the device signature before persisting the exact endpoint pin;
     /// transport authenticates `from` independently of the incoming document.
@@ -2808,63 +2847,125 @@ impl WorkspaceTree {
         changes: &[Vec<u8>],
         from: &PeerOrigin,
     ) -> Result<bool, automerge::AutomergeError> {
-        use tilo_peer_state::room::{
-            AdmittedRoom, ContentOwnership, RoomAdmission, RoomRefusal, admit_room_changes,
+        let Some(basis) = self.room_batch_basis(room, from) else {
+            return Ok(false);
         };
+        let admitted = basis.admit(changes, from);
+        self.install_room_batch(basis, admitted, changes, from)
+    }
+
+    /// [`Self::apply_room_changes`] without holding the tree while the batch
+    /// is admitted: admission decodes untrusted bytes in a worker process and
+    /// copies the room's whole document, which on a slow machine takes far
+    /// longer than a frame, and every reader of the tree (the compositor's
+    /// loop among them) would wait for it. The tree is read for what the
+    /// batch is admitted against and written only to install the result.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply_room_changes`].
+    pub fn merge_room_changes(
+        tree: &WorkspaceTreeHandle,
+        room: RoomId,
+        changes: &[Vec<u8>],
+        from: &PeerOrigin,
+    ) -> Result<bool, automerge::AutomergeError> {
+        let Some(basis) = tree.read().room_batch_basis(room, from) else {
+            return Ok(false);
+        };
+        let admitted = basis.admit(changes, from);
+        tree.write()
+            .install_room_batch(basis, admitted, changes, from)
+    }
+
+    /// What a batch from `from` for `room` is admitted against, as this tree
+    /// holds it now; `None` when this tree takes no batch for the room.
+    fn room_batch_basis(&self, room: RoomId, from: &PeerOrigin) -> Option<RoomBatchBasis> {
+        if self.requires_native_owner(room) {
+            return None;
+        }
+        self.workspace_in_room(room)?;
+        let staged_name = self.staged_room_name(room);
+        let mut before = self.room_docs.get(&room).cloned();
+        let heads = before
+            .as_mut()
+            .map(AutoCommit::get_heads)
+            .unwrap_or_default();
+        if let (Some(before), Some(name)) = (before.as_mut(), staged_name.as_ref()) {
+            use automerge::transaction::Transactable as _;
+            before.put(automerge::ROOT, "name", name.clone()).ok()?;
+        }
+        Some(RoomBatchBasis {
+            room,
+            heads,
+            before,
+            terms: self.room_batch_terms(room, from, staged_name),
+            local_salt: self.local_salt(),
+            caps_now: tilo_clock::unix_now(),
+        })
+    }
+
+    /// A local rename may still live only in the cache when a delayed
+    /// reply arrives. It is staged in a copy of the existing room document
+    /// before merging, so projection cannot erase it. Kept private: a
+    /// malformed or unauthorized reply must leave our heads unchanged. The
+    /// room's name is not governed, so every check reads the same
+    /// governance from the staged copy as from the held document.
+    fn staged_room_name(&self, room: RoomId) -> Option<String> {
+        let workspace = self.workspace_in_room(room)?;
+        self.room_docs
+            .get(&room)
+            .filter(|_| self.governs_room(room))
+            .and_then(|before| tilo_peer_state::room::extract_governed_fields(before).0)
+            .filter(|name| *name != workspace.name)
+            .map(|_| workspace.name.clone())
+    }
+
+    /// Everything other than the document that decides a batch from `from`.
+    fn room_batch_terms(
+        &self,
+        room: RoomId,
+        from: &PeerOrigin,
+        staged_name: Option<String>,
+    ) -> RoomBatchTerms {
+        RoomBatchTerms {
+            standing: self.room_writer(from).standing,
+            authority: self.room_authority(room),
+            local_person: self.local_person,
+            same_person_governs: self.same_person_governs(room, from),
+            staged_name,
+        }
+    }
+
+    /// Install a batch admitted against `basis`. When the room's document
+    /// moved on meanwhile with nothing else changed, what it gained (this
+    /// tree's own writes and batches admitted since) joins the candidate;
+    /// when anything the admission rested on changed, the batch is admitted
+    /// again here.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one candidate-then-commit admission: every governance check runs before the batch installs"
+    )]
+    fn install_room_batch(
+        &mut self,
+        basis: RoomBatchBasis,
+        admitted: Result<tilo_peer_state::room::AdmittedRoom, tilo_peer_state::room::RoomRefusal>,
+        changes: &[Vec<u8>],
+        from: &PeerOrigin,
+    ) -> Result<bool, automerge::AutomergeError> {
+        use tilo_peer_state::room::{AdmittedRoom, RoomRefusal};
+        let room = basis.room;
         if self.requires_native_owner(room) {
             return Ok(false);
         }
         if self.workspace_in_room(room).is_none() {
             return Ok(false);
         }
-        // A local rename may still live only in the cache when a delayed
-        // reply arrives. Stage it in a copy of the existing room document
-        // before merging, so projection cannot erase it. Keep this private:
-        // a malformed or unauthorized reply must leave our heads unchanged.
-        // The room's name is not governed, so every check reads the same
-        // governance from the staged copy as from the held document.
-        let mut staged_before = None;
-        if self.governs_room(room)
-            && let Some(before) = self.room_docs.get(&room)
-            && let Some(workspace) = self.workspace_in_room(room)
-            && let Some(name) = tilo_peer_state::room::extract_governed_fields(before).0
-            && name != workspace.name
-        {
-            use automerge::transaction::Transactable as _;
-            let mut staged = before.clone();
-            staged.put(automerge::ROOT, "name", workspace.name.clone())?;
-            staged_before = Some(staged);
+        if self.room_batch_terms(room, from, self.staged_room_name(room)) != basis.terms {
+            return self.apply_room_changes(room, changes, from);
         }
-        let before = staged_before.as_ref().or_else(|| self.room_docs.get(&room));
-        // Another device of the person that governs the room may have named
-        // or certified a peer; what it changed is adopted below.
-        let governed_peers_before = self.governs_room(room).then(|| {
-            (
-                Self::peer_names_of(before),
-                Self::peer_identities_of(before),
-            )
-        });
-        let now = tilo_clock::unix_now();
-        let authority = self.room_authority(room);
-        let local_person = self.local_person;
-        let room_id = room.to_string();
-        // Applied to a copy first: a check that runs after the merge has
-        // already happened is not a check.
-        let admitted = admit_room_changes(
-            RoomAdmission {
-                before,
-                room: &room_id,
-                source: self.room_writer(from),
-                authority: self.room_authority_pin(room, &authority, local_person.as_ref(), from),
-                contents: ContentOwnership::Salted {
-                    local_salt: self.local_salt(),
-                },
-                caps_now: now,
-            },
-            changes,
-        );
         let AdmittedRoom {
-            candidate,
+            mut candidate,
             media,
             rebased,
         } = match admitted {
@@ -2880,13 +2981,45 @@ impl WorkspaceTree {
                     target: "shell::state",
                     room = %room,
                     from = %from,
-                    authority = ?authority,
+                    authority = ?basis.terms.authority,
                     %refusal,
                     "room sync refused",
                 );
                 return Ok(false);
             }
         };
+        let moved = self
+            .room_docs
+            .get_mut(&room)
+            .map(AutoCommit::get_heads)
+            .unwrap_or_default()
+            != basis.heads;
+        if moved {
+            // A new base replaces the document rather than joining it, and a
+            // staged rename is a write of this tree's own that its later
+            // writes would collide with.
+            let Some(held) = self
+                .room_docs
+                .get_mut(&room)
+                .filter(|_| !rebased && basis.terms.staged_name.is_none())
+            else {
+                return self.apply_room_changes(room, changes, from);
+            };
+            // Already admitted here: its own writes, or batches admitted
+            // since. Their union with this batch is what admitting it now
+            // would hold.
+            let since = held.get_changes(&basis.heads);
+            candidate.apply_incoming(since)?;
+        }
+        let before = self.room_docs.get(&room);
+        // Another device of the person that governs the room may have named
+        // or certified a peer; what it changed is adopted below.
+        let governed_peers_before = self.governs_room(room).then(|| {
+            (
+                Self::peer_names_of(before),
+                Self::peer_identities_of(before),
+            )
+        });
         if media.is_some() && !self.media_authority_admitted(room, &candidate, from) {
             tracing::warn!(
                 target: "shell::state",
