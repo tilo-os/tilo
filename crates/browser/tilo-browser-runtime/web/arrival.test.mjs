@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {existsSync} from 'node:fs';
 import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, FAILURES, fill, inviteLinkTarget, isCoffeeHost, lineParts, refusedByHost,
-  parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES, visitLine} from './arrival.mjs';
+  parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES, stoppedInside, visitLine} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const locale = name => parseMessages(readFileSync(here(`locales/${name}.ftl`), 'utf8'));
@@ -227,6 +227,20 @@ test('a desktop that did not start once the host let the person in says they got
     'Du bist in Lounge, aber der Desktop ist in diesem Tab nicht gestartet. Versuch es noch einmal.');
   // The network failing is said as that, wherever it happened.
   assert.match(failureMessage(new Error('WebSocket connection closed'), {workspace: 'Lounge', admitted: true}), /^Can’t reach Lounge/);
+});
+
+test('a person let in whose desktop never drew is told they got in', () => {
+  // The renderer gives up on a first frame that never came and marks the
+  // arrival stopped before the page hears the mount failed.
+  const peer = {room: 'r'};
+  assert.equal(stoppedInside(peer, 'stopped'), true);
+  assert.equal(stoppedInside(peer, 'open'), true);
+  assert.equal(stoppedInside(peer, 'draw'), true);
+  assert.equal(stoppedInside(peer, 'done'), false);
+  assert.equal(stoppedInside(null, 'stopped'), false);
+  const firstFrame = new Error('WebGPU presented no first frame in 60 s, waiting for the first frame to present');
+  assert.equal(failureMessage(firstFrame, {workspace: 'Auth', admitted: stoppedInside(peer, 'stopped')}),
+    'You got into Auth, but its desktop did not start in this tab. Try again.');
 });
 
 test('both locales word every failure, with the workspace’s name and without', () => {
