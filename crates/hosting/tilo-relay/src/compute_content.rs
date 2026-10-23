@@ -564,9 +564,7 @@ fn job_source(
     if !room_access::decide(workspace, trust, peer, RoomOperation::Compute).admitted() {
         return Err("not_authorised");
     }
-    let record = workspace
-        .store
-        .load_compute_job(&job_id)
+    let record = crate::compute_transport::ComputeJobs::load_compute_job(&workspace.store, &job_id)
         .map_err(|_| "unavailable")?
         .ok_or("not_authorised")?;
     let (source, max_bytes) = rule(

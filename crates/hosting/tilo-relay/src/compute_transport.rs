@@ -260,6 +260,59 @@ pub struct DurableComputeJob {
     pub log_bytes: u64,
 }
 
+/// A workspace store's compute job records, read and written as
+/// [`DurableComputeJob`]s.
+pub trait ComputeJobs {
+    /// [`WorkspaceStore::claim_compute_record`] for `record`'s job.
+    ///
+    /// # Errors
+    ///
+    /// As [`WorkspaceStore::claim_compute_record`].
+    fn claim_compute_job(
+        &self,
+        record: &DurableComputeJob,
+    ) -> Result<Option<DurableComputeJob>, StoreError>;
+    /// [`WorkspaceStore::load_compute_record`].
+    ///
+    /// # Errors
+    ///
+    /// As [`WorkspaceStore::load_compute_record`].
+    fn load_compute_job(&self, job_id: &[u8; 16]) -> Result<Option<DurableComputeJob>, StoreError>;
+    /// [`WorkspaceStore::save_compute_record`] for `record`'s job.
+    ///
+    /// # Errors
+    ///
+    /// As [`WorkspaceStore::save_compute_record`].
+    fn save_compute_job(&self, record: &DurableComputeJob) -> Result<(), StoreError>;
+    /// [`WorkspaceStore::load_compute_records`].
+    ///
+    /// # Errors
+    ///
+    /// As [`WorkspaceStore::load_compute_records`].
+    fn load_compute_jobs(&self) -> Result<Vec<DurableComputeJob>, StoreError>;
+}
+
+impl ComputeJobs for WorkspaceStore {
+    fn claim_compute_job(
+        &self,
+        record: &DurableComputeJob,
+    ) -> Result<Option<DurableComputeJob>, StoreError> {
+        self.claim_compute_record(&record.spec.job_id, record)
+    }
+
+    fn load_compute_job(&self, job_id: &[u8; 16]) -> Result<Option<DurableComputeJob>, StoreError> {
+        self.load_compute_record(job_id)
+    }
+
+    fn save_compute_job(&self, record: &DurableComputeJob) -> Result<(), StoreError> {
+        self.save_compute_record(&record.spec.job_id, record)
+    }
+
+    fn load_compute_jobs(&self) -> Result<Vec<DurableComputeJob>, StoreError> {
+        self.load_compute_records()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ComputeRouteOutcome {
     Route(DeviceKey),
