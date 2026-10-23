@@ -571,3 +571,63 @@ fn a_flatpaks_files_are_found_beside_its_exported_entry() {
         None
     );
 }
+
+/// Taking a downloaded program off the person's apps removes its entry and
+/// the icon Tilo kept for it; the program's file stays where it is.
+#[test]
+fn a_downloaded_program_taken_off_the_apps_is_no_longer_listed_and_its_file_stays() {
+    use desktop_entry::downloaded::{Icon, Identity, Program, ProgramKind, Store};
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let places = places(home);
+    let program = home.join("Downloads/mytool/mytool");
+    std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+    std::fs::write(&program, b"\x7fELF").unwrap();
+    let store = Store::in_data_home(&places.data_home);
+    let desktop_id = store
+        .add(
+            &Identity {
+                key: "org.example.MyTool".into(),
+                name: "MyTool".into(),
+                icon: Icon::sniff(b"\x89PNG\r\n\x1a\n".to_vec()),
+                comment: None,
+                categories: Vec::new(),
+                keywords: Vec::new(),
+                mime_types: Vec::new(),
+                startup_wm_class: None,
+                field_code: None,
+            },
+            &Program {
+                path: program.clone(),
+                kind: ProgramKind::Program,
+            },
+        )
+        .unwrap();
+    let listed = || {
+        let scan = desktop_entry::scan_dirs(&[places.applications()], &[]);
+        project(&[], &host_entries(&scan), &places, &Person::default())
+    };
+    let items = listed();
+    let mytool = item(&items, &desktop_id).clone();
+    assert!(matches!(
+        &mytool.source,
+        AppSource::Downloaded { program: listed, .. } if *listed == program
+    ));
+    let icon = desktop_entry::scan_dirs(&[places.applications()], &[])
+        .find(&desktop_id)
+        .and_then(|entry| entry.icon.clone())
+        .map(PathBuf::from)
+        .expect("the entry keeps an icon");
+    assert!(icon.exists());
+
+    assert!(!execute(&forget_entry(&mytool, &places)).unwrap());
+    assert!(
+        listed().iter().all(|item| item.id != desktop_id),
+        "the entry is gone from the list"
+    );
+    assert!(program.exists(), "the program's file stays");
+    assert!(
+        !icon.exists(),
+        "the icon Tilo kept for it goes with the entry"
+    );
+}

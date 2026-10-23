@@ -206,6 +206,11 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::HostApplicationsProvider::new(),
         ));
+        // Downloaded programs running now that are not in the person's apps
+        // yet, to add.
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::downloaded_programs::DownloadedProgramsProvider::default(),
+        ));
         let records = crate::shell::search::providers::RecordsProvider::new();
         let room_records = records.index();
         search_registry.register(std::rc::Rc::new(records));
@@ -591,9 +596,9 @@ impl ShellOverlayHost {
             public_for_shots: false,
             person_quick_composer_node: None,
             peer_sync_node: None,
-            uninstall_sheet: None,
-            uninstall_nodes: None,
-            uninstall_changed: false,
+            app_sheet: None,
+            app_sheet_nodes: None,
+            app_sheet_changed: false,
             agent_actions: HashMap::new(),
             tracker: None,
             task_imports: task_import::TaskImports::default(),

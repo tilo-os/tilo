@@ -1422,6 +1422,7 @@ readers = ["apps/notes/build.rs"]
 package = "shell"
 inputs = [
   "apps/browser/tilo-app.toml",
+  "apps/imager/packaging/linux/tilo-imager.svg",
   "apps/file-explorer/tilo-app.toml",
   "tools/protocols/airdrop_sender.py",
   "tools/test-assets.py",
@@ -1442,6 +1443,7 @@ inputs = [
   "apps/*.rs",
 ]
 readers = [
+  "crates/session/shell/src/bin/shots/driver/downloaded_scene.rs",
   "crates/session/shell/src/shell/doc_open.rs",
   "crates/session/shell/src/shell/search/relevance_tests.rs",
   "crates/session/shell/src/shell/selection_agent.rs",

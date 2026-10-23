@@ -9,6 +9,7 @@ pub(crate) mod authentication_prompts;
 mod background_index;
 pub mod continuity;
 pub mod desktop_windows;
+pub mod downloaded_programs;
 pub mod file_picker;
 pub mod files;
 pub mod host_applications;

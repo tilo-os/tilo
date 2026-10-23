@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use shell::shell::add_app_sheet::Answer;
 use shell::shell::app_list::AppSource;
 use shell::shell::downloaded_apps;
 use shell::shell::state::TileContent;
@@ -216,17 +217,31 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
         "running it adds nothing to the person's apps by itself"
     );
 
+    // Phase `the_first_run_asks_once_with_no_move_for_a_loose_binary`.
+    let ask = downloaded_apps::take_ask().expect("the first run asks");
+    assert_eq!(ask.surface_id, surface_id);
+    assert_eq!(ask.name, "MyTool");
+    assert_eq!(ask.file, first_file);
+    assert!(!ask.appimage, "a loose binary is never offered a move");
+    assert!(ask.icon.is_some(), "the question shows the window's icon");
+    assert!(downloaded_apps::take_ask().is_none(), "asked once");
+
     // Phase `adding_it_puts_it_in_the_applications_model_with_its_window_icon`.
-    assert_eq!(
-        downloaded_apps::add_candidate(surface_id, WAIT).as_deref(),
-        Ok(desktop_id)
-    );
+    downloaded_apps::answer(&Answer::Add {
+        surface_id,
+        move_to_applications: true,
+    });
+    assert!(downloaded_apps::settle(WAIT));
     let app = entry(desktop_id).expect("the entry is in the applications model");
     assert_eq!(app.name, "MyTool");
     assert!(app.window_identities.iter().any(|id| id == APP_ID));
     let icon = PathBuf::from(app.icon.clone().expect("the window's icon"));
     assert!(std::fs::read(&icon).unwrap().starts_with(b"\x89PNG"));
-    assert_eq!(app.downloaded.as_ref().unwrap().program, first_file);
+    assert_eq!(
+        app.downloaded.as_ref().unwrap().program,
+        first_file,
+        "a loose binary stays where it is even when a move was asked for"
+    );
     assert!(app.downloaded.as_ref().unwrap().present);
     drop(window);
     drop(h);
@@ -239,7 +254,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     let (surface_id, window) = open_window(&mut h);
     assert!(downloaded_apps::settle(WAIT));
     assert!(
-        downloaded_apps::candidate(surface_id).is_none(),
+        downloaded_apps::candidate(surface_id).is_none() && downloaded_apps::take_ask().is_none(),
         "an app with an entry is not asked about again"
     );
     let named: Vec<_> = shell::shell::host_apps::host_apps()
@@ -282,5 +297,103 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     wait_for("the entry is gone", || entry(desktop_id).is_none());
     assert!(first_file.exists(), "the program's file stays where it is");
     assert!(!icon.exists());
+
+    // Phase `closing_the_question_means_that_file_is_not_asked_about_again`.
+    let again = Running::start(&first_file);
+    let mut h = harness_for(&again);
+    let (surface_id, window) = open_window(&mut h);
+    assert!(downloaded_apps::settle(WAIT));
+    let ask = downloaded_apps::take_ask().expect("with no entry, the file is asked about");
+    assert_eq!(ask.surface_id, surface_id);
+    downloaded_apps::answer(&Answer::Declined {
+        surface_id: ask.surface_id,
+    });
+    assert!(downloaded_apps::settle(WAIT));
+    assert!(entry(desktop_id).is_none(), "declining adds nothing");
+    drop(window);
+    drop(h);
+    drop(again);
+    let once_more = Running::start(&first_file);
+    let mut h = harness_for(&once_more);
+    let (surface_id, _window) = open_window(&mut h);
+    assert!(downloaded_apps::settle(WAIT));
+    assert!(
+        downloaded_apps::take_ask().is_none(),
+        "that file is not asked about again"
+    );
+    assert!(
+        downloaded_apps::candidate(surface_id).is_some(),
+        "it can still be added from search"
+    );
+    desktop_entry::cache::invalidate();
+}
+
+#[test]
+fn an_entry_follows_its_file_when_it_moves_inside_the_persons_files() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    // The person's files on Tilo's filesystem: every file carries a record
+    // id, and the root answers where a record is now.
+    let files = home.home().join("Files");
+    let before = files.join("Downloads/Foo.AppImage");
+    std::fs::create_dir_all(before.parent().unwrap()).unwrap();
+    std::fs::copy("/usr/bin/sleep", &before).unwrap();
+    let record = [0x5a; 16];
+    xattr::set(&before, fs_protocol::RECORD_ID_XATTR, &record).unwrap();
+    home.env().set("TILO_WORKSPACE_ROOTS", &files);
+    desktop_entry::cache::invalidate();
+    let store = desktop_entry::downloaded::Store::for_session().unwrap();
+    let desktop_id = store
+        .add(
+            &desktop_entry::downloaded::Identity {
+                key: "org.example.Foo".into(),
+                name: "Foo".into(),
+                icon: None,
+                comment: None,
+                categories: Vec::new(),
+                keywords: Vec::new(),
+                mime_types: Vec::new(),
+                startup_wm_class: None,
+                field_code: None,
+            },
+            &desktop_entry::downloaded::Program {
+                path: before.clone(),
+                kind: desktop_entry::downloaded::ProgramKind::Program,
+            },
+        )
+        .unwrap();
+    let written = entry(&desktop_id).unwrap().downloaded.unwrap();
+    assert_eq!(written.record(), Some(record));
+
+    // Phase `a_moved_and_renamed_file_is_found_by_its_record`.
+    let after = files.join("Apps/Foo-renamed.AppImage");
+    std::fs::create_dir_all(after.parent().unwrap()).unwrap();
+    std::fs::rename(&before, &after).unwrap();
+    let uuid = uuid::Uuid::from_bytes(record);
+    let exact = serde_json::json!({
+        "schema_version": 2,
+        "revision": "a".repeat(64),
+        "record": {
+            "record_id": uuid,
+            "path": "/Apps/Foo-renamed.AppImage",
+            "is_dir": false,
+        },
+    });
+    xattr::set(
+        &files,
+        format!(
+            "{}{uuid}",
+            fs_protocol::projection::RECORD_INDEX_BY_ID_XATTR_PREFIX
+        ),
+        &serde_json::to_vec(&exact).unwrap(),
+    )
+    .unwrap();
+    desktop_entry::cache::refresh();
+    downloaded_apps::follow_moves();
+    assert!(downloaded_apps::settle(WAIT));
+    wait_for("the entry points at the file where it is now", || {
+        entry(&desktop_id)
+            .and_then(|app| app.downloaded)
+            .is_some_and(|downloaded| downloaded.present && downloaded.program == after)
+    });
     desktop_entry::cache::invalidate();
 }

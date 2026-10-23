@@ -227,6 +227,7 @@ mod idle_io_animation_tests;
 #[path = "qs_device_state_tests.rs"]
 mod qs_device_state_tests;
 
+mod app_sheets;
 mod capture;
 mod chords;
 mod collaborators;
@@ -272,7 +273,6 @@ mod tab_menu_host;
 mod thing_menu;
 mod top_bar;
 mod tree_harvest;
-mod uninstall;
 mod wifi_password;
 mod window_focus;
 mod workspace_content;
@@ -1003,12 +1003,13 @@ pub struct ShellOverlayHost {
     person_quick_composer_node: Option<NodeId>,
     /// The invite, join and pairing sheet's node while it is up.
     peer_sync_node: Option<NodeId>,
-    /// "Uninstall <name>?" while it asks ([`uninstall`]).
-    uninstall_sheet: Option<crate::shell::uninstall_sheet::Asking>,
+    /// The question about one of the person's apps on screen, "Uninstall
+    /// <name>?" or "Add <name> to apps?" ([`app_sheets`]).
+    app_sheet: Option<app_sheets::AppSheet>,
     /// The sheet's window node and its own, while it is laid out.
-    uninstall_nodes: Option<(NodeId, NodeId)>,
+    app_sheet_nodes: Option<(NodeId, NodeId)>,
     /// The sheet opened or closed since the tree was last built.
-    uninstall_changed: bool,
+    app_sheet_changed: bool,
     agent_actions:
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     /// The rooms' trackers, where the composer follows the runs it asked for.
