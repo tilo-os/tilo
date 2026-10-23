@@ -176,7 +176,7 @@ test('every step note the entry pages write is one the screen leaves to screen r
     .map(name => readFileSync(here(name), 'utf8')).join('\n');
   for (const note of STEP_NOTES) assert.ok(sources.includes(`${note}`), `${note} is no longer written`);
   // What a person must read stays on screen.
-  for (const shown of ['Waiting for the workspace owner to let you in…', 'Pairing code']) {
+  for (const shown of ['Waiting for someone in the workspace to let you in…', 'Pairing code']) {
     assert.ok(![...STEP_NOTES].some(note => note.startsWith(shown)));
   }
 });

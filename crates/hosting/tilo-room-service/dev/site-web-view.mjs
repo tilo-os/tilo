@@ -25,8 +25,8 @@ import {CHAT_CHANNEL, CHAT_WHY, chatShows, open, page} from './auth-e2e.mjs';
 const CHANNEL_READS = ({window, channel}) => `(async () => {
   let result;
   try {
-    result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
-      {channel: ${JSON.stringify(channel)}, pageSize: 32}, {window: ${JSON.stringify(window)}});
+    result = await tiloMount.invokeAction(${JSON.stringify(`chat.workspace/channels/${channel}`)}, 'read-messages',
+      {pageSize: 32}, {window: ${JSON.stringify(window)}});
   } catch (error) {
     return {refused: String(error?.message ?? error)};
   }
