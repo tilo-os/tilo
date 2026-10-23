@@ -293,6 +293,7 @@ impl FileExplorerWidget {
         }
         once.extend(always);
         self.app_chooser.set_entries(once);
+        // window-bar: picker, the Open with chooser
         self.app_chooser
             .set_query_placeholder(t_args("files-open-with-search", &[arg("name", entry.name)]));
         self.app_chooser.open();

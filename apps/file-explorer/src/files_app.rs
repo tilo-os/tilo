@@ -1817,6 +1817,7 @@ impl FileExplorerWidget {
         // `build_layout`; the toolbar is the content header's one action and
         // stays for the window's lifetime.
         let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
+        // window-bar: fallback, the header the bar takes over once it hosts the window
         let nav = NavShell::new()
             .content_kind(ui::widget::ContentKind::List)
             .with_id("files.shell")
@@ -1994,6 +1995,7 @@ impl FileExplorerWidget {
             open_with_cache: RefCell::new(HashMap::new()),
             entry_ids: RefCell::default(),
             entry_rows: RefCell::default(),
+            // window-bar: picker, the Open with chooser
             app_chooser: ui::widget::command_palette::CommandPalette::commands(),
             app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
