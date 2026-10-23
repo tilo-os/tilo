@@ -32,14 +32,14 @@ python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:<ref>-<sh
 `--dev-base` measures the production-layout `tilo-ci` image that a dev image
 names as its base. Pull requests that touch the image publish
 `tilo-ci:<ref>-<sha7>-<arch>` (Build / OS dev), so measure a branch with
-`--image` before merging. Perf / scheduled (footprint group, nightly)
+`--image` before merging. t's `perf-footprint-image` check, in the performance run,
 measures main's newest image for both architectures and records
 `footprint.image.{compressed_bytes,unique_content_bytes,redundant_payload_bytes}.<arch>`.
 `tools/perf/kpi-budgets.toml` holds them to two rules:
 
 - **Growth.** More than 5 % above the median of the last five nights fails on
-  the second night running. To land intended growth, dispatch Perf / scheduled
-  on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
+  the second run in a row. To land intended growth, run
+  `t dispatch perf-scheduled --ref main --input accept=<KPI ids>` once the image has it.
 - **Ceiling.** Compressed bytes and unique content are held to an enforced
   ceiling, set 5 % over the image #4003 measured and lowered by what each
   later size change saved, so slow creep fails too. It may only be lowered,

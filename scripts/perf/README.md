@@ -40,7 +40,7 @@ executable stand-alone; the higher-level flow is described below.
   runtime's CPU per frame) and an idle desktop, judged against the 30 fps
   minimum, 120 fps and 50 ms activation goals. It refuses to report when the
   bundle's bytes, revision or profile, the WebGPU adapter or a quiet host
-  (`--max-load`) cannot be proven. **Perf / scheduled** runs it nightly as the
+  (`--max-load`) cannot be proven. t's performance run runs it as the
   `browser` group (`tools/perf/adapters.py browser-qualification`);
   `docs/measurements/performance.md` has the hardware invocation.
 
@@ -52,7 +52,7 @@ executable stand-alone; the higher-level flow is described below.
   picture drawn is read back: startup to the first picture, capture-to-picture
   latency, frame rate, frames never drawn and click-to-session input latency,
   and a failure for any corrupt, misnamed or older picture, decoder error,
-  wrong last frame or lost press. **Perf / scheduled** runs it nightly as the
+  wrong last frame or lost press. t's performance run runs it as the
   `stream` group (`tools/perf/adapters.py native-stream`).
 
 - `binary-sizes.sh [target-dir]` — walk `target/release/` (or the
@@ -83,7 +83,7 @@ executable stand-alone; the higher-level flow is described below.
   server. Each is timed from the client's side of the control socket, after
   100 warm-up calls, with 1,000 samples. `--app PROVIDER:ID` adds an app
   action. With `--env-json` it writes `tools/perf/record.py` records.
-  **Perf / scheduled** runs it nightly as the `agent` group.
+  t's performance run runs it as the `agent` group.
 
 - `agent_task.py (--socket PATH | --spawn SHELL [--seeder EXAMPLE])` — a
   whole agent task: a scripted model, streamed like the Messages API from a

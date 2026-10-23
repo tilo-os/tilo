@@ -1,7 +1,7 @@
 // Tests of the native stream qualification's reading and judging
 // (scripts/perf/native_stream_qualification.mjs); the run itself needs a
 // host, the session example, a built bundle and Chrome, which
-// Perf / scheduled's `stream` job has.
+// t's perf-stream check has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CODE_BITS, analyse, codeCheck, codeGeometry, judgeGoals, parseArgs, readCode} from './native_stream_qualification.mjs';

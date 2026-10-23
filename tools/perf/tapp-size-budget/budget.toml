@@ -3,7 +3,7 @@
 #
 # - Release / apps fails when a tapp it has just packaged is over its app's
 #   budget, which is the `bytes` below plus every raise under raises/.
-# - Perf / scheduled fails when a published app is over its budget, or when
+# - t's perf-footprint (the performance run) fails when a published app is over its budget, or when
 #   the median (p50), p90 or max of the apps in the registry is over its
 #   fleet ceiling.
 # - t's `changes` check fails when a budget grows without a raise file new in
