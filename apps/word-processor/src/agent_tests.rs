@@ -177,3 +177,25 @@ fn replace_text_rewrites_a_phrase_in_the_document() {
         blocks(&app)
     );
 }
+
+#[test]
+fn replace_body_writes_the_whole_body_from_markdown_tables_included() {
+    let mut app = written("# Old\nGone");
+    app.call(
+        "replace-body",
+        json!({ "markdown": "# Timeline\n\n| Time | Event |\n| --- | --- |\n| 14:02 | Alert |\n\nAfter the table." }),
+    )
+    .unwrap();
+    app.settle();
+    let cells = kinds(&app).iter().filter(|kind| *kind == "cell").count();
+    assert_eq!(cells, 4, "a table of two rows of two is written");
+    let shown = blocks(&app);
+    assert!(
+        shown
+            .iter()
+            .any(|(kind, text)| kind == "heading" && text == "Timeline")
+            && shown.iter().any(|(_, text)| text == "After the table.")
+            && !shown.iter().any(|(_, text)| text == "Gone"),
+        "{shown:?}"
+    );
+}
