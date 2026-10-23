@@ -188,7 +188,6 @@ mod tests {
 
     #[test]
     fn battery_warnings_fire_once_per_threshold_and_rearm_on_power() {
-        // Phase `state_code_mapping`.
         {
             assert_eq!(BatteryState::from_upower(1), BatteryState::Charging);
             assert_eq!(BatteryState::from_upower(2), BatteryState::Discharging);
@@ -198,7 +197,6 @@ mod tests {
             assert!(!BatteryState::Charging.is_discharging());
             assert!(!BatteryState::Full.is_discharging());
         }
-        // Phase `healthy_charge_emits_nothing`.
         {
             let mut m = BatteryMonitor::new();
             assert!(
@@ -207,7 +205,6 @@ mod tests {
             );
             assert!(!m.is_warning());
         }
-        // Phase `low_warns_once_then_stays_quiet`.
         {
             let mut m = BatteryMonitor::new();
             let p = policy();
@@ -226,7 +223,6 @@ mod tests {
             );
             assert!(m.is_warning());
         }
-        // Phase `critical_emits_once_and_suppresses_low`.
         {
             let mut m = BatteryMonitor::new();
             let p = policy();
@@ -241,7 +237,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `low_then_critical_are_two_distinct_shots`.
         {
             let mut m = BatteryMonitor::new();
             let p = policy();
@@ -258,7 +253,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `plugging_in_rearms_and_recovers`.
         {
             let mut m = BatteryMonitor::new();
             let p = policy();
@@ -278,14 +272,12 @@ mod tests {
                 vec![BatteryEvent::Low(12)]
             );
         }
-        // Phase `absent_battery_never_warns`.
         {
             let mut m = BatteryMonitor::new();
             let p = policy();
             assert!(m.evaluate(&BatterySnapshot::absent(), &p).is_empty());
             assert!(!m.is_warning());
         }
-        // Phase `critical_action_gate`.
         {
             let mut p = policy();
             p.critical_action = PowerAction::Suspend;

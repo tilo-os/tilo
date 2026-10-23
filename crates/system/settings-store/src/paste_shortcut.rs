@@ -134,10 +134,6 @@ pub fn overrides_from_section(section: &Map<String, Value>) -> BTreeMap<String, 
 
 /// Serde `deserialize_with` for a stored override map: keeps the valid
 /// entries and drops the rest, so one bad entry never loses the section.
-///
-/// # Errors
-///
-/// Only when the input is not JSON at all.
 pub fn lenient_overrides<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,

@@ -124,7 +124,6 @@ mod tests {
 
     #[test]
     fn explicit_bundles_load_deduplicated_and_directories_are_rejected() {
-        // Phase `explicit_bundle_loads_and_deduplicates`.
         {
             let directory = tempfile::tempdir().unwrap();
             let bundle = directory.path().join("roots.pem");
@@ -134,7 +133,6 @@ mod tests {
             assert!(result.errors.is_empty());
             assert_eq!(result.certs.len(), 1);
         }
-        // Phase `certificate_directories_are_rejected`.
         {
             let directory = tempfile::tempdir().unwrap();
             let result = load_certs_from_paths(None, Some(directory.path()));

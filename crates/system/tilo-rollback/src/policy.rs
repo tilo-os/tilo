@@ -219,10 +219,6 @@ pub fn flush(runner: &dyn Runner) {
 
 /// Load the prediction authority's public key and return its TPM Name — that, not the PEM,
 /// is what `TPM2_PolicyAuthorize` commits to and what a sealed token is bound to.
-///
-/// # Errors
-///
-/// Returns an error if loading the key or reading its public area fails.
 pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> Result<Vec<u8>> {
     flush(runner);
     let ctx = ws.path("signkey.ctx");
@@ -256,10 +252,6 @@ pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> R
 /// Compute the digest a `TPM2_PolicyPCR` over `pcr_values` reaches. `pcr_values` is a
 /// `tpm2_pcrread -o` blob (the predicted measurements); pass `None` to use the machine's live
 /// PCRs, as enrollment does when generating its own first prediction on the machine itself.
-///
-/// # Errors
-///
-/// Returns an error if the trial policy session or reading its digest fails.
 pub fn approved_policy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -404,10 +396,6 @@ impl PolicySpec<'_> {
 }
 
 /// The full seal policy digest for one generation.
-///
-/// # Errors
-///
-/// Returns an error if any step of the trial policy session fails.
 pub fn seal_policy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -418,10 +406,6 @@ pub fn seal_policy(
 
 /// The full seal policy digest for a signed target boot policy with no NV
 /// counter. See [`BootPolicy`].
-///
-/// # Errors
-///
-/// Returns an error if any step of the trial policy session fails.
 pub fn seal_boot_policy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -556,12 +540,6 @@ struct PredictionTicket {
 /// wrong policy reference) — an expected outcome when trying several predictions, not an
 /// error. `Err` is reserved for "the mechanism itself is broken", except a `PolicyNV` failure
 /// which *is* an error: it means the machine is below the rollback floor.
-///
-/// # Errors
-///
-/// Returns an error if loading the prediction key or minting its verification ticket fails
-/// outright (as opposed to simply not verifying), if the policy session fails to start, if
-/// reading live PCRs fails, or if the rollback-floor `PolicyNV` step fails.
 pub fn satisfy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -820,12 +798,10 @@ mod tests {
 
     #[test]
     fn policy_marshalling_matches_tool_and_tpm_layouts() {
-        // Phase `pcr_selection_matches_the_tools_syntax`.
         {
             assert_eq!(pcr_selection("sha256", &[7, 11]), "sha256:7,11");
             assert_eq!(pcr_selection("sha384", &[0]), "sha384:0");
         }
-        // Phase `rsassa_marshalling_has_the_tpm_structure_layout`.
         {
             let sig = vec![0xABu8; 256];
             let m = marshal_rsassa_sha256(&sig).unwrap();
@@ -835,11 +811,9 @@ mod tests {
             assert_eq!(&m[4..6], &[0x01, 0x00], "size must be 256 big-endian");
             assert_eq!(&m[6..], &sig[..]);
         }
-        // Phase `an_oversized_signature_is_refused_rather_than_truncated`.
         {
             assert!(marshal_rsassa_sha256(&vec![0u8; 70_000]).is_err());
         }
-        // Phase `workspace_writes_scratch_files`.
         {
             let d = tempfile::tempdir().unwrap();
             let ws = Workspace::new(d.path());

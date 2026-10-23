@@ -147,7 +147,6 @@ mod tests {
     /// Privacy facets are opt-in behind a master switch, and audit entries hold only time, capability and state.
     #[test]
     fn continuity_privacy_is_opt_in_and_its_audit_is_payload_free() {
-        // Case `privacy_sensitive_facets_are_opt_in_and_master_kill_switch_wins`.
         {
             let mut policy = ContinuityPrivacy::default();
             for capability in Capability::ALL {
@@ -160,7 +159,6 @@ mod tests {
             assert!(policy.effective(Capability::Clipboard));
         }
 
-        // Case `audit_schema_cannot_hold_payloads_tokens_or_device_addresses`.
         {
             let entry = AuditEntry {
                 recorded_at_secs: 42,

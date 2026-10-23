@@ -1391,7 +1391,6 @@ mod tests {
             Cli::command().debug_assert();
             DeviceCli::command().debug_assert();
         }
-        // Phase `completion_scripts_cover_tilo_and_system`.
         {
             let mut output = Vec::new();
             clap_complete::generate(Shell::Bash, &mut Cli::command(), "tilo", &mut output);
@@ -1407,7 +1406,6 @@ mod tests {
             assert!(script.contains("_system()"), "{script}");
             assert!(script.contains("default system"), "{script}");
         }
-        // Phase `elapsed_time_is_compact_and_stable`.
         {
             assert_eq!(human_duration(Duration::from_secs(9)), "9s");
             assert_eq!(human_duration(Duration::from_secs(125)), "2m 05s");
@@ -1423,7 +1421,6 @@ mod tests {
                 "status must parse without flags"
             );
         }
-        // Phase `provider_namespaces_parse_independently`.
         {
             let system = Cli::try_parse_from(["tilo", "system", "status"]).expect("system parses");
             assert!(matches!(
@@ -1466,13 +1463,11 @@ mod tests {
 
     #[test]
     fn providers_are_discovered_forwarded_and_overridable() {
-        // Phase `missing_optional_provider_is_detectable`.
         {
             assert!(!command_available(std::ffi::OsStr::new(
                 "tilo-provider-that-does-not-exist"
             )));
         }
-        // Phase `app_provider_defaults_to_path_for_partial_non_tilo_installations`.
         {
             assert_eq!(app_binary_from(None), OsString::from("app"));
             assert_eq!(
@@ -1480,7 +1475,6 @@ mod tests {
                 OsString::from("/custom/app")
             );
         }
-        // Phase `app_help_is_forwarded_to_the_app_provider`.
         {
             let cli = Cli::try_parse_from(["tilo", "app", "--help"])
                 .expect("app help must be forwarded rather than consumed by the super-command");
@@ -1511,7 +1505,6 @@ mod tests {
 
     #[test]
     fn umbrella_update_runs_available_providers_and_fails_on_any_failure() {
-        // Phase `umbrella_update_uses_whichever_providers_are_available`.
         {
             let mut app_runs = 0;
             let mut system_runs = 0;
@@ -1542,7 +1535,6 @@ mod tests {
             .unwrap();
             assert_eq!(status, ExitCode::SUCCESS);
         }
-        // Phase `umbrella_update_fails_for_no_provider_or_any_failed_provider`.
         {
             assert!(
                 update_available_providers(
@@ -1784,7 +1776,6 @@ mod tests {
         let (verb, args) = nouns::picked(device, nouns::DEVICE).expect("a handed-on verb");
         assert_eq!((verb.program, verb.prefix), ("tilo-vm", &["swap"][..]));
         assert_eq!(args, ["shell", "--target", "lab"]);
-        // The system's own verbs stay `tilo`'s.
         let matches = command_here(EVERYWHERE)
             .try_get_matches_from(["tilo", "device", "status"])
             .expect("device status parses");
@@ -1807,7 +1798,6 @@ mod tests {
         assert!(!device_examples(bare).contains("swap"));
         let agent = agent_here(AgentCli::command(), bare);
         assert!(agent.get_subcommands().all(clap::Command::is_hide_set));
-        // Completion still offers everything, shortcuts included.
         let all: Vec<String> = completing(EVERYWHERE)
             .get_subcommands()
             .filter(|sub| !sub.is_hide_set())

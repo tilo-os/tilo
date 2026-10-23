@@ -98,9 +98,6 @@ impl ReleaseTrust {
     }
 
     /// The e-mail identity a certificate for `purpose` names.
-    ///
-    /// # Errors
-    /// A purpose that is not lowercase words joined by hyphens.
     pub fn identity(&self, purpose: &str) -> Result<String, String> {
         let well_formed = !purpose.is_empty()
             && !purpose.starts_with('-')
@@ -118,7 +115,6 @@ impl ReleaseTrust {
 pub struct VerifiedRelease {
     /// When Rekor recorded the signature (Unix seconds).
     pub integrated_time: u64,
-    /// The entry's index in the log.
     pub log_index: u64,
 }
 

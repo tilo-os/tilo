@@ -350,7 +350,6 @@ mod tests {
         let mut profiles = DisplayProfiles::default();
         profiles.remember(&saved_set, &config);
 
-        // The dock's MST ports enumerate the other way round next boot.
         let replugged = DisplaySet::of([
             attached("eDP-1", Some(&panel)),
             attached("DP-7", Some(&right)),

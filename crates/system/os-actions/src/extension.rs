@@ -346,10 +346,6 @@ pub fn available(id: &ExtensionId) -> bool {
 /// The helper reports progress in the status file while this runs; [`watch`]
 /// delivers those updates. Stopping the caller does not stop the
 /// transaction: the unit keeps running in the system manager.
-///
-/// # Errors
-/// Returns the unit's failure reason when systemd, polkit or the helper refuse
-/// or fail.
 pub fn run(action: ExtensionAction, id: &ExtensionId) -> Result<(), String> {
     let unit = action.unit(id);
     let output = bounded_command::run(
@@ -594,7 +590,6 @@ mod tests {
         watch_dir(dir.path(), &id("media-codecs"), move || tx.send(()).is_ok()).unwrap();
         // Another extension's status is not this watcher's business.
         std::fs::write(dir.path().join("other.json"), "{}").unwrap();
-        // The helper writes a temporary file and renames it over the status.
         let temporary = dir.path().join(".media-codecs.json.tmp");
         std::fs::write(&temporary, r#"{"state":"installing"}"#).unwrap();
         std::fs::rename(&temporary, dir.path().join("media-codecs.json")).unwrap();

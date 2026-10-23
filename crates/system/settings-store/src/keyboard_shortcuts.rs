@@ -319,7 +319,6 @@ impl FixedShortcut {
         self.keys.iter().map(|key| key.chord()).collect()
     }
 
-    /// Whether `chord` is one of this shortcut's.
     #[must_use]
     pub fn owns(&self, chord: &KeyChord) -> bool {
         self.keys.iter().any(|key| key.chord() == *chord)

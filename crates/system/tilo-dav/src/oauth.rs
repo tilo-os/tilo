@@ -45,9 +45,6 @@ impl Service {
 
     /// Trust exactly one loopback origin as a Google fixture. This is explicit
     /// per service and does not permit a second loopback server or arbitrary URL.
-    ///
-    /// # Errors
-    /// If the fixture is not an HTTP(S) loopback origin without URL metadata.
     #[cfg(feature = "test-support")]
     pub fn for_test_origin(custodian: Custodian, origin: &str) -> Result<Self, String> {
         let url = Url::parse(origin).map_err(|_| "invalid fixture origin")?;

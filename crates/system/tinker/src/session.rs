@@ -233,7 +233,6 @@ mod tests {
 
     #[test]
     fn sessions_isolate_the_host_home_network_and_namespaces() {
-        // Phase `the_host_filesystem_is_not_mounted`.
         {
             let v = strs(&spec());
             // The failure mode being guarded is a `--bind / /` or `--dev-bind / /`
@@ -248,7 +247,6 @@ mod tests {
                 );
             }
         }
-        // Phase `home_is_the_layers_own_not_the_users`.
         {
             let v = strs(&spec());
             let i = pos(&v, "/s/layers/a/home");
@@ -256,17 +254,14 @@ mod tests {
             assert_eq!(v[i + 1], "/root");
             let h = pos(&v, "HOME");
             assert_eq!(v[h + 1], "/root");
-            // Nothing under the real user's home may be exposed by default.
             assert!(!v.iter().any(|s| s.starts_with("/home/")), "{v:?}");
         }
-        // Phase `tmp_is_world_writable_with_the_sticky_bit`.
         {
             let v = strs(&spec());
             let i = pos(&v, "--chmod");
             assert_eq!(v[i + 1], "1777");
             assert_eq!(v[i + 2], "/tmp");
         }
-        // Phase `no_second_user_namespace_is_created`.
         {
             // The id mapping is established before bwrap; asking bwrap for another
             // user namespace would collapse the map back to a single uid.
@@ -279,7 +274,6 @@ mod tests {
             assert!(v.iter().any(|s| s == "--unshare-pid"));
             assert!(v.iter().any(|s| s == "--die-with-parent"));
         }
-        // Phase `offline_sessions_unshare_the_network_and_drop_resolv_conf`.
         {
             let mut s = spec();
             s.network = false;
@@ -287,7 +281,6 @@ mod tests {
             assert!(v.iter().any(|x| x == "--unshare-net"));
             assert!(!v.iter().any(|x| x == "/etc/resolv.conf"));
         }
-        // Phase `shares_are_read_only_unless_asked_otherwise`.
         {
             let mut s = spec();
             s.shares = vec![
@@ -314,7 +307,6 @@ mod tests {
 
     #[test]
     fn session_argv_stacks_overlays_and_places_the_command() {
-        // Phase `overlay_sources_run_base_first_topmost_last`.
         {
             let mut s = spec();
             s.lower_layers = vec![
@@ -333,13 +325,11 @@ mod tests {
             assert_eq!(v[upper + 1], "/s/layers/a/work");
             assert_eq!(v[upper + 2], "/");
         }
-        // Phase `an_empty_command_becomes_a_login_shell`.
         {
             let v = strs(&spec());
             let sep = pos(&v, "--");
             assert_eq!(&v[sep + 1..], &["/bin/sh".to_string(), "-l".to_string()]);
         }
-        // Phase `an_explicit_command_lands_after_the_separator`.
         {
             let mut s = spec();
             s.command = vec![
@@ -352,7 +342,6 @@ mod tests {
             let sep = pos(&v, "--");
             assert_eq!(&v[sep + 1..], &["apt-get", "install", "-y", "cowsay"]);
         }
-        // Phase `explain_starts_with_bwrap_and_mentions_the_overlay`.
         {
             let text = spec().explain();
             assert!(text.starts_with("bwrap "), "{text}");
@@ -361,7 +350,6 @@ mod tests {
                 "{text}"
             );
         }
-        // Phase `the_layer_name_is_visible_inside`.
         {
             let v = strs(&spec());
             let i = pos(&v, "TILO_LAYER");

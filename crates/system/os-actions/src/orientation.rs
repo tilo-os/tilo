@@ -52,7 +52,6 @@ pub fn accelerometer_in(root: &Path) -> Option<PathBuf> {
     devices.into_iter().next()
 }
 
-/// The machine's accelerometer, if it has one.
 pub fn accelerometer() -> Option<PathBuf> {
     accelerometer_in(Path::new(IIO_DEVICES))
 }
@@ -336,7 +335,6 @@ mod tests {
         // Just past the diagonal: tilted more left than up, but not by the
         // hysteresis margin — the screen must not turn.
         assert_eq!(classify(tilted_left(50.0), DeviceOrientation::Normal), None);
-        // And coming back, the same reading keeps left-up.
         assert_eq!(classify(tilted_left(40.0), DeviceOrientation::LeftUp), None);
         // Clearly turned: rotate.
         assert_eq!(
@@ -351,7 +349,6 @@ mod tests {
         let left = held(DeviceOrientation::LeftUp);
         assert_eq!(tracker.update(left), None);
         assert_eq!(tracker.update(left), None);
-        // A jolt back to upright restarts the count.
         assert_eq!(tracker.update(held(DeviceOrientation::Normal)), None);
         assert_eq!(tracker.update(left), None);
         assert_eq!(tracker.update(left), None);

@@ -15,7 +15,6 @@ use tilo_lock::MutexRecover as _;
 use crate::client::OAuthClient;
 use crate::{OAuthError, Provider, Refresh, Registration, TokenSet};
 
-/// The device-code grant type.
 const DEVICE_CODE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// The interval RFC 8628 §3.2 prescribes when the issuer names none.
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);

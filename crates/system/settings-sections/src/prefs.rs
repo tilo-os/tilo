@@ -1375,7 +1375,6 @@ mod paste_shortcut_tests {
             .unwrap();
         assert!(input.paste_shortcuts.is_empty());
 
-        // What the shell reads back from the stored section.
         input
             .set_paste_shortcut("org.example.MyTerm", "ctrl_shift_v")
             .unwrap();

@@ -76,11 +76,6 @@ pub fn get_keyboard_backlight() -> Result<KeyboardBacklight, String> {
 }
 
 /// Set the keyboard light to the raw hardware `level`, clamped to the device's range.
-///
-/// # Errors
-///
-/// Returns an error message when this machine has no keyboard backlight or the write is
-/// refused.
 pub fn set_keyboard_backlight(level: u32) -> Result<(), String> {
     set_in(Path::new(LEDS), level)
 }

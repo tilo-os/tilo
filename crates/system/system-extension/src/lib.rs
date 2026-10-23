@@ -702,7 +702,6 @@ mod tests {
 
     #[test]
     fn extensions_are_accepted_only_after_exact_signed_verification() {
-        // Phase `signature_covers_every_pinned_manifest_field`.
         {
             let bytes = b"runtime artifact";
             let (release_key, keyring) = signer_and_keyring();
@@ -716,7 +715,6 @@ mod tests {
                 Err(ExtensionError::InvalidSignature)
             );
         }
-        // Phase `preflight_is_exact_for_image_architecture_and_kernel_abi`.
         {
             let manifest = manifest(b"runtime artifact");
             manifest.preflight(&host()).unwrap();
@@ -733,7 +731,6 @@ mod tests {
                 Err(ExtensionError::BaseImageMismatch)
             );
         }
-        // Phase `no_artifact_or_state_change_is_accepted_before_verification`.
         {
             let bytes = b"runtime artifact";
             let (release_key, keyring) = signer_and_keyring();
@@ -772,7 +769,6 @@ mod tests {
             assert_eq!(state.active.len(), 1);
             assert!(state.pending.is_none());
         }
-        // Phase `accepted_state_is_revalidated_against_the_signed_image_and_keyring`.
         {
             let bytes = b"runtime artifact";
             let (release_key, keyring) = signer_and_keyring();
@@ -798,7 +794,6 @@ mod tests {
 
     #[test]
     fn the_state_store_persists_only_valid_transitions_and_never_defaults() {
-        // Phase `state_store_rejects_malformed_or_symlinked_state_instead_of_defaulting`.
         {
             use std::os::unix::fs::symlink;
 
@@ -819,7 +814,6 @@ mod tests {
                 Err(ExtensionStoreError::UnsafeStatePath(_))
             ));
         }
-        // Phase `state_store_persists_only_after_each_valid_transition`.
         {
             let bytes = b"runtime artifact";
             let (release_key, keyring) = signer_and_keyring();
@@ -841,7 +835,6 @@ mod tests {
             assert!(state.pending.is_none());
             assert!(state.active.contains_key("local-model-runtime"));
         }
-        // Phase `a_failed_commit_never_drops_the_pending_transaction`.
         {
             let bytes = b"runtime artifact";
             let (release_key, keyring) = signer_and_keyring();

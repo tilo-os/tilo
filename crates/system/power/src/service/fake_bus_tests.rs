@@ -19,7 +19,6 @@ const DISPLAY_PATH: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
 /// What the fake daemons were asked, and the far ends of the inhibitor fds they handed out.
 #[derive(Default)]
 struct Calls {
-    /// Every `Inhibit`.
     inhibits: Vec<LogindInhibitorRequest>,
     /// The daemon's end of each inhibitor fd, in `inhibits` order: it reads EOF once the
     /// service drops the lock.
@@ -215,7 +214,6 @@ async fn start(policy: PowerPolicy, foreign: Vec<LogindInhibitorRow>) -> Session
                 kind: 2,
                 present: true,
                 percentage: 80.0,
-                // Discharging.
                 state: 2,
                 capacity: 90.0,
             },

@@ -53,32 +53,18 @@ pub enum FirmwareEvent {
 }
 
 /// Query updates already offered by fwupd's configured remotes.
-///
-/// # Errors
-///
-/// Returns an error message if `fwupdmgr` is not installed, the command fails, or its output
-/// is not valid fwupd JSON.
 pub fn get_firmware_updates() -> Result<Vec<FirmwareUpdate>, String> {
     let json = run_capture("fwupdmgr", &["get-updates", "--json"])?;
     parse_updates(&json)
 }
 
 /// Refresh signed metadata from configured fwupd remotes.
-///
-/// # Errors
-///
-/// Returns an error message if `fwupdmgr` is not installed or the command fails.
 pub fn refresh_firmware_metadata() -> Result<(), String> {
     run("fwupdmgr", &["refresh"])
 }
 
 /// Read fwupd's own transaction history. This is authoritative lifecycle
 /// state, not a Tilo-maintained success counter.
-///
-/// # Errors
-///
-/// Returns an error message if `fwupdmgr` is not installed, the command fails, or its output
-/// is not valid fwupd JSON.
 pub fn get_firmware_history() -> Result<Vec<FirmwareHistoryEntry>, String> {
     let json = run_capture("fwupdmgr", &["get-history", "--json"])?;
     parse_history(&json)
@@ -420,7 +406,6 @@ mod tests {
 
     #[test]
     fn fwupd_devices_history_and_progress_parse_bounded_and_sanitized() {
-        // Phase `firmware_progress_reader_bounds_lines_and_event_count`.
         {
             let (tx, rx) = mpsc::channel();
             read_firmware_progress(
@@ -445,7 +430,6 @@ mod tests {
                     .contains("event")
             );
         }
-        // Phase `parses_fwupd_devices_and_releases`.
         {
             let updates = parse_updates(
                 r#"{"Devices":[{"DeviceId":"device-1","Name":"System Firmware","Version":"1.0","Releases":[{"Version":"1.2","Flags":4}]}]}"#,
@@ -457,7 +441,6 @@ mod tests {
             assert_eq!(updates[0].new_version.as_deref(), Some("1.2"));
             assert!(updates[0].problems.is_empty());
         }
-        // Phase `parses_fwupd_transaction_history`.
         {
             let history = parse_history(
                 r#"{"Devices":[{"Name":"System Firmware","VersionOld":"1.0","Version":"1.2","UpdateState":"success"},{"Name":"Dock","Version":"3","UpdateState":"failed","UpdateError":"cable removed"}]}"#,
@@ -467,7 +450,6 @@ mod tests {
             assert_eq!(history[0].from_version.as_deref(), Some("1.0"));
             assert_eq!(history[1].error.as_deref(), Some("cable removed"));
         }
-        // Phase `parses_fwupd_progress_without_trusting_terminal_control_bytes`.
         {
             assert_eq!(progress_percent("Installing… [  42%]"), Some(42));
             assert_eq!(

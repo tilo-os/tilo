@@ -25,7 +25,6 @@ use tilo_highlight::Grammars;
 #[cfg(feature = "syntax-definitions")]
 mod syntect_set;
 
-/// The grammar set.
 #[must_use]
 pub fn grammars() -> &'static dyn Grammars {
     #[cfg(feature = "syntax-definitions")]

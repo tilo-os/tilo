@@ -230,7 +230,6 @@ fn untranslated_entries_keep_their_english_names() {
     for locale in Catalogue::locales() {
         let cat = Catalogue::for_locale(locale);
         assert_eq!(cat.get("🇨🇶").unwrap().name(), english, "{locale}");
-        // Every emoji and group has a real name in every locale.
         assert!(cat.emoji().iter().all(|e| e.name() != e.text()), "{locale}");
         assert!(cat.groups().iter().all(|g| g.label() != g.id()), "{locale}");
     }

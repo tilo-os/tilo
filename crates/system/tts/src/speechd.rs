@@ -120,7 +120,6 @@ impl Speaker for SpeechDispatcherSpeaker {
             tracing::debug!("speechd: cancel before interrupting speak failed: {e}");
         }
 
-        // Apply this utterance's priority for the upcoming message.
         if let Err(e) = self
             .client
             .set_priority(utterance.priority.to_ssip())
@@ -313,12 +312,10 @@ mod tests {
         reason = "milli only ever reaches 4000, far inside f32's exact-integer range"
     )]
     fn speechd_identity_and_rate_translation_match_ssip() {
-        // Phase `identity_constants_are_sane`.
         {
             assert_eq!(super::SSIP_USER, "tilo");
             assert_eq!(super::SSIP_COMPONENT, "screen-reader");
         }
-        // Phase `rate_translation_matches_ssip_range`.
         {
             // The SSIP RATE command takes -100..=100; prove our translation stays
             // inside it for a sweep of normalized rates.

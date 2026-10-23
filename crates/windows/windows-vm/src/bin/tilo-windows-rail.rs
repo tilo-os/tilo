@@ -339,7 +339,6 @@ mod tests {
 
     #[test]
     fn rail_launches_keep_cookies_and_private_paths_out_of_argv() {
-        // Phase `xauthority_record_never_places_cookie_in_command_arguments`.
         {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("authority");
@@ -354,7 +353,6 @@ mod tests {
             );
             assert_eq!(bytes.len(), 48);
         }
-        // Phase `launch_directory_cleanup_is_narrow`.
         {
             let directory = tempfile::tempdir().unwrap();
             let launch = directory.path().join("launch-test");
@@ -364,7 +362,6 @@ mod tests {
             assert!(!launch.exists());
             assert!(directory.path().exists());
         }
-        // Phase `private_read_only_argument_never_reaches_freerdp`.
         {
             let drive = windows_vm::portal_lease_root().join("rail-test/TILO01");
             let command = free_rdp_command(&["/v:guest".into()], std::slice::from_ref(&drive));
@@ -384,7 +381,6 @@ mod tests {
                     .starts_with(READ_ONLY_DRIVE_PREFIX)
             }));
         }
-        // Phase `caller_cannot_name_an_ambient_read_only_path`.
         {
             assert!(
                 split_private_arguments(vec![

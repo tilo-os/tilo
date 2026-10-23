@@ -194,10 +194,6 @@ impl VaultFormat {
 
     /// Browser custody with acknowledged creation, serialized across tabs.
     /// The legacy format's key name and encoding remain authoritative.
-    ///
-    /// # Errors
-    /// Returns an error if key generation or browser custody fails, or if the
-    /// stored key is missing, malformed or unavailable for an existing vault.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     pub async fn load_or_create_page_key(&self, vault_exists: bool) -> Result<VaultKey, String> {
         let candidate = if vault_exists {

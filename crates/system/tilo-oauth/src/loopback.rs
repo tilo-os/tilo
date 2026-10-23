@@ -17,7 +17,6 @@ use std::time::Duration;
 
 use crate::{OAuthError, Redirect, RedirectPorts};
 
-/// Path the provider redirects to.
 pub const REDIRECT_PATH: &str = "/oauth";
 
 const WAITING: u8 = 0;
@@ -249,7 +248,6 @@ pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
     parse_redirect_at(line, REDIRECT_PATH)
 }
 
-/// [`parse_redirect_line`] for a redirect to `expected_path`.
 fn parse_redirect_at(line: &str, expected_path: &str) -> Option<RedirectResult> {
     let target = line.split_whitespace().nth(1)?;
     let (path, query) = target.split_once('?').unwrap_or((target, ""));

@@ -66,8 +66,6 @@ impl DeviceDisplaySnapshot {
     }
 
     /// Publish under the existing compositor's runtime lease.
-    /// # Errors
-    /// Fails if the private runtime directory is unavailable or writing fails.
     pub fn save(&self) -> std::io::Result<()> {
         let path = path().ok_or_else(|| std::io::Error::other("runtime unavailable"))?;
         // The clock's sample must not re-author unchanged runtime observations.
