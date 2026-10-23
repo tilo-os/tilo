@@ -22,6 +22,7 @@
 mod controls;
 mod document_history;
 pub mod host_media;
+mod keys;
 
 pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput};
 use tilo_sort::CompactSort as _;
@@ -8985,7 +8986,7 @@ impl FrameHarness {
         });
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.pump_component_wakes();
-        let key = parse_key(spec);
+        let key = keys::parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
             self.send_host_event(&key_input(&key, state));
         }
@@ -10329,36 +10330,6 @@ fn next_widget_path(
         format!("{parent_path}/{name}[{current}]")
     };
     (name, path, current)
-}
-
-fn parse_key(spec: &str) -> Key {
-    match spec {
-        "Enter" | "Return" => Key::Named(NamedKey::Enter),
-        "Tab" => Key::Named(NamedKey::Tab),
-        "Escape" | "Esc" => Key::Named(NamedKey::Escape),
-        "Space" => Key::Named(NamedKey::Space),
-        "Backspace" => Key::Named(NamedKey::Backspace),
-        "Delete" => Key::Named(NamedKey::Delete),
-        "ArrowUp" | "Up" => Key::Named(NamedKey::ArrowUp),
-        "ArrowDown" | "Down" => Key::Named(NamedKey::ArrowDown),
-        "ArrowLeft" | "Left" => Key::Named(NamedKey::ArrowLeft),
-        "ArrowRight" | "Right" => Key::Named(NamedKey::ArrowRight),
-        "F1" => Key::Named(NamedKey::F1),
-        "F2" => Key::Named(NamedKey::F2),
-        "F3" => Key::Named(NamedKey::F3),
-        "F4" => Key::Named(NamedKey::F4),
-        "F5" => Key::Named(NamedKey::F5),
-        "F6" => Key::Named(NamedKey::F6),
-        "F7" => Key::Named(NamedKey::F7),
-        "F8" => Key::Named(NamedKey::F8),
-        "F9" => Key::Named(NamedKey::F9),
-        "F10" => Key::Named(NamedKey::F10),
-        "F11" => Key::Named(NamedKey::F11),
-        "F12" => Key::Named(NamedKey::F12),
-        "Home" => Key::Named(NamedKey::Home),
-        "End" => Key::Named(NamedKey::End),
-        other => Key::Character(other.into()),
-    }
 }
 
 /// Parse `--headless-drive '<json>'` (or `--headless-drive=<json>`) out of
