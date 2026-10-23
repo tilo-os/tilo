@@ -40,6 +40,8 @@ PUBLISH = "tools/ci/publish"
 PLATFORMS = {"x86_64": "linux/amd64", "aarch64": "linux/arm64"}
 # What every build, signing and publishing check reads besides the product's own inputs.
 BUILD_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/oci-build.sh", f"{PUBLISH}/oci-run.sh"]
+# The check whose outputs hold the pinned Cosign (lib.sh use_cosign), for every check that runs it.
+SIGNING_TOOLS = "signing-tools"
 COSIGN_INPUTS = ["os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh",
                  "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub",
                  "keys/release/**", "keys/operational/**"]
@@ -121,9 +123,23 @@ def with_scripts(fields: dict[str, Any]) -> dict[str, Any]:
     return {**fields, "inputs": [*fields.get("inputs", []), *scripts]} if scripts else fields
 
 
+def runs_cosign(run: str) -> bool:
+    """Whether a command reaches lib.sh's use_cosign, which takes Cosign from SIGNING_TOOLS."""
+    return any(re.search(r"^\s*use_cosign\s*$", (ROOT / s).read_text(encoding="utf-8"), re.M)
+               for s in publish_scripts(run))
+
+
+def with_signing_tools(fields: dict[str, Any]) -> dict[str, Any]:
+    """Every check that runs Cosign needs the check that downloads it once."""
+    needs = fields.get("needs", [])
+    if SIGNING_TOOLS in needs or not runs_cosign(fields.get("run", "")):
+        return fields
+    return {**fields, "needs": [*needs, SIGNING_TOOLS]}
+
+
 def check(fields: dict[str, Any], comment: str | None = None, matrix: dict[str, Any] | None = None) -> str:
     """A `[[check]]`, and with `matrix` the `[check.matrix]` t expands it by."""
-    fields = with_scripts(fields)
+    fields = with_signing_tools(with_scripts(fields))
     order = {name: i for i, name in enumerate(FIELD_ORDER)}
     lines = [f"# {line}".rstrip() for line in comment.strip().splitlines()] if comment else []
     lines.append("[[check]]")

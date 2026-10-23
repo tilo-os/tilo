@@ -26,7 +26,7 @@ class RegistryServerImageTests(unittest.TestCase):
         test = build["run"].index("container/test-image.sh")
         self.assertGreater(test, build["run"].index("oci-build.sh"))
         publish = self.checks["publish-registry-server"]
-        self.assertEqual(publish["needs"], ["image-registry-server"])
+        self.assertEqual(publish["needs"], ["image-registry-server", "signing-tools"])
         self.assertEqual(publish["optional_needs"], ["sign-registry-server"])
         # Signed releases from stable; development tags only when someone dispatches them.
         self.assertEqual(publish["on"], ["dispatch", "stable"])

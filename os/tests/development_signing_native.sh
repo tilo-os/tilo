@@ -37,8 +37,8 @@ case ${1:-} in
     cp -a os/usr/lib/dracut/modules.d/91tilo-rollback/. "$context/91tilo-rollback/"
     tools=${TMPDIR:-/tmp}/development-signing-tools
     mkdir -p "$tools"
-    RUNNER_TEMP=$tools GITHUB_PATH=$tools/path TILO_GITHUB_ASSET_CACHE=$tools/assets \
-      TILO_ASSET_STORE= bash os/dev/install-cached-cosign.sh >/dev/null
+    RUNNER_TEMP=$tools GITHUB_PATH=$tools/path TILO_GITHUB_ASSET_CACHE=/target/signing-tools \
+      TILO_ASSET_OFFLINE=1 bash os/dev/install-cached-cosign.sh >/dev/null
     cp "$tools/tilo-cosign-tools/cosign" "$context/cosign"
     cargo build --locked --release -p tilo-crypto
     cp "${CARGO_TARGET_DIR:-target}/release/tilo-crypto" "$context/tilo-crypto"
