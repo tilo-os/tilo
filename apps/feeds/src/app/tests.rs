@@ -210,7 +210,15 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
             .find(|c| c.name.as_deref() == Some(name))
             .unwrap_or_else(|| panic!("{name} is a control"))
     };
-    assert!(control("Refresh all feeds").disabled);
+    // Disabled, Refresh says why rather than doing nothing on a press.
+    let refresh = control("There are no subscriptions to refresh");
+    assert!(refresh.disabled);
+    assert!(
+        controls
+            .iter()
+            .all(|c| c.name.as_deref() != Some("Refresh all feeds")),
+        "with nothing subscribed, Refresh is not offered as if it could run"
+    );
     assert!(control("Mark all as read").disabled);
     assert!(!control("Add subscription").disabled);
     for absent in ["Star article", "Open original article", "Reading settings"] {
@@ -1273,4 +1281,40 @@ fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
     host.harness().key("L");
     pump_frames(&mut host);
     assert!(sidebar_width(&mut host) < 0.5, "the shortcut collapsed it");
+}
+
+/// In a half-width window, where the sidebar is a screen of its own, the
+/// window bar's Show sidebar brings it up from the article list: the places
+/// are not reachable only through Back.
+#[test]
+fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
+    let libraries: [(fn() -> FeedsApp, u32); 2] = [(FeedsApp::new, 640), (app, 640)];
+    for (library, width) in libraries {
+        let mut mounted = framed_at(library(), (width, 800));
+        Framed::harness_mut(&mut mounted).present_in_window_bar();
+        settle(&mut mounted);
+        assert_eq!(
+            mounted.shell().geometry().sidebar,
+            SidebarPlacement::Screen,
+            "{width} wide"
+        );
+        assert!(!mounted.shell().is_sidebar_open(), "{width} wide");
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+            Some(false),
+            "the bar offers Show sidebar {width} wide"
+        );
+        Framed::harness_mut(&mut mounted)
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        settle(&mut mounted);
+        assert!(
+            mounted.shell().is_sidebar_open(),
+            "Show sidebar showed the places {width} wide"
+        );
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+            Some(true),
+            "the bar's toggle now hides it {width} wide"
+        );
+    }
 }
