@@ -69,21 +69,37 @@ pub fn context_switches(tid: &str) -> u64 {
 /// Run `start` and return its result with the id of the thread it spawned
 /// under `comm` (the kernel's 15-byte truncation of the thread name).
 ///
+/// Only for a thread no other test of the process can start at the same
+/// time: test binaries run their tests as threads of one process, and a
+/// thread found by name may be another test's. Where that can happen, have
+/// the code under test record its thread's [`current_thread_id`] instead.
+///
 /// # Panics
-/// `/proc/self/task` cannot be listed, or no new thread of that name
-/// appears within the hang bound.
+/// `/proc/self/task` cannot be listed, no new thread of that name appears
+/// within the hang bound, or more than one does.
 pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
     let before = own_thread_ids();
     let started = start();
     // A thread names itself once it runs, so it may not be named yet.
     let tid = crate::wait_for(format_args!("a new thread named {comm}"), || {
-        own_thread_ids()
+        let named: Vec<String> = own_thread_ids()
             .difference(&before)
-            .find(|tid| {
+            .filter(|tid| {
                 std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
                     .is_ok_and(|name| name.trim() == comm)
             })
             .cloned()
+            .collect();
+        match <[String; 1]>::try_from(named) {
+            Ok([tid]) => Some(tid),
+            Err(named) if named.is_empty() => None,
+            Err(named) => panic!(
+                "{} new threads named {comm} ({}): another test of this process started one \
+                 too, so which is this test's is unknown",
+                named.len(),
+                named.join(", ")
+            ),
+        }
     });
     (started, tid)
 }
@@ -121,10 +137,14 @@ fn asleep(tid: &str) -> bool {
 /// so the count is final for everything that happened before the call.
 ///
 /// # Panics
-/// The thread does not fall asleep within the hang bound, or its counts
-/// cannot be read.
+/// The thread has exited, does not fall asleep within the hang bound, or
+/// its counts cannot be read.
 pub fn asleep_switches(tid: &str) -> u64 {
     crate::wait_for(format_args!("thread {tid} to fall asleep"), || {
+        assert!(
+            std::path::Path::new(&format!("/proc/self/task/{tid}")).exists(),
+            "thread {tid} has exited, so it can never fall asleep"
+        );
         asleep(tid).then(|| context_switches(tid))
     })
 }
