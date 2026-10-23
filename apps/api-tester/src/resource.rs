@@ -329,9 +329,12 @@ impl Workspace {
 pub struct ApiTesterShell;
 
 impl ApiTesterShell {
-    /// The view state a screenshot scenario stages: a contextual form, the
-    /// rail, the URL's focus, a failed send.
+    /// The view state a screenshot scenario stages: the sample request and
+    /// its response (`default`, the response's headers), a contextual form,
+    /// the rail, the URL's focus, a failed send.
     pub const SCENARIOS: &'static [&'static str] = &[
+        "default",
+        "response-headers",
         "empty",
         "rail-open",
         "error",

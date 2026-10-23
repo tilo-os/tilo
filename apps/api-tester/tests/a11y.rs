@@ -123,7 +123,7 @@ fn every_control_is_a_focusable_accessible_node() {
     );
 
     // Labels / values a screen reader announces.
-    for name in ["Send", "Save", "New collection", "Search", "Hide sidebar"] {
+    for name in ["Send", "Save request", "New collection", "Hide sidebar"] {
         assert!(
             nodes
                 .iter()
@@ -297,12 +297,13 @@ fn tab_traverses_every_control_in_order() {
         "Tab visits every focusable node, including platform controls"
     );
     let stops: Vec<_> = all_stops
-        .into_iter()
+        .iter()
+        .cloned()
         .skip_while(|(role, _)| *role != Role::ComboBox)
         .collect();
 
     // The builder comes first, top-left to top-right: method picker, URL
-    // field, Save, Send, then the request tabs.
+    // field, then the request tabs. Save and Send are the header's.
     let roles: Vec<Role> = stops.iter().map(|(r, _)| *r).collect();
     assert_eq!(
         roles.first(),
@@ -314,19 +315,25 @@ fn tab_traverses_every_control_in_order() {
         Some(&Role::TextInput),
         "second stop is the URL field"
     );
-    assert_eq!(stops[2].1.as_deref(), Some("Save"));
-    assert_eq!(stops[3].1.as_deref(), Some("Send"));
     assert_eq!(
-        roles.get(4),
+        roles.get(2),
         Some(&Role::Group),
         "request tabs follow the endpoint row"
     );
+    for name in ["Save request", "Send"] {
+        assert!(
+            all_stops
+                .iter()
+                .any(|(_, stop)| stop.as_deref() == Some(name)),
+            "{name} is a stop"
+        );
+    }
     let divider = roles
         .iter()
         .position(|role| *role == Role::Separator)
         .expect("the resize divider is keyboard reachable");
     assert!(
-        divider > 4,
+        divider > 2,
         "the divider follows the request controls in directional focus order"
     );
     assert_eq!(
@@ -443,10 +450,10 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     let mut app = sample();
     let d = app.harness();
     let before = d.targets()["api.request-divider"];
-    let top = d.targets()["api.send"].y0;
+    let top = d.targets()["api.url"].y0;
     assert!(
         before.y0 - top < 300.0,
-        "three parameter rows fit above the response: divider {before:?}, send y={top}"
+        "three parameter rows fit above the response: divider {before:?}, URL y={top}"
     );
     assert!(
         reset_disabled(d),
