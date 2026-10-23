@@ -1,15 +1,11 @@
-//! Transient status: the result of a sync, an import or an edit, as a toast
-//! in the window's top layer, until it is dismissed, replaced or has been
-//! up for a notice's lifetime (the shared [`ui::widget::toast::Transient`] keeps it).
+//! Transient status: the result of a sync, an import or an edit, as the
+//! window bar's notice until it is replaced or has been up for a notice's
+//! lifetime (the shared [`ui::widget::toast::Transient`] keeps it).
 
-use vello::Scene;
-use vello::kurbo::Affine;
+use ui::widget::toast::ToastKind;
+use ui::window_toolbar::ToolbarNotice;
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
-
-use super::{Action, CalendarApp};
+use super::CalendarApp;
 
 fn kind_of(message: &str) -> ToastKind {
     if message.starts_with("Sync failed") || message.contains("failed") {
@@ -22,39 +18,13 @@ fn kind_of(message: &str) -> ToastKind {
 }
 
 impl CalendarApp {
-    pub(super) fn draw_status(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    /// Keep the window bar's notice saying the status while it lasts:
+    /// "Syncing calendars…" for as long as the sync runs.
+    pub(super) fn publish_status(&mut self) {
         self.status.keep_while(self.syncing);
         self.status.expire();
-        let Some(message) = self.status.get() else {
-            return;
-        };
-        let card = ToastCard::new(message, kind_of(message))
-            .closable(true)
-            .close_hovered(self.status_close.contains(self.last_mouse));
-        // The toast keeps to the window's trailing corner, where it covers
-        // the least of the calendar and never sits mid-grid.
-        let hit = self.status.paint(
-            scene,
-            t,
-            text,
-            theme,
-            self.rect,
-            ToastAnchor::BottomRight,
-            &card,
-        );
-        self.status_close = hit.close_rect;
-        if hit.card_rect.area() > 0.0 {
-            self.hits.push((hit.card_rect, Action::Noop));
-        }
-        if hit.close_rect.area() > 0.0 {
-            self.hits.push((hit.close_rect, Action::DismissStatus));
-        }
+        self.status
+            .publish(|message| ToolbarNotice::new(message.clone(), kind_of(message)));
     }
 }
 
@@ -70,6 +40,17 @@ mod tests {
             ToastKind::Warning
         );
         assert_eq!(kind_of("Event deleted"), ToastKind::Info);
+    }
+
+    /// A failed sync is an error notice in the window's bar.
+    #[test]
+    fn a_failed_sync_is_an_error_in_the_window_bar() {
+        let mut app = CalendarApp::new_detached();
+        app.status.show("Sync failed. Check the account.".into());
+        app.publish_status();
+        let notice = ui::window_toolbar::notice().expect("the bar shows the status");
+        assert_eq!(notice.kind, ToastKind::Error);
+        assert_eq!(notice.text, "Sync failed. Check the account.");
     }
 
     /// A status leaves on its own once it has been up for a notice's
@@ -95,21 +76,19 @@ mod tests {
             assert!(!app.status.expire(), "the newer status keeps its time");
             assert_eq!(app.status.as_deref(), Some("Imported calendar items"));
         });
-        with_monotonic_time(at(7), || {
-            app.draw_status(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::default(),
-            );
-        });
+        with_monotonic_time(at(5), || app.publish_status());
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some("Imported calendar items".to_owned()),
+            "the window bar says the status"
+        );
+        with_monotonic_time(at(7), || app.publish_status());
         assert!(!app.status.is_shown());
         assert_eq!(app.status.deadline(), None, "nothing left to wake for");
-        assert!(
-            !app.hits
-                .iter()
-                .any(|(_, action)| matches!(action, Action::DismissStatus)),
-            "the gone status leaves no close button behind"
+        assert_eq!(
+            ui::window_toolbar::notice(),
+            None,
+            "the gone status leaves the window bar"
         );
     }
 
@@ -122,14 +101,8 @@ mod tests {
         let start = ui::time::now();
         let at = |seconds: u64| start + std::time::Duration::from_secs(seconds);
         let draw = |app: &mut CalendarApp| {
-            app.hits.clear();
-            app.draw_status(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::default(),
-            );
-            app.status.as_deref().map(str::to_owned)
+            app.publish_status();
+            ui::window_toolbar::notice().map(|notice| notice.text)
         };
         with_monotonic_time(start, || app.shots_set_sync_state("syncing"));
         for second in [3, 6, 9] {

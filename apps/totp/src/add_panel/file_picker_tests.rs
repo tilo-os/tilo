@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use tilo_dialogs::portal::{self, ContentsOutcome};
 use tilo_dialogs::shell::{FilePortalGrant, Reply, Request};
 
-use super::tests::{click, nodes, opened, panel};
+use super::tests::{click, opened, panel};
 
 /// What the session shell answers an app whose workspace granted it no
 /// files when it asks for a path (`portal-chooser-nothing-granted`).
@@ -265,10 +265,7 @@ fn an_image_without_a_readable_code_says_so_over_the_open_sheet() {
         app.harness().idle();
     }
 
-    let notice = nodes(&mut app)
-        .into_iter()
-        .find(|node| node.name.as_deref() == Some("Notifications"))
-        .and_then(|node| node.value);
+    let notice = ui::window_toolbar::notice().map(|notice| notice.text);
     assert_eq!(
         notice.as_deref(),
         Some("Couldn\u{2019}t read a code from that image"),

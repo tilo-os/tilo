@@ -548,7 +548,7 @@ impl App {
         if self.floating.toolbar_sent != Some(toolbar) {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::Toolbar {
-                    toolbar: crate::window_toolbar::declared(),
+                    toolbar: crate::window_toolbar::shown(),
                     instance,
                 },
             )?;

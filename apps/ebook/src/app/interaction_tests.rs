@@ -5200,15 +5200,14 @@ fn a_dropped_file_opens_without_a_hover_and_a_non_book_names_itself() {
     );
 }
 
-/// "Couldn't open x.epub" offers nothing to do but close it, so it leaves
-/// on its own after a notice's lifetime: the app wakes for it, and once it
-/// is due the card is gone and leaves no close button behind.
+/// "Couldn't open x.epub" offers nothing to do, so it says so in the
+/// window's bar and leaves on its own after a notice's lifetime: the app
+/// wakes for it, and once it is due the bar no longer says it.
 #[test]
 fn a_failed_open_leaves_on_its_own() {
     use ui::time::testing::with_monotonic_time;
     use ui::widget::toast::NOTICE_LIFETIME;
     let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
-    app.toast_area = Rect::new(0.0, 0.0, 800.0, 600.0);
     let start = ui::time::now();
     let due = start + NOTICE_LIFETIME;
     with_monotonic_time(start, || {
@@ -5218,40 +5217,35 @@ fn a_failed_open_leaves_on_its_own() {
         );
     });
     assert_eq!(app.next_wake_deadline(), Some(due), "it wakes the app");
-    let draw = |app: &mut BooksApp| {
-        app.hits.clear();
-        let theme = ui::theme::Theme::default();
-        let (mut scene, mut text) = (vello::Scene::new(), TextRenderer::new());
-        app.draw_load_toast(&mut PaintCtx::new(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut text,
-            &theme,
-        ));
-        app.hits
-            .iter()
-            .any(|hit| matches!(hit.action, Action::DismissLoadError))
-    };
-    with_monotonic_time(start, || assert!(draw(&mut app), "the failure shows"));
-    with_monotonic_time(due + Duration::from_millis(1), || {
-        assert!(!draw(&mut app), "a failure past its time is not painted");
-        app.dirty = false;
+    let said = |app: &mut BooksApp| {
         app.expire_load_toast();
+        ui::window_toolbar::notice().map(|notice| (notice.text, notice.kind))
+    };
+    with_monotonic_time(start, || {
+        assert_eq!(
+            said(&mut app),
+            Some((
+                "Couldn’t open x.epub: not a book".to_owned(),
+                ui::widget::toast::ToastKind::Error
+            )),
+            "the failure shows in the window's bar"
+        );
     });
-    assert!(app.dirty, "the window repaints without it");
+    with_monotonic_time(due + Duration::from_millis(1), || {
+        assert_eq!(said(&mut app), None, "a failure past its time is gone");
+    });
     assert_eq!(app.load_error.as_deref(), None);
     assert_eq!(app.next_wake_deadline(), None, "nothing left to wake for");
 }
 
-/// "Opening x.epub" follows the import: it stays for as long as the import
-/// runs, however long that is, and goes with it.
+/// "Opening x.epub" follows the import: it stays in the window's bar for as
+/// long as the import runs, however long that is, and goes with it.
 #[test]
 fn opening_a_book_shows_until_the_import_ends() {
     use std::path::PathBuf;
     use ui::time::testing::with_monotonic_time;
     use ui::widget::toast::{NOTICE_LIFETIME, Transient};
     let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
-    app.toast_area = Rect::new(0.0, 0.0, 800.0, 600.0);
     let start = ui::time::now();
     let at = |seconds: u64| start + Duration::from_secs(seconds);
     with_monotonic_time(start, || {
@@ -5263,21 +5257,15 @@ fn opening_a_book_shows_until_the_import_ends() {
             card: Transient::showing_progress(()),
         });
     });
-    let painted = |app: &mut BooksApp| {
-        let theme = ui::theme::Theme::default();
-        let (mut scene, mut text) = (vello::Scene::new(), TextRenderer::new());
-        app.draw_load_toast(&mut PaintCtx::new(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut text,
-            &theme,
-        ));
-        !scene.encoding().is_empty()
-    };
+    let said = || ui::window_toolbar::notice().map(|notice| notice.text);
     for second in [3, 6, 9] {
         with_monotonic_time(at(second), || {
             app.expire_load_toast();
-            assert!(painted(&mut app), "still opening at {second}s");
+            assert_eq!(
+                said().as_deref(),
+                Some("Opening x.epub"),
+                "still opening at {second}s"
+            );
         });
     }
     assert_eq!(
@@ -5287,7 +5275,8 @@ fn opening_a_book_shows_until_the_import_ends() {
     );
     app.import_loading = None;
     with_monotonic_time(at(10), || {
-        assert!(!painted(&mut app), "the import ended");
+        app.expire_load_toast();
+        assert_eq!(said(), None, "the import ended");
     });
     assert_eq!(app.next_wake_deadline(), None);
 }

@@ -225,7 +225,23 @@ impl ToolbarRow {
         theme_motion: crate::tokens::EffectiveMotion,
         now: Instant,
     ) {
-        let next = toolbar.map(|toolbar| (tab, toolbar.clone()));
+        // A notice stands in the location's place, unless the location is
+        // being edited: the field keeps what the person is typing.
+        let editing =
+            self.field.is_some() && self.shown.as_ref().map(|(shown, _)| *shown) == Some(tab);
+        let next = toolbar.map(|toolbar| {
+            if editing {
+                (
+                    tab,
+                    WindowToolbar {
+                        notice: None,
+                        ..toolbar.clone()
+                    },
+                )
+            } else {
+                (tab, toolbar.presented())
+            }
+        });
         let next_tab = next.as_ref().map(|(tab, _)| *tab);
         let previous_tab = self.shown.as_ref().map(|(tab, _)| *tab);
         if next_tab != previous_tab {

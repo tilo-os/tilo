@@ -64,27 +64,14 @@ fn a_painted_stack_needs_a_frame_only_when_its_notices_change() {
 #[test]
 fn a_notice_without_an_action_leaves_on_its_own_and_wakes_its_widget() {
     use crate::time::testing::with_monotonic_time;
-    let theme = Theme::dark();
-    let mut tr = TextRenderer::new();
-    let area = Rect::new(0.0, 0.0, 640.0, 400.0);
+    use crate::window_toolbar::{ToolbarNotice, notice as bar_notice, notify};
+    notify(None);
     let start = crate::time::now();
     let after = start + NOTICE_LIFETIME + Duration::from_millis(1);
-    let paint = |tr: &mut TextRenderer, card: &ToastCard<'_>| {
-        paint_transient(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            card,
-            start,
-        )
-    };
 
     let mut notice = Notice::default();
     with_monotonic_time(start, || {
-        notice.show("Couldn’t open x.epub", ToastKind::Error)
+        notice.show("Couldn’t open x.epub", ToastKind::Error);
     });
     assert_eq!(
         notice.deadline(),
@@ -93,41 +80,20 @@ fn a_notice_without_an_action_leaves_on_its_own_and_wakes_its_widget() {
     );
     with_monotonic_time(start, || {
         assert!(!notice.expire());
-        let hit = notice.paint(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-        );
-        assert!(hit.card_rect.area() > 0.0);
+        notice.publish();
     });
+    assert_eq!(
+        bar_notice(),
+        Some(ToolbarNotice::new("Couldn’t open x.epub", ToastKind::Error)),
+        "the window's bar shows it"
+    );
     with_monotonic_time(after, || {
         assert!(!notice.is_shown(), "a notice past its time reads as gone");
-        let hit = notice.paint(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-        );
-        assert_eq!(hit.card_rect, Rect::ZERO, "and is not painted");
+        notice.publish();
+        assert_eq!(bar_notice(), None, "and leaves the bar");
         assert!(notice.expire(), "waking at its deadline takes it down");
     });
     assert_eq!(notice.deadline(), None, "nothing left to wake for");
-
-    // A card painted straight from an app's own state leaves by the
-    // same rule unless it offers something to do.
-    with_monotonic_time(after, || {
-        let plain = ToastCard::new("Sync failed", ToastKind::Error).closable(true);
-        assert_eq!(paint(&mut tr, &plain).card_rect, Rect::ZERO);
-        let undo = ToastCard::new("Event deleted", ToastKind::Info).action("Undo", false);
-        assert!(paint(&mut tr, &undo).card_rect.area() > 0.0);
-        let working = ToastCard::new("Copying", ToastKind::Info).progress(0.5);
-        assert!(paint(&mut tr, &working).card_rect.area() > 0.0);
-    });
 
     // Showing a message again gives it its full time again.
     let mut status = Transient::new();
@@ -137,6 +103,44 @@ fn a_notice_without_an_action_leaves_on_its_own_and_wakes_its_widget() {
         status.show(String::from("Saved"));
         assert_eq!(status.as_deref(), Some("Saved"));
     });
+}
+
+/// Notices replace each other in the order they came, and none stacks: an
+/// older one leaving takes nothing newer down, and one gone with its owner
+/// leaves the bar.
+#[test]
+fn notices_replace_each_other_in_order_and_leave_with_their_owner() {
+    use crate::window_toolbar::{ToolbarNotice, notice as bar_notice, notify};
+    notify(None);
+    let mut saved = Notice::default();
+    let mut failed = Notice::default();
+    saved.show("Saved", ToastKind::Success);
+    saved.publish();
+    failed.show("Couldn’t sync", ToastKind::Error);
+    failed.publish();
+    saved.publish();
+    assert_eq!(
+        bar_notice(),
+        Some(ToolbarNotice::new("Couldn’t sync", ToastKind::Error)),
+        "the newest replaces the older, which does not take the bar back"
+    );
+    assert!(saved.dismiss());
+    saved.publish();
+    assert_eq!(
+        bar_notice().map(|notice| notice.text),
+        Some("Couldn’t sync".to_owned()),
+        "the older leaving takes nothing newer down"
+    );
+    saved.show("Saved again", ToastKind::Success);
+    saved.publish();
+    assert_eq!(
+        bar_notice().map(|notice| notice.text),
+        Some("Saved again".to_owned()),
+        "news replaces what is up"
+    );
+    drop(saved);
+    assert_eq!(bar_notice(), None, "a notice leaves with its owner");
+    drop(failed);
 }
 
 /// Progress stays while its app reports the work running, however long
@@ -521,168 +525,6 @@ fn toast_card_paints_text_close_and_actions_inside_the_card() {
         // backend details.
         assert!(!single_line_text("Couldn't open\nNotes").contains('\n'));
         assert!(!single_line_text("The app stopped\nbefore opening").contains('\n'));
-    }
-}
-
-#[test]
-fn transient_cards_size_safely_anchor_and_fade() {
-    {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let area = Rect::new(10.0, 20.0, 510.0, 320.0);
-        let title = "A deliberately long notification that cannot fit in the available app area";
-
-        let centered = paint_transient(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(title, ToastKind::Info),
-            crate::time::now(),
-        );
-        let trailing = paint_transient(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomRight,
-            &ToastCard::new(title, ToastKind::Info),
-            crate::time::now(),
-        );
-
-        assert!(centered.card_rect.width() > 320.0);
-        assert!(centered.card_rect.width() <= area.width() - 48.0);
-        assert_eq!(centered.card_rect.center().x, area.center().x);
-        assert_eq!(trailing.card_rect.x1, area.x1 - 24.0);
-        assert_eq!(centered.card_rect.y1, area.y1 - 24.0);
-    }
-
-    {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        // The caller has removed 92 px of bottom player chrome from its area.
-        // A narrow content column also cannot accommodate the normal minimum.
-        let area = Rect::new(40.0, 10.0, 190.0, 308.0);
-        let hit = paint_transient(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new("This title must clip safely", ToastKind::Info),
-            crate::time::now(),
-        );
-
-        assert_eq!(hit.card_rect.x0, area.x0 + 24.0);
-        assert_eq!(hit.card_rect.x1, area.x1 - 24.0);
-        assert_eq!(hit.card_rect.y1, area.y1 - 24.0);
-        assert!(hit.card_rect.y0 >= area.y0);
-    }
-
-    {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let area = Rect::new(0.0, 0.0, 480.0, 320.0);
-        let card = ToastCard::new("Extracting “game.tar.xz”", ToastKind::Info)
-            .body("1.6 GB of 4.6 GB")
-            .action("Cancel", false)
-            .closable(true);
-        let mut plain_scene = Scene::new();
-        let plain = paint_transient(
-            &mut plain_scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &card,
-            crate::time::now(),
-        );
-        let mut bar_scene = Scene::new();
-        let with_bar = paint_transient(
-            &mut bar_scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &card.progress(0.35),
-            crate::time::now(),
-        );
-        assert!(
-            with_bar.card_rect.height() >= plain.card_rect.height(),
-            "the bar never squeezes the text"
-        );
-        assert!(
-            bar_scene.encoding().draw_tags.len() > plain_scene.encoding().draw_tags.len(),
-            "the bar is painted"
-        );
-    }
-
-    {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let area = Rect::new(0.0, 0.0, 480.0, 320.0);
-        let mut full_scene = Scene::new();
-        let full = paint_transient(
-            &mut full_scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new("Backup complete", ToastKind::Success),
-            crate::time::now(),
-        );
-        let mut faded_scene = Scene::new();
-        let faded = paint_transient(
-            &mut faded_scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new("Backup complete", ToastKind::Success).alpha(0.35),
-            crate::time::now(),
-        );
-
-        assert_eq!(faded.card_rect, full.card_rect);
-        assert!(
-            !faded_scene.encoding().draw_tags.is_empty(),
-            "a partially faded card remains visible"
-        );
-    }
-
-    {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
-        let hit = paint_card(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            rect,
-            &ToastCard::new("gone", ToastKind::Info)
-                .alpha(0.0)
-                .closable(true),
-        );
-        assert_eq!(
-            hit.close_rect,
-            Rect::ZERO,
-            "faded card exposes no close rect"
-        );
-        assert!(
-            scene.encoding().draw_tags.is_empty(),
-            "a fully-faded card emits no draw ops",
-        );
     }
 }
 

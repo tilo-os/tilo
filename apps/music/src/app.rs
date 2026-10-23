@@ -1170,10 +1170,11 @@ impl MusicApp {
             .collect()
     }
 
-    /// Show a transient message: a confirmation (`Success`), something under
-    /// way (`Info`) or a failure (`Error`).
+    /// Show a transient message in the window's bar: a confirmation
+    /// (`Success`), something under way (`Info`) or a failure (`Error`).
     fn notify(&mut self, kind: ToastKind, text: impl Into<String>) {
         self.toast.show(text, kind);
+        self.toast.publish();
     }
 
     fn update_device_cache(&mut self, id: &str, state: CacheState) {
@@ -3254,7 +3255,7 @@ impl MusicApp {
         self.audio.stop();
         let message = "Audio startup timed out before playback could begin.";
         self.playback_error = Some(message.into());
-        self.toast.show(message, ToastKind::Error);
+        self.notify(ToastKind::Error, message);
         self.fail_resource_stream(
             "music.stream_start_timed_out",
             message,

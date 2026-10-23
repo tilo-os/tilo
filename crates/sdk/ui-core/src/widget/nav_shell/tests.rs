@@ -1656,58 +1656,58 @@ fn a_hidden_inspector_animation_waits_until_the_drawer_is_painted() {
     );
 }
 
+/// A notice is the window bar's: it shows there in the location's place,
+/// leaves on its own, and paints nothing over the window.
 #[test]
-fn a_toast_floats_over_the_bottom_corner_and_a_click_dismisses_it() {
+fn a_toast_is_the_window_bars_notice_and_paints_nothing_over_the_window() {
+    use crate::window_toolbar::{ToolbarNotice, notice, notify};
+    notify(None);
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>().mark_drawn();
-    h.root_mut::<NavShell>().toast("Saved", ToastKind::Success);
-    assert!(h.root::<NavShell>().needs_redraw(), "a new notice repaints");
-    settle(&mut h, 1280, 800);
-    let card = h.root::<NavShell>().toasts.get_rect();
-    assert!(
-        card.width() > 0.0 && card.x1 < 1280.0 && card.y1 < 800.0 && card.y0 > 400.0,
-        "the notice sits inside the window's bottom trailing corner: {card:?}"
-    );
-    assert_eq!(h.root::<NavShell>().toast_text(), Some("Saved"));
-    let announced = h
-        .root::<NavShell>()
-        .children()
-        .last()
-        .and_then(|child| child.accessibility())
-        .and_then(|node| node.value);
+    let theme = Theme::dark();
+    let mut text = crate::font_catalog::fixture_renderer();
+    let shell = h.root_mut::<NavShell>();
+    let _ = present_shell(shell, &mut text, &theme, 1.0);
+    let _ = present_shell(shell, &mut text, &theme, 1.0);
+    shell.toast("Saved", ToastKind::Success);
     assert_eq!(
-        announced.as_deref(),
-        Some("Saved"),
-        "a live region announces it"
+        notice(),
+        Some(ToolbarNotice::new("Saved", ToastKind::Success)),
+        "the window's bar shows the notice"
     );
-    h.click_at(card.center().x, card.center().y);
-    assert_eq!(h.root::<NavShell>().toast_text(), None);
+    assert_eq!(shell.toast_text(), Some("Saved"));
+    let (_, damage) = present_shell(shell, &mut text, &theme, 1.0);
+    assert!(
+        damage.is_empty(),
+        "nothing is painted over the window: {damage:?}"
+    );
+    shell.dismiss_toast();
+    assert_eq!(notice(), None, "taken down, it leaves the bar");
+    assert_eq!(shell.toast_text(), None);
 }
 
-/// A notice's button is a button of the window to keyboards, screen readers
-/// and agents too: pressing it through the accessibility tree reports the
-/// notice as a click does, and takes it down.
+/// A notice's button stands in the window's bar; pressing it there reports
+/// the notice once and takes it down.
 #[test]
-fn a_notices_button_is_pressed_through_the_accessibility_tree() {
+fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
+    use crate::window_toolbar::{ToolbarEvent, notice, notify};
+    notify(None);
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>()
-        .toast_with_action("Deleted Groceries", ToastKind::Info, "Undo");
-    settle(&mut h, 1280, 800);
-    let undo = h
-        .a11y_node_named("Undo")
-        .expect("the notice's button is in the accessibility tree");
-    h.perform_a11y_action(undo, &crate::a11y::Action::Activate)
-        .expect("pressing it there works");
+    let shell = h.root_mut::<NavShell>();
+    shell.toast_with_action("Deleted Groceries", ToastKind::Info, "undo-2", "Undo");
+    let shown = notice().expect("the bar shows the notice");
+    let button = shown.action.expect("with its button");
+    assert_eq!(button.name, "Undo");
+    assert!(shell.window_toolbar_event(&ToolbarEvent::Action { id: button.id }));
     assert_eq!(
-        h.root_mut::<NavShell>().take_toast_action().as_deref(),
+        shell.take_toast_action().as_deref(),
         Some("Deleted Groceries"),
-        "the press names the notice, as a click does"
+        "the press names the notice"
     );
-    settle(&mut h, 1280, 800);
-    assert_eq!(h.root::<NavShell>().toast_text(), None, "and it goes");
-    assert!(h.a11y_node_named("Undo").is_none(), "with its button");
+    assert_eq!(shell.take_toast_action(), None, "once");
+    assert_eq!(shell.toast_text(), None, "and it goes");
+    assert_eq!(notice(), None, "from the bar too");
 }
 
 /// One frame of the shell as a host presents it at `scale`: its widgets and
@@ -1732,111 +1732,6 @@ fn present_shell(
         .map(|rect| transform.transform_rect_bbox(rect).inflate(1.0, 1.0))
         .collect();
     (scene, damage)
-}
-
-/// Repaint `after` over `before` only where `damage` says, and require the
-/// pixels of a full render of `after`.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the test's window is a few megapixels at scale 2"
-)]
-fn assert_sparse_equals_full(
-    (before, after): (&Scene, &Scene),
-    damage: &[Rect],
-    theme: &Theme,
-    (size, label): ((f64, f64), &str),
-) {
-    let (width, height) = (size.0.round() as u32, size.1.round() as u32);
-    let background = theme.tokens.colors.surfaces.content;
-    let mut retained = crate::offscreen::OffscreenRenderer::new(width, height);
-    let mut full = crate::offscreen::OffscreenRenderer::new(width, height);
-    let _ = retained.render(before, background);
-    let rasterized = retained.render_damage_regions_gpu_wait(after, background, damage);
-    assert!(
-        rasterized < u64::from(width).saturating_mul(u64::from(height)),
-        "{label}: the damage must exercise a sparse render: {damage:?}"
-    );
-    let expected = full.render(after, background);
-    let differing = retained
-        .readback_current()
-        .chunks_exact(4)
-        .zip(expected.chunks_exact(4))
-        .filter(|(actual, expected)| {
-            actual
-                .iter()
-                .zip(*expected)
-                .any(|(a, e)| a.abs_diff(*e) > 1)
-        })
-        .count();
-    assert_eq!(
-        differing, 0,
-        "{label}: the sparse repaint must equal a full render; damage {damage:?}"
-    );
-}
-
-/// A notice that comes and goes repaints the card and its shadow where it
-/// was and is, nothing else: the card's real painted bounds, not the
-/// window, and never short of its shadow. Every theme, at 100 % and 200 %.
-#[test]
-fn a_toast_damages_its_card_and_shadow_where_it_was_and_is() {
-    let (w, h_px) = (1280, 800);
-    for scale in [1.0, 2.0] {
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high contrast", Theme::high_contrast()),
-        ] {
-            let label = format!("{name} at {scale}x");
-            let mut h = harness(mail_shell(), w, h_px, theme.clone());
-            settle(&mut h, w, h_px);
-            let mut text = crate::font_catalog::fixture_renderer();
-            let shell = h.root_mut::<NavShell>();
-            let size = (f64::from(w) * scale, f64::from(h_px) * scale);
-            // The first frame at this scale and renderer; then one with no
-            // change, which must damage nothing, or this observes nothing.
-            let _ = present_shell(shell, &mut text, &theme, scale);
-            let (before, quiet) = present_shell(shell, &mut text, &theme, scale);
-            assert!(
-                quiet.is_empty(),
-                "{label}: a settled shell damages nothing: {quiet:?}"
-            );
-
-            shell.toast("Saved", ToastKind::Success);
-            let (shown, damage) = present_shell(shell, &mut text, &theme, scale);
-            let card = shell.toasts.get_rect();
-            let painted = crate::widget::floating_surface::painted_bounds(card, &theme);
-            assert_eq!(
-                damage,
-                [Affine::scale(scale)
-                    .transform_rect_bbox(painted)
-                    .inflate(1.0, 1.0)],
-                "{label}: a new notice damages its card and shadow ({card:?})"
-            );
-            assert_sparse_equals_full(
-                (&before, &shown),
-                &damage,
-                &theme,
-                (size, &format!("{label}: showing")),
-            );
-
-            shell.dismiss_toast();
-            let (gone, damage) = present_shell(shell, &mut text, &theme, scale);
-            assert_eq!(
-                damage,
-                [Affine::scale(scale)
-                    .transform_rect_bbox(painted)
-                    .inflate(1.0, 1.0)],
-                "{label}: a dismissed notice damages where it was"
-            );
-            assert_sparse_equals_full(
-                (&shown, &gone),
-                &damage,
-                &theme,
-                (size, &format!("{label}: dismissing")),
-            );
-        }
-    }
 }
 
 /// Maximized, the window's controls join the header row at its trailing end:

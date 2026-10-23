@@ -45,6 +45,84 @@ fn row() -> ToolbarRow {
     row
 }
 
+/// A notice takes the location's place for as long as it is up, at any
+/// width, without moving a slot; its button is a bar action while it
+/// shows, and a screen reader hears it without the focus moving.
+#[test]
+fn a_notice_stands_in_the_location_and_is_read_out_politely() {
+    use crate::widget::toast::ToastKind;
+    use crate::window_toolbar::ToolbarNotice;
+    for width in [640.0, 420.0 - 40.0] {
+        let bounds = Rect::new(40.0, 0.0, 40.0 + width, 40.0);
+        let mut quiet = ToolbarRow::new();
+        quiet.show(
+            7,
+            Some(&browser()),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        quiet.lay_out(bounds);
+        let noticed = WindowToolbar {
+            notice: Some(ToolbarNotice::new("Saved report.pdf", ToastKind::Success)),
+            ..browser()
+        };
+        let mut row = ToolbarRow::new();
+        row.show(
+            7,
+            Some(&noticed),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        row.lay_out(bounds);
+        assert_eq!(
+            row.slots().location,
+            quiet.slots().location,
+            "the notice reserves no room of its own at {width}"
+        );
+        assert!(row.slots().location.width() > 0.0);
+        let nodes = row.accessibility();
+        let said = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Saved report.pdf"))
+            .expect("the notice is the location's text");
+        assert_eq!(said.live, Some(crate::a11y::Politeness::Polite));
+        assert!(
+            quiet.accessibility().iter().all(|node| node.live.is_none()),
+            "the location is not a live region without a notice"
+        );
+    }
+
+    let undo = WindowToolbar {
+        notice: Some(
+            ToolbarNotice::new("Deleted Groceries", ToastKind::Info).action(
+                crate::window_toolbar::ToolbarAction::new("notice-undo", "undo-2", "Undo"),
+            ),
+        ),
+        ..browser()
+    };
+    let mut row = ToolbarRow::new();
+    row.show(
+        7,
+        Some(&undo),
+        Theme::dark().motion(),
+        crate::motion::frame_now(),
+    );
+    row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
+    let button = row.slots().actions[0].center();
+    assert!(row.press(button));
+    assert!(row.release(button));
+    assert_eq!(
+        row.take_events(),
+        vec![(
+            7,
+            ToolbarEvent::Action {
+                id: "notice-undo".into()
+            }
+        )],
+        "the notice's button runs as a bar action"
+    );
+}
+
 #[test]
 fn navigation_leads_actions_trail_and_the_location_fills_between() {
     let row = row();

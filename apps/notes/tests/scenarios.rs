@@ -43,16 +43,16 @@ fn semantic_markdown_import_reports_original_success_notification() {
     ui::clock::freeze_for_capture();
     check(Some("import_success"), (1280, 720)).unwrap();
     let mut app = TestApp::<NotesShell>::capture_at(Some("import_success"), (1280, 720)).unwrap();
-    // A capture retains its original notification even when frame preparation
-    // exceeds the live toast lifetime. Draw the real app as it would be after
-    // that delay.
+    // A capture retains its original notice in the window's bar even when
+    // frame preparation exceeds the live notice lifetime. Draw the real app
+    // as it would be after that delay.
     let late =
-        ui::time::now() + ui::widget::toast::DEFAULT_TTL + ui::time::Duration::from_millis(100);
+        ui::time::now() + ui::widget::toast::NOTICE_LIFETIME + ui::time::Duration::from_millis(100);
     ui::time::testing::with_monotonic_time(late, || app.harness().relayout());
-    assert!(observed(app.harness(), |node| {
-        node.name.as_deref() == Some("Notifications")
-            && node.value.as_deref() == Some("Imported Project brief")
-    }));
+    assert_eq!(
+        ui::window_toolbar::notice().map(|notice| notice.text),
+        Some("Imported Project brief".to_owned())
+    );
 }
 
 #[test]
@@ -468,10 +468,8 @@ fn reached(
             }) && blocks.iter().any(|block| {
                 matches!(block.kind, BlockKind::Paragraph)
                     && block.text() == "Imported through Notes' semantic Markdown action."
-            }) && observed(driver, |node| {
-                node.name.as_deref() == Some("Notifications")
-                    && node.value.as_deref() == Some("Imported Project brief")
-            })
+            }) && ui::window_toolbar::notice()
+                .is_some_and(|notice| notice.text == "Imported Project brief")
         }
         _ => driver
             .expect(&SemanticExpectation::named("note_title").value("Launch checklist"))
