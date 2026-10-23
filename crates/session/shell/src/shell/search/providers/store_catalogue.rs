@@ -159,6 +159,11 @@ impl StoreCatalogueTestSource {
         (generation, generation, generation, generation)
     }
 
+    /// While the guard lives, an index build reading this source waits.
+    pub(crate) fn hold(&self) -> std::sync::MutexGuard<'_, StoreCatalogueTestState> {
+        self.state.lock().expect("catalogue test source lock")
+    }
+
     pub(crate) fn replace(&self, state: StoreCatalogueTestState) {
         *self.state.lock().expect("catalogue test source lock") = state;
         self.generation
