@@ -462,8 +462,14 @@ pub struct PdfApp {
     has_document: bool,
     /// The PDF the record's markup is made against, as last presented.
     record_source: Option<crate::markup::PinnedSource>,
-    /// The record's pinned source was asked for from the content store.
+    /// The record's pinned source was read from the content store and
+    /// handed to the PDF owner.
     reopen_requested: bool,
+    /// The record's pinned source is not on this device: where its fetch
+    /// stands, and the content arrivals count it was last looked for at
+    /// ([`ui::collaboration::record_content::arrivals`]). It is looked for
+    /// again when that moves, never on a timer.
+    source_wait: Option<(tilo_content::ContentState, u64)>,
     /// A capture shows the reader opening a document whose open never ends.
     staged_opening: bool,
     /// A capture imports a page on the next sync, where the document is.
@@ -1079,6 +1085,7 @@ impl PdfApp {
             has_document: false,
             record_source: None,
             reopen_requested: false,
+            source_wait: None,
             staged_opening: false,
             staged_import: false,
             doc_name: String::new(),
@@ -1285,6 +1292,8 @@ impl PdfApp {
         let source = state.pinned_source();
         if self.record_source != source {
             self.record_source = source;
+            // Another document is looked for afresh.
+            self.source_wait = None;
         }
         self.dirty = true;
     }
@@ -3873,9 +3882,7 @@ impl PdfApp {
                 // a record of its own, so it opens only in a window that
                 // marks up nothing yet.
                 if self.holds_document() {
-                    let refusal = format!(
-                        "{name} keeps its markup in a window of its own; open it from Files"
-                    );
+                    let refusal = self.another_window_refusal(&name);
                     self.status_note.show(refusal.clone());
                     self.dirty = true;
                     self.finish_portal_action(false, Some(refusal));
@@ -3937,6 +3944,31 @@ impl PdfApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
             }
+        }
+    }
+
+    /// Why a file chosen by its contents does not open in this window, and
+    /// where it does: this window's record marks up its own document, and
+    /// a new window opens any file.
+    pub(super) fn another_window_refusal(&self, name: &str) -> String {
+        let shown = self
+            .record_source
+            .as_ref()
+            .map(|source| source.name.clone())
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                self.source_path
+                    .as_deref()
+                    .and_then(std::path::Path::file_name)
+                    .map(|name| name.to_string_lossy().into_owned())
+            });
+        match shown {
+            Some(shown) => format!(
+                "This window shows {shown} and its markup. Open {name} in a new PDF Viewer window."
+            ),
+            None => format!(
+                "This window keeps its document's markup. Open {name} in a new PDF Viewer window."
+            ),
         }
     }
 
@@ -4004,18 +4036,57 @@ impl PdfApp {
         let Some(source) = self.record_source.clone() else {
             return;
         };
-        self.reopen_requested = true;
+        let looked = ui::collaboration::record_content::arrivals();
+        if self.source_wait.is_some_and(|(_, at)| at == looked) {
+            return;
+        }
         let name = if source.name.is_empty() {
             "Document.pdf".to_string()
         } else {
             source.name.clone()
         };
+        // A document shared in the room is fetched from a device that has
+        // it: reading it asks for it, and it opens once it is here.
         let Some(bytes) = self.content.read(&source.hash) else {
-            self.load_error = Some(format!("{name} is not on this device yet"));
-            self.dirty = true;
+            let state = self.content.state(&source.hash);
+            if self.source_wait.map(|(was, _)| was) != Some(state) {
+                self.dirty = true;
+            }
+            self.source_wait = Some((state, looked));
             return;
         };
+        self.reopen_requested = true;
+        self.source_wait = None;
         self.queue_worker_open_contents(&name, bytes);
+    }
+
+    /// What the empty state says while the record's document is not on this
+    /// device: its title, its message, and whether that is a failure.
+    pub(super) fn source_wait_text(&self) -> Option<(&'static str, String, bool)> {
+        let (state, _) = self.source_wait?;
+        let name = self
+            .record_source
+            .as_ref()
+            .map(|source| source.name.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("The document");
+        Some(match state {
+            ContentState::Waiting => (
+                "Waiting for the document",
+                format!("{name} opens when a device that has it connects."),
+                false,
+            ),
+            ContentState::Unavailable => (
+                "This document isn't here",
+                format!("No device connected now has {name}. It opens when one that has it does."),
+                true,
+            ),
+            ContentState::Pending | ContentState::Resolved => (
+                "Getting the document…",
+                format!("{name} is coming from a device in this room that has it."),
+                false,
+            ),
+        })
     }
 
     /// Submit a replacement to the PDF owner: filesystem reads and `PDFium`
@@ -6135,6 +6206,73 @@ mod tests {
         assert_eq!(
             app.read_text(None, None).unwrap_err(),
             "report.pdf is not on this device yet"
+        );
+    }
+
+    /// A visitor's window of a record shared in the room shows its document
+    /// once the bytes come from a device that has them: it asks for them,
+    /// says where they stand while they travel, and opens them on arrival,
+    /// never failing for good because they were not here at first.
+    #[test]
+    fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
+        use ui::collaboration::record_content::{ContentLane, RecordContent};
+        let bytes = std::fs::read(concat!(env!("OUT_DIR"), "/sample.pdf")).expect("the fixture");
+        let hash = tilo_content::hash_bytes(&bytes);
+        let lane = ContentLane::of("so.tilo.pdf-viewer.shared-test", "shared-record");
+        let content = RecordContent::store(ContentStore::memory(), std::sync::Arc::clone(&lane));
+        let mut app = PdfApp::empty_with_content(content);
+        app.record_source = Some(crate::markup::PinnedSource {
+            hash: hash.clone(),
+            len: u64::try_from(bytes.len()).unwrap(),
+            name: "shared.pdf".into(),
+        });
+        let title = |app: &PdfApp| app.source_wait_text().map(|(title, ..)| title);
+
+        app.reopen_pinned_source();
+        assert_eq!(app.load_error, None, "nothing failed yet");
+        assert_eq!(title(&app), Some("Getting the document…"));
+        assert_eq!(
+            lane.take_requests().wants,
+            vec![hash.clone()],
+            "the document is asked of the room"
+        );
+
+        lane.stands(hash.clone(), ContentState::Waiting);
+        app.reopen_pinned_source();
+        assert_eq!(title(&app), Some("Waiting for the document"));
+        lane.stands(hash.clone(), ContentState::Unavailable);
+        app.reopen_pinned_source();
+        let (_, message, error) = app.source_wait_text().unwrap();
+        assert!(error && message.contains("shared.pdf"), "{message}");
+
+        lane.arrive(hash, bytes);
+        app.reopen_pinned_source();
+        assert_eq!(title(&app), None);
+        assert!(app.pending_open.is_some(), "the arrived document opens");
+        drain_until(&mut app, |app| app.pending_open.is_none());
+        if matches!(
+            pdfium_gate(app.raster_active(), require_pdfium()),
+            PdfiumGate::Skip
+        ) {
+            return;
+        }
+        assert!(app.has_document, "{:?}", app.load_error);
+    }
+
+    /// A file chosen by its contents in a window that marks up another
+    /// document is not opened over it, and the person is told where it
+    /// opens.
+    #[test]
+    fn a_file_for_another_window_says_where_it_opens() {
+        let mut app = PdfApp::empty_with_content(ContentStore::memory());
+        app.record_source = Some(crate::markup::PinnedSource {
+            hash: "0".repeat(64),
+            len: 1,
+            name: "shared.pdf".into(),
+        });
+        assert_eq!(
+            app.another_window_refusal("mine.pdf"),
+            "This window shows shared.pdf and its markup. Open mine.pdf in a new PDF Viewer window."
         );
     }
 
