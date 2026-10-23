@@ -2851,7 +2851,7 @@ impl WorkspaceTree {
             return Ok(false);
         };
         let admitted = basis.admit(changes, from);
-        self.install_room_batch(basis, admitted, changes, from)
+        self.install_room_batch(&basis, admitted, changes, from)
     }
 
     /// [`Self::apply_room_changes`] without holding the tree while the batch
@@ -2875,7 +2875,7 @@ impl WorkspaceTree {
         };
         let admitted = basis.admit(changes, from);
         tree.write()
-            .install_room_batch(basis, admitted, changes, from)
+            .install_room_batch(&basis, admitted, changes, from)
     }
 
     /// What a batch from `from` for `room` is admitted against, as this tree
@@ -2948,7 +2948,7 @@ impl WorkspaceTree {
     )]
     fn install_room_batch(
         &mut self,
-        basis: RoomBatchBasis,
+        basis: &RoomBatchBasis,
         admitted: Result<tilo_peer_state::room::AdmittedRoom, tilo_peer_state::room::RoomRefusal>,
         changes: &[Vec<u8>],
         from: &PeerOrigin,
