@@ -99,11 +99,30 @@ rpms_snapshot() {
   export RPMS_REF
 }
 
+# A kernel this run built (KERNEL_RPMS_REF=oci-archive:/target/publish/kernel/ARCH/image.oci.tar,
+# which tools/ci/os/os_toml.py gives the kernel layer), checked against its recorded digest and
+# loaded under a local name the kernel-rpms stage can build FROM. Any other ref is left to
+# build-image.sh as it is.
+kernel_from_run() {
+  local archive digest id
+  [[ ${KERNEL_RPMS_REF:-} == oci-archive:* ]] || return 0
+  archive=${KERNEL_RPMS_REF#oci-archive:}
+  [[ -f $archive ]] || die "no kernel archive $archive in this run"
+  digest=$(cat "$(dirname "$archive")/digest")
+  [[ $(archive_digest "$archive") == "$digest" ]] || die "$archive is not the build"
+  id=$(podman pull -q "oci-archive:$archive")
+  KERNEL_RPMS_REF=localhost/tilo-kernel:run-${digest#sha256:}
+  podman tag "$id" "$KERNEL_RPMS_REF"
+  printf 'installing the kernel image-kernel-%s built in this run (%s), unsigned\n' "$arch" "$digest"
+  export KERNEL_RPMS_REF
+}
+
 # Everything build-image.sh needs that the run decides: the pins, the clock, the keys.
 build_env() {
   . os/base-snapshot.env
   export BASE_REF
   rpms_snapshot
+  kernel_from_run
   # One clock for every layer: the newest of the base's and the snapshot's creation, never
   # the commit's, so builds of different commits make the same bytes of the same inputs.
   SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")

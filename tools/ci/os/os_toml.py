@@ -206,6 +206,14 @@ def block():
                 given.add(pieces.parent(name))
             files = sorted(set(tools + piece_files(name, given) + pieces.inputs(name, given)))
             needs = [f"os-base-{arch}", "os-assets", f"image-rpms-{arch}"] + below
+            run = f"bash os/image/build-layer.sh layer {name} {arch} /target/os/{arch}/layers/{name}"
+            if name == "kernel":
+                # os/kernel-snapshot.env pins only what stable published, and this tree's
+                # os/kernel differs from it: the layer installs the kernel image-kernel-ARCH
+                # built in this run, unsigned (build-image.sh labels the image so).
+                needs.append(f"image-kernel-{arch}")
+                run = (f"KERNEL_RPMS_REF=oci-archive:/target/publish/kernel/{arch}/image.oci.tar "
+                       f"TILO_KERNEL_TRUST=unsigned {run}")
             for g in l.get("given", []):
                 if g == "compiled":
                     needs.append(f"os-compile-{arch}")
@@ -218,7 +226,7 @@ def block():
             out.append(check([
                 ("name", f'"os-layer-{name}-{arch}"'),
                 ("image", ASSEMBLER_IMAGE.format(arch=arch)),
-                ("run", f'"bash os/image/build-layer.sh layer {name} {arch} /target/os/{arch}/layers/{name}"'),
+                ("run", f'"{run}"'),
                 ("inputs", arr(files)),
                 ("needs", arr(list(dict.fromkeys(needs)))),
                 ("outputs", arr([f"/target/os/{arch}/layers/{name}/**"])),

@@ -229,9 +229,11 @@ case ${1:-} in
     stage_board_firmware "$board"
     # The snapshot the OS image was built from, as the dev image takes it.
     rpms_snapshot "$arch"
-    # The board image's update origin: the tag os-board-publish.sh pushes it under.
+    # The board image's update origin: this branch's build is delivered as an OCI archive and
+    # publishes no tag, so it keeps the origin the Lenovo 83ED it is for already records, a tag
+    # that exists, rather than naming one nothing will ever push.
     phase build
-    build_board "$board" localhost/tilo-vm:ci "registry.tilo.so/tilo/tilo-vm:main-${revision:0:7}-$board"
+    build_board "$board" localhost/tilo-vm:ci "registry.tilo.so/tilo/tilo-vm:pr-4433-d7d1575-$board"
     phase save
     save_image localhost/tilo-board:ci "$out" "$revision"
     printf '%s\n' "$board" > "$out/board"
