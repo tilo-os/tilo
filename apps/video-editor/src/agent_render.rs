@@ -21,7 +21,6 @@
 //! same bytes and a repeated export is recognisably the same content.
 
 use serde_json::{Map, Value, json};
-use ui::tilo_resource::Resource as _;
 
 use crate::model::Project;
 
@@ -112,17 +111,18 @@ impl AgentExportSettings {
     /// Why the arguments name no render an agent may ask for, in words the
     /// caller can correct.
     pub fn from_args(args: &Map<String, Value>, aspect: f64) -> Result<Self, String> {
-        mp4_only(args)?;
+        let args = AgentArgs::read(args)?;
+        args.mp4_only()?;
         let aspect = usable_aspect(aspect);
-        let width = optional_whole(args, "width")?;
-        let height = optional_whole(args, "height")?;
+        let width = whole("width", args.width)?;
+        let height = whole("height", args.height)?;
         let (width, height) = match (width, height) {
             (None, None) => (1280, 720),
             (Some(width), None) => (width, even(width as f64 / aspect)),
             (None, Some(height)) => (even(height as f64 * aspect), height),
             (Some(width), Some(height)) => (width, height),
         };
-        let fps = optional_whole(args, "fps")?.unwrap_or(30);
+        let fps = whole("fps", args.fps)?.unwrap_or(30);
         Self::checked(width, height, fps)
     }
 
@@ -135,8 +135,9 @@ impl AgentExportSettings {
     ///
     /// A format other than mp4, or a size an agent may not render.
     pub fn from_render_args(args: &Map<String, Value>, aspect: f64) -> Result<Self, String> {
-        mp4_only(args)?;
-        let height = match optional_text(args, "size")?.map(str::trim) {
+        let args = AgentArgs::read(args)?;
+        args.mp4_only()?;
+        let height = match args.size.as_deref().map(str::trim) {
             None | Some("1080p") => 1080,
             Some("720p") => 720,
             Some(other) => {
@@ -194,7 +195,7 @@ impl AgentExportSettings {
 ///
 /// A `wait` that is not a whole number of seconds from 0.
 pub fn wait_from_args(args: &Map<String, Value>) -> Result<std::time::Duration, String> {
-    let wait = optional_whole(args, "wait")?.unwrap_or(AGENT_DEFAULT_WAIT);
+    let wait = whole("wait", AgentArgs::read(args)?.wait)?.unwrap_or(AGENT_DEFAULT_WAIT);
     Ok(std::time::Duration::from_secs(wait.min(AGENT_MAX_WAIT)))
 }
 
@@ -220,16 +221,14 @@ impl AgentFrameSettings {
         aspect: f64,
         duration: f64,
     ) -> Result<Self, String> {
-        let at = args
-            .get("at")
-            .and_then(Value::as_f64)
-            .ok_or("name the time to view, in seconds: `at`")?;
+        let args = AgentArgs::read(args)?;
+        let at = args.at.ok_or("name the time to view, in seconds: `at`")?;
         if !at.is_finite() || at < 0.0 || at > duration.max(0.0) {
             return Err(format!(
                 "{at} s is not on the timeline, which runs from 0 to {duration} s"
             ));
         }
-        let width = optional_whole(args, "width")?.unwrap_or(640);
+        let width = whole("width", args.width)?.unwrap_or(640);
         if width % 2 != 0 || !(16..=1920).contains(&width) {
             return Err(format!(
                 "the width is an even number from 16 to 1920, not {width}"
@@ -398,9 +397,9 @@ pub fn pipeline_desc(settings: &AgentExportSettings, sink: &str, with_audio: boo
 ///
 /// The bytes are no document, or the document no timeline.
 pub fn read_snapshot(bytes: &[u8]) -> Result<Project, String> {
-    let doc = automerge::AutoCommit::load(bytes)
-        .map_err(|error| format!("the timeline does not load: {error}"))?;
-    Project::read(&doc).map_err(|error| format!("the timeline does not read: {error}"))
+    ui::tilo_resource::Replica::<Project>::load(bytes)
+        .and_then(|replica| replica.state())
+        .map_err(|error| format!("the timeline does not read: {error}"))
 }
 
 /// Zero the creation and modification times an MP4's movie, track and
@@ -491,37 +490,45 @@ fn header_times(data: &[u8], body: &std::ops::Range<usize>) -> Option<std::ops::
     (end <= body.end).then_some(start..end)
 }
 
-fn mp4_only(args: &Map<String, Value>) -> Result<(), String> {
-    match optional_text(args, "format")?.map(str::trim) {
-        None => Ok(()),
-        Some(format) if format.eq_ignore_ascii_case("mp4") => Ok(()),
-        Some(format) => Err(format!("an agent's video renders as mp4, not {format}")),
-    }
+/// The arguments an agent's render verbs read, from the arguments bound to
+/// the call. A verb's other arguments (an export's range) are its own.
+#[derive(serde::Deserialize)]
+struct AgentArgs {
+    format: Option<String>,
+    size: Option<String>,
+    width: Option<f64>,
+    height: Option<f64>,
+    fps: Option<f64>,
+    wait: Option<f64>,
+    at: Option<f64>,
 }
 
-fn optional_text<'a>(args: &'a Map<String, Value>, name: &str) -> Result<Option<&'a str>, String> {
-    match args.get(name) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) => Ok(Some(text)),
-        Some(other) => Err(format!("`{name}` is text, not {other}")),
+impl AgentArgs {
+    fn read(args: &Map<String, Value>) -> Result<Self, String> {
+        serde_json::from_value(Value::Object(args.clone()))
+            .map_err(|error| format!("the arguments do not read: {error}"))
+    }
+
+    fn mp4_only(&self) -> Result<(), String> {
+        match self.format.as_deref().map(str::trim) {
+            None => Ok(()),
+            Some(format) if format.eq_ignore_ascii_case("mp4") => Ok(()),
+            Some(format) => Err(format!("an agent's video renders as mp4, not {format}")),
+        }
     }
 }
 
 /// A whole, non-negative number argument; `30.0` reads as `30`.
-fn optional_whole(args: &Map<String, Value>, name: &str) -> Result<Option<u64>, String> {
-    match args.get(name) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .or_else(|| {
-                value
-                    .as_f64()
-                    .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0 && *n < 1e9)
-                    .map(|n| n as u64)
-            })
-            .map(Some)
-            .ok_or_else(|| format!("`{name}` is a whole number from 0, not {value}")),
-    }
+fn whole(name: &str, value: Option<f64>) -> Result<Option<u64>, String> {
+    value
+        .map(|n| {
+            if n.is_finite() && n >= 0.0 && n.fract() == 0.0 && n < 1e9 {
+                Ok(n as u64)
+            } else {
+                Err(format!("`{name}` is a whole number from 0, not {n}"))
+            }
+        })
+        .transpose()
 }
 
 #[cfg(test)]
