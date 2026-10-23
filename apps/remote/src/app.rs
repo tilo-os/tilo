@@ -4,7 +4,8 @@
 //! what this device observed of each machine's reachability), the current
 //! [`Screen`], the add / edit draft and the live session. The
 //! window is a [`NavShell`]: a docked rail of destinations beside the
-//! current screen, with the screen's title and actions in the header row.
+//! current screen; the screen's name and actions are the window bar's
+//! ([`window_bar`]).
 //! The list and the form are toolkit widgets rebuilt from this state
 //! ([`crate::view`]); a connected session is [`SessionPane`], which paints
 //! the remote terminal grid or framebuffer.
@@ -554,7 +555,7 @@ pub struct RemoteApp {
     /// many times; resource-operation completion must never settle an old
     /// invocation against a newer session for the same connection id.
     session_generation: u64,
-    /// The session fills the window, without the rail and the header.
+    /// The session fills the window, without the rail.
     fullscreen: bool,
     /// Discoverable Tilo peers for the form's device picker.
     tilo_devices: Vec<TiloDevice>,
@@ -586,7 +587,7 @@ pub struct RemoteApp {
     toasts: ToastStack,
     toast_clock: Option<ui::time::Instant>,
 
-    /// The window: rail, header row and current screen.
+    /// The window: rail and current screen.
     shell: NavShell,
     /// The session alone, while it fills the window.
     immersive: Option<SessionPane>,
@@ -639,6 +640,7 @@ impl RemoteApp {
             shell: NavShell::new()
                 .content_kind(ui::widget::ContentKind::Document)
                 .with_id("remote.shell")
+                .with_window_toolbar()
                 .mode(NavMode::Docked),
             immersive: None,
             requests: Requests::default(),
@@ -1691,7 +1693,7 @@ impl RemoteApp {
         }
     }
 
-    /// Put the current screen, its header and the rail into the shell.
+    /// Put the current screen and the rail into the shell.
     fn rebuild_views(&mut self) {
         let key = self.view_key();
         if self.built == Some(key) {
@@ -1703,71 +1705,25 @@ impl RemoteApp {
             .and_then(|id| self.workspace.get(id))
             .map(|c| c.kind);
         let rail = view::rail(&self.requests, self.destination, session_kind);
-        let (title, actions, content): (String, Vec<Element>, Element) = match self.content() {
+        let content: Element = match self.content() {
             Content::List {
                 destination,
                 rows,
                 has_connections,
-            } => (
-                match destination {
-                    Destination::Pinned => "Pinned connections".to_owned(),
-                    _ => "Connections".to_owned(),
-                },
-                view::list_actions(&self.requests, has_connections),
-                view::connection_list(&self.requests, destination, &rows, has_connections),
-            ),
-            Content::Form(model) => (
-                String::new(),
-                view::form_actions(&self.requests),
-                view::connection_form(&self.requests, &self.fields, &model),
-            ),
-            Content::Surface(id) => {
-                let connection = self.workspace.get(id);
-                let framebuffer = connection.is_some_and(|c| c.kind.streams_framebuffer());
-                (
-                    connection.map(|c| c.name.clone()).unwrap_or_default(),
-                    view::session_actions(
-                        &self.requests,
-                        framebuffer,
-                        self.session.borrow().scale_to_fit,
-                    ),
-                    Box::new(SessionPane::new(Rc::clone(&self.session))),
-                )
-            }
+            } => view::connection_list(&self.requests, destination, &rows, has_connections),
+            Content::Form(model) => view::connection_form(&self.requests, &self.fields, &model),
+            Content::Surface(_) => Box::new(SessionPane::new(Rc::clone(&self.session))),
             Content::Status { id, .. } => {
-                let name = self
-                    .workspace
-                    .get(id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                let actions = if self.session.borrow().live_active() {
-                    view::session_actions(&self.requests, false, true)
-                } else {
-                    Vec::new()
-                };
-                (
-                    name,
-                    actions,
-                    view::session_status(&self.requests, self.status_model(id)),
-                )
+                view::session_status(&self.requests, self.status_model(id))
             }
-            Content::Missing => (
-                String::new(),
-                Vec::new(),
-                Box::new(
-                    ui::widget::EmptyState::new("This connection was deleted")
-                        .with_icon(Icon::Monitor)
-                        .with_message("Someone you share your connections with removed it."),
-                ),
+            Content::Missing => Box::new(
+                ui::widget::EmptyState::new("This connection was deleted")
+                    .with_icon(Icon::Monitor)
+                    .with_message("Someone you share your connections with removed it."),
             ),
         };
-        let mut shell = std::mem::take(&mut self.shell)
-            .with_id("remote.shell")
-            .mode(NavMode::Docked)
-            .content_header(title, actions);
-        shell.set_sidebar(Some(Box::new(rail)));
-        shell.set_content(content);
-        self.shell = shell;
+        self.shell.set_sidebar(Some(Box::new(rail)));
+        self.shell.set_content(content);
     }
 
     /// What a session that shows no remote surface says, and the one way
@@ -2056,13 +2012,16 @@ impl Widget for RemoteApp {
         // picked search hits and queued controls.
         self.settle_pending_effect();
         self.open_found();
+        self.take_window_toolbar_events();
         self.apply_requests();
         self.revalidate();
         self.check_views();
+        self.declare_window_toolbar();
         self.body_mut().sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.declare_window_toolbar();
         self.body_mut().update(state, path)
     }
 
@@ -3215,6 +3174,8 @@ fn sample_tilo_devices() -> Vec<TiloDevice> {
         device("Garage Pi", 53, false),
     ]
 }
+
+mod window_bar;
 
 #[cfg(test)]
 mod tests;
