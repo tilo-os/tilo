@@ -1385,14 +1385,30 @@ readers = ["apps/pdf-viewer/build.rs"]
 [[cargo]]
 package = "tilo-agent-participant"
 # The session tests mount apps against the controlled font fixture and share
-# the browser peer's relay test support.
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
+# the browser peer's relay test support; the campaign benchmark runs its
+# confined workers inside the test environment script.
+inputs = [
+  "crates/sdk/ui-core/assets/fonts/",
+  "crates/browser/tilo-browser-peer/tests/support/",
+  "tools/with-test-environment.sh",
+]
 readers = [
   "crates/agent/agent-participant/tests/asking_first.rs",
+  "crates/agent/agent-participant/tests/campaign_bench.rs",
   "crates/agent/agent-participant/tests/room_actions.rs",
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
   "crates/agent/agent-participant/tests/shared_session.rs",
+]
+
+[[cargo]]
+package = "tilo-video-render"
+# The helper's tests render footage the video editor's test support
+# generates, so a change to that generator runs them.
+inputs = ["apps/video-editor/tests/support/"]
+readers = [
+  "crates/media/video-render/tests/render_helper.rs",
+  "crates/media/video-render/tests/support/media_stack.rs",
 ]
 
 [[cargo]]
