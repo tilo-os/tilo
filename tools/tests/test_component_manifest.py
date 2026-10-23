@@ -357,7 +357,12 @@ class InstallerTests(unittest.TestCase):
                 root = Path(temporary)
                 out = self.build_outputs(root)
                 image = root / "image"
-                status = self.run_installer("--from", str(out), "--dest", str(image), "--by-layer", "--all")
+                # The pinned Cosign is an external asset the image build is given; its
+                # verification has a test of its own.
+                cosign = root / "cosign"
+                cosign.write_bytes(b"\x7fELF cosign fixture")
+                with mock.patch.object(installer, "native_cosign", return_value=cosign):
+                    status = self.run_installer("--from", str(out), "--dest", str(image), "--by-layer", "--all")
                 self.assertEqual(status, 0)
                 manifest = installer.load_manifest(REPO / "os/components.toml")
                 expected = {f"{e.layer}{e.to}" for e in manifest.files()

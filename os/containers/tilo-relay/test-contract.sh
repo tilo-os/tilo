@@ -92,8 +92,7 @@ fi
 if grep -Fq 'SCCACHE_AWS' "$build"; then
   fail "relay-build.sh binds the static compiler-cache key"
 fi
-need "$build" 'bash os/dev/cache-github-assets.sh'
-need "$build" 'sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz'
+need "$build" 'assets=$(pinned_assets sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz)'
 need "$build" '--build-context "github-assets=$assets"'
 need "$build" '--build-arg "BASE_REF=$BASE_REF"'
 need "$build" '--build-arg "RPMS_REF=$rpms_ref"'

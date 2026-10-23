@@ -86,7 +86,7 @@ stage_board_firmware() {
         --manifest-sha256 "$(publication TILO_LENOVO_FIRMWARE_MANIFEST_SHA256)" \
         --profile lenovo-83ed --architecture aarch64 --repo "$repo_root" >/dev/null ;;
     orangepi-3b-v2-1)
-      TILO_GITHUB_ASSET_CACHE=$scratch/github-assets bash os/dev/fetch-orangepi-wifi-firmware.sh ;;
+      TILO_ASSET_OFFLINE=1 bash os/dev/fetch-orangepi-wifi-firmware.sh ;;
     *) die "no firmware source for the board $1" ;;
   esac
 }

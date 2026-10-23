@@ -287,8 +287,8 @@ has_t provenance-rpms inputs 'os/dev/derive-rpm-package-set.py' \
 
 has_t image-rpms-{arch} inputs 'os/external-assets/github-assets.tsv' \
   'pinned external asset changes rebuild the snapshot'
-has "$rpms_build" 'bash os/dev/cache-github-assets.sh' \
-  'snapshot materializes checksum-verified external inputs'
+has "$rpms_build" 'assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)' \
+  'snapshot takes the checksum-verified external input from os-assets'
 has "$rpms_build" '--build-context "github-assets=$assets"' \
   'snapshot receives only the materialized external-input cache'
 has "$snapshot" '/tilo-assets/virtio-win-0.1.302-1.noarch.rpm' \

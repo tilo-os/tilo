@@ -256,15 +256,16 @@ operate it. Companion to `docs/security/design-rationale.md`.
 - **Persistent GitHub input cache.** Every GitHub-hosted tarball, source
   snapshot, catalogue, and license consumed by the OS image is declared once
   in `os/external-assets/github-assets.tsv` with an immutable URL and SHA-256.
-  `os/dev/cache-github-assets.sh` performs resumable, retrying downloads and
-  refuses a checksum mismatch. Both OS and CI-builder workflows restore that
-  directory through Forgejo's cache before materializing missing entries, so
-  ephemeral runners normally make no GitHub release-asset requests at all.
+  `os/dev/cache-github-assets.sh` performs resumable downloads and refuses a
+  checksum mismatch. In t, the `os-assets` check runs it once per manifest and
+  keeps the verified files as its outputs; every image build that takes an
+  asset needs that check and only verifies what it is given
+  (`TILO_ASSET_OFFLINE=1`), so no build job downloads one from upstream.
   CI and local scripts expose the cache as a separate named build context;
   Containerfiles consume it through read-only mounts. Archives therefore never
   enter layer history or the Rust workspace context, and builds never fetch
-  from GitHub. Bump the manifest entry to update an input—the
-  manifest hash creates a fresh CI cache key automatically.
+  from GitHub. Bump the manifest entry to update an input; that reruns
+  `os-assets`.
 - **Staged, verified promotion.** A boot-tested build is first uploaded under a
   non-channel candidate tag. CI signs its digest, attaches signed SPDX and SLSA
   provenance attestations, and verifies all three against the public key. Only

@@ -79,6 +79,14 @@ stage_context() {
   tar -C "$repo_root" "${excludes[@]}" -cf - . | tar -C "$dest" -xf -
 }
 
+# The pinned external assets NAME... (os/external-assets/github-assets.tsv), checksum-verified;
+# prints their directory, for --build-context. They come from the os-assets check's outputs,
+# which the calling check needs; nothing here downloads them.
+pinned_assets() {
+  TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/cache-github-assets.sh" "$@" >&2
+  printf '%s' "$repo_root/os/external-assets/cache"
+}
+
 # The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH.
 use_cosign() {
   command -v cosign >/dev/null && return
