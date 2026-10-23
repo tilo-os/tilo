@@ -1,5 +1,3 @@
-//! The Displays pane's model, composition and canvas, driven as a person and an agent do.
-
 use super::*;
 use crate::dispatcher::testing::RecordingDispatcher;
 
@@ -1090,8 +1088,6 @@ fn preview_and_keep_preserve_the_staged_refresh_rate() {
     assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
 }
 
-/// Scale labels, the person's display scale, and a staged plan that is
-/// applied, kept and reverted.
 #[test]
 fn display_scale_and_plans_persist_confirm_and_revert() {
     for (label, factor) in DISPLAY_SCALES {
@@ -1427,7 +1423,6 @@ fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
     );
 }
 
-/// Every widget id under `widget`.
 fn test_ids(widget: &dyn Widget, ids: &mut Vec<String>) {
     if let Some(id) = widget.test_id() {
         ids.push(id.to_owned());

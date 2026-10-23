@@ -608,7 +608,6 @@ pub struct TerminalWidget {
     /// for behavioural tests that want to verify palette swaps actually
     /// propagate into rendered state without spinning up a GPU scene.
     last_cursor_color: Color,
-    /// Last default-fg color drawn, same rationale as `last_cursor_color`.
     last_fg_default: Color,
     /// Last default-bg color drawn, same rationale as `last_cursor_color`.
     last_bg_default: Color,
@@ -764,7 +763,6 @@ struct RunState {
     /// The command lines `run` asked for, shared with the view that carries
     /// out the session's outbox.
     queue: crate::runs::RunQueue,
-    /// Asked, waiting for the shell to be at its prompt.
     waiting: std::collections::VecDeque<crate::runs::Asked>,
     /// Typed at the prompt, waiting for the shell to start it.
     typed: Option<crate::runs::Asked>,
@@ -2051,12 +2049,6 @@ impl TerminalWidget {
     /// dead PTY into a false `Succeeded` result. Local keyboard/paste callers
     /// use [`Self::write_input`], which records the same terminal state and
     /// exposes it visibly even though winit cannot return an error.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the PTY has already ended, its writer lock is
-    /// poisoned, or either write/flush operation fails. Every such error marks
-    /// the session disconnected before returning.
     pub fn try_write_input(&self, bytes: &[u8]) -> Result<(), String> {
         if let Some(("session_not_open", reason)) = self.input_unavailable() {
             return Err(reason.to_owned());
@@ -2288,8 +2280,6 @@ impl TerminalWidget {
         }
     }
 
-    /// # Errors
-    /// Returns why the effect was refused or failed.
     pub(crate) fn perform(
         &mut self,
         effect: crate::resource::TerminalEffect,
@@ -5133,7 +5123,6 @@ impl TerminalWidget {
             let abs_row = *row;
             let line = self.grid.get(abs_row).map_or("", String::as_str);
 
-            // Walk chars and pick out the cells covered by [start_col, end_col).
             let mut cell_idx = 0usize;
             let mut row_text = String::new();
             for c in line.chars() {
@@ -7028,7 +7017,6 @@ pub enum OpenError {
     /// No environment can be built on this device: no `env-runtime` image is
     /// installed. The device's own shell may still be opened instead.
     NoRuntime(String),
-    /// Opening failed.
     Failed(String),
 }
 
@@ -7847,10 +7835,6 @@ impl TerminalWidget {
     /// mock PTY master. No shell is spawned, so nothing arrives on the output
     /// channel — used by headless screenshot scenarios that drive the grid
     /// entirely through `feed`, keeping the frame deterministic.
-    ///
-    /// # Errors
-    ///
-    /// This function should not fail under normal circumstances as it uses a null backend.
     pub fn spawn_headless() -> anyhow::Result<Self> {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.headless = true;

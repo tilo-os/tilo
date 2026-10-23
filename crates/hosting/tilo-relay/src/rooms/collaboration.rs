@@ -90,10 +90,6 @@ impl Rooms {
     /// Issue an invitation to `room` for `administrator`: a device of this
     /// relay's own user, or of a member the room lets invite with the
     /// invitation's role.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the invitation was refused or could not be recorded.
     pub async fn issue(
         &self,
         room: &str,
@@ -152,10 +148,6 @@ impl Rooms {
     }
 
     /// Cancel an unredeemed invitation of `room`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the cancellation was refused or could not be recorded.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed, published and answered"
@@ -182,10 +174,6 @@ impl Rooms {
     }
 
     /// The invitations of `room` still redeemable.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the listing was refused.
     pub async fn pending(
         &self,
         room: &str,
@@ -205,10 +193,6 @@ impl Rooms {
 
     /// Admit `device`, a device of this relay's own user, to `room` as its
     /// owner. Returns whether governance changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the device was refused or the change could not commit.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed, published and answered"
@@ -231,10 +215,6 @@ impl Rooms {
     }
 
     /// Change the role of the member `request.user_public_key` in `room`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the change was refused or could not commit.
     pub async fn set_member_role(
         &self,
         room: &str,
@@ -437,10 +417,6 @@ impl Rooms {
 
     /// Remove the member `request.user_public_key` and every device of theirs
     /// from `room`. The relay stops admitting them before this returns.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the removal was refused or could not commit.
     pub async fn remove_member(
         &self,
         room: &str,
@@ -457,10 +433,6 @@ impl Rooms {
     /// room that kept every visitor would slow with each one, and one change
     /// per guest would hold the room as long again. A pruned guest joins
     /// again through a new invitation.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the removal was refused or could not commit.
     pub async fn prune_members(
         &self,
         room: &str,
@@ -509,10 +481,6 @@ impl Rooms {
     /// Remove `request.user_public_key` from `room`, when a member, and keep
     /// them out until [`Self::unban_member`]: a removal plus their
     /// `block:<person>` Deny.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the ban was refused or could not commit.
     pub async fn ban_member(
         &self,
         room: &str,
@@ -524,10 +492,6 @@ impl Rooms {
     }
 
     /// Let the banned `request.user_public_key` be admitted to `room` again.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the unban was refused or could not commit.
     pub async fn unban_member(
         &self,
         room: &str,
@@ -542,10 +506,6 @@ impl Rooms {
     /// `until_ms` (Unix milliseconds): the room's expiring
     /// `restrict:<person>` Deny, which lapses by itself and leaves reading
     /// alone. A newer restriction replaces an older one.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the restriction was refused or could not commit.
     pub async fn restrict_member(
         &self,
         room: &str,
@@ -559,10 +519,6 @@ impl Rooms {
 
     /// Lift `request.user_public_key`'s restriction in `room` before it
     /// lapses.
-    ///
-    /// # Errors
-    ///
-    /// Returns why lifting was refused or could not commit.
     pub async fn unrestrict_member(
         &self,
         room: &str,
@@ -852,9 +808,6 @@ impl Rooms {
 
     /// The bots `room` asks its host to run, as its governance records
     /// them now.
-    ///
-    /// # Errors
-    /// The room is not governed here.
     pub async fn bot_requests(
         &self,
         room: &str,
@@ -871,9 +824,6 @@ impl Rooms {
 
     /// Installation `id` of `room` as its governance records it now: the
     /// live row, else the last withdrawn one.
-    ///
-    /// # Errors
-    /// The room is not governed here.
     pub async fn installed_bot(
         &self,
         room: &str,

@@ -1,8 +1,5 @@
 //! Native target identity, exclusive custody and platform preparation.
 /// Bind an already-open block descriptor to the freshly reviewed device node.
-///
-/// # Errors
-/// Rejects stale inventory, non-block descriptors/nodes, changed inode/device identity, or native metadata errors.
 #[cfg(target_os = "linux")]
 pub fn attest_target_descriptor(target: &TargetDrive, file: &std::fs::File) -> io::Result<()> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -64,8 +61,6 @@ pub fn target_identity_matches(selected: &TargetDrive, current: &TargetDrive) ->
         && (selected.is_system || !current.is_system)
 }
 
-/// # Errors
-/// Returns an error if mount-state enumeration or unmounting fails, times out, or exceeds bounded output.
 #[cfg(target_os = "linux")]
 pub fn prepare_target(target: &TargetDrive) -> io::Result<()> {
     const PREPARE_OUTPUT_LIMIT: usize = 1024 * 1024;
@@ -175,8 +170,6 @@ pub fn finish_target(target: &TargetDrive, _result: &JobResult) {
     target_os = "macos",
     target_os = "windows"
 ))]
-/// # Errors
-/// Returns spawn/wait failures or a timeout error after terminating and reaping the command.
 pub fn run_finite_status(
     mut command: Command,
     timeout: Duration,
@@ -213,8 +206,6 @@ pub fn target_lock_name(target: &TargetDrive) -> String {
 pub type TargetWriteLock = advisory_lock::FileLock;
 
 #[cfg(unix)]
-/// # Errors
-/// Returns native lock-file open errors, lock failures, or `WouldBlock` when another writer holds the lock.
 pub fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -236,9 +227,6 @@ pub fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
 
 /// Keep the existing privileged writer lock through reviewed mounted output.
 /// This grants no raw descriptor or filesystem authority to its callback.
-///
-/// # Errors
-/// Rejects non-root callers, unsafe/contended writer locks and stale targets, and propagates callback errors.
 #[cfg(target_os = "linux")]
 pub fn with_locked_media_root<T>(
     target: &TargetDrive,

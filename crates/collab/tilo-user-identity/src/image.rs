@@ -75,7 +75,6 @@ pub struct ImageEndorsement {
     pub image_manifest_sha256: [u8; 32],
     /// Monotonic Tilo generation embedded in the signed UKI.
     pub generation: u64,
-    /// Time at which the device issued this endorsement.
     pub issued_at_ns: u64,
     pub device_certificate: DeviceCert,
     /// Separate root grant proving this device may endorse OS images.

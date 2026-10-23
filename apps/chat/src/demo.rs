@@ -582,7 +582,6 @@ pub fn seed_room(room: &mut Room) -> Result<(), DoorError> {
 /// like the chat record it dereferences to; a verb on the messages applies
 /// through the chain to the part it changes ([`Room::apply_part_as`]).
 pub struct Room {
-    /// The room's chat record.
     pub chat: AutoCommit,
     parts: Option<ui::framework::Chain<ChatPart>>,
     /// The chat record as the chain's actions read it: refreshed before

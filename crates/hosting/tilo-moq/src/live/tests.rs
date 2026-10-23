@@ -693,7 +693,6 @@ async fn open_records_per_publisher_are_bounded() {
     assert_eq!(f.live.relay.counters().records_refused, 2);
 }
 
-/// Two native clients exchange presence both ways over loopback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn loopback_presence_exchange_reaches_both_sides() {
     let f = fixture();

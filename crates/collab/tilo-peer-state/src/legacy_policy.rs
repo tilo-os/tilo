@@ -10,7 +10,6 @@ pub fn private_policy_basis(peer: &StatePeer) -> Result<(String, Vec<u64>), Stri
     Ok((basis.revision, basis.expiries))
 }
 
-/// The canonical owner of `peer`'s room.
 pub fn canonical_owner(peer: &StatePeer) -> Result<String, String> {
     peer.legacy_canonical_owner()
 }

@@ -85,7 +85,6 @@ fn typing_in_the_2d_graph_mode_enters_the_function() {
     // phase typing_as_soon_as_the_window_opens
     {
         let mut app = hosted();
-        // The desktop gives a window it opens the keyboard.
         app.harness().send(&WindowEvent::Focused(true));
         app.harness().type_text("6*7");
         app.settle();

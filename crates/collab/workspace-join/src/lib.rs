@@ -628,7 +628,6 @@ fn validate_inviter(inviter: &Inviter) -> Result<(), String> {
     Ok(())
 }
 
-/// Sign an opaque transport hint as `host`.
 pub fn sign_transport_hint(
     kind: impl Into<String>,
     opaque_json: impl Into<String>,
@@ -691,7 +690,6 @@ pub fn encode_invitation_text(signed_invitation: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signed_invitation)
 }
 
-/// Decode a textual invitation and verify it.
 pub fn decode_and_verify_invitation_text(
     text: &str,
     recipient_user_public_key: Option<[u8; 32]>,
@@ -704,7 +702,6 @@ pub fn decode_and_verify_invitation_text(
     decode_and_verify_invitation(&bytes, recipient_user_public_key, revocations, now_ns)
 }
 
-/// Decode a signed invitation and verify it for the recipient.
 pub fn decode_and_verify_invitation(
     signed_invitation: &[u8],
     recipient_user_public_key: Option<[u8; 32]>,

@@ -33,7 +33,6 @@ pub enum AgentLink {
 }
 
 impl AgentLink {
-    /// A stream to the guest's `port`.
     pub fn connect(&self, port: u32) -> io::Result<AgentStream> {
         match self {
             #[cfg(target_os = "linux")]

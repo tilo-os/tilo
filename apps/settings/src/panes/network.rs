@@ -3876,7 +3876,6 @@ mod tests {
         }
         let fake = Arc::new(FakeNetwork::default());
         let mut network = model(&fake);
-        // The band is in the hotspot's setup, open.
         network.hotspot_open = true;
         // The networks were just looked for, and the clock holds still: a
         // periodic scan landing between the click and the resize rebuilds
@@ -5031,7 +5030,6 @@ mod tests {
                 .contains("must be tested separately")
         );
         let mut model = area.model().borrow_mut();
-        // A known network's wake is among its details, open in place.
         model.known_open = Some(uuid.into());
         assert!(named_switch(
             model.build_composition().as_ref(),

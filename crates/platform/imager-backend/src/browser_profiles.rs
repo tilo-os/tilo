@@ -839,9 +839,6 @@ fn settings_count(directory: &Arc<PinnedDirectory>, provider: Provider) -> io::R
 #[cfg(not(target_os = "linux"))]
 impl ReviewedProfile {
     /// Inventory inspection is unavailable where the native database reader is not built.
-    ///
-    /// # Errors
-    /// Returns `Unsupported` rather than an empty complete inventory.
     pub fn inventory(&self) -> io::Result<ProfileInventory> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

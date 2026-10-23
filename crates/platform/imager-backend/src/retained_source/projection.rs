@@ -19,9 +19,6 @@ pub struct SourceProjection {
 }
 impl SourceProjection {
     /// Narrow an already admitted Home to one existing, singly-linked file.
-    /// # Errors
-    /// Returns an error for non-root callers, invalid names, failed opens or
-    /// metadata reads, nonregular or multiply linked files, or unsupported hosts.
     pub fn selected(directory: &File, name: &OsStr, context: &str) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {
@@ -36,9 +33,6 @@ impl SourceProjection {
     }
 
     /// Pin the actual admitted Home directory, never a selected file's parent.
-    /// # Errors
-    /// Returns an error for non-root callers, descriptor duplication or metadata
-    /// failures, a non-directory object, or an unsupported host.
     pub fn home(directory: &File, context: &str) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {
@@ -52,8 +46,6 @@ impl SourceProjection {
     }
 
     /// Duplicate this held object; this does not grant additional source rights.
-    /// # Errors
-    /// Returns an error if descriptor duplication fails or the host is unsupported.
     pub fn duplicate_file(&self) -> io::Result<File> {
         #[cfg(target_os = "linux")]
         {

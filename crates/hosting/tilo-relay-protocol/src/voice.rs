@@ -61,42 +61,33 @@ pub enum CallOperation {
     /// had restarted, or a new one where participants publish and subscribe.
     /// Any member may open a channel's call.
     Open {
-        /// The chat app.
         app_id: String,
-        /// The chat record holding the channel.
         record_id: String,
-        /// The voice channel.
         channel_id: String,
     },
     /// Start a call on voice channel `channel_id` of the chat record
     /// `record_id` of app `app_id`.
     Start {
-        /// The chat app.
         app_id: String,
-        /// The chat record holding the channel.
         record_id: String,
-        /// The voice channel.
         channel_id: String,
         /// What participants may do.
         allowed: Directions,
     },
     /// End an active call.
     End {
-        /// The call.
         call: [u8; 32],
         /// The epoch the caller last saw.
         epoch: u64,
     },
     /// Restart an ended call on its original channel.
     Restart {
-        /// The call.
         call: [u8; 32],
         /// The epoch the caller last saw.
         epoch: u64,
     },
     /// Change what participants may do.
     SetDirections {
-        /// The call.
         call: [u8; 32],
         /// The epoch the caller last saw.
         epoch: u64,
@@ -105,7 +96,6 @@ pub enum CallOperation {
     },
     /// Deny one person directions in a call; denying neither lifts it.
     SetDenial {
-        /// The call.
         call: [u8; 32],
         /// The epoch the caller last saw.
         epoch: u64,
@@ -119,7 +109,6 @@ pub enum CallOperation {
 /// A call as the room's governance records it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallState {
-    /// The call.
     pub call: [u8; 32],
     /// Advances with every change of the call.
     pub epoch: u64,
@@ -132,7 +121,6 @@ pub struct CallState {
 /// Admission of one participation to a call's voice carrier.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoiceGrant {
-    /// The call.
     pub call: [u8; 32],
     /// The call's epoch this grant was issued under.
     pub epoch: u64,
@@ -165,26 +153,19 @@ pub struct VoiceGrant {
 pub struct CallSummary {
     /// The call as governance records it.
     pub state: CallState,
-    /// The chat app the call's voice channel belongs to.
     pub app_id: String,
-    /// The chat record holding the channel.
     pub record_id: String,
-    /// The voice channel.
     pub channel_id: String,
-    /// Who is in the call now.
     pub participants: Vec<VoiceParticipant>,
 }
 
-/// One participant of a call.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoiceParticipant {
     /// The participating device.
     pub device_public_key: [u8; 32],
     /// Its person.
     pub user_public_key: [u8; 32],
-    /// Its voice namespace.
     pub namespace: String,
-    /// Whether it may publish.
     pub publishes: bool,
     /// What it shows besides its voice.
     pub showing: Showing,
@@ -194,7 +175,6 @@ pub struct VoiceParticipant {
 /// on the carrier while it shows them (tilo-video/1, `tilo_moq::video`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Showing {
-    /// Its camera is on.
     pub camera: bool,
     /// It shares a screen.
     pub screen: bool,

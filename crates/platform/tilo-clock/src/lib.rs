@@ -388,7 +388,6 @@ mod tests {
 
     #[test]
     fn clocks_agree_on_units_move_only_as_told_and_never_backwards() {
-        // Phase `wall_clock_units_agree`.
         {
             let secs = unix_now();
             let ms = unix_now_ms();
@@ -398,7 +397,6 @@ mod tests {
             assert!(ns / 1_000_000 >= ms);
             assert_eq!(unix_now_i64(), i64::try_from(unix_now()).unwrap());
         }
-        // Phase `test_clocks_hold_and_move_as_told`.
         {
             assert_eq!(FixedClock(7).now_ms(), 7);
             let clock = ManualClock::new(10);
@@ -411,7 +409,6 @@ mod tests {
             clock.advance(10);
             assert_eq!(clock.now_ms(), u64::MAX);
         }
-        // Phase `monotonic_clock_never_moves_backwards`.
         {
             let first = MonotonicClock.now_ms();
             assert!(MonotonicClock.now_ms() >= first);

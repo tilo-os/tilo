@@ -218,9 +218,6 @@ impl SettingsApp {
 
     /// Ask for `setting`'s pane, scrolled to the setting with the keyboard
     /// on its control; it opens at the next sync.
-    ///
-    /// # Errors
-    /// Returns why `setting` names nothing Settings shows.
     pub fn request_setting(&self, setting: &str) -> Result<(), String> {
         let (category, setting) = setting_and_pane(setting)
             .ok_or_else(|| format!("Settings has no setting `{setting}`"))?;
@@ -1099,7 +1096,6 @@ impl SettingsApp {
     /// Scroll the pane so `setting`'s control is in sight, a little below
     /// the top so its card's heading shows too.
     fn scroll_to_control(&mut self, setting: &'static settings_store::index::Setting) {
-        /// The control's rect, under `widget`.
         fn control_rect(
             widget: &dyn Widget,
             setting: &settings_store::index::Setting,
@@ -1208,7 +1204,6 @@ fn row_of(
     walk(root, setting, &mut Vec::new())
 }
 
-/// The setting named `id` and the pane it is on.
 fn setting_and_pane(id: &str) -> Option<(Category, &'static settings_store::index::Setting)> {
     let setting = settings_store::index::setting(id)?;
     Some((Category::from_slug(setting.page)?, setting))
@@ -1596,8 +1591,6 @@ mod tests {
         ]);
     }
 
-    /// The category list stays capturable as its own full-screen screen, and
-    /// a busy pane lays out both wide and narrow.
     #[test]
     fn narrow_list_screen_and_busy_panes_lay_out() {
         assert_responsive_layouts(vec![
@@ -1635,7 +1628,6 @@ mod tests {
     /// Narrow headings, large-text viewports, readable sidebars and list-to-content navigation.
     #[test]
     fn narrow_and_large_text_navigation_keeps_destinations_visible() {
-        // Case `narrow_page_heading_explains_the_back_arrow_destination_without_overlap`.
         {
             fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
                 if out.is_none()
@@ -1663,7 +1655,6 @@ mod tests {
             );
         }
 
-        // Case `narrow_large_text_keeps_the_destination_in_the_initial_viewport`.
         {
             fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
                 if out.is_none()
@@ -1692,7 +1683,6 @@ mod tests {
             );
         }
 
-        // Case `wide_large_text_reserves_a_readable_sidebar_before_layout`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             let app = config.app().with_width_hint(1800.0);
@@ -1725,14 +1715,12 @@ mod tests {
             );
         }
 
-        // Case `narrow_pick_navigates_list_to_content_and_back`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             // Start on the list screen — the reachable back-tap state.
             let app = config.app().with_width_hint(440.0).with_category_list();
             let mut app = layout_at(app, 440.0, 820.0);
             assert!(app.sidebar_open(), "starts on the list screen");
-            // Picking a category drills into its content screen.
             app.select(Category::Users);
             assert!(app.take_structure_dirty(), "the pick requests a rebuild");
             Framed::harness_mut(&mut app)
@@ -1798,7 +1786,6 @@ mod tests {
         nav.set_filter("");
         assert!(nav.visible_item_ids().len() > filtered.len());
         nav.set_filter("night light");
-        // Re-syncing keeps the bar's query and rebuilds nothing.
         app.sync(&doc, &root);
         assert_eq!(app.search_query(), "night light");
         assert!(!app.take_structure_dirty());
@@ -1834,11 +1821,9 @@ mod tests {
                     "window chrome owns the app name; the shell may name its destination"
                 );
             }
-            // And the resolved layout is the wide split.
             assert!(shell.geometry().side_by_side);
         }
 
-        // Case `root_landmark_is_retained_across_responsive_shell_rebuilds`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             let app = config.app().with_category(Category::Appearance);

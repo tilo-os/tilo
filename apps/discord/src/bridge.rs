@@ -40,7 +40,6 @@ pub struct BridgePlan {
     pub observe: Vec<Value>,
     /// `start-thread`, then `map` the thread.
     pub threads: Vec<Value>,
-    /// `send`, then `map` the message.
     pub sends: Vec<Value>,
     pub edits: Vec<Value>,
     /// `delete`, then `unmap` the message.

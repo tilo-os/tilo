@@ -765,7 +765,6 @@ fn windows_blockers_and_remedies_follow_reader_facts() {
     }
 }
 
-/// GPT verification, create preconditions and raw IO ranges.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -887,7 +886,6 @@ fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
             ops::io_offset(MIB, GIB, 512, GIB - 512, 512).unwrap(),
             MIB + GIB - 512
         );
-        // Disjoint, contained, straddling.
         assert_eq!(ops::volume_extent_allowed(GIB, GIB, 0, GIB), Some(true));
         assert_eq!(ops::volume_extent_allowed(GIB, GIB, GIB, GIB), Some(true));
         assert_eq!(
@@ -907,7 +905,6 @@ fn windows_disk_io_verifies_gpt_preconditions_and_ranges() {
     }
 }
 
-/// Script interpolation and encoded commands.
 #[test]
 #[allow(
     clippy::too_many_lines,

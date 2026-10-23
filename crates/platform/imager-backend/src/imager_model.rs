@@ -1179,7 +1179,6 @@ mod tests {
     /// Source identity across handles, renames and equal bytes.
     #[test]
     fn source_identity_follows_the_file_across_handles_and_renames() {
-        // Phase `source_identity_tracks_the_file_across_handles_and_renames`.
         #[cfg(any(unix, windows))]
         {
             use super::SourceIdentity;
@@ -1213,7 +1212,6 @@ mod tests {
             assert_ne!(replacement, identity);
         }
 
-        // Phase `held_source_identity_survives_rename_and_distinguishes_same_bytes`.
         #[cfg(any(unix, target_os = "windows"))]
         {
             let root = tempfile::tempdir().unwrap();
@@ -1249,7 +1247,6 @@ mod tests {
     /// Sample data, release digests, capacity, sizes and target kinds.
     #[test]
     fn samples_releases_and_targets_are_classified_truthfully() {
-        // Phase `sample_has_usb_and_nvme_targets`.
         {
             let t = sample_targets();
             assert_eq!(t.len(), 2);
@@ -1259,7 +1256,6 @@ mod tests {
             assert!(!t[1].removable);
         }
 
-        // Phase `sample_source_is_installable_tilo`.
         {
             let s = sample_source();
             assert_eq!(s.kind, SourceKind::TiloImage);
@@ -1267,7 +1263,6 @@ mod tests {
             assert!(s.size > 0);
         }
 
-        // Phase `release_without_authenticated_image_digest_fails_closed`.
         {
             let mut release = sample_releases().remove(0);
             release.image_sha256.clear();
@@ -1277,7 +1272,6 @@ mod tests {
             assert!(source.expected_sha256.is_none());
         }
 
-        // Phase `fits_respects_capacity`.
         {
             let usb = &sample_targets()[0];
             assert!(usb.fits(2_000_000_000));
@@ -1285,7 +1279,6 @@ mod tests {
             assert!(usb.fits(0)); // unknown size always "fits" for the check
         }
 
-        // Phase `fmt_size_picks_sane_units`.
         {
             assert_eq!(fmt_size(0), "—");
             assert_eq!(fmt_size(512), "512 B");
@@ -1293,7 +1286,6 @@ mod tests {
             assert!(fmt_size(2_415_919_104).ends_with("GB"));
         }
 
-        // Phase `target_kind_classifies_from_lsblk`.
         {
             assert_eq!(
                 TargetKind::from_lsblk(false, Some("usb"), true),
@@ -1325,7 +1317,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn media_profile_serializes_migrates_and_validates_the_installer_contract() {
-        // Phase `embedded_profile_contains_only_applied_non_secret_fields`.
         {
             let prof = InstallProfile::sample_workstation();
             let src = sample_source();
@@ -1341,7 +1332,6 @@ mod tests {
             assert!(!cfg.contains(&prof.user.password) || prof.user.password.contains('•'));
         }
 
-        // Phase `every_filesystem_serializes_to_the_installer_contract`.
         {
             for filesystem in Filesystem::all() {
                 let profile = InstallProfile {
@@ -1354,7 +1344,6 @@ mod tests {
             }
         }
 
-        // Phase `media_profile_validation_rejects_each_consumer_invalid_field`.
         {
             let good = InstallProfile::default();
             good.validate_media_profile().unwrap();
@@ -1390,7 +1379,6 @@ mod tests {
             }
         }
 
-        // Phase `round_trips_through_json`.
         {
             let prof = InstallProfile::sample_workstation();
             let json = serde_json::to_string(&prof).unwrap();
@@ -1408,7 +1396,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn step_and_progress_state_advance() {
-        // Phase `step_flow_advances_and_retreats_and_saturates`.
         {
             assert_eq!(Step::Source.next(), Step::Drive);
             assert_eq!(Step::Drive.next(), Step::Customize);
@@ -1422,13 +1409,11 @@ mod tests {
 
             assert_eq!(Step::Source.prev(), Step::Source, "first step saturates");
             assert_eq!(Step::all().len(), 6);
-            // Every station round-trips through its stable document key.
             for s in Step::all() {
                 assert_eq!(Step::from_key(s.key()), s);
             }
         }
 
-        // Phase `progress_overall_and_eta_track_phase`.
         {
             let idle = Progress::default();
             assert_eq!(idle.overall(), 0.0);

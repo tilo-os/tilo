@@ -46,7 +46,6 @@ pub(super) struct CommentRows {
     pub text_h: f64,
     /// The replies line.
     pub replies_top: f64,
-    /// The action row.
     pub actions_top: f64,
     pub height: f64,
 }
@@ -78,7 +77,6 @@ impl ChromeMetrics {
     }
 }
 
-/// A card in the dock.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum DockCard {
     /// The chart at this index of the sheet's charts.

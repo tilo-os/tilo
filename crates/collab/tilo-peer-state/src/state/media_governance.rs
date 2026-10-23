@@ -326,7 +326,6 @@ impl PeerMediaGovernanceMut<'_> {
         *self.peer = candidate;
         Ok(true)
     }
-    /// Author a room media policy as the governance writer.
     pub fn author_media_policy(
         self,
         policy: &RoomMediaV1,

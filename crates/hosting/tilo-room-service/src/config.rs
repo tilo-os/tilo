@@ -527,7 +527,6 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
 pub struct AttachmentQuota {
     /// The largest file kept.
     pub max_file: Option<u64>,
-    /// One member's files together.
     pub per_member: Option<u64>,
     /// Everyone's files together.
     pub per_room: Option<u64>,
@@ -862,7 +861,6 @@ mod tests {
         );
         assert!(with(&[("TILO_ROOMS_LIVE_ORIGIN", "http://live.example")]).is_err());
         assert!(with(&[("TILO_ROOMS_LIVE_ORIGIN", "https://live.example/moq")]).is_err());
-        // Without an ingress there is nothing to bypass.
         assert!(
             config(&[
                 ("TILO_ROOMS_PERSISTENT", "plaza"),

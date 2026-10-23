@@ -763,8 +763,6 @@ impl MailApp {
         }
     }
 
-    // ---- screenshot staging ----------------------------------------------
-
     /// Stage the view state screenshot `scenario` shows over the fixture
     /// mailbox. Runs in the sync after the framework asked for it, with the
     /// document, so a scenario that changes mail (moving messages to Trash
@@ -978,8 +976,6 @@ impl MailApp {
             .is_some_and(|pending| pending.kind == kind)
     }
 
-    // ---- window shell -----------------------------------------------------
-
     /// The window shell: the sidebar of accounts and folders, the message
     /// list and the open message. Its toolbar is the window bar's slots
     /// ([`crate::window_bar`]).
@@ -1054,8 +1050,6 @@ impl MailApp {
             folder.title(),
         ))
     }
-
-    // ---- intent processing ------------------------------------------------
 
     /// The message currently selected, if any. Lets a test observe where a
     /// Ctrl+K activation navigated.
@@ -1308,8 +1302,6 @@ impl MailApp {
         self.process_intents();
     }
 
-    // ---- row menu ---------------------------------------------------------
-
     /// Open the row menu for `id` at `at`, beside `row` when known.
     fn open_menu(&mut self, id: MessageId, at: Point, row: Option<Rect>) {
         let (items, read, starred) = {
@@ -1490,8 +1482,6 @@ impl MailApp {
         let at = Point::new(column.x0 + column.width() * 0.6, row.center().y);
         self.open_menu(id, at, Some(row));
     }
-
-    // ---- permanent deletion -----------------------------------------------
 
     fn open_purge_confirmation(&mut self, count: usize) {
         let answer = Rc::new(Cell::new(None));
@@ -1951,8 +1941,6 @@ impl MailApp {
         id
     }
 
-    // ---- accounts ----------------------------------------------------------
-
     /// Whether the app is at first run (no account configured) and should show
     /// the onboarding screen rather than an empty mailbox.
     fn is_first_run(&self) -> bool {
@@ -1977,8 +1965,6 @@ impl MailApp {
         self.close_menu();
         self.dirty = true;
     }
-
-    // ---- sync / refresh ---------------------------------------------------
 
     /// Post a fetch of the currently-viewed folder for the active account, and
     /// show a syncing indicator. Used by the manual-refresh shortcut and the
@@ -2092,8 +2078,6 @@ impl MailApp {
         Some(ui::time::now() + std::time::Duration::from_secs(seconds))
     }
 
-    // ---- transient status toast ------------------------------------------
-
     /// Hand a newly-set status to the shell, which shows it as a toast and
     /// lets it fade on its own.
     fn show_status(&mut self) {
@@ -2135,8 +2119,6 @@ impl MailApp {
             ToastKind::Success
         }
     }
-
-    // ---- engine drain -----------------------------------------------------
 
     /// A watched inbox of `account_id` changed: fetch it, if the account is
     /// still on this device.
@@ -3051,8 +3033,6 @@ impl MailApp {
         ))
     }
 
-    // ---- test / probe accessors ------------------------------------------
-
     /// The column in front of a narrow window (for tests / probes).
     pub fn nav_pane(&self) -> NavPane {
         self.nav.front_pane()
@@ -3241,8 +3221,6 @@ fn report_account_sync(
         tracing::warn!(%error, account = account_id, "mail: could not persist sync status");
     }
 }
-
-// =============================== Widget impl ===============================
 
 impl MailApp {
     /// The loaded mailbox, which search reads its messages from.
@@ -5678,7 +5656,6 @@ mod tests {
             "a reply has its recipient and account"
         );
 
-        // A new message waits for a recipient.
         app.compose.open_blank();
         app.sync(&doc, &automerge::ROOT);
         app.layout_for_test(1280.0, 800.0);
@@ -6419,7 +6396,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn calendar_invitation_handoff_creates_reviewable_drafts_and_refuses_bad_payloads() {
-        // Phase `calendar_invitation_handoff_creates_a_durable_reviewable_draft`.
         {
             let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:event@example\r\nDTSTART:20260915T120000Z\r\nDTEND:20260915T130000Z\r\nSUMMARY:Review\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             let draft = prepare_calendar_invitation_draft(
@@ -6448,7 +6424,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert_eq!(steps, 1, "saving the draft is one undo step");
         }
 
-        // Phase `calendar_invitation_handoff_refuses_malformed_and_oversized_payloads`.
         {
             let valid = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:x\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             assert!(prepare_calendar_invitation_draft("bad", "Invite", "", valid).is_err());
@@ -6489,14 +6464,12 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn pane_layout_reflows_between_wide_and_narrow_and_navigates_folders() {
-        // Phase `starts_in_mailbox_with_a_selection`.
         {
             let (app, _) = app();
             assert!(app.shared.borrow().selected.is_some());
             assert_eq!(app.shared.borrow().folder, Folder::Inbox);
         }
 
-        // Phase `wide_shows_three_columns_abreast`.
         {
             let (mut app, _doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -6528,7 +6501,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert!(app.shared.borrow().narrow);
         }
 
-        // Phase `narrow_open_message_pushes_detail_then_back`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(560.0, 860.0);
@@ -6561,7 +6533,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `narrow_then_wide_reflows_to_three_columns`.
         {
             let (mut app, _doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -6585,7 +6556,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `choosing_a_folder_switches_the_list`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -6640,7 +6610,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn accessibility_routes_panes_reader_attachments_and_context_menu() {
-        // Phase `accessibility_tracks_compact_panes_and_routes_mailbox_activation`.
         {
             use ui::a11y::{Action, Role as A11yRole};
 
@@ -6716,7 +6685,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `accessibility_exposes_attachment_save_through_the_portal_boundary`.
         {
             use ui::a11y::{Action, Role as A11yRole};
 
@@ -6761,7 +6729,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `accessibility_routes_reader_and_modal_controls_to_existing_actions`.
         {
             use ui::a11y::{Action, Role as A11yRole};
 
@@ -6846,7 +6813,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `the_row_menu_is_the_shared_menu_and_applies_its_action`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -6887,7 +6853,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn opening_marks_read_through_the_document_action_and_preview_stays_neutral() {
-        // Phase `selecting_message_marks_read_and_persists`.
         {
             let (app, mut doc) = app();
             let id = {
@@ -6914,7 +6879,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `resource_open_marks_message_read_through_the_document_action`.
         {
             let (mut app, mut doc) = app();
             let id = app
@@ -6955,7 +6919,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `resource_opens_before_one_sync_each_keep_normal_read_semantics`.
         {
             let (mut app, mut doc) = app();
             let ids: Vec<_> = app
@@ -7036,7 +6999,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `explicit_resource_preview_keeps_an_unread_message_unread_and_announces_that_fact`.
         {
             let (mut app, mut doc) = app();
             let id = app
@@ -7091,7 +7053,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `shortcut_enter_opens_and_records_the_same_read_action_as_a_row`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -7124,7 +7085,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 
-        // Phase `shortcut_p_is_explicit_read_neutral_preview`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -7163,7 +7123,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
-        // Phase `resource_compose_actions_open_the_same_private_composer_without_mutating_mail`.
         {
             let (mut app, mut doc) = app();
             let message = {
@@ -7211,7 +7170,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `sending_queues_the_message_in_the_outbox_until_it_is_delivered`.
         {
             let (mut app, mut doc) = app();
             let before = app.shared.borrow().mailbox.count(Folder::Sent);
@@ -7288,7 +7246,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                 .expect("the delivery answered")
                 .expect("refused for good, not tried again");
             assert!(!settled.is_done());
-            // The outbox drain records how it settled.
             TestMail::settle_delivery(&mut doc, &outgoing.id, &settled);
             let outbox = TestMail::outbox(&doc);
             assert!(
@@ -7300,7 +7257,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                 "a refused message comes back to the composer"
             );
 
-            // Sending it again replaces the refused one.
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
             TestMail::confirm(&mut doc, &dispatcher);
             let outbox = TestMail::outbox(&doc);
@@ -7310,10 +7266,8 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `reply_all_seeds_sender_in_to_and_others_in_cc`.
         {
             let (mut app, mut doc) = app();
-            // A message with more than one recipient.
             let id = {
                 let st = app.shared.borrow();
                 st.mailbox
@@ -7354,7 +7308,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `save_draft_lands_in_drafts_and_reopens`.
         {
             let (mut app, mut doc) = app();
             let before = app.shared.borrow().mailbox.count(Folder::Drafts);
@@ -7382,7 +7335,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                 "the draft appears in Drafts"
             );
 
-            // Reopening the Drafts message re-seeds the composer for editing.
             let id = {
                 let st = app.shared.borrow();
                 st.mailbox
@@ -7409,7 +7361,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert_eq!(app.editing_draft, Some(id));
         }
 
-        // Phase `saving_edited_draft_updates_in_place_not_duplicates`.
         {
             let (mut app, mut doc) = app();
             app.compose.open_blank();
@@ -7421,7 +7372,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             });
             app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
             let after_first = app.shared.borrow().mailbox.count(Folder::Drafts);
-            // Re-open + re-save the same draft.
             let id = app.editing_draft.expect("editing the saved draft");
             app.open_draft(id);
             app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
@@ -7432,7 +7382,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `shortcut_c_opens_compose`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -7444,7 +7393,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert!(app.compose.open, "'c' opened the composer");
         }
 
-        // Phase `compose_picker_completion_wakes_without_animation_and_stops_polling`.
         {
             for (outcome, expected) in [
                 (
@@ -7535,7 +7483,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                 .unwrap_or_default()
         }
 
-        // Phase `bulk_purge_requires_an_explicit_modal_confirmation`.
         {
             use ui::a11y::Role;
 
@@ -7568,7 +7515,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             let dialog = app.accessibility().expect("modal accessibility");
             assert_eq!(dialog.role, Role::Dialog);
 
-            // Escape dismisses without deleting anything.
             assert!(dispatch(&mut app, &esc_event(), &mut doc));
             assert!(app.bulk_purge_confirmation.is_none());
             assert!(
@@ -7576,7 +7522,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                     .all(|id| app.shared.borrow().mailbox.get(*id).is_some())
             );
 
-            // Confirming deletes them.
             app.shared
                 .borrow_mut()
                 .push_intent(Intent::ConfirmBulkPurge);
@@ -7590,7 +7535,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
                 "Enter cancels a permanent delete"
             );
 
-            // Operating "Delete permanently" deletes them.
             app.shared
                 .borrow_mut()
                 .push_intent(Intent::ConfirmBulkPurge);
@@ -7614,7 +7558,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `context_and_swipe_actions_are_mirrored`.
         {
             let (app, _doc) = app();
             let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
@@ -7626,7 +7569,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert!(menu.contains(&CtxAction::Delete));
         }
 
-        // Phase `context_menu_click_applies_the_action`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -7647,7 +7589,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert!(!app.menu.is_open(), "menu dismissed after the action");
         }
 
-        // Phase `context_menu_keyboard_moves_focus_and_activates_the_visible_action`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -7673,7 +7614,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert!(!app.menu.is_open());
         }
 
-        // Phase `the_menu_accelerators_act_on_its_message`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -7694,7 +7634,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         reason = "the regression test spells out a complete interleaving so ownership mistakes remain diagnosable"
     )]
     fn engine_events_settle_only_their_own_request() {
-        // Phase `interleaved_engine_events_only_settle_their_own_request`.
         {
             let mut fixture = InterleavedEngineFixture::new();
             let deadline = fixture
@@ -7808,7 +7747,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `completed_refresh_cannot_be_replaced_before_its_owner_polls`.
         {
             let (mut app, _doc) = app();
             let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
@@ -7846,7 +7784,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
     /// live window keeps them in its host's profile.
     #[test]
     fn account_roots_follow_each_mode() {
-        // Phase `sample_mode_persists_to_a_sandbox_not_the_real_store`.
         {
             // Regression guard for the leak where the bundled demo accounts
             // (you@example.test, you@hooli.example, new@host.example) ended up in the
@@ -7868,7 +7805,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `a_live_window_persists_into_its_hosts_profile`.
         {
             // A session window keeps the person's accounts; a test, capture or
             // `--data-dir` profile keeps its own beside its settings document.
@@ -7907,7 +7843,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn presentation_state_stays_local() {
-        // Phase `presentation_state_is_local_and_never_restored_from_a_peer_document`.
         {
             let mut doc = crate::resource::TestMail::doc();
             {
@@ -7951,7 +7886,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `active_account_selection_persists_locally_without_touching_automerge`.
         {
             let (mut app, mut doc) = app();
             let selected_id = app.shared.borrow().accounts.accounts[1].id.clone();
@@ -7978,7 +7912,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `first_run_shows_onboarding_and_links_to_settings`.
         {
             let mut first = MailApp::new_first_run();
             let mut doc = crate::resource::TestMail::doc();
@@ -8032,7 +7965,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert_eq!(app.opened_links, ["settings://external_accounts"]);
         }
 
-        // Phase `status_shows_as_the_shell_toast`.
         {
             let (mut app, _doc) = app();
             app.shared.borrow_mut().status = Some("Synced 3 messages".into());
@@ -8051,7 +7983,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn keyboard_shortcuts_drive_the_visible_triage_actions() {
-        // Phase `shortcut_reference_is_modal_and_explains_open_vs_preview`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -8073,7 +8004,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert!(!app.shortcuts.visible(), "Escape dismisses the modal sheet");
         }
 
-        // Phase `shortcut_e_archives_selected`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -8091,7 +8021,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `reader_shortcuts_reply_star_and_mark_unread_through_visible_paths`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -8117,7 +8046,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert_eq!(TestMail::get_read(&doc, &id.to_string()), Some(false));
         }
 
-        // Phase `shortcut_arrow_down_moves_selection`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
@@ -8130,7 +8058,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `shortcut_delete_trashes_selected`.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);

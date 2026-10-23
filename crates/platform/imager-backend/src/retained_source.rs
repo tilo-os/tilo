@@ -36,9 +36,6 @@ impl From<Unsupported> for io::Error {
 }
 
 /// Run the source role over the canonical launcher's fixed projection.
-/// # Errors
-/// Returns an error if launcher authentication, source admission, provider IO or
-/// retirement fails, or if retained-source services are unsupported on this host.
 pub fn run(home: bool) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -52,9 +49,6 @@ pub fn run(home: bool) -> io::Result<()> {
 }
 
 /// Run the target-credential FUSE worker over its already admitted channel.
-/// # Errors
-/// Returns an error if bootstrap or credential validation, provider setup, FUSE
-/// service or cleanup fails, or if this host is unsupported.
 pub fn run_target_projection() -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {

@@ -148,7 +148,6 @@ impl DestinationChannel {
         Self(Pending::Direct(channel))
     }
 
-    /// Answered at once with `outcome`.
     pub fn answered(outcome: DestinationOutcome) -> Self {
         Self::from_outcomes(answered(outcome))
     }

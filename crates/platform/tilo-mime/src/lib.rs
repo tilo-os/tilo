@@ -40,7 +40,6 @@ pub fn from_path(path: impl AsRef<Path>) -> Option<&'static str> {
     from_ext(path.as_ref().extension()?.to_str()?)
 }
 
-/// [`from_path`], or [`OCTET_STREAM`].
 #[must_use]
 pub fn from_path_or_octet_stream(path: impl AsRef<Path>) -> &'static str {
     from_path(path).unwrap_or(OCTET_STREAM)

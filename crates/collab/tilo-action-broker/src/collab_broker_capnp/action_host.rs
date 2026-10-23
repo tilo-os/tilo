@@ -77,7 +77,6 @@ pub(super) struct LaunchDestination {
 }
 
 impl BrokerActor {
-    /// The broker actor a caller is admitted as.
     #[must_use]
     pub(super) fn for_caller(caller: &Caller) -> Self {
         match caller.principal() {
@@ -412,12 +411,10 @@ pub(super) enum RowScope<'a> {
     None,
     /// Every row the caller is offered.
     All,
-    /// The rows of this one provider.
     Provider(&'a str),
 }
 
 impl RowScope<'_> {
-    /// Whether rows of `provider` are built.
     fn wants(self, provider: &str) -> bool {
         match self {
             Self::None => false,
@@ -496,11 +493,6 @@ impl CapnpBrokerState {
     /// declare `[actions] query`; invoking another app's action needs
     /// `[actions] invoke` and is then decided for the app, which holds no
     /// role and has only what the workspace grants it.
-    ///
-    /// # Errors
-    ///
-    /// The refusal to answer with, when the request is outside what the app
-    /// declared.
     pub(crate) fn app_door(
         &self,
         person: &Caller,
@@ -2842,10 +2834,6 @@ impl CapnpBrokerState {
 
     /// Launch `app_id` into `workspace`, optionally opening content-addressed
     /// bytes read-only, and record the terminal outcome as an invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not launch the application or no launcher is installed.
     pub(super) fn launch_application(
         &self,
         custody: (&Caller, Option<&super::InvocationCaller>, &str),
@@ -3583,7 +3571,6 @@ mod app_close_tests {
                 .iter()
                 .any(|provider| provider.provider == "4")
         );
-        // The workspace's own rows read it once, for open and close alike.
         let (page, listed) = answered(&state, &launcher, &caller, &query(Some(&workspace), 64));
         assert_eq!(listed, 1);
         assert!(page.rows.iter().all(|row| row.provider == workspace));

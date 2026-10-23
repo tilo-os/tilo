@@ -741,7 +741,6 @@ mod tests {
             let sugg = path_completions("~/Pro", Some(home.path()));
             assert_eq!(sugg.len(), 1);
             assert_eq!(sugg[0].label, "Projects");
-            // The inserted value stays in ~-form for readability.
             assert!(
                 sugg[0].value.starts_with("~/Projects"),
                 "value: {}",

@@ -44,7 +44,6 @@ impl NativePublicationCut {
         Ok((self, report))
     }
 
-    /// Finish the cut, returning the candidate peer.
     pub fn finish(mut self, now: SystemTime) -> Result<StatePeer, AdmissionError> {
         let publisher = self
             .candidate
@@ -97,7 +96,6 @@ fn pending_stamp(pending: &([u8; 32], NeighbourMsg, bool)) -> Result<[u8; 32], A
 }
 
 impl StatePeer {
-    /// Begin a native publication cut for `publisher`.
     pub fn begin_native_publication_cut(
         &self,
         publisher: [u8; 32],

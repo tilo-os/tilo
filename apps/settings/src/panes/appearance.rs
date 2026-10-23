@@ -889,7 +889,6 @@ mod tests {
                 .contains("Accessibility options")
         );
 
-        // The row takes the person to Accessibility, which has the controls.
         let link =
             ui::widget::find_test_id(app.harness().root_widget(), "appearance.accessibility")
                 .expect("the link is shown")
@@ -915,7 +914,6 @@ mod tests {
                 "Accessibility shows {control} once: {accessibility:?}"
             );
         }
-        // Search and links find them in Accessibility.
         for setting in [
             "appearance.high_contrast",
             "appearance.reduce_motion",

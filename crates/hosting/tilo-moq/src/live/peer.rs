@@ -119,12 +119,10 @@ impl Peer {
         ))
     }
 
-    /// The `MoQ` session.
     pub fn session(&self) -> &moq_net::Session {
         &self.connected.session
     }
 
-    /// The own `presence` track, when publishing.
     pub fn presence(&mut self) -> Option<&mut moq_net::track::Producer> {
         self.presence.as_mut()
     }
@@ -160,7 +158,6 @@ impl Peer {
         self.records.get_mut(record).map(|(_, track)| track)
     }
 
-    /// Write one frame as its own group on `record`.
     pub fn write_record(&mut self, record: &str, frame: &[u8]) -> bool {
         let Some(track) = self.record(record) else {
             return false;

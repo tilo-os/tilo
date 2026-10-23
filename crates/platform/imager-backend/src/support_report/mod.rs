@@ -305,7 +305,6 @@ pub enum SupportReason {
     DisplayDisconnected,
     /// A display is connected but not active.
     DisplayInactive { device: String },
-    /// One or more displays are active.
     DisplaysActive {
         internal: usize,
         external: usize,
@@ -362,9 +361,7 @@ pub enum Remedy {
     CheckDriver,
     /// Sign in with a password instead.
     PasswordSignIn,
-    /// Use an external USB camera.
     ExternalCamera,
-    /// Use an external keyboard.
     ExternalKeyboard,
     /// Check power settings after installation.
     PowerSettings,
@@ -557,16 +554,12 @@ impl SupportReport {
     }
 
     /// A model named for another computer. It carries no component results.
-    /// # Errors
-    /// Returns why the declared model is not specific enough.
     pub fn declared_model(manufacturer: &str, model: &str, variant: &str) -> Result<Self, String> {
         Self::declared_model_with(manufacturer, model, variant, None, None)
     }
 
     /// A model named for another computer, with the optional board and SKU
     /// that distinguish otherwise identical model names.
-    /// # Errors
-    /// Returns why the declared model is not specific enough.
     pub fn declared_model_with(
         manufacturer: &str,
         model: &str,

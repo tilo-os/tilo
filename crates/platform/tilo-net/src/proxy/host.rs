@@ -143,7 +143,6 @@ pub struct RateLimits {
     /// Requests per destination host, from every device together, so the
     /// host cannot be turned on one site.
     pub destination_requests: Rate,
-    /// Requests one device has in flight at once.
     pub device_in_flight: usize,
     /// Requests in flight at once, in total.
     pub in_flight: usize,
@@ -1722,7 +1721,6 @@ mod tests {
         assert!(buckets.take(&device, 1.0, now).is_ok());
         assert!(buckets.take(&device, 1.0, now).is_ok());
         assert_eq!(buckets.take(&device, 1.0, now), Err(Duration::from_secs(1)));
-        // Another device has its own budget.
         assert!(buckets.take(&Caller([2; 32]), 1.0, now).is_ok());
         let later = now.checked_add(Duration::from_secs(1)).unwrap();
         assert!(buckets.take(&device, 1.0, later).is_ok());

@@ -211,7 +211,6 @@ fn general(app: &TestApp<ChatShell>) -> (String, crate::model::Channel) {
     (item("channels", &channel.id), channel)
 }
 
-/// Every message of the chat `app` holds.
 fn messages(app: &mut TestApp<ChatShell>) -> Vec<crate::model::Message> {
     let held = crate::testing::mounted_messages(app);
     let chat = app.state();

@@ -5,10 +5,6 @@ use std::{
 };
 
 /// Install staged setup into the installed root of a regular image file.
-///
-/// # Errors
-/// Returns an error if the target is not a regular file, no installed root is
-/// found, or metadata lookup, temporary-directory creation, mounting or `install` fails.
 pub fn apply_handoff_stage_to_image_file(
     image: &Path,
     staged: &Path,
@@ -72,10 +68,6 @@ pub fn apply_handoff_stage_to_device(
 /// A regular file that is a GUID-partition or qcow2 disk image is not.
 /// Hiding Wi-Fi and identity in its slack reports success, and a VM boot of
 /// that file never reads it.
-///
-/// # Errors
-/// Returns an error if disk-image detection fails, the target is a regular disk
-/// image without an inspected root, or `embed` fails.
 pub fn handoff_when_root_was_not_found(
     device: &Path,
     image_len: u64,
@@ -92,9 +84,6 @@ pub fn handoff_when_root_was_not_found(
 }
 
 /// Detect a regular file with a qcow2 header or a primary GPT signature.
-///
-/// # Errors
-/// Returns metadata, open or read errors from inspecting the target.
 pub fn regular_file_is_disk_image(device: &Path) -> io::Result<bool> {
     let meta = std::fs::metadata(device)?;
     if !meta.is_file() {

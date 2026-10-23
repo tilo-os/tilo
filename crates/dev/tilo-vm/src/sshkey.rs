@@ -48,7 +48,6 @@ pub fn keygen_command(key: &Path, name: &str) -> CommandLine {
         .arg(key.display().to_string())
 }
 
-/// The public key line of `key`.
 pub fn read_public(key: &Path) -> Result<String, CliError> {
     let path = public_path(key);
     let text =

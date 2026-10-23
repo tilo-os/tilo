@@ -125,11 +125,6 @@ fn show(
 /// Show `request`'s panel modally in a process of its own, which becomes a
 /// foreground app for as long as it shows: the runtime's chooser for a
 /// confined app. The picked local paths, or `None` when cancelled.
-///
-/// # Errors
-///
-/// Not on the main thread, or the panel returned something that is not a
-/// local file.
 pub(crate) fn show_modal(request: &PickRequest) -> Result<Option<Vec<std::path::PathBuf>>, String> {
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
     let mtm = MainThreadMarker::new().ok_or("the file panel must run on the main thread")?;

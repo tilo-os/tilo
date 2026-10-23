@@ -852,10 +852,8 @@ mod tests {
         assert!(
             matches!(&item.source, StoreSource::Tilo { registry_name } if registry_name == MAIN)
         );
-        // Still within its validity, the verified catalogue's update stands.
         assert!(item.installed.update_available());
         assert!(details(&state)["detail"].get("notice").is_none());
-        // The outage itself is still reported.
         assert!(
             state
                 .catalogue_error

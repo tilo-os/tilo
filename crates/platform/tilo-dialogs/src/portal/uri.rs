@@ -42,10 +42,6 @@ pub struct ScopedUriFixture {
 }
 /// Select a backend only for requests dispatched on this test UI thread.
 /// The real original-caller check runs before the captured backend is called.
-///
-/// # Errors
-///
-/// When this UI thread already owns a URI fixture.
 #[cfg(any(test, feature = "test-support"))]
 pub fn scoped_uri_fixture(backend: ScopedUriBackend) -> Result<ScopedUriFixture, String> {
     SCOPED_URI_FIXTURE.with(|current| {
