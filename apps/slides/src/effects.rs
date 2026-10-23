@@ -99,7 +99,7 @@ pub enum SlidesEffect {
     /// Open a `.pptx` the room holds as content (an attachment, a shared
     /// file, an export) into this deck while it is new and untouched; a deck
     /// someone wrote is never replaced. Answers the imported outline.
-    #[effect(returns, audience = "agents")]
+    #[effect(returns, kind = "undoable", audience = "agents")]
     ImportPptxContent {
         #[param(content, "The deck's content address, `tilo.content:<hash>`")]
         content: String,

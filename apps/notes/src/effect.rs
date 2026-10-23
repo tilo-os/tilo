@@ -52,7 +52,7 @@ pub enum NotesEffect {
     /// Import Markdown content
     ///
     /// Add Markdown text to the notebook as a note, with no file to choose.
-    #[effect(returns, audience = "agents")]
+    #[effect(returns, kind = "undoable", audience = "agents")]
     ImportMarkdownContent {
         #[param("Note title")]
         title: String,

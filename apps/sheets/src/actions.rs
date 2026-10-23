@@ -75,7 +75,7 @@ pub enum SheetsEffect {
     /// percent and date formats and hidden sheets; a new workbook's untouched
     /// blank sheet gives way to them. The same content imported again is
     /// not added twice.
-    #[effect(returns, audience = "agents")]
+    #[effect(returns, kind = "undoable", audience = "agents")]
     ImportXlsxContent {
         #[param(content, "The workbook's content address, `tilo.content:<hash>`")]
         content: String,
