@@ -87,13 +87,35 @@ pub enum VideoEditorEffect {
     /// Cancel export.
     #[effect(destructive)]
     CancelExport,
+    /// Import content.
+    ///
+    /// Brings a video, sound or picture the room holds, by its content
+    /// address, into the bin. Its kind, length, frame size and rate come
+    /// from its container. Answers the new source: place it with add-clip.
+    /// Importing the same content again answers the source already there.
+    #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
+    ImportContent {
+        #[param(content, "The media's content address, tilo.content:<hash>")]
+        content: String,
+        #[param("The source's name in the bin, e.g. interview.mp4; made up when omitted")]
+        name: Option<String>,
+        #[param("Seconds the source lasts, used only when its container does not say")]
+        duration: Option<f64>,
+    },
+    /// Export timeline.
+    ///
+    /// Keeps the timeline as JSON content, what read answers with, and
+    /// answers its content address. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportTimelineContent,
     /// Render video.
     ///
     /// Renders the timeline, or a part of it, on this device into a video
     /// kept as content, and answers with its content address, the range it
     /// covers and its size. Changes nothing; putting the video in a file is
-    /// another action that takes the content.
-    #[effect(kind = "read", job, cancellable, returns)]
+    /// another action that takes the content. An agent's host renders it in
+    /// its render service, as mp4 at 720p or 1080p.
+    #[effect(kind = "read", job, cancellable, returns, host_render)]
     Render {
         #[param("Seconds on the timeline where it begins; omit for the render range's start")]
         start: Option<f64>,
@@ -103,6 +125,65 @@ pub enum VideoEditorEffect {
         format: Option<String>,
         #[param("The picture's height; 1080p when omitted", choices = ["720p", "1080p", "2160p"])]
         size: Option<String>,
+    },
+    /// Export video content.
+    ///
+    /// Renders the timeline (its render range when marked) to an MP4 kept as
+    /// content, deterministically: the same cut at the same settings is the
+    /// same content. Answers state done with the content address, frames,
+    /// duration and size; or state rendering with a job to ask
+    /// export-video-status about when the wait ran out. Sources must be room
+    /// content (import-content); at most two minutes. Changes nothing.
+    #[effect(kind = "read", returns, audience = "agents", host_render)]
+    ExportVideoContent {
+        #[param("The file format: mp4, the only one; mp4 when omitted", choices = ["mp4"])]
+        format: Option<String>,
+        #[param(
+            "Frame width in pixels, even, at most 1920; from the height and the project's aspect when omitted, 1280 when both are"
+        )]
+        width: Option<u32>,
+        #[param(
+            "Frame height in pixels, even, at most 1080 (1920 when portrait); 720 when both are omitted"
+        )]
+        height: Option<u32>,
+        #[param("Frames per second: 24, 30 or 60; 30 when omitted")]
+        fps: Option<u32>,
+        #[param(
+            "Seconds to wait for the render before answering with its job, 0 to 120; 60 when omitted"
+        )]
+        wait: Option<u32>,
+    },
+    /// Export video status.
+    ///
+    /// Answers where a render export-video-content started has got to: done
+    /// with its content, still rendering with frames done of total, or failed
+    /// with why. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents", host_render)]
+    ExportVideoStatus {
+        #[param("The render's job, from export-video-content's answer")]
+        job: String,
+        #[param("Seconds to wait for it to finish, 0 to 120; 60 when omitted")]
+        wait: Option<u32>,
+    },
+    /// Cancel video export.
+    ///
+    /// Stops a render export-video-content started; answers it as failed.
+    #[effect(kind = "read", returns, idempotent, audience = "agents", host_render)]
+    CancelVideoExport {
+        #[param("The render's job, from export-video-content's answer")]
+        job: String,
+    },
+    /// View frame content.
+    ///
+    /// Draws the timeline at one time as a PNG kept as content, to check a
+    /// cut by eye: answers its content address, the time and its size.
+    /// Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents", host_render)]
+    ViewFrameContent {
+        #[param("Seconds on the timeline to view")]
+        at: f64,
+        #[param("The picture's width in pixels, even, 16 to 1920; 640 when omitted")]
+        width: Option<u32>,
     },
 }
 

@@ -5778,7 +5778,8 @@ impl PdfApp {
             PdfEffect::OpenPdf { .. }
             | PdfEffect::SaveAs { .. }
             | PdfEffect::ReadText { .. }
-            | PdfEffect::LookPage { .. } => {
+            | PdfEffect::LookPage { .. }
+            | PdfEffect::ImportPdfContent { .. } => {
                 return false;
             }
         }
@@ -5881,7 +5882,7 @@ impl PdfApp {
             (None, None) => {
                 return Err(match &self.record_source {
                     Some(source) => format!("{} is not on this device yet", source.name),
-                    None => "this record holds no PDF to read yet".to_owned(),
+                    None => content_import::NO_PDF.to_owned(),
                 });
             }
         };
@@ -6029,6 +6030,7 @@ impl PdfApp {
     }
 }
 
+mod content_import;
 mod scroll_damage;
 use scroll_damage::CanvasShown;
 
@@ -6161,7 +6163,7 @@ mod tests {
         let mut app = PdfApp::empty_with_content(content);
         assert_eq!(
             app.read_text(None, None).unwrap_err(),
-            "this record holds no PDF to read yet"
+            content_import::NO_PDF
         );
         app.record_source = Some(crate::markup::PinnedSource {
             hash,

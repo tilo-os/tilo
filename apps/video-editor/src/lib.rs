@@ -52,6 +52,8 @@
     reason = "app-local arithmetic; see the note above"
 )]
 pub mod actions;
+pub mod agent_render;
+pub mod agent_timeline;
 pub mod app;
 pub mod audio;
 pub mod curve;
@@ -67,6 +69,7 @@ pub mod presence;
 pub mod preview;
 pub mod probe;
 pub mod project_file;
+pub mod render_helper;
 pub mod resource;
 pub mod search;
 pub mod seed;

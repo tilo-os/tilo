@@ -563,6 +563,9 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
             )
             .map(ui::framework::Effected::value);
         }
+        if let ChatEffect::ExportContent { channel, format } = &effect {
+            return self.export_transcript(&cx.live().get(), channel, format.as_deref());
+        }
         if let ChatEffect::ReadRoom { message, channel } = &effect {
             let chat = cx.live().get();
             return Ok(ui::framework::Effected::value(crate::effects::read_room(
@@ -613,6 +616,43 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
                 ))
             })
             .collect()
+    }
+}
+
+impl ChatApp {
+    /// Keep `channel`'s transcript as content ([`ChatEffect::ExportContent`]).
+    fn export_transcript(&self, chat: &Chat, channel: &str, format: Option<&str>) -> EffectAnswer {
+        let id = Id::from_raw(channel);
+        let found = chat
+            .channels
+            .get(&id)
+            .filter(|found| found.conversation_with.is_none())
+            .ok_or_else(|| format!("there is no channel `{channel}` in this chat"))?;
+        let held = self.held_messages();
+        let mut messages: Vec<_> = held
+            .iter()
+            .filter(|(_, message)| message.channel == id)
+            .collect();
+        // Oldest first; posts of one second keep the chain's order.
+        messages.sort_by_key(|(_, message)| message.ts);
+        let transcript = crate::transcript::Channel {
+            id: channel,
+            name: &found.name,
+            messages,
+        };
+        let bytes = crate::transcript::transcript(&transcript, format, &|author| {
+            self.display_name(author)
+        })?;
+        let hash = self
+            .content
+            .put(&bytes)
+            .map_err(|error| format!("the transcript could not be kept: {error}"))?;
+        Ok(crate::transcript::exported(
+            &hash,
+            format,
+            transcript.messages.len(),
+            bytes.len(),
+        ))
     }
 }
 

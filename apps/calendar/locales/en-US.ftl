@@ -7,6 +7,7 @@ calendar-new-task = Added a task
 calendar-new-project = Added the project { $name }
 calendar-delete-event = Deleted an event
 calendar-reschedule = Moved an event
+calendar-set-start = Moved when an event starts
 calendar-move-to-calendar = Moved an event to another calendar
 calendar-invite = Invited { $email }
 calendar-delete-task = Deleted a task

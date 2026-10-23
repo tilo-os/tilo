@@ -169,6 +169,20 @@ pub enum PdfEffect {
         #[param("The picture's longest side in pixels, 64 to 1536; 1024 when omitted")]
         size: Option<u32>,
     },
+    /// Open PDF from content
+    ///
+    /// Pins a PDF the room keeps as content (an attachment, a shared file,
+    /// an export) as the document this record marks up, so read-text and
+    /// look-page read it and markup is made on it, and answers with its
+    /// name and page count. A record marks up one PDF: the PDF it holds
+    /// already answers again, another is refused.
+    #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
+    ImportPdfContent {
+        #[param(content, "The PDF's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param("The file's name, such as report.pdf; Document.pdf when omitted")]
+        name: Option<String>,
+    },
     /// Open PDF
     ///
     /// Opens a PDF on its own markup record, in this window.

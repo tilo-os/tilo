@@ -880,6 +880,76 @@ pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatu
     start_export(project, settings, output_path(settings, project)).join()
 }
 
+/// Where a render's file goes: a path it creates, or a file it was handed
+/// open (the render helper, which may open nothing once confined).
+#[cfg(feature = "gst")]
+pub(crate) enum Output<'a> {
+    Path(&'a std::path::Path),
+    File(&'a std::fs::File),
+}
+
+#[cfg(feature = "gst")]
+impl Output<'_> {
+    /// How much has been written so far.
+    fn len(&self) -> Option<u64> {
+        match self {
+            Self::Path(path) => crate::files::metadata(path).ok().map(|m| m.len),
+            Self::File(file) => file.metadata().ok().map(|m| m.len()),
+        }
+    }
+
+    /// Throw away what a failed render wrote, so nothing half-written looks
+    /// like a render.
+    fn discard(&self) {
+        match self {
+            Self::Path(path) => crate::files::remove(path),
+            Self::File(file) => {
+                let _ = file.set_len(0);
+            }
+        }
+    }
+}
+
+/// One encode: the frame size and rate the timeline is composited at, and
+/// the graph (its sink writing [`Output`]) the frames are pushed into.
+#[cfg(feature = "gst")]
+pub(crate) struct Encode<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub desc: String,
+    pub output: Output<'a>,
+}
+
+/// Run `encode` over `project` on the calling thread, for a caller with a
+/// graph of its own (the render helper's agent encode): `report` is told
+/// each frame written and how many there are, and `cancel` stops it.
+/// Returns how many frames were written.
+///
+/// # Errors
+/// Why no file was written; the output is discarded then.
+#[cfg(feature = "gst")]
+pub(crate) fn encode_to(
+    project: &Project,
+    encode: &Encode<'_>,
+    cancel: Arc<AtomicBool>,
+    report: impl Fn(u64, u64) + Send + Sync + 'static,
+) -> Result<u64, String> {
+    let missing = unreadable_sources(project);
+    if !missing.is_empty() {
+        return Err(unreadable_reason(&missing));
+    }
+    let state = JobState {
+        done: AtomicU64::new(0),
+        total: AtomicU64::new(0),
+        cancel,
+        outcome: Mutex::new(None),
+        frame_patience: EXPORT_FRAME_PATIENCE,
+        report: Some(Box::new(report)),
+    };
+    gst_pipeline::encode_with(project, encode, &state)
+}
+
 #[cfg(feature = "gst")]
 mod gst_pipeline {
     #[allow(
@@ -897,7 +967,7 @@ mod gst_pipeline {
     /// including allocation, GPU setup and push failures.
     struct OutputGuard<'a> {
         pipeline: gst::Pipeline,
-        path: &'a std::path::Path,
+        output: &'a Output<'a>,
         keep: bool,
     }
 
@@ -905,7 +975,7 @@ mod gst_pipeline {
         fn drop(&mut self) {
             let _ = self.pipeline.set_state(gst::State::Null);
             if !self.keep {
-                crate::files::remove(self.path);
+                self.output.discard();
             }
         }
     }
@@ -943,15 +1013,8 @@ mod gst_pipeline {
     /// clock.
     const QUIET_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-    /// Build + run the real export graph: push every composited frame of the
-    /// timeline into an `appsrc`, encode + mux to the container, and write the
-    /// file. Blocks until the pipeline reaches EOS (or errors), then returns the
-    /// written path. Any failure is surfaced verbatim — nothing claims success
-    /// unless a real file was produced.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one export pipeline: probe, encode, mux and finish in order, sharing cleanup on every exit"
-    )]
+    /// Build + run the real export graph for a file a person chose: the
+    /// preset's encoders, writing `destination`. Returns the written path.
     pub fn run(
         project: &Project,
         settings: ExportSettings,
@@ -982,13 +1045,42 @@ mod gst_pipeline {
             selected_encoders(settings.container).describe()
         );
         let desc = pipeline_desc_with_audio(&settings, w, h, &out_str, with_audio);
-        let pipeline = gst::parse::launch(&desc)
+        let encode = Encode {
+            width: w,
+            height: h,
+            fps,
+            desc,
+            output: Output::Path(&out),
+        };
+        encode_with(project, &encode, state)?;
+        Ok(out_str)
+    }
+
+    /// Push every composited frame of the timeline into the `appsrc` of
+    /// `encode`'s graph, encode and mux, and finish its output. Blocks until
+    /// the pipeline reaches EOS (or errors), then returns how many frames
+    /// were written. Any failure is surfaced verbatim and discards the
+    /// output — nothing claims success unless a real file was produced.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one export pipeline: probe, encode, mux and finish in order, sharing cleanup on every exit"
+    )]
+    pub fn encode_with(
+        project: &Project,
+        encode: &Encode<'_>,
+        state: &super::JobState,
+    ) -> Result<u64, String> {
+        gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
+        let (w, h, fps) = (encode.width, encode.height, encode.fps);
+        let with_audio = crate::audio::has_audio(project);
+        let out = &encode.output;
+        let pipeline = gst::parse::launch(&encode.desc)
             .map_err(|e| format!("build export pipeline: {e}"))?
             .downcast::<gst::Pipeline>()
             .map_err(|_| "export pipeline is not a Pipeline".to_string())?;
         let mut output = OutputGuard {
             pipeline: pipeline.clone(),
-            path: &out,
+            output: out,
             keep: false,
         };
 
@@ -1054,7 +1146,7 @@ mod gst_pipeline {
                 if state.cancel.load(Ordering::Relaxed) {
                     let _ = pipeline.set_state(gst::State::Null);
                     // A half-written file must not be left looking like a render.
-                    crate::files::remove(&out);
+                    out.discard();
                     return Err(super::CANCELLED.to_string());
                 }
                 let rgba = compositor.frame(project, t, w, h, &mut sources);
@@ -1063,7 +1155,7 @@ mod gst_pipeline {
                 };
                 if ui::time::now().saturating_duration_since(asked) >= state.frame_patience {
                     let _ = pipeline.set_state(gst::State::Null);
-                    crate::files::remove(&out);
+                    out.discard();
                     return Err(super::no_picture_reason(
                         project,
                         media,
@@ -1136,17 +1228,14 @@ mod gst_pipeline {
             .bus()
             .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
-        let mut watch = FlushWatch::new(
-            crate::files::metadata(&out).map_or(0, |m| m.len),
-            ui::time::now(),
-        );
+        let mut watch = FlushWatch::new(out.len().unwrap_or(0), ui::time::now());
         loop {
             use gst::MessageView;
             if state.cancel.load(Ordering::Relaxed) {
                 result = Err(super::CANCELLED.to_string());
                 break;
             }
-            if let Ok(len) = crate::files::metadata(&out).map(|m| m.len) {
+            if let Some(len) = out.len() {
                 watch.observe_len(len, ui::time::now());
             }
             if watch.stalled(ui::time::now(), QUIET_LIMIT) {
@@ -1177,18 +1266,18 @@ mod gst_pipeline {
         }
         let _ = pipeline.set_state(gst::State::Null);
         if result.is_err() {
-            crate::files::remove(&out);
+            out.discard();
         }
         result?;
 
         // Never report success unless a real, non-empty file exists.
-        match crate::files::metadata(&out) {
-            Ok(m) if m.len > 0 => {
+        match out.len() {
+            Some(len) if len > 0 => {
                 output.keep = true;
-                Ok(out_str)
+                Ok(total)
             }
-            Ok(_) => Err("export produced an empty file".to_string()),
-            Err(e) => Err(format!("export wrote no file: {e}")),
+            Some(_) => Err("export produced an empty file".to_string()),
+            None => Err("export wrote no file".to_string()),
         }
     }
 }

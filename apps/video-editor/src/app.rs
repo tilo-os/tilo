@@ -5350,6 +5350,15 @@ impl VideoEditorApp {
             VideoEditorEffect::Render { .. } => {
                 return Err("a render is answered as a job of its own".into());
             }
+            VideoEditorEffect::ExportVideoContent { .. }
+            | VideoEditorEffect::ExportVideoStatus { .. }
+            | VideoEditorEffect::CancelVideoExport { .. }
+            | VideoEditorEffect::ViewFrameContent { .. } => {
+                return Err(crate::agent_render::HOST_ONLY.into());
+            }
+            VideoEditorEffect::ImportContent { .. } | VideoEditorEffect::ExportTimelineContent => {
+                return Err("answered by crate::agent_timeline".into());
+            }
             VideoEditorEffect::CancelExport => {
                 let Some(job) = self.export_job.as_ref() else {
                     return Err("no export is running".into());
@@ -9391,7 +9400,8 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
         effect: crate::actions::VideoEditorEffect,
         cx: &mut ui::framework::EffectCx<Project, Self>,
     ) -> ui::framework::EffectAnswer {
-        self.answer_effect(effect, cx)
+        crate::agent_timeline::effect(&effect, self.content.as_ref(), cx)
+            .unwrap_or_else(|| self.answer_effect(effect, cx))
     }
 
     /// Export needs an encoder in this build; cancelling needs a render

@@ -262,6 +262,10 @@ fn answer(
         | MessagesEffect::Send { .. } => {
             return Err(CATALOG.t("messages-transport-unavailable"));
         }
+        // Answered from the record before the broker's effects are reached.
+        MessagesEffect::SearchMessages { .. } | MessagesEffect::ExportContent { .. } => {
+            return Err("the record answers this before the broker".to_owned());
+        }
     }
     Ok(Effected::done())
 }
@@ -555,7 +559,31 @@ fn register_effects(
     let status_sending = sending.clone();
     let jobs = cx.jobs();
     let status_history = history.clone();
+    let content = cx.content();
     cx.effects(move |effect: MessagesEffect, cx| {
+        // What the record holds is read here, never through the broker.
+        match &effect {
+            MessagesEffect::SearchMessages { query } => {
+                return cx.live().get().search(query).map(Effected::value);
+            }
+            MessagesEffect::ExportContent { format, conversation } => {
+                let (bytes, count) = cx
+                    .live()
+                    .get()
+                    .transcript(format.as_deref(), conversation.as_deref())?;
+                let store = content
+                    .as_ref()
+                    .ok_or("this window keeps no content to export into")?;
+                let hash = store.put(&bytes).map_err(|error| error.to_string())?;
+                return Ok(crate::conversations::exported(
+                    &hash,
+                    format.as_deref(),
+                    count,
+                    bytes.len(),
+                ));
+            }
+            _ => {}
+        }
         if crate::groups::GroupsView::handles(&effect) { effect_setup.close(); return effect_groups.effect(&effect_sources, effect, cx); }
         if crate::setup::SetupView::handles(&effect) { effect_groups.close(); return effect_setup.effect(&effect_sources, effect, cx); }
         if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::Back) { effect_setup.close(); effect_groups.close(); }

@@ -145,6 +145,31 @@ fn sample_media() -> Option<PathBuf> {
     SAMPLE_MEDIA.lock().ok().and_then(|s| s.clone())
 }
 
+/// Where a source imported from content (`tilo.content:<hash>`) is read
+/// from: a directory holding each by its hash. The render helper points it
+/// at its job directory, where the host laid out the sources a render
+/// places; a path naming content resolves nowhere else.
+static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Read content-addressed sources from `dir` (see [`CONTENT_ROOT`]); `None`
+/// stops it.
+pub fn set_content_root(dir: Option<PathBuf>) {
+    if let Ok(mut slot) = CONTENT_ROOT.lock() {
+        *slot = dir;
+    }
+}
+
+/// The file a content-addressed `path` names under the content root, when
+/// one is set.
+fn content_file(path: &str) -> Option<PathBuf> {
+    let hash = tilo_actions::content_hash(path)?;
+    if !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let root = CONTENT_ROOT.lock().ok()?.clone()?;
+    Some(root.join(hash.to_ascii_lowercase()))
+}
+
 /// Resolve a media `path` to an absolute [`MediaSource`], reporting whether its
 /// bytes are hydrated.
 ///
@@ -183,6 +208,18 @@ pub fn resolve(path: &str) -> MediaSource {
         };
         return MediaSource {
             abs_path: raw.to_path_buf(),
+            hydration,
+        };
+    }
+    // A source imported from content, where a render laid its bytes out.
+    if let Some(abs_path) = content_file(path) {
+        let hydration = if abs_path.is_file() {
+            Hydration::Local
+        } else {
+            Hydration::Projected
+        };
+        return MediaSource {
+            abs_path,
             hydration,
         };
     }

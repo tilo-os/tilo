@@ -230,6 +230,27 @@ impl Calendar {
         Ok(())
     }
 
+    /// Set start
+    ///
+    /// Moves an event to start at another time, keeping how long it lasts:
+    /// what a caller who knows only the new start means by moving it.
+    #[action(item = events)]
+    pub fn set_start(
+        &mut self,
+        event: &Id,
+        #[param("When it starts (YYYY-MM-DDTHH:MM)")] start: NaiveDateTime,
+    ) -> Result<(), Refusal> {
+        let event = self
+            .events
+            .find_mut(event)
+            .ok_or_else(|| Refusal::new("that event is gone"))?;
+        let length = event.end - event.start;
+        event.start = start;
+        event.end = start + length;
+        event.end_later_fold = false;
+        Ok(())
+    }
+
     /// Move to calendar
     ///
     /// Files an event on another calendar, in that calendar's colour.
@@ -835,6 +856,17 @@ pub enum CalendarEffect {
     /// Saves every event and task to an iCalendar file you choose.
     #[effect(attended, job)]
     ExportIcs,
+    /// Export ICS content
+    ///
+    /// Keeps every event and task, or one event, as an iCalendar file in
+    /// the room's content and answers its content address. No file is
+    /// chosen or written, so it needs no one attending: the file stays in
+    /// the room until someone hands it on.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportIcsContent {
+        #[param("The event's id; every event and task when omitted")]
+        event: Option<Uuid>,
+    },
     /// Import ICS
     ///
     /// Imports the events and tasks of an iCalendar file you choose.

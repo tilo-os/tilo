@@ -36,6 +36,7 @@ pub mod actions;
 mod agenda;
 pub mod app;
 pub mod caldav;
+pub mod content_export;
 pub mod date;
 pub mod display;
 mod draw_util;

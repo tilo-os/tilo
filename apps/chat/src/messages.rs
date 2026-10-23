@@ -49,6 +49,9 @@ fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
     }
 }
 
+/// The longest name a delivered message is shown under.
+const MAX_SHOWN_NAME_BYTES: usize = 128;
+
 fn seconds(cx: &ActionCx) -> i64 {
     cx.now_ms().div_euclid(1000)
 }
@@ -306,6 +309,57 @@ impl ChatPart {
                 reference: Some(reference),
                 source_provider,
                 mentions: mentions.unwrap_or_default(),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Deliver message.
+    ///
+    /// Adds a message someone outside the room wrote (a seeded
+    /// conversation, an import, an integration relaying a line), shown to
+    /// every reader under their name; it stays yours, as a bridge's post
+    /// does. Given when it was written, delivering it again changes nothing.
+    #[action(incoming_message, audience = "agents")]
+    pub fn deliver_message(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The channel")] channel: Id,
+        #[param("Who wrote it: the name every reader sees")] author: String,
+        #[param("The message")] body: String,
+        #[param("When it was written, in Unix seconds; now when absent")] ts: Option<i64>,
+    ) -> Result<(), Refusal> {
+        let shown = author.trim().to_owned();
+        if shown.is_empty() || shown.len() > MAX_SHOWN_NAME_BYTES {
+            return Err(Refusal::new(
+                "a delivered message names its author, in a short name",
+            ));
+        }
+        if body.trim().is_empty() {
+            return Err(Refusal::new("a message says something"));
+        }
+        let id = match ts {
+            Some(ts) => crate::transcript::delivered_id(&channel, &shown, ts, &body),
+            None => cx.id(),
+        };
+        if self.messages.contains(&id) {
+            return Ok(());
+        }
+        let by = self::author(cx)?;
+        let now = seconds(cx);
+        self.append(
+            id,
+            &channel,
+            by,
+            ts.map_or(now, |ts| ts.clamp(0, now)),
+            Posting {
+                text: body,
+                appearance: Some(tilo_actions::Appearance {
+                    name: shown,
+                    avatar: None,
+                    persona: None,
+                }),
                 ..Posting::default()
             },
         )
@@ -620,7 +674,7 @@ impl Chained for ChatPart {
     }
 
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        use chat_part::{EditMessage, Post, RecordWork, StreamOutput};
+        use chat_part::{DeliverMessage, EditMessage, Post, RecordWork, StreamOutput};
         let holding = |message: &Id| {
             parts
                 .iter()
@@ -644,7 +698,16 @@ impl Chained for ChatPart {
                         ..
                     },
             }) => holding(parent),
+            // A delivery made before is where it was put; it changes nothing.
+            ChatPartAction::DeliverMessage(DeliverMessage {
+                channel,
+                author,
+                body,
+                ts: Some(ts),
+            }) => holding(&crate::transcript::delivered_id(channel, author, *ts, body))
+                .or_else(|_| new()),
             ChatPartAction::Post(_)
+            | ChatPartAction::DeliverMessage(_)
             | ChatPartAction::PostFile(_)
             | ChatPartAction::ShareResource(_) => new(),
             // A reply being streamed stays where it started.
@@ -688,6 +751,7 @@ impl Chained for ChatPart {
                 edit.mentions = Some(chat.mentions(&edit.text, &body));
             }
             ChatPartAction::StreamOutput(stream) => takes_posts(chat, &stream.channel)?,
+            ChatPartAction::DeliverMessage(delivery) => takes_posts(chat, &delivery.channel)?,
             _ => {}
         }
         Ok(())
