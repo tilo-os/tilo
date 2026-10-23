@@ -42,14 +42,16 @@ pub const CHAT_CHANNEL: &str = "c_chat";
 /// The id of the room's voice channel every chat opens with, `#voice`.
 pub const VOICE_CHANNEL: &str = "c_voice";
 
-/// Bring a chat record of version `from` up to this one. Version 1 kept
-/// everyone's unsent drafts in the room, where every member edited one
-/// shared draft per channel; drafts are each writer's own now
-/// ([`crate::drafts`]), so the room's copy is dropped. Versions 1 and 2
-/// kept the messages in the record and read marks as counts; the messages
-/// are kept in parts beside it now ([`crate::parts`]) and a read mark is a
-/// position in them, so both are dropped: a record outgrown by its messages
-/// is what parts replace, and nothing carries them over. Versions 1 to 3
+/// Bring a chat record of version `from` up to this one. No step deletes
+/// anything a person wrote: what the record no longer reads stays where it
+/// is. Version 1 kept everyone's unsent drafts in the room, where every
+/// member edited one shared draft per channel; drafts are each writer's own
+/// now ([`crate::drafts`]), and the room's copy stays under `drafts`.
+/// Versions 1 and 2 kept the messages in the record and read marks as
+/// counts; new messages are kept in parts beside it now ([`crate::parts`])
+/// and a read mark is a position in them. The record's messages stay under
+/// `messages`, and the counts move to `read_counts` so `read` can hold
+/// positions ([`keep_read_counts`]). Versions 1 to 3
 /// kept workspaces of the chat's own; Chat runs in its room now, so that
 /// structure is dropped and every channel and category stays
 /// ([`drop_workspaces`]). Versions 1 to 4 kept a filed report's submission,
@@ -67,21 +69,14 @@ fn migrate(
     doc: &mut ui::tilo_resource::Doc,
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
-    use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
+    use ui::automerge::ROOT;
     if !(1..=5).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
     }
     if from <= 2 {
-        for dropped in ["drafts", "messages"] {
-            if doc.get(ROOT, dropped)?.is_some() {
-                doc.delete(ROOT, dropped)?;
-            }
-        }
-        let read = ui::tilo_resource::Slot::Key(&ROOT, "read");
-        read.remove(doc)?;
-        read.object(doc, ui::automerge::ObjType::Map)?;
+        keep_read_counts(doc)?;
     }
     if from <= 3 {
         drop_workspaces(doc)?;
@@ -96,6 +91,35 @@ fn migrate(
     if let Some(moderation) = map_at(doc, &ROOT, "moderation")? {
         moderation_model::record::upgrade_decisions(doc, &moderation)?;
     }
+    Ok(())
+}
+
+/// Move the read marks versions 1 and 2 kept as counts (person, then
+/// channel, to how many messages they had read) to `read_counts`, and start
+/// `read` over as positions in the parts.
+///
+/// # Errors
+/// The document's read or write error.
+fn keep_read_counts(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value};
+    use ui::tilo_resource::Slot;
+    if let Some(read) = map_at(doc, &ROOT, "read")? {
+        let counts = Slot::Key(&ROOT, "read_counts").object(doc, ObjType::Map)?;
+        for person in doc.keys(&read).collect::<Vec<_>>() {
+            let Some(channels) = map_at(doc, &read, &person)? else {
+                continue;
+            };
+            let kept = Slot::Key(&counts, &person).object(doc, ObjType::Map)?;
+            for channel in doc.keys(&channels).collect::<Vec<_>>() {
+                if let Some((Value::Scalar(count), _)) = doc.get(&channels, channel.as_str())? {
+                    Slot::Key(&kept, &channel).put_scalar(doc, count.into_owned())?;
+                }
+            }
+        }
+    }
+    let read = Slot::Key(&ROOT, "read");
+    read.remove(doc)?;
+    read.object(doc, ObjType::Map)?;
     Ok(())
 }
 
