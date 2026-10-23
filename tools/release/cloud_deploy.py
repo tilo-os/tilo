@@ -83,8 +83,6 @@ class Superseded(Exception):
     """The target runs a newer build already: a later run deployed it."""
 
 
-# --- The deploy target ------------------------------------------------------
-
 @dataclasses.dataclass(frozen=True)
 class Service:
     name: str
@@ -155,8 +153,6 @@ def load_target(text: str, source: str) -> Target:
     return Target(tuple(services), rollout, timeout, settle)
 
 
-# --- HTTP ------------------------------------------------------------------
-
 @dataclasses.dataclass(frozen=True)
 class Response:
     status: int
@@ -199,8 +195,6 @@ def urllib_transport(method: str, url: str, headers: Mapping[str, str], body: by
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise PromotionError(f"{method} {url}: {error}") from error
 
-
-# --- Registry --------------------------------------------------------------
 
 @dataclasses.dataclass(frozen=True)
 class Image:
@@ -309,8 +303,6 @@ class Registry:
         return Image(service.name, digest, built, platform, built)
 
 
-# --- Git -------------------------------------------------------------------
-
 class Git:
     def __init__(self, root: Path):
         self.root = root
@@ -381,8 +373,6 @@ class Git:
             merged.append((short, f"{match.group(1)} ({match.group(2)})" if match else subject))
         return merged
 
-
-# --- Choosing and checking the images ------------------------------------
 
 def load_receipt(path: Path, target: Target) -> tuple[Service, Image] | None:
     """A digest receipt written by t's publishing checks, or None for an image the target
@@ -520,8 +510,6 @@ def resolve_current(registry: Registry, digests: Mapping[str, str], target: Targ
     return current
 
 
-# --- The plan ----------------------------------------------------------------
-
 @dataclasses.dataclass
 class Plan:
     revision: str
@@ -643,8 +631,6 @@ def build_plan(registry: Registry, git: Git, head_ref: str, revision: str | None
     return Plan(chosen, images, dict(current), moves, pulls, commits, oldest if ahead else None, files, target)
 
 
-# --- The target repository through the Forgejo API --------------------------
-
 class Forge:
     def __init__(self, transport: Transport, token: str, repo: str, base: str = FORGE):
         self.transport = transport
@@ -727,8 +713,6 @@ def plan_from(args, source: Source, registry: Registry, git: Git) -> Plan:
                       args.allow_rollback)
 
 
-# --- Watching a rollout ---------------------------------------------------------
-
 def probe(transport: Transport, service: Service, expected: str | None, strict: bool = True) -> str | None:
     """None when the service answers healthy with the expected build, else what is wrong.
 
@@ -778,8 +762,6 @@ def watch(transport: Transport, target: Target, expected: Mapping[str, str | Non
             return "; ".join(problems) or "never healthy for long enough"
         sleep(PROBE_INTERVAL)
 
-
-# --- Command line --------------------------------------------------------------
 
 def command_plan(args, registry: Registry, git: Git, transport: Transport, **_) -> int:
     source = read_source(args, transport)

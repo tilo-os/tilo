@@ -114,8 +114,6 @@ TOP = 30
 PREVIOUS_DEPTH = 400
 
 
-# ---------------------------------------------------------------- sources
-
 
 class NotFound(ValueError):
     """The registry has no such manifest or blob (HTTP 404)."""
@@ -331,8 +329,6 @@ def layout_image(root: Path, arch: str | None) -> Image:
     config = layout.blob_json(document["config"]["digest"])
     return Image(f"oci:{root}@{digest}", digest, document, config, layout.blob)
 
-
-# ---------------------------------------------------------------- reading
 
 
 class Verified(io.RawIOBase):
@@ -551,8 +547,6 @@ def replay(image: Image, progress: Callable[[str], None] | None = None) -> tuple
     return result, root
 
 
-# ---------------------------------------------------------------- packages
-
 RPM_TAGS = {1000: "name", 1001: "version", 1002: "release", 1009: "size", 5009: "longsize",
             1047: "provides", 1049: "requires", 5046: "recommends", 5052: "supplements",
             1116: "dirindexes", 1117: "basenames", 1118: "dirnames"}
@@ -676,8 +670,6 @@ def why(name: str, everything: list[Package], depth: int = 8) -> list[str]:
     walk(name, 0)
     return lines
 
-
-# ---------------------------------------------------------------- report
 
 
 def directory_totals(files: dict[str, Entry], depth: int) -> dict[str, int]:

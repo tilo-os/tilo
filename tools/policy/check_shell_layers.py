@@ -174,8 +174,6 @@ class Edge:
     line: int
 
 
-# --- Reading Rust source -----------------------------------------------------
-
 
 def item_end(text: str, start: int) -> int:
     """Offset past the item starting at ``start``: its body block or its ``;``."""
@@ -359,8 +357,6 @@ def module_edges(root: Path = ROOT) -> list[Edge]:
     return sorted(edges.values(), key=lambda edge: (edge.file, edge.target))
 
 
-# --- Reading manifests -------------------------------------------------------
-
 
 def dependency_tables(manifest: dict) -> list[dict]:
     """Normal and build dependency tables, every target included."""
@@ -426,8 +422,6 @@ def load_workspace(root: Path = ROOT) -> Workspace:
             manifests[manifest["package"]["name"]] = manifest
     return Workspace(root, manifests, workspace.get("dependencies", {}))
 
-
-# --- Baseline ----------------------------------------------------------------
 
 
 @dataclass
@@ -562,8 +556,6 @@ def wrap(text: str, width: int = 86) -> list[str]:
             current = f"{current} {word}".strip()
     return lines + [current] if current else lines
 
-
-# --- The check ---------------------------------------------------------------
 
 
 @dataclass
