@@ -2053,7 +2053,6 @@ impl WorkspaceTree {
         let policy = ws.policy.clone();
         let sandbox = ws.sandbox.clone();
         let presets = ws.presets.clone();
-        let tasks = ws.tasks.clone();
         let effect_receipts = ws.effect_receipts.clone();
         let shortcuts = ws.shortcuts.clone();
         let schedule_claims = ws.schedule_claims.clone();
@@ -2145,9 +2144,6 @@ impl WorkspaceTree {
             ) {
                 tracing::error!(?err, "room doc: contents map");
             }
-        }
-        if let Err(error) = projection::project_workspace_tasks(doc, &tasks) {
-            tracing::error!(?error, "room doc: tasks map");
         }
         if let Err(error) = projection::project_effect_receipts(doc, &effect_receipts) {
             tracing::error!(?error, "room doc: effect receipts map");
@@ -3924,142 +3920,6 @@ impl WorkspaceTree {
         }
     }
 
-    /// Create a task in the workspace and mirror it immediately into both
-    /// durable state and the room document. Creation is data entry, not model
-    /// inference: `route` explicitly records whether later execution may use
-    /// a model.
-    pub fn create_workspace_task(
-        &mut self,
-        workspace_id: WorkspaceId,
-        title: impl Into<String>,
-        actor: impl Into<String>,
-        assigned_agent: Option<String>,
-        route: WorkspaceTaskRoute,
-        resource: Option<WorkspaceTaskResource>,
-    ) -> Option<String> {
-        // Native manual work is committed by the outcome handler after it drops
-        // the tree writer. Never mutate a parallel legacy task cache here.
-        if route == WorkspaceTaskRoute::Manual
-            && self
-                .room_of(workspace_id)
-                .is_some_and(|room| self.requires_native_owner(room))
-        {
-            return None;
-        }
-        let title = title.into().trim().to_string();
-        if title.is_empty() {
-            return None;
-        }
-        let actor = actor.into();
-        let now = tilo_clock::unix_now_i64();
-        let id = format!("task:{}", uuid::Uuid::new_v4());
-        let task = WorkspaceTask {
-            id: id.clone(),
-            title: title.clone(),
-            created_by: actor.clone(),
-            assigned_agent,
-            route,
-            status: WorkspaceTaskStatus::Queued,
-            resource,
-            subject: None,
-            created_at: now,
-            updated_at: now,
-            audit: vec![WorkspaceTaskAuditEvent::new(
-                now,
-                actor,
-                "create-task",
-                [("title", tilo_actions::Scalar::text(&title))],
-            )],
-        };
-        self.desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)?
-            .tasks
-            .push(task.clone());
-        self.doc_upsert_workspace_task(workspace_id, &task);
-        self.queue_save();
-        Some(id)
-    }
-
-    pub fn set_workspace_task_status(
-        &mut self,
-        workspace_id: WorkspaceId,
-        task_id: &str,
-        status: WorkspaceTaskStatus,
-        actor: &str,
-    ) -> bool {
-        if self
-            .room_of(workspace_id)
-            .is_some_and(|room| self.requires_native_owner(room))
-            && self
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == workspace_id)
-                .and_then(|workspace| workspace.tasks.iter().find(|task| task.id == task_id))
-                .is_some_and(|task| task.route == WorkspaceTaskRoute::Manual)
-        {
-            // Status needs a future typed owner command; a local cache write
-            // cannot complete native coordination work.
-            return false;
-        }
-        let now = tilo_clock::unix_now_i64();
-        let Some(task) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.set_task_status_at(task_id, status, actor, now))
-            .cloned()
-        else {
-            return false;
-        };
-        self.doc_upsert_workspace_task(workspace_id, &task);
-        let lapsed = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-            .map(Workspace::lapse_task_grants)
-            .unwrap_or_default();
-        self.doc_write_policy(
-            workspace_id,
-            &PolicyEdit {
-                revoked: lapsed,
-                ..PolicyEdit::default()
-            },
-        );
-        self.queue_save();
-        true
-    }
-
-    /// Append a broker-authenticated task event without allowing a caller to
-    /// alter task state. Agent progress is durable shared audit data, not a
-    /// substitute for an arbitrary document write.
-    pub fn append_workspace_task_audit(
-        &mut self,
-        workspace_id: WorkspaceId,
-        task_id: &str,
-        actor: &str,
-        summary: impl Into<String>,
-    ) -> bool {
-        let now = tilo_clock::unix_now_i64();
-        let Some(task) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.append_task_audit_at(task_id, actor, summary, now))
-            .cloned()
-        else {
-            return false;
-        };
-        self.doc_upsert_workspace_task(workspace_id, &task);
-        self.queue_save();
-        true
-    }
-
     /// Persist one terminal effect the host itself made, exactly once, with
     /// what it did. This creates semantic workspace activity, not a mutation
     /// in the target application's CRDT.
@@ -4286,12 +4146,6 @@ impl WorkspaceTree {
         }
         self.queue_save();
         true
-    }
-
-    fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
-        if tilo_desktop_model::desktop_doc::upsert_task(&mut self.doc, workspace_id, task) {
-            self.commit_room_change();
-        }
     }
 
     fn doc_upsert_workspace_effect_receipt(
@@ -10022,109 +9876,7 @@ mod workspace_tree_lifecycle_tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn workspace_tasks_and_receipts_are_durable_audited_activity() {
-        // Phase `workspace_task_is_durable_and_carries_action_provenance`.
-        {
-            let mut tree = WorkspaceTree::bootstrap_default();
-            let workspace = tree.desktop.active;
-            let id = tree
-                .create_workspace_task(
-                    workspace,
-                    "Review the release brief",
-                    "ada",
-                    Some("review-agent".into()),
-                    WorkspaceTaskRoute::RulesOnly,
-                    Some(WorkspaceTaskResource {
-                        app_id: Some("org.tilo.Writer".into()),
-                        app_label: Some("Writer".into()),
-                        id: "document:brief".into(),
-                        kind: "document".into(),
-                        label: "Release brief".into(),
-                        agent_request: None,
-                    }),
-                )
-                .expect("non-empty task is created");
-
-            let task = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .tasks
-                .first()
-                .unwrap();
-            assert_eq!(task.id, id);
-            assert_eq!(task.route, WorkspaceTaskRoute::RulesOnly);
-            let context = task.action_context();
-            assert_eq!(
-                context.group.as_ref().map(|group| group.kind.as_str()),
-                Some("task")
-            );
-            assert_eq!(
-                context
-                    .resource
-                    .as_ref()
-                    .map(|resource| resource.label.as_str()),
-                Some("Release brief")
-            );
-
-            tree.resync_cache_from_doc();
-            assert_eq!(tree.desktop.active_workspace().unwrap().tasks.len(), 1);
-            assert_eq!(
-                tree.desktop.active_workspace().unwrap().tasks[0].title,
-                "Review the release brief"
-            );
-        }
-
-        // Phase `task_status_changes_append_a_truthful_audit_event`.
-        {
-            let mut tree = WorkspaceTree::bootstrap_default();
-            let workspace = tree.desktop.active;
-            let id = tree
-                .create_workspace_task(
-                    workspace,
-                    "Publish notes",
-                    "ada",
-                    None,
-                    WorkspaceTaskRoute::Manual,
-                    None,
-                )
-                .unwrap();
-            assert!(tree.set_workspace_task_status(
-                workspace,
-                &id,
-                WorkspaceTaskStatus::InProgress,
-                "ada"
-            ));
-            assert!(tree.set_workspace_task_status(
-                workspace,
-                &id,
-                WorkspaceTaskStatus::Done,
-                "ada"
-            ));
-            let task = tree
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .tasks
-                .first()
-                .unwrap();
-            assert_eq!(task.status, WorkspaceTaskStatus::Done);
-            assert_eq!(task.audit.len(), 3);
-            let event = task.audit.last().unwrap();
-            assert_eq!(event.action(), "set-status");
-            assert_eq!(
-                &event.what,
-                &tilo_actions::Did::verb(
-                    tilo_actions::ActionKey::new(
-                        tilo_desktop_model::workspace::WORKSPACE_GOVERNANCE_APP_ID,
-                        tilo_desktop_model::TASK_KIND,
-                        "set-status",
-                    ),
-                    [("status".to_owned(), tilo_actions::Scalar::from("done"))],
-                )
-            );
-        }
-
+    fn effect_receipts_are_durable_audited_activity() {
         // Phase `an_applications_effect_is_recorded_without_its_arguments`.
         {
             let mut tree = WorkspaceTree::bootstrap_default();

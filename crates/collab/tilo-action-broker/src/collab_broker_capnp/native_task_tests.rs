@@ -5,16 +5,13 @@
 use super::super::*;
 use crate::peer_actions::{CertificateAuthority, OwnerPolicyClock, PolicyOrigin};
 use crate::services::{
-    NativeTaskActionRequirement, NativeTaskBinding, WorkspaceAuthority, WorkspaceMemberships,
-    WorkspaceTaskExecution,
+    NativeTaskActionRequirement, TrackerDirection, TrackerRun, TrackerRuns, WorkspaceAuthority,
+    WorkspaceMemberships,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::roles::AgentPreset;
 use tilo_owner_commit::{CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
-use tilo_peer_state::workspace_task::{
-    WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskSnapshot,
-};
 
 #[path = "native_task_launch_tests.rs"]
 mod closed_app;
@@ -33,7 +30,12 @@ struct Native {
     cached_projection: Mutex<Option<tilo_desktop_model::DesktopTree>>,
     capped_connection: std::sync::atomic::AtomicBool,
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
+    /// The tracker's runs, as the person approves, steers and stops them.
+    runs: Mutex<Vec<TrackerRun>>,
 }
+
+/// The issue the fixture's agent runs.
+const ISSUE: &str = "tasks.tracker/issues/release";
 fn room() -> tilo_desktop_model::RoomId {
     tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap()
 }
@@ -68,7 +70,6 @@ impl WorkspaceAuthority for Native {
                 .policy
                 .grants
                 .retain(|grant| !self.spent_grants.lock().unwrap().contains(&grant.id));
-            workspace.tasks = tilo_peer_state::workspace_task::snapshot(doc)?.tasks;
             let mut tree = tilo_desktop_model::DesktopTree {
                 active: workspace.id,
                 ..Default::default()
@@ -127,8 +128,6 @@ impl OwnerCommitService for Native {
             // first, as they do while a commit is on its way.
             tokio::task::yield_now().await;
             let receipt = match request.operation {
-                CommitOperation::WorkspaceTaskCommand { .. } => owner
-                    .commit_workspace_task_command(request.clone(), std::time::SystemTime::now()),
                 CommitOperation::EffectReceipt { .. } => {
                     owner.commit_effect_receipt(&request, &cert, &key, std::time::SystemTime::now())
                 }
@@ -169,133 +168,46 @@ impl WorkspaceMemberships for Native {
     fn health(&self) -> Result<(), String> {
         self.owner.health()
     }
-    fn task_snapshot(&self, requested: &str) -> Result<WorkspaceTaskSnapshot, String> {
-        if !OwnerCommitService::requires_room(self, requested) {
-            return Err("foreign task room".into());
-        }
-        self.owner.workspace_task_snapshot(room())
-    }
     fn execute(&self, request: OwnerCommitRequest) -> CommitFuture {
         self.commit(request)
     }
 }
-impl WorkspaceTaskExecution for Native {
+impl TrackerRuns for Native {
     fn requires_room(&self, requested: &str) -> bool {
         OwnerCommitService::requires_room(self, requested)
     }
-    fn snapshot(&self, requested: &str) -> Result<WorkspaceTaskSnapshot, String> {
-        self.task_snapshot(requested)
-    }
-    fn agent_snapshot(
-        &self,
-        requested: &str,
-        agent: &str,
-    ) -> Result<WorkspaceTaskSnapshot, String> {
+    fn runs(&self, requested: &str) -> Result<Vec<TrackerRun>, String> {
         if !OwnerCommitService::requires_room(self, requested) {
-            return Err("foreign task room".into());
+            return Err("foreign tracker room".into());
+        }
+        Ok(self.runs.lock().unwrap().clone())
+    }
+    fn check_agent(&self, requested: &str, agent: &str) -> Result<(), String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign tracker room".into());
         }
         self.owner.with_current(room(), |view| {
-            view.peer().workspace().check_task_execution_actor(
-                agent,
-                None,
-                std::time::SystemTime::now(),
-            )?;
-            tilo_peer_state::workspace_task::snapshot(
-                view.peer()
-                    .admitted_room()
-                    .ok_or("native task document unavailable")?,
-            )
-        })
-    }
-    fn report(
-        &self,
-        requested: &str,
-        binding: NativeTaskBinding,
-        command: WorkspaceTaskCommand,
-    ) -> CommitFuture {
-        let digest = blake3::hash(
-            &serde_json::to_vec(&(requested, &binding.task_id, binding.epoch, &command)).unwrap(),
-        );
-        self.commit(OwnerCommitRequest {
-            room: requested.into(),
-            operation: CommitOperation::WorkspaceTaskCommand {
-                invocation: uuid::Uuid::from_bytes(digest.as_bytes()[..16].try_into().unwrap()),
-                authority: if matches!(command, WorkspaceTaskCommand::Abandon { .. }) {
-                    WorkspaceTaskAuthority::Host {
-                        attestor: self.certificate.clone(),
-                    }
-                } else {
-                    WorkspaceTaskAuthority::Agent {
-                        attestor: self.certificate.clone(),
-                        agent_id: binding.agent_id,
-                    }
-                },
-                command,
-            },
+            view.peer()
+                .workspace()
+                .check_admitted_agent(agent, std::time::SystemTime::now())
         })
     }
     fn authorize_action(
         &self,
         requested: &str,
-        agent: &str,
+        run: &TrackerRun,
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String> {
         if !OwnerCommitService::requires_room(self, requested) {
-            return Err("foreign task room".into());
+            return Err("foreign tracker room".into());
         }
         self.owner.with_current(room(), |view| {
             let now = std::time::SystemTime::now();
             view.peer()
                 .workspace()
-                .check_task_execution_actor(agent, None, now)?;
-            requirement.check(view.peer(), requested, agent, now)
+                .check_admitted_agent(&run.agent, now)?;
+            requirement.check_tracker(view.peer(), requested, run, now)
         })
-    }
-
-    fn admit_host_launch(
-        &self,
-        requested: &str,
-        binding: &NativeTaskBinding,
-        requirement: &NativeTaskActionRequirement,
-        launch: &mut dyn FnMut() -> Result<(), String>,
-    ) -> Result<(), String> {
-        if !OwnerCommitService::requires_room(self, requested) {
-            return Err("foreign task room".into());
-        }
-        self.owner.with_task_action_admission(
-            room(),
-            &binding.task_id,
-            &binding.agent_id,
-            binding.epoch,
-            binding.revision,
-            || {
-                self.authorize_action(requested, &binding.agent_id, requirement)?;
-                launch()
-            },
-        )
-    }
-
-    fn admit(
-        &self,
-        requested: &str,
-        binding: &NativeTaskBinding,
-        requirement: &NativeTaskActionRequirement,
-        action: &mut dyn FnMut() -> Result<InvocationJob, String>,
-    ) -> Result<InvocationJob, String> {
-        if !OwnerCommitService::requires_room(self, requested) {
-            return Err("foreign task room".into());
-        }
-        self.owner.with_task_action_admission(
-            room(),
-            &binding.task_id,
-            &binding.agent_id,
-            binding.epoch,
-            binding.revision,
-            || {
-                self.authorize_action(requested, &binding.agent_id, requirement)?;
-                action()
-            },
-        )
     }
 }
 struct Fixture {
@@ -349,6 +261,7 @@ impl Fixture {
             cached_projection: Mutex::new(None),
             capped_connection: std::sync::atomic::AtomicBool::new(false),
             spent_grants: Mutex::new(Vec::new()),
+            runs: Mutex::new(Vec::new()),
         });
         let membership = OwnerCommitRequest {
             room: room().to_string(),
@@ -372,31 +285,7 @@ impl Fixture {
                 std::time::SystemTime::now(),
             )
             .unwrap();
-        let queue = uuid::Uuid::new_v4();
-        native
-            .owner
-            .commit_workspace_task_command(
-                OwnerCommitRequest {
-                    room: room().to_string(),
-                    operation: CommitOperation::WorkspaceTaskCommand {
-                        invocation: queue,
-                        authority: WorkspaceTaskAuthority::Person {
-                            caller: native.certificate.clone(),
-                        },
-                        command: WorkspaceTaskCommand::QueueInstruction {
-                            title: "Prepare release notes".into(),
-                            instruction: "Inspect every release-note section, preserve all cross references, and report every blocking inconsistency. ".repeat(4),
-                            assigned_agent: "scribe".into(),
-                            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-                        },
-                    },
-                },
-                std::time::SystemTime::now(),
-            )
-            .unwrap();
-        let task = native.owner.workspace_task_snapshot(room()).unwrap().tasks[0]
-            .id
-            .clone();
+        let task = ISSUE.to_owned();
         let fanout = Arc::new(FanoutState::new());
         let config = crate::peer_actions::NativePeerBrokerConfig {
             journal_root: directory.path().join("journal"),
@@ -412,7 +301,7 @@ impl Fixture {
             HostServices {
                 launcher,
                 app_action_grants: Some(native.clone()),
-                task_execution: Some(native.clone()),
+                tracker_runs: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 ..Default::default()
             },
@@ -444,23 +333,35 @@ impl Fixture {
                 .governs(uuid::Uuid::parse_str(&room().to_string()).unwrap(), None)
         );
     }
-    fn person_command(&self, command: WorkspaceTaskCommand) -> Result<(), String> {
-        self.native
-            .owner
-            .commit_workspace_task_command(
-                OwnerCommitRequest {
-                    room: room().to_string(),
-                    operation: CommitOperation::WorkspaceTaskCommand {
-                        invocation: uuid::Uuid::new_v4(),
-                        authority: WorkspaceTaskAuthority::Person {
-                            caller: self.native.certificate.clone(),
-                        },
-                        command,
-                    },
-                },
-                std::time::SystemTime::now(),
-            )
-            .map(|_| ())
+    /// Change the issue's run as the person does on the issue's page, and
+    /// let the broker read it.
+    fn on_run(&self, change: impl FnOnce(&mut TrackerRun)) {
+        change(
+            self.native
+                .runs
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .find(|run| run.issue == self.task)
+                .expect("the issue has a run"),
+        );
+        self.state.refresh_native_task_delivery();
+    }
+    /// The person sends the run a message.
+    fn direct(&self, text: &str) {
+        self.on_run(|run| {
+            run.directions.push(TrackerDirection {
+                id: format!("message-{}", run.directions.len().saturating_add(1)),
+                author: hex::encode(self.native.certificate.user_public_key),
+                text: text.into(),
+                at_ms: 1_000,
+                incorporated: false,
+            });
+        });
+    }
+    /// The person stops the run.
+    fn stop(&self) {
+        self.on_run(|run| run.active = false);
     }
     fn remove_agent(&self) {
         let removal = OwnerCommitRequest {
@@ -483,14 +384,35 @@ impl Fixture {
             )
             .unwrap();
     }
+    /// The person approves a run of the issue for the agent: the issue's
+    /// next run.
     fn approve(&self) {
-        self.person_command(WorkspaceTaskCommand::ApproveRun {
-            task_id: self.task.clone(),
-            agent_id: "scribe".into(),
-            expected_run_epoch: 0,
-            after_revision: 0,
-        })
-        .unwrap();
+        self.approve_issue(&self.task);
+    }
+    fn approve_issue(&self, issue: &str) {
+        {
+            let mut runs = self.native.runs.lock().unwrap();
+            let epoch = runs
+                .iter()
+                .find(|run| run.issue == issue)
+                .map_or(1, |run| run.epoch.saturating_add(1));
+            runs.retain(|run| run.issue != issue);
+            runs.push(TrackerRun {
+                issue: issue.into(),
+                title: "Prepare release notes".into(),
+                instruction: "Inspect every release-note section, preserve all cross references, and report every blocking inconsistency. ".repeat(4),
+                agent: "scribe".into(),
+                epoch,
+                starter: hex::encode(self.native.certificate.user_public_key),
+                active: true,
+                budget: None,
+                subject: None,
+                model: None,
+                directions: Vec::new(),
+                question: None,
+            });
+        }
+        self.state.refresh_native_task_delivery();
     }
     fn channel(&self, peer: u64, agent: bool) -> channel_handle::Client {
         self.app_channel(
@@ -736,30 +658,8 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
             let run = delivered(&agent).await;
             let (_target, stream) = notes_target(&f).await;
             grant_notes(&f);
-            f.person_command(WorkspaceTaskCommand::QueueInstruction {
-                title: "Other work".into(),
-                instruction: "Inspect unrelated work".into(),
-                assigned_agent: "scribe".into(),
-                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-            })
-            .unwrap();
-            let other = f
-                .native
-                .owner
-                .workspace_task_snapshot(room())
-                .unwrap()
-                .tasks
-                .into_iter()
-                .find(|task| task.id != f.task)
-                .unwrap()
-                .id;
-            f.person_command(WorkspaceTaskCommand::ApproveRun {
-                task_id: other.clone(),
-                agent_id: "scribe".into(),
-                expected_run_epoch: 0,
-                after_revision: 0,
-            })
-            .unwrap();
+            let other = "tasks.tracker/issues/other".to_owned();
+            f.approve_issue(&other);
             put_grant(
                 &f,
                 Grant::new(
@@ -770,18 +670,6 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
                     Answer::Deny,
                     Subject::person(hex::encode(f.native.certificate.user_public_key)),
                 ),
-            );
-            assert_eq!(
-                f.native
-                    .owner
-                    .workspace_task_snapshot(room())
-                    .unwrap()
-                    .tasks
-                    .iter()
-                    .find(|task| task.id == other)
-                    .unwrap()
-                    .status,
-                WorkspaceTaskStatus::InProgress,
             );
             let invocation = uuid::Uuid::new_v4();
             let first = invoke(&agent, &run, invocation).await.unwrap();
@@ -804,7 +692,7 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -829,8 +717,7 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
                     KindSet::UNDOABLE,
                     Answer::Allow,
                     Subject::person(hex::encode(f.native.certificate.user_public_key)),
-                )
-                .with_lifetime(Lifetime::Task(f.task.clone())),
+                ),
             );
             assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
             assert!(
@@ -873,12 +760,7 @@ async fn ordinary_native_agent_invocation_remains_fenced_after_stop() {
                 .unwrap(),
             );
             update.send().promise.await.unwrap();
-            f.person_command(WorkspaceTaskCommand::CancelForRun {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                after_revision: 0,
-            })
-            .unwrap();
+            f.stop();
             assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
             assert!(
                 ordinary_invoke(&agent)
@@ -948,7 +830,7 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
 /// the run is held to its task's grant set.
 #[tokio::test(flavor = "current_thread")]
 async fn a_native_run_is_held_to_its_tasks_grant_set() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -966,8 +848,7 @@ async fn a_native_run_is_held_to_its_tasks_grant_set() {
                     KindSet::READ,
                     Answer::Allow,
                     Subject::person(hex::encode(f.native.certificate.user_public_key)),
-                )
-                .with_lifetime(Lifetime::Task(f.task.clone())),
+                ),
             );
             assert!(
                 invoke(&agent, &run, uuid::Uuid::from_u128(8100))
@@ -986,21 +867,22 @@ async fn a_native_run_is_held_to_its_tasks_grant_set() {
         .await;
 }
 
+/// A failed run ends with its messages; the person's next approval is a new
+/// run of the issue, delivered as its own, and the old run reads as replaced.
 #[tokio::test(flavor = "current_thread")]
-async fn native_failure_preserves_pending_decisions_on_restart_and_old_run_cannot_retry() {
+async fn a_failed_run_is_replaced_by_the_next_approval_and_reads_as_replaced() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            f.person_command(WorkspaceTaskCommand::DirectionForRun {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                after_revision: 0,
-                text: "Ask me before changing the public API".into(),
-            })
-            .unwrap();
+            f.direct("Ask me before changing the public API");
+            let control = observed_control(&agent, &run).await;
+            assert_eq!(
+                control.directions[0].text,
+                "Ask me before changing the public API"
+            );
             report(
                 &agent,
                 &run,
@@ -1010,49 +892,19 @@ async fn native_failure_preserves_pending_decisions_on_restart_and_old_run_canno
             )
             .await
             .unwrap();
-            let reopened =
-                tilo_joined_room::open_file(&f.directory.path().join("native.json")).unwrap();
-            let pending = reopened.workspace_task_snapshot(room()).unwrap();
-            assert_eq!(pending.tasks[0].status, WorkspaceTaskStatus::Waiting);
-            assert!(pending.controls[&f.task].active_run.is_none());
-            assert_eq!(pending.controls[&f.task].directions.len(), 1);
-            assert!(pending.controls[&f.task].directions[0].applied.is_none());
-            f.person_command(WorkspaceTaskCommand::Retry {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-            })
-            .unwrap();
-            assert!(
-                f.state
-                    .dispatch_workspace_task(&room().to_string(), &f.task)
-                    .is_err(),
-                "retry alone does not approve a run"
-            );
-            f.person_command(WorkspaceTaskCommand::ApproveRun {
-                task_id: f.task.clone(),
-                agent_id: "scribe".into(),
-                expected_run_epoch: 1,
-                after_revision: 1,
-            })
-            .unwrap();
+            f.approve();
             let restarted = delivered(&agent).await;
             assert_ne!(restarted.run_id, run.run_id);
+            let mut old = agent.task_run_cancelled_request();
+            old.get().set_run_id(run.run_id);
+            old.get().set_lease(&run.lease);
             assert!(
-                report(
-                    &agent,
-                    &run,
-                    runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 }
-                )
-                .await
-                .is_err()
+                old.send().promise.await.is_err(),
+                "the replaced run no longer reads"
             );
             let control = observed_control(&agent, &restarted).await;
             assert_eq!(control.run_epoch, 2);
-            assert_eq!(control.applied_revision, 0);
-            assert_eq!(
-                control.directions[0].text,
-                "Ask me before changing the public API"
-            );
+            assert!(control.directions.is_empty(), "the new run starts afresh");
             drop(f);
         })
         .await;
@@ -1128,8 +980,6 @@ async fn a_started_run_acts_as_its_starter_and_deleted_targets_fail_closed() {
                     .await
                     .is_err()
             );
-            let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
-            assert_eq!(snapshot.tasks[0].status, WorkspaceTaskStatus::InProgress);
             drop(f);
         })
         .await;
@@ -1144,14 +994,8 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
                 turn_ms: 5000,
                 total_ms: 20000,
             };
-            f.person_command(WorkspaceTaskCommand::SetExecutionBudget {
-                task_id: f.task.clone(),
-                expected_run_epoch: 0,
-                expected_budget: None,
-                budget: Some(budget),
-            })
-            .unwrap();
             f.approve();
+            f.on_run(|run| run.budget = Some(budget));
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
             assert_eq!(run.execution_budget, Some(budget));
@@ -1159,12 +1003,7 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
             assert_eq!(run, replaced);
             let (_target, _stream) = notes_target(&f).await;
             grant_notes(&f);
-            f.person_command(WorkspaceTaskCommand::CancelForRun {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                after_revision: 0,
-            })
-            .unwrap();
+            f.stop();
             let mut status = agent.task_run_cancelled_request();
             status.get().set_run_id(run.run_id);
             status.get().set_lease(&run.lease);
@@ -1184,26 +1023,6 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
                     .is_err()
             );
             assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
-            assert!(
-                report(
-                    &agent,
-                    &run,
-                    runtime_collab::TaskRunUpdate::Succeeded {
-                        message: "Unseen work".into()
-                    }
-                )
-                .await
-                .is_err()
-            );
-            assert_eq!(
-                f.native
-                    .owner
-                    .workspace_task_snapshot(room())
-                    .unwrap()
-                    .tasks[0]
-                    .status,
-                WorkspaceTaskStatus::Cancelled
-            );
             drop(f);
         })
         .await;
@@ -1299,8 +1118,6 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
             )
             .await
             .unwrap();
-            let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
-            assert_eq!(snapshot.tasks[0].status, WorkspaceTaskStatus::Done);
             f.native
                 .owner
                 .with_current(room(), |view| {
@@ -1317,196 +1134,14 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
         .await;
 }
 
-async fn assert_authenticated_presentations_coalesce(
-    f: &Fixture,
-    agent: &channel_handle::Client,
-    run: &runtime_collab::TaskRunEnvelope,
-) {
-    let presentation = |sequence| task_presentation(run, sequence);
-    let update = presentation_update;
-    let before = WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
-    let audits = before
-        .tasks
-        .iter()
-        .find(|task| task.id == f.task)
-        .unwrap()
-        .audit
-        .len();
-    let receipts = before.controls[&f.task].receipts.len();
-    let person = f.channel(99, false);
-    assert!(report(&person, run, update(presentation(0))).await.is_err());
-    let mut wrong_lease = run.clone();
-    wrong_lease.lease.push('x');
-    assert!(
-        report(agent, &wrong_lease, update(presentation(0)))
-            .await
-            .is_err()
-    );
-    for sequence in 0..140 {
-        report(agent, run, update(presentation(sequence)))
-            .await
-            .unwrap();
-    }
-    let snapshot =
-        WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
-    assert_eq!(
-        snapshot
-            .tasks
-            .iter()
-            .find(|task| task.id == f.task)
-            .unwrap()
-            .audit
-            .len(),
-        audits
-    );
-    assert_eq!(snapshot.controls[&f.task].receipts.len(), receipts);
-    assert_eq!(snapshot.controls[&f.task].presentations.len(), 1);
-    assert_ne!(
-        snapshot.controls[&f.task]
-            .presentations
-            .values()
-            .next()
-            .unwrap()
-            .received_at,
-        Some(-100),
-        "sender cannot mint the host's receipt time"
-    );
-    assert_eq!(
-        snapshot.controls[&f.task]
-            .presentations
-            .values()
-            .next()
-            .unwrap()
-            .text,
-        "Reply 139"
-    );
-}
-
-fn task_presentation(
-    run: &runtime_collab::TaskRunEnvelope,
-    sequence: u64,
-) -> runtime_collab::TaskPresentation {
-    runtime_collab::TaskPresentation {
-        run: format!("{}:0", run.run_id),
-        received_at: Some(-100), // Sender cannot backdate the reply.
-        sequence,
-        text: format!("Reply {sequence}"),
-        reasoning: "Provider-exposed summary".into(),
-        finish: None,
-        detail: String::new(),
-    }
-}
-
-fn presentation_update(value: runtime_collab::TaskPresentation) -> runtime_collab::TaskRunUpdate {
-    runtime_collab::TaskRunUpdate::Progress {
-        message: "Working".into(),
-        presentation: Some(value),
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn authenticated_presentations_coalesce_without_audit_or_receipt_exhaustion() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let f = Fixture::new();
-            f.approve();
-            let agent = f.channel(100, true);
-            let run = delivered(&agent).await;
-            assert_eq!(run.presentation_version, Some(1));
-            let presentation = |sequence| task_presentation(&run, sequence);
-            let update = presentation_update;
-            assert!(
-                report(&agent, &run, update(presentation(0))).await.is_err(),
-                "presentation requires accepted execution"
-            );
-            report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
-                .await
-                .unwrap();
-            assert_authenticated_presentations_coalesce(&f, &agent, &run).await;
-            assert!(
-                report(&agent, &run, update(presentation(138)))
-                    .await
-                    .is_err()
-            );
-            let mut final_turn = presentation(140);
-            final_turn.finish = Some(runtime_collab::TaskPresentationFinish::Complete);
-            report(&agent, &run, update(final_turn)).await.unwrap();
-            assert!(
-                report(&agent, &run, update(presentation(141)))
-                    .await
-                    .is_err()
-            );
-            let mut second = presentation(0);
-            second.run = format!("{}:1", run.run_id);
-            second.text = "é".repeat(runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
-            let second_id = second.run.clone();
-            report(&agent, &run, update(second)).await.unwrap();
-            let snapshot =
-                WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
-            let retained = &snapshot.controls[&f.task].presentations[&second_id];
-            assert_eq!(
-                retained.finish,
-                Some(runtime_collab::TaskPresentationFinish::Truncated)
-            );
-            assert!(retained.text.len() <= runtime_collab::TaskPresentation::MAX_TEXT_BYTES);
-            assert!(!retained.detail.is_empty());
-            for turn in 2..collab_types::task_presentation::MAX_TASK_PRESENTATIONS {
-                let mut next = presentation(0);
-                next.run = format!("{}:{turn}", run.run_id);
-                report(&agent, &run, update(next)).await.unwrap();
-            }
-            let mut excess = presentation(0);
-            excess.run = format!("{}:overflow", run.run_id);
-            assert!(report(&agent, &run, update(excess)).await.is_err());
-            report(
-                &agent,
-                &run,
-                runtime_collab::TaskRunUpdate::Progress {
-                    message: "Legacy public note".into(),
-                    presentation: None,
-                },
-            )
-            .await
-            .unwrap();
-            report(
-                &agent,
-                &run,
-                runtime_collab::TaskRunUpdate::Succeeded {
-                    message: "Done".into(),
-                },
-            )
-            .await
-            .unwrap();
-            assert!(
-                report(&agent, &run, update(presentation(150)))
-                    .await
-                    .is_err()
-            );
-            let snapshot =
-                WorkspaceTaskExecution::snapshot(f.native.as_ref(), &room().to_string()).unwrap();
-            assert!(
-                snapshot.controls[&f.task]
-                    .presentations
-                    .values()
-                    .all(|p| p.finish.is_some()),
-                "closing authority must not leave interrupted replies working forever"
-            );
-            drop(f);
-        })
-        .await;
-}
-
+/// Nothing runs until the person approves; a message to the run stays
+/// pending until its agent took it in, also across a reconnect, and an agent
+/// removed from the room reads its run no more.
 #[tokio::test(flavor = "current_thread")]
 async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
-            assert!(
-                f.state
-                    .dispatch_workspace_task(&room().to_string(), &f.task)
-                    .is_err(),
-                "queueing is not approval"
-            );
             let person = f.channel(99, false);
             assert!(
                 person
@@ -1524,76 +1159,32 @@ async fn native_approved_run_reconnects_and_steering_stays_pending_until_applied
             report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
                 .await
                 .unwrap();
-            report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
-                .await
-                .unwrap();
-            f.person_command(WorkspaceTaskCommand::DirectionForRun {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                after_revision: 0,
-                text: "Keep compatibility examples".into(),
-            })
-            .unwrap();
+            f.direct("Keep compatibility examples");
             let control = observed_control(&agent, &run).await;
             assert_eq!(control.directions[0].text, "Keep compatibility examples");
             assert_eq!(control.applied_revision, 0);
+            let (_target, _stream) = notes_target(&f).await;
+            grant_notes(&f);
             assert!(
-                f.native
-                    .owner
-                    .with_task_action_admission(
-                        room(),
-                        &f.task,
-                        "scribe",
-                        1,
-                        0,
-                        || -> Result<(), String> { panic!("old plan must not enter") }
-                    )
-                    .is_err()
+                invoke(&agent, &run, uuid::Uuid::from_u128(5100))
+                    .await
+                    .is_err(),
+                "a run acts only once it took in every message to it"
             );
-            report(
-                &agent,
-                &run,
-                runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
-            )
-            .await
-            .unwrap();
+            assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
+            f.on_run(|run| run.directions[0].incorporated = true);
             f.state.remove_connection(100);
             let reconnect = f.channel(101, true);
             let resumed = delivered(&reconnect).await;
             assert_eq!(resumed.run_id, run.run_id);
-            assert_eq!(resumed.lease, run.lease);
-            report(
-                &reconnect,
-                &resumed,
-                runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
-            )
-            .await
-            .unwrap();
-            let state = f.native.owner.workspace_task_snapshot(room()).unwrap();
-            assert_eq!(
-                state.controls[&f.task]
-                    .active_run
-                    .as_ref()
-                    .unwrap()
-                    .applied_direction_revision,
-                1
-            );
-            assert_eq!(state.controls[&f.task].directions.len(), 1);
+            let control = observed_control(&reconnect, &resumed).await;
+            assert_eq!(control.applied_revision, 1);
             f.remove_agent();
             assert!(
-                report(
-                    &reconnect,
-                    &resumed,
-                    runtime_collab::TaskRunUpdate::Succeeded {
-                        message: "forged after removal".into()
-                    }
-                )
-                .await
-                .is_err()
-            );
-            assert_eq!(
-                f.native.owner.workspace_task_snapshot(room()).unwrap(),
-                state
+                invoke(&reconnect, &resumed, uuid::Uuid::from_u128(5101))
+                    .await
+                    .is_err(),
+                "a removed agent acts no more"
             );
             drop(f);
         })
@@ -1772,12 +1363,7 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
             });
             holding(&f, before).await;
             assert!(!held.is_finished(), "held while the child runs");
-            f.person_command(WorkspaceTaskCommand::CancelForRun {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                after_revision: 0,
-            })
-            .unwrap();
+            f.stop();
             let _answer = tilo_test_env::within("the cancelled re-ask's answer", held)
                 .await
                 .unwrap();

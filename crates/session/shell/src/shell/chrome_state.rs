@@ -832,6 +832,15 @@ pub enum PublicationState {
 }
 
 /// Mutable chrome state shared across the shell widget tree.
+/// Work for an agent, asked from the chrome: a notification handed to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentAsk {
+    pub room: crate::shell::state::RoomId,
+    pub agent: String,
+    pub title: String,
+    pub body: String,
+}
+
 #[derive(Debug)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -935,6 +944,9 @@ pub struct ChromeState {
     /// leaves the banners lands in the history, as does anything
     /// [`Self::notifications_quiet`] held back.
     notification_log: NotificationLog,
+    /// Work handed to an agent from the shell's chrome, until the overlay
+    /// host asks it through the workspace's tracker.
+    agent_asks: Vec<AgentAsk>,
     /// `None` until the compositor wires it up; tests and offscreen
     /// `shots` run without it.
     notification_bridge: Option<NotificationBridge>,
@@ -1257,6 +1269,7 @@ impl ChromeState {
             test_only_owner_override: None,
             local_user_id,
             notification_log: NotificationLog::default(),
+            agent_asks: Vec::new(),
             notification_bridge: None,
             pending_notification_actions: None,
             notification_history_store: None,
@@ -3992,6 +4005,27 @@ impl ChromeState {
         ids.len()
     }
 
+    /// Ask `agent` in `room` for work: `title`, described by `body`. The
+    /// overlay host asks it as an issue in Tasks, as the person.
+    pub fn ask_agent(
+        &mut self,
+        room: crate::shell::state::RoomId,
+        agent: String,
+        (title, body): (String, String),
+    ) {
+        self.agent_asks.push(AgentAsk {
+            room,
+            agent,
+            title,
+            body,
+        });
+    }
+
+    /// The work handed to agents since last taken.
+    pub(crate) fn take_agent_asks(&mut self) -> Vec<AgentAsk> {
+        std::mem::take(&mut self.agent_asks)
+    }
+
     /// The agent collaborator a retained notification could be handed to:
     /// the first agent admitted to the workspace the notification came from
     /// (or the active one, for shell and mirrored notifications). Whether
@@ -4013,50 +4047,6 @@ impl ChromeState {
             .or_else(|| tree.desktop.active_workspace())?;
         let (agent, _) = workspace.agent_members().into_iter().next()?;
         Some((workspace.id, workspace.room(), agent))
-    }
-
-    /// Hand a retained notification to an agent collaborator as a queued
-    /// workspace task carrying the notification as a typed resource. Returns
-    /// the task id, which the caller dispatches to the live agent.
-    pub fn hand_history_notification_to_agent(
-        &mut self,
-        id: u64,
-        workspace: WorkspaceId,
-        agent: &str,
-    ) -> Option<String> {
-        let notification = self.notification_log.history_entry(id)?;
-        let summary = if notification.body.is_empty() {
-            notification.title.clone()
-        } else {
-            format!("{}: {}", notification.title, notification.body)
-        };
-        let title: String = summary.chars().take(240).collect();
-        let resource = crate::shell::state::WorkspaceTaskResource {
-            app_id: notification.app_id.clone(),
-            app_label: notification.app_name.clone(),
-            id: format!("notification:{}", uuid::Uuid::new_v4()),
-            kind: "notification".to_string(),
-            label: notification.title.clone(),
-            agent_request: None,
-        };
-        let room = self
-            .tree()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .map(crate::shell::state::Workspace::room)?;
-        let actor = self.local_user_for_room(&room);
-        let task = self.tree_mut().create_workspace_task(
-            workspace,
-            title,
-            actor,
-            Some(agent.to_string()),
-            crate::shell::state::WorkspaceTaskRoute::Model,
-            Some(resource),
-        )?;
-        self.bump();
-        Some(task)
     }
 
     // ---------- Do-Not-Disturb ----------

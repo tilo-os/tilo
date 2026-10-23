@@ -13,7 +13,6 @@ use tilo_action_broker::services::{
 };
 use tilo_desktop_model::{
     DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceEffectReceipt, WorkspaceId,
-    WorkspaceTaskStatus,
 };
 use tilo_identity_host::broker::WorkspaceMembership;
 
@@ -290,29 +289,6 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
                     completed_at,
                 ),
             );
-            Some(())
-        })
-    }
-
-    fn record_task_update(
-        &self,
-        room: &str,
-        task: &str,
-        actor: &str,
-        status: Option<WorkspaceTaskStatus>,
-        summary: String,
-    ) -> Result<(), String> {
-        let now = tilo_clock::unix_now_i64();
-        self.record(room, |tree, workspace| {
-            let workspace = tree
-                .workspaces
-                .iter_mut()
-                .find(|candidate| candidate.id == workspace)?;
-            if let Some(status) = status {
-                workspace.set_task_status_at(task, status, actor, now);
-                workspace.lapse_task_grants();
-            }
-            workspace.append_task_audit_at(task, actor, summary, now)?;
             Some(())
         })
     }

@@ -1,7 +1,7 @@
 //! Native Store submissions keep task custody and require exact host disclosure consent.
 use super::*;
 use crate::app_actions::{AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest};
-use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
+use crate::services::TrackerAnswer;
 
 const STORE: &str = "so.tilo.store";
 const RESOURCE: &str = "store:package";
@@ -103,6 +103,28 @@ async fn target(f: &Fixture, action: &str) -> (channel_handle::Client, invocatio
     (target, stream)
 }
 
+/// The agent asks its person about the Store `action` it was answered asks
+/// first, on the issue.
+fn ask(f: &Fixture, action: &str) -> crate::services::TrackerQuestion {
+    let arguments =
+        serde_json::json!({"app": "org.example.app", "operation": operation(action, "Original")});
+    confirmation::ask(f, (RESOURCE, action), arguments.as_object().unwrap())
+}
+
+/// The person confirms the run's question, changing the operation to `text`.
+fn confirm(f: &Fixture, text: String) {
+    confirmation::answer(
+        f,
+        TrackerAnswer::Confirmed {
+            edits: serde_json::to_value(vec![tilo_actions::DraftEdit {
+                path: vec!["operation".into()],
+                text,
+            }])
+            .unwrap(),
+        },
+    );
+}
+
 async fn invoke(
     agent: &channel_handle::Client,
     run: &runtime_collab::TaskRunEnvelope,
@@ -179,10 +201,8 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                     let (_target, stream) = target(&f, action).await;
                     let waiting = invoke(&agent, &run, action, provider).await.unwrap_err();
                     assert!(waiting.to_string().contains(tilo_actions::draft::AWAITING_CONFIRMATION), "{waiting}");
-                    let held = confirmation::held(&f).unwrap();
-                    confirmation::answer(&f, &held.id, WorkspaceTaskConfirmationAnswer::Confirm {
-                        edits: vec![tilo_actions::DraftEdit { path: vec!["operation".into()], text: operation(action, "Reviewed") }],
-                    });
+                    ask(&f, action);
+                    confirm(&f, operation(action, "Reviewed"));
                     let unavailable = invoke(&agent, &run, action, provider).await.unwrap_err();
                     assert!(unavailable.to_string().contains("host confirmation unavailable"), "{unavailable}");
                     assert!(confirmation::nothing_delivered());
@@ -289,17 +309,11 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
 
             let waiting = invoke(&agent, &run, action, 1).await.unwrap_err();
             assert!(waiting.to_string().contains(tilo_actions::draft::AWAITING_CONFIRMATION), "{waiting}");
-            let asked = confirmation::held(&f).expect("closed Store action needs a task draft");
-            assert!(asked.is_waiting());
+            let asked = ask(&f, action);
             assert_eq!(asked.app, STORE);
             assert!(launches.try_recv().is_err(), "an unconfirmed draft cannot launch Store");
             assert!(sheets.try_recv().is_err(), "disclosure needs a live provider");
-            confirmation::answer(&f, &asked.id, WorkspaceTaskConfirmationAnswer::Confirm {
-                edits: vec![tilo_actions::DraftEdit {
-                    path: vec!["operation".into()],
-                    text: operation(action, "Reviewed while Store was closed"),
-                }],
-            });
+            confirm(&f, operation(action, "Reviewed while Store was closed"));
 
             let call = invoke(&agent, &run, action, 1);
             tokio::pin!(call);
@@ -344,7 +358,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             assert_eq!(preview.signing_root, hex::encode(f.native.certificate.user_public_key));
             let confirmed = confirmation::held(&f).unwrap();
             assert_eq!(confirmed.id, asked.id, "delivery must not create a second task draft");
-            assert!(!confirmed.is_waiting());
+            assert!(!matches!(confirmed.answer, TrackerAnswer::Waiting));
             assert!(confirmation::nothing_delivered());
             answer.send(AppActionConsent::Once).unwrap();
             tilo_test_env::within("confirmed Store invocation to be admitted", &mut call).await.unwrap();
@@ -354,7 +368,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             assert_eq!(wire.get_action().unwrap().to_str().unwrap(), action);
             let arguments: serde_json::Value = serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
             assert_eq!(arguments["operation"], operation(action, "Reviewed while Store was closed"));
-            assert!(confirmation::held(&f).is_none_or(|held| held.id == asked.id && !held.is_waiting()));
+            assert!(confirmation::held(&f).is_none_or(|held| held.id == asked.id && !matches!(held.answer, TrackerAnswer::Waiting)));
             assert!(launches.try_recv().is_err(), "one confirmed draft launches once");
             assert!(sheets.try_recv().is_err(), "one dispatch needs one disclosure sheet");
             assert!(confirmation::nothing_delivered());
