@@ -173,8 +173,10 @@ impl Browser {
 }
 
 /// The screenshot scenarios: the page, the chrome's states, the library's
-/// sections and the tab strip.
+/// sections and the tab strip. `page` is the deterministic page as it opens,
+/// nothing staged over it.
 const SCENARIOS: &[&str] = &[
+    "page",
     "pip-active",
     "pip-empty",
     "settings",
