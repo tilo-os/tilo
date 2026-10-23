@@ -619,6 +619,29 @@ fn an_agent_imports_a_workbook_the_room_keeps_unasked() {
         .expect("the agent imports the workbook unasked");
 }
 
+/// An event on the local calendar stays in the record: an agent adds one
+/// unasked. One on a remote calendar is queued for its server, which its
+/// person is asked about first.
+#[test]
+fn an_agent_adds_a_local_event_unasked_and_is_asked_for_a_remote_one() {
+    let calendar = agents_record("so.tilo.calendar", None);
+    let new_event = operation(&calendar, "new-event");
+    let event = |calendar_id: &str| {
+        arguments(serde_json::json!({"event": {
+            "title": "Runner check-in", "start": "2026-11-28T07:30",
+            "end": "2026-11-28T08:30", "calendar_id": calendar_id,
+        }}))
+    };
+    calendar
+        .invoke(&new_event.address, &event(""), false)
+        .expect("a local event is added unasked");
+    assert!(calendar.take_mutation().unwrap().is_some());
+    match calendar.invoke(&new_event.address, &event("work@caldav"), false) {
+        Err(DoorError::ConfirmationRequired | DoorError::Unavailable { .. }) => {}
+        other => panic!("an event for a server is not added unasked: {other:?}"),
+    }
+}
+
 /// Placing a picture the room keeps is an ordinary edit of the document:
 /// an agent is offered it, and it runs unasked, under the heading named.
 #[test]
@@ -628,10 +651,10 @@ fn an_agent_places_a_picture_the_room_keeps_under_a_heading() {
     let hash = room.put(&png(8, 0x40)).unwrap();
     let address = tilo_actions::content_resource(&hash).unwrap();
     let writer = agents_record(WRITER, Some(&room));
-    let paste = operation(&writer, "paste");
+    let replace = operation(&writer, "replace-body");
     writer
         .invoke(
-            &paste.address,
+            &replace.address,
             &arguments(serde_json::json!({
                 "markdown": "# Summary\nSee the results below.\n# Results\nNumbers by region"
             })),

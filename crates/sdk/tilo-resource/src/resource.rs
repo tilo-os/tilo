@@ -2041,6 +2041,16 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     if decl.kind == ActionKind::Undoable {
         spec = spec.reversible();
     }
+    // One whose arguments decide whether it reaches outside is what the
+    // action built from them is; arguments that build none are taken as
+    // reaching outside.
+    if decl.by_arguments {
+        let classify = Arc::clone(&decl.build);
+        spec = spec.with_need_of(move |args| match classify(args, 0) {
+            Ok(action) => action.need(),
+            Err(_) => tilo_actions::ActionNeed::of(ActionKind::Outside),
+        });
+    }
     if let Some(field) = decl.field {
         spec = spec.below_field(field);
     }

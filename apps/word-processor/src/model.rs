@@ -109,6 +109,19 @@ impl Document {
         Ok(())
     }
 
+    /// Replace the body.
+    ///
+    /// The whole body written again from Markdown (headings, lists, pipe
+    /// tables): a line holding a paragraph's text keeps that paragraph.
+    #[action(answers, audience = "agents")]
+    pub fn replace_body(
+        &mut self,
+        #[param("The whole new body as Markdown")] markdown: String,
+    ) -> Result<(), Refusal> {
+        self.body.perform(RichTextAction::SyncBody { markdown });
+        Ok(())
+    }
+
     /// Find and replace.
     ///
     /// Replace a phrase where it is in the document, the first occurrence
