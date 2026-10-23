@@ -1012,10 +1012,6 @@ impl ChromiumEngine {
     }
 
     /// Explicit profile with the packaged helper and approved extensions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid extensions, profile preparation failure, or helper startup failure.
     pub fn with_profile_extensions(
         profile: &Path,
         extensions: &[PathBuf],

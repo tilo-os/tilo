@@ -104,7 +104,6 @@ impl<T> TypingRuns<T> {
         Some(&mut run.at)
     }
 
-    /// Open `actor`'s run at `at`, typing into `field`.
     pub(crate) fn start(&mut self, actor: &str, field: TypedField, time_ms: i64, at: T) {
         self.open
             .insert(actor.to_owned(), Run { field, time_ms, at });

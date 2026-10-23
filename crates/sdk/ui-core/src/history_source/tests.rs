@@ -579,7 +579,6 @@ fn contributor_and_date_filters_select_and_intersect() {
         });
         assert_eq!(timeline.visible_len(), 0, "nothing happened then");
 
-        // The full span holds everything.
         timeline.set_filter(HistoryFilter {
             time_range: Some((at(T0 - HOUR), at(T0 + 10 * HOUR))),
             ..Default::default()

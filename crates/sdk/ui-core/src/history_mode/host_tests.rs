@@ -1831,7 +1831,6 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
     }
 }
 
-/// The text at `key` of `doc`'s root, if it holds text.
 fn root_text(doc: &automerge::AutoCommit, key: &str) -> Option<String> {
     doc.get(ROOT, key)
         .ok()

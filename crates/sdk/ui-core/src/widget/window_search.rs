@@ -307,7 +307,6 @@ pub enum WindowSearchRequest {
     Open,
     /// Close it: the app stops highlighting or narrowing.
     Close,
-    /// Widen it beyond the window.
     Widen(SearchReach),
 }
 
@@ -428,7 +427,6 @@ impl WindowSearch {
         self.presence.is_open()
     }
 
-    /// Whether the field holds the keyboard.
     #[must_use]
     pub fn has_keyboard(&self) -> bool {
         self.is_open() && self.keyboard
@@ -1613,7 +1611,6 @@ mod tests {
         assert!(search.field_rect.width() >= field_min);
         assert!(search.parts.iter().all(|(_, r)| r.x1 <= 520.0 + 0.5));
 
-        // Halfway open, the field is between the control and its width.
         search.layout(0.5, &mut text, &theme);
         assert!(search.field_rect.width() > CONTROL_PX);
         assert!(

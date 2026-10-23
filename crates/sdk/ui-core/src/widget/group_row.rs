@@ -686,7 +686,6 @@ struct ApartDrawing {
 pub struct OutputSpan {
     /// Left edge of the display in combined coordinates.
     pub x: f64,
-    /// Full width of the display.
     pub width: f64,
     /// Width available to window groups on this display: `width` minus
     /// whatever shell chrome it reserves (on the leftmost display, the
@@ -7088,12 +7087,10 @@ mod tests {
             "the deadline had its frame: no frame after frame"
         );
 
-        // A later deadline of the same window still wakes the host.
         let later = crate::time::now() + Duration::from_secs(60);
         deadline.set(Some(later));
         assert_eq!(harness.frame_schedule().next_wake_deadline, Some(later));
 
-        // Shown, the window is painted and its deadline consumed.
         deadline.set(Some(crate::time::now()));
         let max = harness.root::<PannedRow>().row.pan_max_scroll_x();
         travel.set(Some(max));
@@ -7490,8 +7487,6 @@ mod tests {
         let mut now = crate::time::now();
         crate::time::testing::with_monotonic_time(now, || {
             let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-            // Far from the window's centre, where a lift scaled about the
-            // centre drifted most.
             let grab = group_grab_point(&row, 0);
             press_at(&mut row, &taffy, root, grab);
             let mut at = grab;
@@ -7788,7 +7783,6 @@ mod tests {
                 mid > 0.0 && mid < expected,
                 "halfway through the curve scroll_x must be between 0 and {expected}, got {mid}"
             );
-            // The group-move spring has come to rest well inside a second.
             anim.tick_snap_at(t0 + Duration::from_secs(1));
             assert_eq!(
                 anim.scroll_x(),
@@ -7834,7 +7828,6 @@ mod tests {
         }
 
         fn drop_into_new_window_works_when_release_is_above_row() {
-            // Companion to the "below" case.
             let row = make_row_with_groups(&[&[1, 2], &[10, 11]]);
             let r0 = row.groups[0].get_rect();
             let release = Point::new(r0.x0 - 4.0, row.rect.y0 - 15.0);
@@ -8089,7 +8082,6 @@ mod tests {
     #[test]
     fn single_tab_group_splits_on_any_gap_repeatedly() {
         fn single_tab_group_can_split_into_new_group_on_any_adjacent_gap() {
-            // Companion to `single_tab_group_split_is_not_refused_by_handle_event_sweep`.
             let mut row = make_row_with_groups(&[&[1]]);
             assert!(
                 row.split_tab_into_new_group(0, 1, 1),
@@ -8117,7 +8109,6 @@ mod tests {
             row.tab_drop_target = row.tab_drop_target_at(release);
             row.groups[0].bar_mut().pending_detach = Some((7, release));
 
-            // The release triggers the same post-child detach sweep as production.
             let event = WindowEvent::MouseInput {
                 device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
@@ -8911,7 +8902,6 @@ mod tests {
             first.encoding_eq(&moved),
             "the replay draws what drawing would"
         );
-        // A focused group is drawn on every frame.
         let focused = shown[0];
         let index = row.groups.iter().position(|g| g.id == focused).unwrap();
         let _ = row.groups[index].set_focused(true);
@@ -9021,7 +9011,6 @@ mod tests {
                     "drawings do not outlive a frame that is not only a pan"
                 );
             }
-            // A keyboard-focused window is drawn on every frame.
             let shown = row.onscreen_group_ids();
             let focused = shown[0];
             let index = row
@@ -9196,7 +9185,6 @@ mod tests {
                 "the pan shows both whole: spans {spans:?}, scroll {to}"
             );
         }
-        // Phase `a_display_too_narrow_to_share_leaves_widths_alone`.
         {
             let mut row = opened_beside(800.0, 0.0);
             assert!(
@@ -9209,7 +9197,6 @@ mod tests {
             );
             assert_eq!(row.groups[1].width(), WindowWidth::Normal);
         }
-        // Phase `windows_that_cannot_both_be_shown_keep_the_selected_one`.
         {
             let mut row = strip_at(2, 800.0, 0.0, 1000);
             row.scroll_groups_into_view_animated(
@@ -9259,7 +9246,6 @@ mod tests {
                     },
                 );
                 assert!(!handled, "a bare wheel must be left unclaimed by the strip");
-                // Lets any wrongly-started eased travel show itself.
                 row.tick_snap_at(crate::motion::frame_now() + Duration::from_millis(400));
                 assert_eq!(row.scroll_x(), 0.0, "a bare wheel must not move the strip");
                 row.apply_layout(&taffy, root, Point::ORIGIN);
@@ -9498,7 +9484,6 @@ mod tests {
 
             // 8 groups → sum-of-mins exceeds the 1200px viewport.
             let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
-            // Stage an in-flight snap directly to skip a real idle window.
             row.set_scroll_x_for_test(300.0);
             let base = crate::time::now();
             row.set_last_wheel_at_for_test(earlier(base, 250));
@@ -9868,7 +9853,6 @@ mod tests {
 
     #[test]
     fn the_seam_belongs_to_the_focused_window_and_hovering_shows_whose_edge_it_is() {
-        // Phase `with_no_window_in_use_each_half_is_its_windows_edge`.
         {
             let (mut row, taffy, root) = edge_strip(None, None);
             let r = rects(&row);
@@ -9955,7 +9939,6 @@ mod tests {
             assert_eq!(row.groups[0].edge_highlight(), Some(WindowEdge::Trailing));
             assert_eq!(row.groups[1].edge_highlight(), Some(WindowEdge::Leading));
             assert_eq!(row.groups[2].edge_highlight(), None);
-            // Off every edge nothing is shown.
             let _ = edge_event(&mut row, &taffy, root, false, &move_to(r[1].center()));
             assert_eq!(row.edge_hover(), None);
             assert!(row.groups.iter().all(|g| g.edge_highlight().is_none()));
@@ -10009,7 +9992,6 @@ mod tests {
             assert_eq!(row.groups[0].take_pending_width_change(), None);
             assert_eq!(row.groups[2].take_pending_width_change(), None);
         }
-        // Phase `right_edge_grows_right_and_pushes_the_window_after_it`.
         {
             let (row, taffy, root) = edge_strip(Some(1), None);
             let before = rects(&row);
@@ -10023,7 +10005,6 @@ mod tests {
                 assert_eq!(frame[0], before[0]);
             }
         }
-        // Phase `an_unfocused_windows_own_half_resizes_that_window`.
         {
             let (row, taffy, root) = edge_strip(None, None);
             let before = rects(&row);
@@ -10194,7 +10175,6 @@ mod tests {
 
     #[test]
     fn a_limit_stops_the_edge_and_resizes_nothing_else() {
-        // Phase `the_apps_own_minimum_stops_the_edge`.
         {
             let (files, anchor) = files_window(320.0);
             let (row, taffy, root) = edge_strip(Some(1), Some(files));
@@ -10230,7 +10210,6 @@ mod tests {
             ));
             assert!(anchor.get().1, "and that the drag ended");
         }
-        // Phase `an_app_that_says_nothing_stops_at_the_strips_floor`.
         {
             let (row, taffy, root) = edge_strip(Some(1), None);
             let before = rects(&row);
@@ -10242,7 +10221,6 @@ mod tests {
                 vec![400.0, min_group_px(FIXTURE_USABLE_PX), 400.0]
             );
         }
-        // Phase `shift_stops_when_either_window_reaches_its_minimum`.
         {
             let (files, _anchor) = files_window(320.0);
             let (row, taffy, root) = edge_strip(Some(1), Some(files));
@@ -10362,7 +10340,6 @@ mod tests {
                 r2.width(),
             );
 
-            // Small fp tolerance for taffy rounding.
             let r1 = row.groups[1].get_rect();
             let row_w = row.rect.width();
             assert!(
@@ -10570,7 +10547,6 @@ mod tests {
         // Fresh curves are read in the instant they start: a descheduled
         // runner cannot age them.
         crate::time::testing::with_monotonic_time(crate::time::now(), || {
-            // Case `maximize_starts_a_fast_fade_and_keeps_the_tiled_rect`.
             {
                 let (row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
                 let before = row.groups[0].get_rect().width();
@@ -10600,7 +10576,6 @@ mod tests {
                     "a quarter of the way through fast the sibling is still on screen, got {mid}",
                 );
 
-                // Case `restore_retargets_from_the_current_alpha`.
                 row.groups[1].maximized = false;
                 let (row, ..) = relayout_row_owned_with(row, 2000.0, &Theme::dark());
                 let after = row.sibling_fade_value();
@@ -10614,7 +10589,6 @@ mod tests {
                 );
             }
 
-            // Case `reduced_motion_snaps_siblings_away`.
             {
                 let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
                 row.groups[1].maximized = true;
@@ -11256,7 +11230,6 @@ mod tests {
         let t0 = crate::time::now();
         let frame = Duration::from_millis(16);
 
-        // In the middle of the screen nothing pans.
         row.set_external_content_drag_hover(Some(Point::new(350.0, 300.0)));
         assert!(!row.drag_reach_pending());
         assert!(!row.advance_drag_reach_for_test(t0));
@@ -11273,7 +11246,6 @@ mod tests {
         let fast = row.scroll_x();
         assert!(fast > 100.0, "about 1.5 px/ms near the edge: {fast}");
 
-        // Shallower in the band is slower.
         let (mut slow_row, _t, _r) =
             make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
         slow_row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
@@ -11304,7 +11276,6 @@ mod tests {
         assert!(row.advance_drag_reach_for_test(now));
         assert!(row.scroll_x() < max);
 
-        // The drag leaving the row ends it.
         let at = row.scroll_x();
         row.set_external_content_drag_hover(None);
         now += frame;
@@ -11388,7 +11359,6 @@ mod tests {
         row.advance_drag_reach_for_test(t0 + Duration::from_millis(600));
         assert_eq!(row.groups[0].active_tab_id(), 1);
 
-        // Without a drag, hovering a tab is just hovering.
         row.set_external_content_drag_hover(None);
         row.last_cursor = background;
         assert!(!row.advance_drag_reach_for_test(t0));

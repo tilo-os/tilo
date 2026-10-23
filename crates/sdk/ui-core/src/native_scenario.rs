@@ -211,10 +211,6 @@ fn parse(contents: &str) -> Result<Scenario, String> {
 }
 
 /// Loads a scenario and verifies any opted-in collector's exact source hash.
-///
-/// # Errors
-/// Returns an error for invalid gate configuration, unreadable scenario bytes,
-/// a mismatched gated source hash, or an invalid scenario.
 pub fn load_from_env() -> Result<Option<Scenario>, String> {
     let gate = GateConfig::from_env()?;
     let Some(path) = std::env::var_os("TILO_NATIVE_SCENARIO") else {
@@ -450,10 +446,6 @@ pub fn deadline(origin: Instant, interval_us: u64, index: usize) -> Result<Insta
 ///
 /// Joining this thread proves only delivery has ended, not that inputs were
 /// handled, changed application state, rendered, or appeared on a display.
-///
-/// # Errors
-/// Returns an error for an invalid timeline, opted-in gate configuration/source/
-/// descriptor, unsupported opted-in gate platform, or thread creation failure.
 pub fn spawn(
     scenario: Scenario,
     mut deliver: impl FnMut(Packet) -> bool + Send + 'static,
@@ -668,7 +660,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gate_releases_only_exact_current_step_approvals() {
-        // Case `exact_current_step_approvals_release_each_non_hover_once`.
         {
             let mut child = GateChild::start(1_000, |_| {});
             let first = child.request();
@@ -682,7 +673,6 @@ mod tests {
             assert_eq!(delivered_ids(&child.finish()), [0, 1, 2]);
         }
 
-        // Case `revoked_wrong_or_replayed_permits_never_release_the_pending_step`.
         {
             for field in [
                 "approved",
@@ -733,7 +723,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gate_fails_closed_on_invalid_configuration_and_transport() {
-        // Case `invalid_gate_configuration_and_unverified_source_hash_fail_closed`.
         {
             for (field, value) in [
                 ("fd", serde_json::json!(-1)),
@@ -748,7 +737,6 @@ mod tests {
             }
         }
 
-        // Case `gate_rejects_non_socket_and_changed_scheduling_input`.
         {
             let mut malformed = GateChild::start(1_000, |config| {
                 *config = serde_json::json!("not a gate config")
@@ -810,7 +798,6 @@ mod tests {
 
     #[test]
     fn scheduling_keeps_deadlines_and_stops_on_a_closed_receiver() {
-        // Case `delayed_delivery_does_not_shift_future_deadlines`.
         {
             let observed = Arc::new(Mutex::new(Vec::new()));
             let output = observed.clone();
@@ -874,7 +861,6 @@ mod tests {
             }
         }
 
-        // Case `closed_receiver_stops_scheduling`.
         {
             let observed = Arc::new(Mutex::new(Vec::new()));
             let output = observed.clone();
@@ -891,7 +877,6 @@ mod tests {
 
     #[test]
     fn scenario_json_loads_validated_and_rejects_ambiguous_or_overflowing_input() {
-        // Case `loads_validated_json_with_optional_warmup`.
         {
             let loaded = parse(
                 r#"{"name":"hover","interval_us":16667,"steps":[{"kind":"hover","x":10,"y":20}]}"#,
@@ -913,7 +898,6 @@ mod tests {
             );
         }
 
-        // Case `keyboard_schema_preserves_unicode_and_rejects_ambiguous_input`.
         {
             let scenario = parse(r#"{"name":"typing","interval_us":16667,"steps":[{"kind":"character","value":"é"},{"kind":"key","key":"backspace"}]}"#).unwrap();
             assert_eq!(
@@ -930,7 +914,6 @@ mod tests {
             }
         }
 
-        // Case `find_holds_the_command_modifier_around_one_f`.
         {
             let scenario = parse(
                 r#"{"name":"find","interval_us":16667,"steps":[{"kind":"find"},{"kind":"character","value":"z"}]}"#,
@@ -956,7 +939,6 @@ mod tests {
             }
         }
 
-        // Case `pen_steps_load_and_reject_out_of_range_pressure`.
         {
             let scenario = parse(r#"{"name":"stroke","interval_us":8000,"steps":[{"kind":"pen_down","x":10,"y":20,"pressure":0.4},{"kind":"pen_move","x":12,"y":21,"pressure":0.9},{"kind":"pen_up","x":12,"y":21}]}"#).unwrap();
             assert!(matches!(
@@ -984,7 +966,6 @@ mod tests {
             assert!(invalid.validate().is_err());
         }
 
-        // Case `rejects_invalid_scenario_before_scheduling`.
         {
             let mut invalid = scenario();
             invalid.name = "  ".into();
@@ -1021,7 +1002,6 @@ mod tests {
             }
         }
 
-        // Case `checked_timeline_rejects_overflow`.
         {
             let origin = crate::time::now();
             assert!(deadline(origin, u64::MAX, 2).is_err());

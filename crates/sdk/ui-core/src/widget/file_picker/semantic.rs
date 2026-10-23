@@ -141,7 +141,6 @@ impl FilePicker {
                 if !Self::within_scope(&row) {
                     return Err(PickerRefusal::OutsideScope);
                 }
-                // Select is the ordinary single-click selection. Directory traversal is explicit.
                 if navigate {
                     if !row.is_dir {
                         return Err(PickerRefusal::UnavailableEntry);

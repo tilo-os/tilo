@@ -1454,7 +1454,6 @@ mod tests {
         ));
         assert!(p.color().r() <= 5, "the finger lands at the left end");
         assert!(Widget::wants_pointer_capture(&p));
-        // Off the track, the drag still follows the finger's x.
         assert!(dispatch(
             &mut p,
             &finger(TouchPhase::Moved, r.x1 - 1.0, y + 80.0)
@@ -1523,7 +1522,6 @@ mod tests {
                 "top-right SV click must yield high value — got v={v_tr}",
             );
 
-            // Either channel dropping below the post-TR reading proves the click landed.
             let bl_x = p.sv_rect.x0 + 1.0;
             let bl_y = p.sv_rect.y1 - 1.0;
             dispatch(&mut p, &cursor_moved(bl_x, bl_y));
@@ -1640,7 +1638,6 @@ mod tests {
             let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
             assert_eq!(p.take_changed(), None, "no edit → take_changed is None");
 
-            // A real drag through the production handle_event path.
             let r_x = p.r_slider_rect.x1 - 1.0;
             let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
             dispatch(&mut p, &cursor_moved(r_x, r_y));

@@ -148,7 +148,6 @@ fn file_picker_open_and_save_render() {
         let bg8 = backdrop(&theme).to_rgba8();
         let bg = [bg8.r, bg8.g, bg8.b, 0xff];
 
-        // Open mode with file-type filters.
         let mut open = listed(
             FilePicker::new("Open a file", &root, vec![root.clone()]).with_filters(vec![
                 FileFilter::new("Images", &["png", "jpg"]),
@@ -165,7 +164,6 @@ fn file_picker_open_and_save_render() {
         assert_panel_edge_registers(&rgba, w, theme_name);
         dump(&format!("file_picker_open_{theme_name}"), &rgba, w, h);
 
-        // Save mode with a typed filename.
         let mut save = listed(
             FilePicker::new("Save as", &root, vec![root.clone()])
                 .with_mode(FilePickerMode::Save)
