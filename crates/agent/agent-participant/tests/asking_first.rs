@@ -174,6 +174,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             room: ROOM.into(),
+            content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {
             key: agent_device.key.clone(),

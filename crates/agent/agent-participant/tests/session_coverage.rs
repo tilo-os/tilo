@@ -230,6 +230,7 @@ async fn every_web_app_over_the_session() {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             room: ROOM.into(),
+            content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {
             key: agent_device.key.clone(),
@@ -661,5 +662,388 @@ async fn every_web_app_over_the_session() {
             .map(|retained| (retained.author, retained.body)),
     );
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
+    host.relay.shutdown().await;
+}
+
+const CANVAS: &str = "so.tilo.canvas";
+const SHEETS: &str = "so.tilo.sheets";
+
+/// An agent granted `apps`, planning with `planner`, admitted to the room
+/// on `host`, its records lent `store`.
+async fn planning_agent(
+    root: &ed25519_dalek::SigningKey,
+    (host, host_device): (&support::TestHost, &support::Device),
+    apps: &[&str],
+    planner: Box<dyn tilo_agent_participant::Planner>,
+    store: tilo_content::ContentStore,
+) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+    let agent_device = enrol(root, "Agent: Planner", CertificationPolicy::agent().ceiling);
+    let now = tilo_clock::unix_now_ns();
+    let delegation = Delegation::sign(
+        root,
+        agent_device.cert.device_public_key,
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "planner".into(),
+        },
+        "Planner",
+        [0x0f, 0x4c, 0x5c],
+        DelegateScope {
+            rooms: vec![ROOM.into()],
+            apps: apps.iter().map(|app| (*app).to_owned()).collect(),
+        },
+        now,
+        now + 3_600_000_000_000,
+    )
+    .unwrap();
+    host.relay.register_agent(delegation.clone()).unwrap();
+    let control = AgentControl::new(delegation.clone());
+    let mut agent = AgentParticipant::start(
+        ParticipantConfig {
+            host: host.iroh(),
+            host_cert: host_device.cert.clone(),
+            room: ROOM.into(),
+            content: store,
+        },
+        AgentIdentity {
+            key: agent_device.key.clone(),
+            cert: agent_device.cert.clone(),
+            delegation,
+        },
+        control.clone(),
+        catalogue(),
+        planner,
+    )
+    .unwrap();
+    wait_for("the agent to be admitted", || {
+        agent.pump();
+        let waiting = control.status() == AgentStatus::Waiting;
+        async move { waiting.then_some(()) }
+    })
+    .await;
+    (agent, control)
+}
+
+/// A planner at `url`, an OpenAI-compatible endpoint answering canned turns.
+fn endpoint_planner(url: &str) -> Box<dyn tilo_agent_participant::Planner> {
+    Box::new(ModelPlanner::new(Box::new(
+        tilo_agent_participant::OpenAiModel::new(
+            url,
+            "canned",
+            tilo_agent_participant::ApiKey::None,
+            tilo_test_env::hang_bound(),
+            tilo_model_gateway::openai::Target::Standard,
+        ),
+    )))
+}
+
+/// An endpoint answering `answers` in order, one connection each, and
+/// reporting every request's body.
+fn model_endpoint(answers: Vec<serde_json::Value>) -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for answer in answers {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            sent.send(String::from_utf8(body).unwrap()).unwrap();
+            let answer = answer.to_string();
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{answer}",
+                answer.len()
+            );
+            reader.into_inner().write_all(reply.as_bytes()).unwrap();
+        }
+    });
+    (url, received)
+}
+
+/// A chat-completions turn calling `name` with `input`.
+fn tool_call(id: &str, name: &str, input: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
+        "tool_calls": [{"id": id, "type": "function", "function": {"name": name,
+            "arguments": input.to_string()}}]}, "finish_reason": "tool_calls"}]})
+}
+
+/// The text of a chat-completions message, written as a string or as text
+/// parts.
+fn message_text(message: &serde_json::Value) -> String {
+    match &message["content"] {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect(),
+        _ => String::new(),
+    }
+}
+
+/// Run `text` as a task of `agent` to its end.
+fn run_task(
+    agent: &mut AgentParticipant,
+    control: &AgentControl,
+    text: &str,
+) -> tilo_relay_protocol::agents::AgentTask {
+    let task = control.message(text).unwrap();
+    let ended = || {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|info| info.id == task)
+            .filter(|info| !matches!(info.state, TaskState::Queued | TaskState::Running))
+    };
+    agent.run_until(Some(Instant::now() + Duration::from_secs(60)), |_| {
+        ended().is_some()
+    });
+    ended().expect("the task ended")
+}
+
+/// The offline measure of model calls per task: a one-app task over an app
+/// the room has no record of is planned in ONE model request — the record
+/// is made before the plan, and the first turn shows what it publishes with
+/// its parameters in full.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_one_app_task_is_planned_in_one_model_request() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let set_cells = "sheets.workbook#set-cells";
+    let (url, sent) = model_endpoint(vec![tool_call(
+        "p1",
+        "plan",
+        &serde_json::json!({"steps": [{"operation": set_cells,
+            "arguments": {"sheet": "00000000-0000-4000-8000-000000000001", "start": "A1",
+                "rows": [["Visits", "Signups"], [240, 18]]}}],
+            "then": ""}),
+    )]);
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        endpoint_planner(&url),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+
+    let info = run_task(
+        &mut agent,
+        &control,
+        "In Sheets, enter Visits and Signups in the first row and 240 and 18 under them",
+    );
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let actions: Vec<&str> = info.steps.iter().map(|step| step.action.as_str()).collect();
+    assert_eq!(actions, ["set-cells"], "no open, no re-plan: {info:?}");
+    let requests: Vec<String> = sent.try_iter().collect();
+    assert_eq!(requests.len(), 1, "one model request for the task");
+    let first: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
+    let turn = message_text(&first["messages"][1]);
+    // The task names Sheets, which the room has no record of: one is made
+    // before the plan, so its operations are listed and nothing is opened.
+    assert!(turn.contains(set_cells), "{turn}");
+    assert!(!turn.contains("app.so.tilo.sheets#open"), "{turn}");
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// An agent reads an open record in the planning conversation: the first
+/// turn shows what the artwork holds (read before planning) and `draw` in
+/// full; the model asks `read_view` for `inspect` and is answered in the
+/// same conversation, then plans the band — two model requests and no
+/// re-plan — and the read is no step of the task.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_view_is_read_in_the_planning_conversation() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (url, sent) = model_endpoint(vec![
+        tool_call(
+            "r1",
+            tilo_agent_participant::READ_VIEW,
+            &serde_json::json!({"operation": "canvas.artwork#inspect", "arguments": {}}),
+        ),
+        tool_call(
+            "p1",
+            "plan",
+            &serde_json::json!({"steps": [{"operation": "canvas.artwork#draw",
+                "arguments": {"marks": [{"id": "band", "fill": "#0F4C5C",
+                    "shape": {"kind": "rect", "x": 62, "y": 0, "width": 38, "height": 50}}]}}],
+                "then": ""}),
+        ),
+    ]);
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[CANVAS],
+        endpoint_planner(&url),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let canvas = agent.open(CANVAS, None).unwrap();
+
+    let info = run_task(
+        &mut agent,
+        &control,
+        "In Canvas, add a filled rectangle over the right 38% of the picture",
+    );
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let actions: Vec<&str> = info.steps.iter().map(|step| step.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        ["draw"],
+        "the read is no step of its own: {info:?}"
+    );
+    let requests: Vec<serde_json::Value> = sent
+        .try_iter()
+        .map(|body| serde_json::from_str(&body).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 2, "a read and a plan, no re-plan");
+    let turn = message_text(&requests[0]["messages"][1]);
+    assert!(
+        turn.contains("canvas.artwork#draw")
+            && turn.contains(&format!("(document {})", canvas.record))
+            && turn.contains("canvas.artwork#inspect answered"),
+        "the first turn shows draw in full and what the artwork holds: {turn}"
+    );
+    let read = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .map(message_text)
+        .collect::<String>();
+    assert!(
+        read.contains("canvas.artwork#inspect answered") && read.contains("width"),
+        "the read answered in the conversation: {read}"
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// Steps written out run as written: a look renders the artwork as content
+/// the room keeps, and the task's reply names it. A step that takes what
+/// the step before it produced, after one that produced nothing, is refused
+/// before it runs, saying why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_reports_the_content_its_steps_produced() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let store = tilo_content::ContentStore::memory();
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[CANVAS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        store.clone(),
+    )
+    .await;
+    let canvas = agent.open(CANVAS, None).unwrap();
+    let operations = agent.survey(&canvas);
+    let address = |action: &str| {
+        operations
+            .iter()
+            .find(|descriptor| descriptor.address.action == action)
+            .unwrap_or_else(|| panic!("the artwork publishes {action}"))
+            .address
+            .clone()
+    };
+    let step = |action: &str, arguments: serde_json::Value| {
+        let address = address(action);
+        serde_json::json!({
+            "app": CANVAS,
+            "record": canvas.record,
+            "resource": address.resource,
+            "action": address.action,
+            "arguments": arguments,
+        })
+    };
+    let draw = step(
+        "draw",
+        serde_json::json!({"marks": [{"shape": {"kind": "rect", "x": 0, "y": 0,
+            "width": 10, "height": 10}, "fill": "#0F4C5C"}]}),
+    );
+
+    let looked = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            draw,
+            step("look", serde_json::json!({"format": "png", "size": 64})),
+        ])
+        .to_string(),
+    );
+    assert_eq!(looked.state, TaskState::Completed, "{looked:?}");
+    let reply = control.info().conversation.last().unwrap().text.clone();
+    let produced = reply
+        .strip_prefix("Done: 2 actions. Produced ")
+        .and_then(|rest| rest.strip_suffix('.'))
+        .unwrap_or_else(|| panic!("the reply names what was produced: {reply}"));
+    let hash = tilo_actions::content_hash(produced).expect("a content address");
+    let png = store.read(hash).expect("the room keeps the look");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+    let mut carried = step("draw", serde_json::json!({"marks": []}));
+    carried["carries"] = true.into();
+    let another = step(
+        "draw",
+        serde_json::json!({"marks": [{"shape": {"kind": "rect", "x": 20, "y": 20,
+            "width": 5, "height": 5}, "fill": "#E9C46A"}]}),
+    );
+    let refused = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([another, carried]).to_string(),
+    );
+    assert_eq!(refused.state, TaskState::Failed, "{refused:?}");
+    let error = refused.error.unwrap_or_default();
+    assert!(
+        error.contains("draw takes what the step before it produced")
+            && error.contains("no preceding action result"),
+        "{error}"
+    );
+
+    agent.close();
     host.relay.shutdown().await;
 }

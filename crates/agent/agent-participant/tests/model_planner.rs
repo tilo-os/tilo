@@ -52,7 +52,7 @@ fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
         open: vec![(route.clone(), app.survey())],
         known: Vec::new(),
         apps: vec![SCRATCHPAD.into(), NOTES.into()],
-        may_plan_nothing: false,
+        ..PlanContext::default()
     };
     (context, route, app)
 }
