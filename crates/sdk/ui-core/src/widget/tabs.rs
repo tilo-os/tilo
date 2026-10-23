@@ -2897,6 +2897,14 @@ impl TabBar {
     pub fn drag_in_flight(&self) -> bool {
         self.pending_drag.is_some()
     }
+
+    /// The tab this bar is dragging, while it drags one.
+    pub fn dragged_tab(&self) -> Option<u64> {
+        match self.pending_drag {
+            Some(DragPayload::Tab { tab, .. }) => Some(tab),
+            _ => None,
+        }
+    }
     pub fn take_reorder(&mut self) -> Option<(usize, usize)> {
         self.pending_reorder.take()
     }
@@ -4111,7 +4119,10 @@ impl Widget for TabBar {
                 ..
             } => {
                 self.on_left_press(ctx.handled);
-                if *ctx.handled {
+                // A press on one of the app's own slots is a press on the
+                // app: the bar does not take the keyboard from it, so
+                // Escape or what is typed next still reaches the app.
+                if *ctx.handled && !self.toolbar_row.pressing_app_slot() {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
             }

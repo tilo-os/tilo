@@ -311,6 +311,11 @@ struct RunHostArgs {
     /// `autostart` directories, are started.
     #[arg(long)]
     desktop_file: Option<PathBuf>,
+    /// Run this program file itself, with no desktop entry: a downloaded
+    /// `AppImage` or executable opened in Files. It is made runnable first;
+    /// only a compiled program is run this way, never a script.
+    #[arg(long, conflicts_with = "desktop_file")]
+    program: Option<PathBuf>,
     /// Host path of the compositor's Wayland socket. `WAYLAND_DISPLAY` and
     /// `XDG_RUNTIME_DIR` are both derived from it.
     #[arg(long)]
@@ -1349,6 +1354,7 @@ fn run_host(args: RunHostArgs) -> ExitCode {
     let RunHostArgs {
         desktop_id,
         desktop_file,
+        program,
         wayland_socket,
         x11_display,
         x11_authority,
@@ -1369,9 +1375,12 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         urls: open_url.into_iter().collect(),
         prefer_new_window: new_window,
     };
-    let planned = match desktop_file.as_deref() {
-        Some(path) => launcher::host::plan_host_file(path, &env),
-        None => launcher::host::plan_host(&desktop_id, &env),
+    let planned = match (program.as_deref(), desktop_file.as_deref()) {
+        (Some(program), _) if dry_run => launcher::host::plan_host_program(program, &env),
+        (Some(program), _) => launcher::host::make_runnable(program)
+            .and_then(|()| launcher::host::plan_host_program(program, &env)),
+        (None, Some(path)) => launcher::host::plan_host_file(path, &env),
+        (None, None) => launcher::host::plan_host(&desktop_id, &env),
     };
     if dry_run {
         return match planned {

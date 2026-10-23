@@ -100,7 +100,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         "temporary-browser",
         DeviceCapabilities::member(),
     );
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&identity_key, &host, state.path()).await;
     let room = hosted
         .relay
@@ -839,7 +839,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -1013,7 +1013,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -1103,7 +1103,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -1370,7 +1370,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;

@@ -311,6 +311,12 @@ async fn file_chooser_opens_and_saves_what_the_user_picked() {
             picker.navigate_to(dir.path());
             picker.set_rect(rect);
         }
+        // The chooser lists the folder on a worker; the person sees the rows
+        // a moment later, and only then can click one.
+        pump_until(&mut host, "the chooser to list the folder", |h| {
+            h.file_picker().is_some_and(|picker| !picker.reading())
+        })
+        .await;
         let row = {
             let picker = host.file_picker().expect("dialog");
             let idx = picker

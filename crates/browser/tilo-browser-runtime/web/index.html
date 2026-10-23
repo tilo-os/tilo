@@ -114,6 +114,16 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]) #arrival-retry { display: block; }
     [data-arrival=stopped][data-entry=refused][data-own-desktop] #arrival-own { display: block; }
+    /* Turned away for coming without an invitation: the field for the link
+       they get, under the words, and their own desktop under it. */
+    #arrival-invite { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px + 5.5em); transform: translateX(-50%); width: min(26em, calc(100% - 48px)); grid-template-columns: 1fr auto; gap: 8px; margin: 0; }
+    #arrival-invite input { min-width: 0; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: #e6e6e9; }
+    #arrival-invite input:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 1px; }
+    #arrival-invite button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
+    #arrival-invite button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    #arrival-invite-error { grid-column: 1 / -1; margin: 0; min-height: 1.5em; color: #ff8a80; text-align: center; }
+    [data-arrival=stopped][data-entry=refused][data-invite-link] #arrival-invite { display: grid; }
+    [data-invite-link] #arrival-own { top: calc(50% + 22px + 5.5em + 88px); background: transparent; border: 1px solid #34363d; color: #d4d4d8; }
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .tilo-entry-card { z-index: 3; }
     /* A workspace that turned this browser away for good: only its card shows. */
@@ -132,6 +142,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
   <button id="arrival-own" type="button">Open your own desktop</button>
+  <form id="arrival-invite"><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the

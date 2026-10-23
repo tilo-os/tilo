@@ -201,25 +201,14 @@ impl CapnpBrokerState {
                 .map(|workspace| {
                     (
                         workspace.room().to_string(),
-                        workspace.name.clone(),
                         membership_actions(workspace, now / 1_000_000_000),
-                        workspace
-                            .agent_members_at(now / 1_000_000_000)
-                            .into_iter()
-                            .map(|(agent, _)| agent)
-                            .collect::<std::collections::BTreeSet<_>>(),
                     )
                 })
                 .collect::<Vec<_>>()
         })?;
-        for (room, name, mut actions, current_agents) in rooms {
+        for (room, mut actions) in rooms {
             if service.requires_room(&room) {
                 actions.extend(super::workspace_checkpoints::actions());
-                actions.extend(super::workspace_tasks::actions(
-                    &service.task_snapshot(&room)?,
-                    &name,
-                    &current_agents,
-                ));
             } else if service.grants_authorship_at_host(&room) {
                 // Governed by the node that stewards it: the one change
                 // this device asks there is an opening app's authorship.
@@ -360,37 +349,6 @@ impl CapnpBrokerState {
             })
             .cloned()
             .ok_or("membership invocation is no longer admitted")?;
-        if super::workspace_tasks::is_inspect(envelope) {
-            let original = pending
-                .original
-                .as_ref()
-                .ok_or("task inspection custody unavailable")?;
-            original.owner_person_certificate(self, room, envelope)?;
-            if !service.requires_room(room) {
-                return Err("task inspection room changed".into());
-            }
-            service.health()?;
-            let snapshot = service.task_snapshot(room)?;
-            if let Some(agent) = super::workspace_tasks::inspection_agent(&snapshot, envelope)? {
-                let now = self.policy_now_ns()? / 1_000_000_000;
-                let membership = self
-                    .membership
-                    .as_ref()
-                    .ok_or("task inspection workspace authority unavailable")?;
-                let current = membership.decide_in_room(room, |workspace| {
-                    workspace.is_some_and(|workspace| {
-                        workspace
-                            .agent_members_at(now)
-                            .iter()
-                            .any(|(current, _)| current == &agent)
-                    })
-                })?;
-                if !current {
-                    return Err("task inspection agent is not a current room member".into());
-                }
-            }
-            return super::workspace_tasks::inspect(&snapshot, envelope);
-        }
         if let Some(command) = super::workspace_checkpoints::command(envelope)? {
             return self
                 .execute_workspace_checkpoint(room, envelope, command, &pending, service)
@@ -412,27 +370,6 @@ impl CapnpBrokerState {
             .as_ref()
             .ok_or("membership original custody unavailable")?;
         let caller = original.owner_person_certificate(self, room, envelope)?;
-        if let Some(command) = super::workspace_tasks::command(envelope)? {
-            let request = OwnerCommitRequest {
-                room: room.into(),
-                operation: CommitOperation::WorkspaceTaskCommand {
-                    invocation: envelope.invocation.0,
-                    authority: tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
-                        caller: caller.clone(),
-                    },
-                    command,
-                },
-            };
-            let receipt = service.execute(request.clone()).await?;
-            receipt.validate_for(&request)?;
-            let snapshot = service.task_snapshot(room)?;
-            return super::workspace_tasks::result(
-                &snapshot,
-                envelope,
-                caller.device_public_key,
-                receipt.generation,
-            );
-        }
         let command = membership_command(envelope)?;
         let request = OwnerCommitRequest {
             room: room.into(),
@@ -940,17 +877,6 @@ mod tests {
             Ok(())
         }
 
-        fn task_snapshot(
-            &self,
-            _: &str,
-        ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
-            Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
-                tasks: Vec::new(),
-                controls: std::collections::BTreeMap::default(),
-                grants: Vec::new(),
-            })
-        }
-
         fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
@@ -1031,7 +957,7 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 21));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 17));
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
@@ -1046,10 +972,6 @@ mod tests {
                     (WORKSPACE, "set-bot-appearance"),
                     (WORKSPACE, "request-bot"),
                     (WORKSPACE, "withdraw-bot-request"),
-                    (WORKSPACE, "create-task"),
-                    (WORKSPACE, "queue-agent-task"),
-                    ("desktop:tasks", "queue"),
-                    ("desktop:tasks", "read-current-tasks"),
                     ("desktop:checkpoints", "capture"),
                     ("desktop:checkpoints", "inspect"),
                     ("desktop:checkpoints", "name-bind"),
@@ -1073,7 +995,7 @@ mod tests {
                 }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 22));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 18));
                 expected.push(("desktop:agent:scribe", "remove"));
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();

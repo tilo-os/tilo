@@ -7,6 +7,7 @@ use crate::shell::native_media::CallTarget;
 use crate::shell::state::RoomId;
 
 const CALL_PICTURE_KIND: u8 = 0x43;
+const CALL_AUDIO_KIND: u8 = 0x41;
 
 /// The channel whose keys seal a call's pictures: its record's, which only
 /// member devices that read the record hold. A relay holds none, so it
@@ -59,6 +60,55 @@ fn artifact(publication: &str, source: Source, object: &VideoObject) -> Artifact
         ],
         CALL_PICTURE_KIND,
         object.sequence,
+    )
+}
+
+fn audio_artifact(publication: &str, sequence: u64, timestamp: u64, duration: u16) -> ArtifactId {
+    sealed_picture::artifact(
+        b"tilo-call-audio-v1\0",
+        &[
+            publication.as_bytes(),
+            &timestamp.to_le_bytes(),
+            &duration.to_le_bytes(),
+        ],
+        CALL_AUDIO_KIND,
+        sequence,
+    )
+}
+
+/// Opus frame `sequence` (at `timestamp`, `duration` samples long) sealed as
+/// `sealing`'s publication sends it.
+pub(crate) fn seal_audio(
+    sealing: &Sealing,
+    sequence: u64,
+    (timestamp, duration): (u64, u16),
+    payload: &[u8],
+) -> Option<Vec<u8>> {
+    sealed_picture::seal(
+        &sealing.keys,
+        audio_artifact(&sealing.publication, sequence, timestamp, duration),
+        payload,
+    )
+}
+
+/// The Opus frame in `object`, received from `publication`; `None` when it
+/// does not authenticate as that publication's.
+pub(crate) fn open_audio(
+    keys: &ChannelContentKeys,
+    channel: ChannelId,
+    publication: &str,
+    object: &tilo_moq::voice::VoiceObject,
+) -> Option<Vec<u8>> {
+    sealed_picture::open(
+        keys,
+        channel,
+        audio_artifact(
+            publication,
+            object.sequence,
+            object.timestamp,
+            object.duration,
+        ),
+        &object.payload,
     )
 }
 
@@ -167,5 +217,38 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn a_call_audio_frame_opens_only_as_the_publication_and_place_it_was_sealed_as() {
+        let channel = collab_types::document_channel_id("so.tilo.chat", "room", "general");
+        let keys = keys_of(channel, 7);
+        let sealing = Sealing {
+            keys: keys.clone(),
+            publication: "call/alice".into(),
+        };
+        let payload = seal_audio(&sealing, 12, (11_520, 960), b"an opus frame").unwrap();
+        let frame = |sequence: u64, timestamp: u64| tilo_moq::voice::VoiceObject {
+            sequence,
+            timestamp,
+            duration: 960,
+            payload: payload.clone(),
+        };
+        assert_eq!(
+            open_audio(&keys, channel, "call/alice", &frame(12, 11_520)).as_deref(),
+            Some(b"an opus frame".as_slice())
+        );
+        assert!(
+            open_audio(
+                &keys_of(channel, 8),
+                channel,
+                "call/alice",
+                &frame(12, 11_520)
+            )
+            .is_none()
+        );
+        assert!(open_audio(&keys, channel, "call/bob", &frame(12, 11_520)).is_none());
+        assert!(open_audio(&keys, channel, "call/alice", &frame(13, 11_520)).is_none());
+        assert!(open_audio(&keys, channel, "call/alice", &frame(12, 12_480)).is_none());
     }
 }

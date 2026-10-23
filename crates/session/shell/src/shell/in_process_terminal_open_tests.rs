@@ -36,7 +36,12 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
         }
     });
     let profile = tempfile::tempdir().unwrap();
-    let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+    let mut apps = InProcessApps::at(
+        profile.path(),
+        &profile.path().join("person"),
+        "test-person",
+    )
+    .unwrap();
     let component = apps
         .mount(
             terminal::definition(),
@@ -98,7 +103,12 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
 #[test]
 fn deferred_hosted_terminal_grant_reports_missing_ush_through_its_resource() {
     let profile = tempfile::tempdir().unwrap();
-    let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+    let mut apps = InProcessApps::at(
+        profile.path(),
+        &profile.path().join("person"),
+        "test-person",
+    )
+    .unwrap();
     let component = apps
         .mount(
             terminal::definition(),

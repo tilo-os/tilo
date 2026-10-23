@@ -126,6 +126,8 @@ pub enum HostLaunchError {
         name: String,
         program: std::path::PathBuf,
     },
+    #[error("{} is not a program that runs by itself", program.display())]
+    NotAProgram { program: std::path::PathBuf },
 }
 
 /// A resolved host-application launch: the exact argv and environment. Pure data — building
@@ -435,6 +437,73 @@ pub fn plan_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, 
         .and_then(|text| crate::entry::parse(&text, &id, path, &crate::locale::locale_candidates()))
         .ok_or_else(|| HostLaunchError::NotFound(path.display().to_string()))?;
     plan(&entry, env)
+}
+
+/// Plan running the program file at `path` itself, as opening a downloaded
+/// `AppImage` or executable in Files does: no desktop entry, no arguments,
+/// the environment and confinement of every host launch.
+///
+/// # Errors
+///
+/// [`HostLaunchError::NotAProgram`] when `path` is not absolute.
+pub fn plan_program(
+    path: &std::path::Path,
+    env: &LaunchEnv,
+) -> Result<HostLaunch, HostLaunchError> {
+    if !path.is_absolute() {
+        return Err(HostLaunchError::NotAProgram {
+            program: path.to_path_buf(),
+        });
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(HostLaunch {
+        desktop_id: name.clone(),
+        display_name: name,
+        program: path.to_path_buf(),
+        args: Vec::new(),
+        env: build_env(env),
+        window_identities: Vec::new(),
+        source: EntrySource::Host,
+    })
+}
+
+/// Make the program file at `path` runnable by the person, as opening it
+/// does: a downloaded file arrives without the executable bit. Only a
+/// compiled program (an ELF file, which every `AppImage` is) is touched; a
+/// script is never made runnable this way.
+///
+/// # Errors
+///
+/// [`HostLaunchError::NotAProgram`] for anything but a regular ELF file, or
+/// when its mode can't be changed.
+#[cfg(unix)]
+pub fn make_runnable(path: &std::path::Path) -> Result<(), HostLaunchError> {
+    use std::io::Read as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let not_a_program = || HostLaunchError::NotAProgram {
+        program: path.to_path_buf(),
+    };
+    let meta = std::fs::metadata(path).map_err(|_| not_a_program())?;
+    let mut magic = [0_u8; 4];
+    let elf = meta.is_file()
+        && std::fs::File::open(path)
+            .and_then(|mut file| file.read_exact(&mut magic))
+            .is_ok()
+        && magic == *b"\x7fELF";
+    if !elf {
+        return Err(not_a_program());
+    }
+    let mode = meta.permissions().mode();
+    // Runnable by whoever may read it, as `chmod +x` on a downloaded file.
+    let wanted = mode | ((mode & 0o444) >> 2);
+    if wanted != mode {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(wanted))
+            .map_err(|_| not_a_program())?;
+    }
+    Ok(())
 }
 
 /// Find the entry with this desktop-file id on the current system and plan a launch for it.

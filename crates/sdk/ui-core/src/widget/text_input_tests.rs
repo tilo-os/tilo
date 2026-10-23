@@ -579,9 +579,9 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
         draw_with_theme(&mut ti, &Theme::dark());
         let dark_signature = ti.shaped_layout_signature;
         draw_with_theme(&mut ti, &Theme::light());
-        assert_ne!(
+        assert_eq!(
             ti.shaped_layout_signature, dark_signature,
-            "theme-dependent syntax colours invalidate the attributed layout"
+            "syntax colours paint with the rows, so another theme keeps the shaped layout"
         );
     }
 }

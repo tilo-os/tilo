@@ -1032,6 +1032,44 @@ mod action_authority;
 pub mod capability;
 use action_authority::ActionAuthoritySampler;
 
+/// The shared admission ([`tilo_action_policy::admit`]) as a window takes
+/// it for its own person, the decision a broker takes for a caller: an ask
+/// is theirs to confirm in the window when they act themselves (`direct`),
+/// and nobody else's here. `confirmed` is their confirmation, or the broker
+/// having admitted it.
+///
+/// # Errors
+/// Refused, or [`tilo_actions::DoorError::ConfirmationRequired`] until
+/// the person confirmed an ask.
+pub fn admit_in_window(
+    answer: tilo_action_policy::Answer,
+    action: &tilo_actions::ActionSpec,
+    direct: bool,
+    confirmed: bool,
+) -> Result<(), tilo_actions::DoorError> {
+    let admitted = tilo_action_policy::admit(
+        tilo_action_policy::Invoked {
+            answer,
+            attended: action.contract.is_attended(),
+            task: None,
+            record: None,
+        },
+        tilo_action_policy::Asker {
+            reachable: direct,
+            // A window has no session delegate: an agent acting in it holds a
+            // bounded standing (`direct` false), so its asks already refuse.
+            delegated: false,
+        },
+    );
+    match admitted {
+        Err(_) => Err(crate::bound_dispatch::denied(action)),
+        Ok(tilo_action_policy::Admission::AsksFirst) if !confirmed => {
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        }
+        Ok(_) => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod policy_time_tests;
 

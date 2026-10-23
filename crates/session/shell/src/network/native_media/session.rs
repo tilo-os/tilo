@@ -162,6 +162,7 @@ impl MediaFactory for Factory {
                     publications_revision: None,
                     heard: Heard::default(),
                     channel,
+                    keys: None,
                     video: Video {
                         choice: camera,
                         ..Video::default()
@@ -494,8 +495,10 @@ struct Session {
     /// The carrier's reading revision the decoders were last matched to.
     publications_revision: Option<u64>,
     heard: Heard,
-    /// Whose keys seal the call's pictures.
+    /// Whose keys seal the call's audio and pictures.
     channel: Option<super::call_seal::CallChannel>,
+    /// Those keys, as of this tick; `None` until this device holds them.
+    keys: Option<channel_crypto::ChannelContentKeys>,
     video: Video,
 }
 
@@ -516,6 +519,8 @@ struct Video {
     own: Option<String>,
     /// The publication this device sends, as the grant names it.
     publication: Option<String>,
+    /// The grant revision `publication` was read at.
+    publication_revision: Option<u64>,
     /// What the encoders seal with; `None` until this device holds the
     /// call's keys.
     sealing: Arc<Mutex<Option<super::call_seal::Sealing>>>,
@@ -637,7 +642,7 @@ impl Session {
         let revision = ticket.revision();
         if self.video.applied != Some((carrier, revision)) {
             let shown = &self.video.shown;
-            let (wanted, own, publication) = ticket
+            let (wanted, own) = ticket
                 .inspect_current(|_, grant| {
                     let mut wanted: std::collections::BTreeMap<String, Vec<_>> =
                         std::collections::BTreeMap::new();
@@ -659,10 +664,9 @@ impl Session {
                             wanted.insert(participant.namespace.clone(), tracks);
                         }
                     }
-                    Ok((wanted, own, grant.publication.clone()))
+                    Ok((wanted, own))
                 })
                 .unwrap_or_default();
-            self.video.publication = publication;
             // This person's own camera tile is fed on this device.
             let own_layer = own.as_ref().and_then(|own| {
                 shown
@@ -686,22 +690,22 @@ impl Session {
             self.video.applied = Some((carrier, revision));
         }
         self.take_own_camera();
+        for (source, publisher) in [
+            (tilo_moq::video::Source::Camera, &self.video.camera),
+            (tilo_moq::video::Source::Screen, &self.video.screen),
+        ] {
+            if let Some(publisher) = publisher
+                && client.wants_picture_keyframe(source)
+            {
+                publisher.ask_keyframe();
+            }
+        }
         self.receive_pictures(client);
     }
     /// The pictures of others the app shows, opened with the call's keys,
     /// into its inbox; and the keys this device's encoders seal with.
     fn receive_pictures(&mut self, client: &Client) {
-        let pictures = self.video.camera.is_some()
-            || self.video.screen.is_some()
-            || !self.video.showing.is_empty();
-        let keys = self
-            .channel
-            .filter(|_| pictures)
-            .and_then(super::call_seal::CallChannel::keys);
-        *self.video.sealing.lock() = keys
-            .clone()
-            .zip(self.video.publication.clone())
-            .map(|(keys, publication)| super::call_seal::Sealing { keys, publication });
+        let keys = self.keys.clone();
         let ticket = &self.runtime.ticket;
         for _ in 0..video::RECEIVE_PER_TICK {
             let Some(received) = client.try_recv_picture() else {
@@ -785,6 +789,26 @@ impl Session {
             }
         });
     }
+    /// The call's keys, and what this device seals with: its publication as
+    /// the current grant names it.
+    fn refresh_keys(&mut self) {
+        let revision = self.runtime.ticket.revision();
+        if self.video.publication_revision != Some(revision) {
+            self.video.publication = self
+                .runtime
+                .ticket
+                .inspect_current(|_, grant| Ok(grant.publication.clone()))
+                .ok()
+                .flatten();
+            self.video.publication_revision = Some(revision);
+        }
+        self.keys = self.channel.and_then(super::call_seal::CallChannel::keys);
+        *self.video.sealing.lock() = self
+            .keys
+            .clone()
+            .zip(self.video.publication.clone())
+            .map(|(keys, publication)| super::call_seal::Sealing { keys, publication });
+    }
     /// The carrier the call sends on now, for an encoder thread.
     fn current_client(&self) -> video::CurrentClient {
         let running = Arc::downgrade(&self.runtime);
@@ -858,6 +882,7 @@ impl MediaSession for Session {
                 return Ok(CallState::Reconnecting);
             }
         }
+        self.refresh_keys();
         let generation = self.runtime.ticket.carrier_generation();
         if self.decoded_generation != generation {
             for publisher in self.publishers.drain(..) {
@@ -902,18 +927,29 @@ impl MediaSession for Session {
                     );
                     self.next_audio_diagnostic = later(Duration::from_secs(1));
                 }
+                let sealing = self.video.sealing.lock().clone();
                 for frame in frames {
+                    // Until this device holds the call's keys nothing leaves it.
+                    let Some(sealing) = &sealing else {
+                        continue;
+                    };
                     let first_packet = !self.first_packet_diagnosed;
                     self.first_packet_diagnosed = true;
                     if first_packet {
                         tracing::debug!("native voice first packet entering carrier");
                     }
-                    let result = client.try_send(client::CapturedOpus {
-                        timestamp_48k: frame.timestamp_48k,
-                        duration_samples: frame.duration_samples,
-                        payload: frame.payload,
-                        captured_at: frame.captured_at,
-                    });
+                    let header = (frame.timestamp_48k, frame.duration_samples);
+                    let result = client.try_send_sealed(
+                        client::CapturedOpus {
+                            timestamp_48k: frame.timestamp_48k,
+                            duration_samples: frame.duration_samples,
+                            payload: frame.payload,
+                            captured_at: frame.captured_at,
+                        },
+                        |sequence, payload| {
+                            super::call_seal::seal_audio(sealing, sequence, header, &payload)
+                        },
+                    );
                     if first_packet {
                         tracing::debug!(
                             accepted = result.is_ok(),
@@ -942,6 +978,17 @@ impl MediaSession for Session {
             let Some(frame) = client.try_recv() else {
                 break;
             };
+            let (Some(keys), Some(channel)) = (&self.keys, self.channel) else {
+                continue;
+            };
+            let Some(payload) = super::call_seal::open_audio(
+                keys,
+                channel.channel(),
+                &frame.publisher.namespace,
+                &frame.object,
+            ) else {
+                continue;
+            };
             // Carrier arrivals are asynchronous: this frame can arrive after
             // the tick began. Compare it with a fresh local clock observation,
             // retaining its original arrival and expiry without clamping either.
@@ -964,7 +1011,7 @@ impl MediaSession for Session {
                         sequence: frame.object.sequence,
                         timestamp_48k: frame.object.timestamp,
                         duration_samples: frame.object.duration,
-                        payload: frame.object.payload,
+                        payload,
                         received_at: frame.received_at,
                         expires_at: frame.expires_at,
                     },

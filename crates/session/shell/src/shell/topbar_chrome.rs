@@ -89,7 +89,7 @@ fn strip_places(state: &chrome_state::ChromeState) -> StripPlaces {
             workspace
                 .collaborators
                 .iter()
-                .filter(|person| person.id != local_user)
+                .filter(|person| person.id != local_user && !person.own_device)
                 .filter_map(|person| {
                     let tab = person.active_tab?;
                     workspace

@@ -422,27 +422,23 @@ impl NativeLaunch {
         }
         self.check_retained_contract(state, &offered.1)?;
         let mut admitted = self.clone();
-        let mut confirmation = None;
         // Application-directory providers can name an action that was never
         // retained. Once published, it needs the same exact disclosure gate.
         if super::requires_store_witness(&self.app, &self.action) && self.witness.is_none() {
             if !admitted.confirmed
                 && let super::native_task_confirmation::NativeGate::Confirmed {
                     argument,
-                    confirmation: id,
-                } = state
-                    .native_confirmation_for(
-                        &self.run,
-                        &self.lease,
-                        (&self.app, &offered.1),
-                        (&self.resource, &self.action),
-                        self.argument.as_deref(),
-                    )
-                    .await?
+                    confirmation: _,
+                } = state.native_confirmation_for(
+                    &self.run,
+                    &self.lease,
+                    (&self.app, &offered.1),
+                    (&self.resource, &self.action),
+                    self.argument.as_deref(),
+                )?
             {
                 admitted.argument = Some(argument);
                 admitted.confirmed = true;
-                confirmation = Some(id);
             }
             admitted.witness = state
                 .native_store_witness(
@@ -457,7 +453,7 @@ impl NativeLaunch {
             state.check_native_store_offer(&offered)?;
         }
         let job = state.admit_task_action(
-            admitted.run.clone(),
+            &admitted.run,
             &admitted.lease,
             runtime_collab::TaskAction {
                 peer_id: peer,
@@ -472,22 +468,7 @@ impl NativeLaunch {
             ),
             offered,
         )?;
-        admitted
-            .settle_started_confirmation(state, confirmation.as_deref())
-            .await;
         Ok(job.id)
-    }
-
-    async fn settle_started_confirmation(
-        &self,
-        state: &CapnpBrokerState,
-        confirmation: Option<&str>,
-    ) {
-        if let Some(id) = confirmation
-            && let Err(error) = state.settle_native_confirmation(&self.run, id).await
-        {
-            tracing::warn!(%error, "confirmed Store action started but its confirmation stayed");
-        }
     }
 }
 
@@ -646,24 +627,20 @@ impl CapnpBrokerState {
         let mut native = self.native_launch_for(reask)?;
         // A retained action that asks first pauses at its draft before the
         // application is launched for it, as a running application's does.
-        let mut confirmation = None;
         if let Some(retained) = native.retained.clone()
             && let super::native_task_confirmation::NativeGate::Confirmed {
                 argument,
-                confirmation: id,
-            } = self
-                .native_confirmation_for(
-                    &native.run,
-                    reask.lease,
-                    (&native.app, &retained),
-                    (target.resource, target.action),
-                    target.argument,
-                )
-                .await?
+                confirmation: _,
+            } = self.native_confirmation_for(
+                &native.run,
+                reask.lease,
+                (&native.app, &retained),
+                (target.resource, target.action),
+                target.argument,
+            )?
         {
             native.argument = Some(argument);
             native.confirmed = true;
-            confirmation = Some(id);
         }
         // A disclosure witness needs the actual live provider/publication, not
         // just a retained descriptor. Ask after launch in NativeLaunch::deliver.
@@ -692,7 +669,6 @@ impl CapnpBrokerState {
         };
         let launch_key = native.launch_key(self)?;
         let (completer, answer) = pending::<Result<u64, tilo_actions::remote::ActionHostError>>();
-        let run = native.run.clone();
         let state = Arc::clone(self);
         super::launchable::delivery_runtime()?.spawn(async move {
             let result = state
@@ -711,13 +687,6 @@ impl CapnpBrokerState {
             .await
             .ok_or("native activation delivery ended")?
             .map_err(|error| error.to_string())?;
-        if let Some(confirmation) = confirmation {
-            // The child started; a failure to clear the answer only leaves
-            // the card until the run ends.
-            if let Err(error) = self.settle_native_confirmation(&run, &confirmation).await {
-                tracing::warn!(%error, "confirmed task action started but its confirmation stayed");
-            }
-        }
         let update = self
             .invocation_status(id)
             .or_else(|| {

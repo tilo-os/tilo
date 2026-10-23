@@ -55,7 +55,18 @@ struct State {
     results: HashMap<u64, Vec<Rendered>>,
     wakes: HashMap<u64, WakeHandle>,
     rendered: HashMap<u64, u64>,
+    /// What viewers let go of, dropped by the worker: tearing down a large
+    /// laid-out document costs time no frame should pay.
+    retired: Vec<Box<dyn Send>>,
     inline: bool,
+}
+
+impl State {
+    fn retire_source(&mut self, session: u64) {
+        if let Some((_, source)) = self.sources.remove(&session) {
+            self.retired.push(Box::new(source));
+        }
+    }
 }
 
 struct Queue {
@@ -82,10 +93,14 @@ fn shared_queue() -> &'static Arc<Queue> {
     })
 }
 
+/// A render to run: the viewer's session and document version, its pages
+/// and the work.
+type Job = (u64, u64, Arc<dyn PageSource>, Work);
+
 /// The next render, whole pages before tiles (a zoomed page's placeholder
 /// comes before its tiles, so it is never blank while they arrive), with the
 /// source it renders from.
-fn next_work(state: &mut State) -> Option<(u64, u64, Arc<dyn PageSource>, Work)> {
+fn next_work(state: &mut State) -> Option<Job> {
     loop {
         let (session, work) = if let Some((session, key)) = state.pages.pop() {
             (session, Work::Page(key))
@@ -99,10 +114,7 @@ fn next_work(state: &mut State) -> Option<(u64, u64, Arc<dyn PageSource>, Work)>
     }
 }
 
-fn render(
-    queue: &Queue,
-    (session, generation, source, work): (u64, u64, Arc<dyn PageSource>, Work),
-) {
+fn render(queue: &Queue, (session, generation, source, work): Job) {
     let result = match work {
         Work::Page(key) => Rendered::Page {
             key,
@@ -143,28 +155,47 @@ fn deliver(
 
 fn serve(queue: &Queue) {
     loop {
-        let work = {
-            let mut state = queue.state.lock_recover();
-            loop {
-                if let Some(work) = next_work(&mut state) {
-                    break work;
-                }
-                state = queue
-                    .ready
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-        };
-        render(queue, work);
+        let (retired, work) = next_task(queue);
+        drop(retired);
+        if let Some(work) = work {
+            render(queue, work);
+        }
     }
 }
 
-fn next_inline(state: &mut State) -> Option<(u64, u64, Arc<dyn PageSource>, Work)> {
+/// What the worker does next: drop what viewers let go of, or render,
+/// waiting until there is either.
+fn next_task(queue: &Queue) -> (Vec<Box<dyn Send>>, Option<Job>) {
+    let mut state = queue.state.lock_recover();
+    loop {
+        if !state.retired.is_empty() {
+            return (std::mem::take(&mut state.retired), None);
+        }
+        if let Some(work) = next_work(&mut state) {
+            return (Vec::new(), Some(work));
+        }
+        state = queue
+            .ready
+            .wait(state)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+}
+
+fn next_inline(state: &mut State) -> Option<Job> {
     if state.inline { next_work(state) } else { None }
+}
+
+fn retired_inline(state: &mut State) -> Vec<Box<dyn Send>> {
+    if state.inline {
+        std::mem::take(&mut state.retired)
+    } else {
+        Vec::new()
+    }
 }
 
 fn pump_inline(queue: &Queue) {
     let started = tilo_clock::now();
+    drop(retired_inline(&mut queue.state.lock_recover()));
     loop {
         let Some(work) = next_inline(&mut queue.state.lock_recover()) else {
             return;
@@ -213,21 +244,38 @@ impl PageRenderer {
     /// Show `source`, version `generation`: queued work and undelivered
     /// results for the source shown before are dropped, and a render of it
     /// still under way is discarded when it finishes.
+    /// The source shown before is dropped by the worker.
     pub fn set_source(&self, generation: u64, source: Arc<dyn PageSource>) {
         let mut state = self.queue.state.lock_recover();
+        state.retire_source(self.session);
         state.sources.insert(self.session, (generation, source));
         state.pages.drop_session(self.session);
         state.tiles.drop_session(self.session);
         state.results.remove(&self.session);
+        drop(state);
+        self.queue.ready.notify_one();
     }
 
     /// Show nothing: drop the source, its queued work and its results.
     pub fn clear_source(&self) {
         let mut state = self.queue.state.lock_recover();
-        state.sources.remove(&self.session);
+        state.retire_source(self.session);
         state.pages.drop_session(self.session);
         state.tiles.drop_session(self.session);
         state.results.remove(&self.session);
+        drop(state);
+        self.queue.ready.notify_one();
+    }
+
+    /// Have the worker drop `value` (the viewer's own handle on a source it
+    /// replaced), so a large document is never torn down on the UI thread.
+    pub fn retire(&self, value: impl Send + 'static) {
+        self.queue
+            .state
+            .lock_recover()
+            .retired
+            .push(Box::new(value));
+        self.queue.ready.notify_one();
     }
 
     /// Replace this viewer's queued page renders with `pages`, most
@@ -299,12 +347,14 @@ impl PageRenderer {
 impl Drop for PageRenderer {
     fn drop(&mut self) {
         let mut state = self.queue.state.lock_recover();
-        state.sources.remove(&self.session);
+        state.retire_source(self.session);
         state.pages.drop_session(self.session);
         state.tiles.drop_session(self.session);
         state.results.remove(&self.session);
         state.wakes.remove(&self.session);
         state.rendered.remove(&self.session);
+        drop(state);
+        self.queue.ready.notify_one();
     }
 }
 
@@ -344,6 +394,46 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         out
+    }
+
+    /// A source that notes the thread it was dropped on.
+    struct Noted(Arc<Mutex<Option<String>>>);
+
+    impl PageSource for Noted {
+        fn render_page(&self, _page: usize, _width: u32) -> Option<PenikoImage> {
+            None
+        }
+        fn render_tile(&self, _tile: TileKey) -> Option<PenikoImage> {
+            None
+        }
+    }
+
+    impl Drop for Noted {
+        fn drop(&mut self) {
+            *self.0.lock_recover() = std::thread::current().name().map(str::to_owned);
+        }
+    }
+
+    #[test]
+    fn the_worker_drops_a_source_the_viewer_replaced() {
+        let renderer = PageRenderer::new();
+        let dropped_on = Arc::new(Mutex::new(None));
+        let shown = Arc::new(Noted(Arc::clone(&dropped_on)));
+        renderer.set_source(1, shown.clone());
+        renderer.set_source(
+            2,
+            Arc::new(Paper {
+                renders: AtomicUsize::new(0),
+            }),
+        );
+        renderer.retire(shown);
+        let deadline = tilo_clock::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("deadline");
+        while dropped_on.lock_recover().is_none() && tilo_clock::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(dropped_on.lock_recover().as_deref(), Some("page-raster"));
     }
 
     #[test]

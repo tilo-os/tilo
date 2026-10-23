@@ -1969,9 +1969,18 @@ impl ShellDriver {
             "palette_github" => self.scene_seeded_query("github"),
             "palette_workbook" => self.scene_seeded_query("workbook"),
             "palette_open_app" => self.scene_palette_open_app(),
-            "palette_downloaded" => self.scene_downloaded_query("aseprite"),
+            "palette_downloaded" => self.scene_downloaded_query("imager"),
             "palette_downloaded_missing" => self.scene_downloaded_query("ardour"),
             "launcher_downloaded" => self.scene_downloaded_launcher(),
+            "downloaded_add_appimage" => {
+                self.scene_downloaded_add(downloaded_scene::AddScene::AppImage);
+            }
+            "downloaded_add_program" => {
+                self.scene_downloaded_add(downloaded_scene::AddScene::Tarball);
+            }
+            "downloaded_add_no_artwork" => {
+                self.scene_downloaded_add(downloaded_scene::AddScene::NoArtwork);
+            }
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
             "qs-edit-drag" => self.scene_qs_edit(true),
@@ -2029,6 +2038,7 @@ impl ShellDriver {
             name @ ("app-uninstall-flatpak"
             | "app-uninstall-tilo"
             | "app-uninstall-downloaded"
+            | "app-uninstall-downloaded-copies"
             | "app-uninstall-system"
             | "app-uninstall-system-tilo"
             | "app-uninstall-device-flatpak") => self.scene_app_uninstall(name),

@@ -106,7 +106,7 @@ pub async fn run() {
         "fixture-second-browser",
         DeviceCapabilities::member(),
     );
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let mut hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
     let rooms = hosted.relay.rooms().unwrap();
     let room = rooms.create("Mounted resource acceptance").await.unwrap();

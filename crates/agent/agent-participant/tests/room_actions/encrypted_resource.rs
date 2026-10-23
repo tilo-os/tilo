@@ -20,7 +20,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     );
     let writer_device = enrol(&author, "remote-writer", DeviceCapabilities::member());
     let reader_device = enrol(&viewer, "remote-reader", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let room = hosted
         .relay

@@ -203,11 +203,11 @@ fi
 if [ -z "$lock_value" ]; then
   lock_value="!tilo-firstboot-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
   # Do not replace an unexpected intent; create it before useradd can succeed.
+  # The helper returns only once the record and its directory entry are
+  # synced: a power loss must not leave an account with no durable ownership
+  # witness.
   printf '%s:%s\n' "$user" "$lock_value" | "$FILES_HELPER" intent "$TRANSACTION"
 fi
-# Persist both the intent and its directory entry before account creation.
-# A power loss must not leave an account with no durable ownership witness.
-sync -f -- "$TRANSACTION"
 
 native_home="/var/home/$user"
 if [ "$retry" -eq 0 ]; then

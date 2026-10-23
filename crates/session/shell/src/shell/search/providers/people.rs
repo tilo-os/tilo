@@ -122,7 +122,7 @@ impl SearchProvider for PeopleProvider {
         let tree = ctx.chrome.tree();
         let row = collaborator_roster_rows(&tree.desktop, &me)
             .into_iter()
-            .find(|row| row.id == id && row.id != me)?;
+            .find(|row| row.id == id && row.id != me && !row.own_device)?;
         drop(tree);
         Some(result(row, kind.clone()))
     }
@@ -141,7 +141,7 @@ impl SearchProvider for PeopleProvider {
             let tree = ctx.chrome.tree();
             collaborator_roster_rows(&tree.desktop, &me)
                 .into_iter()
-                .filter(|row| row.id != me)
+                .filter(|row| row.id != me && !row.own_device)
                 .collect()
         };
         let fields: Vec<Vec<(String, FieldWeight)>> = people

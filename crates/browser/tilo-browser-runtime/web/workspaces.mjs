@@ -400,8 +400,9 @@ async function ask({workspace, path, body, fetch}) {
   const retry = Number(response.headers.get('retry-after'));
   const hasRetry = response.headers.get('retry-after') != null && Number.isFinite(retry);
   // A 503 without Retry-After is the host failing, not the room being full.
-  // A 403 naming the person (`removed`) rather than their address.
-  const code = response.status === 403 && reply.code === 'removed' ? 'removed'
+  // A 403 naming the person (`removed`) rather than their address, or a
+  // room that takes people by invitation (`invitation-only`).
+  const code = response.status === 403 && ['removed', 'invitation-only'].includes(reply.code) ? reply.code
     : response.status === 503 && !hasRetry ? 'unavailable' : (CODES[response.status] ?? 'unavailable');
   throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null);
 }
@@ -653,6 +654,34 @@ async function memoryCustody(crypto) {
 function memoryStore() {
   const map = new Map();
   return {get: async key => map.get(key), put: async (key, value) => { map.set(key, value); }, delete: async key => { map.delete(key); }};
+}
+
+/**
+ * Join `workspace` once its door has a seat: a page that watches because
+ * there was none asks the door's `presence` every `retryAfter` seconds (with
+ * jitter, so a full room is not asked by everyone at once) and calls `join`
+ * only when it says `open`. Asking takes no seat, so the page keeps watching
+ * on the one it has instead of trading it for a new one each time. Returns
+ * a function that stops asking.
+ */
+export function joinWhenSeated({workspace, retryAfter, join, fetch = globalThis.fetch,
+  schedule = (run, ms) => setTimeout(run, ms), cancel = clearTimeout, random = Math.random}) {
+  const wait = Math.max(5, retryAfter ?? 30);
+  let timer, stopped = false;
+  const next = () => { if (!stopped) timer = schedule(check, (wait + random() * wait / 2) * 1000); };
+  async function check() {
+    try {
+      const response = await fetch(new URL('presence', admissionDoor(workspace)), {credentials: 'omit'});
+      if (!stopped && response.ok && (await response.json())?.open === true) {
+        stopped = true;
+        join();
+        return;
+      }
+    } catch { /* The door did not answer: ask again later. */ }
+    next();
+  }
+  next();
+  return () => { stopped = true; cancel(timer); };
 }
 
 /**

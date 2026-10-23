@@ -48,8 +48,7 @@ pub struct ScrollRegion {
     persisted: Option<Rc<Cell<(f32, f32)>>>,
     /// What the frame being drawn shows of the content, and what the last
     /// frame the host presented showed ([`Self::offer_copy`]).
-    shown_drawing: std::cell::RefCell<Option<RegionShown>>,
-    shown_presented: Option<RegionShown>,
+    shown: crate::scroll_copy::ShownFrames<RegionShown>,
     /// The rounded corners of the window the region sits in, learned where
     /// it last drew: its bars keep out of them.
     corners: Cell<crate::widget::scrollbar::SurfaceCorners>,
@@ -67,6 +66,28 @@ struct RegionShown {
     overlays: Vec<Rect>,
     tracks: Vec<Rect>,
     thumbs: Vec<(Rect, vello::peniko::Color)>,
+}
+
+impl crate::scroll_copy::Shown for RegionShown {
+    fn scroll(&self) -> Vec2 {
+        self.offset
+    }
+
+    fn clip(&self) -> Rect {
+        self.clip
+    }
+
+    fn transform(&self) -> Affine {
+        self.transform
+    }
+
+    fn same_view(&self, _other: &Self) -> bool {
+        true
+    }
+
+    fn overlays(&self, out: &mut Vec<Rect>) {
+        out.extend(self.overlays.iter().chain(&self.tracks));
+    }
 }
 
 impl ScrollRegion {
@@ -88,8 +109,7 @@ impl ScrollRegion {
             edge_fade: false,
             overlaid_bars: false,
             persisted: None,
-            shown_drawing: std::cell::RefCell::new(None),
-            shown_presented: None,
+            shown: crate::scroll_copy::ShownFrames::default(),
             corners: Cell::new(crate::widget::scrollbar::SurfaceCorners::default()),
         }
     }
@@ -360,7 +380,7 @@ impl ScrollRegion {
                 overlays.push(Rect::new(clip.x1 - reach, clip.y0, clip.x1, clip.y1));
             }
         }
-        *self.shown_drawing.borrow_mut() = Some(RegionShown {
+        self.shown.note(RegionShown {
             offset: self.offset,
             clip,
             transform: crate::scroll_copy::on_screen(transform),
@@ -376,8 +396,8 @@ impl ScrollRegion {
     /// or lighting up under the pointer). Without both frames noted, every
     /// track either knows is added.
     pub fn damage_changed_bars(&self, regions: &mut Vec<Rect>) {
-        let drawing = self.shown_drawing.borrow();
-        match (drawing.as_ref(), self.shown_presented.as_ref()) {
+        let drawing = self.shown.drawing();
+        match (drawing.as_deref(), self.shown.presented()) {
             (Some(drawing), Some(presented))
                 if drawing.thumbs == presented.thumbs && drawing.tracks == presented.tracks => {}
             (drawing, presented) => regions.extend(
@@ -398,37 +418,20 @@ impl ScrollRegion {
     /// transform, or the offset did not move: the host then damages the
     /// region as it would without copies.
     pub fn offer_copy<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> bool {
-        let drawing = self.shown_drawing.borrow();
-        let (Some(drawing), Some(presented)) = (drawing.as_ref(), self.shown_presented.as_ref())
-        else {
+        if self.shown.compare(owner, regions) != crate::scroll_copy::Since::Copied {
             return false;
-        };
-        let offered = drawing.clip == presented.clip
-            && drawing.transform == presented.transform
-            && drawing.offset != presented.offset
-            && crate::scroll_copy::offer(
-                owner,
-                drawing.clip,
-                presented.offset - drawing.offset,
-                drawing
-                    .overlays
-                    .iter()
-                    .chain(&drawing.tracks)
-                    .copied()
-                    .collect(),
-                drawing.transform,
-            );
-        if offered {
+        }
+        if let Some((drawing, presented)) = self.shown.frames() {
             regions.extend(drawing.tracks.iter().chain(&presented.tracks).copied());
         }
-        offered
+        true
     }
 
     /// From the host's `mark_drawn`: the frame just drawn is on screen. Not
     /// drawn this frame, the region's content is not known to be there, and
     /// its next scroll repaints.
     pub fn mark_presented(&mut self) {
-        self.shown_presented = self.shown_drawing.get_mut().take();
+        self.shown.present();
     }
 
     /// Paint the content with `draw` (handed the scene and the content
@@ -508,7 +511,7 @@ impl ScrollRegion {
                     None,
                     &RoundedRect::from_rect(thumb, radius),
                 );
-                if let Some(shown) = self.shown_drawing.borrow_mut().as_mut() {
+                if let Some(mut shown) = self.shown.drawing_mut() {
                     shown.thumbs.push((thumb, colour));
                 }
             }

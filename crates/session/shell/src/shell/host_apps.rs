@@ -582,6 +582,64 @@ fn launch_resolved(
     Ok(app)
 }
 
+/// Run the program file at `program` itself, unconfined like every host
+/// application: a downloaded `AppImage` or executable opened in Files. The
+/// launcher makes it runnable first. Returns the name it runs under (the
+/// file's), as soon as the launch is handed to its worker.
+///
+/// # Errors
+///
+/// No display, no launcher, or no host execution on this platform.
+pub(crate) fn launch_program(
+    program: &Path,
+    portal_workspace_id: Option<String>,
+) -> Result<String, LaunchError> {
+    require_host_execution()?;
+    let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
+    let launcher_bin = launcher::resolve_launcher_bin()?;
+    let command = build_program_command(program, &launcher_bin, &socket, portal_workspace_id);
+    let name = program
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let _ = launcher::spawn_launch(name.clone(), name.clone(), command);
+    Ok(name)
+}
+
+/// The `tilo-launcher run-host --program` command for [`launch_program`].
+/// Pure, like [`build_launch_command`].
+pub(crate) fn build_program_command(
+    program: &Path,
+    launcher_bin: &Path,
+    wayland_socket: &Path,
+    portal_workspace_id: Option<String>,
+) -> launcher::LaunchCommand {
+    let name = program
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    launcher::LaunchCommand {
+        program: launcher_bin.to_path_buf(),
+        args: vec![
+            "run-host".to_string(),
+            "--desktop-id".to_string(),
+            name,
+            "--program".to_string(),
+            program.display().to_string(),
+            "--wayland-socket".to_string(),
+            wayland_socket.display().to_string(),
+        ],
+        env: vec![(
+            "XDG_RUNTIME_DIR".to_string(),
+            launcher::runtime_dir().display().to_string(),
+        )],
+        service_identity: None,
+        x11_workspace: portal_workspace_id.clone(),
+        portal_workspace_id,
+        managed_agent_id: None,
+    }
+}
+
 /// The `tilo-launcher run-host` command for an XDG autostart entry. It names
 /// the file itself, since autostart entries need not be in any
 /// `applications` directory. Pure, like [`build_launch_command`].

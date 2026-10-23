@@ -111,6 +111,9 @@ pub struct RoomAdmission<'a> {
 pub struct AdmittedRoom {
     pub candidate: AutoCommit,
     pub media: Option<media::RoomMediaV1>,
+    /// The candidate is a newer base ([`super::base`]) replacing the
+    /// document held, not that document with the batch applied.
+    pub rebased: bool,
 }
 
 /// Why a batch was refused. Display strings are the peer-state messages.
@@ -187,12 +190,34 @@ pub fn admit_room_changes(
     input: RoomAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedRoom, RoomRefusal> {
-    if !input.authority.admits(&input.source) {
+    let governs = input.authority.admits(&input.source);
+    if !governs {
         may_write(input.before, input.room, &input.source, input.caps_now)?;
     }
-    let candidate = super::candidate(input.before, changes).map_err(RoomRefusal::Malformed)?;
-    let media = check_candidate(&input, &candidate)?;
-    Ok(AdmittedRoom { candidate, media })
+    match super::base::lineage(input.before, changes) {
+        super::base::Lineage::Same(changes) => {
+            let candidate =
+                super::candidate(input.before, &changes).map_err(RoomRefusal::Malformed)?;
+            let media = check_candidate(&input, &candidate)?;
+            Ok(AdmittedRoom {
+                candidate,
+                media,
+                rebased: false,
+            })
+        }
+        super::base::Lineage::Newer if governs => {
+            let candidate = super::candidate(None, changes).map_err(RoomRefusal::Malformed)?;
+            // The receiver projects what it owns onto the base it adopts, so a
+            // base leaving out or changing its entries holds only until then.
+            let media = checked(&input, &candidate, false)?;
+            Ok(AdmittedRoom {
+                candidate,
+                media,
+                rebased: true,
+            })
+        }
+        super::base::Lineage::Newer => Err(RoomRefusal::GovernanceWriter),
+    }
 }
 
 /// Check a candidate room document against `input.before`, however it was
@@ -219,6 +244,14 @@ pub fn admit_room_changes(
 pub fn check_candidate(
     input: &RoomAdmission<'_>,
     candidate: &AutoCommit,
+) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
+    checked(input, candidate, true)
+}
+
+fn checked(
+    input: &RoomAdmission<'_>,
+    candidate: &AutoCommit,
+    salted_owners: bool,
 ) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
     let RoomAdmission {
         before,
@@ -249,7 +282,7 @@ pub fn check_candidate(
             crate::topology::validate(before, candidate, source.key, pinned)
                 .map_err(RoomRefusal::Topology)?;
         }
-        ContentOwnership::Salted { local_salt } => {
+        ContentOwnership::Salted { local_salt } if salted_owners => {
             let rewritten = tilo_desktop_model::projection::changed_owned_entries(
                 before, candidate, local_salt,
             );
@@ -257,6 +290,7 @@ pub fn check_candidate(
                 return Err(RoomRefusal::OwnedContents(rewritten));
             }
         }
+        ContentOwnership::Salted { .. } => {}
     }
     if !super::immutable_receipts(before, candidate) {
         return Err(RoomRefusal::ReceiptImmutable);

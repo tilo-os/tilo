@@ -351,6 +351,7 @@ fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
         availability: ui::Availability::Available,
         call: None,
         join: None,
+        own_device: false,
     }
 }
 

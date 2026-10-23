@@ -275,6 +275,42 @@ impl Rooms {
         .await
     }
 
+    /// Take back the room grants `ids`, as the room's host decided; a grant
+    /// the room does not hold is no change.
+    ///
+    /// # Errors
+    ///
+    /// Why the grants were not taken back.
+    pub async fn remove_room_grants(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request_id: [u8; 32],
+        ids: Vec<tilo_action_policy::GrantId>,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        self.authorize(
+            administrator,
+            None,
+            RoomOp::Host(HostOperation::PutRoomGrants),
+            now,
+        )?;
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let key = self.inner.host.key.clone();
+        self.administer(
+            &mut room,
+            request_id,
+            request_digest(&("room.grants.remove", &ids))?,
+            |peer| {
+                peer.governance_mut()
+                    .remove_governed_grants(&ids, &key, system_time(now))
+            },
+            now,
+        )
+        .await
+    }
+
     /// Make the room's app authorship what its host configured: every app
     /// in `apps` authors the room's content
     /// ([`tilo_action_policy::roles::app_authorship`]), so a member whose

@@ -383,6 +383,22 @@ impl AgentActions {
         }
     }
 
+    /// Open for `owner` and ask its agent for `title`'s work, described by
+    /// `body`: an issue in Tasks whose run the asking starts, as the composer
+    /// asks. Whether it was asked.
+    pub(super) fn open_and_ask(
+        &mut self,
+        source: ActionSessionSource,
+        owner: &ComposerOwner,
+        (title, body): (&str, &str),
+    ) -> bool {
+        if !self.open(source, owner.clone()) {
+            return false;
+        }
+        self.begin(queue_operation(owner, None, (title, body), None, None));
+        true
+    }
+
     /// Hand what the person chose to do with an answer to the agent as work.
     /// An answer put at the selection carries that selection, so the agent
     /// is told the exact place.

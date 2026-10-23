@@ -18,13 +18,11 @@ use std::sync::{Arc, OnceLock};
 
 use typst::diag::{FileError, FileResult, Severity, SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime, Duration};
-use typst::layout::{Frame, FrameItem, Point as TypstPoint, Transform};
 use typst::syntax::{DiagSpanKind, FileId, Source};
-use typst::text::{Font, FontBook, TextItem};
+use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World};
 use typst_layout::PagedDocument;
-use vello::kurbo::{Affine, Point};
 
 use crate::pages::TypstPages;
 
@@ -56,37 +54,16 @@ pub struct Diagnostic {
     pub hints: Vec<String>,
 }
 
-/// A run of shaped text on a page, in **page points**, carrying one selectable
-/// cell per glyph so the preview can hit-test a drag to a character boundary
-/// and copy the covered text. Extracted from the compiled `typst` frame — the
-/// same layout the raster is rendered from — so positions line up exactly.
-#[derive(Clone, Debug)]
-pub struct TextRun {
-    /// Top / bottom of the run's line box in page points (y grows downward).
-    pub top: f64,
-    pub bottom: f64,
-    pub cells: Vec<TextCell>,
-}
-
-/// One selectable glyph cell within a [`TextRun`], in page points.
-#[derive(Clone, Debug)]
-pub struct TextCell {
-    pub x0: f64,
-    pub x1: f64,
-    /// The source characters this glyph renders (may be empty for a ligature
-    /// continuation, or several chars for a combined glyph).
-    pub text: String,
-}
-
 /// The full result of one compile pass.
 #[derive(Clone)]
 pub struct CompileOutput {
     /// The laid-out pages, rasterised on demand as the preview shows them;
     /// `None` when compilation failed.
     pub document: Option<Arc<TypstPages>>,
-    /// Extracted selectable text, one entry per page.
-    pub page_text: Vec<Vec<TextRun>>,
     pub diagnostics: Vec<Diagnostic>,
+    /// The headings the source writes, read from the syntax the compile
+    /// parsed.
+    pub(crate) headings: Vec<crate::outline::Heading>,
     /// Wall-clock compile time in milliseconds.
     pub elapsed_ms: u128,
     /// True when compilation produced a document (even with warnings); false
@@ -338,21 +315,16 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str) -> CompileOutput {
     let warnings = result.warnings;
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    let (document, page_text, ok) = match result.output {
+    let (document, ok) = match result.output {
         Ok(document) => {
-            let texts = document
-                .pages()
-                .iter()
-                .map(|page| extract_page_text(&page.frame))
-                .collect();
             let pages = TypstPages::new(document.pages().to_vec());
-            (Some(Arc::new(pages)), texts, true)
+            (Some(Arc::new(pages)), true)
         }
         Err(errors) => {
             for d in &errors {
                 diagnostics.push(flatten(&world, d));
             }
-            (None, Vec::new(), false)
+            (None, false)
         }
     };
 
@@ -367,8 +339,8 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str) -> CompileOutput {
 
     CompileOutput {
         document,
-        page_text,
         diagnostics,
+        headings: crate::outline::headings_in(&world.main),
         elapsed_ms: started.elapsed().as_millis(),
         ok,
     }
@@ -395,86 +367,6 @@ pub fn compile_pdf(parts: &Arc<WorldParts>, src: &str) -> Result<Vec<u8>, Vec<Di
     let bytes = typst_pdf::pdf(&document, &options).map_err(|errors| flatten_all(&errors))?;
     comemo::evict(8);
     Ok(bytes)
-}
-
-/// Walk a compiled page frame and pull out every run of shaped text with its
-/// per-glyph geometry, in page points. Nested groups are followed with their
-/// transform composed in, so text placed inside `#align`, `#box`, tables, etc.
-/// still lands at the right spot.
-fn extract_page_text(frame: &Frame) -> Vec<TextRun> {
-    let mut runs = Vec::new();
-    walk_frame(frame, Affine::IDENTITY, &mut runs);
-    runs
-}
-
-fn walk_frame(frame: &Frame, cur: Affine, out: &mut Vec<TextRun>) {
-    for (pos, item) in frame.items() {
-        match item {
-            FrameItem::Group(group) => {
-                let child = cur
-                    * Affine::translate((pos.x.to_pt(), pos.y.to_pt()))
-                    * transform_to_affine(&group.transform);
-                walk_frame(&group.frame, child, out);
-            }
-            FrameItem::Text(text) => {
-                if let Some(run) = build_run(*pos, text, cur) {
-                    out.push(run);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// A typst affine transform → a kurbo one (same row-major layout typst-render
-/// uses to feed tiny-skia, so geometry matches the raster).
-fn transform_to_affine(t: &Transform) -> Affine {
-    Affine::new([
-        t.sx.get(),
-        t.ky.get(),
-        t.kx.get(),
-        t.sy.get(),
-        t.tx.to_pt(),
-        t.ty.to_pt(),
-    ])
-}
-
-/// Build a [`TextRun`] for one shaped `TextItem` placed at `pos` inside a frame
-/// whose local→page transform is `cur`. Glyph advances accumulate along the
-/// baseline; the line box comes from the font's ascender/descender so cells on
-/// adjacent lines don't vertically overlap. Rotation/shear is not modelled
-/// (documents lay text axis-aligned); the x/y scale of `cur` is honoured.
-fn build_run(pos: TypstPoint, item: &TextItem, cur: Affine) -> Option<TextRun> {
-    if item.glyphs.is_empty() {
-        return None;
-    }
-    let size = item.size;
-    let metrics = item.font.metrics();
-    let ascent = metrics.ascender.at(size).to_pt();
-    let descent = metrics.descender.at(size).to_pt(); // negative (below baseline)
-
-    let coeffs = cur.as_coeffs();
-    let sx = coeffs[0].hypot(coeffs[1]).max(1e-6); // |x-basis| of `cur`
-    let sy = coeffs[2].hypot(coeffs[3]).max(1e-6); // |y-basis| of `cur`
-    let origin = cur * Point::new(pos.x.to_pt(), pos.y.to_pt());
-
-    let mut cells = Vec::with_capacity(item.glyphs.len());
-    let mut cum = 0.0f64;
-    for g in &item.glyphs {
-        let adv = g.x_advance.at(size).to_pt();
-        let x0 = origin.x + cum * sx;
-        let x1 = origin.x + (cum + adv) * sx;
-        cum += adv;
-        let range = g.range.start as usize..g.range.end as usize;
-        let text = item.text.get(range).unwrap_or("").to_string();
-        cells.push(TextCell { x0, x1, text });
-    }
-
-    Some(TextRun {
-        top: origin.y - ascent * sy,
-        bottom: origin.y - descent * sy,
-        cells,
-    })
 }
 
 /// Flatten a `typst` diagnostic into our plain struct, resolving the span to a
@@ -562,6 +454,7 @@ mod tests {
     fn compile_extracts_text_glyphs_and_pdf_bytes() {
         #[cfg(target_os = "windows")]
         {
+            use typst::layout::FrameItem;
             let parts = WorldParts::new();
             let world = TypstWorld::new(parts, "= Native Grün 🌍");
             let output = typst::compile::<PagedDocument>(&world)
@@ -599,19 +492,21 @@ mod tests {
             let (width_pt, height_pt) = out.document.as_ref().unwrap().sizes()[0];
             assert!(width_pt > 0.0 && height_pt > 0.0, "point size set");
 
-            let cells: usize = out
-                .page_text
-                .iter()
-                .flat_map(|p| p.iter())
-                .map(|r| r.cells.len())
+            let document = out.document.as_ref().unwrap();
+            let cells: usize = (0..document.len())
+                .map(|page| document.text(page).len())
                 .sum();
             assert!(cells > 0, "extracted glyph cells for the text layer");
 
-            for run in out.page_text.iter().flat_map(|p| p.iter()) {
-                for w in run.cells.windows(2) {
-                    assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+            for page in 0..document.len() {
+                for w in document.text(page).cells().windows(2) {
+                    if w[1].line == w[0].line {
+                        assert!(w[1].x0 + 1e-6 >= w[0].x0, "cells advance rightward");
+                    }
                 }
-                assert!(run.bottom > run.top, "run line box has positive height");
+                for cell in document.text(page).cells() {
+                    assert!(cell.bottom > cell.top, "a line box has positive height");
+                }
             }
         }
         // Case `compile_pdf_produces_pdf_bytes`:

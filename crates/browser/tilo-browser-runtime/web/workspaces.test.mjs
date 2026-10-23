@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, joinWhenSeated, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -144,6 +144,14 @@ test('a door that names the person removed tells them so, whatever this browser 
   const {calls, options} = harness({person: identity(0x33),
     joinReply: {status: 403, body: {error: 'you were removed from this room', code: 'removed'}}});
   await assert.rejects(joinViaHost(options), {name: 'AdmissionError', code: 'removed', message: removedFrom('Commons')});
+  assert.equal(calls.posted.length, 1);
+  assert.equal(calls.connected.length, 0);
+});
+
+test('a door taking people by invitation tells a visitor without one so, and asks once', async () => {
+  const {calls, options} = harness({person: identity(0x44),
+    joinReply: {status: 403, body: {error: 'this room takes people by invitation for now', code: 'invitation-only'}}});
+  await assert.rejects(joinViaHost(options), error => error instanceof HostAdmissionError && error.code === 'invitation-only');
   assert.equal(calls.posted.length, 1);
   assert.equal(calls.connected.length, 0);
 });
@@ -584,4 +592,37 @@ test('the person switches between the home and the workspaces they entered, neve
       subtitle: 'Workspace · globex.example · did not open last time'},
     {id: 'open-workspace:https://rooms.example/TEAM', title: 'Open Team', label: 'Team', source: 'workspaces', subtitle: 'Workspace · rooms.example'},
   ]);
+});
+
+test('a watching page joins only once the door has a seat, asking without taking one', async () => {
+  const asked = [], timers = [];
+  const answers = [{open: false}, {open: false}, {open: true}];
+  let joined = 0;
+  joinWhenSeated({
+    workspace: commons, retryAfter: 30, join: () => { joined += 1; }, random: () => 0,
+    fetch: async (url, options) => { asked.push([String(url), options]); return {ok: true, json: async () => answers.shift()}; },
+    schedule: (run, ms) => { timers.push([run, ms]); return timers.length; },
+  });
+  for (let round = 0; round < 3; round++) {
+    assert.equal(timers.length, round + 1, 'one question waits at a time');
+    assert.equal(timers[round][1], 30000);
+    await timers[round][0]();
+  }
+  assert.deepEqual(asked.map(([url]) => url), Array(3).fill('https://rooms.example/presence'));
+  assert.deepEqual(asked[0][1], {credentials: 'omit'});
+  assert.equal(joined, 1, 'it joins when the door says open, and not before');
+  assert.equal(timers.length, 3, 'and asks no more after');
+});
+
+test('a watching page that stops asking never joins', async () => {
+  const timers = [];
+  let joined = 0;
+  const stop = joinWhenSeated({
+    workspace: commons, join: () => { joined += 1; }, random: () => 0,
+    fetch: async () => ({ok: true, json: async () => ({open: true})}),
+    schedule: run => { timers.push(run); return 7; }, cancel: () => {},
+  });
+  stop();
+  await timers[0]();
+  assert.equal(joined, 0);
 });

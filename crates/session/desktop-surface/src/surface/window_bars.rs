@@ -32,14 +32,6 @@ impl DesktopSurface {
             &windows,
             self.rows.values_mut().flat_map(|row| row.groups.iter_mut()),
         );
-        // A press on an app's own slot is a press on the app: the bar took
-        // the keyboard with the click, and the app gets it back, so Escape
-        // or what is typed next reaches the window it was meant for.
-        if let Some(&tab) = sync.keyboard.last()
-            && let Some(ids) = route_of(&self.shared.borrow().tree, tab)
-        {
-            self.activation = Some((ids.strip, ids.tab));
-        }
         if !sync.closing.is_empty() {
             let mut shared = self.shared.borrow_mut();
             for tab in sync.closing {

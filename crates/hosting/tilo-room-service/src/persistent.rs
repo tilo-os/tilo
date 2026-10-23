@@ -75,6 +75,9 @@ pub enum JoinRefusal {
     CoolingDown,
     /// The person asking was removed from the room within the day.
     Removed,
+    /// The room takes people by invitation, and the person asking is not a
+    /// member.
+    InviteOnly,
     TooMany {
         retry_after_secs: u64,
     },
@@ -90,6 +93,8 @@ enum Answer {
     Certificate(String),
     /// The room refused the person: it removed them within the day.
     Removed,
+    /// The room takes people by invitation and has no such member.
+    InviteOnly,
 }
 
 type Waiters = HashMap<String, oneshot::Sender<std::result::Result<Answer, String>>>;
@@ -116,6 +121,9 @@ pub(crate) struct Shared {
     /// Some of the members online and how many belong, as the room last
     /// reported them, for the site's directory.
     presence: std::sync::Mutex<(Vec<tilo_relay_protocol::directory::Face>, u32)>,
+    /// The room takes people by invitation (`TILO_ROOMS_ADMISSION=invite`):
+    /// its relay lets in only its members.
+    invite_only: bool,
 }
 
 impl Shared {
@@ -134,13 +142,15 @@ impl Shared {
             .persistent
             .as_ref()
             .context("not a persistent room")?;
-        Self::with_key(
+        let mut shared = Self::with_key(
             dir,
             key,
             config.max_guests,
             persistent.max_spectators,
             (persistent.guest_joins, persistent.spectator_joins),
-        )
+        )?;
+        shared.invite_only = persistent.admission == crate::config::Admission::Invite;
+        Ok(shared)
     }
 
     fn with_key(
@@ -166,6 +176,7 @@ impl Shared {
             seats: std::sync::Mutex::new(Seats::new(max_guests)),
             watching: std::sync::Mutex::new(Seats::new(max_spectators)),
             presence: std::sync::Mutex::default(),
+            invite_only: false,
         })
     }
 
@@ -342,6 +353,18 @@ pub(crate) fn relay_log() -> String {
         .unwrap_or_else(|| "warn".into())
 }
 
+/// Who governs the room beyond its flags, and whom its door lets in: a
+/// room taking people by invitation has its relay let in only members, who
+/// invite the people they bring.
+fn governance(command: &mut Command, persistent: &PersistentConfig) {
+    if let Some(roles) = &persistent.roles_file {
+        command.arg("--roles-file").arg(roles);
+    }
+    if persistent.admission == crate::config::Admission::Invite {
+        command.arg("--members-only");
+    }
+}
+
 /// What the room keeps of the files its members post, where the operator
 /// set it; the relay's defaults otherwise.
 fn attachment_limits(command: &mut Command, persistent: &PersistentConfig) {
@@ -444,9 +467,7 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     ] {
         command.args(values.iter().flat_map(|value| [flag, value.as_str()]));
     }
-    if let Some(roles) = &persistent.roles_file {
-        command.arg("--roles-file").arg(roles);
-    }
+    governance(&mut command, persistent);
     command
         .arg("--layout")
         .arg(&persistent.layout)
@@ -663,12 +684,15 @@ impl Persistent {
                     token_sha256,
                     reason,
                     removed,
+                    invite_only,
                 }) => {
                     eprintln!("tilo-room-service: a pre-admission was refused: {reason}");
                     self.settle(
                         &format!("join:{token_sha256}"),
                         if removed {
                             Ok(Answer::Removed)
+                        } else if invite_only {
+                            Ok(Answer::InviteOnly)
                         } else {
                             Err(reason)
                         },
@@ -845,6 +869,20 @@ impl Persistent {
         })
     }
 
+    /// Whether `/join` would seat a guest now: a watching page asks this
+    /// before it reloads to join, so it stays on its seat until one frees.
+    pub fn seat_free(&self) -> bool {
+        self.shared
+            .seats
+            .lock_recover()
+            .free(tilo_clock::unix_now_ms())
+    }
+
+    /// Whether the door lets in only the room's members (`TILO_ROOMS_ADMISSION=invite`).
+    pub fn invite_only(&self) -> bool {
+        self.shared.invite_only
+    }
+
     pub fn watching(&self) -> u32 {
         Self::counted(&self.shared.watching)
     }
@@ -969,6 +1007,10 @@ impl Persistent {
             Answer::Removed => {
                 unadmit();
                 return Err(JoinRefusal::Removed);
+            }
+            Answer::InviteOnly => {
+                unadmit();
+                return Err(JoinRefusal::InviteOnly);
             }
             Answer::Certificate(_) => {
                 unadmit();
@@ -1164,6 +1206,7 @@ mod tests {
             token_sha256,
             label,
             role,
+            ..
         } = relay.command().await
         else {
             panic!("expected a pre-admission");
@@ -1229,6 +1272,7 @@ mod tests {
                 token_sha256,
                 reason: "full".into(),
                 removed: false,
+                invite_only: false,
             })
             .await;
         assert!(matches!(
@@ -1254,9 +1298,63 @@ mod tests {
                 token_sha256,
                 reason: "removed from the room".into(),
                 removed: true,
+                invite_only: false,
             })
             .await;
         assert!(matches!(joining.await.unwrap(), Err(JoinRefusal::Removed)));
+    }
+
+    /// A room taking people by invitation tells someone its relay does
+    /// not let in that they need an invitation.
+    #[tokio::test]
+    async fn a_room_taking_people_by_invitation_tells_a_stranger_they_need_one() {
+        let (persistent, mut relay, _dir) = persistent(200, 1000).await;
+        let joining = {
+            let persistent = Arc::clone(&persistent);
+            tokio::spawn(async move { persistent.join(ip("203.0.113.9"), request(7)).await })
+        };
+        let OperatorCommand::PreAdmit { token_sha256, .. } = relay.command().await else {
+            panic!("expected a pre-admission")
+        };
+        relay
+            .report(&RoomEvent::PreAdmitRefused {
+                token_sha256,
+                reason: "the room takes people by invitation only".into(),
+                removed: false,
+                invite_only: true,
+            })
+            .await;
+        assert!(matches!(
+            joining.await.unwrap(),
+            Err(JoinRefusal::InviteOnly)
+        ));
+    }
+
+    /// The relay is told to take people by invitation when the room is set
+    /// to (`TILO_ROOMS_ADMISSION=invite`), and only then.
+    #[test]
+    fn the_relay_takes_people_by_invitation_as_the_room_is_set() {
+        let members_only = |admission: Option<&str>| {
+            let mut vars = vec![
+                ("TILO_ROOMS_PERSISTENT", "plaza"),
+                ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
+            ];
+            vars.extend(admission.map(|value| ("TILO_ROOMS_ADMISSION", value)));
+            let config = Config::from_lookup(|name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+            .unwrap();
+            child_command(&config, Path::new("/state"))
+                .unwrap()
+                .as_std()
+                .get_args()
+                .any(|arg| arg == "--members-only")
+        };
+        assert!(!members_only(None));
+        assert!(!members_only(Some("open")));
+        assert!(members_only(Some("invite")));
     }
 
     #[tokio::test]

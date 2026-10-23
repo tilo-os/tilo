@@ -618,22 +618,21 @@ impl NotificationHost for ChromeNotifications<'_> {
     }
 
     fn hand_to_agent(&self, notification: &Notification) {
-        let (Some(agents), Some((workspace, room, agent))) =
-            (self.agents, self.live_agent(notification))
-        else {
+        let Some((_, room, agent)) = self.live_agent(notification) else {
             return;
         };
-        let task = self.chrome.borrow_mut().hand_history_notification_to_agent(
-            notification.id,
-            workspace,
-            &agent,
-        );
-        let Some(task) = task else {
+        let Some(room) = crate::shell::state::RoomId::parse(&room) else {
             return;
         };
-        if let Err(error) = agents.dispatch_task_in(&room, &task) {
-            tracing::warn!(%task, "handing a notification to {agent} failed: {error}");
-        }
+        let title: String = notification.title.chars().take(240).collect();
+        let body = if notification.body.is_empty() {
+            notification.title.clone()
+        } else {
+            format!("{}\n\n{}", notification.title, notification.body)
+        };
+        self.chrome
+            .borrow_mut()
+            .ask_agent(room, agent, (title, body));
     }
 
     fn changed(&self) {

@@ -61,11 +61,13 @@ pub enum AppSource {
     },
     /// A program the person downloaded: an `AppImage`, or a program from a
     /// tarball or a loose binary. `entry` is the file the app list holds it
-    /// by, which Tilo wrote.
+    /// by, which Tilo wrote; `locations` are the other copies of it the
+    /// person has, newest first.
     Downloaded {
         program: PathBuf,
         entry: PathBuf,
         appimage: bool,
+        locations: Vec<PathBuf>,
     },
     /// A menu entry the person put in their own applications directory.
     PersonEntry { path: PathBuf },
@@ -195,6 +197,8 @@ pub struct HostEntry {
     pub downloaded: Option<PathBuf>,
     /// Which kind of app the entry is, as search and `tilo app list` say.
     pub kind: desktop_entry::EntryKind,
+    /// The other copies of that program the entry knows.
+    pub downloaded_locations: Vec<PathBuf>,
 }
 
 /// What the list knows of the person: whether they administer the device,
@@ -245,6 +249,7 @@ impl Places {
                     program: program.clone(),
                     entry: entry.path.clone(),
                     appimage: kind == EntryKind::AppImage,
+                    locations: entry.downloaded_locations.clone(),
                 }
             }
             (EntryKind::Program, _, None) => AppSource::PersonEntry {
@@ -502,6 +507,11 @@ pub fn host_entries(scan: &desktop_entry::Scan) -> Vec<HostEntry> {
             .downloaded
             .as_ref()
             .map(|downloaded| downloaded.program.clone()),
+        downloaded_locations: entry
+            .downloaded
+            .as_ref()
+            .map(|downloaded| downloaded.locations.clone())
+            .unwrap_or_default(),
     })
     .collect()
 }
@@ -693,6 +703,8 @@ pub enum Outcome {
     UninstalledDataInTrash,
     /// A downloaded program's file went to the Trash.
     UninstalledFileInTrash,
+    /// A downloaded program's copies all went to the Trash.
+    UninstalledFilesInTrash,
     RemovedFromApps,
 }
 
@@ -703,6 +715,9 @@ impl Outcome {
             Self::Uninstalled => ("app-list-uninstalled", None),
             Self::UninstalledDataInTrash => {
                 ("app-list-uninstalled", Some("app-list-uninstalled-data"))
+            }
+            Self::UninstalledFilesInTrash => {
+                ("app-list-uninstalled", Some("app-list-uninstalled-files"))
             }
             Self::UninstalledFileInTrash => {
                 ("app-list-uninstalled", Some("app-list-uninstalled-file"))
@@ -784,14 +799,28 @@ pub fn plan(
             steps.push(Step::Trash(flatpak_data_dir(home, app_id)));
             Ok((steps, Outcome::UninstalledDataInTrash))
         }
-        AppSource::Downloaded { program, entry, .. } => {
+        AppSource::Downloaded {
+            program,
+            entry,
+            locations,
+            ..
+        } => {
             if !entry.starts_with(places.applications()) {
                 return Err(t("app-list-invalid-entry"));
             }
-            Ok((
-                vec![Step::Trash(program.clone()), forget_entry(item, places)],
-                Outcome::UninstalledFileInTrash,
-            ))
+            // Every copy goes, or running a leftover one brings the app back;
+            // all of them can be restored from the Trash.
+            let mut steps: Vec<Step> = std::iter::once(program)
+                .chain(locations)
+                .map(|copy| Step::Trash(copy.clone()))
+                .collect();
+            steps.push(forget_entry(item, places));
+            let outcome = if locations.is_empty() {
+                Outcome::UninstalledFileInTrash
+            } else {
+                Outcome::UninstalledFilesInTrash
+            };
+            Ok((steps, outcome))
         }
         AppSource::PersonEntry { path } => {
             if !path.starts_with(places.applications()) {

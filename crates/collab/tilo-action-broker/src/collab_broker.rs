@@ -851,13 +851,6 @@ impl AppActionBroker {
             .unwrap_or(false)
     }
 
-    /// Dispatch a task to its assigned live agent. There is intentionally no
-    /// offline queue or application launch fallback in this boundary.
-    pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
-        self.state
-            .while_live(|state| state.dispatch_workspace_task(room, task_id))
-    }
-
     /// Prepare a one-use confirmation token for the exact invocation inputs.
     pub fn prepare_confirmation(
         &self,

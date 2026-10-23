@@ -1,4 +1,4 @@
-# Tilo patches: stop topic timers that have no work
+# Tilo patches: stop topic timers that have no work, reach every neighbour
 
 crates.io `iroh-gossip` 0.101.0, verbatim (archive SHA-256
 `4e1dc4b05f73e7a1b9e83b531eb63c3fd671b0af3aeb13b59c546dd7ca747515`, upstream
@@ -40,6 +40,20 @@ passive-view recovery and wire messages are unchanged. The public protocol-state
 regression `gossip_stops_shuffling_after_its_last_peer_leaves_and_restarts_on_join`
 in `crates/system/fs/tests/iroh_idle.rs` verifies departure, both return timings,
 and continued shuffling with a live neighbor without wall-clock sleeps.
+
+## Neighbours-only messages reach lazy neighbours
+
+`Scope::Neighbors` is documented as "broadcast only to the immediate
+neighbors", but `broadcast` pushed it to the eager peers only. A neighbour
+that once sent a duplicate swarm message is pruned to the lazy set, which in
+a triangle of three peers happens to one link at the first broadcast; from
+then on nothing neighbours-only crossed that link, as the lazy path (`IHave`
+and `Graft`) carries swarm messages only. Tilo announces device identities
+neighbours-only, so of three devices of one person two stopped
+authenticating each other after a restart. Such a message now goes to every
+direct neighbour, eager or lazy (`a_neighbours_only_message_reaches_lazy_neighbours_too`, and
+through the public topic state `gossip_neighbours_only_messages_cross_a_pruned_link` in
+`crates/system/fs/tests/iroh_idle.rs`).
 
 ## Built as an rlib only (`Cargo.toml`)
 

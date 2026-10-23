@@ -23,6 +23,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::context_menu::{ContextMenu, MenuItem};
+
+#[path = "toolbar_damage.rs"]
+mod damage;
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
@@ -173,6 +176,8 @@ pub struct Toolbar {
     /// Element nodes laid out apart from a host (a painted host).
     detached: Vec<Option<super::floating_surface::DetachedContent>>,
     theme: Theme,
+    /// What the frame being drawn and the one on screen show of the row.
+    shown: crate::scroll_copy::ShownFrames<damage::BarShown>,
 }
 
 impl Toolbar {
@@ -227,6 +232,7 @@ impl Toolbar {
             measured_scale: None,
             detached: Vec::new(),
             theme: Theme::dark(),
+            shown: crate::scroll_copy::ShownFrames::default(),
         }
     }
 
@@ -1824,6 +1830,14 @@ impl Widget for Toolbar {
             );
         }
         scene.pop_layer();
+        self.note_shown(transform, theme);
+    }
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.collect_shown_damage(regions);
+    }
+    fn mark_drawn(&mut self) {
+        self.shown.present();
+        super::defaults::mark_drawn(self.children_mut());
     }
     fn draw_overlay(
         &mut self,

@@ -932,6 +932,7 @@ people-panel-here-watching = { $count ->
 }, { $watching } watching
 people-panel-section-people = People
 people-panel-section-agents = Agents
+people-panel-section-devices = Your devices
 people-panel-wave = Wave
 people-panel-waved = Waved
 people-panel-join = Join

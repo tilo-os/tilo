@@ -346,6 +346,10 @@ pub struct Relay {
     /// certified host retains the existing dynamic multi-workspace behavior.
     interactive_workspace_id: Option<u64>,
     interactive_owner_trust: Option<tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust>,
+    /// Sealing what the rooms it stewards hold in the clear, started when
+    /// its operator decided it ([`crate::reseal`]).
+    #[cfg(feature = "agents")]
+    resealing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// The relay state the browser carriers serve sessions with.
@@ -926,9 +930,22 @@ impl Relay {
         if let (Some(governance), Some(rooms)) = (&governance, &rooms) {
             governance.attach(rooms.clone());
         }
+        #[cfg(feature = "agents")]
+        let mut resealing = None;
         #[cfg(any(feature = "agents", feature = "web"))]
         if let Some(rooms) = &rooms {
             handler.compactor.steward_with(Arc::new(rooms.clone()));
+            // What the rooms it stewards hold in the clear is sealed only
+            // once its operator decided it, recorded in its state.
+            #[cfg(feature = "agents")]
+            if crate::reseal::decided(&cfg.state_root) {
+                let (rooms, compactor) = (rooms.clone(), handler.compactor.clone());
+                rooms.reseal_existing();
+                compactor.reseal_existing();
+                resealing = Some(tokio::spawn(async move {
+                    rooms.reseal_stewarded(&compactor).await;
+                }));
+            }
         }
         let mut router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
@@ -1017,6 +1034,8 @@ impl Relay {
             workspaces,
             metrics,
             identity: live,
+            #[cfg(feature = "agents")]
+            resealing: std::sync::Mutex::new(resealing),
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
             peer_relay_tasks,
@@ -1093,6 +1112,7 @@ impl Relay {
         if let Err(error) = self.router.shutdown().await {
             tracing::debug!(%error, "relay router shutdown task failed");
         }
+        self.compactor().stop().await;
     }
 
     /// Add a peer relay with a fully-resolved endpoint address —
@@ -1147,6 +1167,21 @@ impl Relay {
     /// what a peer needs to dial this relay.
     pub fn node_addr(&self) -> EndpointAddr {
         self.endpoint.addr()
+    }
+
+    /// Wait until the relay has sealed what the rooms it stewards held in
+    /// the clear when it started, if its operator decided it
+    /// ([`crate::reseal`]).
+    #[cfg(feature = "agents")]
+    pub async fn resealed(&self) {
+        let task = self
+            .resealing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
     }
 
     /// The compactor keeping this relay's retained document channels short.

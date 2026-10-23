@@ -26,6 +26,7 @@ bash "$run" "$fast" bash -euo pipefail -c '
   done
   bwrap --version
   python3 -c "import PIL"
+  node -e "process.exit([...new Intl.Segmenter(\"en\", {granularity: \"grapheme\"}).segment(\"e\u0301x\")].length === 2 ? 0 : 1)"
   fc-match -f "%{family}" "Noto Sans" | grep -Fq "Noto Sans"
   test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name "RPM-GPG-KEY-fedora-*-primary" -print -quit)"'
 bash "$run" "$control" bash -euo pipefail -c '

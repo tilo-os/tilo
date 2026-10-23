@@ -975,6 +975,13 @@ impl App {
         }
     }
 
+    /// The window's root widget, for a test that drives a live window and
+    /// looks at what it mounted.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
+        self.root_widget.as_mut()
+    }
+
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {

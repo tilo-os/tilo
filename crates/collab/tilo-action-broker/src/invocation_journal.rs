@@ -127,7 +127,9 @@ impl InvocationOwner {
                 || agent.chars().any(char::is_control)
                 || task.is_empty()
                 || task.len() > 256
-                || !task.starts_with("task:")
+                // An issue's run, or a room task's in a journal kept from
+                // before tasks were issues.
+                || !(task.starts_with("task:") || crate::services::is_tracker_issue(task))
                 || *epoch == 0)
         {
             return Err("invalid native task invocation owner".into());

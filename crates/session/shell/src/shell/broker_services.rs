@@ -25,7 +25,6 @@ pub(crate) use owner_source::OPENING as NATIVE_OWNER_OPENING;
 mod resource_views;
 #[cfg(target_os = "linux")]
 mod service_sessions;
-mod task_execution;
 mod tracker_runs;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
@@ -141,12 +140,6 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
                     return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
                         .await;
                 }
-            }
-            if matches!(
-                request.operation,
-                tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
-            ) {
-                return owner.commit_workspace_task_command(request, std::time::SystemTime::now());
             }
             if matches!(
                 request.operation,
@@ -266,15 +259,6 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .health()
     }
 
-    fn task_snapshot(
-        &self,
-        room: &str,
-    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
-        let room = super::state::RoomId::parse(room).ok_or("invalid native task room")?;
-        self.opened_owner("native task owner unavailable")?
-            .workspace_task_snapshot(room)
-    }
-
     fn execute(
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,
@@ -293,22 +277,14 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                     return grant_authorship_at_host(network, &owner, room, &request).await;
                 }
             }
-            let receipt = if matches!(
-                request.operation,
-                tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
-            ) {
-                owner.commit_workspace_task_command(request, std::time::SystemTime::now())?
-            } else {
-                let (key, governor) =
-                    tilo_identity_host::broker::trusted_current_device(&request.room)
-                        .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
-                owner.commit_workspace_membership_command(
-                    request,
-                    &governor,
-                    &key,
-                    std::time::SystemTime::now(),
-                )?
-            };
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
+            let receipt = owner.commit_workspace_membership_command(
+                request,
+                &governor,
+                &key,
+                std::time::SystemTime::now(),
+            )?;
             if let Some(network) = network {
                 network.schedule_native_owner_publication(room);
             }
@@ -492,32 +468,6 @@ impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
             .ok_or("effect workspace no longer hosted")?;
         // Preserve native projection semantics; this void flush is not OwnerCommitService.
         let _ = tree.append_app_effect_receipt(id, invocation, actor, context, status);
-        drop(tree);
-        Ok(())
-    }
-    fn record_task_update(
-        &self,
-        room: &str,
-        task: &str,
-        actor: &str,
-        status: Option<tilo_desktop_model::WorkspaceTaskStatus>,
-        summary: String,
-    ) -> Result<(), String> {
-        let mut tree = self.0.write();
-        if super::state::RoomId::parse(room).is_some_and(|room| tree.requires_native_owner(room)) {
-            return Err("native enrolled mutation requires its typed durable owner".into());
-        }
-        let id = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.room().to_string() == room && w.tasks.iter().any(|t| t.id == task))
-            .map(|w| w.id)
-            .ok_or("task workspace or task no longer hosted")?;
-        if let Some(status) = status {
-            let _ = tree.set_workspace_task_status(id, task, status, actor);
-        }
-        let _ = tree.append_workspace_task_audit(id, task, actor, summary);
         drop(tree);
         Ok(())
     }
@@ -1855,13 +1805,6 @@ fn native_workspace_memberships(
     Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
 }
 
-fn native_task_execution(
-    tree: &WorkspaceTreeHandle,
-    network: Option<Arc<super::network::ShellNetwork>>,
-) -> Arc<dyn tilo_action_broker::services::WorkspaceTaskExecution> {
-    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
-}
-
 /// The room's tracker, read for the broker's runs and for whoever follows
 /// one in the shell.
 pub(crate) fn native_tracker(
@@ -1918,9 +1861,6 @@ pub fn native_services(
     let workspace_memberships = membership
         .as_ref()
         .map(|tree| native_workspace_memberships(tree, network.clone()));
-    let task_execution = membership
-        .as_ref()
-        .map(|tree| native_task_execution(tree, network.clone()));
     let resource_views = native_resource_views(membership.as_ref(), network.as_ref());
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
@@ -1983,7 +1923,6 @@ pub fn native_services(
         app_action_grants,
         committed_documents,
         workspace_memberships,
-        task_execution,
         tracker_runs,
         person_chat: membership
             .as_ref()

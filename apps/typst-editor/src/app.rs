@@ -269,6 +269,9 @@ pub struct TypstApp {
     /// Set when a pointer *move* changed something visible (hover, live drag)
     /// so `needs_redraw` asks the host to repaint — moves are otherwise gated.
     dirty: bool,
+    /// What the frame being drawn shows around the panes, and what the frame
+    /// on screen showed.
+    window_shown: ui::scroll_copy::ShownFrames<damage::WindowShown>,
     /// The pointer has moved over the window, so the bubble follows it.
     pointer_seen: bool,
 }
@@ -338,6 +341,7 @@ impl TypstApp {
             )
             .with_label("Resize the source and the preview"),
             dirty: true,
+            window_shown: ui::scroll_copy::ShownFrames::default(),
             pointer_seen: false,
             actions: None,
         }
@@ -524,7 +528,7 @@ impl TypstApp {
             // late result for text since deleted is superseded the same way.
             self.preview.set_blank();
         } else if let Some(document) = &out.document {
-            self.preview.set_document(document.clone(), &out.page_text);
+            self.preview.set_document(document.clone());
         } else {
             // The compile failed. Keep the last successful render on screen (so
             // the reader doesn't lose their place while fixing a typo) and flag
@@ -535,6 +539,7 @@ impl TypstApp {
             }
             self.preview.set_stale(true);
         }
+        self.outline.set_headings(out.headings);
         self.diagnostics.set_diagnostics(out.diagnostics);
         if self.err_count > 0 && self.compile_feedback {
             // An explicit Compile that fails opens Problems. While typing, a
@@ -1292,7 +1297,6 @@ impl Widget for TypstApp {
         }
         self.editor.pull(doc);
         let source = self.editor.text().to_owned();
-        self.outline.sync(&source);
 
         // In the browser the fonts arrive after the editor opens; compile
         // once they have, with parts built from them.
@@ -1431,6 +1435,8 @@ impl Widget for TypstApp {
             self.status.pointer_moved(area, self.mouse, tr, theme, now);
         }
         self.status.paint(scene, t, tr, theme, area, now);
+
+        self.note_window(tr, theme);
 
         // This frame reflects the latest interaction state; clear the move-dirty
         // flag so idle hover doesn't spin the render loop.
@@ -1654,9 +1660,14 @@ impl Widget for TypstApp {
         self.dirty || self.chrome.needs_redraw()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.window_damage(regions);
+    }
+
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.chrome.mark_drawn();
+        self.mark_window_shown();
     }
 }
 
@@ -1879,8 +1890,8 @@ impl TypstApp {
                         dy = 0.0;
                     }
                     if self.editor_rect.contains(p) {
-                        let text = self.source_cache.clone();
-                        self.editor.scroll_by(dx as f32, dy as f32, &text);
+                        self.editor
+                            .scroll_by(dx as f32, dy as f32, &self.source_cache);
                     } else if self.show_diagnostics && self.diag_rect.contains(p) {
                         self.diagnostics.scroll_by(dy);
                     }
@@ -2082,6 +2093,9 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
     tilo_files::blocking::save_document(&dir, &name, bytes)
 }
 
+mod damage;
+#[cfg(test)]
+mod damage_tests;
 #[cfg(test)]
 mod long_document_tests;
 #[cfg(test)]

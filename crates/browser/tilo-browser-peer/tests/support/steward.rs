@@ -20,7 +20,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use tilo_relay::daemon::Relay;
 
-use crate::support::{Device, ROOM, enrol, route, workspace};
+use crate::support::{Device, ROOM, enrol, route, scratch_dir, workspace};
 
 /// Publish `message` through the host the way a shell does.
 pub fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
@@ -91,7 +91,7 @@ impl Steward {
     pub async fn start(host: &Relay, root: &SigningKey) -> Self {
         let device = enrol(root, "steward", DeviceCapabilities::primary());
         let channels = Arc::new(Mutex::new(Channels {
-            dir: tempfile::tempdir().unwrap(),
+            dir: scratch_dir(),
             key: device.key.clone(),
             stewards: HashMap::new(),
         }));

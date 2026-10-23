@@ -41,6 +41,7 @@ pub mod voice;
 mod watching;
 
 pub use channel_crypto::ChannelContentKeys;
+pub use channels::document_admission;
 pub use custody::{
     CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
     certify, certify_with_root, decide_pairing, issue_device_cert, pending_pairings,

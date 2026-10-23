@@ -8,7 +8,7 @@
 )]
 
 use super::call_seal::{self, Sealing};
-use super::video::{CameraChoice, Publisher};
+use super::video::{CameraChoice, Publisher, screen_share};
 use channel_crypto::ChannelContentKeys;
 use collab_types::ChannelId;
 use std::sync::Arc;
@@ -41,13 +41,15 @@ impl SessionAuthorization for Permit {
     }
 }
 
-/// Ana publishes `b` and hears `c`; Ben publishes `c` and hears `b`.
+/// Ana publishes `b` and hears `c`; Ben publishes `c` and hears `b`; Cid
+/// publishes `d` and hears `b`.
 struct Roles;
 impl RelayAuthority for Roles {
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let (publish, subscribe) = match proof {
             b"ana" => (name('b'), vec![name('c')]),
             b"ben" => (name('c'), vec![name('b')]),
+            b"cid" => (name('d'), vec![name('b')]),
             _ => return Err(Denied),
         };
         Ok(Arc::new(Permit { publish, subscribe }))
@@ -239,4 +241,72 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
         "no picture after the camera stopped"
     );
     drop(ana_camera);
+}
+
+async fn live(clients: &[&Client]) {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        while clients.iter().any(|client| client.status() != Status::Live) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("every carrier live");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_still_screen_is_encoded_once_and_each_new_viewer_starts_at_its_standing_keyframe() {
+    let relay = LoopbackRelay::start(Arc::new(Roles)).unwrap();
+    let ana = join(&relay, b"ana", 'b');
+    let ben = join(&relay, b"ben", 'c');
+    live(&[&ana, &ben]).await;
+
+    let channel = collab_types::document_channel_id("so.tilo.chat", "room", "general");
+    let keys = keys_of(channel, 7);
+    let sealing = Sealing {
+        keys: keys.clone(),
+        publication: name('b'),
+    };
+    let carrier = ana.clone();
+    let screen = Arc::new(
+        Publisher::screen(Arc::new(move || {
+            Some((carrier.clone(), Some(sealing.clone())))
+        }))
+        .expect("Ana's screen share starts"),
+    );
+    screen.preview().set(Some(Layer::Low));
+    let ticking = {
+        let (ana, screen) = (ana.clone(), screen.clone());
+        tokio::spawn(async move {
+            loop {
+                if ana.wants_picture_keyframe(Source::Screen) {
+                    screen.ask_keyframe();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+    };
+    let rgba: Arc<[u8]> = [200_u8, 40, 40, 255].repeat(640 * 360).into();
+    screen_share().publish_rgba(640, 360, rgba);
+    let encoded = || screen.preview().take().0.len();
+
+    ben.show(&name('b'), &[(Source::Screen, Layer::Low)]);
+    let (first, _) = decoded_picture(&ben, (&keys, channel), "Ben sees Ana's screen").await;
+    assert!(first.keyframe);
+
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(
+        ben.try_recv_picture().is_none(),
+        "a still screen sends nothing while nobody new shows it"
+    );
+    assert_eq!(encoded(), 1, "the still screen was encoded once");
+
+    let cid = join(&relay, b"cid", 'd');
+    live(&[&cid]).await;
+    cid.show(&name('b'), &[(Source::Screen, Layer::Low)]);
+    let (late, _) = decoded_picture(&cid, (&keys, channel), "Cid sees Ana's screen").await;
+    assert!(late.keyframe);
+    assert_eq!(late.sequence, first.sequence);
+    assert_eq!(encoded(), 0, "a new viewer costs no encode");
+
+    ticking.abort();
 }

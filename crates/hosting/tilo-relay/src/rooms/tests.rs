@@ -2355,6 +2355,191 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     relay.shutdown().await;
 }
 
+/// `member`'s change to `room`'s document closing every window it has in
+/// its namespace `salt`, as its device would send it.
+async fn windows_closed(rooms: &Rooms, room: &str, member: &DeviceCert, salt: u16) -> Vec<u8> {
+    let mut doc = {
+        let state = rooms.room(room).await.unwrap();
+        let governed = state.lock().await;
+        governed.peer().admitted_room().unwrap().clone()
+    };
+    let heads = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        &[],
+        salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .unwrap();
+    doc.commit();
+    postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
+        room: room.to_owned(),
+        changes: doc
+            .get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+    })
+    .unwrap()
+}
+
+/// Every entry the store under `root` archived.
+fn archived_bytes(root: &std::path::Path) -> Vec<Vec<u8>> {
+    let mut found = Vec::new();
+    let mut dirs = vec![
+        root.join(crate::store::RETAINED_DIR)
+            .join(crate::store::compaction::ARCHIVE_DIR),
+    ];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                found.push(bytes);
+            }
+        }
+    }
+    found
+}
+
+/// Whether `title` occurs in `frame`, a frame a device's replay delivers:
+/// in its bytes as encoded for the wire, or in any operation of a room
+/// document change it carries once decoded (a change's columns may be
+/// compressed, which a search of the raw bytes alone would miss).
+fn replayed_frame_carries(frame: &crate::transport::Envelope, title: &str) -> bool {
+    let needle = title.as_bytes();
+    let wire = crate::frame::encode(frame).unwrap();
+    if wire.windows(needle.len()).any(|window| window == needle) {
+        return true;
+    }
+    let crate::transport::Envelope::Delta { delta, .. } = frame else {
+        return false;
+    };
+    let Some(
+        crate::coedit::CoeditPayload::Checkpoint { body, .. }
+        | crate::coedit::CoeditPayload::RetainedDelta { body, .. },
+    ) = crate::coedit::CoeditPayload::decode(delta)
+    else {
+        return false;
+    };
+    let Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) =
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body)
+    else {
+        return false;
+    };
+    changes.iter().any(|bytes| {
+        automerge::Change::try_from(bytes.as_slice())
+            .is_ok_and(|change| format!("{:?}", change.decode()).contains(title))
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Withdrawal {
+    Closed,
+    LayoutTurnedPersonal,
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
+    const TITLES: [&str; 2] = ["ssh prod-db", "~/private/taxes"];
+    for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let relay = view_read_relay(dir.path(), &key, &cert).await;
+        let rooms = relay.rooms().unwrap().clone();
+        let created = rooms.create("Team").await.unwrap();
+        let room = created.room.clone();
+        let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+        let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+        rooms
+            .absorb(&room, a.device_public_key, &body)
+            .await
+            .unwrap();
+        assert_eq!(
+            titles_shared(&rooms, &room).await.len(),
+            2,
+            "{withdrawal:?}: the room shares A's terminals while they are open"
+        );
+
+        match withdrawal {
+            Withdrawal::Closed => {
+                let body = windows_closed(&rooms, &room, &a, a_salt).await;
+                rooms
+                    .absorb(&room, a.device_public_key, &body)
+                    .await
+                    .unwrap();
+            }
+            Withdrawal::LayoutTurnedPersonal => rooms
+                .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+                .await
+                .unwrap(),
+        }
+        assert!(
+            titles_shared(&rooms, &room).await.is_empty(),
+            "{withdrawal:?}: the room's current state no longer holds A's terminals"
+        );
+
+        let (c, c_cert) = guest_device();
+        door_join(&rooms, &cert, &room, (&c, &c_cert), 21).await;
+        // Whatever the room published is retained before C's replay is read.
+        rooms
+            .inner
+            .host
+            .records
+            .retained(created.workspace_id)
+            .await
+            .unwrap();
+        let workspace = rooms
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&created.workspace_id)
+            .cloned()
+            .expect("the relay hosts the room's workspace");
+        let (replayed, archived) = {
+            let runtime = workspace.lock().await;
+            (
+                crate::store::test_support::replay_frames(&runtime.store),
+                archived_bytes(runtime.store.root()),
+            )
+        };
+        assert!(
+            !replayed.is_empty(),
+            "{withdrawal:?}: a device joining the room is replayed the room"
+        );
+        for title in TITLES {
+            assert!(
+                !replayed
+                    .iter()
+                    .any(|frame| replayed_frame_carries(frame, title)),
+                "{withdrawal:?}: a member who joins later is replayed {title:?}, \
+                 a window withdrawn before they joined"
+            );
+            assert!(
+                archived.iter().any(|bytes| {
+                    crate::frame::decode(bytes.get(4..).unwrap_or_default())
+                        .is_ok_and(|frame| replayed_frame_carries(&frame, title))
+                }),
+                "{withdrawal:?}: the relay keeps {title:?} archived for those who held it"
+            );
+        }
+        drop(rooms);
+        relay.shutdown().await;
+    }
+}
+
 /// A room listed in the directory (open admission) whose governor chose no
 /// layout scope becomes personal when the relay opens it: the windows the
 /// governor committed of a member while it shared them are removed, its

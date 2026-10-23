@@ -352,7 +352,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
 
     // The supervisor hands each spawned agent to this thread, which drives
     // its participant (in a host, its own thread does).

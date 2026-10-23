@@ -67,6 +67,40 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AudioArea> {
     app.areas().find()
 }
 
+pub(crate) mod values;
+
+/// The switch that mutes the output.
+pub(crate) fn mute(cx: &PaneCx, on: bool) -> Item {
+    cx.row(t("sound-mute"))
+        .id("audio.mute")
+        .toggle_effect(&LocalState::new(on), effect(AudioEffect::SET_OUTPUT_MUTED))
+}
+
+/// The switch that plays both channels in each ear.
+pub(crate) fn mono(cx: &PaneCx, on: bool) -> Item {
+    cx.row(t("sound-mono"))
+        .id("audio.mono")
+        .toggle_effect(&LocalState::new(on), effect(AudioEffect::SET_MONO_OUTPUT))
+}
+
+/// The switch that gives calls an echo-cancelled microphone.
+pub(crate) fn echo_cancellation(cx: &PaneCx, on: bool) -> Item {
+    cx.row(t("sound-echo"))
+        .id("audio.echo_cancellation")
+        .toggle_effect(
+            &LocalState::new(on),
+            effect(AudioEffect::SET_ECHO_CANCELLATION),
+        )
+}
+
+/// The switch that lets system events make sounds.
+pub(crate) fn system_sounds(cx: &PaneCx, on: bool) -> Item {
+    cx.row(t("sound-system")).id("audio.system_sounds").toggle(
+        &LocalState::new(on),
+        AudioPrefs::paths().system_sounds.enabled,
+    )
+}
+
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
 /// device plugged in (a headset) or an application that just started playing
 /// appears without reopening Settings. Cheap enough for an actively-viewed
@@ -1054,6 +1088,21 @@ impl AudioRead {
 }
 
 impl AudioModel {
+    /// Whether the output can play both channels in each ear: a stereo
+    /// output, on a sound server that mixes it down.
+    fn offers_mono(&self) -> bool {
+        self.runtime_caps.mono_output
+            && self
+                .graph
+                .default_sink()
+                .is_some_and(|sink| sink.channels == 2)
+    }
+
+    /// Whether calls can have an echo-cancelled microphone.
+    fn offers_echo_cancellation(&self) -> bool {
+        self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty()
+    }
+
     /// The model over what `read` found on this device.
     fn from_read(cx: PaneCx, read: AudioRead) -> Self {
         let AudioRead {
@@ -1802,11 +1851,8 @@ impl AudioModel {
                 )),
             ));
         }
-        if self.runtime_caps.mono_output && stereo_sink.is_some() {
-            output_rows.push(self.cx.row(t("sound-mono")).id("audio.mono").toggle_effect(
-                &LocalState::new(self.prefs.get().mono_output),
-                effect(AudioEffect::SET_MONO_OUTPUT),
-            ));
+        if self.offers_mono() {
+            output_rows.push(mono(&self.cx, self.prefs.get().mono_output));
             output_rows.push(note(&t("sound-mono-caption")));
         }
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
@@ -1898,16 +1944,11 @@ impl AudioModel {
             ));
             input_rows.push(note(&t("sound-mic-caption")));
         }
-        if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
-            input_rows.push(
-                self.cx
-                    .row(t("sound-echo"))
-                    .id("audio.echo_cancellation")
-                    .toggle_effect(
-                        &LocalState::new(self.prefs.get().echo_cancellation),
-                        effect(AudioEffect::SET_ECHO_CANCELLATION),
-                    ),
-            );
+        if self.offers_echo_cancellation() {
+            input_rows.push(echo_cancellation(
+                &self.cx,
+                self.prefs.get().echo_cancellation,
+            ));
             input_rows.push(note(&t("sound-echo-caption")));
         }
         section(&t("sound-input"), rows(input_rows))
@@ -2158,15 +2199,7 @@ impl AudioModel {
             };
             return section(&t("sound-system"), rows(vec![reason]));
         }
-        let mut sound_rows = vec![
-            self.cx
-                .row(t("sound-system"))
-                .id("audio.system_sounds")
-                .toggle(
-                    &LocalState::new(sounds.enabled),
-                    crate::prefs::AudioPrefs::paths().system_sounds.enabled,
-                ),
-        ];
+        let mut sound_rows = vec![system_sounds(&self.cx, sounds.enabled)];
         if !sounds.enabled {
             return section(&t("sound-system"), rows(sound_rows));
         }

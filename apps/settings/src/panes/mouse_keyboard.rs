@@ -90,6 +90,32 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&InputArea> {
     app.areas().find()
 }
 
+pub(crate) mod values;
+
+/// A switch of the stored input section, as the page and search show it:
+/// labelled `$label`, explained by its description.
+macro_rules! input_switches {
+    ($($name:ident => $field:ident, $label:literal, $id:literal;)*) => {$(
+        pub(crate) fn $name(cx: &PaneCx, input: &Followed<InputPrefs>) -> Item {
+            cx.row(t($label))
+                .described(t(concat!($label, "-description")))
+                .id($id)
+                .of(input, InputPrefs::paths().$field)
+                .toggle()
+        }
+    )*};
+}
+
+input_switches! {
+    disable_while_typing => disable_while_typing, "input-disable-while-typing", "input.disable_while_typing";
+    disable_with_mouse => touchpad_disabled_on_external_mouse, "input-touchpad-disable-with-mouse", "input.touchpad_disabled_on_external_mouse";
+    gestures => touchpad_gestures, "input-touchpad-gestures", "input.touchpad_gestures";
+    left_handed => left_handed, "input-left-handed", "input.left_handed";
+    middle_click => middle_emulation, "input-middle-emulation", "input.middle_emulation";
+    tap_to_click => tap_to_click, "input-tap-to-click", "input.tap_click";
+    touchpad => touchpad_enabled, "input-touchpad-enabled", "input.touchpad_enabled";
+}
+
 /// The compose-key choice that turns it off.
 const COMPOSE_DISABLED: &str = "disabled";
 /// The Caps Lock choice that keeps it Caps Lock.
@@ -1263,6 +1289,18 @@ impl SourceCatalog {
         })
     }
 
+    /// The name of source `id`, where the catalogue was read; never reads
+    /// it.
+    fn label_if_read(&self, id: &str) -> Option<String> {
+        let (entries, _) = self.read.get()?;
+        Some(
+            entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .map_or_else(|| id.to_owned(), |entry| entry.label.clone()),
+        )
+    }
+
     pub(crate) fn entries(&self) -> &[CatalogEntry] {
         &self.read().0
     }
@@ -1693,18 +1731,8 @@ impl MouseKeyboardPane {
         section(
             &t("input-touchpad-title"),
             rows(vec![
-                self.field_row(
-                    "input-touchpad-enabled",
-                    "input-touchpad-enabled-description",
-                    InputPrefs::paths().touchpad_enabled,
-                    "input.touchpad_enabled",
-                ),
-                self.field_row(
-                    "input-touchpad-disable-with-mouse",
-                    "input-touchpad-disable-with-mouse-description",
-                    InputPrefs::paths().touchpad_disabled_on_external_mouse,
-                    "input.touchpad_disabled_on_external_mouse",
-                ),
+                touchpad(&self.cx, &self.input),
+                disable_with_mouse(&self.cx, &self.input),
                 self.cx
                     .row(t("input-touchpad-speed"))
                     .id("input.touchpad_pointer_speed")
@@ -1722,12 +1750,7 @@ impl MouseKeyboardPane {
                     InputPrefs::paths().touchpad_natural_scroll,
                     "input.touchpad_natural_scroll",
                 ),
-                self.field_row(
-                    "input-tap-to-click",
-                    "input-tap-to-click-description",
-                    InputPrefs::paths().tap_to_click,
-                    "input.tap_click",
-                ),
+                tap_to_click(&self.cx, &self.input),
                 self.field_row(
                     "input-tap-drag",
                     "input-tap-drag-description",
@@ -1740,18 +1763,8 @@ impl MouseKeyboardPane {
                     InputPrefs::paths().tap_drag_lock,
                     "input.tap_drag_lock",
                 ),
-                self.field_row(
-                    "input-disable-while-typing",
-                    "input-disable-while-typing-description",
-                    InputPrefs::paths().disable_while_typing,
-                    "input.disable_while_typing",
-                ),
-                self.field_row(
-                    "input-touchpad-gestures",
-                    "input-touchpad-gestures-description",
-                    InputPrefs::paths().touchpad_gestures,
-                    "input.touchpad_gestures",
-                ),
+                disable_while_typing(&self.cx, &self.input),
+                gestures(&self.cx, &self.input),
             ]),
         )
     }
@@ -1827,18 +1840,8 @@ impl MouseKeyboardPane {
         section(
             &t("input-pointer-title"),
             rows(vec![
-                self.field_row(
-                    "input-left-handed",
-                    "input-left-handed-description",
-                    InputPrefs::paths().left_handed,
-                    "input.left_handed",
-                ),
-                self.field_row(
-                    "input-middle-emulation",
-                    "input-middle-emulation-description",
-                    InputPrefs::paths().middle_emulation,
-                    "input.middle_emulation",
-                ),
+                left_handed(&self.cx, &self.input),
+                middle_click(&self.cx, &self.input),
                 self.cx
                     .row(t("input-acceleration"))
                     .id("input.accel_profile")

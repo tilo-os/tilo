@@ -295,7 +295,10 @@ containerfile="$repo/os/Containerfile"
 # The public content refresh's user tilo-public-content-refresh.service/.timer
 # ride the existing user-unit COPY instruction; they are the intentional
 # payload rows.
-expected_contract=39496e3f91f8538d08d2c1443ca415e5672a3367c082ac9c2743efb9643bfbea
+# NetworkManager's DNS cache (conf.d/25-tilo-dns-cache.conf, dnsmasq caching
+# lookups that a lossy Wi-Fi link would otherwise stall for glibc's 5 s
+# resolver timeout) is one payload row.
+expected_contract=3f36f63037484ae3780f9cd3ebc7a28cfd531586ce5a1f25f9782078adfd87fb
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

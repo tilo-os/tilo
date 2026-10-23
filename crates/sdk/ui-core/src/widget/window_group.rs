@@ -246,6 +246,15 @@ pub struct WindowGroup {
     /// Pushed down by the parent [`crate::widget::GroupRow`] before every
     /// `build_layout`; seeded to [`DEFAULT_STRIP_USABLE_PX`].
     strip_usable_px: f64,
+    /// No other window shares this one's run of the strip, so a default
+    /// width takes the strip ([`WindowWidth::resolve_in_strip`]). Pushed
+    /// down by the parent row with [`Self::strip_usable_px`].
+    alone: bool,
+    /// The width this window had before it was narrowed to share the
+    /// screen with a window that opened beside it
+    /// ([`Self::share_width`]): alone again, it goes back to it. Any other
+    /// change of width (the person's resize, a tier) forgets it.
+    width_before_share: Option<WindowWidth>,
     rect: Rect,
     /// An edge drag the parent row is carrying out on this window
     /// ([`super::edge_resize`]).
@@ -328,7 +337,7 @@ pub struct WindowGroup {
     built_active: Option<u64>,
     pending_maximize_change: Option<bool>,
     /// Per-mille, not px — a peer's output may be a different size.
-    pending_width_change: Option<u32>,
+    pending_width_change: Option<WindowWidth>,
     /// A search the window hands to the platform search
     /// ([`Self::take_pending_search_open`]).
     pending_search_open: Option<super::SearchHandoff>,
@@ -502,6 +511,8 @@ impl WindowGroup {
             hosts,
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
+            alone: false,
+            width_before_share: None,
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
@@ -776,19 +787,22 @@ impl WindowGroup {
     /// would stay where it stopped while the group kept asking for
     /// animation frames, so ask for one.
     pub fn frame_presented(&mut self) {
+        self.next_frame();
+    }
+
+    /// A new frame may step the width spring and rebuild a closing group
+    /// once more. Called when the group is drawn, and by a row for groups
+    /// it culled from a frame, so an off-screen transition still ends. A
+    /// step skipped since the last frame (a settle rebuild of the frame
+    /// that started the spring) asks for the rebuild that takes it, or the
+    /// spring would stay where it stopped.
+    pub fn next_frame(&mut self) {
         if self.width_step_skipped
             && !self.reduce_motion
             && self.width_spring.as_ref().is_some_and(|s| !s.is_settled())
         {
             self.style_dirty = true;
         }
-        self.next_frame();
-    }
-
-    /// A new frame may step the width spring and rebuild a closing group
-    /// once more. Called when the group is drawn, and by a row for groups
-    /// it culled from a frame, so an off-screen transition still ends.
-    pub fn next_frame(&mut self) {
         self.width_step_skipped = false;
         self.width_stepped = false;
         self.close_rebuild_taken = false;
@@ -1078,8 +1092,32 @@ impl WindowGroup {
         }
     }
 
+    /// Whether this window has its run of the strip to itself. Called by
+    /// [`crate::widget::GroupRow::build_layout`] with
+    /// [`Self::set_strip_usable_px`]; a placed window springs to the width
+    /// that follows, as when its width is set.
+    pub fn set_alone(&mut self, alone: bool) {
+        if self.alone == alone {
+            return;
+        }
+        let visual = self.layout_width_px();
+        self.alone = alone;
+        self.style_dirty = true;
+        if alone && let Some(before) = self.width_before_share.take() {
+            self.width = before;
+            self.stamp_pending_width_change();
+        }
+        if self.edge_drag.is_none()
+            && !self.is_closing()
+            && (self.rect.width() > 1.0 || self.width_spring.is_some())
+        {
+            self.retarget_width(visual, self.resolved_width_px());
+        }
+    }
+
     pub fn resolved_width_px(&self) -> f64 {
-        self.width.resolve(self.strip_usable_px)
+        self.width
+            .resolve_in_strip(self.strip_usable_px, self.alone)
     }
 
     /// Show (or, with `None`, hide) the grip on the edge of this window a
@@ -1179,7 +1217,8 @@ impl WindowGroup {
         };
         if commit {
             self.width = WindowWidth::from_px(drag.live_px, self.strip_usable_px);
-            self.pending_width_change = Some(self.width.permille());
+            self.width_before_share = None;
+            self.pending_width_change = Some(self.width);
         } else {
             self.width = drag.before;
         }
@@ -1209,6 +1248,17 @@ impl WindowGroup {
         }
     }
 
+    /// Narrow (or widen) this window to `w` to share the screen with a
+    /// window opened beside it, remembering the width it had so that it
+    /// gets it back once it is alone on the strip again.
+    pub fn share_width(&mut self, w: WindowWidth) {
+        let before = self.width_before_share.unwrap_or(self.width);
+        self.set_width(w);
+        if self.width != before {
+            self.width_before_share = Some(before);
+        }
+    }
+
     /// A committed width: springs from where the window is drawn. Edge
     /// drags set widths live instead ([`Self::begin_edge_drag`]).
     pub fn set_width(&mut self, w: WindowWidth) {
@@ -1221,6 +1271,7 @@ impl WindowGroup {
             other => self.width = other,
         }
         if self.width != before {
+            self.width_before_share = None;
             self.style_dirty = true;
             // A group that has never been placed is still being built;
             // snapping keeps constructors and first-layout fixtures from
@@ -1233,7 +1284,7 @@ impl WindowGroup {
         // must not later save the older one over it.
         if self
             .pending_width_change
-            .is_some_and(|pending| pending != self.width.permille())
+            .is_some_and(|pending| pending != self.width)
         {
             self.pending_width_change = None;
         }
@@ -1251,14 +1302,17 @@ impl WindowGroup {
     }
 
     pub fn stamp_pending_width_change(&mut self) {
-        self.pending_width_change = Some(self.width.permille());
+        self.pending_width_change = Some(self.width);
     }
     /// A width change the host has not yet persisted: until it does, its
     /// saved width is the old one and must not be reapplied over it.
     pub fn has_pending_width_change(&self) -> bool {
         self.pending_width_change.is_some()
     }
-    pub fn take_pending_width_change(&mut self) -> Option<u32> {
+    /// The width to persist, as the window holds it: a default width stays
+    /// the default (so it keeps taking the strip while alone), not the
+    /// fraction it resolves to.
+    pub fn take_pending_width_change(&mut self) -> Option<WindowWidth> {
         self.pending_width_change.take()
     }
 
@@ -1865,6 +1919,8 @@ impl WindowGroup {
             hosts: vec![(tab_id, host)],
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
+            alone: false,
+            width_before_share: None,
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
@@ -2357,6 +2413,11 @@ impl WindowGroup {
 
     pub fn drag_in_flight(&self) -> bool {
         self.bar.drag_in_flight()
+    }
+
+    /// The tab this group's bar is dragging, while it drags one.
+    pub fn dragged_tab(&self) -> Option<u64> {
+        self.bar.dragged_tab()
     }
 
     /// Whether one of this group's edges is being dragged to resize it.
@@ -5053,7 +5114,10 @@ mod tests {
                 WindowWidth::Fraction(944),
                 "the drag is stored as the share it landed on (1700/1800)",
             );
-            assert_eq!(g.take_pending_width_change(), Some(944));
+            assert_eq!(
+                g.take_pending_width_change(),
+                Some(WindowWidth::Fraction(944))
+            );
             assert_eq!(g.take_pending_width_change(), None, "drained once");
             assert_eq!(
                 settle,

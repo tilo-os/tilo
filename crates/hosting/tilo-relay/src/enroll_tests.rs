@@ -1701,23 +1701,23 @@ fn a_key_holder_answers_as_every_build_expects_and_an_introducer_with_its_certif
         device: &device,
         issuer: &issuer,
     };
-    let introduced = sign_response(payload(&root), introducer).unwrap();
+    let signed_by_introducer = sign_response(payload(&root), introducer).unwrap();
     let minted = token_from(user, &device);
     assert_eq!(
-        verify_response(&introduced, &minted).unwrap().1,
+        verify_response(&signed_by_introducer, &minted).unwrap().1,
         device.verifying_key().to_bytes()
     );
-    let finalized = make_finalized(&introduced, [3; 16], [7; 32], introducer).unwrap();
+    let finalized = make_finalized(&signed_by_introducer, [3; 16], [7; 32], introducer).unwrap();
     verify_finalized(
         &finalized,
-        &introduced,
+        &signed_by_introducer,
         [3; 16],
         [7; 32],
         device.verifying_key().to_bytes(),
     )
     .unwrap();
     assert!(
-        verify_response(&introduced, &token(&root)).is_err(),
+        verify_response(&signed_by_introducer, &token(&root)).is_err(),
         "an introducer answers only its own token"
     );
     let mut uncertified = issuer.clone();

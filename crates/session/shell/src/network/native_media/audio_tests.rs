@@ -19,6 +19,10 @@ use tilo_moq::client::{
 };
 use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
 
+use super::call_seal::{Sealing, open_audio, seal_audio};
+use channel_crypto::ChannelContentKeys;
+use collab_types::ChannelId;
+
 const RATE: f64 = 48_000.0;
 const FRAME: usize = 960;
 const CALL: &str = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0";
@@ -108,6 +112,13 @@ struct Side {
     client: Client,
     frequency: f64,
     packets: Vec<Vec<u8>>,
+    sealing: Sealing,
+}
+
+fn keys_of(channel: ChannelId, key: u8) -> ChannelContentKeys {
+    let wire = (1_u8, channel, 1_u64, vec![(1_u64, [key; 32])]);
+    ChannelContentKeys::from_bytes(&postcard::to_stdvec(&wire).expect("keys encode"))
+        .expect("keys decode")
 }
 fn start(relay: &LoopbackRelay, own: char, other: char, proof: &[u8]) -> Client {
     let scope = ConnectionScope {
@@ -143,6 +154,9 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
     let mut encoder = OpusEncoder::new().expect("native voice proof requires GStreamer opusenc");
     let seconds = 5;
     let relay = LoopbackRelay::start(Arc::new(TestIdentities)).expect("loopback relay");
+    let channel = collab_types::document_channel_id("so.tilo.chat", "room", "general");
+    let keys = keys_of(channel, 7);
+    let stranger = keys_of(channel, 9);
     let mut sides = Vec::new();
     for (own, other, proof, frequency, offset) in [
         ('a', 'b', &b"native-proof-a"[..], 700.0, 0),
@@ -164,6 +178,10 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             client: start(&relay, own, other, proof),
             frequency,
             packets,
+            sealing: Sealing {
+                keys: keys.clone(),
+                publication: namespace(own),
+            },
         });
     }
     for side in &sides {
@@ -188,6 +206,7 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
     }
     let frames = sides[0].packets.len().min(sides[1].packets.len());
     let mut sent_at = vec![vec![None; frames]; 2];
+    let side_packets: Vec<Vec<Vec<u8>>> = sides.iter().map(|side| side.packets.clone()).collect();
     let mut decoders = [
         OpusDecoder::new().expect("opusdec"),
         OpusDecoder::new().expect("opusdec"),
@@ -202,13 +221,17 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         if next < frames {
             for (index, side) in sides.iter().enumerate() {
                 let now = Instant::now();
+                let header = ((next * FRAME) as u64, FRAME as u16);
                 side.client
-                    .try_send(CapturedOpus {
-                        timestamp_48k: (next * FRAME) as u64,
-                        duration_samples: FRAME as u16,
-                        payload: side.packets[next].clone(),
-                        captured_at: now,
-                    })
+                    .try_send_sealed(
+                        CapturedOpus {
+                            timestamp_48k: header.0,
+                            duration_samples: header.1,
+                            payload: side.packets[next].clone(),
+                            captured_at: now,
+                        },
+                        |sequence, payload| seal_audio(&side.sealing, sequence, header, &payload),
+                    )
                     .expect("native publication");
                 sent_at[index][next] = Some(now);
             }
@@ -228,7 +251,15 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
                 } else {
                     -(at.duration_since(frame.received_at).as_secs_f64() * 1000.0)
                 };
-                let pcm = decoders[receiver].decode(&frame.object.payload);
+                let publication = &frame.publisher.namespace;
+                assert!(
+                    open_audio(&stranger, channel, publication, &frame.object).is_none(),
+                    "other keys open nothing"
+                );
+                assert_ne!(frame.object.payload, side_packets[sender][sequence]);
+                let opus = open_audio(&keys, channel, publication, &frame.object)
+                    .expect("the call's keys open each frame");
+                let pcm = decoders[receiver].decode(&opus);
                 received[receiver].push((sequence, latency, pcm));
             }
         }

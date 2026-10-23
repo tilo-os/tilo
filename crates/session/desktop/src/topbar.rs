@@ -1378,10 +1378,11 @@ impl TopBarChrome {
         let roster: &[tilo_desktop_model::Collaborator] =
             active_ws.map_or(&[], |workspace| workspace.collaborators.as_slice());
         // An invited-but-not-arrived peer doesn't count as present.
-        // This person is their own avatar beside the stack, never a face in it.
+        // This person is their own avatar beside the stack, never a face in
+        // it, and so are their other devices.
         let local = self.explicit_local_user.as_deref();
         let present = |c: &&tilo_desktop_model::Collaborator| {
-            c.id != "me" && Some(c.id.as_str()) != local && !c.invited
+            c.id != "me" && Some(c.id.as_str()) != local && !c.invited && !c.own_device
         };
         self.collaborator_initials.clear();
         self.collaborator_names.clear();
@@ -6904,7 +6905,7 @@ mod tests {
 
         // Invited but not redeemed: an avatar here would falsely claim
         // he's in the workspace.
-        let mut asked = empty;
+        let mut asked = empty.clone();
         asked.workspaces[0].collaborators = vec![
             tilo_desktop_model::Collaborator::new("peer@11895642303397647149", "Xaver")
                 .as_invited(),
@@ -6921,6 +6922,14 @@ mod tests {
             0,
             "and does not show up in the +N chip either",
         );
+
+        // Another device of this person is theirs, not a face in the stack.
+        let mut own = empty;
+        own.workspaces[0].collaborators =
+            vec![tilo_desktop_model::Collaborator::new("peer@7", "Orange Pi").as_own_device()];
+        let bar = TopBarChrome::from_tree(&own);
+        assert!(bar.collaborator_initials().is_empty());
+        assert_eq!(bar.collaborator_overflow(), 0);
     }
 }
 

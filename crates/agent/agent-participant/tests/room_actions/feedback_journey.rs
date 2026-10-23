@@ -89,7 +89,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let device = enrol(&identity, "temporary-browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&identity, &host, state.path()).await;
     let room = hosted
         .relay
@@ -245,7 +245,7 @@ async fn a_commenter_files_through_the_owner_and_cannot_triage() {
     );
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let room = hosted
         .relay

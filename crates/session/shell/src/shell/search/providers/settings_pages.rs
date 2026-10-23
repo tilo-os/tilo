@@ -515,6 +515,8 @@ mod switch_tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn every_setting_switch_flips_both_ways_and_its_row_shows_the_live_value() {
+        // The person's settings records, kept apart from every other test's.
+        let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
         let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
         let records = settings_store::SessionSettings::open(paths.clone()).expect("records");

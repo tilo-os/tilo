@@ -568,12 +568,7 @@ async fn stop_and_revocation_while_a_cold_app_is_waiting_deliver_no_action() {
                     result = &mut pending => panic!("answered before activation: {result:?}"),
                 }
                 if stop {
-                    f.person_command(WorkspaceTaskCommand::CancelForRun {
-                        task_id: f.task.clone(),
-                        run_epoch: 1,
-                        after_revision: 0,
-                    })
-                    .unwrap();
+                    f.stop();
                 } else {
                     permission(&f, false);
                 }
@@ -620,27 +615,28 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
             let run = delivered(&agent).await;
             let provider = tilo_actions::remote::workspace_provider(&room().to_string());
             let resource = format!("app.{WRITER}");
-            f.native
-                .authorize_action(
-                    &room().to_string(),
-                    "scribe",
-                    &crate::services::NativeTaskActionRequirement {
-                        binding: f
-                            .state
-                            .task_run_for(100, "scribe", run.run_id, &run.lease)
-                            .unwrap()
-                            .native,
-                        app: WRITER.into(),
-                        resource_kind: "applications.app".into(),
-                        resource: resource.clone(),
-                        action: "open".into(),
-                        need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
-                        consequential: false,
-                        attended: false,
-                        confirmed: false,
-                    },
-                )
-                .expect("canonical starter/task authority alone would permit this activation");
+            let issue_run = f.native.runs.lock().unwrap()[0].clone();
+            crate::services::TrackerRuns::authorize_action(
+                f.native.as_ref(),
+                &room().to_string(),
+                &issue_run,
+                &crate::services::NativeTaskActionRequirement {
+                    binding: f
+                        .state
+                        .task_run_for(100, "scribe", run.run_id, &run.lease)
+                        .unwrap()
+                        .native,
+                    app: WRITER.into(),
+                    resource_kind: "applications.app".into(),
+                    resource: resource.clone(),
+                    action: "open".into(),
+                    need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+                    consequential: false,
+                    attended: false,
+                    confirmed: false,
+                },
+            )
+            .expect("canonical starter/task authority alone would permit this activation");
             f.cap_connection();
             assert!(
                 invoke_provider(
@@ -1020,23 +1016,12 @@ fn ask_first_for_writer(f: &Fixture) {
     );
 }
 
-fn held_confirmation(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
-    f.native
-        .owner
-        .workspace_task_snapshot(room())
-        .unwrap()
-        .controls
-        .get(&f.task)
-        .and_then(|control| control.confirmation.clone())
-}
-
 /// A retained action whose grants ask first pauses at a reviewable draft
 /// before anything is launched, as a running application's action does; once
 /// the person confirms, the application is launched for exactly what they
 /// confirmed, opening it included.
 #[tokio::test(flavor = "current_thread")]
 async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() {
-    use tilo_desktop_model::{WorkspaceTaskConfirmationAnswer, WorkspaceTaskConfirmationState};
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let (f, mut launches) = fixture();
@@ -1065,20 +1050,18 @@ async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() 
                 "{waiting}"
             );
             assert!(launches.try_recv().is_err(), "nothing launched for a draft");
-            let asked = held_confirmation(&f).expect("the run is paused at a draft the person can review");
-            assert!(asked.is_waiting());
+            let asked = super::confirmation::ask(
+                &f,
+                (Document::KIND, "append-paragraph"),
+                arguments.as_object().unwrap(),
+            );
             assert_eq!(asked.app, WRITER);
-            f.person_command(WorkspaceTaskCommand::AnswerConfirmation {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                confirmation_id: asked.id.clone(),
-                answer: WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
-            })
-            .unwrap();
-            assert!(matches!(
-                held_confirmation(&f).unwrap().state,
-                WorkspaceTaskConfirmationState::Confirmed { .. }
-            ));
+            super::confirmation::answer(
+                &f,
+                crate::services::TrackerAnswer::Confirmed {
+                    edits: serde_json::Value::Null,
+                },
+            );
             let pending = invoke_provider_id(
                 &agent,
                 &run,

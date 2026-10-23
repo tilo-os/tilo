@@ -1299,19 +1299,6 @@ impl RoomActivityPane {
             .as_ref()
             .is_some_and(|broker| broker.agent_is_live_task_capable(room, agent))
     }
-    /// Dispatch a queued task in `room` to its assigned live agent, for
-    /// surfaces that hand work over directly.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no broker is attached or the assigned agent
-    /// cannot accept the task.
-    pub fn dispatch_task_in(&self, room: &str, task_id: &str) -> Result<u64, String> {
-        self.1
-            .as_ref()
-            .ok_or_else(|| "agent task dispatch is unavailable".to_string())?
-            .dispatch_task(room, task_id)
-    }
     pub fn apply_deep_link(&mut self, focus: crate::shell::chrome_state::ActivityFocus) {
         self.0
             .apply_deep_link(tilo_desktop::activity::ActivityDeepLink {

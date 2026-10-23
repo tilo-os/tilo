@@ -88,3 +88,45 @@ impl Preparation {
             .then_some((input.core.caret(), input.core.preedit_cursor()))
     }
 }
+
+/// A bound text read: the object, where its document stood, and the text
+/// the field showed after reading it. A sync that finds all of it as it was
+/// reads nothing. Edits not yet committed leave the heads alone but not
+/// the document's operations (an insertion adds one) or the text's length
+/// (a deletion shortens it).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Adopted {
+    obj: automerge::ObjId,
+    heads: Vec<automerge::ChangeHash>,
+    ops: u64,
+    length: usize,
+    shown: (usize, u64),
+}
+
+impl Adopted {
+    pub(super) fn of(state: &automerge::AutoCommit, obj: &automerge::ObjId, shown: &str) -> Self {
+        use automerge::ReadDoc as _;
+        Self {
+            obj: obj.clone(),
+            heads: state.committed_heads(),
+            ops: state.stats().num_ops,
+            length: state.length(obj),
+            shown: Self::fingerprint(shown),
+        }
+    }
+
+    /// This read, with the field showing `text` after it.
+    pub(super) fn showing(self, text: &str) -> Self {
+        Self {
+            shown: Self::fingerprint(text),
+            ..self
+        }
+    }
+
+    fn fingerprint(text: &str) -> (usize, u64) {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = rustc_hash::FxHasher::default();
+        text.hash(&mut hasher);
+        (text.len(), hasher.finish())
+    }
+}
