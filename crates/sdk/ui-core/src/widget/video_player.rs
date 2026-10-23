@@ -983,6 +983,14 @@ impl VideoPlayer {
 
     /// The controls Panel: floating over the bottom of the picture, one
     /// `spacing.s2` in from the sides and the bottom edge.
+    /// Where the transport stands over the picture, shown or not: what an
+    /// app's panel over the picture stops above, so it never covers play
+    /// and the scrubber.
+    #[must_use]
+    pub fn transport_rect(&self, theme: &Theme) -> Rect {
+        self.controls_bar_rect(theme)
+    }
+
     fn controls_bar_rect(&self, theme: &Theme) -> Rect {
         let height = if theme.text_scale > 1.25 {
             (CONTROLS_BAR_HEIGHT * f64::from(theme.text_scale)).min(96.0)
@@ -2427,10 +2435,12 @@ fn draw_fullscreen_glyph(
     color: Color,
     active: bool,
 ) {
+    // The corners, not the window's diagonal arrows: the window bar's
+    // maximize already wears those.
     let icon = if active {
-        Icon::Minimize2
+        Icon::Minimize
     } else {
-        Icon::Maximize2
+        Icon::Maximize
     };
     transport_glyph(scene, transform, r, icon, color);
 }
