@@ -25,6 +25,21 @@ impl ShellDriver {
         if SEEDED.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
+        // Flathub's cache ships each app's icon beside its metadata.
+        let icons = tilo_paths::home().map(|home| home.join(".cache/shots-flathub-icons"));
+        let icon_file = |id: &str| {
+            let dir = icons.as_ref()?;
+            let rgb = match id {
+                "com.spotify.Client" => [0x1d, 0xb9, 0x54],
+                "dev.alextren.Spot" => [0x6b, 0x4f, 0xd8],
+                "org.gimp.GIMP" => [0x7a, 0x5c, 0x3e],
+                _ => [0x3a, 0x3f, 0x47],
+            };
+            let path = dir.join(format!("{id}.png"));
+            std::fs::create_dir_all(dir).ok()?;
+            std::fs::write(&path, super::downloaded_scene::app_icon_png(rgb)?).ok()?;
+            Some(path)
+        };
         let flathub = |id: &str, name: &str, tagline: &str, category: &str| CatalogueEntry {
             id: id.to_owned(),
             source: Source::Flathub {
@@ -37,7 +52,7 @@ impl ShellDriver {
             description: String::new(),
             keywords: Vec::new(),
             category: Some(category.to_owned()),
-            icon_file: None,
+            icon_file: icon_file(id),
             icon_url: None,
             resource_types: Vec::new(),
             actions: Vec::new(),
