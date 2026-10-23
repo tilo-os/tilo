@@ -690,6 +690,16 @@ impl Session {
             self.video.applied = Some((carrier, revision));
         }
         self.take_own_camera();
+        for (source, publisher) in [
+            (tilo_moq::video::Source::Camera, &self.video.camera),
+            (tilo_moq::video::Source::Screen, &self.video.screen),
+        ] {
+            if let Some(publisher) = publisher
+                && client.wants_picture_keyframe(source)
+            {
+                publisher.ask_keyframe();
+            }
+        }
         self.receive_pictures(client);
     }
     /// The pictures of others the app shows, opened with the call's keys,

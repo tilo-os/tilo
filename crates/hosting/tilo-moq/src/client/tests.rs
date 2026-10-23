@@ -173,7 +173,7 @@ fn live_shared() -> Shared {
             reading_revision: 1,
             pictures_out: BTreeMap::new(),
             pictures_revision: 0,
-            window_keyframes: BTreeSet::new(),
+            keyframes: BTreeSet::new(),
             shown: BTreeMap::new(),
             pictures_in: BTreeMap::new(),
             counters: Counters::default(),
