@@ -2036,9 +2036,15 @@ fn a_typed_character_damages_the_composer_and_a_resize_the_window() {
         app.mark_drawn();
         damage
     };
+    // The room's avatars and attachments decode off the frame and repaint
+    // the timeline when they land: the frames measured come after every
+    // picture asked for has been drawn.
     for _ in 0..3 {
         frame(&mut app, w, h);
+        app.images
+            .block_until_idle(std::time::Duration::from_secs(30));
     }
+    assert!(app.images.is_idle(), "the room's pictures settled");
     let still = frame(&mut app, w, h);
     assert!(
         still.is_empty(),
