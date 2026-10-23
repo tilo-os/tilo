@@ -482,17 +482,24 @@ fn the_sort_control_orders_the_list() {
 #[test]
 fn the_list_selects_by_pointer_keyboard_and_semantics() {
     let mut harness = harness((1280, 800));
-    let (target, center) = {
+    let ((other, other_center), (target, center)) = {
         let app = &*harness;
         let bridge = app.shared.borrow();
-        let (id, rect) = bridge.painted[1];
-        (id, rect.center())
+        let row = |index: usize| {
+            let (id, rect) = bridge.painted[index];
+            (id, rect.center())
+        };
+        (row(2), row(1))
     };
-    harness.harness_mut().click_at(center.x, center.y);
-    assert_eq!(harness.selected, Some(target));
-    assert_eq!(harness.mode, Mode::View);
+    harness
+        .harness_mut()
+        .click_at(other_center.x, other_center.y);
+    assert_eq!(harness.selected, Some(other));
+    assert_eq!(harness.mode, Mode::View, "a single press only selects");
 
-    harness.harness_mut().click_at(center.x, center.y);
+    // A double press on another row selects it and opens it, however long
+    // a slow host takes to draw the frame between the two presses.
+    harness.harness_mut().double_click_at(center.x, center.y);
     let app = &*harness;
     assert_eq!(
         app.mode,
