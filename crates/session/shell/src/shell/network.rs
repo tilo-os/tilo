@@ -8978,19 +8978,6 @@ pub(crate) fn native_remote_answer_for_test(
     );
 }
 
-/// Give a fixture network the worker runtime a spawned one owns, so governor
-/// invocations are answered instead of refused as "the network is not running".
-#[cfg(test)]
-pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
-    network.runtime = Some(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("fixture network runtime"),
-    );
-}
-
 /// How an own-device invocation ended, from the other device's last word
 /// on it: its output, or why it failed there or never ran.
 fn own_device_outcome(
