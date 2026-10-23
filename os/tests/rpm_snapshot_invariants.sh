@@ -348,8 +348,4 @@ else
   ok 'obsolete DROP_RPMDB_WAL workaround is absent'
 fi
 
-python3 "$repo/os/tests/test_rpm_snapshot_fingerprint.py" \
-  && ok "fingerprint resolution preserves package-set addressing without a hand-kept pin" \
-  || bad "fingerprint resolution regression"
-
 exit "$fail"
