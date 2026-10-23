@@ -6,7 +6,7 @@
     clippy::unwrap_used,
     reason = "test assertions over checked fixtures, and the shared footage helper"
 )]
-#![cfg(all(feature = "gst", feature = "decode", unix))]
+#![cfg(all(feature = "helper", unix))]
 
 //! `tilo-video-render` end to end: the host lays out a job directory, the
 //! helper confines itself and renders into the file it was handed, and the
@@ -15,11 +15,11 @@
 use std::io::Read as _;
 use std::time::{Duration, Instant};
 
+use tilo_video_render::client::{self, Finished, JobDir};
+use tilo_video_render::proto::{Reply, Request};
 use video_editor::Project;
 use video_editor::agent_render::{AGENT_VIDEO_ENCODER, AgentExportSettings, AgentFrameSettings};
 use video_editor::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
-use video_editor::render_helper::client::{self, Finished, JobDir};
-use video_editor::render_helper::proto::{Reply, Request};
 
 #[allow(
     dead_code,
@@ -29,7 +29,7 @@ use video_editor::render_helper::proto::{Reply, Request};
 mod generated_clip {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/generated_clip.rs"
+        "/../../../apps/video-editor/tests/support/generated_clip.rs"
     ));
 }
 

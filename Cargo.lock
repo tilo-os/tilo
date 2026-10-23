@@ -16585,6 +16585,7 @@ dependencies = [
  "tilo-sandbox-core",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilo-video-render",
  "tokio",
  "tokio-rustls",
  "totp",
@@ -20237,6 +20238,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-video-render"
+version = "0.1.0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "serde",
+ "serial_test",
+ "tempfile",
+ "tilo-advisory-lock",
+ "tilo-app",
+ "tilo-sandbox",
+ "tilo-test-env",
+ "tracing",
+ "uuid",
+ "video-editor",
+ "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-vision"
 version = "0.1.0"
 dependencies = [
@@ -22116,14 +22137,12 @@ dependencies = [
  "tilo-files",
  "tilo-media",
  "tilo-paths",
- "tilo-sandbox",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-vello",
  "tilo-winit",
  "tracing",
  "uuid",
- "wire-frame",
  "workspace-hack",
 ]
 

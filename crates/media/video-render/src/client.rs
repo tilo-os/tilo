@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::proto::{FRAMING, PROTOCOL_VERSION, Reply, Request, SNAPSHOT, SOURCES};
+use crate::proto::{FRAMING, PROTOCOL_VERSION, Reply, Request, SNAPSHOT, SOURCES};
 
 /// The variables a helper inherits as they are: where fonts and caches are,
 /// where `GStreamer`'s plugin scanner is, the locale and logging. Never the

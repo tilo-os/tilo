@@ -3,7 +3,7 @@
 //! never in the record's app worker, and offered only where the helper is.
 //!
 //! The helper is found beside the test's build (`cargo build -p
-//! video-editor --bin tilo-video-render`) or at `$TILO_VIDEO_RENDER`; its
+//! tilo-video-render --bin tilo-video-render`) or at `$TILO_VIDEO_RENDER`; its
 //! encoder through `GST_PLUGIN_PATH` where it is not a system plugin.
 //! Without either, the rendering tests say so and return, unless
 //! `TILO_REQUIRE_MEDIA=1` demands them.
@@ -37,7 +37,7 @@ fn renders() -> bool {
     }
     assert!(
         std::env::var_os("TILO_REQUIRE_MEDIA").is_none(),
-        "the render helper is required: build video-editor's tilo-video-render"
+        "the render helper is required: build tilo-video-render"
     );
     eprintln!("skipped: no tilo-video-render beside the test or at $TILO_VIDEO_RENDER");
     false
