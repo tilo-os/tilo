@@ -785,9 +785,9 @@ fn preview_zoom_and_diagnostics_respond_to_input() {
 
         // Compile a broken source (an undefined variable is a fatal error that
         // stops layout), then feed the result exactly as the worker would.
-        let broken = compile::compile_source(&app.parts, "Body #undefined_var end.\n", PPP);
+        let broken = compile::compile_source(&app.parts, "Body #undefined_var end.\n");
         assert!(
-            broken.pages.is_empty(),
+            broken.document.is_none(),
             "the broken source produced no pages"
         );
         assert!(broken.error_count() >= 1, "and carries a blocking error");
@@ -810,15 +810,14 @@ fn preview_zoom_and_diagnostics_respond_to_input() {
         app.apply_output(compile::compile_source(
             &app.parts,
             "Body #undefined_var end.\n",
-            PPP,
         ));
         assert!(
             app.show_diagnostics,
             "an explicit Compile shows why it failed"
         );
 
-        let good = compile::compile_source(&app.parts, "= Fixed\n\nBody.\n", PPP);
-        assert!(!good.pages.is_empty());
+        let good = compile::compile_source(&app.parts, "= Fixed\n\nBody.\n");
+        assert!(good.document.is_some());
         app.apply_output(good);
         assert!(
             !app.preview.is_stale(),
@@ -923,7 +922,7 @@ fn an_empty_document_previews_as_empty_not_as_a_blank_page() {
     let (mut app, _doc) = fresh();
     app.layout_in(Rect::new(0.0, 0.0, 1400.0, 900.0));
     app.worker = None;
-    let written = compile::compile_source(&app.parts, "= Written\n", PPP);
+    let written = compile::compile_source(&app.parts, "= Written\n");
     app.request_compile("  \n");
     assert!(app.preview.is_blank());
     assert_eq!(app.preview.page_count(), 0);
