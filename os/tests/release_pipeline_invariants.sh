@@ -278,8 +278,9 @@ if t_has pin-kernel on main && [ "$(tcheck pin-kernel on)" = main ] \
    && grep -Fq '"buildType": "https://tilo.sh/buildtypes/kernel-rpm/v1"' "$kernel_script" \
    && t_has sign-kernel run 'bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64' \
    && t_has sign-kernel run 'bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64' \
-   && grep -Fq 'args=(--yes --type slsaprovenance1 --predicate "$predicate"' "$publish/oci-attest.sh" \
-   && grep -Fq 'cosign verify-attestation --key "$verify_key" --type slsaprovenance1' "$publish/oci-publish.sh" \
+   && grep -Fq 'type=${4:-slsaprovenance1}' "$publish/oci-attest.sh" \
+   && grep -Fq 'args=(--yes --type "$type" --predicate "$predicate"' "$publish/oci-attest.sh" \
+   && grep -Fq 'cosign verify-attestation --key "$verify_key" --type "$type"' "$publish/oci-publish.sh" \
    && grep -Fq 'verify_key=$repo_root/keys/cosign.pub' "$publish/oci-publish.sh" \
    && grep -Fq 'ExclusiveArch:  x86_64 aarch64' "$repo/os/kernel/tilo-kernel-payload.spec"; then
   ok 'kernel publication builds, signs, attests, and reports native x86-64 and ARM64 payloads'

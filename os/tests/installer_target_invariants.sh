@@ -344,9 +344,10 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq '"$signer" sign-efi' "$prediction_signer" \
    && grep -Fq '"$signer" export-efi-cert' "$prediction_signer" \
    && grep -Fq 'TILO_EFI_SIGNING_CERT_SHA256' "$prediction_signer" \
-   && grep -Fq 'verify-efi /work/efi-signing.crt' "$prediction_signer" \
+   && grep -Fq 'image_crypto verify-efi "$work/efi-signing.crt"' "$prediction_signer" \
    && grep -Fq 'verify-authenticode-envelope.py' "$prediction_signer" \
-   && grep -Fq 'sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"' "$prediction_signer" \
+   && grep -Fq '"$signer" sign-sha256-rsa-pkcs1 "$work/target.efi.signed" "$work/target.uki.sig"' "$prediction_signer" \
+   && grep -Fq 'sign-target-prediction.sh sign "$out/boot"' "$repo_root/tools/ci/publish/os-release.sh" \
    && grep -Fq 'broker signed the prediction with a key other than Tilo' "$prediction_signer" \
    && ! grep -Eq 'PRIVATE[_-]?KEY|private-key' "$prediction_signer" \
    && grep -Fq 'TILO_REQUIRE_PCR_PREDICTION' "$repo_root/os/dev/build-custom-installer.sh" \

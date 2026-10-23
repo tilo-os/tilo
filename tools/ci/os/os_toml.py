@@ -6,7 +6,9 @@
 Per architecture: the assembler (the image the actions run in), the base, the OS builder
 and side builds, the compiles (in the OS builder, with t's compiler cache and warm build
 directories: the image's, and the dev image's components), one check per layer, and the
-composition, which is `os-image-<arch>`.
+composition, which is `os-image-<arch>`; then the release image's compile (thin LTO), its
+`release` layers and its composition, `os-release-image-<arch>` (tools/ci/publish/os-release.sh
+seals, signs and publishes it).
 
 Each layer check is keyed by exactly what its piece reads: its Containerfile and the
 helper stages it builds on, every file those COPY or bind-mount, the tools that build
@@ -186,22 +188,26 @@ def block():
                 ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
                 ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
                 ("default", "false")]))
-        out.append(check([
-            ("name", f'"os-compile-{arch}"'),
-            ("image", BUILDER_IMAGE.format(arch=arch)),
-            ("run", f'"bash os/image/compile.sh /target/os/{arch}/compiled"'),
-            ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
-            ("needs", arr(["os-assets", "test-assets"])),
-            # The development image's compile: no LTO and no line tables, as Build / OS dev did.
-            # A build to ship, not a lint gate: warnings stay warnings, as in every image build.
-            ("env", '{ TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", '
-                    f'TILO_TEST_ASSET_SEED = "{TEST_ASSET_SEED}", '
-                    'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '
-                    'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
-            ("outputs", arr([f"/target/os/{arch}/compiled/**"])),
-            ("requires", arr([node])),
-            ("cost", '"heavy"'), ("requirement", requirement(16, "32GiB")), ("timeout_secs", "10800"),
-            ("default", "false")]))
+        # The development image's compile: no LTO and no line tables. A build to ship, not a
+        # lint gate: warnings stay warnings, as in every image build. A release's: thin LTO,
+        # whose links of the large binaries take up to 8 GiB each, so 8 at a time.
+        for suffix, lto, debuginfo, memory, jobs in (("", "off", "0", "32GiB", ""),
+                                                     ("-release", "thin", "line-tables-only", "64GiB", "8")):
+            out.append(check([
+                ("name", f'"os-compile{suffix}-{arch}"'),
+                ("image", BUILDER_IMAGE.format(arch=arch)),
+                ("run", f'"bash os/image/compile.sh /target/os/{arch}/compiled{suffix}"'),
+                ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
+                ("needs", arr(["os-assets", "test-assets"])),
+                ("env", f'{{ TILO_RUST_LTO = "{lto}", TILO_RUST_DEBUGINFO = "{debuginfo}", TILO_WITH_BROWSER = "1", '
+                        + (f'TILO_CARGO_BUILD_JOBS = "{jobs}", ' if jobs else "")
+                        + f'TILO_TEST_ASSET_SEED = "{TEST_ASSET_SEED}", '
+                        'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '
+                        'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
+                ("outputs", arr([f"/target/os/{arch}/compiled{suffix}/**"])),
+                ("requires", arr([node])),
+                ("cost", '"heavy"'), ("requirement", requirement(16, memory)), ("timeout_secs", "10800"),
+                ("default", "false")]))
         out.append(check([
             ("name", f'"os-compile-dev-{arch}"'),
             ("image", BUILDER_IMAGE.format(arch=arch)),
@@ -217,54 +223,74 @@ def block():
             ("requires", arr([node])),
             ("cost", '"heavy"'), ("requirement", requirement(16, "32GiB")), ("timeout_secs", "10800"),
             ("default", "false")]))
-        below = []
-        for l in plan["layer"]:
-            name = l["name"]
-            given = set(given_stages(l))
-            if not l.get("scratch"):
-                given.add(pieces.parent(name))
-            files = sorted(set(tools + piece_files(name, given) + pieces.inputs(name, given)))
-            needs = [f"os-base-{arch}", "os-assets", "signing-tools", f"image-rpms-{arch}"] + below
-            for g in l.get("given", []):
-                if g == "compiled":
-                    needs.append(f"os-compile-{arch}")
+        # The development image's layers, then the release image's (TILO_OS_FLAVOUR=release):
+        # its `release` layers again, over the development image's below them.
+        layer = {}
+        for flavour in ("dev", "release"):
+            below = []
+            for l in plan["layer"]:
+                name = l["name"]
+                if flavour == "release" and not l.get("release"):
+                    if any(x.endswith(f"-release-{arch}") for x in below):
+                        sys.exit(f"os/image/layers.toml: {name} is above a release layer, so must be one")
+                    below.append(layer[name])
                     continue
-                what = g.split(":", 1)[0]
-                if any(i["name"] == what for i in plan.get("image", [])):
-                    needs.append(f"os-{what}-{arch}")
-                else:
-                    needs.append(f"os-layer-{what}-{arch}")
+                suffix, dirs, compiled = (("", "layers", "os-compile") if flavour == "dev"
+                                          else ("-release", "release-layers", "os-compile-release"))
+                given = set(given_stages(l))
+                if not l.get("scratch"):
+                    given.add(pieces.parent(name))
+                files = sorted(set(tools + piece_files(name, given) + pieces.inputs(name, given)
+                                   + (["os/publication.env"] if flavour == "release" else [])))
+                needs = [f"os-base-{arch}", "os-assets", "signing-tools", f"image-rpms-{arch}"] + below
+                for g in l.get("given", []):
+                    if g == "compiled":
+                        needs.append(f"{compiled}-{arch}")
+                        continue
+                    what = g.split(":", 1)[0]
+                    if any(i["name"] == what for i in plan.get("image", [])):
+                        needs.append(f"os-{what}-{arch}")
+                    else:
+                        needs.append(layer[what])
+                fields = [
+                    ("name", f'"os-layer-{name}{suffix}-{arch}"'),
+                    ("image", ASSEMBLER_IMAGE.format(arch=arch)),
+                    ("run", f'"bash os/image/build-layer.sh layer {name} {arch} /target/os/{arch}/{dirs}/{name}"'),
+                    ("inputs", arr(files)),
+                    ("needs", arr(list(dict.fromkeys(needs)))),
+                    ("outputs", arr([f"/target/os/{arch}/{dirs}/{name}/**"]))]
+                if flavour == "release":
+                    fields.append(("env", '{ TILO_OS_FLAVOUR = "release" }'))
+                out.append(check(fields + [
+                    ("git", "true"),
+                    ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
+                    ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
+                    ("default", "false")]))
+                layer[name] = f"os-layer-{name}{suffix}-{arch}"
+                below.append(layer[name])
+            name, env = (("os-image", []) if flavour == "dev"
+                         else ("os-release-image", [("env", '{ TILO_OS_FLAVOUR = "release" }')]))
             out.append(check([
-                ("name", f'"os-layer-{name}-{arch}"'),
-                ("image", ASSEMBLER_IMAGE.format(arch=arch)),
-                ("run", f'"bash os/image/build-layer.sh layer {name} {arch} /target/os/{arch}/layers/{name}"'),
-                ("inputs", arr(files)),
-                ("needs", arr(list(dict.fromkeys(needs)))),
-                ("outputs", arr([f"/target/os/{arch}/layers/{name}/**"])),
-                ("git", "true"),
-                ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
-                ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
-                ("default", "false")]))
-            below.append(f"os-layer-{name}-{arch}")
-        out.append(check([
-            ("name", f'"os-image-{arch}"'),
-            ("run", f'"bash os/image/build-layer.sh compose {arch} /target/os/{arch}/image"'),
-            ("inputs", arr(["os/image/build-layer.sh", "os/image/layers.toml", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh"])),
-            ("needs", arr([f"os-base-{arch}"] + below)),
-            ("outputs", arr([f"/target/os/{arch}/image/**"])),
-            ("requires", arr(["arch=any"])),
-            ("cost", '"minutes"'), ("requirement", requirement(1, "2GiB")), ("default", "false")]))
-        # The composed image's /usr against its budget: every check that ships or boots
-        # os-image-<arch> needs this one, so an image over budget goes nowhere.
-        out.append(check([
-            ("name", f'"os-image-size-{arch}"'),
-            ("run", f'"bash tools/ci/os/image-size.sh production-{arch} /target/os/{arch}/image/oci '
-                    f'/target/os/{arch}/size"'),
-            ("inputs", arr(IMAGE_SIZE_TOOLS)),
-            ("needs", arr([f"os-image-{arch}"])),
-            ("outputs", arr([f"/target/os/{arch}/size/**"])),
-            ("requires", arr(["arch=any"])),
-            ("cost", '"minutes"'), ("requirement", requirement(2, "4GiB")), ("default", "false")]))
+                ("name", f'"{name}-{arch}"'),
+                ("run", f'"bash os/image/build-layer.sh compose {arch} /target/os/{arch}/{name.removeprefix("os-")}"'),
+                ("inputs", arr(["os/image/build-layer.sh", "os/image/layers.toml", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh"])),
+                ("needs", arr([f"os-base-{arch}"] + below)),
+                ("outputs", arr([f"/target/os/{arch}/{name.removeprefix('os-')}/**"])),
+                *env,
+                ("requires", arr(["arch=any"])),
+                ("cost", '"minutes"'), ("requirement", requirement(1, "2GiB")), ("default", "false")]))
+            # The composed image's /usr against its budget: every check that ships or boots
+            # the image needs this one, so an image over budget goes nowhere.
+            size = "size" if flavour == "dev" else "release-size"
+            out.append(check([
+                ("name", f'"{name}-size-{arch}"'),
+                ("run", f'"bash tools/ci/os/image-size.sh production-{arch} /target/os/{arch}/{name.removeprefix("os-")}/oci '
+                        f'/target/os/{arch}/{size}"'),
+                ("inputs", arr(IMAGE_SIZE_TOOLS)),
+                ("needs", arr([f"{name}-{arch}"])),
+                ("outputs", arr([f"/target/os/{arch}/{size}/**"])),
+                ("requires", arr(["arch=any"])),
+                ("cost", '"minutes"'), ("requirement", requirement(2, "4GiB")), ("default", "false")]))
     return "\n".join(out)
 
 

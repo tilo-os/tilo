@@ -248,7 +248,7 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    KERNEL_RPMS_REF="kernel@sha256:$hex" TILO_APP_COLLECTION_SHA256="$hex" \
    TILO_DESKTOP_PAYLOAD_SHA256="$hex" TILO_SBOM_SHA256="$hex" \
-   GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
+   SOURCE_REVISION="$hex" \
    "$provenance" "$tmp/provenance.json" \
    && jq -e '.buildDefinition.externalParameters.generation == 42' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
@@ -266,7 +266,7 @@ kernel_refs='[{"architecture":"x86_64","ref":"registry.tilo.so/tilo/tilo-kernel@
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    TILO_KERNEL_REFS_JSON="$kernel_refs" TILO_RELEASE_CHILDREN_JSON="$children" \
-   GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
+   SOURCE_REVISION="$hex" \
    "$provenance" "$tmp/index-provenance.json" \
    && jq -e --argjson children "$children" \
      '.buildDefinition.externalParameters.children == $children' \
@@ -281,7 +281,7 @@ fi
 
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF='base:latest' RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" SOURCE_REVISION="$hex" \
    "$provenance" "$tmp/bad.json" >/dev/null 2>&1; then
   bad 'provenance accepted an unpinned build dependency'
 else
@@ -291,7 +291,7 @@ fi
 firmware="code.tilo.so/tilo/lenovo-firmware@sha256:$hex"
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" SOURCE_REVISION="$hex" \
    TILO_HARDWARE_PROFILE=lenovo-83ed TILO_RELEASE_ARCHITECTURE=aarch64 \
    TILO_FIRMWARE_CANDIDATE="$firmware" \
    TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
@@ -304,7 +304,7 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
    ' "$tmp/lenovo-provenance.json" >/dev/null \
    && ! (RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
          BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-         KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+         KERNEL_RPMS_REF="kernel@sha256:$hex" SOURCE_REVISION="$hex" \
          TILO_HARDWARE_PROFILE=generic TILO_FIRMWARE_CANDIDATE="$firmware" \
          "$provenance" "$tmp/bad-generic-firmware.json" >/dev/null 2>&1); then
   ok 'Lenovo release provenance binds reviewed firmware and generic releases reject it'
@@ -316,7 +316,7 @@ fex="registry.tilo.so/tilo/tilo-fex-payload-candidate@sha256:$hex"
 guest="registry.tilo.so/tilo/tilo-development-windows-guest@sha256:$(printf 'b%.0s' {1..64})"
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" SOURCE_REVISION="$hex" \
    TILO_HARDWARE_PROFILE=lenovo-83ed TILO_RELEASE_ARCHITECTURE=aarch64 \
    TILO_FIRMWARE_CANDIDATE="$firmware" TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
    TILO_WINDOWS_PROVIDER_INPUT_CLASS=development-only \
@@ -332,7 +332,7 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
    ' "$tmp/lenovo-windows-provenance.json" >/dev/null \
    && ! (RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
          BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-         KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+         KERNEL_RPMS_REF="kernel@sha256:$hex" SOURCE_REVISION="$hex" \
          TILO_HARDWARE_PROFILE=lenovo-83ed TILO_RELEASE_ARCHITECTURE=aarch64 \
          TILO_FIRMWARE_CANDIDATE="$firmware" TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
          TILO_WINDOWS_PROVIDER_INPUT_CLASS=development-only \

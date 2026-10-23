@@ -248,7 +248,9 @@ has "$rpms_provenance" '"internalParameters": {"expectedReleaseDigest": digest}'
   'snapshot provenance binds the index digest'
 has_t sign-rpms run 'bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index' \
   'snapshot signing attests the index provenance'
-has "$repo/tools/ci/publish/oci-attest.sh" 'args=(--yes --type slsaprovenance1 --predicate "$predicate"' \
+has "$repo/tools/ci/publish/oci-attest.sh" 'type=${4:-slsaprovenance1}' \
+  'snapshot provenance is attested as SLSA provenance'
+has "$repo/tools/ci/publish/oci-attest.sh" 'args=(--yes --type "$type" --predicate "$predicate"' \
   'snapshot publishes signed SLSA provenance'
 has "$repo/tools/ci/publish/oci-attest.sh" 'die "the provenance predicate is not for $expected"' \
   'attestation refuses a predicate for another digest'

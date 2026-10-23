@@ -87,6 +87,38 @@ pinned_assets() {
   printf '%s' "$repo_root/os/external-assets/cache"
 }
 
+# Credentials of the AWS role $1 in region $2, exported as AWS_ACCESS_KEY_ID,
+# AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN: STS exchanges t's identity token for them
+# (`id_token = ["sts.amazonaws.com"]`), and the role's trust policy decides which references may
+# have them. They last minutes, and no key is stored. The token goes in the request body from a
+# file, never on a command line.
+aws_role() {
+  local role=$1 region=$2 sts
+  sts=$(mktemp -d "$scratch/sts.XXXXXX")
+  (umask 077 && id_token sts.amazonaws.com > "$sts/token")
+  curl --fail-with-body --silent --show-error --proto '=https' "https://sts.$region.amazonaws.com/" \
+    --data-urlencode Action=AssumeRoleWithWebIdentity --data-urlencode Version=2011-06-15 \
+    --data-urlencode "RoleArn=$role" --data-urlencode DurationSeconds=900 \
+    --data-urlencode "RoleSessionName=tilo-t-$(printf '%.12s' "${T_COMMIT:-local}")" \
+    --data-urlencode "WebIdentityToken@$sts/token" > "$sts/reply.xml" \
+    || die "STS refused the identity token: $(sed -n 's:.*<Message>\(.*\)</Message>.*:\1:p' "$sts/reply.xml")"
+  unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_SECURITY_TOKEN
+  AWS_ACCESS_KEY_ID=$(tr -d '\n' < "$sts/reply.xml" | sed -n 's:.*<AccessKeyId>\([^<]*\)</AccessKeyId>.*:\1:p')
+  AWS_SECRET_ACCESS_KEY=$(tr -d '\n' < "$sts/reply.xml" | sed -n 's:.*<SecretAccessKey>\([^<]*\)</SecretAccessKey>.*:\1:p')
+  AWS_SESSION_TOKEN=$(tr -d '\n' < "$sts/reply.xml" | sed -n 's:.*<SessionToken>\([^<]*\)</SessionToken>.*:\1:p')
+  rm -rf -- "$sts"
+  [[ -n $AWS_ACCESS_KEY_ID && -n $AWS_SECRET_ACCESS_KEY && -n $AWS_SESSION_TOKEN ]] || die 'STS answered without credentials'
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION=$region
+}
+
+# A value of os/publication.env, the public configuration of OS publication.
+publication() {
+  local value
+  value=$(sed -n "s/^$1=//p" "$repo_root/os/publication.env")
+  [[ -n $value ]] || die "os/publication.env sets no $1"
+  printf '%s' "$value"
+}
+
 # The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH. It comes
 # from the signing-tools check's outputs, which every check that runs this needs.
 use_cosign() {
