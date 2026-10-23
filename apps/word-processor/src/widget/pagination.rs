@@ -87,6 +87,16 @@ pub(super) fn page_stack_to_flow(stack: f64, letter_h: f64, margins: Edges) -> f
     (stack / pitch).floor() * band_h + (stack % pitch - margins.top).clamp(0.0, band_h)
 }
 
+/// How a page `page_w` wide shows the document's margins: in proportion
+/// on a narrow or enlarged editing sheet, as they are on a print page.
+pub(super) fn margin_scale(page_w: f64, mobile: bool, accessible: bool) -> f64 {
+    if mobile || accessible {
+        (page_w / MAX_PAGE_W).min(1.0)
+    } else {
+        1.0
+    }
+}
+
 pub(super) fn responsive_page_geometry(
     canvas_left: f64,
     canvas_right: f64,
@@ -105,7 +115,7 @@ pub(super) fn responsive_page_geometry(
     if !mobile && !accessible {
         return (page_w, margins);
     }
-    let scale = (page_w / MAX_PAGE_W).min(1.0);
+    let scale = margin_scale(page_w, mobile, accessible);
     (
         page_w,
         Edges {

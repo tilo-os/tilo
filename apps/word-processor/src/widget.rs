@@ -1107,6 +1107,10 @@ pub struct WordProcessorWidget {
     /// The page rect in screen space (post-scroll), cached each frame so the
     /// event handler can hit-test layout guides against it.
     page_rect: Rect,
+    /// How the page shows the document's margins ([`pagination::margin_scale`]),
+    /// cached each frame with the page rect so the ruler draws and drags them
+    /// where the text stands.
+    page_margin_scale: f64,
     /// The bottom layout bar's clickable chips: `(mode, rect)`.
     layout_chips: Vec<(LayoutMode, Rect)>,
     layout_bar_height: f64,
@@ -1403,6 +1407,7 @@ impl WordProcessorWidget {
             },
             ruler: Ruler::default(),
             page_rect: Rect::ZERO,
+            page_margin_scale: 1.0,
             layout_chips: Vec::new(),
             layout_bar_height: 0.0,
             zoom_viewport: Rect::ZERO,

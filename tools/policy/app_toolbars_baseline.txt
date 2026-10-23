@@ -30,6 +30,5 @@ toolbar-band 1 apps/typst-editor/src/app.rs
 toolbar-band 1 apps/browser/src/browser_widget.rs
 # Not a toolbar row, only the band's hairline borrowed: Writer's ruler wants
 # a divider of its own instead.
-toolbar-band 1 apps/word-processor/src/ruler.rs
 window-header 1 apps/maps/src/app.rs
 window-header 1 apps/typst-editor/src/app.rs

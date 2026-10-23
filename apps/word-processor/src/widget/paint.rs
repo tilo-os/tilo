@@ -142,6 +142,8 @@ impl WordProcessorWidget {
         // unscaled canvas. Scaling about the canvas centre then keeps both page
         // edges visible in auto-fit mode instead of pinning the left edge and
         // clipping the right.
+        self.page_margin_scale =
+            super::pagination::margin_scale(page_w, mobile_page, accessible_page);
         let page_x = f64::midpoint(canvas.x0, page_right) - page_w / 2.0;
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
