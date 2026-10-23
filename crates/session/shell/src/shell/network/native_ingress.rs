@@ -167,7 +167,7 @@ impl ShellNetwork {
         tree.desktop
             .workspaces
             .iter()
-            .any(|slot| room_topic_id(slot.room()) == ws && tree.requires_native_owner(slot.room()))
+            .any(|slot| room_topic_id(slot.room()) == ws)
     }
     /// Take what the room's governor never admits into its replica: channel
     /// governance, and in a room whose records are sealed channels, a
@@ -364,10 +364,7 @@ impl ShellNetwork {
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).
     pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {
-        {
-            let tree = self.tree.read();
-            tree.requires_native_owner(room) && !tree.commits_native_documents(room)
-        }
+        !self.tree.read().commits_native_documents(room)
     }
     /// Whether `input` is admitted together with the inputs of its session
     /// queued right before and after it: an app write the owner commits.

@@ -20,13 +20,12 @@ mod governor_actions;
 mod home_peer_reader;
 mod hosted_sites;
 mod hosted_topology;
+mod room_rosters;
 mod room_window_carriers;
 mod room_window_views;
 pub use room_window_views::RoomWindowViewer;
 #[cfg(test)]
 mod device_certification_tests;
-#[cfg(test)]
-mod hostless_live_tests;
 #[cfg(test)]
 mod idle_quiet_tests;
 mod input_declines;
@@ -73,8 +72,6 @@ pub(crate) mod device_approvals;
 pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
-#[cfg(test)]
-mod governor_succession_tests;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
@@ -1392,6 +1389,8 @@ pub struct ShellNetwork {
     /// Topics already subscribed in the actor. Avoids sending a Join command on
     /// every app delta while still allowing rooms accepted after startup.
     joined_topics: Mutex<std::collections::HashSet<u64>>,
+    /// The room rosters last told to the actor ([`Self::send_room_rosters`]).
+    room_rosters_sent: Mutex<room_rosters::Sent>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
     /// Populated only after `IdentityHello` admission succeeds.
     workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
@@ -2192,6 +2191,7 @@ impl ShellNetwork {
             event_rx: Mutex::new(event_rx),
             event_wake,
             joined_topics: Mutex::new(std::collections::HashSet::new()),
+            room_rosters_sent: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
@@ -4935,8 +4935,7 @@ impl ShellNetwork {
             .ok_or_else(missing)?;
         // The same decision the invite composer and the palette are gated
         // on: who may invite, and which authority signs it.
-        let route =
-            crate::shell::invite_policy::may_issue_invitation(&tree, &ws, &local_user, governor);
+        let route = crate::shell::invite_policy::may_issue_invitation(&ws, &local_user, governor);
         drop(tree);
         let terms = relay_rooms::RelayInvitation {
             role,
@@ -4951,11 +4950,6 @@ impl ShellNetwork {
                     .ok_or("this workspace's relay is not reachable yet; try again in a moment")?;
                 self.issue_relay_invitation(&held, &terms)
             }
-            InviteRoute::ShareOnRelay => self
-                .share_on_home_relay(local, ws.room(), &ws.name, &terms)?
-                // Every invitation is the room's host's own: with no host to
-                // share the room on, there is nobody to issue one.
-                .ok_or_else(|| "this workspace has no host to invite through yet".to_string()),
             InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
                 Err(route.refusal().unwrap_or_default().into())
             }
@@ -6656,6 +6650,7 @@ impl ShellNetwork {
         steps.time("network/governance", || {
             self.send_governance_requests_off_loop();
         });
+        steps.time("network/room-rosters", || self.send_room_rosters());
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -8119,6 +8114,7 @@ pub(crate) fn shell_network_for_test(
         event_rx: Mutex::new(event_rx),
         event_wake: Arc::default(),
         joined_topics: Mutex::new(joined_topics),
+        room_rosters_sent: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,

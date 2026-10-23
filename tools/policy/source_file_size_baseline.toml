@@ -166,7 +166,7 @@
 "crates/session/shell/src/shell/quick_settings/root.rs" = 4000
 "crates/session/shell/src/shell/remote_audio.rs" = 3500
 "crates/session/shell/src/shell/search/mod.rs" = 4000
-"crates/session/shell/src/shell/search/providers/actions.rs" = 10000
+"crates/session/shell/src/shell/search/providers/actions.rs" = 9500
 "crates/session/shell/src/shell/search/providers/files.rs" = 3500
 "crates/session/shell/src/shell/search/providers/live_app_actions.rs" = 6500
 "crates/session/shell/src/shell/state.rs" = 6500

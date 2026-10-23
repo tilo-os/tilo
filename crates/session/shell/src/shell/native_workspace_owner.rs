@@ -310,10 +310,8 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
 /// Take the workspace that is `room` off this device, with the room: a room
 /// the native owner holds, or is joining, leaves the owner's record in the
 /// same publication that takes its workspace off ([`Change::Released`]), so
-/// the two never part; a room of the shell's own engine is its workspace.
-/// Answers the workspace's place and value when it can be put back (an
-/// undo): only a room of the shell's own engine can, since a host's room is
-/// joined again through its host.
+/// the two never part. A room is joined again through its host, never put
+/// back here.
 ///
 /// # Errors
 ///
@@ -322,28 +320,14 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
 pub(crate) fn release_workspace_room(
     tree: &WorkspaceTreeHandle,
     room: RoomId,
-) -> Result<Option<(usize, super::state::Workspace)>, String> {
-    let (native, last) = {
+) -> Result<(), String> {
+    let last = {
         let tree = tree.read();
         let workspaces = &tree.desktop.workspaces;
-        (
-            tree.requires_native_owner(room),
-            workspaces.len() < 2 && workspaces.iter().any(|w| w.room() == room),
-        )
+        workspaces.len() < 2 && workspaces.iter().any(|w| w.room() == room)
     };
     if last {
         return Err("the last workspace stays".into());
-    }
-    if !native {
-        let mut tree = tree.write();
-        let id = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.room() == room)
-            .map(|w| w.id)
-            .ok_or("no workspace is that room")?;
-        return Ok(tree.delete_workspace(id));
     }
     let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
     if !owner.release_room(room)? {
@@ -351,13 +335,12 @@ pub(crate) fn release_workspace_room(
         // is here.
         tree.write().forget_personal_room(room);
     }
-    Ok(None)
+    Ok(())
 }
 
 /// Delete the archived workspace that is `room`, with the room: a room the
 /// native owner holds or is joining leaves its record in the same
-/// publication ([`Change::Released`]); a room of the shell's own engine is
-/// its workspace, answered for an undo, which archives it again.
+/// publication ([`Change::Released`]).
 ///
 /// # Errors
 ///
@@ -366,32 +349,20 @@ pub(crate) fn release_workspace_room(
 pub(crate) fn delete_archived_workspace(
     tree: &WorkspaceTreeHandle,
     room: RoomId,
-) -> Result<Option<super::state::Workspace>, String> {
-    let native = {
-        let tree = tree.read();
-        if !tree.archived_workspaces.iter().any(|w| w.room() == room) {
-            return Err("no archived workspace is that room".into());
-        }
-        tree.requires_native_owner(room)
-    };
-    if native {
-        let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
-        if !owner.release_room(room)? {
-            tree.write().forget_personal_room(room);
-        }
-        return Ok(None);
-    }
-    let mut held = tree.write();
-    let index = held
+) -> Result<(), String> {
+    if !tree
+        .read()
         .archived_workspaces
         .iter()
-        .position(|w| w.room() == room)
-        .ok_or("no archived workspace is that room")?;
-    let removed = held.archived_workspaces.remove(index);
-    held.room_docs.remove(&room);
-    held.queue_save();
-    drop(held);
-    Ok(Some(removed))
+        .any(|w| w.room() == room)
+    {
+        return Err("no archived workspace is that room".into());
+    }
+    let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
+    if !owner.release_room(room)? {
+        tree.write().forget_personal_room(room);
+    }
+    Ok(())
 }
 
 /// The owner already attached to `tree`'s writer, which an [`open`] of it

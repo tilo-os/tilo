@@ -467,6 +467,31 @@ pub struct GovernedPeerIdentity {
     pub delegate: Option<tilo_peer_state::GovernedDelegateRow>,
 }
 
+/// `peer`'s admitted roster: each device it admitted, keyed by endpoint id,
+/// with the revocations of its person.
+fn admitted_roster(peer: &tilo_peer_state::StatePeer) -> BTreeMap<String, GovernedPeerIdentity> {
+    let revocations = peer.revocations();
+    peer.certificates()
+        .into_iter()
+        .filter_map(|device_cert| {
+            let endpoint = iroh::EndpointId::from_bytes(&device_cert.device_public_key).ok()?;
+            let revocations = revocations
+                .iter()
+                .filter(|entry| entry.user_public_key == device_cert.user_public_key)
+                .cloned()
+                .collect();
+            Some((
+                endpoint.to_string(),
+                GovernedPeerIdentity {
+                    device_cert,
+                    revocations,
+                    delegate: None,
+                },
+            ))
+        })
+        .collect()
+}
+
 impl GovernedPeerIdentity {
     /// How the agent this device is is shown, when governance admitted it
     /// as one: only when its person's root signed the delegation for exactly
@@ -687,29 +712,6 @@ pub fn session_handle(peer: u64) -> String {
     format!("p{peer:016x}")
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum OwnershipTransferStateError {
-    #[error("workspace ownership transfer is not locally governed")]
-    NotGoverned,
-    #[error("workspace or current structural owner does not match the signed proposal")]
-    WrongWorkspaceOrOwner,
-    #[error("recipient must remain a member until commit")]
-    RecipientNotMember,
-    #[error("another live ownership-transfer proposal already exists")]
-    ProposalAlreadyPending,
-    #[error("ownership-transfer proposal is unknown, cancelled, expired, or already consumed")]
-    ProposalUnavailable,
-    #[error("ownership-transfer audit history is full; archive it before another transfer")]
-    HistoryFull,
-    #[error("invalid signed ownership-transfer record: {0}")]
-    InvalidSignature(#[from] collab_types::OwnershipTransferError),
-    #[error("ownership-transfer persistence failed: {0}")]
-    Persistence(String),
-}
-
-const MAX_OWNERSHIP_TRANSFER_HISTORY: usize = 4_096;
-const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
-
 /// A change to a room's governance made at this device, for the room's
 /// governor to decide ([`WorkspaceTree::request_governance`]).
 #[derive(Debug, Clone)]
@@ -738,6 +740,12 @@ pub struct WorkspaceTree {
     /// Projected from the owner, so not persisted.
     #[serde(skip)]
     pub stewarded_rooms: BTreeSet<RoomId>,
+    /// Each room's admitted roster: every device its governor admitted,
+    /// keyed by endpoint id (the device key), with its root-signed
+    /// certificate and its person's revocations. Projected from the
+    /// owner, so not persisted.
+    #[serde(skip)]
+    pub(crate) room_rosters: BTreeMap<RoomId, BTreeMap<String, GovernedPeerIdentity>>,
     /// Which version of the authorization-relevant state (grants, roster,
     /// owner, ...) this tree holds. Advanced by the released write guard that
     /// changed it ([`WorkspaceTreeHandle::write`]), from one process-wide
@@ -839,8 +847,8 @@ pub struct WorkspaceTree {
     /// Rooms this device is joining through a host, each with its
     /// workspace made for the join: from the moment the join starts until
     /// the room's replica installs here. Such a workspace says Joining… and
-    /// nothing is written into it; it is routed to the native owner
-    /// ([`Self::requires_native_owner`]), never governed here meanwhile. A
+    /// nothing is written into it; it is routed to the native owner, as
+    /// every room is, never governed here meanwhile. A
     /// join that failed stays, for the person to try again.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub joining_rooms: BTreeSet<RoomId>,
@@ -901,6 +909,7 @@ impl Default for WorkspaceTree {
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
             stewarded_rooms: BTreeSet::new(),
+            room_rosters: BTreeMap::new(),
             policy_revision: 0,
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
@@ -1007,14 +1016,6 @@ impl WorkspaceTree {
         &self,
     ) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
         self.native_runtime.owner()
-    }
-
-    /// Whether `room`'s state goes through this device's native owner: every
-    /// room does. The room's host governs it and this device is a member,
-    /// whether the room is enrolled, being joined or still waiting for its
-    /// placement ([`Self::pending_placements`]); there is no other engine.
-    pub(crate) fn requires_native_owner(&self, room: RoomId) -> bool {
-        !room.is_nil()
     }
 
     /// Whether this device holds `room`: its replica is installed. A room
@@ -1147,7 +1148,7 @@ impl WorkspaceTree {
     /// In a room whose governor stewards channels they are sealed instead:
     /// each app seals and opens its record's channel itself.
     pub(crate) fn commits_native_documents(&self, room: RoomId) -> bool {
-        self.requires_native_owner(room) && !self.stewarded_rooms.contains(&room)
+        !self.stewarded_rooms.contains(&room)
     }
 
     /// Presentation projection from the actual admitted owner, never a second admission.
@@ -1179,6 +1180,7 @@ impl WorkspaceTree {
             tilo_peer_state::room::adopt_room(archived, document, &[]);
         }
         self.room_docs.insert(room, document.clone());
+        self.room_rosters.insert(room, admitted_roster(peer));
         self.queue_inbound_records(room, document);
         self.merge_room_contents(room);
         if let Some(ws) = self
@@ -1379,7 +1381,7 @@ impl WorkspaceTree {
         room: RoomId,
     ) -> tilo_user_identity::TrustedIdentityProjectionV2 {
         let names = self.room_peer_names_in_doc(room);
-        let identities = self.room_peer_identities_in_doc(room);
+        let identities = self.room_peer_identities(room);
         let revoked = identities
             .values()
             .flat_map(|identity| identity.revocations.iter())
@@ -1543,7 +1545,7 @@ impl WorkspaceTree {
         &self,
         room: RoomId,
     ) -> std::collections::BTreeMap<u64, tilo_user_identity::DeviceCert> {
-        let identities = self.room_peer_identities_in_doc(room);
+        let identities = self.room_peer_identities(room);
         let revoked = identities
             .values()
             .flat_map(|identity| identity.revocations.iter())
@@ -1655,60 +1657,31 @@ impl WorkspaceTree {
 
     /// Key the room document stores its peers' names under.
     const ROOM_PEERS_KEY: &'static str = "peers";
-    const ROOM_PEER_IDENTITIES_KEY: &'static str = "peer_identities_v1";
 
-    pub fn room_peer_identities_in_doc(
+    /// Every device `room`'s governor admitted, keyed by endpoint id, as
+    /// this device's native owner last projected the room.
+    pub fn room_peer_identities(
         &self,
         room: RoomId,
     ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
-        Self::peer_identities_of(self.room_docs.get(&room))
+        self.room_rosters.get(&room).cloned().unwrap_or_default()
     }
 
-    /// The valid governed identities room document `doc` carries.
-    fn peer_identities_of(
-        doc: Option<&AutoCommit>,
-    ) -> std::collections::BTreeMap<String, GovernedPeerIdentity> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let mut out = std::collections::BTreeMap::new();
-        let Some(doc) = doc else {
-            return out;
-        };
-        let Some((_, object)) = doc
-            .get(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY)
-            .ok()
-            .flatten()
-        else {
-            return out;
-        };
-        for peer in doc.keys(&object) {
-            let Some((Value::Scalar(value), _)) = doc.get(&object, &peer).ok().flatten() else {
-                continue;
-            };
-            let ScalarValue::Bytes(bytes) = value.as_ref() else {
-                continue;
-            };
-            let Ok(identity) = serde_json::from_slice::<GovernedPeerIdentity>(bytes) else {
-                continue;
-            };
-            let Ok(endpoint) = peer.parse::<iroh::EndpointId>() else {
-                continue;
-            };
-            if endpoint.as_bytes() == &identity.device_cert.device_public_key
-                && tilo_user_identity::verify_device_cert(&identity.device_cert).is_ok()
-                && !identity
-                    .device_cert
-                    .is_expired_at(tilo_clock::unix_now_ns())
-                && identity.revocations.len()
-                    <= tilo_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
-                && identity.revocations.iter().all(|entry| {
-                    entry.user_public_key == identity.device_cert.user_public_key
-                        && tilo_user_identity::verify_revocation_entry(entry).is_ok()
-                })
-            {
-                out.insert(peer, identity);
-            }
-        }
-        out
+    /// Whether `room`'s governor admitted the device `endpoint`, with a
+    /// certificate live now and not revoked.
+    pub fn room_admits_device(&self, room: RoomId, endpoint: &iroh::EndpointId) -> bool {
+        let now = tilo_clock::unix_now_ns();
+        self.room_rosters
+            .get(&room)
+            .and_then(|roster| roster.get(&endpoint.to_string()))
+            .is_some_and(|identity| {
+                let cert = &identity.device_cert;
+                !cert.is_expired_at(now)
+                    && !identity
+                        .revocations
+                        .iter()
+                        .any(|entry| entry.revoked_device_public_key == cert.device_public_key)
+            })
     }
 
     /// Cache `room`'s admitted document as naming exactly `names` (device
@@ -2171,13 +2144,10 @@ impl WorkspaceTree {
         }
     }
 
-    /// Mirror a governance change of `workspace_id` into the automerge doc
-    /// so peer-sync ships it and a restart reloads it. Grants, members and
-    /// sandbox capabilities live as **maps keyed by id**, not lists:
-    /// deleting a map key merges concurrently, while deleting list index 3
-    /// on two peers removes two different grants. Without the mirror a
-    /// revocation would change only the local cache, and a peer would keep
-    /// using what the owner took away.
+    /// Record a change made here to `workspace_id`'s policy, a sandbox
+    /// capability this device's apps were given or lost, in this device's
+    /// document so a restart reloads it, and ask the room's governor for it
+    /// so the room carries it too.
     pub fn doc_write_policy(&mut self, workspace_id: WorkspaceId, edit: &PolicyEdit) {
         if edit.is_empty() {
             return;
@@ -2194,8 +2164,10 @@ impl WorkspaceTree {
         else {
             return;
         };
-        edit.write(&mut self.doc, workspace);
+        let workspace = workspace.clone();
+        edit.write(&mut self.doc, &workspace);
         self.commit_room_change();
+        self.request_policy_changes(&workspace, edit);
     }
 
     /// Replicate a named grant set as workspace policy. The grants an
@@ -2703,6 +2675,219 @@ impl WorkspaceTree {
             self.request_governance(room, GovernanceRequest::RevokeSandbox(id.to_owned()));
         }
         narrowed
+    }
+
+    /// Ask the governor of `workspace_id`'s room for what `edit` changed in
+    /// `edited`, a copy of the workspace the change was worked out on. Only
+    /// a sandbox capability taken back changes here at once
+    /// ([`Self::narrow_sandbox`]); everything else waits for the room's
+    /// admitted document.
+    pub fn request_policy_edit(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        edited: &Workspace,
+        edit: &PolicyEdit,
+    ) {
+        self.request_policy_changes(
+            edited,
+            &PolicyEdit {
+                sandbox_revoked: Vec::new(),
+                ..edit.clone()
+            },
+        );
+        for id in &edit.sandbox_revoked {
+            self.narrow_sandbox(workspace_id, actor, id);
+        }
+    }
+
+    /// Queue for `edited`'s governor every change `edit` names, read from
+    /// `edited`.
+    fn request_policy_changes(&mut self, edited: &Workspace, edit: &PolicyEdit) {
+        use tilo_action_policy::Change;
+        let room = edited.room();
+        let mut requests = Vec::new();
+        for person in &edit.members {
+            requests.push(GovernanceRequest::Policy(
+                match edited.policy.members.get(person) {
+                    Some(role) => Change::SetRole {
+                        person: person.clone(),
+                        role: *role,
+                    },
+                    None => Change::RemoveMember {
+                        person: person.clone(),
+                    },
+                },
+            ));
+        }
+        for id in &edit.granted {
+            if let Some(grant) = edited.policy.grants.iter().find(|grant| &grant.id == id) {
+                requests.push(GovernanceRequest::Policy(Change::Grant(grant.clone())));
+            }
+        }
+        for id in &edit.revoked {
+            requests.push(GovernanceRequest::Policy(Change::Revoke(id.clone())));
+        }
+        for id in &edit.sandbox_granted {
+            if let Some(cap) = edited.sandbox.iter().find(|cap| &cap.id == id) {
+                requests.push(GovernanceRequest::GrantSandbox(cap.clone()));
+            }
+        }
+        for id in &edit.sandbox_revoked {
+            requests.push(GovernanceRequest::RevokeSandbox(id.clone()));
+        }
+        for request in requests {
+            self.request_governance(room, request);
+        }
+    }
+
+    /// Ask the governor of `workspace_id`'s room for `changes` as `actor`,
+    /// all or none, after working them out on a copy of the workspace: the
+    /// room's policy as this device holds it refuses what its governor
+    /// would. Nothing changes here until the room's admitted document
+    /// carries the changes. What was asked for.
+    ///
+    /// # Errors
+    /// The workspace is gone, or the first change the policy refuses.
+    pub fn govern_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        changes: Vec<tilo_action_policy::Change>,
+    ) -> Result<PolicyEdit, tilo_action_policy::Refusal> {
+        let mut edited = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .cloned()
+            .ok_or_else(|| tilo_action_policy::Refusal::NotPermitted("no such workspace".into()))?;
+        let edit = edited.govern_all_at(actor, changes, tilo_clock::unix_now())?;
+        self.request_policy_edit(workspace_id, actor, &edited, &edit);
+        Ok(edit)
+    }
+
+    /// Ask the governor of `workspace_id`'s room to grant `grant`, given by
+    /// `grantor`. Its id, or `None` when the room's policy refuses it.
+    pub fn grant_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        grantor: &UserId,
+        grant: tilo_action_policy::Grant,
+    ) -> Option<tilo_action_policy::GrantId> {
+        let id = grant.id.clone();
+        self.govern_in_workspace(
+            workspace_id,
+            grantor,
+            vec![tilo_action_policy::Change::Grant(grant)],
+        )
+        .ok()?;
+        Some(id)
+    }
+
+    /// Ask the governor of `workspace_id`'s room to revoke the grant `id`
+    /// as `revoker`. Whether there was one to revoke that the room's policy
+    /// lets `revoker` take back.
+    pub fn revoke_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        revoker: &UserId,
+        id: &tilo_action_policy::GrantId,
+    ) -> bool {
+        self.govern_in_workspace(
+            workspace_id,
+            revoker,
+            vec![tilo_action_policy::Change::Revoke(id.clone())],
+        )
+        .is_ok_and(|edit| !edit.is_empty())
+    }
+
+    /// Apply `changes` to `workspace_id`'s policy here as `actor`, as the
+    /// room's admitted document would once its governor took them: for
+    /// tests and staged scenes, which have no governor.
+    #[cfg(any(test, feature = "hosted-test-control"))]
+    pub fn govern_here_for_test(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        changes: Vec<tilo_action_policy::Change>,
+    ) -> Result<PolicyEdit, tilo_action_policy::Refusal> {
+        self.desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| tilo_action_policy::Refusal::NotPermitted("no such workspace".into()))?
+            .govern_all_at(actor, changes, tilo_clock::unix_now())
+    }
+
+    /// Make `person` a member of `workspace_id` holding `role` here, as
+    /// [`Self::govern_here_for_test`] does.
+    #[cfg(any(test, feature = "hosted-test-control"))]
+    pub fn admit_here_for_test(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        person: &str,
+        role: CapRole,
+    ) -> Option<PolicyEdit> {
+        let member = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)?
+            .role_of(person)
+            .is_some();
+        let person = person.to_owned();
+        let change = if member {
+            tilo_action_policy::Change::SetRole { person, role }
+        } else {
+            tilo_action_policy::Change::AddMember { person, role }
+        };
+        self.govern_here_for_test(workspace_id, actor, vec![change])
+            .ok()
+    }
+
+    /// Record the sandbox capability `cap` in `workspace_id` here, given by
+    /// `grantor`, as [`Self::govern_here_for_test`] does. Its id, or `None`
+    /// when the room's policy refuses it.
+    #[cfg(any(test, feature = "hosted-test-control"))]
+    pub fn grant_sandbox_here_for_test(
+        &mut self,
+        workspace_id: WorkspaceId,
+        grantor: &UserId,
+        cap: CapOverride,
+    ) -> Option<String> {
+        self.desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)?
+            .grant_sandbox_as_at(grantor, cap, tilo_clock::unix_now())
+            .ok()?
+            .sandbox_granted
+            .first()
+            .cloned()
+    }
+
+    /// Take the policy changes asked of governors as their governor would,
+    /// made by `actor`, and apply them here as the rooms' admitted
+    /// documents would carry them: for tests, which have no governor.
+    #[cfg(test)]
+    pub(crate) fn govern_requests_here_for_test(&mut self, actor: &UserId) {
+        for (room, request) in self.take_governance_requests() {
+            let GovernanceRequest::Policy(change) = request else {
+                continue;
+            };
+            if let Some(workspace) = self
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.room() == room)
+            {
+                workspace
+                    .govern_as_at(actor, change, tilo_clock::unix_now())
+                    .expect("the governor takes the change");
+            }
+        }
     }
 
     /// Whether a governance change waits to be taken to its governor.
@@ -5263,7 +5448,6 @@ mod hosted_workspace_tests {
             tree.is_joining(room),
             "the workspace is joining until placed"
         );
-        assert!(tree.requires_native_owner(room));
         assert!(!tree.holds_room(room));
 
         assert_eq!(

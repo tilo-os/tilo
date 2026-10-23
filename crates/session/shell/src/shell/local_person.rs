@@ -44,13 +44,6 @@ impl LocalPersonServices for NativeLocalPerson {
         let certificate = current_certificate(room, person)?;
         let room = RoomId::parse(room).ok_or("native caller room is invalid")?;
         let tree = self.tree.upgrade().ok_or("native caller owner retired")?;
-        if !tree.read().requires_native_owner(room) {
-            return super::launcher::action_authority::with_ordinary_room_current(
-                &tree,
-                room,
-                |_| Ok(certificate),
-            );
-        }
         let owner = tree
             .read()
             .installed_native_owner()

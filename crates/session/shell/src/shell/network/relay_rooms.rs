@@ -104,16 +104,6 @@ impl HeldRoom {
     }
 }
 
-/// What moving a workspace onto the person's home relay made.
-pub(super) struct MovedRoom {
-    /// The room the relay governs now.
-    pub room: RoomId,
-    /// The first invitation, when one was asked for.
-    pub issued: Option<IssuedInvitation>,
-    /// This device's enrollment into the room, while it is installed.
-    pub enrollment: Option<u64>,
-}
-
 /// What an invitation a relay issues is for.
 pub(super) struct RelayInvitation<'a> {
     /// The role it grants.
@@ -694,102 +684,6 @@ impl ShellNetwork {
         Ok(true)
     }
 
-    /// Share the local workspace `local`, which is `room`, on this person's
-    /// home relay: the relay takes over governing that same room, named
-    /// `name`, with the invitation `first`, and admits this device as its
-    /// owner, and this device enrolls `local` into it. Answers the text of
-    /// `first`, or `None` when this device has no identity or its person no
-    /// home relay.
-    pub(super) fn share_on_home_relay(
-        &self,
-        local: WorkspaceId,
-        room: RoomId,
-        name: &str,
-        first: &RelayInvitation<'_>,
-    ) -> Result<Option<String>, String> {
-        let Some(moved) = self.move_to_home_relay(local, room, name, Some(first))? else {
-            return Ok(None);
-        };
-        if let Some(id) = moved.enrollment {
-            self.relay_rooms
-                .shared
-                .lock()
-                .map_err(|_| "shared room enrollments are unavailable")?
-                .push(id);
-        }
-        let issued = moved
-            .issued
-            .ok_or("the relay did not issue the invitation")?;
-        self.remember_relay_invitation(moved.room, &issued, first)
-            .map(Some)
-    }
-
-    /// Move the governance of the workspace `local`, which is `room` and is
-    /// called `name`, to this person's home relay, which governs it from
-    /// then on: the relay takes the room over under its own identity (a
-    /// workspace is its room, and keeps it when its governance moves),
-    /// issuing `first` with it when given, and this device holds the same
-    /// workspace as a member of the room the relay governs. `None` when the
-    /// person has no home relay. The caller finishes the returned
-    /// enrollment.
-    pub(super) fn move_to_home_relay(
-        &self,
-        local: WorkspaceId,
-        room: RoomId,
-        name: &str,
-        first: Option<&RelayInvitation<'_>>,
-    ) -> Result<Option<MovedRoom>, String> {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return Ok(None);
-        };
-        let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
-        let user = certificate.user_public_key;
-        let Some(home) = home_for_workspace(user, room)? else {
-            return Ok(None);
-        };
-        self.connect_home(&home);
-        let mut arguments = create_arguments(&room_name(name), first);
-        arguments.insert("room".into(), room.to_string().into());
-        let created: CreatedRoom =
-            answer_of(self.host_action(home.addr.id, user, CREATE_ROOM, arguments)?)?;
-        if RoomId::parse(&created.room.room) != Some(room) {
-            return Err(
-                "the home relay made another room instead of taking this one over; it needs to update"
-                    .into(),
-            );
-        }
-        let issued = match first {
-            Some(_) => Some(
-                created
-                    .invitation
-                    .ok_or("the relay did not issue the invitation")?
-                    .decode()?,
-            ),
-            None => None,
-        };
-        let own = self.enter_host_room(home.addr.id, user, &created.room.room)?;
-        // The same workspace joins the room the relay governs now: it stays
-        // out of the shell's own engine from here, and says Joining… until
-        // the relay's replica installs into it.
-        let joined = self.tree.write().join_native_room(name, room);
-        if joined != Some(local) {
-            return Err("the workspace moving to the home relay is gone".into());
-        }
-        let enrollment = match self.accept_invitation_via(
-            local,
-            &own,
-            crate::network::invite::enrollment_driver::Via::Iroh,
-        )? {
-            PeerSyncResponse::EnrollmentPending { id } => Some(id),
-            _ => None,
-        };
-        Ok(Some(MovedRoom {
-            room,
-            issued,
-            enrollment,
-        }))
-    }
-
     /// Enter `room` at the host at `relay` as this device of `user`, and
     /// answer the text of the invitation this device redeems to hold it.
     fn enter_host_room(
@@ -873,14 +767,7 @@ impl ShellNetwork {
         let tree = self.tree.clone();
         let (held, first) = {
             let tree = tree.read();
-            (
-                tree.holds_room(room),
-                !tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .any(|workspace| tree.requires_native_owner(workspace.room())),
-            )
+            (tree.holds_room(room), tree.desktop.workspaces.is_empty())
         };
         if held {
             return Ok(());
