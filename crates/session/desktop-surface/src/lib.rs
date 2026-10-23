@@ -24,6 +24,7 @@ pub mod i18n;
 pub mod navigation;
 pub mod notifications;
 pub mod person_cursor;
+pub mod session;
 mod shared_tree;
 pub mod surface;
 
