@@ -422,7 +422,7 @@ fn an_agent_makes_converts_and_ticks_checklist_items_and_reads_them_back_in_orde
         ]
     );
     assert_eq!(note["blocks"], 4, "{note}");
-    assert_eq!(ids(&note)[..2], [water.clone(), pack.clone()]);
+    assert_eq!(ids(&note)[..2], [water, pack]);
     let read_body = call(&mut app, "notes.notebook", "read", json!({ "item": body }));
     assert_eq!(read_body["markdown"], note["markdown"]);
 }
