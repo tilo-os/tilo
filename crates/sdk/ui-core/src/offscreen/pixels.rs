@@ -188,10 +188,27 @@ fn render_now(scene: &Scene, width: u32, height: u32, background: Color) -> Pixe
         let entry = kept.remove(at);
         kept.push(entry);
     } else {
-        let renderer = OffscreenRenderer::try_new(width, height).map_err(|error| match error {
-            OffscreenError::NoAdapter | OffscreenError::CannotWait => PixelsError::Unavailable,
-            error => PixelsError::Failed(error.to_string()),
-        })?;
+        let renderer = match OffscreenRenderer::try_new(width, height) {
+            Ok(renderer) => renderer,
+            // Without an adapter (a confined app worker, a machine with no
+            // GPU) the picture is drawn on the CPU instead.
+            #[cfg(not(target_arch = "wasm32"))]
+            Err(OffscreenError::NoAdapter) => {
+                drop(kept);
+                return super::render_on_cpu(scene, width, height, background)
+                    .map(|rgba| Pixels {
+                        rgba,
+                        width,
+                        height,
+                    })
+                    .map_err(PixelsError::Failed);
+            }
+            // A browser page draws no picture without its GPU.
+            #[cfg(target_arch = "wasm32")]
+            Err(OffscreenError::NoAdapter) => return Err(PixelsError::Unavailable),
+            Err(OffscreenError::CannotWait) => return Err(PixelsError::Unavailable),
+            Err(error) => return Err(PixelsError::Failed(error.to_string())),
+        };
         if kept.len() >= KEPT_RENDERERS {
             kept.remove(0);
         }
