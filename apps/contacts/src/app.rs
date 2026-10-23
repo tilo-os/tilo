@@ -53,6 +53,10 @@ const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
 
 /// The sidebar destinations that are not groups.
 const ALL_DESTINATION: &str = "all";
+
+/// What an empty book says to someone who may only view it, in place of a
+/// New contact that would only be refused.
+const VIEW_ONLY_MESSAGE: &str = "You can view this address book, but not add to it.";
 const FAVORITES_DESTINATION: &str = "favorites";
 const GROUP_DESTINATION: &str = "group:";
 
@@ -144,10 +148,16 @@ enum PendingMenu {
 /// What the content column shows.
 #[derive(Clone, PartialEq, Debug)]
 enum ContentKey {
-    FirstRun,
+    /// An empty book, whose first contact anyone who may edit adds here.
+    FirstRun {
+        read_only: bool,
+    },
     Nothing,
     Contact(Box<Contact>),
-    Edit { epoch: u64, calendar: bool },
+    Edit {
+        epoch: u64,
+        calendar: bool,
+    },
 }
 
 #[allow(
@@ -533,7 +543,7 @@ impl ContactsApp {
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
-            .content(empty_pane(&shared, "No contact selected", None))
+            .content(empty_pane(&shared, "No contact selected", None, None))
             .with_window_toolbar();
         shell.show(NavPane::Overview);
         Self {
@@ -1163,7 +1173,9 @@ impl ContactsApp {
             };
         }
         if self.store.is_empty() {
-            return ContentKey::FirstRun;
+            return ContentKey::FirstRun {
+                read_only: self.read_only(),
+            };
         }
         match self.selected.and_then(|id| self.store.contact(id)) {
             Some(contact) => ContentKey::Contact(Box::new(contact.clone())),
@@ -1297,29 +1309,13 @@ impl ContactsApp {
                 photo: pictures.hold_text(&contact.photo),
             })
             .collect();
-        // Beside the content, an empty book is said once, by the content's
-        // first-run pane with its New contact; a narrow window's list stands
-        // alone, so it says so itself rather than show nothing.
         self.list_alone = !self.shell.geometry().stack.is_empty();
-        let (empty_title, empty_icon) = match self.group_filter.as_deref() {
-            Some(FAVORITES_FILTER) => (Some("No favorites yet".to_owned()), None),
-            Some(_) => (Some("No one is in this group".to_owned()), None),
-            None if self.list_alone && self.store.is_empty() => {
-                (Some("No contacts yet".to_owned()), Some(Icon::Users))
-            }
-            None => (None, None),
-        };
         let sortable = !rows.is_empty();
         self.sort_shown = sortable;
         {
             let mut bridge = self.shared.borrow_mut();
-            if bridge.rows != rows
-                || bridge.empty_title != empty_title
-                || bridge.empty_icon != empty_icon
-            {
+            if bridge.rows != rows {
                 bridge.rows = rows;
-                bridge.empty_title = empty_title;
-                bridge.empty_icon = empty_icon;
                 bridge.revision = bridge.revision.wrapping_add(1);
             }
         }
@@ -1342,6 +1338,55 @@ impl ContactsApp {
             self.sidebar_shown = sidebar;
             self.structure_dirty = true;
         }
+    }
+
+    /// What the list says in place of rows: its title, sentence and icon.
+    /// Beside the content, an empty book is said once, by the content's
+    /// first-run pane; a narrow window's list stands alone, so it says so
+    /// itself rather than show nothing. While the first contact is being
+    /// written the form takes that pane's place, so the list says it then
+    /// too, and where the new contact will appear.
+    fn list_empty_state(&self) -> (Option<String>, Option<String>, Option<Icon>) {
+        let creating = self.mode == Mode::Edit && self.form.as_ref().is_some_and(|f| f.is_new);
+        match self.group_filter.as_deref() {
+            Some(FAVORITES_FILTER) => (Some("No favorites yet".to_owned()), None, None),
+            Some(_) => (Some("No one is in this group".to_owned()), None, None),
+            None if self.store.is_empty() && (self.list_alone || creating) => {
+                let message = if self.read_only() {
+                    Some(VIEW_ONLY_MESSAGE.to_owned())
+                } else if creating {
+                    Some("The contact you're adding appears here once you save it.".to_owned())
+                } else {
+                    None
+                };
+                (
+                    Some("No contacts yet".to_owned()),
+                    message,
+                    Some(Icon::Users),
+                )
+            }
+            None => (None, None, None),
+        }
+    }
+
+    /// Hand the list what it says in place of rows, when that changed.
+    fn publish_list_empty_state(&self) {
+        let (title, message, icon) = self.list_empty_state();
+        let mut bridge = self.shared.borrow_mut();
+        if bridge.empty_title != title
+            || bridge.empty_message != message
+            || bridge.empty_icon != icon
+        {
+            bridge.empty_title = title;
+            bridge.empty_message = message;
+            bridge.empty_icon = icon;
+            bridge.revision = bridge.revision.wrapping_add(1);
+        }
+    }
+
+    /// Whether this participant may only view the address book.
+    fn read_only(&self) -> bool {
+        self.dispatcher.as_ref().is_some_and(Dispatcher::read_only)
     }
 
     /// The shared list controls and a truthful, live announcement of the
@@ -1382,6 +1427,7 @@ impl ContactsApp {
         if self.list_stale {
             self.publish_list();
         }
+        self.publish_list_empty_state();
         self.publish_overview_controls();
         if self
             .selected
@@ -1403,12 +1449,19 @@ impl ContactsApp {
         let content = self.content_key();
         if self.content_shown.as_ref() != Some(&content) {
             let element: Element = match &content {
-                ContentKey::FirstRun => empty_pane(
+                ContentKey::FirstRun { read_only: false } => empty_pane(
                     &self.shared,
                     "No contacts yet",
+                    None,
                     Some(("New contact", Request::NewContact)),
                 ),
-                ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None),
+                ContentKey::FirstRun { read_only: true } => empty_pane(
+                    &self.shared,
+                    "No contacts yet",
+                    Some(VIEW_ONLY_MESSAGE),
+                    None,
+                ),
+                ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None, None),
                 ContentKey::Contact(contact) => {
                     if self.detail_scroll.0 != Some(contact.id) {
                         self.detail_scroll = (Some(contact.id), std::rc::Rc::default());
