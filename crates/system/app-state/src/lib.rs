@@ -71,8 +71,8 @@ pub enum StoreError {
     #[error("another writer owns {path}")]
     WriterBusy { path: PathBuf },
     /// The store's own thread is still opening the key for a thread that
-    /// declined waiting ([`durable_store::DurableStore::decline_waiting`]),
-    /// and wakes it when done.
+    /// must not wait on storage ([`durable_store::waiting`]), and wakes it
+    /// once when done.
     #[error("{0} is still being opened")]
     Opening(String),
     #[error("existing document is empty: {path}")]

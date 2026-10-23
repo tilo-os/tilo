@@ -381,7 +381,7 @@ mod tests {
             history.flush().unwrap();
         }
         let (notify, notified) = std::sync::mpsc::channel();
-        store.decline_waiting(std::sync::Arc::new(move || {
+        durable_store::waiting::decline_on_this_thread(std::sync::Arc::new(move || {
             let _ = notify.send(());
         }));
         let mut history = PrivateHistory::open(store.clone(), &owner, b"actor").unwrap();
