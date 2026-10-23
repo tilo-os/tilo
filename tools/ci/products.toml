@@ -222,7 +222,8 @@ or published. Everyone pushes to main, so main publishes only development tags (
 and `dev-<commit>-<arch>` for each image), signed with the development key (keys/cosign-dev.pub)
 by sign-dev-ci-builder; nothing a consumer resolves by a moving tag or verifies against
 keys/cosign.pub comes from main. Stable signs the index and both
-images with the release key and publishes `<commit>` and `<rust channel>`. `latest`, which
+images with the release key, each with a transparency log entry so that a plain `cosign verify
+--key keys/cosign.pub` accepts them, and publishes `<commit>` and `<rust channel>`. `latest`, which
 resolve_builder.py and tilo-app-cli's generated CI follow, is not moved yet: stable lags main,
 and moving `latest` from it would hand main's consumers an older toolchain."""
 repository = "registry.tilo.so/tilo/tilo-builder"
@@ -231,6 +232,7 @@ index = true
 children = true
 dev = ["dev-{commit}"]
 release = ["{commit}", "{rust}"]
+tlog = true
 dev_signed = true
 gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64"]
 publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory = "24GiB" } }
