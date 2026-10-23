@@ -24,10 +24,6 @@ def is_test(name: str) -> bool:
     return name.startswith(TEST_FAMILIES) or name.startswith("suite-") or name.startswith("policy/tests/")
 
 
-def never_ancestor(commit: str, base: str) -> bool:
-    return False
-
-
 class SelectTests(unittest.TestCase):
     def test_a_push_runs_no_test_vm_suite_or_whole_tree_check_whatever_it_touches(self):
         config = t_matrix.load(ROOT)
@@ -37,7 +33,7 @@ class SelectTests(unittest.TestCase):
         families = [family["name"] for family in config.get("cargo", [])]
         scope = {"base": "b" * 40,
                  "checks": [*checks, *(f"{family}/{package}" for family in families for package in ("shell", "notes"))]}
-        chosen = pre_push.select(scope, {}, ["crates/session/shell/src/lib.rs"], never_ancestor)
+        chosen = pre_push.select(scope, ["crates/session/shell/src/lib.rs"])
         run = chosen["run"]
         self.assertEqual([name for name in run if is_test(name)], [])
         self.assertNotIn("fmt", run, "the whole tree's fmt stays on main; a push formats what it changed")
@@ -68,24 +64,16 @@ class SelectTests(unittest.TestCase):
 
     def test_policy_tests_run_only_when_the_policy_tools_change(self):
         scope = {"base": "b" * 40, "checks": ["policy/formats", "policy/tests/unit"]}
-        self.assertEqual(pre_push.select(scope, {}, ["apps/notes/src/lib.rs"], never_ancestor)["run"],
+        self.assertEqual(pre_push.select(scope, ["apps/notes/src/lib.rs"])["run"],
                          ["fmt-changed", "changes", "policy/formats"])
         self.assertIn("policy/tests/unit",
-                      pre_push.select(scope, {}, ["tools/policy/check_formats.py"], never_ancestor)["run"])
+                      pre_push.select(scope, ["tools/policy/check_formats.py"])["run"])
 
-    def test_a_check_red_on_main_at_the_base_is_skipped_and_named(self):
-        board = {"items": [
-            {"check": "clippy", "checks": ["clippy/agent", "clippy/shell"], "first_bad": "old"},
-            {"check": "policy/source-file-size", "first_bad": "new"},
-            {"check": "policy/formats", "test": "one", "first_bad": "old"},
-        ]}
-        scope = {"base": "base", "checks": ["clippy/shell", "clippy/notes", "policy/source-file-size", "policy/formats"]}
-        chosen = pre_push.select(scope, board, [], lambda commit, base: commit == "old")
-        self.assertEqual(chosen["red"], ["clippy/shell"])
-        # Broken after the base: the push may be what breaks it there, so it runs; one test red
-        # is not the check red.
-        self.assertEqual(chosen["run"], ["fmt-changed", "changes", "clippy/notes", "policy/source-file-size",
-                                         "policy/formats"])
+    def test_a_check_red_on_main_runs_all_the_same(self):
+        # t compares its failures with main's: a push that adds one is refused however red main is.
+        scope = {"base": "base", "checks": ["clippy/shell", "policy/source-file-size"]}
+        self.assertEqual(pre_push.select(scope, [])["run"],
+                         ["fmt-changed", "changes", "clippy/shell", "policy/source-file-size"])
 
     def test_opt_in_names_what_t_suggest_says_the_change_touches(self):
         suggest = {"checks": [
@@ -124,12 +112,46 @@ class UnpassedTests(unittest.TestCase):
                   {"type": "error", "message": "503 from the server", "hint": "t status"}]
         self.assertEqual(pre_push.unpassed(events, ["a", "b", "c", "d", "e", "f"]), [
             "t failed, not a check: 503 from the server (t status)",
-            "a: fails (main fails it too): boom",
+            "a: fails (main fails it too, as a whole: it found nothing it names, so it can't be compared "
+            "finding by finding): boom",
             "b: fails: bang",
             "c: cancelled before it finished",
             "d: not run, since a check it is gated on failed",
             "e: later, which this hook can't tell apart from a failure",
             "f: no result; the run ended before t reported one, a failure of t, not of the change"])
+
+    def test_what_fails_on_main_too_says_how_it_was_compared(self):
+        def finding(test: str, kind: str) -> dict:
+            return {"test": test, "excerpt": test, "blame": {"kind": kind}}
+        inherited = {"kind": "inherited"}
+        by_finding = result("policy/source-file-size", "fail", blame=inherited,
+                            failures=[finding("apps/a.rs: N lines, over its ceiling of N", "inherited"),
+                                      finding("source file size: N problem(s)", "inherited")])
+        whole = result("clippy/agent", "fail", "not checked: shell did not compile, which it builds on",
+                       blame=inherited)
+        self.assertEqual(pre_push.unpassed([by_finding, whole], ["policy/source-file-size", "clippy/agent"]), [
+            "policy/source-file-size: fails (main fails it too: each of its 2 findings, compared one by one): "
+            "apps/a.rs: N lines, over its ceiling of N",
+            "clippy/agent: fails (main fails it too, as a whole: it found nothing it names, so it can't be "
+            "compared finding by finding): not checked: shell did not compile, which it builds on"])
+        # Main's result named no findings (it predates them, or could not compile): as a whole.
+        unnamed = result("clippy/shell", "fail", blame=inherited,
+                         failures=[finding("clippy::redundant_clone crates/session/shell/src/a.rs", "unknown")])
+        self.assertEqual(pre_push.unpassed([unnamed], ["clippy/shell"]), [
+            "clippy/shell: fails (main fails it too, as a whole: main's result names no findings to compare its 1 "
+            "with one by one): clippy::redundant_clone crates/session/shell/src/a.rs"])
+        # A test check whose tests did not run is not main's for main failing it as a whole.
+        untested = result("policy/tests/unit", "fail", "not tested: the build failed", blame={"kind": "uncompared"})
+        self.assertEqual(pre_push.unpassed([untested], ["policy/tests/unit"]), [
+            "policy/tests/unit: fails (its tests did not run, so they can't be compared with main's: main failing "
+            "it as a whole doesn't make it main's): not tested: the build failed"])
+        # A finding main doesn't have is named, whatever else main fails too.
+        added = result("policy/source-file-size", "fail", blame={"kind": "new"},
+                       failures=[finding("apps/a.rs: N lines, over its ceiling of N", "inherited"),
+                                 finding("apps/b.rs: N lines, over its ceiling of N", "new")])
+        self.assertEqual(pre_push.unpassed([added], ["policy/source-file-size"]), [
+            "policy/source-file-size: fails (not on main: apps/b.rs: N lines, over its ceiling of N): "
+            "apps/a.rs: N lines, over its ceiling of N"])
 
     def test_a_run_that_passed_names_nothing(self):
         self.assertEqual(pre_push.unpassed([result("a", "pass")], ["a"]), [])
@@ -143,8 +165,6 @@ with open(os.environ["FAKE_T_LOG"], "a") as log:
 command = args[0]
 if command == "test" and "--help" in args:
     print("--rev <COMMIT>")
-elif command == "main":
-    print(json.dumps({"items": [{"check": "clippy", "checks": ["clippy/shell"], "first_bad": os.environ["FAKE_RED"]}]}))
 elif command == "scope":
     print(json.dumps({"base": os.environ["FAKE_BASE"], "checks": [
         "test-x86_64/shell", "test/notes", "clippy/shell", "clippy/notes", "security", "suite-os",
@@ -182,7 +202,7 @@ class HookTests(unittest.TestCase):
             shutil.copy2(ROOT / path, self.work / path)
         self.git("add", ".")
         self.git("commit", "-qm", "chore: base")
-        self.red = self.git("rev-parse", "HEAD").stdout.strip()
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
         self.git("remote", "add", "origin", str(remote))
         self.git("push", "-q", "origin", "main")
         (self.work / "change.rs").write_text("fn main() {}\n", encoding="utf-8")
@@ -190,12 +210,12 @@ class HookTests(unittest.TestCase):
         self.git("commit", "-qm", "feat: a change")
         self.git("config", "core.hooksPath", ".githooks")
         self.env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_T_LOG": str(self.log),
-                    "FAKE_RED": self.red, "FAKE_BASE": self.red}
+                    "FAKE_BASE": self.base}
 
     def tearDown(self):
         self.directory.cleanup()
 
-    def test_a_push_to_main_runs_no_tests_skips_what_main_has_red_and_names_the_opt_in_checks(self):
+    def test_a_push_to_main_runs_no_tests_and_names_the_opt_in_checks(self):
         pushed = self.git("push", "origin", "main", env=self.env, check=False)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         calls = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
@@ -204,9 +224,9 @@ class HookTests(unittest.TestCase):
         run = runs[0]
         self.assertEqual(run[run.index("--rev") + 1], self.git("rev-parse", "HEAD").stdout.strip())
         self.assertEqual(run[run.index("--priority") + 1], "high")
-        self.assertEqual(run[run.index("--json") + 1:], ["fmt-changed", "changes", "clippy/notes", "policy/formats"])
-        self.assertIn(f"pre-push: skipped, red on main at {self.red[:10]} already (t main): clippy/shell",
-                      pushed.stderr)
+        self.assertEqual(run[run.index("--json") + 1:],
+                         ["fmt-changed", "changes", "clippy/shell", "clippy/notes", "policy/formats"])
+        self.assertFalse(any(call[0] == "main" for call in calls), "nothing is skipped for being red on main")
         self.assertIn("t test test-x86_64/shell", pushed.stderr)
         # It names what t suggests and runs none of it.
         self.assertFalse(any("test-x86_64/shell" in run for run in runs))
@@ -220,9 +240,9 @@ class HookTests(unittest.TestCase):
         pushed = self.git("push", "origin", "main", env=self.env, check=False)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         self.assertEqual(self.gate_runs(), 1)
-        self.git("push", "-q", "--no-verify", "-f", "origin", f"{self.red}:main")
+        self.git("push", "-q", "--no-verify", "-f", "origin", f"{self.base}:main")
         self.git("branch", "change", "HEAD")
-        self.git("reset", "-q", "--hard", self.red)
+        self.git("reset", "-q", "--hard", self.base)
         (self.work / "other.rs").write_text("fn other() {}\n", encoding="utf-8")
         self.git("add", ".")
         self.git("commit", "-qm", "feat: someone else's change")
@@ -241,8 +261,9 @@ class HookTests(unittest.TestCase):
         self.assertEqual(self.gate_runs(), 2)
 
     def test_a_refusal_names_each_check_that_could_not_run_and_why(self):
-        run = [{"type": "planned", "run": "r9", "checks": ["fmt-changed", "changes", "clippy/notes", "policy/formats"]},
+        run = [{"type": "planned", "run": "r9", "checks": ["fmt-changed", "changes", "clippy/shell", "clippy/notes", "policy/formats"]},
                result("fmt-changed", "pass"), result("changes", "pass"), result("policy/formats", "pass"),
+               result("clippy/shell", "pass"),
                result("clippy/notes", "error", "the machine running it ran out of disk space"),
                {"type": "done", "exit_code": 2, "run": "r9"}]
         env = {**self.env, "FAKE_EXIT": "2", "FAKE_RUN": "".join(json.dumps(event) + "\n" for event in run)}
@@ -254,14 +275,32 @@ class HookTests(unittest.TestCase):
         self.assertNotIn("no-verify", pushed.stderr)
 
     def test_a_refusal_for_a_failure_names_the_check(self):
-        run = [{"type": "planned", "run": "r9", "checks": ["fmt-changed", "changes", "clippy/notes", "policy/formats"]},
+        run = [{"type": "planned", "run": "r9", "checks": ["fmt-changed", "changes", "clippy/shell", "clippy/notes", "policy/formats"]},
                result("fmt-changed", "pass"), result("changes", "fail", "a commit message says nothing"),
-               result("policy/formats", "pass"), result("clippy/notes", "pass"),
+               result("policy/formats", "pass"), result("clippy/notes", "pass"), result("clippy/shell", "pass"),
                {"type": "done", "exit_code": 1, "run": "r9"}]
         env = {**self.env, "FAKE_EXIT": "1", "FAKE_RUN": "".join(json.dumps(event) + "\n" for event in run)}
         pushed = self.git("push", "origin", "main", env=env, check=False)
         self.assertNotEqual(pushed.returncode, 0)
         self.assertIn("    changes: fails: a commit message says nothing", pushed.stderr)
+
+    def test_a_pass_names_what_fails_on_main_too_and_how_it_was_compared(self):
+        findings = [{"test": "clippy::redundant_clone crates/session/shell/src/a.rs", "excerpt": "error: redundant clone",
+                     "blame": {"kind": "inherited"}}]
+        run = [{"type": "planned", "run": "r9", "checks": ["fmt-changed", "changes", "clippy/shell", "clippy/notes", "policy/formats"]},
+               result("fmt-changed", "pass"), result("changes", "pass"), result("policy/formats", "pass"),
+               result("clippy/shell", "fail", blame={"kind": "inherited"}, failures=findings),
+               result("clippy/notes", "fail", "not checked: shell did not compile, which it builds on",
+                      blame={"kind": "inherited"}),
+               {"type": "done", "exit_code": 3, "run": "r9"}]
+        env = {**self.env, "FAKE_EXIT": "3", "FAKE_RUN": "".join(json.dumps(event) + "\n" for event in run)}
+        pushed = self.git("push", "origin", "main", env=env, check=False)
+        self.assertEqual(pushed.returncode, 0, pushed.stderr)
+        self.assertIn("what fails, fails on main too", pushed.stderr)
+        self.assertIn("    clippy/shell: fails (main fails it too: each of its 1 findings, compared one by one)",
+                      pushed.stderr)
+        self.assertIn("    clippy/notes: fails (main fails it too, as a whole: it found nothing it names, so it "
+                      "can't be compared finding by finding)", pushed.stderr)
 
     def test_a_push_to_another_branch_runs_nothing(self):
         self.git("push", "-q", "origin", "HEAD:topic", env=self.env)
