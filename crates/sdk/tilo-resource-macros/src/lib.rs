@@ -117,7 +117,12 @@ mod schema;
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read")]`.
+/// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
+/// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
+/// answers in a render service of its own rather than the record's app
+/// worker; `tag` (repeatable) adds a contract tag, a `&'static str` constant;
+/// `outside_with = "path"` makes a `kind = "read"` effect reach outside only
+/// when that parameter is given (an export writing the file it names).
 /// Who may run an effect is decided by its kind, like any action. An
 /// `own_device` effect's whole scope is the invoking person's own device,
 /// touching nothing shared and no one else (their clipboard, their own

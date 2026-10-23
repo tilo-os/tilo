@@ -165,6 +165,15 @@ struct VariantOptions {
     /// output_mb = N, gpu)`: a content transform the system may run on the
     /// invoker's best-placed device as the package's catalogue entrypoint.
     offload: Option<OffloadOption>,
+    /// `host_render`: a host answers it in a render service of its own,
+    /// never in the record's confined app worker.
+    host_render: bool,
+    /// `tag = <expr>`, repeatable: further contract tags, each a
+    /// `&'static str` constant.
+    tags: Vec<syn::Expr>,
+    /// `outside_with = "param"`: a read that reaches outside the record only
+    /// when that parameter is given.
+    outside_with: Option<String>,
 }
 
 /// An effect's `offload(...)` option, as written.
@@ -280,12 +289,18 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.item = Some(meta.value()?.parse::<syn::Ident>()?.to_string());
             } else if meta.path.is_ident("offload") {
                 options.offload = Some(offload_option(&meta)?);
+            } else if meta.path.is_ident("host_render") {
+                options.host_render = true;
+            } else if meta.path.is_ident("tag") {
+                options.tags.push(meta.value()?.parse::<syn::Expr>()?);
+            } else if meta.path.is_ident("outside_with") {
+                options.outside_with = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
                      `own_device`, `attended`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
-                     `item = field`, `offload(...)` or `kind`",
+                     `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
                 ));
             }
             Ok(())
@@ -564,6 +579,24 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(Effect)
         };
+        // Each one a constant, as the row it lands in is.
+        let host_render = options
+            .host_render
+            .then(|| quote!(#krate::__private::HOST_RENDER_TAG))
+            .into_iter();
+        let declared = &options.tags;
+        let tags = quote!(&[#(#host_render,)* #(#declared),*]);
+        let outside_with = match &options.outside_with {
+            None => quote!(::core::option::Option::None),
+            Some(_) if !reads => {
+                return Err(syn::Error::new(
+                    variant.span(),
+                    "`outside_with` names what makes a read reach outside: declare it \
+                     `kind = \"read\"`",
+                ));
+            }
+            Some(param) => quote!(::core::option::Option::Some(#param)),
+        };
         let params: Vec<Tokens> = params.collect();
         let params_fn = if params.is_empty() {
             quote!(#krate::effect::no_params)
@@ -598,6 +631,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 member: #member,
                 item: #item,
                 offload: #offload,
+                tags: #tags,
+                outside_with: #outside_with,
             }
         });
 

@@ -193,7 +193,8 @@ pub mod __private {
     pub use serde_json;
     pub use tilo_actions::{
         ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
-        OperationKind, PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec, RiskLevel,
+        HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec,
+        RiskLevel,
     };
 
     pub use crate::apply_cache::forget_all;
