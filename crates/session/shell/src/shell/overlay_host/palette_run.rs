@@ -438,11 +438,14 @@ impl ShellOverlayHost {
                     .into_iter()
                     .enumerate()
                     .map(|(i, choice)| {
-                        let entry = CommandEntry::new(
+                        let mut entry = CommandEntry::new(
                             format!("{}{i}", palette_flow::CHOICE_PREFIX),
                             choice.label.clone(),
                         )
                         .group(title.clone());
+                        if let Some(detail) = choice.detail {
+                            entry = entry.description(detail);
+                        }
                         match choice.person {
                             Some(key) => entry.avatar(choice.label, key),
                             None => entry,
@@ -493,6 +496,7 @@ impl ShellOverlayHost {
             .map(|picked| palette_flow::Choice {
                 value: picked.value,
                 label: picked.label,
+                detail: picked.detail,
                 person: picked.person,
             })
             .collect()

@@ -26,12 +26,14 @@ pub(super) enum Step {
     Field(ArgumentSpec),
 }
 
-/// One value offered in an argument step: what it binds, how it reads, and
-/// for a person (an identity), the key of their avatar.
+/// One value offered in an argument step: what it binds, how it reads, a
+/// second line that tells it apart, and for a person (an identity), the key
+/// of their avatar.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Choice {
     pub value: Value,
     pub label: String,
+    pub detail: Option<String>,
     pub person: Option<String>,
 }
 
@@ -40,6 +42,7 @@ impl Choice {
         Self {
             value,
             label,
+            detail: None,
             person: None,
         }
     }
@@ -73,6 +76,7 @@ pub(super) fn step_for(
                     Some(Choice {
                         value: value_of(param.ty, choice).ok()?,
                         label: param.choice_label(choice).unwrap_or(choice).to_string(),
+                        detail: None,
                         person: param.choice_is_person(choice).then(|| choice.to_string()),
                     })
                 })
@@ -492,6 +496,7 @@ mod tests {
             .picking(tilo_actions::Pick::Subject);
         let ada = Choice {
             value: serde_json::json!({ "person": "ada" }),
+            detail: None,
             label: "Ada".into(),
             person: Some("ada".into()),
         };
