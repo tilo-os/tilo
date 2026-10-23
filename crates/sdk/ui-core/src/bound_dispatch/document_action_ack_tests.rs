@@ -189,6 +189,7 @@ fn execute_mode(
             source_invocation,
             ambient: None,
             scope: None,
+            door: None,
         },
     )
 }
@@ -404,6 +405,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                     source_invocation: None,
                     ambient: None,
                     scope: None,
+                    door: None,
                 },
             )
             .unwrap();

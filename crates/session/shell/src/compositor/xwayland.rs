@@ -1894,7 +1894,7 @@ mod tests {
         let app = crate::shell::host_apps::HostApp {
             desktop_id: "com.valvesoftware.Steam".into(),
             name: "Steam".into(),
-            source_label: "System",
+            kind: desktop_entry::EntryKind::System,
             categories: Vec::new(),
             keywords: Vec::new(),
             mime_types: Vec::new(),

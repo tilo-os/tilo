@@ -532,8 +532,9 @@ pub struct InstalledApp {
     /// Where the running copy came from: `image` (the system image installed
     /// it), `user` (installed or updated since), or `held` (rolled back
     /// below the image's version on purpose). For an application Tilo did
-    /// not package: `flatpak`, `system`, or `downloaded` (a program the
-    /// person downloaded and added to their apps).
+    /// not package, which kind of app it is, the same answer search and
+    /// Files give: `flatpak`, `appimage`, `program` (one the person
+    /// downloaded or put in their own applications directory) or `system`.
     pub from: String,
     /// The app's name, for an application Tilo did not package (whose id is
     /// a desktop-file id, not a name).
@@ -581,15 +582,17 @@ pub fn host_apps(installed: &[InstalledApp]) -> Vec<InstalledApp> {
         .iter()
         .map(|app| app.package_id.to_ascii_lowercase())
         .collect();
+    let person_applications = tilo_paths::xdg::data_home().map(|home| home.join("applications"));
     desktop_entry::scan()
         .entries
         .into_iter()
         .filter(|entry| !packaged.contains(&entry.id.to_ascii_lowercase()))
         .map(|entry| {
-            let from = match (&entry.downloaded, &entry.source) {
-                (Some(_), _) => "downloaded",
-                (None, desktop_entry::EntrySource::Flatpak { .. }) => "flatpak",
-                (None, desktop_entry::EntrySource::Host) => "system",
+            let from = match entry.kind(person_applications.as_deref()) {
+                desktop_entry::EntryKind::Flatpak => "flatpak",
+                desktop_entry::EntryKind::AppImage => "appimage",
+                desktop_entry::EntryKind::Program => "program",
+                desktop_entry::EntryKind::System => "system",
             };
             InstalledApp {
                 missing: entry.downloaded.as_ref().is_some_and(|d| !d.present),

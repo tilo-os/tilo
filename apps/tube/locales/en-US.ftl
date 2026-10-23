@@ -12,7 +12,6 @@ tube-nav-settings = Settings
 tube-nav-name = Tube
 
 ## Header row and navigation
-tube-connecting = Connecting
 tube-clear-history = Clear history
 
 ## Counts and facts

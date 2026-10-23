@@ -8,7 +8,7 @@
 //! * the **detail** is the full forecast for the selected city
 //!   ([`detail`]).
 //!
-//! The window shell ([`ui::widget::NavShell`]) owns the header row, the
+//! The window shell ([`ui::widget::NavShell`]) owns the
 //! breakpoint, the side-by-side↔push transition and the Back button. This
 //! module owns the *content* of the two panes plus the state they share (the
 //! model, the add-place search, direct manipulation of the list) and the

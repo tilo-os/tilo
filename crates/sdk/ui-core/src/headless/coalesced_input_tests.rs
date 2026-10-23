@@ -15,8 +15,8 @@ fn keys_typed_between_frames_lay_out_once_on_the_hosts_frame() {
     );
     frame.set_coalesce_input_frames(true);
     frame.root_mut::<TextInput>().set_focus(true);
-    // The first key switches the window to keyboard use, which lays out
-    // once for the change of modality; typing on then asks for no more.
+    // The first key switches the window to keyboard use; the host's next
+    // frame lays that out.
     frame.send_host_event(&crate::synthetic_input::named_key(
         winit::keyboard::NamedKey::End,
     ));
@@ -70,4 +70,45 @@ fn a_host_without_its_own_frame_clock_lays_out_each_key() {
     }
     assert_eq!(frame.root::<TextInput>().value(), "ok");
     assert_eq!(frame.relayout_frames(), before + 2);
+}
+
+/// Switching from the pointer to the keyboard, or pinching, between two
+/// frames lays out nothing inside the event handlers: the window draws the
+/// new modality and the zoom once, on its next frame, as the live window
+/// does.
+#[test]
+fn a_change_of_modality_and_a_pinch_wait_for_the_hosts_frame() {
+    let mut frame = FrameHarness::for_root(
+        State::new(),
+        TextInput::local(),
+        (400, 80),
+        crate::Theme::dark(),
+    );
+    frame.set_coalesce_input_frames(true);
+    frame.root_mut::<TextInput>().set_focus(true);
+    frame.send_host_event(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(10.0, 10.0),
+    });
+    frame.relayout();
+    let before = frame.relayout_frames();
+    frame.send_host_event(&crate::synthetic_input::named_key(
+        winit::keyboard::NamedKey::End,
+    ));
+    frame.send_host_event(&WindowEvent::PinchGesture {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: 0.02,
+        phase: winit::event::TouchPhase::Moved,
+    });
+    assert_eq!(
+        frame.relayout_frames(),
+        before,
+        "nothing is laid out inside an event handler"
+    );
+    assert!(frame.poll_frame().unwrap());
+    assert_eq!(
+        frame.relayout_frames(),
+        before + 1,
+        "the host's frame lays both out once"
+    );
 }

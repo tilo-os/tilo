@@ -14,7 +14,6 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RESOLVE = (ROOT / '.forgejo/workflows/resolve-builder.yml').read_text()
 CANARY = (ROOT / 'tools/ci/publish/ci-builder-canary.sh').read_text()
 sys.path.insert(0, str(ROOT / 'tools/ci'))
 import t_matrix  # noqa: E402
@@ -31,19 +30,6 @@ def canary_arm(mode):
     if match is None:
         raise AssertionError(f'ci-builder-canary.sh has no {mode} arm')
     return textwrap.dedent(match.group(1))
-
-
-def step_script(workflow, name):
-    step = workflow.split(f'- name: {name}\n', 1)[1]
-    if step.split('        run: ', 1)[1].splitlines()[0] != '|':
-        return step.split('        run: ', 1)[1].splitlines()[0]
-    lines = step.split('        run: |\n', 1)[1].splitlines()
-    body = []
-    for line in lines:
-        if line and not line.startswith('          '):
-            break
-        body.append(line)
-    return textwrap.dedent('\n'.join(body))
 
 
 def published_tags(run):
@@ -296,12 +282,6 @@ test() {
                     result, output = self.resolve(invalid)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(output, '')
-        with self.subTest(phase="ordinary_checks_resolve_the_builder_anonymously"):
-            # The builder is public on registry.tilo.so; no credential reaches
-            # the resolver.
-            block = RESOLVE.split('- name: Resolve the CI builder\n', 1)[1]
-            self.assertIn('run: python3 tools/ci/resolve_builder.py', block)
-            self.assertNotIn('REGISTRY_TOKEN', RESOLVE)
         with self.subTest(phase="main_publishes_development_tags_only"):
             # Everyone pushes to main, so main's publication carries only dev- tags, signed with
             # the development key; the release key and the release tags are stable's alone.
@@ -336,7 +316,7 @@ test() {
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'outputs'
             result = subprocess.run(
-                ['bash', '-c', step_script(RESOLVE, 'Resolve the CI builder')],
+                [sys.executable, 'tools/ci/resolve_builder.py'],
                 env={**os.environ, 'REQUESTED_BUILDER': requested, 'GITHUB_OUTPUT': str(output)},
                 cwd=ROOT,
                 text=True, capture_output=True,

@@ -143,8 +143,9 @@ class UnpassedTests(unittest.TestCase):
         # A test check whose tests did not run is not main's for main failing it as a whole.
         untested = result("policy/tests/unit", "fail", "not tested: the build failed", blame={"kind": "uncompared"})
         self.assertEqual(pre_push.unpassed([untested], ["policy/tests/unit"]), [
-            "policy/tests/unit: fails (its tests did not run, so they can't be compared with main's: main failing "
-            "it as a whole doesn't make it main's): not tested: the build failed"])
+            "policy/tests/unit: fails (it failed as a whole, so what fails can't be compared with main's one by one: "
+            "its tests did not run, or main's failure named findings this one doesn't; main failing too doesn't make "
+            "it main's): not tested: the build failed"])
         # A finding main doesn't have is named, whatever else main fails too.
         added = result("policy/source-file-size", "fail", blame={"kind": "new"},
                        failures=[finding("apps/a.rs: N lines, over its ceiling of N", "inherited"),

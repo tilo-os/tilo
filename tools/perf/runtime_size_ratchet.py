@@ -36,7 +36,7 @@ Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
   is over its budget.
 - **The published runtime, nightly.** `published ENTRIES_JSON` reads the
   registry index, fetches the newest `so.tilo.runtime` of each architecture,
-  measures its dylib and holds it to the same budgets (Perf / scheduled,
+  measures its dylib and holds it to the same budgets (t's perf-footprint,
   footprint group). `--measurements FILE` writes what it measured, which
   `adapters.py runtime-sizes` turns into `footprint.runtime.*` records.
 - **The change.** `check-budget --base REV` (t's `changes` check) fails when a

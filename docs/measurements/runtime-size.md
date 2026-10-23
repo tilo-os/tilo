@@ -34,7 +34,7 @@ provide one before the library loads.
   loader's cost for an app without media (statistics, the objects it loads,
   its private dirty memory) and, when Video Player is built, decode its H.264
   fixture through the thin runtime.
-- **Perf / scheduled** (footprint group) fetches the newest published
+- **t's `perf-footprint` check** (the performance run's footprint group) fetches the newest published
   `so.tilo.runtime` of each architecture, holds it to the budgets and records
   `footprint.runtime.<metric>.<arch>`.
 - **t's `changes` check** fails when a budget grows without a raise file new in

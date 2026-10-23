@@ -37,8 +37,6 @@ const SCENARIOS: &[&str] = &[
     "terminal",
     "selection",
     "completion",
-    "find",
-    "find-options",
     "search",
     "conflict",
     "indexing",
@@ -556,11 +554,9 @@ mod tests {
     }
 
     #[test]
-    fn the_search_scenario_shows_real_hits_and_find_shows_its_options() {
+    fn the_search_scenario_shows_real_hits() {
         let mut search = TestApp::<CodeEditorShell>::capture(Some("search")).unwrap();
         assert!(editor(&mut search, |app| app.search_hit_count_for_test()) > 0);
-        let mut options = TestApp::<CodeEditorShell>::capture(Some("find-options")).unwrap();
-        assert!(editor(&mut options, |app| app.find_options_shown_for_test()));
     }
 
     #[test]

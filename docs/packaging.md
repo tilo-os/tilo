@@ -137,7 +137,7 @@ Save your work and reboot into the prepared deployment. GDM will continue to
 offer the existing desktop and will also offer Tilo in its session menu. The
 layering transaction preserves other requested and locally installed packages;
 applications installed system-wide or for your user, including Flatpaks, remain
-installed and discoverable from Tilo under **Host Apps**. Select the existing
+installed and discoverable from Tilo under **Apps**. Select the existing
 desktop in GDM whenever you want to switch back. Removing Tilo later uses
 `sudo rpm-ostree uninstall tilo-session` and another reboot. Do not use the
 development subpackage for an ordinary installation.

@@ -236,9 +236,11 @@ fn the_editor_measures_contrast_as_the_theme_changes_and_gates_apply() {
                 .name_contains("Every pairing meets its contrast floor"),
         )
         .expect("a preset copy is legible");
-    app.harness()
-        .expect(&SemanticExpectation::named("theme-apply").enabled(true))
-        .expect("a legible theme can be applied");
+    assert_eq!(
+        bar_enabled(&mut app, "theme-apply"),
+        Some(true),
+        "a legible theme can be applied"
+    );
 
     let theme = Studio::paths().themes.item(&Id::from_raw(SCENARIO_THEME));
     app.invoke(Invoke::edit(&Rung::Tertiary.path(&theme).set(0.42)).expect("an edit"))
@@ -246,12 +248,16 @@ fn the_editor_measures_contrast_as_the_theme_changes_and_gates_apply() {
     app.harness()
         .expect(&SemanticExpectation::named("contrast-findings").name_contains("text_tertiary"))
         .expect("the failing pair is named");
-    app.harness()
-        .expect(&SemanticExpectation::named("theme-apply").enabled(false))
-        .expect("an illegible theme cannot be applied");
-    app.harness()
-        .expect(&SemanticExpectation::named("theme-export").enabled(false))
-        .expect("nor exported");
+    assert_eq!(
+        bar_enabled(&mut app, "theme-apply"),
+        Some(false),
+        "an illegible theme cannot be applied"
+    );
+    assert_eq!(
+        bar_enabled(&mut app, "theme-export"),
+        Some(false),
+        "nor exported"
+    );
 }
 
 #[test]
@@ -323,6 +329,16 @@ fn history_reads_each_role_that_changed() {
             .as_slice()
         )
     );
+}
+
+/// Whether the window bar's action `id` acts, if the bar holds it.
+fn bar_enabled(app: &mut TestApp<App>, id: &str) -> Option<bool> {
+    app.settle();
+    ui::window_toolbar::declared()?
+        .actions
+        .into_iter()
+        .find(|action| action.id == id)
+        .map(|action| action.enabled)
 }
 
 /// Open the navigation list's Presets destination.

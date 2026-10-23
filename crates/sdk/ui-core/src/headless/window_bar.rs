@@ -17,7 +17,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use super::FrameHarness;
 use crate::widget::tabs::TAB_BAR_HEIGHT;
-use crate::widget::{TabBar, TabDescriptor, Widget, WindowSearch};
+use crate::widget::{TabBar, TabDescriptor, Widget, WindowSearch, WindowSearchRequest};
 
 /// The one tab the stand-in window shows.
 const TAB: u64 = 1;
@@ -103,6 +103,137 @@ impl FrameHarness {
             })
             .min_by_key(|(rank, _)| *rank)
             .map(|(_, node)| node)
+    }
+
+    /// Type `query` into the window bar's search, opened with Find or
+    /// Replace as the desktop opens it, and carry it to the app's widgets,
+    /// which find it in place. Returns the current match and the count, as
+    /// the bar shows them.
+    pub fn search_in_window(
+        &mut self,
+        opening: crate::window_toolbar::SearchOpening,
+        query: &str,
+    ) -> Option<(usize, usize)> {
+        if !self.window_search.is_open() {
+            let offer = crate::window_toolbar::SearchOffer::of(self.root.as_mut());
+            self.window_search.open_as(
+                offer.into(),
+                crate::tokens::MotionSource::Keyboard,
+                opening,
+            );
+        }
+        self.window_search_action(
+            "window-search-query",
+            &crate::a11y::Action::SetValue(query.into()),
+        );
+        self.drive_window_search()
+    }
+
+    /// Step the window bar's search to the next (or previous) match.
+    pub fn step_window_search(&mut self, forward: bool) -> Option<(usize, usize)> {
+        self.window_search.step(forward);
+        self.drive_window_search()
+    }
+
+    /// Type `with` into the open search's replacement and press Replace
+    /// (or Replace all); the frame after writes what the app made of it.
+    /// Returns whether the search offered Replace on what the window shows.
+    pub fn replace_in_window(&mut self, with: &str, all: bool) -> bool {
+        self.drive_window_search();
+        if !self.window_search.abilities().replace {
+            return false;
+        }
+        self.window_search_action(
+            "window-search-replacement",
+            &crate::a11y::Action::SetValue(with.into()),
+        );
+        self.window_search.request_replace(all);
+        self.drive_window_search();
+        true
+    }
+
+    /// The window bar's search's current match and count, as the bar
+    /// shows them; `None` with nothing found.
+    #[must_use]
+    pub fn window_search_position(&self) -> Option<(usize, usize)> {
+        self.window_search.position()
+    }
+
+    /// Whether the window bar's search offers Replace on what the window
+    /// shows.
+    #[must_use]
+    pub fn window_search_replaces(&self) -> bool {
+        self.window_search.abilities().replace
+    }
+
+    /// Perform `action` on a part of the window bar's search (a
+    /// `window-search-*` target: open it, type the query or the
+    /// replacement, set an option, step, replace, close), as an agent
+    /// performs it on the desktop's window, then carry the search to the
+    /// app's widgets. The window carries out what the search asks of it:
+    /// it opens in place where the app offers that.
+    pub(super) fn perform_window_search_semantic(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+    ) -> Result<(), String> {
+        if !self.window_bar {
+            return Err(format!(
+                "{target} is part of the window bar's search: present the window bar"
+            ));
+        }
+        // The search's parts stand where the bar lays them out; the bar
+        // spans the window, as wide as the app under it.
+        let width = f64::from(self.viewport.0);
+        self.paint_window_bar(&mut Scene::new(), Affine::IDENTITY, width);
+        let handled = self.window_search_action(target, action);
+        for request in self.window_search.take_requests() {
+            match request {
+                WindowSearchRequest::Open => {
+                    let offer = crate::window_toolbar::SearchOffer::of(self.root.as_mut());
+                    self.window_search.open_as(
+                        offer.into(),
+                        crate::tokens::MotionSource::Action,
+                        crate::window_toolbar::SearchOpening::Find,
+                    );
+                }
+                WindowSearchRequest::Close => {
+                    self.window_search
+                        .close(crate::tokens::MotionSource::Action);
+                }
+                WindowSearchRequest::Widen(_) => {
+                    return Err(format!(
+                        "{target} widens the search to the desktop's, which a single app's window does not host"
+                    ));
+                }
+            }
+        }
+        if !handled {
+            return Err(format!(
+                "the window bar's search did not take {action:?} on {target} now"
+            ));
+        }
+        self.drive_window_search();
+        Ok(())
+    }
+
+    fn window_search_action(&mut self, target: &str, action: &crate::a11y::Action) -> bool {
+        let mut scratch = automerge::AutoCommit::new();
+        self.window_search.perform_semantic_action(
+            target,
+            action,
+            &mut crate::widget::Edits::lend(&mut scratch),
+            &automerge::ROOT,
+        )
+    }
+
+    /// Carry the search to the app's widgets, then run the frame that shows
+    /// (and writes) what they made of it.
+    fn drive_window_search(&mut self) -> Option<(usize, usize)> {
+        self.invalidate_local();
+        self.window_search.drive(self.root.as_mut());
+        self.relayout();
+        self.window_search.position()
     }
 
     /// Press one of the app's own slots in the window's bar (a mode, an
@@ -211,10 +342,9 @@ impl FrameHarness {
     }
 
     /// The bar as the desktop would draw it for this window now, laid out
-    /// across `width`, and the window's search control beside its slots.
-    fn window_bar(&self, width: f64) -> (TabBar, WindowSearch) {
+    /// across `width`.
+    fn window_bar(&self, width: f64) -> TabBar {
         let tab = self.window_tab();
-        let title = tab.title.clone();
         let mut bar = TabBar::new("headless-window", vec![tab], TAB);
         bar.set_window_controls(true);
         bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
@@ -222,10 +352,7 @@ impl FrameHarness {
         bar.set_history_control(TAB, self.window_history_control());
         bar.set_group_focused(true);
         lay_out_bar(&mut bar, width, &self.theme);
-        let mut search = WindowSearch::new();
-        search.set_app_name(&title);
-        place_search(&bar, &mut search);
-        (bar, search)
+        bar
     }
 
     /// Paint the window's bar across the top of a `width`-wide window.
@@ -238,7 +365,11 @@ impl FrameHarness {
             "a hosted window's bar wears its app's icon, as every desktop window's does: \
              mount the app with FrameHarness::for_app"
         );
-        let (mut bar, mut search) = self.window_bar(width);
+        let mut bar = self.window_bar(width);
+        let title = self.window_tab().title;
+        let search = &mut self.window_search;
+        search.set_app_name(&title);
+        place_search(&bar, search);
         let ground = bar.ground_color(&self.theme);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -255,8 +386,21 @@ impl FrameHarness {
             &self.theme,
             &self.presence,
         );
+        let search = &mut self.window_search;
         search.set_ground(ground);
         search.draw(
+            scene,
+            transform,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+        );
+    }
+
+    /// Paint the bar's top layer over the app's frame: the open search's
+    /// options and replacement, under the field.
+    pub(super) fn paint_window_bar_top_layer(&mut self, scene: &mut Scene, transform: Affine) {
+        self.window_search.draw_overlay(
             scene,
             transform,
             &mut self.text,
@@ -374,7 +518,7 @@ mod tests {
             )],
             ..crate::window_toolbar::WindowToolbar::default()
         }));
-        let (bar, _) = harness.window_bar(800.0);
+        let bar = harness.window_bar(800.0);
         assert!((bar.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON);
         let rects = bar.test_rects();
         let sidebar = rects
@@ -570,6 +714,188 @@ mod tests {
         );
         harness.present_in_window_bar();
         harness.paint_window_bar(&mut Scene::new(), Affine::IDENTITY, 800.0);
+    }
+
+    /// A text the window's search finds in place and can replace in.
+    struct Draft {
+        text: String,
+        found: Vec<crate::widget::find_bar::FindMatch>,
+    }
+
+    impl Widget for Draft {
+        crate::provides!(dyn crate::widget::Findable);
+        fn name(&self) -> &str {
+            "Draft"
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut taffy::TaffyTree<()>,
+            _: &crate::theme::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            tree.widget_leaf(taffy::Style::default(), nodes, self)
+        }
+    }
+
+    impl crate::widget::AppWidget for Draft {
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Writer"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("W")
+        }
+    }
+
+    impl crate::widget::Findable for Draft {
+        fn find(
+            &mut self,
+            query: &str,
+            _options: crate::widget::find_bar::FindOptions,
+        ) -> Vec<crate::widget::find_bar::FindMatch> {
+            self.found = if query.is_empty() {
+                Vec::new()
+            } else {
+                self.text
+                    .match_indices(query)
+                    .map(|(start, m)| {
+                        crate::widget::find_bar::FindMatch::new(start, start + m.len())
+                    })
+                    .collect()
+            };
+            self.found.clone()
+        }
+        fn reveal(&mut self, _index: usize) {}
+        fn supports_replace(&self) -> bool {
+            true
+        }
+    }
+
+    // A scenario drives the window bar's search through its parts, as an
+    // agent does on the desktop: open it, type, step, open the options and
+    // type the replacement; what the window does not host is refused.
+    #[test]
+    fn a_scenario_drives_the_window_bars_search_through_its_parts() {
+        use crate::a11y::Action;
+        let _hosted = HostedReset;
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            Draft {
+                text: "an apple and an end".into(),
+                found: Vec::new(),
+            },
+            (800, 600),
+            crate::theme::Theme::dark(),
+        );
+        assert!(
+            harness
+                .perform_semantic_named("window-search-open", None, &Action::Activate)
+                .is_err(),
+            "the search lives in the window bar"
+        );
+        harness.present_in_window_bar();
+        let mut perform =
+            |target: &str, action: Action| harness.perform_semantic_named(target, None, &action);
+        perform("window-search-open", Action::Activate).unwrap();
+        perform("window-search-query", Action::SetValue("an".into())).unwrap();
+        perform("window-search-next", Action::Activate).unwrap();
+        perform("window-search-options", Action::Expand).unwrap();
+        perform("window-search-replacement", Action::SetValue("the".into())).unwrap();
+        assert!(
+            perform("window-search-hex", Action::Activate).is_err(),
+            "a text offers no hex mode"
+        );
+        assert!(
+            perform("window-search-everywhere", Action::Activate).is_err(),
+            "the desktop's search is not the window's"
+        );
+        assert_eq!(harness.window_search_position(), Some((2, 3)));
+        assert!(harness.window_search.options_open());
+        assert_eq!(harness.window_search.replacement(), "the");
+    }
+
+    /// A list the window's search narrows.
+    struct Rows {
+        rows: Vec<&'static str>,
+        filter: String,
+    }
+
+    impl Widget for Rows {
+        crate::provides!(dyn crate::widget::Filterable);
+        fn name(&self) -> &str {
+            "Rows"
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut taffy::TaffyTree<()>,
+            _: &crate::theme::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            tree.widget_leaf(taffy::Style::default(), nodes, self)
+        }
+    }
+
+    impl crate::widget::AppWidget for Rows {
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Remote"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("R")
+        }
+    }
+
+    impl crate::widget::Filterable for Rows {
+        fn set_filter(&mut self, query: &str) {
+            query.clone_into(&mut self.filter);
+        }
+        fn filter_count(&self) -> Option<crate::widget::FilterCount> {
+            let shown = self
+                .rows
+                .iter()
+                .filter(|row| row.contains(self.filter.as_str()))
+                .count();
+            Some(crate::widget::FilterCount::new(shown, self.rows.len()))
+        }
+    }
+
+    // What a scenario types into the bar's search narrows the app's list
+    // and stands in the bar's field, as on the desktop.
+    #[test]
+    fn a_scenario_narrows_a_list_through_the_window_bars_search() {
+        use crate::a11y::Action;
+        let _hosted = HostedReset;
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            Rows {
+                rows: vec!["build-host", "build-arm", "laptop"],
+                filter: String::new(),
+            },
+            (800, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        harness
+            .perform_semantic_named("window-search-open", None, &Action::Activate)
+            .unwrap();
+        harness
+            .perform_semantic_named(
+                "window-search-query",
+                None,
+                &Action::SetValue("build".into()),
+            )
+            .unwrap();
+        assert_eq!(harness.window_search.query(), "build");
+        assert_eq!(
+            harness.window_search.count(),
+            Some(crate::widget::FilterCount::new(2, 3))
+        );
     }
 
     /// Hosting is per thread: a test leaves it as it found it.

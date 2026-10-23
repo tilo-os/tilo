@@ -31,7 +31,6 @@ glyph-join 1 apps/chat/src/resource.rs
 glyph-join 2 apps/chip-design/src/evidence_flow_view.rs
 glyph-join 2 apps/chip-design/src/view.rs
 glyph-join 1 apps/code-editor/src/app.rs
-glyph-join 2 apps/code-editor/src/lsp.rs
 glyph-join 3 apps/code-editor/src/sample_project.rs
 glyph-join 1 apps/containers/src/app.rs
 glyph-join 1 apps/containers/src/model.rs

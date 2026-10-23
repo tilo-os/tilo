@@ -27,11 +27,11 @@ fn rows() -> Vec<serde_json::Value> {
             {"name": "mode", "type": "text", "choices": ["quiet", "loud"]}
         ]}),
         serde_json::json!({"provider": "applications", "id": "so.tilo.calculator",
-            "kind": "Applications", "title": "Calculator", "params": []}),
+            "kind": "Apps", "title": "Calculator", "params": []}),
         serde_json::json!({"provider": "applications", "id": "so.tilo.notes",
-            "kind": "Applications", "title": "Notes", "params": []}),
+            "kind": "Apps", "title": "Notes", "params": []}),
         serde_json::json!({"provider": "store-catalogue", "id": "app:so.tilo.chess",
-            "kind": "Applications", "title": "Chess", "params": []}),
+            "kind": "Apps", "title": "Chess", "params": []}),
     ]
 }
 
@@ -47,7 +47,7 @@ fn enumerate(request: &serde_json::Value) -> serde_json::Value {
     let apps_only = request.get("kinds").is_some();
     let actions: Vec<serde_json::Value> = rows()
         .into_iter()
-        .filter(|row| !apps_only || row["kind"] == "Applications")
+        .filter(|row| !apps_only || row["kind"] == "Apps")
         .filter(|row| {
             let title = row["title"].as_str().unwrap_or_default().to_lowercase();
             let id = row["id"].as_str().unwrap_or_default();
@@ -281,10 +281,7 @@ fn open_resolves_an_app_by_word_name_or_id_like_search() {
         .find(|request| request["op"] == "actions_enumerate")
         .expect("a listing first");
     assert_eq!(listed["query"], "calc");
-    assert_eq!(
-        listed["kinds"],
-        serde_json::json!(["application", "host app"])
-    );
+    assert_eq!(listed["kinds"], serde_json::json!(["app"]));
 
     let with_files = ran(|io| {
         open(
@@ -416,7 +413,7 @@ fn inside_a_sandboxed_app_actions_list_and_run_through_the_agent_door() {
         "{}",
         listed.out
     );
-    assert!(listed.out.contains("\nApplications\n"), "{}", listed.out);
+    assert!(listed.out.contains("\nApps\n"), "{}", listed.out);
 
     let done = ran(|io| run(&doors, "new-terminal-window", &[], &spelling, io));
     assert_eq!(done.code, 0, "{}", done.err);

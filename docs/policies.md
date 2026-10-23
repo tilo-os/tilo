@@ -214,7 +214,7 @@ weaken it for convenience ([security.md](architecture/security.md)).
 | Production-path verification covers cancellation, interruption, reconnect and failure, not only the happy path. | Those are the paths users hit on a real network and a real laptop lid. | Review |
 | Everything is drivable by agents, people and scripts through the semantic control surface (`AGENTS.md`, "Driving a running desktop"). | It is the surface users and agents depend on. | Review |
 | UI changes come with screenshots in more than one theme; hardware claims come with evidence from that hardware. | Single-theme blind spots have shipped repeatedly. | Review |
-| Performance changes report before and after numbers measured the same way; KPIs have budgets. | Speed is a product claim. | Partly: **Perf / scheduled** compares KPIs against `tools/perf/kpi-budgets.toml` nightly ([performance](measurements/performance.md)); it is not a required check, and per-change evidence is review |
+| Performance changes report before and after numbers measured the same way; KPIs have budgets. | Speed is a product claim. | Partly: t's performance run (`perf-scheduled`) compares KPIs against `tools/perf/kpi-budgets.toml` on each `stable` head ([performance](measurements/performance.md)); it is not a required check, and per-change evidence is review |
 
 ## Legal and interoperability
 

@@ -185,6 +185,9 @@ icons! {
     PanelLeft => "panel-left",
     /// Show or hide the inspector: the mirror of [`Icon::PanelLeft`].
     PanelRight => "panel-right",
+    /// Show or hide a bottom panel (problems, a terminal): a window with a
+    /// rule near its bottom edge. Lucide `panel-bottom`.
+    PanelBottom => "panel-bottom",
     // --- Everyday set: people, places, media, text and status (Lucide v0.546.0) ---
     EyeOff => "eye-off",
     Phone => "phone",
@@ -1071,6 +1074,10 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::PanelRight => vec![
             rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
             path_from_d("M15 3v18"),
+        ],
+        Icon::PanelBottom => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            path_from_d("M3 15h18"),
         ],
         Icon::EyeOff => vec![
             path_from_d(
@@ -2089,6 +2096,7 @@ mod tests {
             "droplet",
             "palette",
             "panel-right",
+            "panel-bottom",
             "square-dashed",
             "circle-dashed",
             "lasso",
@@ -2608,6 +2616,7 @@ mod tests {
                 Icon::ArrowUpDown,
                 Icon::PanelLeft,
                 Icon::PanelRight,
+                Icon::PanelBottom,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

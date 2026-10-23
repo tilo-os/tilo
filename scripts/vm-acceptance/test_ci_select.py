@@ -46,9 +46,9 @@ class SelectTest(unittest.TestCase):
                            "crates/runtime/tilo-runtime/src/mcp.rs"]).split(","))
         self.assertEqual(both, {"B04", "W17", "input", "agent"})
 
-    def test_unrelated_paths_in_a_whole_diff_are_ignored_and_the_workflow_runs_all(self):
+    def test_unrelated_paths_in_a_whole_diff_are_ignored_and_the_runner_runs_all(self):
         self.assertEqual(select(["apps/notes/src/lib.rs", "crates/dev/tilo-vmd/src/input.rs"]), "B04,W17,input")
-        self.assertEqual(select(["crates/dev/tilo-vmd/src/input.rs", ".forgejo/workflows/vm-acceptance.yml"]), "")
+        self.assertEqual(select(["crates/dev/tilo-vmd/src/input.rs", "tools/ci/vm-acceptance.sh"]), "")
 
     def test_a_removed_check_module_runs_everything(self):
         self.assertEqual(select([S + "acceptance/checks/gone.py"]), "")

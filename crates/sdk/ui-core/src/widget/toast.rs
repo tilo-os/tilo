@@ -91,16 +91,34 @@ pub fn transient_expired(shown: crate::time::Instant, ttl: Duration) -> bool {
 /// a [`Transient`] and anything painted with [`paint_transient`].
 pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
 
-/// A message an app shows over its content for a while: a confirmation, a
-/// status, a failure. It keeps the time it went up and stops reporting the
-/// message once it has been up for [`NOTICE_LIFETIME`], so a message nobody
-/// takes down still leaves; showing one again starts its time over. The app
-/// asks to be woken at [`Self::deadline`] and calls [`Self::expire`] there
-/// so the window repaints without it. A message that needs the person to
-/// act belongs on a card with an action instead.
+/// A message an app shows over its content for a while. It is one of two
+/// kinds:
+///
+/// - plain information (a confirmation, a status, a failure, [`Self::show`])
+///   stops reporting once it has been up for [`NOTICE_LIFETIME`], so a
+///   message nobody takes down still leaves; showing one again starts its
+///   time over;
+/// - progress (work under way, "Opening book.epub",
+///   [`Self::show_progress`]) stays while the app reports the work as still
+///   running ([`Self::keep_while`]) and leaves once it no longer does, or a
+///   [`NOTICE_LIFETIME`] after it last did, so no stale progress stays.
+///
+/// The app asks to be woken at [`Self::deadline`] and, there, renews
+/// progress and calls [`Self::expire`] so the window repaints without what
+/// left. A message that needs the person to act belongs on a card with an
+/// action instead.
 #[derive(Clone, Debug)]
 pub struct Transient<T> {
-    current: Option<(T, crate::time::Instant)>,
+    current: Option<Shown<T>>,
+}
+
+/// A [`Transient`]'s message and the time its lifetime counts from: when it
+/// went up, or, for progress, when the work was last reported running.
+#[derive(Clone, Debug)]
+struct Shown<T> {
+    value: T,
+    since: crate::time::Instant,
+    progress: bool,
 }
 
 impl<T> Default for Transient<T> {
@@ -115,7 +133,7 @@ impl<T> Transient<T> {
         Self { current: None }
     }
 
-    /// `value`, shown from now.
+    /// `value`, shown from now as plain information.
     #[must_use]
     pub fn showing(value: T) -> Self {
         let mut transient = Self::new();
@@ -123,9 +141,54 @@ impl<T> Transient<T> {
         transient
     }
 
-    /// Show `value`, replacing anything already up, for a full lifetime.
+    /// `value`, shown from now as progress of work under way.
+    #[must_use]
+    pub fn showing_progress(value: T) -> Self {
+        let mut transient = Self::new();
+        transient.show_progress(value);
+        transient
+    }
+
+    /// Show `value` as plain information, replacing anything already up,
+    /// for a full lifetime.
     pub fn show(&mut self, value: T) {
-        self.current = Some((value, crate::time::now()));
+        self.put(value, false);
+    }
+
+    /// Show `value` as progress of work under way, replacing anything
+    /// already up: it stays while [`Self::keep_while`] reports the work
+    /// running.
+    pub fn show_progress(&mut self, value: T) {
+        self.put(value, true);
+    }
+
+    fn put(&mut self, value: T, progress: bool) {
+        self.current = Some(Shown {
+            value,
+            since: crate::time::now(),
+            progress,
+        });
+    }
+
+    /// Report whether the work a progress message follows is still running,
+    /// on every sync: while it is the message stays, once it is not the
+    /// message goes. Plain information keeps its own time. Whether a
+    /// message went.
+    pub fn keep_while(&mut self, busy: bool) -> bool {
+        let Some(shown) = self.current.as_mut().filter(|shown| shown.progress) else {
+            return false;
+        };
+        if busy {
+            shown.since = crate::time::now();
+            return false;
+        }
+        self.dismiss()
+    }
+
+    /// Whether the message up is progress of work under way.
+    #[must_use]
+    pub fn is_progress(&self) -> bool {
+        self.get().is_some() && self.current.as_ref().is_some_and(|shown| shown.progress)
     }
 
     /// Take the message down; whether one was up.
@@ -136,10 +199,10 @@ impl<T> Transient<T> {
     /// The message, while its lifetime lasts.
     #[must_use]
     pub fn get(&self) -> Option<&T> {
-        match &self.current {
-            Some((value, shown)) if !transient_expired(*shown, NOTICE_LIFETIME) => Some(value),
-            _ => None,
-        }
+        self.current
+            .as_ref()
+            .filter(|shown| !transient_expired(shown.since, NOTICE_LIFETIME))
+            .map(|shown| &shown.value)
     }
 
     /// The message borrowed through its `Deref` (a `String` as a `&str`).
@@ -156,11 +219,12 @@ impl<T> Transient<T> {
         self.get().is_some()
     }
 
-    /// When the message went up, while it is up.
+    /// When the message's time started, while it is up: when it went up,
+    /// or, for progress, when the work was last reported running.
     #[must_use]
     pub fn since(&self) -> Option<crate::time::Instant> {
         self.get()?;
-        self.current.as_ref().map(|(_, shown)| *shown)
+        self.current.as_ref().map(|shown| shown.since)
     }
 
     /// Drop the message once its lifetime is over; whether it did.
@@ -168,9 +232,10 @@ impl<T> Transient<T> {
         self.current.is_some() && self.get().is_none() && self.dismiss()
     }
 
-    /// When the message leaves, for a widget's `next_wake_deadline`; none
-    /// once it has, so a widget that has not yet [expired](Self::expire) it
-    /// is not woken over and over. Under the capture clock nothing leaves.
+    /// When the message leaves (progress: when it must next be renewed),
+    /// for a widget's `next_wake_deadline`; none once it has, so a widget
+    /// that has not yet [expired](Self::expire) it is not woken over and
+    /// over. Under the capture clock nothing leaves.
     #[must_use]
     pub fn deadline(&self) -> Option<crate::time::Instant> {
         if crate::time::wall_frozen() {
@@ -217,9 +282,21 @@ pub struct Notice {
 }
 
 impl Notice {
-    /// Show `text`, replacing any notice already up.
+    /// Show `text` as plain information, replacing any notice already up.
     pub fn show(&mut self, text: impl Into<String>, kind: ToastKind) {
         self.current.show((text.into(), kind));
+    }
+
+    /// Show `text` as progress of work under way, replacing any notice
+    /// already up; see [`Transient::show_progress`].
+    pub fn show_progress(&mut self, text: impl Into<String>) {
+        self.current.show_progress((text.into(), ToastKind::Info));
+    }
+
+    /// Report whether the work a progress notice follows is still running;
+    /// see [`Transient::keep_while`]. Whether the notice went.
+    pub fn keep_while(&mut self, busy: bool) -> bool {
+        self.current.keep_while(busy)
     }
 
     /// Take the notice down; whether one was up.
@@ -2308,6 +2385,50 @@ mod tests {
             status.show(String::from("Saved"));
             assert_eq!(status.as_deref(), Some("Saved"));
         });
+    }
+
+    /// Progress stays while its app reports the work running, however long
+    /// that takes, and wakes the widget to be renewed; it leaves once the
+    /// work stops, or once the app stops reporting it at all.
+    #[test]
+    fn a_progress_notice_stays_while_its_work_runs() {
+        use crate::time::testing::with_monotonic_time;
+        let start = crate::time::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut notice = Notice::default();
+        with_monotonic_time(start, || notice.show_progress("Opening x.epub"));
+        assert_eq!(notice.deadline(), Some(start + NOTICE_LIFETIME));
+        for second in [3, 6, 9] {
+            with_monotonic_time(at(second), || {
+                assert!(notice.is_shown(), "still opening at {second}s");
+                assert!(!notice.keep_while(true));
+                assert!(!notice.expire());
+            });
+        }
+        assert_eq!(
+            notice.deadline(),
+            Some(at(9) + NOTICE_LIFETIME),
+            "renewed, it wakes the widget to be renewed again"
+        );
+        with_monotonic_time(at(10), || {
+            assert!(notice.keep_while(false), "the work ended");
+            assert!(!notice.is_shown());
+        });
+        assert_eq!(notice.deadline(), None);
+
+        // Progress nobody reports any more does not stay.
+        let mut stale = Transient::showing_progress(());
+        let started = stale.since().expect("up");
+        with_monotonic_time(started + NOTICE_LIFETIME + Duration::from_millis(1), || {
+            assert!(!stale.is_shown());
+            assert!(stale.expire());
+        });
+
+        // Reporting work running keeps plain information to its own time.
+        let mut plain = Transient::new();
+        with_monotonic_time(start, || plain.show("Saved"));
+        with_monotonic_time(at(3), || assert!(!plain.keep_while(true)));
+        with_monotonic_time(at(5), || assert_eq!(plain.get(), None));
     }
 
     #[test]

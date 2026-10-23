@@ -190,9 +190,9 @@ pub enum StoreError {
     SourceChanged(String),
     #[error("{0} has writes its host has not yet committed")]
     Pending(String),
-    /// On a thread that [declined waiting](DurableStore::decline_waiting):
-    /// the store's own thread is still opening or reading the key, and wakes
-    /// the caller when it is done.
+    /// On a thread that must not wait on storage ([`waiting`]): the store's
+    /// own thread is still opening or reading the key, and calls the
+    /// thread's [wake](waiting::wake) once when it is done.
     #[error("{0} is still being opened")]
     Opening(String),
     #[error("revision {0} is not awaiting acknowledgement")]
@@ -204,8 +204,8 @@ pub enum StoreError {
 /// Ownership of one key, held for as long as the value lives.
 pub type Lease = Box<dyn Any>;
 
-/// Called, from any thread, when work a caller declined to wait for is done
-/// (see [`DurableStore::decline_waiting`]).
+/// Called, from any thread, when work a caller must not wait for is done
+/// (see [`waiting::wake`]).
 pub type ReadyWake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// A non-exclusive claim on one key, for documents several processes may
@@ -309,22 +309,17 @@ pub trait DurableStore {
     /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
 
-    /// From now on, never make the calling thread (a frame loop) wait on
-    /// storage to lease or read a key. [`Self::lease`],
-    /// [`Self::lease_shared`] and [`Self::read`] of a key the store has not
-    /// opened for this thread answer [`StoreError::Opening`] while the
-    /// store's own thread opens or reads it, and `ready` is called, from any
-    /// thread, once it has: asked again, they then wait on nothing. Reads of
-    /// a key this thread leased answer what was read for the lease, with the
-    /// writes accepted since, and [`Self::read_hint`] answers only a hint
-    /// already read. Other threads are unaffected. A store with no thread
-    /// of its own ignores this and keeps working in place.
-    fn decline_waiting(&self, ready: ReadyWake) {
-        let _ = ready;
-    }
-
-    /// Whether the calling thread [declined waiting](Self::decline_waiting)
-    /// here: a lease or read it makes may answer [`StoreError::Opening`].
+    /// Whether a lease or read the calling thread makes may answer
+    /// [`StoreError::Opening`]: on a thread that must not wait on storage
+    /// ([`waiting`], a frame loop), [`Self::lease`], [`Self::lease_shared`]
+    /// and [`Self::read`] of a key the store has not opened for this thread
+    /// answer it while the store's own thread opens or reads the key, and
+    /// that thread calls the caller's [wake](waiting::wake) once it has:
+    /// asked again, they then wait on nothing. Reads of a key this thread
+    /// leased answer what was read for the lease, with the writes accepted
+    /// since, and [`Self::read_hint`] answers only a hint already read.
+    /// Other threads are unaffected. A store with no thread of its own
+    /// works in place, and answers `false`.
     fn declined_waiting_here(&self) -> bool {
         false
     }

@@ -9,7 +9,12 @@ use super::*;
 
 impl Widget for ShellOverlayHost {
     fn has_pending_visual_work(&self) -> bool {
-        let mut pending = self.palette_visible && self.search_indexes_settling;
+        // Artwork that arrived since the rows were built is owed to them
+        // as much as artwork still on its way.
+        let mut pending = self.palette_visible
+            && (self.search_indexes_settling
+                || crate::app_icons::resolving()
+                || crate::app_icons::artwork_generation() != self.search_artwork);
         self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
         pending
     }
@@ -197,7 +202,7 @@ impl Widget for ShellOverlayHost {
             state.flush_notification_history();
         }
         steps.mark("notification-history");
-        let mut search_index_ready = false;
+        let mut search_rows_stale = false;
         // Retained search indexes are maintained on the compositor tick,
         // before palette input is routed.  Providers may do a source refresh
         // here, but the keystroke/query path below only reads ready indexes.
@@ -222,8 +227,15 @@ impl Widget for ShellOverlayHost {
                 doc,
                 doc_root: path,
             };
-            search_index_ready = self.search_registry.refresh_indexes(&args);
+            search_rows_stale = self.search_registry.refresh_indexes(&args);
             self.search_indexes_settling = self.search_registry.indexes_settling(&args);
+            // Rows take their artwork when built: artwork found since is
+            // theirs only once they are built again.
+            let artwork = crate::app_icons::artwork_generation();
+            if artwork != self.search_artwork {
+                self.search_artwork = artwork;
+                search_rows_stale = true;
+            }
         } else {
             self.search_indexes_settling = false;
         }
@@ -267,10 +279,10 @@ impl Widget for ShellOverlayHost {
         self.harvest_capture_studio_requests();
         steps.mark("harvest-requests");
         let palette_dirty = self.palette.update(doc, path);
-        if search_index_ready {
-            // A worker published an immutable index after the palette opened.
-            // Force one normal fanout this frame so the visible list updates
-            // without requiring another character from the user.
+        if search_rows_stale {
+            // A worker published an index, or artwork arrived, after the
+            // rows were built. Force one normal fanout this frame so the
+            // visible list updates without another character typed.
             self.last_search_revision.clear();
             self.refresh_search_results(doc, path);
         }
@@ -1110,6 +1122,7 @@ impl Widget for ShellOverlayHost {
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()
+            | self.bar_popovers.profile.take_structure_dirty()
     }
 
     fn needs_animation_frame(&self) -> bool {

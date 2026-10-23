@@ -446,12 +446,7 @@ fn reached(
                 && node.name.as_deref() == Some("Keyboard shortcuts")
                 && !node.state.hidden
         }),
-        Some("find") => observed(driver, |node| {
-            node.role == ui::a11y::Role::TextInput
-                && node.name.as_deref() == Some("Find in note")
-                && node.value.as_deref() == Some("migration")
-                && node.state.focused
-        }),
+        Some("find") => driver.window_search_position() == Some((1, 4)),
         Some("sidebar_scroll") => observed(driver, |node| {
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),

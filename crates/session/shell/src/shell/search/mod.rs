@@ -179,7 +179,6 @@ impl ResourceKindText for ResourceKind {
         match self {
             ResourceKind::Action => t("search-kind-actions"),
             ResourceKind::Application => t("search-kind-applications"),
-            ResourceKind::HostApplication => t("search-kind-host-apps"),
             ResourceKind::Note => t("search-kind-notes"),
             ResourceKind::Record => t("search-kind-records"),
             ResourceKind::File => t("search-kind-files"),
@@ -1629,10 +1628,7 @@ impl SearchRegistry {
             let Some((app_row, app_strength)) = merged.get(app_at) else {
                 continue;
             };
-            if !matches!(
-                app_row.kind,
-                ResourceKind::Application | ResourceKind::HostApplication
-            ) {
+            if !matches!(app_row.kind, ResourceKind::Application) {
                 continue;
             }
             let Some(provider) = providers.get(app_row.provider_id.as_str()) else {
@@ -1903,7 +1899,6 @@ fn files_follow_what_was_named(merged: &mut [(SearchResult, f32)], needle: &str)
             kind,
             ResourceKind::Action
                 | ResourceKind::Application
-                | ResourceKind::HostApplication
                 | ResourceKind::Tab
                 | ResourceKind::WindowGroup
                 | ResourceKind::Custom(_)
@@ -1932,7 +1927,7 @@ fn files_follow_what_was_named(merged: &mut [(SearchResult, f32)], needle: &str)
 }
 
 /// Rows per group the empty palette shows.
-const JUMP_BACK_IN_GROUP_ROWS: usize = 4;
+pub(crate) const JUMP_BACK_IN_GROUP_ROWS: usize = 4;
 
 /// The starting points the empty palette offers after windows and apps.
 const JUMP_BACK_IN_SUGGESTIONS: [&str; 3] =
@@ -3773,11 +3768,11 @@ mod tests {
                 "apps"
             }
             fn resource_kinds(&self) -> &[ResourceKind] {
-                &[ResourceKind::HostApplication]
+                &[ResourceKind::Application]
             }
             fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
                 vec![SearchResult::nullary(
-                    ResourceKind::HostApplication,
+                    ResourceKind::Application,
                     "open-app-apps",
                     "Alacritty",
                     "Alacritty",

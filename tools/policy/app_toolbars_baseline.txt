@@ -1,6 +1,5 @@
 # Apps that still draw a toolbar row of their own under the window bar
 # (tools/policy/check_app_toolbars.py). Counts only shrink.
-header-row 1 apps/code-editor/src/app/chrome.rs
 header-row 1 apps/git-client/src/app.rs
 header-row 1 apps/video-editor/src/app/layout.rs
 history-in-row 4 apps/git-client/src/app.rs
@@ -14,17 +13,11 @@ nav-header-actions 1 apps/feeds/src/app.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/cloud_browse.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/window_bar.rs
 nav-header-actions 2 apps/logs/src/app.rs
-nav-header-actions 1 apps/monitor/src/app.rs
 nav-header-actions 1 apps/notes/src/app/window_bar.rs
 nav-header-actions 1 apps/passwords/src/window.rs
-nav-header-actions 1 apps/snippets/src/app.rs
-nav-header-actions 1 apps/tube/src/app.rs
-nav-header-actions 1 apps/weather/src/app.rs
 # A column header holding what the bar has no slot for keeps the shell's
 # own header row, until the bar can show it.
 nav-header-leading 1 apps/canvas/src/lib.rs
-nav-header-leading 1 apps/messages/src/view.rs
-nav-header-leading 1 apps/monitor/src/app.rs
 # Search and find entries of an app's own, and a subpage Back of its own; the
 # window bar's search and navigation take them over batch by batch.
 own-back 1 apps/print-centre/src/surface/views.rs
@@ -34,30 +27,22 @@ own-search 1 apps/browser/src/browser_widget/toolbar.rs
 own-search 1 apps/browser/src/daily_controls.rs
 own-search 1 apps/chip-design/src/view.rs
 own-search 1 apps/clocks/src/app.rs
-own-search 2 apps/code-editor/src/app.rs
-own-search 1 apps/code-editor/src/app/find_workflow.rs
 own-search 2 apps/containers/src/view.rs
 own-search 2 apps/db-client/src/app.rs
 own-search 1 apps/feeds/src/app.rs
 own-search 1 apps/logs/src/app.rs
 own-search 1 apps/maps/src/offline_panel.rs
-own-search 1 apps/monitor/src/view.rs
 own-search 1 apps/notes/src/app.rs
 own-search 1 apps/passwords/src/window.rs
 own-search 2 apps/pdf-viewer/src/app.rs
 own-search 1 apps/pdf-viewer/src/app_events.rs
-own-search 1 apps/remote/src/view.rs
 own-search 2 apps/sheets/src/app.rs
-own-search 1 apps/snippets/src/app.rs
 own-search 1 apps/store/src/app.rs
 own-search 1 apps/terminal/src/view.rs
-own-search 1 apps/totp/src/resource.rs
-own-search 1 apps/tube/src/screens.rs
 own-search 2 apps/word-processor/src/find_bar.rs
 toolbar-row 1 apps/git-client/src/app.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
 toolbar-row 1 apps/mail/src/compose.rs
-toolbar-row 2 apps/monitor/src/view.rs
 toolbar-row 1 apps/pdf-viewer/src/app_draw.rs
 toolbar-row 1 apps/typst-editor/src/chrome.rs
 # Books' shelf header: sort, Hide finished, Settings and Open book in a row of

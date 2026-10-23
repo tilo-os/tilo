@@ -48,12 +48,11 @@ impl SearchScope {
 pub enum ResourceKind {
     /// A palette-registered chrome action (e.g. "Open workspace settings").
     Action,
-    /// An installed Tilo application. Enter launches it, sandboxed, into
-    /// the workspace you are looking at.
+    /// An app the person has or can get: a Tilo app, a Flatpak, a
+    /// downloaded program or one of the system's. Where it comes from is a
+    /// fact on its row, not a kind of its own. Enter starts it in the
+    /// workspace you are looking at.
     Application,
-    /// An app Tilo did not package (Flatpak, distro binary). Its own kind
-    /// because a Tilo app runs sandboxed in a room; a host app runs unconfined.
-    HostApplication,
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
     /// A record an app made, collected or imported. Enter brings it into
@@ -87,8 +86,7 @@ impl ResourceKind {
     pub fn label(&self) -> &str {
         match self {
             ResourceKind::Action => "Actions",
-            ResourceKind::Application => "Applications",
-            ResourceKind::HostApplication => "Host Apps",
+            ResourceKind::Application => "Apps",
             ResourceKind::Note => "Notes",
             ResourceKind::Record => "Records",
             ResourceKind::File => "Files",
@@ -110,7 +108,6 @@ impl ResourceKind {
         match self {
             ResourceKind::Action => (0, String::new()),
             ResourceKind::Application => (1, String::new()),
-            ResourceKind::HostApplication => (2, String::new()),
             ResourceKind::Note => (3, String::new()),
             ResourceKind::Record => (4, String::new()),
             ResourceKind::File => (5, String::new()),
@@ -521,10 +518,7 @@ pub fn lexical_strength(
     let title = fold_search_text(title);
     // Application providers decorate the app name with the launch verb.
     // Compare its name on the same basis as a file or note title.
-    let title = if matches!(
-        kind,
-        ResourceKind::Application | ResourceKind::HostApplication
-    ) {
+    let title = if matches!(kind, ResourceKind::Application) {
         title.strip_prefix("open ").unwrap_or(&title)
     } else {
         &title
@@ -567,15 +561,12 @@ pub fn merged_strength(
 ) -> f32 {
     let top = top.max(1);
     // Launch intent is a reading of what was typed; an empty query has none.
-    let application_intent = if !needle.trim().is_empty()
-        && matches!(
-            kind,
-            ResourceKind::Application | ResourceKind::HostApplication
-        ) {
-        application_intent_boost(score, top)
-    } else {
-        0.0
-    };
+    let application_intent =
+        if !needle.trim().is_empty() && matches!(kind, ResourceKind::Application) {
+            application_intent_boost(score, top)
+        } else {
+            0.0
+        };
     lexical_strength(needle, kind, title, subtitle)
         + score as f32 / top as f32
         + application_intent
@@ -759,11 +750,6 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
     match kind {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,
-        // Deliberately *not* the applications glyph. A host app is not
-        // one of Tilo's — it runs unconfined, outside everything the
-        // grid stands for — and the row has to look different at a
-        // glance, not only read differently.
-        K::HostApplication => Icon::ExternalLink,
         K::Note => Icon::FileText,
         // A record is one document several rooms can reach — the stacked
         // plates say "this is the same thing in more than one place",

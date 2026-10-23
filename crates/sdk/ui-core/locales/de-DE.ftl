@@ -313,11 +313,6 @@ table-add-row = Zeile hinzufügen
 table-add-column = Spalte hinzufügen
 
 block-editor-empty = Etwas schreiben…
-block-editor-find-placeholder = In Notiz suchen
-block-editor-find-no-results = Keine Ergebnisse
-block-editor-find-previous = Vorheriger Treffer
-block-editor-find-next = Nächster Treffer
-block-editor-find-close = Suche schließen
 block-editor-change-type = Blocktyp ändern
 block-editor-copy-code-hint = Code kopieren
 
@@ -639,12 +634,6 @@ widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizi
 widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
 widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
 
-block-editor-replace-placeholder = Ersetzen durch
-block-editor-replace = Ersetzen
-
-block-editor-replace-all = Alle ersetzen
-block-editor-replace-all-help = Umschalt+Enter im Ersetzungsfeld ersetzt alle
-
 block-callout-note = Hinweis
 block-callout-tip = Tipp
 block-callout-important = Wichtig
@@ -728,6 +717,7 @@ display-arrangement-caption-status = { $status } · { $name }
 
 # Suche: die Zeile, die den Rest einer gekürzten Gruppe zeigt
 search-show-all = Alle { $count } zeigen
+search-no-matches = Keine Treffer
 approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot

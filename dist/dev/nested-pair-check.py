@@ -282,15 +282,18 @@ def channel_reader(session: Session) -> tuple[dict, str]:
 
 
 def reads_message(session: Session, channel: str, text: str) -> bool:
-    """Whether `session`'s Chat shows a message reading `text` in `channel`.
-    Messages live in the parts of Chat's message chain; the chat's
-    `read-room` reads a channel's latest messages from them (the channel's
-    `read-messages` reads only the chat record, which holds none)."""
+    """Whether `session`'s Chat shows a message reading `text` in `channel`:
+    the channel's `read-messages`, which reads every part of Chat's
+    messages the window holds."""
     for row in session.catalogue():
         if (row.get("application") == CHAT and row.get("room") == session.room
-                and row.get("operation") == "read-room"):
-            room = session.invoke(row, {"channel": channel})
-            return room is not Stale and text in json.dumps(room or {})
+                and row.get("operation") == "read-messages"):
+            logical = bytes.fromhex(row["resource"].rsplit(":", 1)[-1]).decode()
+            if logical != f"chat.workspace/channels/{channel}":
+                continue
+            page = session.invoke(row, {"pageSize": 32})
+            return page is not Stale and any(
+                message.get("text") == text for message in (page or {}).get("messages", []))
     return False
 
 

@@ -524,8 +524,9 @@ suites = [
 
 [[group]]
 name = "vm-acceptance"
-# acceptance/records.py writes its records through tools/perf/record.py.
-inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml", "tools/perf/"]
+# acceptance/records.py writes its records through tools/perf/record.py;
+# test_layer_artifacts.py holds the cohort checks to their trust boundary.
+inputs = ["scripts/vm-acceptance/", "tools/ci/vm-acceptance.sh", "tools/ci/vm-cohort.sh", "t.toml", "tools/perf/"]
 suites = [
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
@@ -555,10 +556,9 @@ requirement = { cores = 4, memory = "1GiB" }
 inputs = [
   "scripts/perf/", "apps/settings-core/src/categories.rs", "tools/perf/",
   # tools/perf/test_compare.py and test_ab.py hold the scheduled groups, their
-  # t checks and benchmarks, and vm-acceptance's groups equal to the budgets'
-  # lanes and the A/B groups.
+  # t checks and benchmarks, and vm-acceptance-perf's groups equal to the
+  # budgets' lanes and the A/B groups.
   "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh", "t.toml",
-  ".forgejo/workflows/vm-acceptance.yml",
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_timing.rs",

@@ -3,8 +3,10 @@
 Performance KPIs (what Tilo markets, and how each is measured; their targets are
 the `source` lines of `tools/perf/kpi-budgets.toml`) are measured by t's scheduled
 performance run: one `perf-<group>` check per group (`tools/ci/perf-scheduled.sh`)
-and `perf-scheduled`, which compares and publishes them, nightly at 01:15 UTC and
-by `t dispatch perf-scheduled`. It is not a required check and never runs per push. Every result is
+and `perf-scheduled`, which compares and publishes them, on each new head of `stable` and
+by `t dispatch perf-scheduled`. It is not a required check and never runs per push.
+`perf-scheduled` runs whatever its groups' outcome: the records of the groups that passed are
+compared and published, and the groups that failed fail the run. Every result is
 one JSON record (`tools/perf/record.py`): KPI id, unit, n, nearest-rank
 p50/p95/p99/max, commit, build profile, renderer, virtualization, runner class
 and hardware. `tools/perf/compare.py` compares each record only with stored
@@ -31,7 +33,11 @@ The records, each with its verdict, are appended to the public generic package
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. The groups are `fs`,
 `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`,
-`search`, `hosting`, `browser` and `stream`; `t test perf-<group>` measures one.
+`search`, `hosting`, `browser` and `stream`; `t test perf-<group>` measures one from your
+tree, except `browser` and `stream`, which measure a commit: `t dispatch perf-<group> --ref
+<branch>`. A group's numbers are compared with the store without writing to it by
+`python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups
+<group>` on its outputs (`t outputs perf-<group>`).
 `perf-scheduled`'s dispatch inputs: `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
@@ -43,14 +49,13 @@ test, not a measurement.
 
 The installed desktop's groups, `boot`, `session`, `idle`, `memory`, `disk` and `app`, and
 its one render KPI, `render.frame_cpu_ms` (compositor CPU per painted frame, R04), come from
-**Dev / VM acceptance** (`vm-acceptance.yml`, lane `vm-acceptance`) instead: its nightly run already boots the
-newest published dev disk in a KVM guest and opens a session on it, so its `perf` job
-compares that run's records (`scripts/vm-acceptance/run.py --records`) with the store
-and publishes them, under the same rules, rather than Perf / scheduled booting a second
-VM. They name `renderer=lavapipe`, `virtualization=kvm` and the runner class
-`runner-disk-100g`: software-rendered guest numbers, compared only with each other and
-never quoted as hardware figures. `scripts/vm-acceptance/README.md` ("Performance
-records") lists the KPIs.
+t's **VM acceptance** run instead (lane `vm-acceptance`): `vm-acceptance` already boots a
+dev disk in a KVM guest and opens a session on it, so `vm-acceptance-perf` compares that
+run's records (`scripts/vm-acceptance/run.py --records`) with the store and publishes them,
+under the same rules, rather than the performance run booting a second VM. They name
+`renderer=lavapipe`, `virtualization=kvm` and the runner class `t`: software-rendered guest
+numbers, compared only with each other and never quoted as hardware figures.
+`scripts/vm-acceptance/README.md` ("Performance records") lists the KPIs.
 
 The `browser` group qualifies the browser runtime: the release desktop bundle
 (`build.sh --bundle desktop`, the bytes t's `image-web-entry` publishes) in headless
@@ -152,7 +157,7 @@ To add a benchmark (a KPI group):
    build is a different environment from GPU, KVM or release, and is never
    compared with them.
 3. Add the group to `tools/ci/perf-scheduled.sh`, a `perf-<group>` check to
-   t.toml and to `perf-scheduled`'s `needs`, and the group to
+   t.toml and to `perf-scheduled`'s `needs_any_outcome`, and the group to
    `[lanes.perf-scheduled]` in `tools/perf/kpi-budgets.toml`. If the group
    has an A/B (`tools/perf/ab.py` `GROUPS`), build the same benchmarks there.
    The check runs on the node class the KPI is defined for and consumes

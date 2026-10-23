@@ -2428,6 +2428,35 @@ mod tests {
     }
 
     #[test]
+    fn the_window_bar_names_the_shown_app_and_adds_one() {
+        let mut app =
+            ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide")).unwrap();
+        app.harness().present_in_window_bar();
+        app.settle();
+        let shown = crate::provider::SampleProvider::new().catalogue().apps[0]
+            .name
+            .clone();
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert_eq!(bar.location.map(|location| location.label), Some(shown));
+        let actions: Vec<&str> = bar
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect();
+        assert_eq!(actions, ["Add Windows app"]);
+        let controls: Vec<String> = app
+            .harness()
+            .controls()
+            .into_iter()
+            .filter_map(|control| control.name)
+            .collect();
+        assert!(
+            !controls.iter().any(|name| name == "Add Windows app"),
+            "the window draws no header of its own: {controls:?}"
+        );
+    }
+
+    #[test]
     fn destructive_and_escalating_actions_require_explicit_confirmation() {
         {
             let mut app = WindowsApp::new_offline();

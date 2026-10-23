@@ -13,9 +13,9 @@ use ui::search::{SearchRequest, open_search_binding};
 use ui::theme::Theme;
 use ui::widget::{
     Avatar, AvatarSize, Badge, Banner, Button, ButtonRole, Chip, ChipLead, ChipStyle, Column,
-    Container, ControlSize, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow,
-    MediaAspect, MediaCard, MediaGrid, MediaSize, MediaSource, OwnedBadge, Row, Scrollable,
-    Section, SectionHeader, Skeleton, SkeletonShape, Spacer, Text, TextInput, Toggle, Tone,
+    Container, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow, MediaAspect,
+    MediaCard, MediaGrid, MediaSize, MediaSource, OwnedBadge, Row, Scrollable, Section,
+    SectionHeader, Skeleton, SkeletonShape, Spacer, Text, TextInput, Toggle, Tone,
     card_column_width, card_columns,
 };
 
@@ -246,12 +246,11 @@ fn search_action() -> ui::tilo_actions::ActionBinding<()> {
 }
 
 // ---------------------------------------------------------------------------
-// header row
+// location
 // ---------------------------------------------------------------------------
 
-/// The content column's title for `route`, for the window's header row.
-/// Pages that title themselves (a video, a creator, a playlist) leave it
-/// empty.
+/// The window bar's location for `route`. Pages that title themselves (a
+/// video, a creator, a playlist) leave it empty.
 pub fn title(route: &Route) -> String {
     match route {
         Route::Home => t("tube-nav-home"),
@@ -263,36 +262,6 @@ pub fn title(route: &Route) -> String {
         Route::Search(query) => format!("Search: {query}"),
         Route::Watch(_) | Route::Channel(_) | Route::Playlist(_) => String::new(),
     }
-}
-
-/// The content column's header actions: the connection status while the
-/// catalogue is still on its way, the page's own action, and the search
-/// launcher.
-pub fn header_actions(ui: Ui<'_>) -> Vec<Element> {
-    let mut actions: Vec<Element> = Vec::new();
-    if let Some(status) = connection_badge(ui.model) {
-        actions.push(Box::new(status));
-    }
-    if matches!(ui.model.route, Route::History) && !ui.model.history.is_empty() {
-        actions.push(Box::new(
-            Button::new("clear_history", &t("tube-clear-history"))
-                .role(ButtonRole::Destructive)
-                .control_size(ControlSize::Small)
-                .on_click(ui.push(Action::Effect(TubeEffect::ClearHistory))),
-        ));
-    }
-    actions.push(Box::new(ui::search::search_button(
-        SearchRequest::this_app(),
-    )));
-    actions
-}
-
-/// "Connecting" while the catalogue is on its way. Being offline is not
-/// repeated here: a page with nothing to show says so itself, and a request
-/// that fails says so in its toast.
-fn connection_badge(model: &TubeModel) -> Option<Badge> {
-    (!model.data_source.live && model.data_source.label.contains("connect"))
-        .then(|| Badge::text(t("tube-connecting")).style(ChipStyle::Tinted(Tone::Info)))
 }
 
 // ---------------------------------------------------------------------------

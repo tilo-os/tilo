@@ -43,6 +43,8 @@ use crate::screens;
 use crate::widgets::SharedPlayer;
 use ui::tilo_resource::{Edit, Invoke};
 
+mod window_bar;
+
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
 /// Pull the frames the player's engine decoded into its surface, as the
@@ -86,8 +88,7 @@ pub struct TubeApp {
     #[cfg(feature = "grayjay-sync")]
     device_sync_seeded: bool,
 
-    /// The window shell: the navigation rail, the header row and the current
-    /// screen. It lives as long as the app, so the person's sidebar choice
+    /// The window shell: the navigation rail and the current screen. It lives as long as the app, so the person's sidebar choice
     /// and its motion survive navigation; `build_layout` swaps the screen
     /// into it when the structure, theme or width changed.
     shell: NavShell,
@@ -259,7 +260,7 @@ impl TubeApp {
     }
 
     /// The window shell: a docked sidebar of destinations beside the
-    /// screen, with the screen's title and actions in the header row, and
+    /// screen, the screen's title and actions in the window's bar, and
     /// the shell's Back for the pages reached by browsing (a video, its
     /// creator, a playlist). Escape, Alt+Left, the mouse back button and an
     /// edge swipe do the same.
@@ -279,6 +280,7 @@ impl TubeApp {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Grid)
             .with_id("tube_shell")
+            .with_window_toolbar()
             .on_back(move || can.get(), move || action::push(&bus, Action::Back))
     }
 
@@ -1108,9 +1110,6 @@ impl TubeApp {
     /// Put the current screen, the rail and the header into the shell.
     fn rebuild_shell(&mut self, theme: &Theme) {
         let screen = self.build_screen(theme);
-        let title = screens::title(&self.model.route);
-        let actions = screens::header_actions(self.ui(theme));
-        self.shell.set_content_header(title, actions);
         self.can_go_back.set(self.nav.can_go_back());
         self.shell.set_can_go_back(self.nav.can_go_back());
         // Catalogue updates may arrive between pointer motion and press.
@@ -2117,6 +2116,7 @@ impl Widget for TubeApp {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.take_window_toolbar_events();
         if self.follow_history() | self.refresh_preferences() {
             self.structure_dirty = true;
         }
@@ -2172,6 +2172,7 @@ impl Widget for TubeApp {
         if self.tick_playback() {
             self.structure_dirty = true;
         }
+        self.declare_window_toolbar();
     }
 
     fn composition_follows_allocation(&self) -> bool {
@@ -3129,12 +3130,11 @@ mod tests {
                 );
                 if placement == Screen && !framed.sidebar_open_for_test() {
                     ui::headless::Framed::harness_mut(&mut framed)
-                        .click_named("nav-shell-sidebar")
-                        .expect("the sidebar control goes back to the narrow rail");
+                        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
                 }
                 assert!(
                     framed.sidebar_open_for_test(),
-                    "the rail is reachable at {width} px"
+                    "the window bar's sidebar toggle reaches the rail at {width} px"
                 );
             }
         }

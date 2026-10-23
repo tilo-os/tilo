@@ -151,50 +151,18 @@ impl RegionPane {
         *self.locale.get()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one declarative card list mirroring the visible Region & Formats pane"
-    )]
     fn build_composition(&self) -> Box<dyn Widget> {
         let loc = *self.locale.get();
-        let paths = Locale::paths();
-        let row = |label: &str, id: &str| self.cx.row(t(label)).id(id);
         let language = self.language_card();
         let formats = section(
             &t("settings-region-formats-card"),
             rows(vec![
-                // Currencies by their ISO code, the stored form.
-                row("settings-region-currency", "region.currency")
-                    .of(&self.locale, paths.currency)
-                    .menu(Currency::ALL.iter().copied(), |currency: &Currency| {
-                        currency.code().to_owned()
-                    }),
-                row("settings-region-date-format", "region.date")
-                    .of(&self.locale, paths.date_format)
-                    .menu(DateStyle::ALL.iter().copied(), |style: &DateStyle| {
-                        date_label(*style)
-                    }),
-                row("settings-region-time-format", "region.time")
-                    .of(&self.locale, paths.time_format)
-                    .menu(TimeStyle::ALL.iter().copied(), |style: &TimeStyle| {
-                        time_label(*style)
-                    }),
-                row("settings-region-measurement", "region.measurement")
-                    .of(&self.locale, paths.measurement)
-                    .menu(Measurement::ALL.iter().copied(), |measure: &Measurement| {
-                        measure_label(*measure)
-                    }),
-                row("settings-region-number-format", "region.number_style")
-                    .of(&self.locale, paths.number_style)
-                    .menu(NumberStyle::ALL, |style: &NumberStyle| {
-                        style.label().to_owned()
-                    }),
-                row("settings-region-first-day", "region.first_day")
-                    .of(&self.locale, paths.first_day_of_week)
-                    .menu(
-                        FirstDayOfWeek::ALL.iter().copied(),
-                        |day: &FirstDayOfWeek| weekday_label(*day),
-                    ),
+                currency(&self.cx, &self.locale),
+                date_format(&self.cx, &self.locale),
+                time_format(&self.cx, &self.locale),
+                measurement(&self.cx, &self.locale),
+                number_style(&self.cx, &self.locale),
+                first_day(&self.cx, &self.locale),
             ]),
         );
 
@@ -228,6 +196,62 @@ impl RegionPane {
 
         crate::widgets::page(vec![language, formats, preview, explainer])
     }
+}
+
+/// Currencies by their ISO code, the stored form.
+pub(crate) fn currency(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
+    cx.row(t("settings-region-currency"))
+        .id("region.currency")
+        .of(locale, Locale::paths().currency)
+        .menu(Currency::ALL.iter().copied(), |currency: &Currency| {
+            currency.code().to_owned()
+        })
+}
+
+pub(crate) fn date_format(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
+    cx.row(t("settings-region-date-format"))
+        .id("region.date")
+        .of(locale, Locale::paths().date_format)
+        .menu(DateStyle::ALL.iter().copied(), |style: &DateStyle| {
+            date_label(*style)
+        })
+}
+
+pub(crate) fn time_format(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
+    cx.row(t("settings-region-time-format"))
+        .id("region.time")
+        .of(locale, Locale::paths().time_format)
+        .menu(TimeStyle::ALL.iter().copied(), |style: &TimeStyle| {
+            time_label(*style)
+        })
+}
+
+pub(crate) fn measurement(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
+    cx.row(t("settings-region-measurement"))
+        .id("region.measurement")
+        .of(locale, Locale::paths().measurement)
+        .menu(Measurement::ALL.iter().copied(), |measure: &Measurement| {
+            measure_label(*measure)
+        })
+}
+
+pub(crate) fn number_style(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
+    cx.row(t("settings-region-number-format"))
+        .id("region.number_style")
+        .of(locale, Locale::paths().number_style)
+        .menu(NumberStyle::ALL, |style: &NumberStyle| {
+            style.label().to_owned()
+        })
+}
+
+pub(crate) fn first_day(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
+    cx.row(t("settings-region-first-day"))
+        .id("region.first_day")
+        .of(locale, Locale::paths().first_day_of_week)
+        .menu(
+            FirstDayOfWeek::ALL.iter().copied(),
+            |day: &FirstDayOfWeek| weekday_label(*day),
+        )
 }
 
 impl Widget for RegionPane {

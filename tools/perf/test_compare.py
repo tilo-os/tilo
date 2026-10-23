@@ -206,8 +206,11 @@ class Budgets(unittest.TestCase):
 
 
 ROOT = HERE.parents[1]
-WORKFLOWS = ROOT / ".forgejo/workflows"
 SCHEDULED = ROOT / "tools/ci/perf-scheduled.sh"
+
+
+def t_checks() -> dict[str, dict]:
+    return {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
 
 
 def scheduled_groups() -> list[str]:
@@ -286,18 +289,23 @@ class Lanes(unittest.TestCase):
         # hosting-room records are hosting's, footprint-image's footprint's
         # (tools/ci/perf-compare.sh).
         self.assertEqual({group.split("-")[0] for group in groups}, budgets.lane_groups("perf-scheduled"))
-        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
-        self.assertEqual(set(checks["perf-scheduled"]["needs"]), {f"perf-{group}" for group in groups})
+        checks = t_checks()
+        # Whatever their outcome, so one failing group doesn't cost the others their records.
+        self.assertNotIn("needs", checks["perf-scheduled"])
+        self.assertEqual(set(checks["perf-scheduled"]["needs_any_outcome"]), {f"perf-{group}" for group in groups})
         for group in groups:
             self.assertEqual(checks[f"perf-{group}"]["run"], f"bash tools/ci/perf-scheduled.sh {group}")
-        self.assertIn("--lane perf-scheduled", (ROOT / "tools/ci/perf-compare.sh").read_text())
+        compare_script = (ROOT / "tools/ci/perf-compare.sh").read_text()
+        self.assertIn('--lane perf-scheduled --groups "$groups"', compare_script)
+        self.assertIn('["lanes"]["perf-scheduled"]["groups"]', compare_script)
+        self.assertIn("T_NEEDS_FAILED", compare_script)
 
     def test_vm_acceptance_owes_exactly_its_lanes_groups(self):
         budgets = compare.load_budgets(compare.BUDGETS)
-        workflow = (WORKFLOWS / "vm-acceptance.yml").read_text()
-        [groups] = re.findall(r"\|\| groups=([a-z,]+)$", workflow, re.M)
+        perf = t_checks()["vm-acceptance-perf"]
+        self.assertEqual(perf["needs"], ["vm-acceptance"])
+        [groups] = re.findall(r"--lane vm-acceptance --groups ([a-z,]+) ", perf["run"])
         self.assertEqual(set(groups.split(",")), budgets.lane_groups("vm-acceptance"))
-        self.assertIn("--lane vm-acceptance", workflow)
 
     def test_each_workflows_render_records_satisfy_the_repository_budgets(self):
         # The nightly failure this fixes: both workflows select render, and

@@ -237,15 +237,24 @@ fn key(package: &str, room: &str, id: &RecordId) -> Result<StorageKey, TransferE
 }
 
 fn decode(store: &Rc<dyn DurableStore>, key: &StorageKey) -> Result<AutoCommit, TransferError> {
-    let stored = store
-        .read(key)?
-        .filter(|stored| !stored.bytes.is_empty())
-        .ok_or(RecordOpenError::MissingRecord)?;
+    decode_stored(store, key)?.ok_or_else(|| RecordOpenError::MissingRecord.into())
+}
+
+/// `key`'s document, `None` when nothing is stored there. One read: a store
+/// that prepares reads for a thread that must not wait hands each one over
+/// once.
+fn decode_stored(
+    store: &Rc<dyn DurableStore>,
+    key: &StorageKey,
+) -> Result<Option<AutoCommit>, TransferError> {
+    let Some(stored) = store.read(key)?.filter(|stored| !stored.bytes.is_empty()) else {
+        return Ok(None);
+    };
     let label = store
         .local_path(key)
         .unwrap_or_else(|| std::path::PathBuf::from(key.to_string()));
     let (doc, _) = app_state::decode_canonical(&stored.bytes, false, &label)?;
-    Ok(doc)
+    Ok(Some(doc))
 }
 
 /// Read `origin` as `package` last made it durable in `room`, without
@@ -302,13 +311,16 @@ pub fn adopt_fetched(
         .filter(|found| &found.id == id)
         .ok_or(RecordOpenError::IdentityMismatch)?;
     validate_identity(&doc, &checkout, room)?;
-    match install(store, package, room, &mut doc) {
-        Err(TransferError::Open(RecordOpenError::AlreadyExists)) => {
-            let (_, landing) = catch_up(store, package, room, &checkout, &doc)?;
-            Ok((checkout, landing))
-        }
-        other => other.map(|(checkout, landing)| (checkout, Some(landing))),
-    }
+    // One writer and one read for both cases: a thread that must not wait
+    // is answered Opening until the store's thread has leased the key, and
+    // a second lease of it would start that over.
+    let key = key(package, room, &checkout.id)?;
+    let _writer = writer(store, &key)?;
+    let landing = match decode_stored(store, &key)? {
+        None => Some(persist(store, &key, &mut doc)?),
+        Some(held) => merge_into(store, &key, held, &checkout, room, &doc)?.1,
+    };
+    Ok((checkout, landing))
 }
 
 /// Identity keys a record's meta map may hold; anything else could claim
@@ -649,7 +661,20 @@ pub fn catch_up(
 ) -> Result<(usize, Option<Landing>), TransferError> {
     let key = key(package, room, &target.id)?;
     let _writer = writer(store, &key)?;
-    let mut doc = decode(store, &key)?;
+    let doc = decode(store, &key)?;
+    merge_into(store, &key, doc, target, room, source)
+}
+
+/// Merge into `doc`, held under `key`'s writer, what `source` adds, and
+/// start that committing.
+fn merge_into(
+    store: &Rc<dyn DurableStore>,
+    key: &StorageKey,
+    mut doc: AutoCommit,
+    target: &RecordCheckout,
+    room: &str,
+    source: &AutoCommit,
+) -> Result<(usize, Option<Landing>), TransferError> {
     validate_identity(&doc, target, room)?;
     let arriving = doc.clone().get_changes_added(&mut source.clone()).len();
     if arriving == 0 {
@@ -658,7 +683,7 @@ pub fn catch_up(
     doc.merge_incoming(&mut source.clone())
         .map_err(|error| TransferError::Automerge(error.to_string()))?;
     validate_identity(&doc, target, room)?;
-    let landing = persist(store, &key, &mut doc)?;
+    let landing = persist(store, key, &mut doc)?;
     Ok((arriving, Some(landing)))
 }
 

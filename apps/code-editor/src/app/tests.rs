@@ -1,5 +1,6 @@
 use super::*;
 use automerge::ReadDoc;
+use ui::tilo_resource::Effect as _;
 
 use tilo_test_env::hang_bound;
 
@@ -238,13 +239,13 @@ fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor()
 }
 
 #[test]
-fn bottom_dock_keeps_a_live_terminal_across_toggles_and_returns_focus_to_its_trigger() {
+fn bottom_dock_keeps_a_live_terminal_across_toggles_and_returns_focus_to_the_code() {
     // Each phase builds a fresh app (and its own terminal or headless driver).
     ide_embeds_the_real_terminal_widget();
     ide_terminal_runs_a_command_and_shows_output();
     dock_commands_open_the_requested_content_and_toggle_without_clearing_it();
-    keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal();
-    retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes();
+    keyboard_closing_a_focused_terminal_returns_to_the_code_without_refocusing_terminal();
+    the_dock_opens_and_closes_from_the_bar_the_keyboard_and_escape_inside_the_viewport();
 }
 
 fn ide_embeds_the_real_terminal_widget() {
@@ -363,7 +364,7 @@ fn a_window_shows_one_file_and_asks_before_dropping_unsaved_work() {
     // Each phase builds a fresh sample app.
     opening_another_file_replaces_the_shown_one();
     opening_another_file_over_unsaved_edits_asks_first();
-    the_header_names_the_shown_file_and_marks_unsaved_edits();
+    the_window_bar_names_the_shown_file_and_marks_unsaved_edits();
     the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop();
     quick_open_and_go_to_line_open_the_host_palette();
 }
@@ -439,21 +440,18 @@ fn opening_another_file_over_unsaved_edits_asks_first() {
     });
 }
 
-fn the_header_names_the_shown_file_and_marks_unsaved_edits() {
+fn the_window_bar_names_the_shown_file_and_marks_unsaved_edits() {
+    fn location(app: &CodeApp) -> Option<String> {
+        app.window_toolbar().location.map(|location| location.label)
+    }
     let mut sample = synced_sample();
-    sample.editor(|app| {
-        app.refresh_header();
-        assert_eq!(*app.header_label.borrow(), "main.rs");
-    });
+    sample.editor(|app| assert_eq!(location(app).as_deref(), Some("main.rs")));
     sample.with_doc(|app, doc| {
         app.editor.insert_for_test(doc, "X");
         app.dispatch_editor_text_edits(doc);
     });
     sample.app.settle();
-    sample.editor(|app| {
-        app.refresh_header();
-        assert_eq!(*app.header_label.borrow(), "main.rs \u{2022}");
-    });
+    sample.editor(|app| assert_eq!(location(app).as_deref(), Some("main.rs \u{2022}")));
 }
 
 fn the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop() {
@@ -538,7 +536,6 @@ fn editor_commands_edit_through_the_crdt_and_move_the_caret() {
     delete_line_removes_it();
     toggle_comment_comments_then_uncomments();
     go_to_line_moves_the_caret();
-    find_highlights_and_navigates_matches();
 }
 
 fn editing_routes_through_crdt() {
@@ -776,7 +773,10 @@ fn an_unfinished_server_replaces_the_no_problems_claim() {
         LspStatus::Ready {
             server: "rust-analyzer".to_string(),
         },
-        LspStatus::Failed("rust-analyzer exited".to_string()),
+        LspStatus::Failed(crate::lsp::LspFailure::Stopped {
+            server: "rust-analyzer".to_string(),
+            detail: None,
+        }),
         LspStatus::None,
     ] {
         assert_eq!(
@@ -1060,39 +1060,6 @@ fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
         .collect()
 }
 
-/// Find populates real matches over the active buffer, hands them to the
-/// editor's highlight layer, and stepping to a match selects it.
-fn find_highlights_and_navigates_matches() {
-    let mut sample = synced_sample();
-    sample.with_doc(|app, doc| {
-        app.open_find();
-        app.find.set_query("primes");
-        app.drive_find(doc);
-
-        assert!(
-            app.find_matches.len() >= 2,
-            "'primes' occurs several times in main.rs, got {}",
-            app.find_matches.len()
-        );
-        assert_eq!(
-            app.editor.find_match_count_for_test(),
-            app.find_matches.len(),
-            "the editor received every match to highlight"
-        );
-
-        // Stepping to the second match navigates the caret onto it and marks it
-        // as the current (filled) highlight.
-        app.focus_match(Some(1));
-        let m = app.find_matches[1];
-        assert_eq!(app.find_current, Some(1), "the second match is now current");
-        assert_eq!(
-            app.editor.primary_caret(),
-            (m.line, m.col),
-            "the caret navigated onto the match"
-        );
-    });
-}
-
 /// Go-to-line moves the caret to the requested 1-based line and clamps past
 /// the end of the buffer.
 fn go_to_line_moves_the_caret() {
@@ -1299,7 +1266,10 @@ fn fresh_editor_collapses_the_empty_bottom_panel() {
     );
 }
 
-fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal() {
+fn keyboard_closing_a_focused_terminal_returns_to_the_code_without_refocusing_terminal() {
+    fn focused(driver: &ui::headless::FrameHarness) -> Option<String> {
+        driver.focused_access_node().and_then(|node| node.name)
+    }
     let mut sample = crate::test_support::sample();
     sample.open("src/main.rs");
     sample.editor(CodeApp::shots_open_terminal);
@@ -1313,13 +1283,11 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
     driver.set_modifiers(&[]);
 
     assert!(!driver.targets().contains_key("bottom_panel"));
+    let code = focused(driver);
     assert_eq!(
-        driver
-            .focused_access_node()
-            .and_then(|node| node.name)
-            .as_deref(),
-        Some("Show panel"),
-        "keyboard close returns focus to the retained disclosure"
+        code.as_deref(),
+        Some("Code editor"),
+        "keyboard close gives the keyboard back to the code; the panel's toggle is the window bar's"
     );
 
     driver.set_modifiers(&["ctrl".to_string()]);
@@ -1327,122 +1295,48 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
     driver.set_modifiers(&[]);
     assert!(driver.targets().contains_key("bottom_panel"));
     assert_eq!(
-        driver
-            .focused_access_node()
-            .and_then(|node| node.name)
-            .as_deref(),
-        Some("Hide panel"),
-        "reopening keeps focus on the disclosure instead of hidden Terminal content"
-    );
-
-    driver.key("Enter");
-    assert!(
-        !driver.targets().contains_key("bottom_panel"),
-        "Enter reaches the focused disclosure after reopening instead of the Terminal"
+        focused(driver),
+        code,
+        "reopening keeps the keyboard on the code instead of hidden Terminal content"
     );
 }
 
-#[allow(
-    clippy::float_cmp,
-    clippy::too_many_lines,
-    reason = "one pointer and keyboard walk through the dock; its geometry is exact"
-)]
-fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes() {
-    fn trigger_semantics(snapshot: &ui::headless::InspectionSnapshot) -> &ui::a11y::AccessNode {
-        fn find(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {
-            if node.test_id.as_deref() == Some("code.bottom-panel-toggle") {
-                return node.semantics.as_ref();
-            }
-            node.children.iter().find_map(find)
-        }
-
-        find(&snapshot.root).expect("dock trigger semantics")
-    }
-
+fn the_dock_opens_and_closes_from_the_bar_the_keyboard_and_escape_inside_the_viewport() {
     let mut sample = crate::test_support::sample();
     sample.open("src/main.rs");
+    sample.editor(|app| {
+        assert!(!app.panel_visible);
+        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
+            id: window_bar::BOTTOM_PANEL.into(),
+        });
+    });
     let driver = sample.app.harness();
     driver.resize((480, 900)).unwrap();
-    let targets = driver.targets();
-    let header = targets
-        .get("code-editor.file")
-        .copied()
-        .expect("file header target");
-    let trigger = targets
-        .get("code.bottom-panel-toggle")
-        .copied()
-        .expect("retained dock trigger");
-    // The trigger shares the chrome row with the file header, centred on the
-    // same line, and never overlaps it.
-    assert!(
-        (trigger.center().y - header.center().y).abs() < 1.0,
-        "trigger and file name share the chrome row: {trigger:?} vs {header:?}"
-    );
-    assert!(
-        header.x1 <= trigger.x0,
-        "file header and dock trigger must not overlap"
-    );
-    let closed_snapshot = driver.inspection();
-    let closed = trigger_semantics(&closed_snapshot);
-    assert_eq!(closed.name.as_deref(), Some("Show panel"));
-    assert_eq!(closed.state.expanded, Some(false));
-    assert!(!closed.state.selected);
-
-    driver
-        .click_named("code.bottom-panel-toggle")
-        .expect("pointer activates retained trigger");
-    assert!(driver.targets().contains_key("bottom_panel"));
-    let open_snapshot = driver.inspection();
-    let open = trigger_semantics(&open_snapshot);
-    assert_eq!(open.name.as_deref(), Some("Hide panel"));
-    assert_eq!(open.state.expanded, Some(true));
-    assert!(open.state.selected);
-    assert_eq!(
-        driver
-            .focused_access_node()
-            .and_then(|node| node.name)
-            .as_deref(),
-        Some("Hide panel"),
-        "click transfers keyboard focus to the retained trigger"
-    );
-
-    driver.key("Enter");
-    assert!(
-        !driver.targets().contains_key("bottom_panel"),
-        "keyboard activation routes through the same toggle command"
-    );
-
-    driver.set_modifiers(&["ctrl".to_string()]);
-    driver.key("j");
-    driver.set_modifiers(&[]);
     assert!(
         driver.targets().contains_key("bottom_panel"),
-        "Ctrl+J remains an equivalent keyboard route"
+        "the window bar's toggle opens the dock"
     );
 
     driver.key("Escape");
     assert!(
         !driver.targets().contains_key("bottom_panel"),
-        "Escape closes the dock disclosure"
+        "Escape closes the dock"
     );
     assert_eq!(
         driver
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show panel"),
-        "Escape returns focus to the retained trigger"
+        Some("Code editor"),
+        "Escape gives the keyboard back to the code"
     );
 
-    let trigger_node = driver
-        .a11y_node_named("Show panel")
-        .expect("trigger is exported to assistive technology");
-    driver
-        .perform_a11y_action(trigger_node, &ui::a11y::Action::Activate)
-        .expect("semantic activation uses the retained control");
+    driver.set_modifiers(&["ctrl".to_string()]);
+    driver.key("j");
+    driver.set_modifiers(&[]);
     assert!(
         driver.targets().contains_key("bottom_panel"),
-        "assistive activation reaches the same canonical toggle"
+        "Ctrl+J is an equivalent keyboard route"
     );
 
     let panel_narrow = driver.targets()["bottom_panel"];
@@ -1454,10 +1348,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         "open panel stays inside the narrow viewport"
     );
     driver.resize((800, 700)).expect("resize open editor");
-    let resized = driver.targets();
-    let panel_standard = resized["bottom_panel"];
-    let header_standard = resized["code-editor.file"];
-    let trigger_standard = resized["code.bottom-panel-toggle"];
+    let panel_standard = driver.targets()["bottom_panel"];
     assert!(
         panel_standard.x0 >= 0.0
             && panel_standard.y0 >= 0.0
@@ -1465,21 +1356,15 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             && panel_standard.y1 <= 700.0,
         "open panel stays inside the resized viewport"
     );
-    assert_eq!(panel_standard.height(), panel_narrow.height());
-    // Same chrome row after the resize, still clear of the file header.
-    assert!((trigger_standard.center().y - header_standard.center().y).abs() < 1.0);
-    assert!(header_standard.x1 <= trigger_standard.x0);
-    let resized_snapshot = driver.inspection();
-    let resized_trigger = trigger_semantics(&resized_snapshot);
-    assert_eq!(resized_trigger.name.as_deref(), Some("Hide panel"));
-    assert_eq!(resized_trigger.state.expanded, Some(true));
-    assert!(resized_trigger.state.selected);
+    assert!(
+        (panel_standard.height() - panel_narrow.height()).abs() < 0.5,
+        "the dock keeps its height across a resize"
+    );
 
     driver.resize((480, 900)).expect("resize back while open");
     let restored = driver.targets();
     assert!(restored.contains_key("bottom_panel"));
-    assert_eq!(restored["bottom_panel"].height(), panel_narrow.height());
-    assert!(restored["code-editor.file"].x1 <= restored["code.bottom-panel-toggle"].x0);
+    assert!((restored["bottom_panel"].height() - panel_narrow.height()).abs() < 0.5);
 }
 
 /// With format on save, the person's Save waits for the language server's
@@ -1605,15 +1490,91 @@ fn the_status_and_header_say_only_what_the_person_needs() {
         let left = sample.editor(|app| app.status.left());
         assert!(!left.contains("Opened"), "status: {left}");
     }
-    // Case `the_header_row_stands_only_over_a_file`.
-    {
-        let mut sample = crate::test_support::sample();
-        let header = |sample: &mut crate::test_support::Sample| {
-            sample.editor(|app| (app.laid_out_header, app.search_button.get_rect().height()))
-        };
-        assert_eq!(header(&mut sample), (false, 0.0), "no file, no header row");
-        sample.open("src/main.rs");
-        let (shown, height) = header(&mut sample);
-        assert!(shown && height > 0.0, "a file brings the header row");
-    }
+    missing_code_help_says_so_and_keeps_why_behind_a_click();
+}
+
+fn missing_code_help_says_so_and_keeps_why_behind_a_click() {
+    use super::code_help::CodeHelpAnswer;
+    let mut sample = crate::test_support::sample();
+    // A computer with no rust-analyzer anywhere the editor looks.
+    sample.editor(|app| app.lsp_tools = Some(tilo_process::tools::ToolDirs::default()));
+    sample
+        .app
+        .settings::<crate::settings::CodeSettings>()
+        .set(&crate::settings::CodeSettings {
+            language_servers: true,
+            ..Default::default()
+        })
+        .unwrap();
+    sample.open("src/main.rs");
+    let status = sample.editor(|app| app.lsp_status.clone());
+    assert_eq!(
+        status,
+        LspStatus::Failed(crate::lsp::LspFailure::NotInstalled {
+            server: "rust-analyzer".to_owned(),
+        }),
+        "the launch reports the server missing, as itself"
+    );
+    let readout = "Rust: code help unavailable";
+    let bounds = sample
+        .app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::Button && node.label() == Some(readout)
+        })
+        .and_then(|(_, node)| node.bounds())
+        .expect("the readout is a button where it is painted");
+    sample.app.harness().click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    sample.app.settle();
+    let (question, body) = sample.editor(|app| {
+        let question = app.question();
+        (question, question.map(|q| app.wording(q).body))
+    });
+    assert_eq!(question, Some(super::dialogs::Question::CodeHelp));
+    let body = body.unwrap_or_default();
+    assert!(
+        body.starts_with("rust-analyzer isn't installed on this computer.")
+            && body.contains("rustup component add rust-analyzer"),
+        "the sheet says why and how to install it: {body}"
+    );
+    let answers = sample.editor(|app| app.code_help_answers());
+    assert_eq!(
+        answers,
+        [CodeHelpAnswer::TryAgain, CodeHelpAnswer::Close],
+        "nothing more to copy than the sheet says"
+    );
+    let (asked, failed) = sample.editor(|app| {
+        app.answer_code_help(0);
+        (app.question(), app.lsp_failed.len())
+    });
+    assert_eq!(
+        (asked, failed),
+        (None, 0),
+        "trying again forgets the failure"
+    );
+    let detail = "signal: 9 (SIGKILL)";
+    let (body, answers) = sample.editor(|app| {
+        app.lsp_status = LspStatus::Failed(crate::lsp::LspFailure::Stopped {
+            server: "rust-analyzer".to_owned(),
+            detail: Some(detail.to_owned()),
+        });
+        (
+            app.wording(super::dialogs::Question::CodeHelp).body,
+            app.code_help_answers(),
+        )
+    });
+    assert_eq!(
+        body.lines().next(),
+        Some("rust-analyzer stopped. Suggestions, problems and go to definition come from it.")
+    );
+    assert!(
+        !body.contains(detail),
+        "the system's words stay behind Copy details: {body}"
+    );
+    assert!(answers.contains(&CodeHelpAnswer::CopyDetails));
 }

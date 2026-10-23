@@ -4,7 +4,7 @@
 // in headless Chrome, measured the way a person uses it, and checked against
 // the runtime's documented goals. It writes one report; `tools/perf/adapters.py
 // browser-qualification` turns that into the `browser` KPI group's records
-// (Perf / scheduled, tools/perf/kpi-budgets.toml).
+// (t's perf-browser, tools/perf/kpi-budgets.toml).
 //
 // usage: node scripts/perf/browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON
 //          --renderer gpu|swiftshader [--rounds N]

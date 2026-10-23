@@ -149,12 +149,20 @@ fn pointers_over_adas_caret(at: (f64, f64)) -> Vec<tilo_ui::presence::PeerCursor
 }
 
 #[test]
-fn a_pointer_right_beside_its_persons_caret_shows_one_name_tag() {
-    let beside = pointers_over_adas_caret((120.0, 90.0));
+fn a_pointer_whose_tag_meets_its_persons_caret_tag_shows_one_name_tag() {
+    // Her caret's tag sits above the caret (y 70..90), from x 100: a pointer
+    // just above-left of the caret puts its tag right over the caret's.
+    let beside = pointers_over_adas_caret((110.0, 40.0));
     assert_eq!(beside.len(), 1);
     assert!(
         beside[0].name_opacity <= 0.0,
-        "the caret's tag names her; the pointer beside it does not again"
+        "the caret's tag names her; the pointer whose tag meets it does not again"
+    );
+    // Right below the caret its tag hangs clear of the caret's tag above.
+    let below = pointers_over_adas_caret((120.0, 95.0));
+    assert!(
+        below[0].name_opacity > 0.0,
+        "a pointer whose tag stays clear of her caret's keeps its own name"
     );
     let away = pointers_over_adas_caret((300.0, 150.0));
     assert!(

@@ -10,7 +10,6 @@ import subprocess
 import sys
 import socket
 import ssl
-import tomllib
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
@@ -64,31 +63,6 @@ class BuilderResolutionTests(unittest.TestCase):
             def unexpected_fetch():
                 self.fail('manual immutable override queried mutable latest')
             self.assertEqual(resolver.resolve(image, fetch=unexpected_fetch), image)
-
-    def test_identical_builder_lookups_share_one_workflow(self) -> None:
-        shared = (ROOT / '.forgejo/workflows/resolve-builder.yml').read_text()
-        pins = tomllib.loads((ROOT / 'tools/ci/images.toml').read_text())
-        registry = pins['registry']
-        control = (f"{registry['host']}/{registry['namespace']}/ci-control@"
-                   f"{pins['pins']['ci-control']}")
-        self.assertIn('workflow_call:', shared)
-        self.assertIn('run: python3 tools/ci/resolve_builder.py', shared)
-        self.assertIn(
-            f'image: {control}',
-            shared,
-        )
-        self.assertNotIn('credentials:', shared)
-        self.assertNotIn('enable-openid-connect:', shared)
-        callers = (
-            'vm-acceptance.yml',
-        )
-        for name in callers:
-            workflow = (ROOT / '.forgejo/workflows' / name).read_text()
-            self.assertIn('uses: ./.forgejo/workflows/resolve-builder.yml', workflow, name)
-            self.assertIn('secrets: inherit', workflow, name)
-            self.assertIn('image: ${{ needs.builder.outputs.image }}', workflow, name)
-            # The lookup lives in one file. A copied job would drift the digest.
-            self.assertNotIn('run: python3 tools/ci/resolve_builder.py', workflow, name)
 
     @staticmethod
     def index():

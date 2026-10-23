@@ -761,7 +761,7 @@ fn the_plus_chip_opens_an_apps_picker_without_moving_the_wide_strip() {
         let filter = h.host.palette_kind_filter();
         assert_eq!(
             filter,
-            vec!["Applications".to_string(), "Host Apps".to_string()],
+            vec!["Apps".to_string()],
             "the + chip must pre-filter the picker to the kinds that can be a \
              tab, and to nothing else"
         );

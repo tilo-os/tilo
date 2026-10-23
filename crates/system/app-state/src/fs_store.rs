@@ -15,14 +15,14 @@
 //! [`Durability::Durable`] only after that commit.
 //!
 //! The same thread opens keys for a thread that must not wait on the disk
-//! ([`DurableStore::decline_waiting`]): see [`prepared`].
+//! ([`durable_store::waiting`]): see [`prepared`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
-use std::thread::{self, ThreadId};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use durable_store::{
@@ -95,9 +95,6 @@ struct State {
     /// no caller waits on the disk for them.
     sync_queue: BTreeSet<StorageKey>,
     syncing: BTreeSet<StorageKey>,
-    /// The thread that declined waiting on the disk, and what wakes it
-    /// ([`DurableStore::decline_waiting`]).
-    waitless: Option<(ThreadId, ReadyWake)>,
     /// Keys being opened for that thread, and what came of it.
     prepared: BTreeMap<StorageKey, Preparation>,
     /// Preparations the writer thread has yet to take.
@@ -525,7 +522,7 @@ impl DurableStore for FsStore {
 
     fn read(&self, key: &StorageKey) -> Result<Option<Stored>, SeamError> {
         let target = self.target(key)?;
-        if let Some(wake) = self.shared.declined_here() {
+        if let Some(wake) = durable_store::waiting::wake() {
             // What this store holds answers without the disk; anything else
             // is read by the store's thread while the caller is told to ask
             // again.
@@ -777,7 +774,7 @@ impl DurableStore for FsStore {
 
     fn lease(&self, key: &StorageKey) -> Result<Lease, SeamError> {
         let target = self.target(key)?;
-        if let Some(wake) = self.shared.declined_here() {
+        if let Some(wake) = durable_store::waiting::wake() {
             return self
                 .lease_without_waiting(key, &target, Access::Exclusive, &wake)
                 .map(|(lease, _)| lease);
@@ -815,7 +812,7 @@ impl DurableStore for FsStore {
 
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, SeamError> {
         let target = self.target(key)?;
-        if let (Target::Document(_), Some(wake)) = (&target, self.shared.declined_here()) {
+        if let (Target::Document(_), Some(wake)) = (&target, durable_store::waiting::wake()) {
             let (lease, primary) =
                 self.lease_without_waiting(key, &target, Access::Shared, &wake)?;
             return Ok(SharedLease { lease, primary });
@@ -843,12 +840,8 @@ impl DurableStore for FsStore {
         }
     }
 
-    fn decline_waiting(&self, ready: ReadyWake) {
-        lock(&self.shared.state).waitless = Some((thread::current().id(), ready));
-    }
-
     fn declined_waiting_here(&self) -> bool {
-        self.shared.declined_here().is_some()
+        durable_store::waiting::disk_forbidden()
     }
 
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
@@ -930,7 +923,7 @@ impl DurableStore for FsStore {
         if !lock(&self.shared.state).owners.contains_key(key) {
             return Err(SeamError::NotLeased(key.to_string()));
         }
-        if self.shared.declined_here().is_some() {
+        if durable_store::waiting::disk_forbidden() {
             self.ensure_worker()?;
             let mut state = lock(&self.shared.state);
             if let Some(snapshot) = state.cache.get_mut(key) {
@@ -948,7 +941,7 @@ impl DurableStore for FsStore {
         let Target::Document(directory) = self.target(key).ok()? else {
             return None;
         };
-        if self.shared.declined_here().is_some() {
+        if durable_store::waiting::disk_forbidden() {
             return self.shared.hint_without_waiting(key);
         }
         read_hint_in(&directory)
@@ -1645,6 +1638,48 @@ mod tests {
         StorageKey::record("so.tilo.test", "room-a", name)
     }
 
+    /// An idle frame loop told "not yet" hears when the answer is ready:
+    /// nothing else happens on it, and its wake is called once, however
+    /// often it asked, after which asking again answers.
+    #[test]
+    fn an_idle_thread_that_must_not_wait_is_woken_once_its_read_is_done() {
+        let tmp = TempDir::new().unwrap();
+        let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+        let key = record("idle");
+        {
+            let _lease = fs.lease(&key).unwrap();
+            fs.write(&key, WriteOp::Replace(b"kept".to_vec()), Some(b"me"))
+                .unwrap();
+            fs.flush(Some(&key)).unwrap();
+        }
+        let (release, held) = std::sync::mpsc::channel();
+        fs.faults().prepare_hold = Some(held);
+        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (notify, notified) = std::sync::mpsc::channel();
+        let counted = Arc::clone(&woken);
+        let wake: ReadyWake = Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = notify.send(());
+        });
+        {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread().waking(wake);
+            assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
+            assert!(matches!(fs.read(&key), Err(SeamError::Opening(_))));
+            assert!(
+                notified.try_recv().is_err(),
+                "woken before the work was done"
+            );
+            release.send(()).unwrap();
+            tilo_test_env::recv("the wake once the read is done", &notified);
+            let stored = fs.read(&key).unwrap().unwrap();
+            assert_eq!(stored.bytes, b"kept");
+            assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]));
+        }
+        // Dropping the store joins its thread: every wake it would call has been.
+        drop(fs);
+        assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     /// A wake that reports which thread called it.
     fn thread_wake() -> (ReadyWake, std::sync::mpsc::Receiver<thread::ThreadId>) {
         let (notify, notified) = std::sync::mpsc::channel();
@@ -1671,7 +1706,7 @@ mod tests {
         let (release, held) = std::sync::mpsc::channel();
         fs.faults().prepare_hold = Some(held);
         let (wake, notified) = thread_wake();
-        fs.decline_waiting(wake);
+        durable_store::waiting::decline_on_this_thread(wake);
 
         // The disk is held until after these return: a caller that waited
         // for it would never return.
@@ -1757,7 +1792,7 @@ mod tests {
             });
             tilo_test_env::recv("the other owner's writes", &wait_written);
             let (wake, notified) = thread_wake();
-            fs.decline_waiting(wake);
+            durable_store::waiting::decline_on_this_thread(wake);
             assert!(matches!(fs.read(view), Err(SeamError::Opening(_))));
             tilo_test_env::recv("the read's wake", &notified);
             assert_eq!(
@@ -1790,7 +1825,7 @@ mod tests {
         )
         .unwrap();
         let (wake, notified) = thread_wake();
-        fs.decline_waiting(wake);
+        durable_store::waiting::decline_on_this_thread(wake);
         assert!(matches!(fs.lease(&key), Err(SeamError::Opening(_))));
         tilo_test_env::recv("the preparation's wake", &notified);
         assert!(matches!(fs.lease(&key), Err(SeamError::Busy(_))));
@@ -1798,7 +1833,7 @@ mod tests {
 
     /// A frame loop reads back what it just wrote while the store's thread
     /// has yet to commit it, and while it commits: from memory, never by
-    /// waiting for that thread. The guard fails the test on a commit wait.
+    /// waiting for that thread. The strict guard fails the test on a wait.
     #[test]
     fn a_read_on_a_thread_that_must_not_wait_sees_unwritten_writes() {
         let tmp = TempDir::new().unwrap();
@@ -1809,7 +1844,7 @@ mod tests {
         fs.write(&key, WriteOp::Replace(b"ab".to_vec()), Some(b"me"))
             .unwrap();
         {
-            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
             let stored = fs.read(&key).unwrap().unwrap();
             assert_eq!(stored.bytes, b"ab", "a queued replacement");
             assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]));
@@ -1822,8 +1857,9 @@ mod tests {
         fs.faults().append_hold = Some((reached_tx, held));
         fs.write(&key, WriteOp::Append(b"cd".to_vec()), None)
             .unwrap();
+        let (wake, notified) = thread_wake();
         {
-            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread().waking(wake);
             assert!(matches!(
                 fs.flush_where_allowed(&key),
                 Err(SeamError::Pending(_))
@@ -1843,14 +1879,10 @@ mod tests {
         );
         assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]), "from the file");
         release.send(()).unwrap();
+        tilo_test_env::recv("the store's thread to read the file", &notified);
         {
             let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
-            let mut read = None;
-            tilo_test_env::wait_until("the store's thread to read the file", || {
-                read = fs.read(&key).ok().flatten();
-                read.is_some()
-            });
-            let stored = read.unwrap();
+            let stored = fs.read(&key).unwrap().unwrap();
             assert_eq!(
                 stored.bytes, b"abcdef",
                 "read for it: the file with the queued append, once"
@@ -1930,7 +1962,7 @@ mod tests {
         let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
         let key = record("blocked");
         let (wake, notified) = thread_wake();
-        fs.decline_waiting(wake);
+        durable_store::waiting::decline_on_this_thread(wake);
         assert!(matches!(fs.lease_shared(&key), Err(SeamError::Opening(_))));
         tilo_test_env::recv("the preparation's wake", &notified);
         assert!(matches!(

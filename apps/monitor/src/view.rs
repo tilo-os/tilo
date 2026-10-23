@@ -1,8 +1,8 @@
 //! The Monitor window's widgets.
 //!
 //! The window is one [`ui::widget::NavShell`]. Its content is the active tab:
-//! [`ProcessesPane`] (the summary tiles, the process filter and the process
-//! table) or [`ResourcesPane`] (the system dashboard). The selected process
+//! [`ProcessesPane`] (the summary tiles and the process table, which the
+//! window bar's search narrows) or [`ResourcesPane`] (the system dashboard). The selected process
 //! is the inspector ([`process_detail`]). [`crate::app::MonitorApp`] owns the
 //! model and the shared view state; the panes meet it in a [`Bridge`]: the
 //! app publishes what they show, the panes queue what the person asked for,
@@ -25,11 +25,10 @@ use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
 use ui::widget::card::{CardGrid, CardWidth};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use ui::widget::toolbar::Orientation;
 use ui::widget::{
-    AppModel, Button, ButtonRole, Column, Element, EmptyState, FilterCount, ModelPath, Property,
-    PropertyList, Row, Scrollable, SearchField, Section, StatGroup, StatTile, TaffyTreeExt,
-    Toolbar, Widget, layout_rect,
+    AppModel, Button, ButtonRole, Column, Element, EmptyState, FilterCount, Filterable, ModelPath,
+    Property, PropertyList, Row, Scrollable, Section, StatGroup, StatTile, TaffyTreeExt, Widget,
+    layout_rect,
 };
 
 use crate::app::{SortKey, Tab};
@@ -94,11 +93,11 @@ pub(crate) enum Cadence {
     Paused,
 }
 
-/// The sampling cadences offered in the header, in milliseconds.
+/// The sampling cadences the window bar offers, in milliseconds.
 pub(crate) const INTERVALS: [u64; 5] = [1000, 1500, 2000, 3000, 5000];
 
 impl Cadence {
-    /// Every choice, in the order the header's menu lists them.
+    /// Every choice, in the order the bar's menu lists them.
     pub(crate) fn all() -> Vec<Self> {
         INTERVALS
             .iter()
@@ -113,14 +112,6 @@ impl Cadence {
             Self::Paused => "Paused".to_owned(),
             Self::Every(1000) => "Every second".to_owned(),
             Self::Every(ms) => format!("Every {} seconds", seconds(ms)),
-        }
-    }
-
-    /// The choice on the header's button.
-    pub(crate) fn short_label(self) -> String {
-        match self {
-            Self::Paused => "Paused".to_owned(),
-            Self::Every(ms) => format!("Every {} s", seconds(ms)),
         }
     }
 }
@@ -149,8 +140,6 @@ pub(crate) enum Request {
     TreeMode(bool),
     SumChildren(bool),
     KernelThreads(bool),
-    /// The header's cadence button was pressed.
-    ChooseCadence,
     ShowStat(Stat),
     ContextMenu {
         pid: u32,
@@ -420,41 +409,6 @@ fn column_key(sort: SortKey) -> &'static str {
     }
 }
 
-/// The view toggles beside the filter.
-fn view_toolbar(options: ListOptions, shared: &Shared) -> Toolbar {
-    let tree = Rc::clone(shared);
-    let sum = Rc::clone(shared);
-    let kernel = Rc::clone(shared);
-    let mut toolbar =
-        Toolbar::new(Orientation::Horizontal).push_toggle("Tree view", options.tree, move || {
-            tree.borrow_mut().push(Request::TreeMode(!options.tree));
-        });
-    let binding = shared.borrow().actions.as_ref().and_then(|actions| {
-        let flat = crate::resource::Monitor::paths().flat.set(options.tree);
-        actions.invocation(ui::tilo_resource::Invoke::edit(&flat).ok()?)
-    });
-    toolbar = match binding {
-        Some(binding) => toolbar.with_action(binding),
-        None => toolbar.with_view("monitor.tree-mode"),
-    };
-    if options.tree {
-        let summing = options.sum == SumMode::SumSubtree;
-        toolbar = toolbar
-            .push_toggle("Include children", summing, move || {
-                sum.borrow_mut().push(Request::SumChildren(!summing));
-            })
-            .with_view("monitor.sum-children");
-    }
-    toolbar
-        .push_separator()
-        .push_toggle("Kernel threads", options.kernel_threads, move || {
-            kernel
-                .borrow_mut()
-                .push(Request::KernelThreads(!options.kernel_threads));
-        })
-        .with_effect("monitor.kernel-threads")
-}
-
 /// One sentence and at most one action for each way the list is empty.
 fn empty_state(kind: Placeholder) -> EmptyState {
     match kind {
@@ -470,9 +424,7 @@ fn empty_state(kind: Placeholder) -> EmptyState {
             "The process list couldn't be read.",
         )
         .with_action("Try again"),
-        Placeholder::NoMatches => {
-            EmptyState::new("No processes match the filter").with_action("Clear filter")
-        }
+        Placeholder::NoMatches => EmptyState::new("No processes match the search"),
     }
 }
 
@@ -480,15 +432,13 @@ fn empty_state(kind: Placeholder) -> EmptyState {
 #[derive(Default)]
 struct Nodes {
     summary: Option<NodeId>,
-    band: Option<NodeId>,
-    field: Option<NodeId>,
-    toolbar: Option<NodeId>,
     body: Option<NodeId>,
     body_child: Option<NodeId>,
 }
 
-/// The Processes tab: the summary tiles, the filter with the view toggles,
-/// and the process table, or one empty state when there is nothing to list.
+/// The Processes tab: the summary tiles and the process table, or one empty
+/// state when there is nothing to list. The window bar's search narrows it
+/// ([`Filterable`]); its view options are the bar's.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent layout, structure and selection-reveal flags"
@@ -501,8 +451,6 @@ pub(crate) struct ProcessesPane {
     summary: Option<StatGroup>,
     /// The metrics changed since `summary` was built.
     summary_stale: bool,
-    field: SearchField,
-    toolbar: Toolbar,
     options: Option<ListOptions>,
     table: DataTable<ProcessRow>,
     sort_keys: Vec<SortKey>,
@@ -511,7 +459,6 @@ pub(crate) struct ProcessesPane {
     viewport: f64,
     row_height: f64,
     placeholder: Option<(Placeholder, EmptyState)>,
-    has_processes: bool,
     /// The row index the table's selection was last synchronised to.
     shown_selection: Option<usize>,
     adopted_selection: Option<usize>,
@@ -538,10 +485,6 @@ impl ProcessesPane {
             seen_metrics: None,
             summary: None,
             summary_stale: true,
-            field: SearchField::filter()
-                .with_id("monitor.filter")
-                .with_placeholder("Filter processes"),
-            toolbar: Toolbar::new(Orientation::Horizontal),
             options: None,
             table,
             sort_keys,
@@ -549,7 +492,6 @@ impl ProcessesPane {
             viewport: 0.0,
             row_height: 0.0,
             placeholder: None,
-            has_processes: false,
             shown_selection: None,
             adopted_selection: None,
             reveal_selection: false,
@@ -583,7 +525,6 @@ impl ProcessesPane {
         {
             let tree_changed = self.options.is_none_or(|old| old.tree != options.tree);
             self.options = Some(options);
-            self.toolbar = view_toolbar(options, &self.shared);
             if tree_changed {
                 self.shape.tree = options.tree;
                 self.rebuild_table();
@@ -603,21 +544,9 @@ impl ProcessesPane {
             self.reveal_selection = bridge.selected.is_some();
         }
 
-        if self.field.value() != bridge.filter {
-            self.field.set_query(&bridge.filter);
-        }
-        self.field.set_count(
-            (!bridge.filter.is_empty()).then(|| FilterCount::new(bridge.rows.len(), bridge.total)),
-        );
-
         let placeholder = bridge.placeholder;
         if self.placeholder.as_ref().map(|(kind, _)| *kind) != placeholder {
             self.placeholder = placeholder.map(|kind| (kind, empty_state(kind)));
-            self.structure_dirty = true;
-        }
-        let has_processes = bridge.total > 0;
-        if self.has_processes != has_processes {
-            self.has_processes = has_processes;
             self.structure_dirty = true;
         }
         self.layout_dirty = true;
@@ -720,13 +649,9 @@ impl ProcessesPane {
         bridge.push(Request::ContextMenu { pid, at, row });
     }
 
-    /// A pane `width` wide drops columns and stacks its filter.
+    /// A pane `width` wide drops columns.
     fn is_compact(&self, width: f64) -> bool {
         width > 0.0 && width < self.compact_below
-    }
-
-    fn shows_filters(&self) -> bool {
-        self.has_processes
     }
 
     fn body(&self) -> &dyn Widget {
@@ -743,47 +668,6 @@ impl ProcessesPane {
         }
     }
 
-    /// The filter beside the view toggles, or over them on a narrow pane.
-    fn build_filters(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        compact: bool,
-    ) -> NodeId {
-        let rhythm = &theme.tokens.spacing.rhythm;
-        let field = self.field.build_layout(taffy, theme, node_map);
-        let toolbar = self.toolbar.build_layout(taffy, theme, node_map);
-        let (direction, align) = if compact {
-            (taffy::FlexDirection::Column, taffy::AlignItems::Stretch)
-        } else {
-            ui::widget::share_row(taffy, field, 1.0);
-            (taffy::FlexDirection::Row, taffy::AlignItems::Center)
-        };
-        let band = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: direction,
-                flex_shrink: 0.0,
-                align_items: Some(align),
-                gap: Size {
-                    width: length(rhythm.sibling),
-                    height: length(rhythm.related),
-                },
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
-            },
-            &[field, toolbar],
-        );
-        self.nodes.band = Some(band);
-        self.nodes.field = Some(field);
-        self.nodes.toolbar = Some(toolbar);
-        band
-    }
-
     /// Route an event to the table and adopt the selection it moved to.
     fn route_to_table(
         &mut self,
@@ -797,7 +681,25 @@ impl ProcessesPane {
     }
 }
 
+impl Filterable for ProcessesPane {
+    /// The window bar's search edited the query: ask the app for it.
+    fn set_filter(&mut self, query: &str) {
+        let mut bridge = self.shared.borrow_mut();
+        if bridge.filter != query {
+            bridge.push(Request::Filter(query.to_owned()));
+        }
+    }
+
+    /// "12 of 96" while the search narrows the list.
+    fn filter_count(&self) -> Option<FilterCount> {
+        let bridge = self.shared.borrow();
+        (!bridge.filter.is_empty()).then(|| FilterCount::new(bridge.rows.len(), bridge.total))
+    }
+}
+
 impl Widget for ProcessesPane {
+    ui::provides!(dyn Filterable);
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt();
         for child in self.children_mut() {
@@ -844,9 +746,6 @@ impl Widget for ProcessesPane {
             let node = summary.build_layout(taffy, theme, node_map);
             self.nodes.summary = Some(node);
             children.push(node);
-        }
-        if self.shows_filters() {
-            children.push(self.build_filters(taffy, theme, node_map, compact));
         }
 
         let body_child = self.body_mut().build_layout(taffy, theme, node_map);
@@ -909,15 +808,6 @@ impl Widget for ProcessesPane {
         if let (Some(summary), Some(node)) = (&mut self.summary, self.nodes.summary) {
             summary.apply_layout(taffy, node, inner);
         }
-        if let Some(band) = self.nodes.band {
-            let band_origin = layout_rect(taffy, band, inner).origin();
-            if let Some(field) = self.nodes.field {
-                self.field.apply_layout(taffy, field, band_origin);
-            }
-            if let Some(toolbar) = self.nodes.toolbar {
-                self.toolbar.apply_layout(taffy, toolbar, band_origin);
-            }
-        }
         if let (Some(body), Some(child)) = (self.nodes.body, self.nodes.body_child) {
             let body_rect = layout_rect(taffy, body, inner);
             let body_origin = body_rect.origin();
@@ -964,12 +854,6 @@ impl Widget for ProcessesPane {
         if let Some(summary) = &mut self.summary {
             summary.draw(scene, transform, text_renderer, theme, presence);
         }
-        if self.shows_filters() {
-            self.field
-                .draw(scene, transform, text_renderer, theme, presence);
-            self.toolbar
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
         self.body_mut()
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -979,27 +863,17 @@ impl Widget for ProcessesPane {
             self.cursor = ctx.logical(position);
             // Every part follows the pointer, whichever one is under it.
             let mut ignored = false;
-            let nodes = [
-                self.nodes.toolbar,
-                self.nodes.field,
-                self.nodes.summary,
-                self.nodes.body_child,
-            ];
-            let shows_filters = self.shows_filters();
+            let nodes = [self.nodes.summary, self.nodes.body_child];
             let summary = self.summary.as_mut().map(|s| s as &mut dyn Widget);
             let body: &mut dyn Widget = match &mut self.placeholder {
                 Some((_, empty)) => empty,
                 None => &mut self.table,
             };
             let mut parts: Vec<(Option<NodeId>, &mut dyn Widget)> = Vec::new();
-            if shows_filters {
-                parts.push((nodes[0], &mut self.toolbar));
-                parts.push((nodes[1], &mut self.field));
-            }
             if let Some(summary) = summary {
-                parts.push((nodes[2], summary));
+                parts.push((nodes[0], summary));
             }
-            parts.push((nodes[3], body));
+            parts.push((nodes[1], body));
             for (node, part) in parts {
                 if let Some(node) = node {
                     let mut child = ctx.reborrow(ctx.path, node);
@@ -1008,25 +882,6 @@ impl Widget for ProcessesPane {
                 }
             }
             return;
-        }
-        if self.shows_filters() {
-            if let Some(toolbar) = self.nodes.toolbar {
-                self.toolbar
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, toolbar));
-                if *ctx.handled {
-                    return;
-                }
-            }
-            if let Some(field) = self.nodes.field {
-                self.field
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, field));
-                if let Some(query) = self.field.take_dirty() {
-                    self.shared.borrow_mut().push(Request::Filter(query));
-                }
-                if *ctx.handled {
-                    return;
-                }
-            }
         }
         if let (Some(summary), Some(node)) = (&mut self.summary, self.nodes.summary) {
             summary.handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -1037,14 +892,10 @@ impl Widget for ProcessesPane {
         let Some(child) = self.nodes.body_child else {
             return;
         };
-        if let Some((kind, empty)) = &mut self.placeholder {
+        if let Some((_, empty)) = &mut self.placeholder {
             empty.handle_event(event, &mut ctx.reborrow(ctx.path, child));
             if empty.take_action() {
-                let request = match kind {
-                    Placeholder::NoMatches => Request::Filter(String::new()),
-                    _ => Request::Refresh,
-                };
-                self.shared.borrow_mut().push(request);
+                self.shared.borrow_mut().push(Request::Refresh);
             }
         } else {
             self.route_to_table(event, ctx, child);
@@ -1056,16 +907,11 @@ impl Widget for ProcessesPane {
         if let Some(summary) = &self.summary {
             children.push(summary);
         }
-        if self.shows_filters() {
-            children.push(&self.field);
-            children.push(&self.toolbar);
-        }
         children.push(self.body());
         children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let shows_filters = self.shows_filters();
         let body: &mut dyn Widget = match &mut self.placeholder {
             Some((_, empty)) => empty,
             None => &mut self.table,
@@ -1073,10 +919,6 @@ impl Widget for ProcessesPane {
         let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
         if let Some(summary) = &mut self.summary {
             children.push(summary);
-        }
-        if shows_filters {
-            children.push(&mut self.field);
-            children.push(&mut self.toolbar);
         }
         children.push(body);
         children
@@ -1713,20 +1555,11 @@ mod tests {
 
     #[test]
     fn cadence_reads_in_words() {
-        let labels: Vec<(String, String)> = Cadence::all()
-            .into_iter()
-            .map(|cadence| (cadence.label(), cadence.short_label()))
-            .collect();
+        let labels: Vec<String> = Cadence::all().into_iter().map(Cadence::label).collect();
         assert_eq!(labels.len(), INTERVALS.len() + 1);
-        assert_eq!(
-            labels[0],
-            ("Every second".to_owned(), "Every 1 s".to_owned())
-        );
-        assert_eq!(
-            labels[1],
-            ("Every 1.5 seconds".to_owned(), "Every 1.5 s".to_owned())
-        );
-        assert_eq!(labels[5], ("Paused".to_owned(), "Paused".to_owned()));
+        assert_eq!(labels[0], "Every second");
+        assert_eq!(labels[1], "Every 1.5 seconds");
+        assert_eq!(labels[5], "Paused");
     }
 
     #[test]

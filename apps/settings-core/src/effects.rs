@@ -248,6 +248,7 @@ pub const PART: crate::area::Part = crate::area::Part {
     families: &[(10, NavigationEffect::FAMILY)],
     live_areas: &[],
     sections: &[],
+    settings: &[],
 };
 
 /// One area of Settings whose live rows show what it reads of the device:

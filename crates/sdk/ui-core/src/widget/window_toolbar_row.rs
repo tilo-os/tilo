@@ -132,7 +132,8 @@ impl Slots {
     /// [`COMFORTABLE_LOCATION_PX`] (or, without one, while the buttons would
     /// overlap) the last of them move into the overflow menu, then the view
     /// switcher's choices, as do the declared actions past that many and
-    /// those declared for the menu.
+    /// those declared for the menu. One action never goes into the menu
+    /// alone: the menu's button would take its place and hide it.
     pub(crate) fn lay_out(toolbar: &WindowToolbar, row: Rect, views: ViewsSize) -> Self {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
@@ -141,6 +142,13 @@ impl Slots {
             .row_actions()
             .min(crate::window_toolbar::MAX_ACTIONS);
         let views = views.filter(|_| toolbar.views.is_some());
+        // A menu holding one action alone saves no width: its button takes
+        // the action's place and hides it.
+        let lone = |inline: usize, views: ViewsSize| {
+            row_actions - inline == 1
+                && toolbar.actions.len() == row_actions
+                && (toolbar.views.is_none() || views.is_some())
+        };
         // The switcher in the row first, then in the menu.
         let tries = if views.is_some() { 2 } else { 1 };
         for views in [views, None].into_iter().take(tries) {
@@ -152,7 +160,7 @@ impl Slots {
                 } else {
                     slots.fits(row)
                 };
-                if room {
+                if room && !lone(inline, views) {
                     return slots;
                 }
                 if inline == 0 {
@@ -161,7 +169,8 @@ impl Slots {
                 inline -= 1;
             }
         }
-        Self::with_inline(toolbar, row, 0, None)
+        let inline = if lone(0, None) { row_actions } else { 0 };
+        Self::with_inline(toolbar, row, inline, None)
     }
 
     /// The slots with the first `inline` actions in the row and the rest in
@@ -2686,6 +2695,43 @@ mod tests {
             "the switcher is measured"
         );
         row
+    }
+
+    fn file_toolbar(actions: usize) -> WindowToolbar {
+        WindowToolbar {
+            sidebar: Some(false),
+            location: Some(ToolbarLocation {
+                label: "explorer.rs".into(),
+                ..ToolbarLocation::default()
+            }),
+            actions: (0..actions)
+                .map(|index| ToolbarAction::new(format!("a{index}"), "panel-bottom", "Act"))
+                .collect(),
+            ..WindowToolbar::default()
+        }
+    }
+
+    #[test]
+    fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
+        // As wide as the row a compact (420 px) window leaves the toolbar.
+        let compact = Rect::new(0.0, 0.0, 220.0, 40.0);
+        let one = Slots::lay_out(&file_toolbar(1), compact, None);
+        assert_eq!(one.actions.len(), 1, "the action stands in the row");
+        assert_eq!(one.overflow, Rect::ZERO, "no menu for one action");
+
+        for declared in [2, 3] {
+            let slots = Slots::lay_out(&file_toolbar(declared), compact, None);
+            let folded = declared - slots.actions.len();
+            assert!(
+                folded == 0 || folded >= 2,
+                "{declared} actions: the menu holds {folded}"
+            );
+            assert_eq!(slots.overflow.area() > 0.0, folded > 0);
+        }
+
+        let wide = Slots::lay_out(&file_toolbar(1), Rect::new(0.0, 0.0, 900.0, 40.0), None);
+        assert_eq!(wide.actions.len(), 1);
+        assert_eq!(wide.overflow, Rect::ZERO);
     }
 
     #[test]

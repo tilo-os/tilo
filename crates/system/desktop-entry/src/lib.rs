@@ -47,5 +47,5 @@ pub mod locale;
 pub mod migration_startup;
 pub mod scan;
 
-pub use entry::{DesktopAction, DesktopEntry, EntrySource, EntryType};
+pub use entry::{DesktopAction, DesktopEntry, EntryKind, EntrySource, EntryType};
 pub use scan::{Scan, ScanStats, scan, scan_dirs};

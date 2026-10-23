@@ -4194,6 +4194,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         window_search::notes_search_in_place(),
         window_search::notes_search_options(),
+        window_search::notes_replace_in_place(),
         window_search::own_process_notes_search(),
         Scenario {
             name: "own_process_notes_history",

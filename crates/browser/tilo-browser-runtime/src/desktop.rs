@@ -75,6 +75,26 @@ pub(crate) fn known_applications() -> Vec<(&'static str, &'static str)> {
 }
 
 /// The title of an application the page can open by id, loaded or not.
+/// Whether `permissions` let this person open `app` here, as the workspace
+/// broker decides it on a native desktop: an installed app, and leave to
+/// change the app's part of the workspace.
+///
+/// # Errors
+/// An app this desktop doesn't have, or one this person may not open.
+pub(crate) fn may_open(
+    permissions: &ui::permissions::PermissionContext,
+    app: &str,
+) -> Result<(), tilo_actions::remote::ActionHostError> {
+    known_application(app).ok_or(tilo_actions::remote::ActionHostError::UnknownAction)?;
+    if !permissions.check(&ui::permissions::PermissionScope::app(
+        app,
+        ui::permissions::ActionKind::Undoable,
+    )) {
+        return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+    }
+    Ok(())
+}
+
 pub(crate) fn known_application(app: &str) -> Option<&'static str> {
     let scratch = crate::scratch::definition();
     known_applications()

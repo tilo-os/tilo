@@ -314,12 +314,83 @@ pub(crate) fn set_field(
     field: &str,
     value: &serde_json::Value,
 ) -> serde_json::Map<String, serde_json::Value> {
+    set_path([field], value)
+}
+
+/// The arguments of a field edit setting the field at `path` (its names,
+/// outermost first) to `value`.
+pub(crate) fn set_path<'a>(
+    path: impl IntoIterator<Item = &'a str>,
+    value: &serde_json::Value,
+) -> serde_json::Map<String, serde_json::Value> {
+    let path: Vec<serde_json::Value> = path
+        .into_iter()
+        .map(|field| serde_json::json!({ "field": field }))
+        .collect();
     let mut arguments = serde_json::Map::new();
     arguments.insert(
         tilo_actions::contract::FIELD_EDIT_PARAM.to_owned(),
-        serde_json::json!({ "path": [{ "field": field }], "op": "set", "value": value }),
+        serde_json::json!({ "path": path, "op": "set", "value": value }),
     );
     arguments
+}
+
+/// Whether each of the yes-or-no settings `switches` is on as stored now,
+/// read where the person's settings are held in one go; `None` for no
+/// switch, or a section the session does not keep.
+pub(crate) fn switches_on(
+    switches: impl IntoIterator<Item = Option<settings_store::index::Switch>>,
+) -> Vec<Option<bool>> {
+    let switches: Vec<_> = switches.into_iter().collect();
+    let asked = switches.len();
+    with_records(move |records| {
+        switches
+            .into_iter()
+            .map(|switch| switch.and_then(|switch| on_in(records, switch)))
+            .collect()
+    })
+    .unwrap_or_else(|_| vec![None; asked])
+}
+
+/// Whether the yes-or-no setting `switch` is on as stored now; `None` for
+/// a section the session does not keep.
+pub(crate) fn switch_is_on(switch: settings_store::index::Switch) -> Option<bool> {
+    switches_on([Some(switch)]).pop().flatten()
+}
+
+/// Whether `switch` is on as `records` hold it.
+fn on_in(records: &SettingsRecords, switch: settings_store::index::Switch) -> Option<bool> {
+    let stored = records.stored(switch.section)?;
+    switch
+        .path()
+        .try_fold(&stored, |value, field| value.get(field))?
+        .as_bool()
+}
+
+/// Flip the yes-or-no setting `switch` through its section's field edit,
+/// on behalf of the action `invoked_by`: on when it is off, off when it is
+/// on, as stored at this moment. A flip whose field edit asks first runs
+/// only once the person `confirmed` it.
+///
+/// # Errors
+/// [`ActionError::ConfirmationRequired`] for a flip they have yet to
+/// confirm; otherwise the session keeps no such section, or the section
+/// refused the change.
+pub(crate) fn flip(
+    switch: settings_store::index::Switch,
+    confirmed: bool,
+    invoked_by: &settings_store::InvokingAction,
+) -> Result<bool, ActionError> {
+    let on = !switch_is_on(switch).ok_or_else(|| {
+        ActionError::Refused(format!("{} is not a setting kept here", switch.section))
+    })?;
+    change(
+        &address(switch.section, "field-edit"),
+        &set_path(switch.path(), &on.into()),
+        confirmed,
+        invoked_by,
+    )?;
+    Ok(on)
 }
 
 /// Run `address` with `arguments` as the person at this seat, on behalf of

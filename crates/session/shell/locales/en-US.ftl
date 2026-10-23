@@ -1271,9 +1271,8 @@ bluetooth-handoff-failure-rollback = source rollback failed
 
 # Search result kinds, as the filter chips and group headers name them
 search-kind-actions = Actions
-search-kind-applications = Applications
+search-kind-applications = Apps
 search-group-in-the-store = In the Store
-search-kind-host-apps = Host Apps
 search-kind-notes = Notes
 search-kind-records = Records
 search-kind-files = Files
@@ -1362,7 +1361,6 @@ search-record-in-another-workspace = In another workspace
 search-files-no-app = No app on this desktop opens .{ $ext } documents.
 search-files-folder-failed = Files couldn’t open this folder.
 search-files-home = Home
-search-files-location = { $folder } · { $age }
 
 # Search: host apps
 
@@ -1556,8 +1554,6 @@ search-action-appearance-theme-dark = Dark theme
 search-action-appearance-theme-dark-subtitle = Dark chrome and apps
 search-action-appearance-theme-light = Light theme
 search-action-appearance-theme-light-subtitle = Light chrome and apps
-search-action-appearance-high-contrast = High contrast
-search-action-appearance-high-contrast-subtitle = More contrast in the current theme
 search-action-appearance-language = Change language
 search-action-appearance-language-subtitle = The desktop’s language, in Settings
 search-action-identity-connect = Add an existing identity
@@ -2132,8 +2128,10 @@ peer-sync-token-incomplete = Not a site or link yet
 # Leftover shell notices: document opens, host app provenance, quiet status, collaboration
 doc-open-failed = Couldn't open { $name }
 doc-open-unnamed-file = File
-host-app-source-flatpak = Flatpak
-host-app-source-system = System
+app-kind-flatpak = Flatpak
+app-kind-appimage = AppImage
+app-kind-program = Program
+app-kind-system = System
 downloaded-app-missing = Can't find this app
 downloaded-app-locate = Locate
 downloaded-app-locate-path = Enter the full path of the app's file, starting with /
@@ -3068,7 +3066,6 @@ search-kw-tab-move-to-new-group = new group, detach, pop out, separate tab
 search-kw-notifications-dnd-toggle = do not disturb, dnd, silence, mute notifications, focus mode, quiet, notifications off
 search-kw-appearance-theme-dark = dark mode, dark theme, night mode, dark, black theme, night
 search-kw-appearance-theme-light = light mode, light theme, day mode, bright, light, white theme
-search-kw-appearance-high-contrast = high contrast, contrast, accessibility, visibility
 search-kw-appearance-language = language, locale, translate, german, english, deutsch, switch language
 search-kw-record-bring = add item, import, bring, add document, attach
 search-kw-shortcut-help-toggle = help, shortcuts, keyboard shortcuts, cheat sheet, hotkeys, keys, guide

@@ -1,14 +1,10 @@
 //! Root widget for the code editor. Owns the [`Session`] (project + open
-//! buffers), the editor pane, the file header, the status model and the bottom
-//! panel, and coordinates the data flow between them and the file tree in the
-//! shell's sidebar.
+//! buffers), the editor pane, the status model and the bottom panel, and
+//! coordinates the data flow between them and the file tree in the shell's
+//! sidebar.
 //!
 //! Layout, in the shell's content column:
 //! ```text
-//! +-------------------------------+
-//! |  file header                  |
-//! +-------------------------------+
-//! |  find bar (when open)         |
 //! +-------------------------------+
 //! |  editor view                  |
 //! +-------------------------------+
@@ -18,9 +14,11 @@
 //! +-------------------------------+
 //! ```
 //! The caret and diagnostics readout is a real row: the status bar reserves its
-//! band under the editor, so nothing is ever drawn over code. Searching the
-//! project and running a command belong to the platform search, which this root
-//! opens with Ctrl+P, Ctrl+Shift+P and Ctrl+Shift+F.
+//! band under the editor, so nothing is ever drawn over code. The shown file's
+//! name, the bottom panel toggle, and find and replace in the buffer are the
+//! window bar's ([`window_bar`], [`find_workflow`]). Searching the project and
+//! running a command belong to the platform search, which this root opens with
+//! Ctrl+P, Ctrl+Shift+P and Ctrl+Shift+F.
 //!
 //! ## The sidebar
 //!
@@ -38,6 +36,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 mod chrome;
+mod code_help;
 mod dialogs;
 mod disk_work;
 mod file_workflow;
@@ -47,14 +46,14 @@ mod lsp_workflow;
 mod surface;
 #[cfg(test)]
 mod tests;
+mod window_bar;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::Effect as _;
-use ui::widget::{Button, FindBar, Text, Widget, WindowBarLink};
+use ui::widget::{Widget, WindowBarLink};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -72,287 +71,6 @@ use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
 use crate::search;
 use crate::status_bar::{StatusModel, StatusState};
 use ui::time::Instant;
-
-/// Retained toggle for the bottom dock. [`Button`] owns pointer, keyboard,
-/// focus, painting, and the canonical action emitter; this thin wrapper adds
-/// the disclosure state that a generic momentary button cannot infer for
-/// accessibility, and swaps the button's icon and name with it.
-struct BottomPanelToggle {
-    button: Button,
-    expanded: bool,
-    dirty: bool,
-}
-
-impl BottomPanelToggle {
-    const ID: &'static str = "code.bottom-panel-toggle";
-
-    fn new(binding: tilo_actions::ActionBinding<()>) -> Self {
-        Self {
-            button: Self::button(binding, false),
-            expanded: false,
-            dirty: true,
-        }
-    }
-
-    fn name(expanded: bool) -> &'static str {
-        if expanded { "Hide panel" } else { "Show panel" }
-    }
-
-    fn button(binding: tilo_actions::ActionBinding<()>, expanded: bool) -> Button {
-        let icon = if expanded {
-            ui::icons::Icon::ChevronDown
-        } else {
-            ui::icons::Icon::ChevronUp
-        };
-        Button::icon_only(Self::ID, icon, Self::name(expanded)).on_action(binding)
-    }
-
-    /// Captures and past versions have no executor for the panel effect.
-    /// Publish the actual control as unavailable rather than retaining an
-    /// action binding to a door that this host does not offer.
-    fn suspend(&mut self) {
-        let icon = if self.expanded {
-            ui::icons::Icon::ChevronDown
-        } else {
-            ui::icons::Icon::ChevronUp
-        };
-        self.button =
-            Button::icon_only(Self::ID, icon, Self::name(self.expanded)).with_enabled(false);
-        self.dirty = true;
-    }
-
-    fn set_expanded(&mut self, expanded: bool) {
-        if self.expanded == expanded {
-            return;
-        }
-        self.expanded = expanded;
-        let icon = if expanded {
-            ui::icons::Icon::ChevronDown
-        } else {
-            ui::icons::Icon::ChevronUp
-        };
-        let name = Self::name(expanded);
-        // Keep the retained emitter: rebuilding an action-bound button here
-        // discards the host's custody and availability, reviving a door that
-        // a capture or past version has already refused.
-        let button = std::mem::replace(&mut self.button, Button::icon_only(Self::ID, icon, name));
-        self.button = button
-            .with_icon(icon)
-            .with_accessible_name(name)
-            .tooltip(name);
-        self.dirty = true;
-    }
-}
-
-impl Widget for BottomPanelToggle {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.button.sync(state, path);
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = self.button.build_layout(taffy, theme, node_map);
-        // The wrapper, not the button, answers for the node, so events and
-        // layout reach the disclosure state too.
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.button.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.button
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.is_focused()
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput {
-                    event: KeyEvent {
-                        logical_key: Key::Named(
-                            winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space
-                        ),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                }
-            )
-            && self.button.perform_action(
-                &ui::a11y::Action::Activate,
-                &[],
-                &mut ctx.state,
-                ctx.path,
-            )
-        {
-            *ctx.handled = true;
-            return;
-        }
-        self.button.handle_event(event, ctx);
-    }
-
-    fn name(&self) -> &'static str {
-        "BottomPanelToggle"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some(Self::ID)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.button.get_rect()
-    }
-
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.button.cursor_shape(point)
-    }
-
-    fn tooltip(&self) -> Option<&str> {
-        <Button as Widget>::tooltip(&self.button)
-    }
-
-    fn is_focusable(&self) -> bool {
-        self.button.is_focusable()
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.button.set_focus(focused);
-    }
-
-    fn is_focused(&self) -> bool {
-        self.button.is_focused()
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.button.is_enabled()
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-
-        Some(
-            AccessNode::new(Role::ToggleButton)
-                .with_semantic_key(Self::ID)
-                .with_name(Self::name(self.expanded))
-                .with_description("Problems and terminal")
-                .with_state(
-                    AccessState::new()
-                        .focusable(self.is_focusable())
-                        .focused(self.is_focused())
-                        .disabled(!self.is_enabled())
-                        .checked(self.expanded)
-                        .selected(self.expanded)
-                        .expanded(self.expanded),
-                ),
-        )
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        _key_path: &[u64],
-        state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
-    ) -> bool {
-        self.button.perform_action(action, &[], state, path)
-    }
-
-    fn set_interaction_environment(
-        &mut self,
-        environment: ui::interaction::InteractionEnvironment,
-    ) {
-        self.button.set_interaction_environment(environment);
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty || self.button.needs_redraw()
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-        self.button.mark_drawn();
-    }
-}
-
-impl ui::widget::controls::ActionControls for BottomPanelToggle {
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        self.button.install_control_custody(domain, attachment);
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        self.button.has_pending_control_invocation()
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.button.take_control_invocation()
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.button.control_action_bindings()
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        self.button.refresh_control_action_availability(allowed);
-    }
-}
-
-/// A control's binding to one of Code's effects, published on the project
-/// resource beside its document actions.
-#[allow(
-    clippy::expect_used,
-    reason = "every effect of the vocabulary is published with no parameters left to supply"
-)]
-pub(crate) fn effect_binding(
-    effect: &crate::effects::CodeEditorEffect,
-) -> tilo_actions::ActionBinding<()> {
-    let resource = tilo_actions::Resource::new(
-        <crate::project::Project as ui::tilo_resource::Resource>::KIND,
-        <crate::project::Project as ui::tilo_resource::Resource>::KIND,
-        "Code",
-    )
-    .with_action(effect.bound());
-    tilo_actions::ActionBinding::unit_for(&resource, effect.id())
-        .expect("a bound effect takes no arguments")
-}
-
-/// The editor header's file-name text, and the label it reads.
-fn file_header(session: &Session) -> (Text, std::rc::Rc<std::cell::RefCell<String>>) {
-    let label = std::rc::Rc::new(std::cell::RefCell::new(
-        session
-            .active_buffer()
-            .map_or_else(String::new, |buffer| buffer.name.clone()),
-    ));
-    let source = label.clone();
-    (
-        Text::dynamic(move || source.borrow().clone())
-            .with_role(ui::tokens::TextRole::Heading)
-            .with_kind(ui::TextKind::Identifier)
-            .with_id("code-editor.file"),
-        label,
-    )
-}
 
 pub(crate) fn language_from_label(label: &str) -> Option<Language> {
     [
@@ -440,7 +158,7 @@ struct Opened {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent, unrelated flag (panel visibility, one-time seed guard, terminal focus, find bar visibility) on the app's top-level state, not a set of options that combine — a bitflag/enum would not read better"
+    reason = "each bool is an independent, unrelated flag (panel visibility, one-time seed guard, terminal focus, liveness) on the app's top-level state, not a set of options that combine — a bitflag/enum would not read better"
 )]
 pub struct CodeApp {
     session: Session,
@@ -450,19 +168,11 @@ pub struct CodeApp {
     explorer_events: ExplorerEvents,
     /// The shell around the editor: its sidebar, open or put away.
     bar: Option<WindowBarLink>,
-    /// The editor header's file name. A window shows one file; other files
-    /// open beside it as desktop tabs, so there is no file header here.
-    header: Text,
-    header_label: std::rc::Rc<std::cell::RefCell<String>>,
     editor: EditorView,
     /// The caret / language / diagnostics readout, drawn in the status bar
     /// band under the editor.
     status: StatusModel,
     panel: BottomPanel,
-    panel_toggle: BottomPanelToggle,
-    /// Opens the platform search over this app: the one search affordance in
-    /// the chrome.
-    search_button: Button,
 
     /// What a test runs with the document at the start of the next sync.
     #[cfg(test)]
@@ -487,19 +197,11 @@ pub struct CodeApp {
     /// The file a New File command created, opened once its record arrives.
     pending_open: Option<String>,
 
-    /// The header row's height, from the theme at layout time.
-    header_h: f64,
-    /// Whether the header row stands: only while a file is open.
-    laid_out_header: bool,
     /// Last cursor position, since `MouseInput` carries no coordinates.
     last_cursor: Point,
     panel_visible: bool,
 
     rect: Rect,
-    header_node: Option<NodeId>,
-    editor_header_node: Option<NodeId>,
-    panel_toggle_node: Option<NodeId>,
-    search_button_node: Option<NodeId>,
     editor_node: Option<NodeId>,
     panel_node: Option<NodeId>,
     status_node: Option<NodeId>,
@@ -565,15 +267,14 @@ pub struct CodeApp {
     /// Languages whose server failed to start, so we report the failure once
     /// and do not respawn a missing binary on every frame.
     lsp_failed: std::collections::HashSet<crate::model::Language>,
+    /// Where language servers are looked for: the person's tool folders
+    /// ([`tilo_process::tools::ToolDirs::current`]) unless set.
+    lsp_tools: Option<tilo_process::tools::ToolDirs>,
     /// A language server is being launched on a background thread.
     lsp_launching: bool,
 
-    /// The toolkit's find bar over the active buffer, and the matches the
-    /// editor answered it with. The bar is a band above the editor while
-    /// `find_open`.
-    find: FindBar,
-    find_open: bool,
-    find_node: Option<NodeId>,
+    /// The matches of the window search's query in the active buffer, and
+    /// which of them is current ([`find_workflow`]).
     find_matches: Vec<crate::find::Match>,
     find_current: Option<usize>,
 
@@ -613,7 +314,7 @@ pub struct CodeApp {
     /// The chrome laid out last (dock shown, its tab, the find bar), so a
     /// change made outside an event (an effect, a staged scenario) rebuilds
     /// the layout before it is drawn.
-    laid_out: (bool, PanelTab, bool),
+    laid_out: (bool, PanelTab),
     structure_dirty: bool,
     /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
@@ -647,6 +348,7 @@ pub struct CodeApp {
     close_prompt: Option<ClosePrompt>,
     /// The sheet a question is asked in: it keeps where its answers landed.
     question_sheet: ui::widget::ModalSheet,
+    code_help: code_help::CodeHelpReadout,
 
     /// A transient message about the last file operation (saved, failed,
     /// reloaded). Shown in the status bar; cleared by the next action.
@@ -733,8 +435,8 @@ pub enum LspStatus {
     },
     /// Up and answering.
     Ready { server: String },
-    /// Could not start; carries the reason.
-    Failed(String),
+    /// Not answering, and why.
+    Failed(crate::lsp::LspFailure),
 }
 
 impl LspStatus {
@@ -742,7 +444,7 @@ impl LspStatus {
     /// the person's words: nothing once it is ready.
     pub fn label(&self) -> String {
         match self {
-            LspStatus::None | LspStatus::Ready { .. } => String::new(),
+            LspStatus::None | LspStatus::Ready { .. } | LspStatus::Failed(_) => String::new(),
             LspStatus::Starting { .. }
             | LspStatus::Busy {
                 percentage: None, ..
@@ -751,7 +453,6 @@ impl LspStatus {
                 percentage: Some(percentage),
                 ..
             } => format!("Loading project {percentage}%"),
-            LspStatus::Failed(e) => format!("Language server: {e}"),
         }
     }
 
@@ -878,23 +579,14 @@ impl CodeApp {
         explorer.show(&session.project);
         explorer.set_current(default);
 
-        let (header, header_label) = file_header(&session);
-
-        let panel_toggle = BottomPanelToggle::new(effect_binding(
-            &crate::effects::CodeEditorEffect::ToggleBottomPanel,
-        ));
-
         CodeApp {
             session,
             explorer,
             explorer_events: ExplorerEvents::default(),
             bar: None,
-            header,
-            header_label,
             editor: EditorView::new(),
             status: StatusModel::new(),
             panel: BottomPanel::new(),
-            panel_toggle,
             #[cfg(test)]
             test_hook: None,
             dispatch: None,
@@ -904,16 +596,9 @@ impl CodeApp {
             demanded: Vec::new(),
             pending_command: None,
             pending_open: None,
-            search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
-            header_h: 0.0,
-            laid_out_header: false,
             last_cursor: Point::ZERO,
             panel_visible: false,
             rect: Rect::ZERO,
-            header_node: None,
-            editor_header_node: None,
-            panel_toggle_node: None,
-            search_button_node: None,
             editor_node: None,
             panel_node: None,
             status_node: None,
@@ -938,10 +623,8 @@ impl CodeApp {
             diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
             lsp_failed: std::collections::HashSet::new(),
+            lsp_tools: None,
             lsp_launching: false,
-            find: FindBar::new().with_replace(),
-            find_open: false,
-            find_node: None,
             find_matches: Vec::new(),
             find_current: None,
             search_job: None,
@@ -963,7 +646,7 @@ impl CodeApp {
             portal_intent: None,
             live: false,
             settings: None,
-            laid_out: (false, PanelTab::Problems, false),
+            laid_out: (false, PanelTab::Problems),
             structure_dirty: false,
             file_reply: None,
             disk_work: disk_work::DiskWork::default(),
@@ -976,6 +659,7 @@ impl CodeApp {
             conflict: None,
             close_prompt: None,
             question_sheet: ui::widget::ModalSheet::new(),
+            code_help: code_help::CodeHelpReadout::default(),
             notice: None,
             pending_jump: None,
             pending_continuation: None,
@@ -1040,18 +724,6 @@ impl CodeApp {
         if let Some(bar) = &self.bar {
             bar.put_drawer_away();
         }
-    }
-
-    /// The shell's sidebar toggle in the window's bar, and what the person
-    /// did there.
-    fn run_window_toolbar(&self) {
-        let Some(bar) = &self.bar else {
-            return;
-        };
-        for event in ui::window_toolbar::take_events() {
-            bar.event(&event);
-        }
-        ui::window_toolbar::declare(Some(bar.slots()));
     }
 
     /// Apply `action` to `doc` now, through the framework's door: within the
@@ -1320,9 +992,6 @@ impl CodeApp {
         self.dispatch = Some(dispatcher);
         self.live_state = Some(state);
         self.live = live;
-        if !live {
-            self.panel_toggle.suspend();
-        }
         self.settings = Some(settings);
     }
 
@@ -1402,30 +1071,6 @@ impl CodeApp {
         next: &str,
     ) -> Result<(), tilo_actions::ActionError> {
         self.submit_now(doc, &actions::text_edit_action(file_id, base, next))
-    }
-
-    /// Keep the header naming the shown file, with a marker while it has
-    /// unsaved edits. Idempotent: safe to call more than once a frame.
-    /// The header row stands over a file: with none open there is nothing
-    /// for it to name or act on.
-    fn shows_header(&self) -> bool {
-        self.session.active_buffer().is_some()
-    }
-
-    fn refresh_header(&self) {
-        let label = self
-            .session
-            .active_buffer()
-            .map_or_else(String::new, |buffer| {
-                if buffer.dirty {
-                    format!("{} \u{2022}", buffer.name)
-                } else {
-                    buffer.name.clone()
-                }
-            });
-        if *self.header_label.borrow() != label {
-            *self.header_label.borrow_mut() = label;
-        }
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
@@ -1598,6 +1243,7 @@ impl CodeApp {
             lsp_working: self.lsp_status.is_working(),
             notice: notice.text,
             dirty: self.session.active_buffer().is_some_and(|b| b.dirty),
+            code_help: self.code_help_readout(),
         });
     }
 
@@ -1782,7 +1428,6 @@ impl CodeApp {
         self.invalidate_search_projection();
         self.explorer.set_current(Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
-        self.refresh_header();
     }
 
     /// The node of the file in the active tab, if any. Lets a test observe
@@ -1862,7 +1507,6 @@ impl CodeApp {
             self.invalidate_search_projection();
             self.bound_node = None;
             self.explorer.set_current(None);
-            self.refresh_header();
         }
         if let Some(next) = then_open {
             self.show_node(next);
@@ -1972,8 +1616,8 @@ impl CodeApp {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Search);
             }
-            Command::Find => self.open_find(),
-            Command::Replace => self.open_replace(),
+            Command::Find => Self::open_find(ui::window_toolbar::SearchOpening::Find),
+            Command::Replace => Self::open_find(ui::window_toolbar::SearchOpening::Replace),
             Command::SearchProject => {
                 // The platform search, seeded from the selection the way
                 // every editor does.
@@ -1991,13 +1635,7 @@ impl CodeApp {
             Command::MoveLineDown => self.editor.move_lines(doc, false),
             Command::DeleteLine => self.editor.delete_lines(doc),
             Command::ToggleComment => self.editor.toggle_line_comment(doc),
-            Command::ToggleBottomPanel => {
-                if self.panel_visible {
-                    self.close_bottom_panel();
-                } else {
-                    self.panel_visible = true;
-                }
-            }
+            Command::ToggleBottomPanel => self.toggle_bottom_panel(),
             Command::ToggleSidebar => {
                 self.toggle_sidebar();
             }
@@ -2011,8 +1649,16 @@ impl CodeApp {
                 self.ensure_terminal();
             }
         }
-        self.panel_toggle.set_expanded(self.panel_visible);
         self.dispatch_editor_text_edits(doc);
+    }
+
+    /// Show the bottom panel, or close it (Ctrl+J, the window bar's toggle).
+    fn toggle_bottom_panel(&mut self) {
+        if self.panel_visible {
+            self.close_bottom_panel();
+        } else {
+            self.panel_visible = true;
+        }
     }
 
     /// Close the retained dock without destroying its selected tab or live
@@ -2021,7 +1667,6 @@ impl CodeApp {
     fn close_bottom_panel(&mut self) {
         self.panel_visible = false;
         self.terminal_focused = false;
-        self.panel_toggle.set_expanded(false);
     }
 
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
@@ -2160,16 +1805,6 @@ impl CodeApp {
             .map(|terminal| terminal.widget().grid_text())
     }
 
-    /// Stage the find bar over the active buffer with a real query, so the shot
-    /// shows real match highlighting and a real count.
-    pub fn shots_open_find(&mut self, query: &str, doc: &AutoCommit) {
-        self.open_find();
-        self.find.set_query(query);
-        // The bar runs the query on its first drive and lands on the first
-        // match, so the current-match outline is visible.
-        self.drive_find(&mut ui::widget::Edits::lend(&mut doc.clone()));
-    }
-
     /// Stage the "changed on disk" prompt for the active buffer.
     pub fn shots_conflict(&mut self) {
         if let Some(buf) = self.session.active_buffer() {
@@ -2298,110 +1933,20 @@ impl CodeApp {
     // ---- build_layout helpers (split out of `Widget::build_layout`, which
     // assembles their results into the content row and outer column) ----
 
-    /// Lay out the editor column: file header and panel toggle, find bar, editor,
-    /// (when visible) the bottom panel, and the status bar, stacked into one
-    /// flex column.
+    /// Lay out the editor column: the editor, (when visible) the bottom panel,
+    /// and the status bar, stacked into one flex column.
     ///
     /// # Panics
     /// Panics if taffy's internal tree storage is corrupted — this only
     /// inserts freshly built child nodes into a tree this same call already
     /// holds a mutable reference to, so there is no data-dependent failure
     /// path to recover from.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one flex column assembled in one place: each row's style and its node stay adjacent so the stacking order reads top to bottom"
-    )]
     fn build_editor_column(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let spacing = &theme.tokens.spacing;
-        self.header_h = f64::from(theme.tokens.metrics.header_height);
-
-        let header_node = self.header.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(header_node).cloned() {
-            let inset = f64::from(spacing.s6);
-            let _ = taffy.set_style(
-                header_node,
-                Style {
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    min_size: Size {
-                        width: Dimension::length(0.0),
-                        height: Dimension::auto(),
-                    },
-                    margin: taffy::Rect {
-                        left: taffy::LengthPercentageAuto::length(inset as f32),
-                        ..existing.margin
-                    },
-                    ..existing
-                },
-            );
-        }
-        self.header_node = Some(header_node);
-
-        self.panel_toggle.set_expanded(self.panel_visible);
-        let panel_toggle_node = self.panel_toggle.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(panel_toggle_node).cloned() {
-            let _ = taffy.set_style(
-                panel_toggle_node,
-                Style {
-                    margin: taffy::Rect {
-                        left: taffy::LengthPercentageAuto::length(spacing.s2),
-                        right: taffy::LengthPercentageAuto::length(spacing.s3),
-                        top: taffy::LengthPercentageAuto::length(0.0),
-                        bottom: taffy::LengthPercentageAuto::length(0.0),
-                    },
-                    ..existing
-                },
-            );
-        }
-        self.panel_toggle_node = Some(panel_toggle_node);
-
-        let search_button_node = self.search_button.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(search_button_node).cloned() {
-            let _ = taffy.set_style(
-                search_button_node,
-                Style {
-                    margin: taffy::Rect {
-                        left: taffy::LengthPercentageAuto::length(spacing.s2),
-                        right: taffy::LengthPercentageAuto::length(0.0),
-                        top: taffy::LengthPercentageAuto::length(0.0),
-                        bottom: taffy::LengthPercentageAuto::length(0.0),
-                    },
-                    ..existing
-                },
-            );
-        }
-        self.search_button_node = Some(search_button_node);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "the editor header inserts two freshly-created children into the same app-owned taffy arena"
-        )]
-        let editor_header_node = taffy
-            .new_with_children(
-                Style {
-                    display: if self.laid_out_header {
-                        taffy::Display::Flex
-                    } else {
-                        taffy::Display::None
-                    },
-                    flex_direction: taffy::FlexDirection::Row,
-                    align_items: Some(taffy::AlignItems::Center),
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(self.header_h as f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &[header_node, search_button_node, panel_toggle_node],
-            )
-            .unwrap();
-        self.editor_header_node = Some(editor_header_node);
-
         let editor_node = self.editor.build_layout(taffy, theme, node_map);
         if let Ok(existing) = taffy.style(editor_node).cloned() {
             let _ = taffy.set_style(
@@ -2419,17 +1964,7 @@ impl CodeApp {
         }
         self.editor_node = Some(editor_node);
 
-        let mut editor_col_children = vec![editor_header_node];
-        // The find bar sits between the tabs and the buffer, so it never covers
-        // the code it is searching.
-        if self.find_open {
-            let find_node = self.find.build_layout(taffy, theme, node_map);
-            self.find_node = Some(find_node);
-            editor_col_children.push(find_node);
-        } else {
-            self.find_node = None;
-        }
-        editor_col_children.push(editor_node);
+        let mut editor_col_children = vec![editor_node];
         if self.panel_visible {
             let panel_node = self.panel.build_layout(taffy, theme, node_map);
             self.panel_node = Some(panel_node);
@@ -2549,30 +2084,14 @@ impl CodeApp {
             let closes_bottom_panel = command == Command::ToggleBottomPanel && self.panel_visible;
             self.apply_command(command, state);
             if closes_bottom_panel {
-                *focus_target = self.panel_toggle_node;
+                // The panel's toggle is in the window's bar: the keyboard
+                // goes back to the code.
+                *focus_target = self.editor_node;
             }
             *handled = true;
             return true;
         }
         false
-    }
-
-    /// The find bar takes keyboard input while it is open and focused (its
-    /// field owns typing; Enter, F3 and Escape are its transport). Returns
-    /// `true` when the find bar newly consumed the event (the caller should
-    /// stop routing).
-    fn handle_find_bar(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
-        if !self.find_open {
-            return false;
-        }
-        let Some(n) = self.find_node else {
-            return false;
-        };
-        let before = *ctx.handled;
-        self.find
-            .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        self.drive_find(&mut ctx.state);
-        *ctx.handled && !before
     }
 
     /// While the Terminal dock tab shows a live terminal, a click in its
@@ -2626,28 +2145,8 @@ impl CodeApp {
         )
     }
 
-    /// Route the event to the header, bottom panel and editor.
+    /// Route the event to the bottom panel and the editor.
     fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // A press in the editor takes keyboard focus off the find bar, whose
-        // keys the editor would otherwise lose.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && self.editor.get_rect().contains(self.last_cursor)
-        {
-            self.find.set_focus(false);
-        }
-
-        if let Some(n) = self.search_button_node {
-            self.search_button
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        }
-        if let Some(n) = self.panel_toggle_node {
-            self.panel_toggle
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        }
         if self.panel_visible
             && let Some(n) = self.panel_node
         {
@@ -2668,7 +2167,7 @@ impl CodeApp {
 /// every splice has to be converted here rather than from a byte offset — a
 /// buffer containing any non-ASCII character would otherwise splice in the
 /// wrong place.
-fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
+pub(crate) fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
     let mut idx = 0usize;
     for (i, l) in text.split('\n').enumerate() {
         let len = l.chars().count();
@@ -2746,6 +2245,7 @@ impl Widget for CodeApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Continuable,
+        dyn ui::widget::Findable,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::semantic_document_read::SemanticReaders
     );
@@ -2830,10 +2330,6 @@ impl Widget for CodeApp {
         self.refresh_search_entries(state);
         self.editor.sync(state, path);
         self.run_window_toolbar();
-        if self.shows_header() != self.laid_out_header {
-            self.laid_out_header = self.shows_header();
-            self.structure_dirty = true;
-        }
         self.restore_pending_continuation(state);
 
         // A jump queued by a search hit or a cross-file definition lands once
@@ -2875,14 +2371,9 @@ impl Widget for CodeApp {
         self.poll_lsp();
 
         self.check_disk_staleness();
-        self.refresh_find();
-        self.refresh_header();
-        self.header.sync(state, path);
-        self.search_button.sync(state, path);
-        self.panel_toggle.sync(state, path);
         self.refresh_diagnostics(state);
         self.refresh_status();
-        let chrome = (self.panel_visible, self.panel.active_tab(), self.find_open);
+        let chrome = (self.panel_visible, self.panel.active_tab());
         if chrome != self.laid_out {
             self.laid_out = chrome;
             self.structure_dirty = true;
@@ -2908,7 +2399,6 @@ impl Widget for CodeApp {
         self.apply_formatted(state);
         self.record_missing_text(state);
         self.dispatch_editor_text_edits(state);
-        self.drive_find(state);
         for child in self.children_mut() {
             child.settle(&mut state.reborrow(), path);
         }
@@ -2972,22 +2462,6 @@ impl Widget for CodeApp {
             // Editor column origin within the content row.
             if let Some(col) = self.editor_col_node {
                 let col_origin = ui::widget::layout_rect(taffy, col, content_origin).origin();
-                if let Some(header_node) = self.editor_header_node {
-                    let header_origin =
-                        ui::widget::layout_rect(taffy, header_node, col_origin).origin();
-                    if let Some(n) = self.header_node {
-                        self.header.apply_layout(taffy, n, header_origin);
-                    }
-                    if let Some(n) = self.search_button_node {
-                        self.search_button.apply_layout(taffy, n, header_origin);
-                    }
-                    if let Some(n) = self.panel_toggle_node {
-                        self.panel_toggle.apply_layout(taffy, n, header_origin);
-                    }
-                }
-                if let Some(n) = self.find_node {
-                    self.find.apply_layout(taffy, n, col_origin);
-                }
                 if let Some(n) = self.editor_node {
                     self.editor.apply_layout(taffy, n, col_origin);
                 }
@@ -3055,6 +2529,10 @@ impl Widget for CodeApp {
             );
             return;
         }
+        if self.code_help_pointer(event) {
+            *ctx.handled = true;
+            return;
+        }
 
         if self.handle_global_shortcuts(
             event,
@@ -3063,12 +2541,6 @@ impl Widget for CodeApp {
             ctx.handled,
             ctx.focus_target,
         ) {
-            return;
-        }
-
-        // The find bar takes keyboard input while it is open (its fields own
-        // typing; Enter and Escape are its transport).
-        if self.handle_find_bar(event, ctx) {
             return;
         }
 
@@ -3089,7 +2561,7 @@ impl Widget for CodeApp {
             )
         {
             self.close_bottom_panel();
-            *ctx.focus_target = self.panel_toggle_node;
+            *ctx.focus_target = self.editor_node;
             *ctx.handled = true;
             return;
         }
@@ -3133,6 +2605,16 @@ impl Widget for CodeApp {
         "CodeApp"
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        self.code_help_action(target, action)
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("code-editor")
     }
@@ -3170,6 +2652,7 @@ impl Widget for CodeApp {
                     }),
             );
         }
+        children.extend(self.code_help_access());
         let analysis = self.lsp_status.label();
         if !analysis.is_empty() {
             children.push(
@@ -3195,18 +2678,7 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = Vec::new();
-        if self.laid_out_header {
-            out.extend([
-                &self.header as &dyn Widget,
-                &self.search_button,
-                &self.panel_toggle,
-            ]);
-        }
-        if self.find_open {
-            out.push(&self.find);
-        }
-        out.push(&self.editor);
+        let mut out: Vec<&dyn Widget> = vec![&self.editor];
         if self.panel_visible {
             out.push(&self.panel);
         }
@@ -3214,16 +2686,7 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        if self.laid_out_header {
-            out.push(&mut self.header);
-            out.push(&mut self.search_button);
-            out.push(&mut self.panel_toggle);
-        }
-        if self.find_open {
-            out.push(&mut self.find);
-        }
-        out.push(&mut self.editor);
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.editor];
         if self.panel_visible {
             out.push(&mut self.panel);
         }
@@ -3249,13 +2712,10 @@ impl Widget for CodeApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.header.needs_redraw()
-            || self.search_button.needs_redraw()
-            || self.panel_toggle.needs_redraw()
-            || self.editor.needs_redraw()
+        self.editor.needs_redraw()
             || self.panel.needs_redraw()
-            || self.find.needs_redraw()
             || self.question().is_some()
+            || self.code_help_needs_redraw()
             // A live terminal repaints continuously while visible.
             || self.terminal_visible()
     }
@@ -3280,7 +2740,6 @@ impl Widget for CodeApp {
         // A language server that is still working needs them too, so the
         // indexing readout actually advances.
         self.panel.needs_animation_frame()
-            || self.header.needs_animation_frame()
             || self.terminal_visible()
             || self.search_job.is_some()
             || self.portal.is_some()
@@ -3292,12 +2751,8 @@ impl Widget for CodeApp {
     }
 
     fn mark_drawn(&mut self) {
-        self.header.mark_drawn();
-        self.search_button.mark_drawn();
-        self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();
-        self.find.mark_drawn();
     }
 }
 

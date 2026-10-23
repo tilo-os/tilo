@@ -5287,6 +5287,7 @@ fn start_launch(
             }
             end
         });
+        let local_gate = matches!(launch_gate, SupervisedLaunchGate::Local(_));
         let release = match launch_gate {
             #[cfg(target_os = "linux")]
             SupervisedLaunchGate::Local(gate) => match &door_end {
@@ -5315,7 +5316,12 @@ fn start_launch(
         // The launcher has its end now; the shell keeps only its own.
         #[cfg(target_os = "linux")]
         drop(door_end);
-        if let Err(error) = release {
+        // A child that has already closed its end of a local gate (it ended
+        // before its release) was never let through it: it is supervised
+        // below like any other, and reported with how it really ended.
+        if let Err(error) = release
+            && !(local_gate && error.kind() == io::ErrorKind::BrokenPipe)
+        {
             let _ = child.kill();
             let _ = child.wait();
             unregister_launched_process(child.id());

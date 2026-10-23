@@ -26,6 +26,7 @@ impl ShellDriver {
                     entry: PathBuf::from(
                         "/home/you/.local/share/applications/tilo-downloaded/tilo-downloaded-krita.desktop",
                     ),
+                    appimage: true,
                 },
             ),
             "app-uninstall-system" => ("org.gnome.TextEditor", "Text Editor", AppSource::System),

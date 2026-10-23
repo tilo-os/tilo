@@ -1,13 +1,15 @@
 //! Opening documents for a thread that must not wait on the disk.
 //!
-//! A thread that declined waiting ([`DurableStore::decline_waiting`], the
+//! A thread that must not wait on storage ([`durable_store::waiting`], the
 //! compositor's frame loop) never names a path itself. When it leases or
 //! reads a key the store has not opened for it, the store's own thread does
 //! every path operation an opener would (creating the directory, opening it
 //! and its gate and lock files, checking they are the ones at those paths,
 //! and reading the stored bytes, writer identity and load hint) and hands
 //! the open descriptors and the bytes back. Until then the caller is told
-//! [`SeamError::Opening`]; it is woken when the work is done and asks again.
+//! [`SeamError::Opening`]; its wake ([`durable_store::waiting::wake`]) is
+//! called once when the work is done, however often it asked, and it asks
+//! again.
 //!
 //! The lease the caller then takes only locks those descriptors (`flock`
 //! takes a descriptor, never waits here, and names no path), and its reads
@@ -16,8 +18,6 @@
 //! keeps no other writer out. A directory replaced between the preparation
 //! and a write is still caught: every commit checks its owner's handles
 //! against their paths first.
-//!
-//! [`DurableStore::decline_waiting`]: durable_store::DurableStore::decline_waiting
 
 use std::path::Path;
 
@@ -80,24 +80,6 @@ pub(super) enum Preparation {
 }
 
 impl Shared {
-    /// How to wake the calling thread once work done for it is ready, when
-    /// it must not wait on the disk: the wake it declined waiting with, or,
-    /// on a thread [`durable_store::waiting`] forbids from waiting that
-    /// declined nothing, none (it asks again when it next runs). `None` for a
-    /// thread that may wait.
-    pub(super) fn declined_here(&self) -> Option<ReadyWake> {
-        let state = lock(&self.state);
-        let declined = state
-            .waitless
-            .as_ref()
-            .filter(|(thread, _)| *thread == std::thread::current().id())
-            .map(|(_, wake)| std::sync::Arc::clone(wake));
-        drop(state);
-        declined.or_else(|| {
-            durable_store::waiting::forbidden().then(|| -> ReadyWake { std::sync::Arc::new(|| {}) })
-        })
-    }
-
     /// Take the preparation of `key` for `access`, or have the store's
     /// thread start it and answer [`SeamError::Opening`]. The caller has
     /// already refused what needs no disk (a key held here).
@@ -113,7 +95,7 @@ impl Shared {
                 return Ok(prepared);
             }
             Some(Preparation::Queued(queued, mut waiting)) if queued == access => {
-                waiting.push(std::sync::Arc::clone(wake));
+                add_wake(&mut waiting, wake);
                 state
                     .prepared
                     .insert(key.clone(), Preparation::Queued(queued, waiting));
@@ -156,7 +138,7 @@ impl Shared {
                 return Ok(prepared.snapshot.stored.clone());
             }
             Some(Preparation::Queued(_, waiting)) => {
-                waiting.push(std::sync::Arc::clone(wake));
+                add_wake(waiting, wake);
                 return Err(SeamError::Opening(key.to_string()));
             }
             _ => {}
@@ -178,6 +160,17 @@ impl Shared {
             Some(Preparation::Ready(prepared)) => prepared.snapshot.hint.clone(),
             _ => None,
         }
+    }
+}
+
+/// Wait for a preparation with `wake` too, unless it already does: a thread
+/// that asks again before the work is done is woken once.
+fn add_wake(waiting: &mut Vec<ReadyWake>, wake: &ReadyWake) {
+    if !waiting
+        .iter()
+        .any(|known| durable_store::waiting::same_wake(known, wake))
+    {
+        waiting.push(std::sync::Arc::clone(wake));
     }
 }
 

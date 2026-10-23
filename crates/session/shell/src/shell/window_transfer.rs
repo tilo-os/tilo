@@ -41,12 +41,13 @@
 //! 6. A **Copy** stops after step 3: the source keeps its window and record,
 //!    and the two histories diverge from there.
 //!
-//! The frame loop drives all of this and never waits for a commit. Each
-//! write the transfer makes for another process to read (the imported
-//! record and its presentation, late edits merged in) is started and left
-//! to the store's own thread; the step that hands the record over (starting
-//! the destination instance, restarting it, retiring the source) comes only
-//! once the store reports those writes durable ([`Phase::Landing`]).
+//! The frame loop drives all of this and never touches the disk: each step
+//! that reads or writes an app profile does that on a thread of its own
+//! ([`after_disk`]), and the loop takes the answer up on a later round. A
+//! write the next process reads (the imported record and its presentation,
+//! late edits merged in) is committed there before the step that hands the
+//! record over (starting the destination instance, restarting it, retiring
+//! the source) runs.
 //!
 //! A native app without records keeps one document for itself in the room
 //! ([`ui::persist`]); that document is what its window carries, arriving as
@@ -193,55 +194,24 @@ impl Carried {
     }
 }
 
-/// Writes a step made for another process to read, on their way to the
-/// disk, and the profile whose store accepted them: only that store can say
-/// how they went.
-struct Arriving {
-    profile: NativeProfile,
-    landings: Vec<transfer::Landing>,
-}
-
-impl Arriving {
-    fn new(
-        profile: NativeProfile,
-        landings: impl IntoIterator<Item = Option<transfer::Landing>>,
-    ) -> Box<Self> {
-        Box::new(Self {
-            profile,
-            landings: landings.into_iter().flatten().collect(),
-        })
-    }
-
-    fn durability(&self) -> durable_store::Durability {
-        transfer::Landing::all(self.profile.store().as_ref(), &self.landings)
-    }
-}
-
-/// The hand-off a [`Phase::Landing`] transfer makes once its writes are
-/// on the disk.
-enum Then {
-    /// Start the destination instance on the imported record.
-    Start {
-        mode: TransferMode,
-        resume: Option<(u16, Vec<u8>)>,
-    },
-    /// Restart the destination instance on the record late edits were
-    /// merged into.
-    Reopen { resume: Option<(u16, Vec<u8>)> },
-    /// Retire the source and finish the move, late edits merged in.
-    Finish,
-}
+/// A step's disk work in flight: asked each round, `None` until the work is
+/// done, then the phase the step goes on to.
+type DiskPoll =
+    Box<dyn FnMut(&mut ChromeState, &mut WindowTransfers, &Plan, bool) -> Option<Option<Phase>>>;
 
 enum Phase {
     Consent(oneshot::Receiver<WindowTransferDecision>),
-    /// Waiting for writes the next step hands over to reach the disk: the
-    /// process that reads them reads the disk.
-    Landing {
-        tab: TabId,
-        carried: Box<Carried>,
-        arriving: Box<Arriving>,
-        then: Then,
-        since: Instant,
+    /// Planned off the frame loop: what the window carries, and the sheet
+    /// now asking about it.
+    Planned {
+        carry: Box<Carry>,
+        consent: oneshot::Receiver<WindowTransferDecision>,
+    },
+    /// Waiting for a step's disk work, done on a thread of its own.
+    /// `after_close` once the old window was asked to close.
+    Disk {
+        poll: DiskPoll,
+        after_close: bool,
     },
     /// Waiting for the old instance to make what it shows durable, so the
     /// transfer reads it as the person left it.
@@ -577,45 +547,34 @@ fn instance_of(
 /// the app keeps for itself in the room ([`ui::persist`]), with the
 /// presentation it carries along.
 fn shown(
-    directory: &Path,
+    local: Option<&LocalShown>,
     room: RoomId,
     app_id: &str,
     instance: u64,
     hosted: Option<&dyn HostedRooms>,
 ) -> Option<(Origin, SavedInstanceView)> {
-    if !directory.is_dir() {
-        return None;
-    }
-    let profile = NativeProfile::open(directory, Some(&room.to_string())).ok()?;
+    let local = local?;
     // A governed room's records live with its owner; the app's own
     // document there never leaves it.
-    let readable = |origin: &Origin| match (hosted, origin) {
+    let readable = |origin: &Origin, here: bool| match (hosted, origin) {
         (Some(hosted), Origin::Record(checkout)) => hosted.read(room, app_id, &checkout.id).is_ok(),
         (Some(_), Origin::AppDocument(_)) => false,
-        (None, origin) => {
-            transfer::read(profile.store(), app_id, profile.workspace_id(), origin).is_ok()
-        }
+        (None, _) => here,
     };
-    if let Some(view) = profile.saved_view(instance).ok().flatten()
-        && view.app_id == app_id
-        && let Some(id) = RecordId::parse(&view.record_id).filter(|id| !id.is_package_primary())
+    if let Some(view) = &local.view
+        && let Some(origin) = named_record(view, app_id)
+        && readable(&origin, local.record_readable)
     {
-        let origin = Origin::Record(RecordCheckout::new(
-            id,
-            ui::record::RecordKind::new(view.record_kind.clone()),
-        ));
-        if readable(&origin) {
-            return Some((origin, view));
-        }
+        return Some((origin, view.clone()));
     }
     let kind = ui::record::RecordKind::new(transfer::APP_DOCUMENT_KIND);
     let origin = Origin::AppDocument(kind.clone());
-    readable(&origin).then(|| {
+    readable(&origin, local.app_document_readable).then(|| {
         let view = SavedInstanceView {
             version: 2,
             app_id: app_id.to_owned(),
-            device_id: profile.device_id().to_owned(),
-            workspace_id: profile.workspace_id().to_owned(),
+            device_id: local.device_id.clone(),
+            workspace_id: local.workspace_id.clone(),
             instance_id: instance,
             record_id: RecordId::for_tab(instance).as_str().to_owned(),
             record_kind: kind.as_str().to_owned(),
@@ -626,13 +585,102 @@ fn shown(
     })
 }
 
+/// What planning reads from the source profile off the frame loop: the
+/// window's own instance, and every other window of the app in the source
+/// workspace whose instance is known.
+struct CarryInputs {
+    instance: u64,
+    root: PathBuf,
+    resume: Option<(u16, Vec<u8>)>,
+    others: Vec<Option<u64>>,
+    source_hosted: bool,
+}
+
+/// What [`read_shown`] found for a plan's [`CarryInputs`].
+type ShownRead = (Option<LocalShown>, Vec<Option<LocalShown>>);
+
+impl CarryInputs {
+    /// The disk work behind them, to run off the frame loop.
+    fn reader(&self, room: RoomId, app_id: &str) -> impl FnOnce() -> ShownRead + Send + 'static {
+        let dir = self.root.clone();
+        let app_id = app_id.to_owned();
+        let instance = self.instance;
+        let others = self.others.clone();
+        let read_locally = !self.source_hosted;
+        move || {
+            let own = read_shown(&dir, room, &app_id, instance, read_locally);
+            let others = others
+                .iter()
+                .map(|other| {
+                    other.and_then(|other| read_shown(&dir, room, &app_id, other, read_locally))
+                })
+                .collect();
+            (own, others)
+        }
+    }
+}
+
+/// What the window carries, from what was read for it.
+fn carry_of(
+    plan: &Plan,
+    inputs: CarryInputs,
+    read: &ShownRead,
+    hosted: Option<&dyn HostedRooms>,
+) -> Carry {
+    let source = &plan.source;
+    let reader = hosted.filter(|_| inputs.source_hosted);
+    let Some((origin, view)) = shown(
+        read.0.as_ref(),
+        source.room,
+        &plan.app_id,
+        inputs.instance,
+        reader,
+    ) else {
+        return Carry::Nothing;
+    };
+    let move_blocked = inputs
+        .others
+        .iter()
+        .zip(&read.1)
+        .any(|(other, local)| match other {
+            Some(other) => shown(local.as_ref(), source.room, &plan.app_id, *other, reader)
+                .is_some_and(|(other, _)| other == origin),
+            // An instance nothing is known about shares the app's own
+            // document, the one thing every window opens.
+            None => matches!(origin, Origin::AppDocument(_)),
+        });
+    let from = source.name.as_str();
+    let move_blocked = if move_blocked {
+        Some(t_args(
+            "window-transfer-move-blocked",
+            &[("from", from.into())],
+        ))
+    } else if inputs.source_hosted && plan.surface.is_none() {
+        // Only a running instance can mark a governed record moved,
+        // through its own route; this desktop cannot write there.
+        Some(t_args(
+            "window-transfer-move-needs-window",
+            &[("from", from.into())],
+        ))
+    } else {
+        None
+    };
+    Carry::Record {
+        instance: inputs.instance,
+        origin,
+        view: Box::new(view),
+        resume: inputs.resume,
+        move_blocked,
+    }
+}
+
 fn plan(
     tree: &WorkspaceTree,
     tab: TabId,
     target: WorkspaceId,
     data_home: Option<&Path>,
     hosted: Option<&dyn HostedRooms>,
-) -> Result<Plan, MoveTabError> {
+) -> Result<(Plan, Option<CarryInputs>), MoveTabError> {
     let (source_ws, found) = find_tab(tree, tab).ok_or(MoveTabError::UnknownTab)?;
     let (app_id, tile_app, surface) = client(&found.tile).ok_or(MoveTabError::Pinned)?;
     let destination_ws = tree
@@ -671,71 +719,48 @@ fn plan(
         hosted: governed(workspace.room()),
     };
     let source = side(source_ws);
-    let carry = data_home
-        .and_then(|home| {
-            let instance = instance_of(tree, tab, source.room, &tile_app, &app_id)?;
-            let root = profile_root(home, source.room, &app_id);
-            let source_reader = hosted.filter(|_| source_hosted);
-            let (origin, view) = shown(&root, source.room, &app_id, instance, source_reader)?;
-            let launch = LaunchIntent::app(app_id.clone()).ok()?;
-            let resume = crate::shell::personal_continuity_registry::global_registry()
-                .lock()
-                .ok()?
-                .continuation_for_tab(source.room, AppInstanceId(tab), &launch)
-                .map(|found| (found.resume.schema_version(), found.resume.bytes().to_vec()));
-            let move_blocked = source_ws
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .filter(|other| other.id != tab)
-                .filter_map(|other| {
-                    let (other_app, other_tile_app, _) = client(&other.tile)?;
-                    (other_app == app_id).then_some((other.id, other_tile_app))
-                })
-                .any(|(other, other_tile_app)| {
-                    match instance_of(tree, other, source.room, &other_tile_app, &app_id) {
-                        Some(other) => shown(&root, source.room, &app_id, other, source_reader)
-                            .is_some_and(|(other, _)| other == origin),
-                        // An instance nothing is known about shares the app's
-                        // own document, the one thing every window opens.
-                        None => matches!(origin, Origin::AppDocument(_)),
-                    }
-                });
-            let from = source.name.as_str();
-            let move_blocked = if move_blocked {
-                Some(t_args(
-                    "window-transfer-move-blocked",
-                    &[("from", from.into())],
-                ))
-            } else if source_hosted && surface.is_none() {
-                // Only a running instance can mark a governed record moved,
-                // through its own route; this desktop cannot write there.
-                Some(t_args(
-                    "window-transfer-move-needs-window",
-                    &[("from", from.into())],
-                ))
-            } else {
-                None
-            };
-            Some(Carry::Record {
-                instance,
-                origin,
-                view: Box::new(view),
-                resume,
-                move_blocked,
+    let inputs = data_home.and_then(|home| {
+        let instance = instance_of(tree, tab, source.room, &tile_app, &app_id)?;
+        let launch = LaunchIntent::app(app_id.clone()).ok()?;
+        let resume = crate::shell::personal_continuity_registry::global_registry()
+            .lock()
+            .ok()?
+            .continuation_for_tab(source.room, AppInstanceId(tab), &launch)
+            .map(|found| (found.resume.schema_version(), found.resume.bytes().to_vec()));
+        let others = source_ws
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter(|other| other.id != tab)
+            .filter_map(|other| {
+                let (other_app, other_tile_app, _) = client(&other.tile)?;
+                (other_app == app_id).then_some((other.id, other_tile_app))
             })
+            .map(|(other, other_tile_app)| {
+                instance_of(tree, other, source.room, &other_tile_app, &app_id)
+            })
+            .collect();
+        Some(CarryInputs {
+            instance,
+            root: profile_root(home, source.room, &app_id),
+            resume,
+            others,
+            source_hosted,
         })
-        .unwrap_or(Carry::Nothing);
-    Ok(Plan {
-        tab,
-        app_id,
-        title: found.title.clone(),
-        surface,
-        source,
-        destination: side(destination_ws),
-        carry,
-    })
+    });
+    Ok((
+        Plan {
+            tab,
+            app_id,
+            title: found.title.clone(),
+            surface,
+            source,
+            destination: side(destination_ws),
+            carry: Carry::Nothing,
+        },
+        inputs,
+    ))
 }
 
 /// The people other than this desktop's person who can open things in `workspace`.
@@ -903,32 +928,89 @@ pub fn request(
     let data_home = st.window_transfers.data_home();
     st.window_transfers.next = st.window_transfers.next.wrapping_add(1);
     let handle = format!("window-transfer:{}:{tab}", st.window_transfers.next);
-    let tree = st.tree();
-    let plan = plan(
-        &tree,
-        tab,
-        target,
-        data_home.as_deref(),
-        st.window_transfers.hosted.as_deref(),
-    )?;
-    let request = sheet(&tree, &plan, handle, preferred);
-    drop(tree);
-    let handle = request.handle.clone();
-    let receiver = st
-        .window_transfers
+    let (plan, inputs) = {
+        let tree = st.tree();
+        plan(
+            &tree,
+            tab,
+            target,
+            data_home.as_deref(),
+            st.window_transfers.hosted.as_deref(),
+        )?
+    };
+    // What the window carries is read from its profile off the frame loop;
+    // the sheet asks once that is known.
+    let phase = match inputs {
+        None => Some(Phase::Planned {
+            carry: Box::new(Carry::Nothing),
+            consent: ask_consent(st, &st.window_transfers, &plan, &handle, preferred)
+                .ok_or(MoveTabError::NobodyToConfirm)?,
+        }),
+        Some(inputs) => {
+            let reader = inputs.reader(plan.source.room, &plan.app_id);
+            let Some(mut read) = off_loop(reader) else {
+                return Err(MoveTabError::NobodyToConfirm);
+            };
+            let mut inputs = Some(inputs);
+            let consent_handle = handle.clone();
+            let mut take = move |st: &ChromeState, transfers: &WindowTransfers, plan: &Plan| {
+                let found = match read.try_recv() {
+                    Err(oneshot::error::TryRecvError::Empty) => return None,
+                    Ok(found) => found,
+                    Err(oneshot::error::TryRecvError::Closed) => (None, Vec::new()),
+                };
+                let inputs = inputs.take()?;
+                let carry = carry_of(plan, inputs, &found, transfers.hosted.as_deref());
+                let carried = Plan {
+                    carry,
+                    ..plan.clone()
+                };
+                Some(
+                    ask_consent(st, transfers, &carried, &consent_handle, preferred).map(
+                        |consent| Phase::Planned {
+                            carry: Box::new(carried.carry),
+                            consent,
+                        },
+                    ),
+                )
+            };
+            match take(st, &st.window_transfers, &plan) {
+                Some(phase) => Some(phase.ok_or(MoveTabError::NobodyToConfirm)?),
+                None => Some(Phase::Disk {
+                    poll: Box::new(move |st, transfers, plan, _| take(st, transfers, plan)),
+                    after_close: false,
+                }),
+            }
+        }
+    };
+    let (plan, phase) = planned(plan, phase);
+    if let Some(phase) = phase {
+        st.window_transfers.active.push(Transfer {
+            handle,
+            plan,
+            phase,
+            source_lost: false,
+        });
+    }
+    st.bump();
+    Ok(())
+}
+
+/// Put the transfer sheet for `plan` up; `None` when nobody can be asked.
+fn ask_consent(
+    st: &ChromeState,
+    transfers: &WindowTransfers,
+    plan: &Plan,
+    handle: &str,
+    preferred: TransferMode,
+) -> Option<oneshot::Receiver<WindowTransferDecision>> {
+    let request = sheet(&st.tree(), plan, handle.to_owned(), preferred);
+    transfers
         .queue
         .clone()
         .unwrap_or_else(PortalDialogQueue::global)
         .enqueue_window_transfer(request)
-        .map_err(|_| MoveTabError::NobodyToConfirm)?;
-    st.window_transfers.active.push(Transfer {
-        handle,
-        plan,
-        phase: Phase::Consent(receiver),
-        source_lost: false,
-    });
-    st.bump();
-    Ok(())
+        .ok()
 }
 
 /// Advance every transfer in flight. The frame loop calls this each round.
@@ -1005,8 +1087,12 @@ fn follow(
             }
         };
     }
-    let record = if kept_here(&follower.address, &data_home) {
-        None
+    // Its profile's store reads on its own thread first: come back.
+    let Some(kept) = kept_here(&follower.address, &data_home) else {
+        return Some(follower);
+    };
+    let record = if let Some(kept) = kept {
+        Some(kept)
     } else {
         match hydrate(&follower.address, &data_home) {
             Hydration::Waiting => return Some(follower),
@@ -1020,7 +1106,9 @@ fn follow(
     };
     forget(&follower.address);
     let instance = crate::shell::state::next_id();
-    reopen_on(&follower.address, &data_home, instance, record.as_ref());
+    if !reopen_on(&follower.address, &data_home, instance, record.as_ref()) {
+        return Some(follower);
+    }
     // Its launch reads the record and its View from the disk.
     follower.instance = Some(instance);
     follow(st, transfers, follower)
@@ -1164,8 +1252,8 @@ fn advance(
             Phase::Releasing { .. }
                 | Phase::Redelivering { .. }
                 | Phase::Reopening { .. }
-                | Phase::Landing {
-                    then: Then::Reopen { .. } | Then::Finish,
+                | Phase::Disk {
+                    after_close: true,
                     ..
                 }
         )
@@ -1279,25 +1367,14 @@ fn advance(
                 None
             }
         },
-        Phase::Landing {
-            tab,
-            carried,
-            arriving,
-            then,
-            since,
-        } => land(
-            st,
-            transfers,
-            &plan,
-            Landing {
-                tab,
-                carried,
-                arriving,
-                then,
-                since,
-            },
-            source_lost,
-        ),
+        Phase::Planned { carry, consent } => Some(Phase::Planned { carry, consent }),
+        Phase::Disk {
+            mut poll,
+            after_close,
+        } => match poll(st, transfers, &plan, source_lost) {
+            None => Some(Phase::Disk { poll, after_close }),
+            Some(next) => next,
+        },
         Phase::Releasing { tab, carried } => {
             release(st, transfers, &plan, tab, carried, source_lost)
         }
@@ -1366,11 +1443,171 @@ fn advance(
             }
         },
     };
+    let (plan, phase) = planned(plan, phase);
     phase.map(|phase| Transfer {
         handle,
         plan,
         phase,
         source_lost,
+    })
+}
+
+/// Take up what planning off the frame loop found: the plan carries it from
+/// now on, and the sheet asks.
+fn planned(mut plan: Plan, phase: Option<Phase>) -> (Plan, Option<Phase>) {
+    match phase {
+        Some(Phase::Planned { carry, consent }) => {
+            plan.carry = *carry;
+            (plan, Some(Phase::Consent(consent)))
+        }
+        other => (plan, other),
+    }
+}
+
+/// Run `work` where it may wait on the disk, and go on with `then` and its
+/// answer. Off the frame loop that is right here, at once; on it, a thread of
+/// its own, and the loop takes the answer up on a later round
+/// ([`Phase::Disk`]). `after_close` once the old window was asked to close.
+fn after_disk<T: Send + 'static>(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    source_lost: bool,
+    after_close: bool,
+    work: impl FnOnce() -> T + Send + 'static,
+    then: impl FnOnce(&mut ChromeState, &mut WindowTransfers, &Plan, T, bool) -> Option<Phase> + 'static,
+) -> Option<Phase> {
+    let Some(mut answer) = off_loop(work) else {
+        failed(st, plan, &t("window-transfer-failed-storage"));
+        return None;
+    };
+    let mut then = Some(then);
+    let mut poll: DiskPoll =
+        Box::new(
+            move |st, transfers, plan, source_lost| match answer.try_recv() {
+                Err(oneshot::error::TryRecvError::Empty) => None,
+                Ok(done) => Some(
+                    then.take()
+                        .and_then(|then| then(st, transfers, plan, done, source_lost)),
+                ),
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    failed(st, plan, &t("window-transfer-failed-storage"));
+                    Some(None)
+                }
+            },
+        );
+    match poll(st, transfers, plan, source_lost) {
+        None => Some(Phase::Disk { poll, after_close }),
+        Some(next) => next,
+    }
+}
+
+/// Start `work` where it may wait on the disk: right here on a thread that
+/// may, else on one of its own. `None` when no thread could be started.
+fn off_loop<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<oneshot::Receiver<T>> {
+    let (answer, answered) = oneshot::channel();
+    if !durable_store::waiting::forbidden() {
+        let _ = answer.send(work());
+        return Some(answered);
+    }
+    std::thread::Builder::new()
+        .name("window-transfer-disk".into())
+        .spawn(move || {
+            let _ = answer.send(work());
+        })
+        .ok()
+        .map(|_| answered)
+}
+
+/// Disk work nothing waits for (retiring a record at rest): off the frame
+/// loop, its outcome only logged.
+fn off_loop_detached(work: impl FnOnce() + Send + 'static) {
+    if off_loop(work).is_none() {
+        tracing::warn!("no thread for a window transfer's last write");
+    }
+}
+
+/// Why disk work off the frame loop failed: the transfer's own reason, or
+/// `None` when the profile could not be opened.
+type Fault = Option<TransferError>;
+
+fn fault_reason(fault: Fault) -> String {
+    fault.map_or_else(
+        || t("window-transfer-failed-storage"),
+        |error| transfer_reason(&error),
+    )
+}
+
+/// An app's profile in `room`, opened off the frame loop.
+fn profile_off_loop(dir: &Path, room: &str) -> Result<NativeProfile, Fault> {
+    std::fs::create_dir_all(dir).map_err(|_| None)?;
+    NativeProfile::open(dir, Some(room)).map_err(|_| None)
+}
+
+/// `origin` as it was last made durable in the profile at `dir`.
+fn read_off_loop(dir: &Path, room: &str, app_id: &str, origin: &Origin) -> Result<Vec<u8>, Fault> {
+    let profile = profile_off_loop(dir, room)?;
+    transfer::read(profile.store(), app_id, profile.workspace_id(), origin)
+        .map(|mut doc| doc.save())
+        .map_err(Some)
+}
+
+/// What one instance's profile holds, read off the frame loop: its saved
+/// presentation, and whether the record it names and the app's own room
+/// document are live records here. Nothing for a profile never written.
+struct LocalShown {
+    view: Option<SavedInstanceView>,
+    record_readable: bool,
+    app_document_readable: bool,
+    device_id: String,
+    workspace_id: String,
+}
+
+/// The record `view` names, when it is one that can travel.
+fn named_record(view: &SavedInstanceView, app_id: &str) -> Option<Origin> {
+    if view.app_id != app_id {
+        return None;
+    }
+    let id = RecordId::parse(&view.record_id).filter(|id| !id.is_package_primary())?;
+    Some(Origin::Record(RecordCheckout::new(
+        id,
+        ui::record::RecordKind::new(view.record_kind.clone()),
+    )))
+}
+
+/// [`LocalShown`] for `instance`, off the frame loop. `read_locally` is
+/// false where the records live with a governed room's owner instead.
+fn read_shown(
+    dir: &Path,
+    room: RoomId,
+    app_id: &str,
+    instance: u64,
+    read_locally: bool,
+) -> Option<LocalShown> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let profile = NativeProfile::open(dir, Some(&room.to_string())).ok()?;
+    let view = profile.saved_view(instance).ok().flatten();
+    let readable = |origin: &Origin| {
+        read_locally
+            && transfer::read(profile.store(), app_id, profile.workspace_id(), origin).is_ok()
+    };
+    let record_readable = view
+        .as_ref()
+        .and_then(|view| named_record(view, app_id))
+        .is_some_and(|origin| readable(&origin));
+    let app_document_readable = readable(&Origin::AppDocument(ui::record::RecordKind::new(
+        transfer::APP_DOCUMENT_KIND,
+    )));
+    Some(LocalShown {
+        view,
+        record_readable,
+        app_document_readable,
+        device_id: profile.device_id().to_owned(),
+        workspace_id: profile.workspace_id().to_owned(),
     })
 }
 
@@ -1505,45 +1742,49 @@ fn transfer_reason(error: &TransferError) -> String {
     }
 }
 
-/// Read the source record as it was last made durable, rehome it into the
-/// destination under a fresh id, and give `instance` there the presentation
-/// it had. Returns the arrived record and the writes the destination
-/// instance reads, on their way to the disk.
+/// Off the frame loop: rehome the source record as it was read into the
+/// destination under `target`, and give the instance there the presentation
+/// it had. Returns the arrived record, on the disk.
 fn import(
-    plan: &Plan,
-    origin: &Origin,
-    snapshot: &AutoCommit,
-    view: &SavedInstanceView,
-    instance: u64,
-    destination_root: &Path,
-) -> Result<(RecordCheckout, Box<Arriving>), String> {
-    let storage = |_| t("window-transfer-failed-storage");
-    std::fs::create_dir_all(destination_root).map_err(|_| t("window-transfer-failed-storage"))?;
-    let destination =
-        NativeProfile::open(destination_root, Some(&plan.destination.room.to_string()))
-            .map_err(storage)?;
+    snapshot: &[u8],
+    carrying: &Carrying,
+    target: &RecordId,
+) -> Result<RecordCheckout, Fault> {
+    let destination = profile_off_loop(&carrying.destination_root, &carrying.destination_room)?;
+    let snapshot = AutoCommit::load(snapshot)
+        .map_err(|error| Some(TransferError::Automerge(error.to_string())))?;
     let mut rehomed = transfer::rehome(
-        snapshot,
-        origin,
-        &plan.source.room.to_string(),
+        &snapshot,
+        &carrying.origin,
+        &carrying.source_room,
         destination.workspace_id(),
-        &RecordId::minted(),
+        target,
     )
-    .map_err(|error| transfer_reason(&error))?;
-    let (target, record) = transfer::install(
+    .map_err(Some)?;
+    // Off the frame loop the store commits before answering: both writes
+    // are on the disk when this returns.
+    let (target, _) = transfer::install(
         destination.store(),
-        &plan.app_id,
+        &carrying.app_id,
         destination.workspace_id(),
         &mut rehomed,
     )
-    .map_err(|error| transfer_reason(&error))?;
-    let presentation = destination
-        .adopt_view(view, instance, &target)
-        .map_err(storage)?;
-    Ok((
-        target,
-        Arriving::new(destination, [Some(record), presentation]),
-    ))
+    .map_err(Some)?;
+    let _ = destination
+        .adopt_view(&carrying.view, carrying.instance, &target)
+        .map_err(|_| None)?;
+    Ok(target)
+}
+
+/// What [`import`] needs, owned so it can run off the frame loop.
+struct Carrying {
+    app_id: String,
+    origin: Origin,
+    view: SavedInstanceView,
+    instance: u64,
+    source_room: String,
+    destination_room: String,
+    destination_root: PathBuf,
 }
 
 /// The continuity instance a plan carries, or 0 when it carries nothing.
@@ -1594,9 +1835,8 @@ fn begin(
     let Carry::Record {
         instance,
         origin,
-        view,
-        resume,
         move_blocked,
+        ..
     } = &plan.carry
     else {
         return None;
@@ -1611,22 +1851,81 @@ fn begin(
         failed(st, plan, &t("window-transfer-failed-storage"));
         return None;
     };
-    let source_root = profile_root(&data_home, plan.source.room, &plan.app_id);
-    let destination_root = profile_root(&data_home, plan.destination.room, &plan.app_id);
     // A moved window is the same instance continuing elsewhere; a copy is a
     // new window beside the one that stays, so it is an instance of its own.
-    let instance = match mode {
-        TransferMode::Move => *instance,
-        TransferMode::Copy => crate::shell::state::next_id(),
+    let roots = Roots {
+        source: profile_root(&data_home, plan.source.room, &plan.app_id),
+        destination: profile_root(&data_home, plan.destination.room, &plan.app_id),
+        instance: match mode {
+            TransferMode::Move => *instance,
+            TransferMode::Copy => crate::shell::state::next_id(),
+        },
     };
-    let snapshot = match hosted::read_source(transfers, plan, origin, &source_root) {
-        Ok(snapshot) => snapshot,
-        Err(reason) => {
-            failed(st, plan, &reason);
-            return None;
-        }
+    if plan.source.hosted {
+        return match hosted::read_source(transfers, plan, origin) {
+            Ok(snapshot) => carry_over(st, transfers, plan, mode, roots, snapshot),
+            Err(reason) => {
+                failed(st, plan, &reason);
+                None
+            }
+        };
+    }
+    let (dir, room, app_id, origin) = (
+        roots.source.clone(),
+        plan.source.room.to_string(),
+        plan.app_id.clone(),
+        origin.clone(),
+    );
+    after_disk(
+        st,
+        transfers,
+        plan,
+        false,
+        false,
+        move || read_off_loop(&dir, &room, &app_id, &origin),
+        move |st, transfers, plan, read, _| {
+            let snapshot = read.map_err(fault_reason).and_then(|bytes| {
+                AutoCommit::load(&bytes).map_err(|_| t("window-transfer-failed-record"))
+            });
+            match snapshot {
+                Ok(snapshot) => carry_over(st, transfers, plan, mode, roots, snapshot),
+                Err(reason) => {
+                    failed(st, plan, &reason);
+                    None
+                }
+            }
+        },
+    )
+}
+
+/// Where a transfer's profiles are, and the instance it opens there.
+struct Roots {
+    source: PathBuf,
+    destination: PathBuf,
+    instance: u64,
+}
+
+/// Bring the source as read over: propose it to a governed destination's
+/// owner, or import it here off the frame loop and start the destination
+/// instance on it.
+fn carry_over(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    mode: TransferMode,
+    roots: Roots,
+    mut snapshot: AutoCommit,
+) -> Option<Phase> {
+    let Carry::Record {
+        origin,
+        view,
+        resume,
+        ..
+    } = &plan.carry
+    else {
+        return None;
     };
-    let known = snapshot.clone().get_heads();
+    let known = snapshot.get_heads();
     if plan.destination.hosted {
         return hosted::propose(
             st,
@@ -1639,54 +1938,62 @@ fn begin(
                 known,
                 view,
                 resume: resume.clone(),
-                instance,
-                source_root,
-                destination_root,
+                instance: roots.instance,
+                source_root: roots.source,
+                destination_root: roots.destination,
             },
         );
     }
-    let (target, arriving) =
-        match import(plan, origin, &snapshot, view, instance, &destination_root) {
-            Ok(imported) => imported,
-            Err(reason) => {
-                failed(st, plan, &reason);
-                return None;
-            }
-        };
-    let carried = Box::new(Carried {
+    let carrying = Carrying {
+        app_id: plan.app_id.clone(),
         origin: origin.clone(),
-        target,
-        known,
-        source_root,
-        destination_root,
-        instance,
-        retired_at: None,
-    });
-    let Some(tab) = opening_card(st, plan) else {
-        roll_back(
-            st,
-            plan,
-            None,
-            &carried,
-            &t("window-move-unknown-workspace"),
-        );
-        return None;
+        view: (**view).clone(),
+        instance: roots.instance,
+        source_room: plan.source.room.to_string(),
+        destination_room: plan.destination.room.to_string(),
+        destination_root: roots.destination.clone(),
     };
-    land(
+    let bytes = snapshot.save();
+    let resume = resume.clone();
+    after_disk(
         st,
         transfers,
         plan,
-        Landing {
-            tab,
-            carried,
-            arriving,
-            then: Then::Start {
-                mode,
-                resume: resume.clone(),
-            },
-            since: Instant::now(),
-        },
         false,
+        false,
+        move || import(&bytes, &carrying, &RecordId::minted()),
+        move |st, transfers, plan, imported, _| {
+            let target = match imported {
+                Ok(target) => target,
+                Err(fault) => {
+                    failed(st, plan, &fault_reason(fault));
+                    return None;
+                }
+            };
+            let Carry::Record { origin, .. } = &plan.carry else {
+                return None;
+            };
+            let carried = Box::new(Carried {
+                origin: origin.clone(),
+                target,
+                known,
+                source_root: roots.source,
+                destination_root: roots.destination,
+                instance: roots.instance,
+                retired_at: None,
+            });
+            let Some(tab) = opening_card(st, plan) else {
+                roll_back(
+                    st,
+                    plan,
+                    None,
+                    &carried,
+                    &t("window-move-unknown-workspace"),
+                );
+                return None;
+            };
+            start(st, transfers, plan, mode, tab, carried, resume)
+        },
     )
 }
 
@@ -1708,79 +2015,6 @@ fn opening_card(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
             },
         },
     ))
-}
-
-/// A transfer whose writes are on their way to the disk.
-struct Landing {
-    tab: TabId,
-    carried: Box<Carried>,
-    arriving: Box<Arriving>,
-    then: Then,
-    since: Instant,
-}
-
-/// Make the hand-off `landing` waits for once its writes are durable, roll
-/// back or give up if they fail or never land, and otherwise keep waiting.
-/// Asks the store each round; never waits for the commit.
-fn land(
-    st: &mut ChromeState,
-    transfers: &mut WindowTransfers,
-    plan: &Plan,
-    landing: Landing,
-    source_lost: bool,
-) -> Option<Phase> {
-    let Landing {
-        tab,
-        carried,
-        arriving,
-        then,
-        since,
-    } = landing;
-    let reason = match arriving.durability() {
-        durable_store::Durability::Durable => {
-            drop(arriving);
-            return match then {
-                Then::Start { mode, resume } => {
-                    start(st, transfers, plan, mode, tab, carried, resume)
-                }
-                Then::Reopen { resume } => {
-                    reopen(st, transfers, plan, tab, carried, resume, source_lost)
-                }
-                Then::Finish => {
-                    finish_move(st, plan, &carried, true, source_lost);
-                    None
-                }
-            };
-        }
-        durable_store::Durability::Pending if since.elapsed() < OPEN_TIMEOUT => {
-            return Some(Phase::Landing {
-                tab,
-                carried,
-                arriving,
-                then,
-                since,
-            });
-        }
-        durable_store::Durability::Pending => "the disk did not take the record in time".to_owned(),
-        durable_store::Durability::Failed(reason) => reason,
-    };
-    tracing::warn!(%reason, app = %plan.app_id, "a transferred record did not reach the disk");
-    drop(arriving);
-    match then {
-        Then::Start { .. } => roll_back(
-            st,
-            plan,
-            Some(tab),
-            &carried,
-            &t("window-transfer-failed-storage"),
-        ),
-        // The source still holds the late edits: it is not retired.
-        Then::Reopen { .. } | Then::Finish => {
-            set_note(st, tab, String::new());
-            failed(st, plan, &t("window-transfer-failed-storage"));
-        }
-    }
-    None
 }
 
 /// Start the destination instance in `tab`, or roll the transfer back.
@@ -1867,16 +2101,24 @@ fn roll_back(
     // can take it for live state. An instance that started without a window
     // may still hold it, in which case it stays unreferenced. A governed
     // destination's owner accepted it into their room; it stays there.
-    if !plan.destination.hosted
-        && let Some(destination) = destination_profile(plan, carried)
-    {
-        let _ = transfer::retire(
-            destination.store(),
-            &plan.app_id,
-            destination.workspace_id(),
-            &Origin::Record(carried.target.clone()),
-            &Retirement::Abandoned,
+    if !plan.destination.hosted {
+        let (dir, room, app_id, target) = (
+            carried.destination_root.clone(),
+            plan.destination.room.to_string(),
+            plan.app_id.clone(),
+            carried.target.clone(),
         );
+        off_loop_detached(move || {
+            if let Ok(destination) = profile_off_loop(&dir, &room) {
+                let _ = transfer::retire(
+                    destination.store(),
+                    &app_id,
+                    destination.workspace_id(),
+                    &Origin::Record(target),
+                    &Retirement::Abandoned,
+                );
+            }
+        });
     }
     failed(st, plan, reason);
 }
@@ -1894,14 +2136,56 @@ fn opened(
 ) -> Option<Phase> {
     // A governed destination took the document as it was when proposed;
     // edits made in the old window while its owner decided would be lost
-    // by retiring it, so the old one stays and both are kept.
-    if mode == TransferMode::Move
-        && plan.destination.hosted
-        && hosted::changed_since_read(transfers, plan, &carried)
-    {
-        hosted::kept_as_copy(st, plan, &carried);
-        return None;
+    // by retiring it, so the old one stays and both are kept. Unreadable is
+    // taken as changed: keeping the original is the safe side.
+    if mode == TransferMode::Move && plan.destination.hosted {
+        if plan.source.hosted {
+            if hosted::changed_since_read(transfers, plan, &carried) {
+                hosted::kept_as_copy(st, plan, &carried);
+                return None;
+            }
+        } else {
+            let (dir, room, app_id, origin) = (
+                carried.source_root.clone(),
+                plan.source.room.to_string(),
+                plan.app_id.clone(),
+                carried.origin.clone(),
+            );
+            return after_disk(
+                st,
+                transfers,
+                plan,
+                source_lost,
+                false,
+                move || read_off_loop(&dir, &room, &app_id, &origin),
+                move |st, transfers, plan, read, source_lost| {
+                    let changed = read
+                        .ok()
+                        .and_then(|bytes| AutoCommit::load(&bytes).ok())
+                        .is_none_or(|now| transfer::changes_since(&now, &carried.known) > 0);
+                    if changed {
+                        hosted::kept_as_copy(st, plan, &carried);
+                        return None;
+                    }
+                    hand_over(st, transfers, plan, mode, tab, carried, source_lost)
+                },
+            );
+        }
     }
+    hand_over(st, transfers, plan, mode, tab, carried, source_lost)
+}
+
+/// The new window is there and the source may go: a move has the old
+/// instance retire its document and close; a copy is done.
+fn hand_over(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    mode: TransferMode,
+    tab: TabId,
+    carried: Box<Carried>,
+    source_lost: bool,
+) -> Option<Phase> {
     // A running old instance stamps its own document retired, over the
     // route everyone holding it listens on, before it is asked to close.
     if mode == TransferMode::Move
@@ -1980,21 +2264,8 @@ fn close_source(
     release(st, transfers, plan, tab, carried, source_lost)
 }
 
-fn source_profile(plan: &Plan, carried: &Carried) -> Option<NativeProfile> {
-    NativeProfile::open(&carried.source_root, Some(&plan.source.room.to_string())).ok()
-}
-
-fn destination_profile(plan: &Plan, carried: &Carried) -> Option<NativeProfile> {
-    NativeProfile::open(
-        &carried.destination_root,
-        Some(&plan.destination.room.to_string()),
-    )
-    .ok()
-}
-
-/// Once the old instance has let go of the record, bring over whatever it
-/// wrote after the transfer read it where that can be merged, and finish the
-/// move.
+/// Once the old instance has let go of the record (asked off the frame
+/// loop, again each round until it has), go on with [`released`].
 fn release(
     st: &mut ChromeState,
     transfers: &mut WindowTransfers,
@@ -2003,38 +2274,89 @@ fn release(
     carried: Box<Carried>,
     source_lost: bool,
 ) -> Option<Phase> {
-    let released = if plan.source.hosted {
+    if plan.source.hosted {
         // Its writes go through the room's owner; it has let go once its
         // window is gone.
-        Ok(source_lost || plan.surface.is_none() || tab_tile(st, plan.tab).is_none())
-    } else {
-        source_profile(plan, &carried)
-            .ok_or_else(|| t("window-transfer-failed-storage"))
-            .and_then(|source| {
-                transfer::writer_released(
-                    source.store(),
-                    &plan.app_id,
-                    source.workspace_id(),
-                    &carried.origin,
-                )
-                .map_err(|error| transfer_reason(&error))
-            })
-    };
-    match released {
-        Ok(true) => {}
-        Ok(false) => return Some(Phase::Releasing { tab, carried }),
-        Err(reason) => {
-            failed(st, plan, &reason);
-            return None;
+        if !(source_lost || plan.surface.is_none() || tab_tile(st, plan.tab).is_none()) {
+            return Some(Phase::Releasing { tab, carried });
         }
+        return match hosted::read_last(transfers, plan, &carried) {
+            Ok(last) => released(st, transfers, plan, tab, carried, last, source_lost),
+            Err(reason) => {
+                failed(st, plan, &reason);
+                None
+            }
+        };
     }
-    let last = match hosted::read_last(transfers, plan, &carried) {
-        Ok(last) => last,
-        Err(reason) => {
-            failed(st, plan, &reason);
-            return None;
+    let (dir, room, app_id, origin, retired_at) = (
+        carried.source_root.clone(),
+        plan.source.room.to_string(),
+        plan.app_id.clone(),
+        carried.origin.clone(),
+        carried.retired_at.clone(),
+    );
+    after_disk(
+        st,
+        transfers,
+        plan,
+        source_lost,
+        true,
+        move || release_off_loop(&dir, &room, &app_id, &origin, retired_at.as_deref()),
+        move |st, transfers, plan, read, source_lost| {
+            let last = match read {
+                Ok(None) => return Some(Phase::Releasing { tab, carried }),
+                Ok(Some(bytes)) => {
+                    AutoCommit::load(&bytes).map_err(|_| t("window-transfer-failed-record"))
+                }
+                Err(fault) => Err(fault_reason(fault)),
+            };
+            match last {
+                Ok(last) => released(st, transfers, plan, tab, carried, last, source_lost),
+                Err(reason) => {
+                    failed(st, plan, &reason);
+                    None
+                }
+            }
+        },
+    )
+}
+
+/// Off the frame loop: `None` while an app process still holds `origin`'s
+/// writer, else the source as its old instance left it, up to its
+/// retirement stamp when it made one.
+fn release_off_loop(
+    dir: &Path,
+    room: &str,
+    app_id: &str,
+    origin: &Origin,
+    retired_at: Option<&[ChangeHash]>,
+) -> Result<Option<Vec<u8>>, Fault> {
+    let source = profile_off_loop(dir, room)?;
+    if !transfer::writer_released(source.store(), app_id, source.workspace_id(), origin)
+        .map_err(Some)?
+    {
+        return Ok(None);
+    }
+    let read = match retired_at {
+        Some(heads) => {
+            transfer::read_until(source.store(), app_id, source.workspace_id(), origin, heads)
         }
+        None => transfer::read(source.store(), app_id, source.workspace_id(), origin),
     };
+    read.map(|mut doc| Some(doc.save())).map_err(Some)
+}
+
+/// The old instance has let go: bring over whatever it wrote after the
+/// transfer read it where that can be merged, and finish the move.
+fn released(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    tab: TabId,
+    carried: Box<Carried>,
+    last: AutoCommit,
+    source_lost: bool,
+) -> Option<Phase> {
     if transfer::changes_since(&last, &carried.known) == 0 {
         finish_move(st, plan, &carried, false, source_lost);
         return None;
@@ -2049,6 +2371,44 @@ fn release(
     merge_late(st, transfers, plan, tab, carried, last, source_lost)
 }
 
+/// Off the frame loop: merge `source` into the destination record. `false`
+/// while the destination instance holds that record.
+fn catch_up_off_loop(carried: &CatchUp, source: &[u8]) -> Result<bool, Fault> {
+    let destination = profile_off_loop(&carried.root, &carried.room)?;
+    let source = AutoCommit::load(source)
+        .map_err(|error| Some(TransferError::Automerge(error.to_string())))?;
+    match transfer::catch_up(
+        destination.store(),
+        &carried.app_id,
+        destination.workspace_id(),
+        &carried.target,
+        &source,
+    ) {
+        Ok(_) => Ok(true),
+        Err(TransferError::Busy) => Ok(false),
+        Err(error) => Err(Some(error)),
+    }
+}
+
+/// Where late edits are merged, owned for [`catch_up_off_loop`].
+struct CatchUp {
+    root: PathBuf,
+    room: String,
+    app_id: String,
+    target: RecordCheckout,
+}
+
+impl CatchUp {
+    fn of(plan: &Plan, carried: &Carried) -> Self {
+        Self {
+            root: carried.destination_root.clone(),
+            room: plan.destination.room.to_string(),
+            app_id: plan.app_id.clone(),
+            target: carried.target.clone(),
+        }
+    }
+}
+
 /// Merge what the old instance wrote after the transfer read it into the
 /// destination record, restarting the destination instance around the
 /// merge when it already has the record open, then finish the move.
@@ -2058,68 +2418,58 @@ fn merge_late(
     plan: &Plan,
     tab: TabId,
     carried: Box<Carried>,
-    last: AutoCommit,
+    mut last: AutoCommit,
     source_lost: bool,
 ) -> Option<Phase> {
-    let Some(destination) = destination_profile(plan, &carried) else {
-        failed(st, plan, &t("window-transfer-failed-storage"));
-        return None;
-    };
-    match transfer::catch_up(
-        destination.store(),
-        &plan.app_id,
-        destination.workspace_id(),
-        &carried.target,
-        &last,
-    ) {
-        // Retiring the source waits for the merge to be on the disk: until
-        // then the source is where those edits are safe.
-        Ok((_, merged)) => land(
-            st,
-            transfers,
-            plan,
-            Landing {
-                tab,
-                carried,
-                arriving: Arriving::new(destination, [merged]),
-                then: Then::Finish,
-                since: Instant::now(),
-            },
-            source_lost,
-        ),
-        Err(TransferError::Busy) => {
-            // The destination instance already has the record open. Restart
-            // it around the merge rather than race its writer.
-            let surface = match tab_tile(st, tab) {
-                Some(TileContent::Foreign { surface_id, .. }) => Some(surface_id),
-                _ => None,
-            };
-            // A card while it restarts, so the window closing does not take
-            // the tab with it.
-            set_tile(st, tab, |tile| {
-                *tile = TileContent::LocalApp {
-                    app_id: plan.app_id.clone(),
-                    label: plan.title.clone(),
-                    note: t("window-transfer-bringing-edits"),
-                };
-            });
-            if let Some(surface) = surface {
-                st.request_surface_close(surface);
+    let catch_up = CatchUp::of(plan, &carried);
+    let bytes = last.save();
+    after_disk(
+        st,
+        transfers,
+        plan,
+        source_lost,
+        true,
+        move || catch_up_off_loop(&catch_up, &bytes),
+        move |st, _, plan, merged, source_lost| match merged {
+            // Merged and on the disk: the source can retire.
+            Ok(true) => {
+                finish_move(st, plan, &carried, true, source_lost);
+                None
             }
-            st.bump();
-            Some(Phase::Redelivering {
-                tab,
-                carried,
-                source: Box::new(last),
-                since: Instant::now(),
-            })
-        }
-        Err(error) => {
-            // The source record is untouched and still holds those edits.
-            failed(st, plan, &transfer_reason(&error));
-            None
-        }
-    }
+            Ok(false) => {
+                // The destination instance already has the record open.
+                // Restart it around the merge rather than race its writer.
+                let surface = match tab_tile(st, tab) {
+                    Some(TileContent::Foreign { surface_id, .. }) => Some(surface_id),
+                    _ => None,
+                };
+                // A card while it restarts, so the window closing does not
+                // take the tab with it.
+                set_tile(st, tab, |tile| {
+                    *tile = TileContent::LocalApp {
+                        app_id: plan.app_id.clone(),
+                        label: plan.title.clone(),
+                        note: t("window-transfer-bringing-edits"),
+                    };
+                });
+                if let Some(surface) = surface {
+                    st.request_surface_close(surface);
+                }
+                st.bump();
+                Some(Phase::Redelivering {
+                    tab,
+                    carried,
+                    source: Box::new(last),
+                    since: Instant::now(),
+                })
+            }
+            Err(fault) => {
+                // The source record is untouched and still holds those edits.
+                failed(st, plan, &fault_reason(fault));
+                None
+            }
+        },
+    )
 }
 
 fn redeliver(
@@ -2128,59 +2478,53 @@ fn redeliver(
     plan: &Plan,
     tab: TabId,
     carried: Box<Carried>,
-    source: Box<AutoCommit>,
+    mut source: Box<AutoCommit>,
     since: Instant,
     source_lost: bool,
 ) -> Option<Phase> {
-    let Some(destination) = destination_profile(plan, &carried) else {
-        failed(st, plan, &t("window-transfer-failed-storage"));
-        return None;
-    };
-    let merged = match transfer::catch_up(
-        destination.store(),
-        &plan.app_id,
-        destination.workspace_id(),
-        &carried.target,
-        &source,
-    ) {
-        Err(TransferError::Busy) if since.elapsed() < OPEN_TIMEOUT => {
-            return Some(Phase::Redelivering {
-                tab,
-                carried,
-                source,
-                since,
-            });
-        }
-        Ok((_, merged)) => merged,
-        Err(error) => {
-            // Keep the source record: it still holds the late edits.
-            set_note(st, tab, String::new());
-            failed(st, plan, &transfer_reason(&error));
-            return None;
-        }
-    };
-    // The new instance's latest resume projection, reported under its tab.
-    let resume = LaunchIntent::app(plan.app_id.clone())
-        .ok()
-        .and_then(|launch| {
-            crate::shell::personal_continuity_registry::global_registry()
-                .lock()
-                .ok()?
-                .continuation_for_tab(plan.destination.room, AppInstanceId(tab), &launch)
-                .map(|found| (found.resume.schema_version(), found.resume.bytes().to_vec()))
-        });
-    land(
+    let catch_up = CatchUp::of(plan, &carried);
+    let bytes = source.save();
+    after_disk(
         st,
         transfers,
         plan,
-        Landing {
-            tab,
-            carried,
-            arriving: Arriving::new(destination, [merged]),
-            then: Then::Reopen { resume },
-            since: Instant::now(),
-        },
         source_lost,
+        true,
+        move || catch_up_off_loop(&catch_up, &bytes),
+        move |st, transfers, plan, merged, source_lost| {
+            match merged {
+                Ok(true) => {}
+                Ok(false) if since.elapsed() < OPEN_TIMEOUT => {
+                    return Some(Phase::Redelivering {
+                        tab,
+                        carried,
+                        source,
+                        since,
+                    });
+                }
+                outcome => {
+                    // Keep the source record: it still holds the late edits.
+                    let reason = match outcome {
+                        Err(fault) => fault_reason(fault),
+                        _ => transfer_reason(&TransferError::Busy),
+                    };
+                    set_note(st, tab, String::new());
+                    failed(st, plan, &reason);
+                    return None;
+                }
+            }
+            // The new instance's latest resume projection, reported under its tab.
+            let resume = LaunchIntent::app(plan.app_id.clone())
+                .ok()
+                .and_then(|launch| {
+                    crate::shell::personal_continuity_registry::global_registry()
+                        .lock()
+                        .ok()?
+                        .continuation_for_tab(plan.destination.room, AppInstanceId(tab), &launch)
+                        .map(|found| (found.resume.schema_version(), found.resume.bytes().to_vec()))
+                });
+            reopen(st, transfers, plan, tab, carried, resume, source_lost)
+        },
     )
 }
 
@@ -2224,16 +2568,33 @@ fn finish_move(
         if carried.retired_at.is_none() {
             hosted::not_retired(st, plan);
         }
-    } else if let Some(source) = source_profile(plan, carried)
-        && let Err(error) = transfer::retire(
-            source.store(),
-            &plan.app_id,
-            source.workspace_id(),
-            &carried.origin,
-            &Retirement::Moved(Some(successor(plan, carried))),
-        )
-    {
-        tracing::warn!(%error, app = %plan.app_id, "moved record could not be retired in its source room");
+    } else {
+        let (dir, room, app_id, origin, why) = (
+            carried.source_root.clone(),
+            plan.source.room.to_string(),
+            plan.app_id.clone(),
+            carried.origin.clone(),
+            Retirement::Moved(Some(successor(plan, carried))),
+        );
+        off_loop_detached(move || {
+            let retired = profile_off_loop(&dir, &room).and_then(|source| {
+                transfer::retire(
+                    source.store(),
+                    &app_id,
+                    source.workspace_id(),
+                    &origin,
+                    &why,
+                )
+                .map_err(Some)
+            });
+            if let Err(fault) = retired {
+                let error = fault.map_or_else(
+                    || "the profile could not be opened".to_owned(),
+                    |error| error.to_string(),
+                );
+                tracing::warn!(%error, app = %app_id, "moved record could not be retired in its source room");
+            }
+        });
     }
     let window = plan.title.as_str();
     receipt(

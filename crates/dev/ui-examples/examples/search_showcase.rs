@@ -230,10 +230,20 @@ pub fn run(args: &[String]) {
         shoot_palette(theme, &dir.join(format!("palette-rows-{name}.png")), false);
         shoot_filters(theme, &dir.join(format!("filter-{name}.png")));
         shoot_find(theme, &dir.join(format!("find-bar-{name}.png")));
-        shoot_window_search(
-            theme,
-            &dir.join(format!("window-search-replace-{name}.png")),
-        );
+        // Replacing; the replacement still empty, with its hint; nothing
+        // matching.
+        for (shot, query, replacement) in [
+            ("replace", "parse", "read"),
+            ("replacement-empty", "parse", ""),
+            ("no-matches", "zebra", ""),
+        ] {
+            shoot_window_search(
+                theme,
+                &dir.join(format!("window-search-{shot}-{name}.png")),
+                query,
+                replacement,
+            );
+        }
     }
 }
 
@@ -569,7 +579,7 @@ fn shoot_find(theme: &Theme, out: &Path) {
 /// the options panel under the field with Match case on, and the
 /// replacement holding the keyboard over Replace and Replace all. Set
 /// through the search's semantic actions, as an agent sets them.
-fn shoot_window_search(theme: &Theme, out: &Path) {
+fn shoot_window_search(theme: &Theme, out: &Path, query: &str, replacement: &str) {
     use tilo_ui::a11y::Action;
     use tilo_ui::tokens::MotionSource;
     use tilo_ui::widget::{Edits, InPlace, WindowSearch};
@@ -610,14 +620,14 @@ fn shoot_window_search(theme: &Theme, out: &Path) {
     act(
         &mut search,
         "window-search-query",
-        Action::SetValue("parse".into()),
+        Action::SetValue(query.into()),
     );
     search.drive(&mut prose);
     act(&mut search, "window-search-match-case", Action::ToggleCheck);
     act(
         &mut search,
         "window-search-replacement",
-        Action::SetValue("read".into()),
+        Action::SetValue(replacement.into()),
     );
     search.drive(&mut prose);
 

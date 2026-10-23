@@ -319,7 +319,7 @@ def main() -> int:
         session_a.chat("post", {"channel": channel, "text": text})
         try:
             wait_for("A's message to be read on B", lambda: PAIR.reads_message(session_b, channel, text))
-            check("post", True, f"B reads {text!r}")
+            check("post", True, f"B reads {text!r} in {channel}")
         except Failed as missing:
             check("post", False, str(missing))
 

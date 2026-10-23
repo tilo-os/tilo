@@ -317,10 +317,42 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     },
 ];
 
+/// The rows of the settings these panes show, as Settings' search shows
+/// them too: each built by the function its pane builds it with.
+const SETTINGS: &[crate::setting::SettingEntry] = &[
+    crate::setting::setting_entry!("appearance.hide_top_bar", keyboard_shortcuts::DesktopControls => appearance::hide_top_bar),
+    crate::setting::setting_entry!("appearance.text_size", crate::prefs::AppearancePrefs => accessibility::text_size),
+    crate::setting::setting_entry!("appearance.high_contrast", crate::prefs::AppearancePrefs => accessibility::high_contrast),
+    crate::setting::setting_entry!("appearance.reduce_motion", crate::prefs::AppearancePrefs => accessibility::reduce_motion),
+    crate::setting::setting_entry!("a11y.on_screen_keyboard", crate::accessibility_settings::AccessibilitySettings => accessibility::on_screen_keyboard),
+    crate::setting::setting_entry!("a11y.large_cursor", crate::accessibility_settings::AccessibilitySettings => accessibility::large_cursor),
+    crate::setting::setting_entry!("a11y.cursor_size", crate::accessibility_settings::AccessibilitySettings => accessibility::cursor_size),
+    crate::setting::setting_entry!("a11y.magnifier", crate::accessibility_settings::AccessibilitySettings => accessibility::magnifier_zoom),
+    crate::setting::setting_entry!("a11y.colour_filter", crate::accessibility_settings::AccessibilitySettings => accessibility::colour_filter),
+    crate::setting::setting_entry!("a11y.sticky_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::sticky_keys),
+    crate::setting::setting_entry!("a11y.slow_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::slow_keys),
+    crate::setting::setting_entry!("a11y.bounce_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::bounce_keys),
+    crate::setting::setting_entry!("a11y.mouse_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::mouse_keys),
+    crate::setting::setting_entry!("a11y.visual_alerts", crate::accessibility_settings::AccessibilitySettings => accessibility::visual_alerts),
+    crate::setting::setting_entry!("a11y.switch_control", crate::accessibility_settings::AccessibilitySettings => accessibility::switch_control),
+    crate::setting::setting_entry!("notifications.dnd", crate::prefs::NotificationPrefs => notifications::dnd),
+    crate::setting::setting_entry!("notifications.banners", crate::prefs::NotificationPrefs => notifications::banners),
+    crate::setting::setting_entry!("notifications.previews", crate::prefs::NotificationPrefs => notifications::previews),
+    crate::setting::setting_entry!("notifications.lock_screen", crate::prefs::NotificationPrefs => notifications::lock_screen),
+    crate::setting::setting_entry!("notifications.sounds", crate::prefs::NotificationPrefs => notifications::play_sounds),
+    crate::setting::setting_entry!("notifications.badges", crate::prefs::NotificationPrefs => notifications::badges),
+    crate::setting::setting_entry!("notifications.quiet_hours", crate::prefs::NotificationPrefs => notifications::quiet_hours),
+    crate::setting::setting_entry!("spelling.check", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::check_spelling),
+    crate::setting::setting_entry!("spelling.autocorrect", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::auto_correct),
+    crate::setting::setting_entry!("power.auto_suspend", crate::prefs::PowerPrefs => power::auto_suspend),
+    crate::setting::setting_entry!("shortcuts.vim", keyboard_shortcuts::DesktopControls => keyboard_shortcuts::vim_mode),
+];
+
 pub const PART: crate::area::Part = crate::area::Part {
     areas: AREAS,
     panes: PANES,
     families: FAMILIES,
     live_areas: LIVE_AREAS,
     sections: SECTIONS,
+    settings: SETTINGS,
 };

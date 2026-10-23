@@ -51,7 +51,6 @@ tilo-reference = { path = "../../crates/collab/reference" }
 # Reports of people and messages, which the room host's moderation agent
 # decides on; the record lives in the chat so every guest can file one.
 moderation-model = { path = "../moderation-model" }
-tilo-doc = { path = "../../crates/doc/tilo-doc" }
 # Message bodies and drafts are rich text, written in the SDK editor.
 tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }

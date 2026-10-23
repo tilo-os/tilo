@@ -371,7 +371,6 @@ impl CameraWorker {
 
     /// Whether a submitted photo's result has not been taken yet: it is
     /// still being encoded and saved, or waits to be drained.
-    #[cfg(test)]
     pub fn saving_photo(&self) -> bool {
         self.photos_outstanding.load(Ordering::Acquire) > 0
     }

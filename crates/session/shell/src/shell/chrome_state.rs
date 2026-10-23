@@ -1913,14 +1913,11 @@ impl ChromeState {
             opened.store(true, std::sync::atomic::Ordering::Release);
             wake();
         });
-        self.records
-            .open_without_waiting(std::sync::Arc::clone(&ready));
-        // Apps mounted in this process keep their records in a store of
-        // their own: a tab whose app's record opened resolves again on the
-        // resync the same flag causes.
-        if let Some(apps) = self.hosted_inputs.in_process() {
-            apps.borrow().open_records_without_waiting(ready);
-        }
+        // The thread never waits on the disk from now on: the record
+        // store, and the stores of apps mounted in this process, open
+        // documents on their own threads and call this, and a tab refused
+        // meanwhile resolves again on the resync the flag causes.
+        durable_store::waiting::decline_on_this_thread(ready);
     }
 
     /// Finalize a new-tab action after its complete document reference/setup.

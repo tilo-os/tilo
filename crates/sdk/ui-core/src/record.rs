@@ -2697,9 +2697,9 @@ pub enum RecordOpenError {
     MissingRecord,
     #[error("record is reserved or already initialized")]
     Busy,
-    /// The store's own thread is still opening the record's document; the
-    /// caller is woken when it is done (see
-    /// [`RecordStore::open_without_waiting`]).
+    /// The store's own thread is still opening the record's document for a
+    /// thread that must not wait on storage; that thread's wake is called
+    /// when it is done (see [`durable_store::waiting`]).
     #[error("the document is still opening")]
     Opening,
     #[error("the new record identity already exists or is reserved")]
@@ -3744,19 +3744,6 @@ impl RecordStore {
     /// it.
     pub fn open_record(&self, want: &RecordCheckout) -> bool {
         self.0.borrow_mut().open_record(want, None)
-    }
-
-    /// From now on, never wait on the disk to open or create a record: one
-    /// whose document the store has yet to open is refused with
-    /// [`RecordOpenError::Opening`] while the store's own thread opens it,
-    /// and `wake` is called when that is done, so the caller asks again.
-    /// For a caller on a frame loop. A store with no thread of its own
-    /// still opens in place.
-    pub fn open_without_waiting(&self, wake: durable_store::ReadyWake) {
-        let set = self.0.borrow();
-        for store in [&set.backend, &set.documents].into_iter().flatten() {
-            store.decline_waiting(std::sync::Arc::clone(&wake));
-        }
     }
 
     /// Create exactly the new resource named by its owning action. Reopening

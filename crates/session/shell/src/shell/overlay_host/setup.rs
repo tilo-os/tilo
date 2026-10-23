@@ -409,6 +409,7 @@ impl ShellOverlayHost {
             present_kinds: Vec::new(),
             search_chrome_revision: 0,
             search_indexes_settling: false,
+            search_artwork: 0,
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
             pending_launchpad_actions: Vec::new(),

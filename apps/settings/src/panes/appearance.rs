@@ -446,14 +446,7 @@ impl AppearancePane {
         let theme_card = self.theme_card();
         let desktop_card = section(
             &t("settings-appearance-desktop-card"),
-            rows(vec![
-                self.cx
-                    .row(t("settings-appearance-hide-top-bar"))
-                    .described(t("settings-appearance-hide-top-bar-desc"))
-                    .id("appearance.hide_top_bar")
-                    .of(&self.desktop, DesktopControls::paths().hide_top_bar)
-                    .toggle(),
-            ]),
+            rows(vec![hide_top_bar(&self.cx, &self.desktop)]),
         );
 
         crate::widgets::page(vec![
@@ -589,6 +582,14 @@ impl AppearancePane {
         )));
         section(&t("settings-appearance-day-night-card"), rows(body))
     }
+}
+
+pub(crate) fn hide_top_bar(cx: &PaneCx, desktop: &Followed<DesktopControls>) -> Item {
+    cx.row(t("settings-appearance-hide-top-bar"))
+        .described(t("settings-appearance-hide-top-bar-desc"))
+        .id("appearance.hide_top_bar")
+        .of(desktop, DesktopControls::paths().hide_top_bar)
+        .toggle()
 }
 
 impl Widget for AppearancePane {

@@ -110,6 +110,12 @@ pub enum Role {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AccessState {
     pub focused: bool,
+    /// The item the keyboard is on inside a focused control that keeps the
+    /// focus itself: an open combo box's highlighted option. Assistive
+    /// technology announces it while focus stays on the control (AccessKit's
+    /// `active_descendant`, ARIA's `aria-activedescendant`). Unlike
+    /// [`focused`](Self::focused) it never moves the tree's focus.
+    pub active_descendant: bool,
     pub focusable: bool,
     /// The control owns a standard context menu.  The bridge exposes
     /// AccessKit/AT-SPI's `ShowContextMenu` verb only when this is true, so
@@ -145,6 +151,11 @@ impl AccessState {
 
     pub fn focused(mut self, v: bool) -> Self {
         self.focused = v;
+        self
+    }
+    /// Sets [`active_descendant`](Self::active_descendant).
+    pub fn active_descendant(mut self, v: bool) -> Self {
+        self.active_descendant = v;
         self
     }
     pub fn focusable(mut self, v: bool) -> Self {

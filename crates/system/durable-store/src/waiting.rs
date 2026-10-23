@@ -16,29 +16,40 @@
 //! thread a test marked with [`forbid_strictly_on_this_thread`], as a panic,
 //! so the test names the caller.
 //!
+//! Work such a thread would have waited for is done for it elsewhere (a
+//! store's own thread opening or reading a key) while it is told "not yet".
+//! The thread's wake ([`Forbidden::waking`], [`decline_on_this_thread`]:
+//! for a frame loop, its redraw) is how it hears that the work is done, so
+//! an idle thread asks again without polling; [`wake`] hands it to whoever
+//! does that work.
+//!
 //! A commit wait ([`refused_commit`]: waiting for another thread's fsync)
 //! is the one a frame loop can never bound, and the one a caller can always
 //! avoid by asking durability instead. A test of code that still reads the
 //! disk on its thread marks it with [`forbid_commit_waits_strictly`]: reads
 //! are reported as usual, and only a commit wait fails the test.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Rule {
     Allowed,
+    /// Waits allowed, but a store does its disk work elsewhere and answers
+    /// "not yet" ([`decline_on_this_thread`]).
+    Declined,
     Forbidden,
     /// Forbidden, and a wait reached anyway fails the test that set it.
     Strict,
-    /// Forbidden, and a commit wait reached anyway fails the test that set
-    /// it; other waits are only reported.
+    /// Commit waits forbidden, failing the test that set it; the code under
+    /// test still reads the disk here, and other waits are only reported.
     StrictCommits,
 }
 
 thread_local! {
     static RULE: Cell<Rule> = const { Cell::new(Rule::Allowed) };
+    static WAKE: RefCell<Option<crate::ReadyWake>> = const { RefCell::new(None) };
 }
 
 static OBSERVER: OnceLock<fn(&str)> = OnceLock::new();
@@ -48,20 +59,98 @@ static OBSERVER: OnceLock<fn(&str)> = OnceLock::new();
 #[must_use = "waits are forbidden only while the guard lives"]
 pub struct Forbidden {
     previous: Rule,
+    /// The wake this guard replaced, when it set one.
+    previous_wake: Replaced,
     _thread: PhantomData<*const ()>,
+}
+
+/// What a guard put back on its thread's wake when it drops.
+enum Replaced {
+    /// It set no wake: the thread's stays.
+    Nothing,
+    /// It set one over this (none, where the thread had none).
+    Wake(Option<crate::ReadyWake>),
+}
+
+impl Forbidden {
+    /// Wake this thread through `wake` when work it was told "not yet"
+    /// about is done, while the guard lives.
+    pub fn waking(mut self, wake: crate::ReadyWake) -> Self {
+        let replaced = WAKE.with(|slot| slot.replace(Some(wake)));
+        if matches!(self.previous_wake, Replaced::Nothing) {
+            self.previous_wake = Replaced::Wake(replaced);
+        }
+        self
+    }
 }
 
 impl Drop for Forbidden {
     fn drop(&mut self) {
         RULE.with(|rule| rule.set(self.previous));
+        if let Replaced::Wake(previous) =
+            std::mem::replace(&mut self.previous_wake, Replaced::Nothing)
+        {
+            WAKE.with(|slot| *slot.borrow_mut() = previous);
+        }
     }
 }
 
 fn set(next: Rule) -> Forbidden {
     Forbidden {
         previous: RULE.with(|rule| rule.replace(next)),
+        previous_wake: Replaced::Nothing,
         _thread: PhantomData,
     }
+}
+
+/// From now on, have stores do this thread's disk work (opening, reading)
+/// elsewhere and answer "not yet", waking it through `wake` once the work
+/// is done: for a frame loop, before its loop forbids every wait
+/// ([`forbid_on_this_thread`]). Its own waits, such as a flush it asks for,
+/// stay allowed. For the rest of the thread's life, or until a guard made
+/// before this drops; a forbidden thread keeps its rule and takes the new
+/// wake.
+pub fn decline_on_this_thread(wake: crate::ReadyWake) {
+    RULE.with(|rule| match rule.get() {
+        Rule::Allowed => rule.set(Rule::Declined),
+        Rule::StrictCommits => rule.set(Rule::Forbidden),
+        Rule::Declined | Rule::Forbidden | Rule::Strict => {}
+    });
+    WAKE.with(|slot| *slot.borrow_mut() = Some(wake));
+}
+
+/// Whether this thread must not touch the disk at all, so a store does its
+/// disk work elsewhere and answers "not yet" ([`wake`]): a thread that
+/// declined it, and every forbidden thread but one under
+/// [`forbid_commit_waits_strictly`], whose code still reads the disk itself.
+#[must_use]
+pub fn disk_forbidden() -> bool {
+    matches!(
+        RULE.with(Cell::get),
+        Rule::Declined | Rule::Forbidden | Rule::Strict
+    )
+}
+
+/// How to wake this thread once work it must not wait for is done: `None`
+/// where it may touch the disk ([`disk_forbidden`]). A thread that set no
+/// wake gets one that does nothing; it hears of the work only when it next
+/// asks.
+#[must_use]
+pub fn wake() -> Option<crate::ReadyWake> {
+    if !disk_forbidden() {
+        return None;
+    }
+    Some(WAKE.with(|slot| slot.borrow().clone()).unwrap_or_else(|| {
+        static NOTHING: OnceLock<crate::ReadyWake> = OnceLock::new();
+        std::sync::Arc::clone(NOTHING.get_or_init(|| std::sync::Arc::new(|| {})))
+    }))
+}
+
+/// Whether `a` and `b` are the same wake, so it is called once however
+/// often the thread asked.
+#[must_use]
+pub fn same_wake(a: &crate::ReadyWake, b: &crate::ReadyWake) -> bool {
+    std::ptr::addr_eq(std::sync::Arc::as_ptr(a), std::sync::Arc::as_ptr(b))
 }
 
 /// Forbid storage waits on this thread while the guard lives. See the
@@ -86,7 +175,7 @@ pub fn forbid_commit_waits_strictly() -> Forbidden {
 /// Whether this thread must not wait on storage.
 #[must_use]
 pub fn forbidden() -> bool {
-    RULE.with(Cell::get) != Rule::Allowed
+    !matches!(RULE.with(Cell::get), Rule::Allowed | Rule::Declined)
 }
 
 /// Tell `observer` about every storage wait reached on a thread that
@@ -125,7 +214,7 @@ pub fn refused_commit(what: &str) {
 #[track_caller]
 fn refuse(what: &str, commit: bool) {
     let rule = RULE.with(Cell::get);
-    if rule == Rule::Allowed {
+    if matches!(rule, Rule::Allowed | Rule::Declined) {
         return;
     }
     if let Some(observer) = OBSERVER.get() {
@@ -143,6 +232,45 @@ fn refuse(what: &str, commit: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_forbidden_thread_carries_its_wake_while_the_guard_lives() {
+        assert!(wake().is_none(), "a thread that may wait needs no wake");
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&woken);
+        let mine: crate::ReadyWake = std::sync::Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        {
+            let _loop = forbid_strictly_on_this_thread().waking(std::sync::Arc::clone(&mine));
+            let handed = wake().expect("a forbidden thread has a wake");
+            assert!(same_wake(&handed, &mine));
+            handed();
+            std::thread::spawn(|| assert!(wake().is_none(), "another thread's own"))
+                .join()
+                .unwrap();
+        }
+        assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(wake().is_none(), "gone with the guard");
+        {
+            let _reads = forbid_commit_waits_strictly();
+            assert!(
+                !disk_forbidden() && wake().is_none(),
+                "this code still reads the disk"
+            );
+        }
+        std::thread::spawn(move || {
+            decline_on_this_thread(std::sync::Arc::clone(&mine));
+            assert!(
+                disk_forbidden() && !forbidden(),
+                "its own waits stay allowed"
+            );
+            refused("a flush it asked for");
+            assert!(same_wake(&wake().unwrap(), &mine));
+        })
+        .join()
+        .unwrap();
+    }
 
     #[test]
     fn a_guard_forbids_waits_on_its_thread_until_it_drops() {

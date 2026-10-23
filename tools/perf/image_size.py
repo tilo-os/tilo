@@ -3,7 +3,7 @@
 
 The OS image is what every install downloads and every update pulls changed
 layers of. "Small footprint" is marketed, so its size is a KPI (#4003) with a budget in
-tools/perf/kpi-budgets.toml, recorded nightly by Perf / scheduled (footprint
+tools/perf/kpi-budgets.toml, recorded by t's performance run (footprint
 group). This script measures one image without a container engine: it
 streams every layer from the registry (or reads an OCI layout), checks each
 blob against its digest, and replays the layers with their whiteouts.

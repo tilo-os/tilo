@@ -852,3 +852,52 @@ fn keys_map_to_the_remote_machine() {
         Some(30)
     );
 }
+
+#[test]
+fn the_window_bar_names_the_screen_and_holds_its_actions() {
+    use super::window_bar::{LEAVE_FORM, NEW_CONNECTION, SAVE};
+    use ui::window_toolbar::{ToolbarEvent, deliver};
+
+    let ids = |bar: &ui::window_toolbar::WindowToolbar| {
+        bar.actions
+            .iter()
+            .map(|action| action.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let label = |bar: &ui::window_toolbar::WindowToolbar| {
+        bar.location.as_ref().map(|location| location.label.clone())
+    };
+    let press = |app: &mut RemoteApp, id: &str| {
+        deliver(ToolbarEvent::Action { id: id.into() });
+        app.take_window_toolbar_events();
+        app.apply_requests();
+    };
+
+    let mut app = demo();
+    let bar = app.window_toolbar();
+    assert_eq!(label(&bar).as_deref(), Some("Connections"));
+    assert_eq!(ids(&bar), [NEW_CONNECTION]);
+
+    press(&mut app, NEW_CONNECTION);
+    assert_eq!(app.screen, Screen::Form { editing: None });
+    let bar = app.window_toolbar();
+    assert_eq!(label(&bar).as_deref(), Some("New connection"));
+    assert_eq!(ids(&bar), [SAVE]);
+    assert!(
+        bar.leading.iter().any(|action| action.id == LEAVE_FORM),
+        "the form is left from the bar"
+    );
+
+    press(&mut app, SAVE);
+    assert!(
+        app.problems.name.is_some(),
+        "Save in the bar saves the form"
+    );
+    press(&mut app, LEAVE_FORM);
+    assert_eq!(app.screen, Screen::List);
+
+    let rdp = app.first_of_kind(ConnectionKind::Rdp).unwrap();
+    let name = app.workspace.get(rdp).unwrap().name.clone();
+    app.apply(Action::RequestConnect(rdp));
+    assert_eq!(label(&app.window_toolbar()), Some(name));
+}
