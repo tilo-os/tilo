@@ -6,6 +6,7 @@ use tilo_automerge::WriteTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
+mod room_bases;
 mod room_binding;
 mod tree_handle;
 mod window_hosting;
@@ -796,6 +797,9 @@ pub struct WorkspaceTree {
     /// re-projected from the cache after a restart.
     #[serde(skip, default)]
     pub room_docs: HashMap<RoomId, AutoCommit>,
+    /// Each room's documents that a base replaced ([`room_bases`]).
+    #[serde(skip, default)]
+    pub room_archives: HashMap<RoomId, Vec<Vec<u8>>>,
     /// Who may write each room's governance — see [`RoomAuthority`]. A
     /// room absent from this map is one this machine minted and governs.
     /// Persisted, unlike [`Self::room_docs`] — can't be re-derived.
@@ -941,6 +945,7 @@ impl Default for WorkspaceTree {
             policy_revision: 0,
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
+            room_archives: HashMap::new(),
             room_authority: HashMap::new(),
             room_peer_names: HashMap::new(),
             room_peer_identities: HashMap::new(),
@@ -2839,7 +2844,11 @@ impl WorkspaceTree {
             },
             changes,
         );
-        let AdmittedRoom { candidate, media } = match admitted {
+        let AdmittedRoom {
+            candidate,
+            media,
+            rebased,
+        } = match admitted {
             Ok(admitted) => admitted,
             // An undecodable batch keeps this API's error type; the detail
             // goes to the log.
@@ -2898,7 +2907,12 @@ impl WorkspaceTree {
             self.queue_save();
         }
 
-        self.room_docs.insert(room, candidate);
+        if let Some(replaced) = self.room_docs.insert(room, candidate)
+            && rebased
+        {
+            self.archive_room_doc(room, replaced);
+            self.try_sync_room_doc(room);
+        }
 
         // Folds the room's windows into this machine's copy, preserving
         // view state; see `merge_room_contents`.

@@ -264,6 +264,12 @@ impl RoomRecords {
             .collect())
     }
 
+    /// Wait until every host commit queued for `workspace_id` so far is
+    /// durable.
+    pub(crate) async fn settled(&self, workspace_id: u64) {
+        self.inflight.settle(workspace_id).await;
+    }
+
     /// Publish `body` on `workspace_id`'s presence as this host's own, to
     /// every device subscribed to it: how the host asks the room's members
     /// for content, as any member asks. The number of devices it reached.
