@@ -815,9 +815,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             } else {
                 let own = tilo_resource::publish::<C>(&address, &label, &state);
                 route_child(own, &self.id, &id)
-                    .with_action(
-                        self.route(step_spec(lifecycle::DELETE, "Delete", &id).destructive()),
-                    )
+                    .with_action(self.route(step_spec(lifecycle::DELETE, "Move to Trash", &id)))
                     .with_action(self.route(move_spec(&id)))
             };
             published.actions.dedup_by(|a, b| a.id == b.id);

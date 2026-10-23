@@ -116,12 +116,10 @@ fn create_delete_and_move_write_the_record_the_window_holds() {
     let moved: Vec<Id> = listed(&app).into_iter().map(|(id, _)| id).collect();
     assert_eq!(moved, [made[1].0.clone(), made[0].0.clone()]);
 
-    // Trashing is destructive: the person confirms it first.
+    // Trashing can be undone, so it is not confirmed first.
     app.harness().click_named("trash").unwrap();
     app.settle();
-    assert!(listed(&app).iter().all(|(_, trashed)| !trashed));
-    assert!(app.confirm_asked().is_some(), "the host asks");
-    app.settle();
+    assert!(app.confirm_asked().is_none(), "the host does not ask");
     assert!(app.refused().is_none(), "{:?}", app.refused());
     let trashed = listed(&app);
     assert_eq!(trashed[0], (made[1].0.clone(), true), "kept, in the trash");
