@@ -34,7 +34,7 @@ pub(super) async fn deliver_waiting(
         )
     };
     if let Some(state) = state
-        && !inbound_tx.send_durable(CollabEvent::ChannelAccess {
+        && !inbound_tx.send_reply(CollabEvent::ChannelAccess {
             route: route.spec.clone(),
             state,
         })
