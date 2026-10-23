@@ -1896,7 +1896,10 @@ fn owners_serve_until_idle_and_replace_dead_owners_sockets() {
         let owner = ChromiumEngine::with_host(&host, &deep).unwrap();
         assert!(owner.runtime.link.is_none());
         assert_host_spawns(&deep, 1);
-        assert!(socket.exists(), "the owner serves beside the deep profile");
+        // The starter serves once the host is spawned, not before.
+        tilo_test_env::wait_until("the owner to serve beside the deep profile", || {
+            socket.exists()
+        });
         let client = ChromiumEngine::with_host(&host, &deep).unwrap();
         assert!(
             client.runtime.link.is_some(),
