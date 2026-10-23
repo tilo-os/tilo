@@ -28,9 +28,18 @@ args = parser.parse_args()
 
 PAGE = ('<!doctype html><html><body style="margin:0">'
         '<div style="height:2000px;background:linear-gradient(#fff,#048)">tall</div>'
-        '<div id="far" style="height:1000px">far</div>'
+        '<div id="far" style="height:1000px;background:#c00">far</div>'
         '</body></html>')
 URL = 'data:text/html;base64,' + base64.b64encode(PAGE.encode()).decode()
+
+
+def far_shown(frame):
+    """Whether the frame's middle (BGRA) is the anchor's red: the page is
+    painted scrolled to it."""
+    width, height = struct.unpack_from('<II', frame, 1)
+    at = 9 + ((height // 2) * width + width // 2) * 4
+    b, g, r = frame[at], frame[at + 1], frame[at + 2]
+    return r > 160 and g < 90 and b < 90
 
 
 def read_exact(stream, length):
@@ -58,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-document-size-') as profile:
                 if data[0] == 1:
                     incoming.put(json.loads(data[1:]))
                 else:
-                    incoming.put({'event': 'frame'})
+                    incoming.put({'event': 'frame', 'far': far_shown(data)})
         except Exception as exc:  # noqa: BLE001 - handed to the main thread
             incoming.put(exc)
 
@@ -87,7 +96,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-document-size-') as profile:
         sizes = []
         frames = 0
         phase = 'load'
-        frames_before_anchor = 0
+        far_on_screen = False
         while time.monotonic() < deadline:
             try:
                 event = next_event(deadline)
@@ -96,11 +105,8 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-document-size-') as profile:
             name = event['event']
             if name == 'frame':
                 frames += 1
-                if phase == 'painted':
-                    # The scrolled page is on screen, so the renderer can
-                    # tell what is under the pointer: a wheel event that
-                    # comes before the page's first frame finds nothing to
-                    # scroll and is dropped, in any Chromium.
+                far_on_screen = event['far']
+                if phase == 'painted' and far_on_screen:
                     phase = 'wheel'
                     wheel()
                 continue
@@ -123,12 +129,15 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-document-size-') as profile:
                     assert event['scroll_y'] == 0, event
                     # The page scrolls to an anchor far down it.
                     phase = 'anchor'
-                    frames_before_anchor = frames
                     send({'op': 'navigate', 'url': URL + '#far'})
                 elif phase == 'anchor' and event['scroll_y'] >= 1900:
-                    # Then, once it is painted there, the wheel scrolls it
-                    # back up. The report follows the paint that showed it.
-                    if frames > frames_before_anchor:
+                    # Then, once a frame shows it there, the wheel scrolls it
+                    # back up. The report reads the page's own scroll, which
+                    # moves before the compositor has the scrolled page: a
+                    # wheel sent on the report alone can reach the compositor
+                    # while it still holds the page at its top, where scrolling
+                    # up goes nowhere.
+                    if far_on_screen:
                         phase = 'wheel'
                         wheel()
                     else:
