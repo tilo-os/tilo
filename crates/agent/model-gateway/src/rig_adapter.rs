@@ -882,6 +882,12 @@ pub(super) fn neutral_response(
             input_tokens: response.usage.input_tokens.unwrap_or_default(),
             output_tokens: response.usage.output_tokens.unwrap_or_default(),
             total_tokens: response.usage.total_tokens.unwrap_or_default(),
+            cached_input_tokens: response.usage.cached_input_tokens.unwrap_or_default(),
+            cache_write_tokens: response
+                .usage
+                .cache_creation_input_tokens
+                .unwrap_or_default(),
+            reasoning_tokens: response.usage.reasoning_tokens.unwrap_or_default(),
         },
     };
     // Refusal and truncation remain explicit, non-dispatchable responses.

@@ -200,9 +200,28 @@ pub enum StopReason {
 /// Normalized token accounting. Missing provider counters remain zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
+    /// Every input token: uncached, read from a cache and written to one.
     pub input_tokens: u64,
+    /// Every output token, reasoning included.
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// The part of `input_tokens` read from the provider's prompt cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cached_input_tokens: u64,
+    /// The part of `input_tokens` written to the provider's prompt cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_tokens: u64,
+    /// The part of `output_tokens` spent reasoning.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reasoning_tokens: u64,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_zero(count: &u64) -> bool {
+    *count == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -838,6 +857,9 @@ mod tests {
             input_tokens: 12,
             output_tokens: 3,
             total_tokens: 15,
+            cached_input_tokens: 8,
+            cache_write_tokens: 2,
+            reasoning_tokens: 1,
         };
         let encoded = serde_json::to_value(&answer).unwrap();
         assert_eq!(
