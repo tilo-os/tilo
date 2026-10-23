@@ -506,6 +506,12 @@ impl SearchProvider for HostApplicationsProvider {
             .refresh(|| self.source_generation(), self.builder());
     }
 
+    /// Until the first index is built the host apps are missing from every
+    /// answer, so a caller that waits for settled indexes waits for it.
+    fn index_settling(&self, _ctx: &SearchContext<'_>) -> bool {
+        self.snapshot().is_none()
+    }
+
     /// An address is looked up in the whole snapshot. An empty query's first
     /// page holds [`SearchBudget::PALETTE`] rows, fewer than a desktop has
     /// host apps, so resolving through it left every later app unreachable
