@@ -1533,7 +1533,6 @@ mod tests {
         );
         assert!(!s.layout_dirty, "laid out at the new ratio");
 
-        // Dragging past either end clamps.
         dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
         dispatch(&mut s, &tree, node, &mouse_press());
         dispatch(&mut s, &tree, node, &cursor_moved(2.0, 150.0));

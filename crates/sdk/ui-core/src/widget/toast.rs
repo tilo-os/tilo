@@ -60,7 +60,6 @@ pub enum ToastKind {
 /// Placement for a transient card painted inside an app's area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToastAnchor {
-    /// Centred, at the bottom of the area.
     BottomCenter,
     /// At the area's bottom trailing corner.
     BottomRight,
@@ -216,7 +215,6 @@ impl Dwell {
         })
     }
 
-    /// What is left of a `lifetime` at `now`.
     #[must_use]
     pub fn left(&self, lifetime: Duration, now: crate::time::Instant) -> Duration {
         lifetime.saturating_sub(self.spent(now))
@@ -277,7 +275,6 @@ impl Dwell {
         self.first_shown
     }
 
-    /// Whether the clock is running.
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.since.is_some()
@@ -323,7 +320,6 @@ pub struct ToastStack {
     last_cursor: Point,
     /// The card whose dismiss control is under the pointer.
     close_hovered: Option<usize>,
-    /// When the stack last advanced its toasts.
     advanced_at: Option<crate::time::Instant>,
     /// The number of cards the layout was sized for.
     laid_out: usize,
@@ -633,7 +629,6 @@ const TOAST_WIDTH: f64 = 320.0;
 const TOAST_HEIGHT: f64 = 48.0;
 const TOAST_GAP: f64 = 8.0;
 
-/// The height of a stack of `n` cards.
 fn stack_height(n: usize) -> f64 {
     if n == 0 {
         0.0
@@ -2311,7 +2306,6 @@ mod tests {
             }
         }
 
-        // Case `paint_card_returns_a_top_right_close_rect_when_closable`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -2349,7 +2343,6 @@ mod tests {
             );
         }
 
-        // Case `paint_card_actions_use_two_standard_non_overlapping_buttons`.
         {
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
@@ -2379,7 +2372,6 @@ mod tests {
             assert!(card_rect.contains(hit.primary_action_rect.center()));
         }
 
-        // Case `paint_card_emits_surface_fill_and_title_glyphs`.
         {
             use vello_encoding::DrawTag;
             let theme = Theme::dark();
@@ -2410,7 +2402,6 @@ mod tests {
             );
         }
 
-        // Case `fixed_height_card_collapses_multiline_localized_error_text`.
         {
             assert_eq!(
                 single_line_text("  App\nfailed:\u{00a0}profile\tmissing  "),
@@ -2456,7 +2447,6 @@ mod tests {
 
     #[test]
     fn transient_cards_size_safely_anchor_and_fade() {
-        // Case `transient_cards_share_safe_sizing_but_keep_the_requested_anchor`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -2491,7 +2481,6 @@ mod tests {
             assert_eq!(centered.card_rect.y1, area.y1 - 24.0);
         }
 
-        // Case `transient_card_honours_a_caller_inset_and_narrow_available_width`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -2515,7 +2504,6 @@ mod tests {
             assert!(hit.card_rect.y0 >= area.y0);
         }
 
-        // Case `a_card_following_work_makes_room_for_its_progress_bar`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -2554,7 +2542,6 @@ mod tests {
             );
         }
 
-        // Case `partial_alpha_keeps_transient_geometry_and_still_paints`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -2587,7 +2574,6 @@ mod tests {
             );
         }
 
-        // Case `paint_card_is_a_noop_when_fully_faded`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -2617,7 +2603,6 @@ mod tests {
 
     #[test]
     fn toast_interaction_dismisses_pauses_and_announces() {
-        // Case `click_dismisses_the_toast_under_the_cursor`.
         {
             let mut s = ToastStack::new();
             s.push("first", ToastKind::Info);
@@ -2636,7 +2621,6 @@ mod tests {
             assert_eq!(s.iter().next().unwrap().text, "first");
         }
 
-        // Case `accessibility_reports_assertive_live_region_with_latest_toast`.
         {
             use crate::a11y::{Politeness, Role};
             // Empty stack: a named, assertive live region with no value yet.
@@ -2661,7 +2645,6 @@ mod tests {
             assert_eq!(node.live, Some(Politeness::Assertive));
         }
 
-        // Case `hover_pauses_expiry`.
         {
             let mut s = ToastStack::new().with_default_ttl(Duration::from_millis(100));
             s.push("stay", ToastKind::Info);

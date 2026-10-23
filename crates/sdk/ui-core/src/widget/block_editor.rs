@@ -1741,7 +1741,6 @@ impl BlockEditor {
             || self.mention_picker.is_open()
     }
 
-    /// Whether the `@` picker is open under the caret.
     #[must_use]
     pub fn mention_picker_open(&self) -> bool {
         self.mention_picker.is_open()
@@ -2823,7 +2822,6 @@ impl BlockEditor {
         true
     }
 
-    /// The focused block's kind.
     pub fn focused_kind(&self) -> Option<&BlockKind> {
         self.focused
             .and_then(|index| self.blocks.get(index))

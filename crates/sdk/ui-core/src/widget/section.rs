@@ -917,7 +917,6 @@ pub struct Section {
     /// rebuild the header around them.
     header: Option<String>,
     expanded: Option<Rc<Cell<bool>>>,
-    /// The label column the section's property lists share.
     labels: crate::widget::property_list::PropertyColumn,
     /// The width the section's dropdowns share.
     choosers: crate::widget::dropdown::ChooserColumn,
@@ -936,7 +935,6 @@ impl Section {
         }
     }
 
-    /// A section of a page titled `title`.
     pub fn titled(title: impl Into<String>, items: Vec<Element>) -> Self {
         Self::new(items).with_header(SectionHeader::heading(title))
     }
@@ -1598,7 +1596,6 @@ impl ObjectHeader {
         self
     }
 
-    /// The avatar's picture.
     #[must_use]
     pub fn avatar_image(mut self, picture: vello::peniko::ImageData) -> Self {
         if let Some(ObjectLead::Avatar { image, .. }) = &mut self.lead {

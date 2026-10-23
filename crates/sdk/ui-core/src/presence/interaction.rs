@@ -102,11 +102,6 @@ impl PresenceCtx {
     /// sequences, identity/target substitution within an invocation, and any
     /// update after a terminal edge are ignored. Validation errors remain
     /// explicit so a trust-boundary caller can log the malformed frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns the interaction contract's validation error when the incoming
-    /// update is malformed or exceeds its wire bounds.
     pub fn apply_interaction(
         &mut self,
         interaction: SemanticInteraction,
@@ -119,11 +114,6 @@ impl PresenceCtx {
     /// broker has authenticated and routed the event; app canvases continue
     /// to use `apply_remote_presence`, whose resource-key check prevents an
     /// interaction from painting in unrelated applications.
-    ///
-    /// # Errors
-    ///
-    /// Returns the interaction contract's validation error when the incoming
-    /// update is malformed or exceeds its wire bounds.
     pub fn observe_interaction(
         &mut self,
         interaction: SemanticInteraction,

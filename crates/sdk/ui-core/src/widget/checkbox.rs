@@ -725,7 +725,6 @@ mod tests {
             OffscreenRenderer::new(40, 40).render(&scene, theme.tokens.colors.surfaces.content)
         };
         let (rest, disabled) = (render(false), render(true));
-        // The outermost pixel column of the box is its edge.
         let rest_edge = OffscreenRenderer::sample(&rest, 40, 8, 20);
         let disabled_edge = OffscreenRenderer::sample(&disabled, 40, 8, 20);
         let ground = OffscreenRenderer::sample(&rest, 40, 2, 20);
@@ -933,7 +932,6 @@ mod tests {
                 &root
             ));
             assert!(c.control.is_checked, "ToggleCheck flips to checked");
-            // Activate also toggles.
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::Activate,

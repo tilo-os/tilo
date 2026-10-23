@@ -595,7 +595,6 @@ mod tests {
     }
     #[test]
     fn close_refusal_and_failure_dialogs_persist_until_an_explicit_choice() {
-        // Case `repeated_close_preserves_failure_dialog_until_explicit_retry`.
         {
             use automerge::{ReadDoc, transaction::Transactable};
             let fail = std::rc::Rc::new(std::cell::Cell::new(true));
@@ -652,7 +651,6 @@ mod tests {
             assert!(app.close_admission.ready);
         }
 
-        // Case `disabled_host_writer_still_refuses_close`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -668,7 +666,6 @@ mod tests {
             assert!(!app.close_admission.admitted);
         }
 
-        // Case `stale_save_button_does_not_save_the_replacement_document`.
         {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = calls.clone();
@@ -716,7 +713,6 @@ mod tests {
             );
         }
 
-        // Case `stale_revision_retires_old_session_only_after_explicit_choice`.
         {
             use automerge::transaction::Transactable;
             let (mut app, dirty) = quit_fixture(false);
@@ -807,7 +803,6 @@ mod tests {
 
     #[test]
     fn native_quit_retains_the_pending_document_session_and_focus() {
-        // Case `native_quit_keep_editing_and_cancelled_save_retain_pending_document`.
         {
             use automerge::{ReadDoc, transaction::Transactable};
             let (mut app, dirty) = quit_fixture(false);
@@ -852,7 +847,6 @@ mod tests {
             assert!(!app.close_admission.admitted);
         }
 
-        // Case `repeated_native_quit_preserves_unsaved_session_addresses_and_focus`.
         {
             let (mut app, dirty) = quit_fixture(false);
             let mut quit = native_quit_request::QuitRequest::new();
@@ -889,7 +883,6 @@ mod tests {
             assert!(dirty.get());
         }
 
-        // Case `native_quit_save_and_discard_share_final_revision_check`.
         {
             use automerge::transaction::Transactable;
             let (mut app, dirty) = quit_fixture(true);
@@ -919,7 +912,6 @@ mod tests {
             assert!(app.close_admission.admitted);
         }
 
-        // Case `modal_control_addresses_survive_moving_the_initialized_app`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),

@@ -277,7 +277,6 @@ mod tests {
 
     #[test]
     fn reorder_drag_separates_clicks_and_emits_one_validated_drop() {
-        // Case `threshold_separates_click_from_reorder`.
         {
             let now = crate::time::now();
             let mut reorder = ReorderController::new();
@@ -292,7 +291,6 @@ mod tests {
             assert_eq!(reorder.finish(), None);
         }
 
-        // Case `invalid_target_has_no_preview_or_drop`.
         {
             let now = crate::time::now();
             let mut reorder = ReorderController::new().with_drag_threshold(0.0);
@@ -307,7 +305,6 @@ mod tests {
             assert_eq!(reorder.finish(), None);
         }
 
-        // Case `finish_emits_one_validated_drop`.
         {
             let now = crate::time::now();
             let mut reorder = ReorderController::new().with_drag_threshold(0.0);
@@ -332,7 +329,6 @@ mod tests {
 
     #[test]
     fn reorder_drag_scrolls_toward_edges_and_expands_hovered_containers_once() {
-        // Case `edge_scroll_accelerates_toward_edges`.
         {
             let now = crate::time::now();
             let mut reorder = ReorderController::new()
@@ -355,7 +351,6 @@ mod tests {
             assert!(bottom.scroll_delta > 50.0);
         }
 
-        // Case `inside_hover_expands_once_after_delay`.
         {
             let now = crate::time::now();
             let mut reorder = ReorderController::new()

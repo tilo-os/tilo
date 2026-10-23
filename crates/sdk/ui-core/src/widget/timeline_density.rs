@@ -108,7 +108,6 @@ mod tests {
                 "{density:?}: an hour at 2x text is {at_two}, at 1x {at_one}"
             );
         }
-        // The column a narrow grid starts at grows with the type too.
         assert!(TimelineDensity::narrow_below(&two) > TimelineDensity::narrow_below(&one));
     }
 }

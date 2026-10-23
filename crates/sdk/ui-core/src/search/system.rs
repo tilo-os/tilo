@@ -647,7 +647,6 @@ pub fn rank<Row: SearchRow>(rows: Vec<(Row, i32)>) -> Vec<Row> {
     merged.into_iter().map(|(r, _)| r).collect()
 }
 
-/// [`group_by_kind`] over [`SearchRow`]s.
 pub fn group<Row: SearchRow>(ranked: Vec<Row>, row_budget: usize) -> Vec<KindGroup<Row>> {
     group_by_kind(ranked, SearchRow::kind, row_budget)
 }

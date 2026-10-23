@@ -39,7 +39,6 @@ use crate::widget::{CardWidth, Column, Container, Element, EventCtx, Row, Widget
 pub struct BoardDrop {
     /// The card's key.
     pub card: String,
-    /// The lane it lands in.
     pub lane: String,
     /// The card it goes before; `None` for the end of the lane.
     pub before: Option<String>,

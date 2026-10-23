@@ -209,7 +209,6 @@ mod tests {
 
     #[test]
     fn backdrop_animates_only_when_allowed_and_stays_opaque() {
-        // Case `ordinary_themes_animate_actual_scene_geometry`.
         {
             for theme in [Theme::dark(), Theme::light()] {
                 assert!(needs_animation(&theme));
@@ -220,7 +219,6 @@ mod tests {
             }
         }
 
-        // Case `reduced_motion_keeps_the_entire_composition_static`.
         {
             let theme = Theme::dark().with_reduce_motion(true);
             assert!(!needs_animation(&theme));
@@ -232,7 +230,6 @@ mod tests {
             assert_same_scene(&first, &frame(&theme, 29.0));
         }
 
-        // Case `high_contrast_draws_only_the_opaque_theme_base`.
         {
             let theme = Theme::high_contrast();
             assert!(!needs_animation(&theme));
@@ -248,7 +245,6 @@ mod tests {
             assert_same_scene(&frame(&theme, 45.0), &expected);
         }
 
-        // Case `every_frame_starts_with_an_opaque_cover_of_its_bounds`.
         {
             let mut transparent_theme = Theme::dark();
             let ground = &mut transparent_theme.tokens.colors.surfaces.base;
@@ -281,14 +277,12 @@ mod tests {
 
     #[test]
     fn backdrop_scenes_stay_seamless_small_and_finite_for_any_input() {
-        // Case `looping_animation_has_no_jump_at_the_period_boundary`.
         {
             let theme = Theme::dark();
             assert_same_scene(&frame(&theme, 0.0), &frame(&theme, 120.0));
             assert_same_scene(&frame(&theme, 3.5), &frame(&theme, 123.5));
         }
 
-        // Case `invalid_time_uses_the_initial_composition`.
         {
             let theme = Theme::dark();
             for time in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
@@ -296,7 +290,6 @@ mod tests {
             }
         }
 
-        // Case `scenes_stay_small_and_finite_even_after_long_uptime`.
         {
             for time in [0.0, 7.0, 120.0, 10_000_000.0, f64::MAX] {
                 let scene = frame(&Theme::dark(), time);
@@ -314,7 +307,6 @@ mod tests {
             }
         }
 
-        // Case `invalid_bounds_do_not_poison_the_scene`.
         {
             for bounds in [
                 Rect::ZERO,

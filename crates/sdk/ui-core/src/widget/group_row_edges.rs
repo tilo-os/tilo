@@ -26,7 +26,6 @@ pub(super) struct RowEdgeDrag {
     other_id: Option<u64>,
     /// The lane whose pan the drag holds.
     lane: usize,
-    /// The pointer's x when pressed, and now.
     press_x: f64,
     pointer_x: f64,
     /// The lane's pan when pressed.
@@ -152,7 +151,6 @@ impl GroupRow {
         .then_some(other)
     }
 
-    /// Whether an edge resize is in flight.
     pub fn edge_resize_in_flight(&self) -> bool {
         self.edge_drag.is_some()
     }

@@ -1309,7 +1309,6 @@ mod tests {
                 clippy::cast_sign_loss,
                 reason = "a small test surface"
             )]
-            // The system search panel floats over the desktop.
             let rgba = OffscreenRenderer::new(w as u32, h as u32)
                 .render(&scene, theme.tokens.colors.surfaces.base);
             #[allow(
@@ -1332,7 +1331,6 @@ mod tests {
                 theme.name
             );
 
-            // Hovered row against the bare panel ground beside its inset.
             let row = v
                 .plan()
                 .rows
@@ -1370,13 +1368,11 @@ mod tests {
 
     #[test]
     fn result_groups_index_preview_and_size_the_panel() {
-        // Case `set_groups_builds_flat_index_and_clamps_cursor`.
         {
             let mut v = view_from("");
             assert_eq!(v.len(), 3, "two contacts + one app");
             v.set_cursor(99);
             assert_eq!(v.cursor(), v.len() - 1, "cursor clamps into range");
-            // Shrinking the list re-clamps.
             v.set_groups(vec![SearchGroup {
                 kind: "Apps".into(),
                 results: vec![SearchResult::new("Apps", "Calculator", "app:calc")],
@@ -1384,7 +1380,6 @@ mod tests {
             assert_eq!(v.cursor(), 0);
         }
 
-        // Case `preview_reserves_fixed_space_and_is_announced`.
         {
             let mut view = SearchResultsView::new();
             view.set_results(vec![
@@ -1409,7 +1404,6 @@ mod tests {
             );
         }
 
-        // Case `empty_results_show_empty_state_and_no_activation`.
         {
             let mut v = SearchResultsView::new().with_empty_text("Nothing here");
             v.set_groups(vec![]);
@@ -1429,7 +1423,6 @@ mod tests {
             assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
         }
 
-        // Case `desired_height_grows_with_content`.
         {
             let empty = SearchResultsView::new().desired_height();
             let full = view_from("").desired_height();
@@ -1442,7 +1435,6 @@ mod tests {
 
     #[test]
     fn results_activate_from_keyboard_and_pointer() {
-        // Case `keyboard_navigation_wraps_and_enter_activates`.
         {
             let mut v = view_from("");
 
@@ -1463,7 +1455,6 @@ mod tests {
             dispatch(&mut v, &key(NamedKey::ArrowUp));
             assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
 
-            // Enter activates the highlighted row and drains once.
             v.set_cursor(0);
             dispatch(&mut v, &key(NamedKey::Enter));
             assert_eq!(
@@ -1474,7 +1465,6 @@ mod tests {
             assert_eq!(v.take_activated(), None, "activation drains after one read");
         }
 
-        // Case `clicking_a_row_selects_and_activates_it`.
         {
             let mut v = view_from("");
             // The plan is the same geometry draw uses; target the third row (the App).

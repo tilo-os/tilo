@@ -276,19 +276,11 @@ impl<'a> ResourceOperation<'a> {
 
     /// Recheck the original caller and owner lifetime of a required
     /// operation. A local operation carries no scope to check.
-    ///
-    /// # Errors
-    ///
-    /// Returns the scope's refusal once its caller or owner has retired.
     pub fn check(&self) -> Result<(), String> {
         self.scope.map_or(Ok(()), ResourceInvocationScope::check)
     }
 
     /// Offer this operation to `widget`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first admission or synchronous-operation error.
     pub fn start(
         &self,
         widget: &mut (impl Widget + ?Sized),
@@ -302,10 +294,6 @@ impl<'a> ResourceOperation<'a> {
 /// Offer `op` to `widget` for a caller that grants no document access. A
 /// handler that writes anyway is refused. Its bytes are retained: rolling
 /// back would also discard the caller's own uncommitted edits.
-///
-/// # Errors
-///
-/// Returns the handler's error, or a refusal when it wrote the document.
 pub(crate) fn start_without_document_writes(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,
@@ -324,10 +312,6 @@ pub(crate) fn start_without_document_writes(
 /// Offer `op` to each retained child in order and return the first start.
 /// This is the default routing; a [`ResourceOperations::start_operation`]
 /// that handles some types itself calls it for the rest.
-///
-/// # Errors
-///
-/// Returns a required operation's retired scope, or the first child error.
 pub fn start_in_children<W: Widget + ?Sized>(
     widget: &mut W,
     op: &ResourceOperation<'_>,
@@ -395,10 +379,6 @@ pub trait ResourceOperations: Widget {
     /// the scope with any job it starts and uses its checked callbacks at each
     /// later effect or document mutation. Hand operations a widget does not
     /// own to [`start_in_children`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the first admission or synchronous-operation error.
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
@@ -443,10 +423,6 @@ pub fn resource_operation_handlers(widget: &(impl Widget + ?Sized)) -> HashSet<S
 }
 
 /// Offer `op` to `widget`: [`ResourceOperations::start_operation`].
-///
-/// # Errors
-///
-/// Returns the first admission or synchronous-operation error.
 pub fn start_operation(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,

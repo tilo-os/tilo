@@ -1305,7 +1305,6 @@ mod tests {
             "drawn just now: still painting"
         );
 
-        // A window showing a still page draws nothing, and is still seen.
         with_monotonic_time(at(60), || drop(engine.drain_events()));
         assert!(
             test.visibility_changes().is_empty(),
@@ -1341,7 +1340,6 @@ mod tests {
         assert_eq!(test.visibility_changes(), vec![false, true, false]);
         with_monotonic_time(at(120), || engine.set_visible(true));
 
-        // A watched share keeps an undrawn page painting.
         set_share_watched(true);
         with_monotonic_time(at(180), || drop(engine.take_paint_stream(false)));
         assert_eq!(test.visibility_changes(), vec![false, true, false, true]);

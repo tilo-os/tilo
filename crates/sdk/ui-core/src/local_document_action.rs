@@ -663,7 +663,6 @@ fn report_budget(
         validate_report_field(field)?;
     }
     validate_report_field(&encoded.type_id)?;
-    // Validate without constructing a second JSON tree for the typed payload.
     serde_json::from_slice::<serde::de::IgnoredAny>(&encoded.payload)
         .map_err(|error| error.to_string())?;
     let group = context.and_then(|cx| cx.group.as_ref());

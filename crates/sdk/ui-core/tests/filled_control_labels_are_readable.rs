@@ -241,7 +241,6 @@ fn toggle_knobs_stay_visible_and_in_place() {
                     hex(rest),
                     hex(hovered),
                 );
-                // A knob already at black-on-white has nowhere further to go.
                 let at_maximum = contrast_ratio(rest, track) >= 20.9;
                 assert!(
                     at_maximum || contrast_ratio(hovered, track) > contrast_ratio(rest, track),

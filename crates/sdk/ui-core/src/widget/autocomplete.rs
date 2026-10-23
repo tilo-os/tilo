@@ -442,14 +442,12 @@ impl SuggestionList {
         Rect::new(panel.x0 + m.inset, y0, panel.x1 - m.inset, y0 + m.row)
     }
 
-    /// The rect of suggestion `index`, when it is in view.
     pub fn row_rect(&self, index: usize) -> Option<Rect> {
         let panel = self.rect()?;
         let visible = index.checked_sub(self.first)?;
         (visible < self.visible_count()).then(|| self.row_in(panel, visible))
     }
 
-    /// The suggestion under `point`, if any.
     pub fn row_at(&self, point: Point) -> Option<usize> {
         let panel = self.rect()?;
         if !panel.contains(point) || self.suggestions.is_empty() {
@@ -1724,7 +1722,6 @@ mod tests {
         }
 
         fn reactive_suggestions_after_open_replace_the_status_line() {
-            // Results arriving async clear the status and become selectable rows.
             let mut ac = Autocomplete::new();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
@@ -1780,7 +1777,6 @@ mod tests {
         // "Amsterdam" beside "North Holland, The Netherlands" in a 300 px row:
         // the detail gets what the label leaves, not a fixed half.
         assert!((detail_room(300.0, 80.0, 8.0) - 204.0).abs() < f64::EPSILON);
-        // A label wider than half still leaves the detail half the row.
         assert!((detail_room(300.0, 250.0, 8.0) - 150.0).abs() < f64::EPSILON);
     }
 

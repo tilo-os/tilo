@@ -101,7 +101,6 @@ impl CaptureButtonFace {
         self
     }
 
-    /// The button's diameter in `theme`.
     #[must_use]
     pub fn diameter(theme: &Theme) -> f64 {
         f64::from(theme.tokens.metrics.min_pointer_target) * 2.0

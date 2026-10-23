@@ -11,7 +11,6 @@
 pub struct Layout {
     /// How far from a timeline event's edge a pointer can grab to resize it.
     pub resize_grip: f32,
-    /// One detent of a jump gesture.
     pub jump_px_per_detent: f32,
     /// A pinned participant's face on the desk.
     pub pin: f32,
@@ -31,11 +30,8 @@ pub struct Layout {
     pub divider_height: f32,
     /// A strip switcher card.
     pub strip_card_width: f32,
-    /// The pairing sheet's height.
     pub pairing_sheet_height: f32,
-    /// The pairing QR code's side.
     pub pairing_qr_side: f32,
-    /// One step of a display's brightness control.
     pub display_brightness_step: f32,
     /// One line-stepping wheel notch.
     pub wheel_step: f32,

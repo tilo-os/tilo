@@ -313,7 +313,6 @@ pub struct Field {
     /// width, even in a grouped section (a read-only value that wraps only
     /// when the row is full).
     filling_control: bool,
-    /// The field is a row of a grouped section.
     grouped: bool,
     inherited: Option<SectionLayout>,
     effective: Option<FieldLayout>,

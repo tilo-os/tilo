@@ -9,8 +9,6 @@ impl App {
     ///     .run();
     /// ```
     #[must_use]
-    /// # Panics
-    /// Fails closed if the host storage lifetime counter is exhausted.
     #[allow(
         clippy::expect_used,
         reason = "storage identity must fail closed rather than wrap and admit an old owner"

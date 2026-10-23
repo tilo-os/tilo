@@ -53,7 +53,6 @@ pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
 /// promise an action the shortcut would refuse.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UndoStatus {
-    /// There is an action this user can undo.
     pub can_undo: bool,
     /// There is an action this user can redo.
     pub can_redo: bool,
@@ -85,7 +84,6 @@ impl UndoStatus {
         }
     }
 
-    /// The summary for the verb `which`, if any.
     pub fn summary(&self, which: UndoRequest) -> Option<&str> {
         match which {
             UndoRequest::Undo => self.undo_summary.as_deref(),
@@ -405,8 +403,6 @@ pub trait LocalUndo {
     /// The component retains this invocation and reports its actual native ACK
     /// through `poll_local_undo_operation`. Required hosted custody continues to
     /// be declined by the generic adapter; this interface supplies no grant.
-    /// # Errors
-    /// Returns the original field's admission refusal.
     fn start_local_undo_operation(
         &mut self,
         _invocation: tilo_actions::InvocationId,
@@ -481,7 +477,6 @@ pub fn take_committed_action(
         .take_committed_action()
 }
 
-/// Whether `widget` keeps its last undo step open.
 pub fn keeps_undo_step_open(widget: &(impl crate::widget::Widget + ?Sized)) -> bool {
     crate::widget::capability::capability::<dyn CommittedActions>(widget)
         .is_some_and(CommittedActions::keeps_undo_step_open)
@@ -821,7 +816,6 @@ mod tests {
 
     #[test]
     fn undo_access_publishes_status_and_refuses_unavailable_verbs_once() {
-        // Case `unused_undo_status_is_not_evaluated`.
         {
             let mut spacer = crate::widget::Spacer::new();
             crate::undo::set_undo_status(&mut spacer, &mut || {
@@ -829,7 +823,6 @@ mod tests {
             });
         }
 
-        // Case `undo_button_requests_and_publishes_status`.
         {
             use crate::widget::Widget;
             let mut button = crate::widget::UndoButton::undo();
@@ -846,7 +839,6 @@ mod tests {
             );
         }
 
-        // Case `a_request_for_an_unavailable_verb_is_refused_and_enqueues_nothing`.
         {
             let mut access = UndoAccess::new();
             // Nothing published yet: an empty history.
@@ -865,7 +857,6 @@ mod tests {
             assert_eq!(access.take_request(), None);
         }
 
-        // Case `taking_a_request_clears_it_so_one_activation_is_one_undo`.
         {
             let mut access = UndoAccess::new();
             access.publish(&status(true, true));
@@ -890,7 +881,6 @@ mod tests {
 
     #[test]
     fn undo_shortcuts_and_descriptions_never_promise_a_missing_action() {
-        // Case `the_shortcut_table_is_the_one_binding_both_hosts_read`.
         {
             use crate::platform::{Platform, PlatformConventions};
             let linux = PlatformConventions::new(Platform::Linux);
@@ -911,7 +901,6 @@ mod tests {
             assert_eq!(super::shortcut(mac, "y", true, false), None);
         }
 
-        // Case `description_never_promises_an_action_that_is_not_there`.
         {
             let empty = UndoStatus::empty();
             assert_eq!(empty.description(UndoRequest::Undo), "Nothing to undo");

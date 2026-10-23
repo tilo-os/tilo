@@ -129,7 +129,6 @@ pub struct HostContext {
 /// it played under.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlaybackHandoff {
-    /// The position to continue from.
     pub position_ms: u64,
     /// Whether playback was running and continues running here.
     pub resume_playing: bool,
@@ -648,7 +647,6 @@ impl HostContext {
         );
         self.content = Some(store);
     }
-    /// The content store the host lent, if any.
     pub fn content(&self) -> Option<&tilo_content::ContentStore> {
         self.content.as_ref()
     }
@@ -862,8 +860,6 @@ impl HostContext {
     /// is read: `migrate` makes at most one deterministic housekeeping change
     /// (two devices migrating the same document make the same one) and
     /// answers whether it changed anything.
-    /// # Errors
-    /// The record is not open here, or the migration failed.
     pub fn migrate_record(
         &self,
         migrate: impl FnOnce(&mut AutoCommit) -> Result<bool, String>,
@@ -887,8 +883,6 @@ impl HostContext {
     /// arriving over sync are merged: validated first, attributed to them in
     /// history, and never on this participant's undo stack. Returns whether
     /// anything changed.
-    /// # Errors
-    /// The document is not a valid copy of this record, or it is not open.
     pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
         self.records.merge_peer_document(&self.record, document)
     }
@@ -2098,8 +2092,6 @@ pub struct ComponentCloseReport {
 }
 impl ComponentCloseReport {
     /// Retry the same dirty canonical owner, retaining it until durability succeeds.
-    /// # Errors
-    /// Returns the original owner's current persistence failure.
     pub fn retry_record(&mut self) -> Result<(), String> {
         if let Some(records) = &self.record_retry {
             match &self.record_retry_target {
@@ -2224,12 +2216,10 @@ mod cleanup_tests {
     }
     #[test]
     fn panics_propagate_after_the_registry_drops_under_a_closed_scope() {
-        // Case `root_panic_still_drops_registry_under_closed_scope_and_propagates`.
         {
             assert_closed_cleanup("root");
         }
 
-        // Case `registry_panic_propagates_after_both_closed_scope_drops`.
         {
             assert_closed_cleanup("registry");
         }
@@ -2423,7 +2413,6 @@ mod bound_lifetime_tests {
 
     #[test]
     fn component_lifetimes_refuse_stale_wakes_loans_and_busy_entries() {
-        // Case `actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry`.
         {
             let temp = tempfile::tempdir().unwrap();
             let mut owners = crate::record::RecordOwners::new(temp.path().into());

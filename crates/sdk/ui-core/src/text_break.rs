@@ -282,7 +282,6 @@ impl LineEdit {
     }
 }
 
-/// Line feeds in `bytes`.
 pub(crate) fn count_line_feeds(bytes: &[u8]) -> usize {
     bytes.iter().map(|&byte| usize::from(byte == b'\n')).sum()
 }
@@ -610,7 +609,6 @@ mod tests {
             "{unchanged} of {}",
             boundaries.len()
         );
-        // Text without spaces is still bounded.
         let solid = "x".repeat(5 * CHUNK_MAX_BYTES + HUGE_PARAGRAPH_BYTES);
         assert!(!paragraph_chunk_boundaries(&solid).is_empty());
         // Line feeds split paragraphs first.
@@ -643,7 +641,6 @@ mod tests {
 
     #[test]
     fn word_and_grapheme_segmentation_keeps_clusters_whole() {
-        // Case `unicode_words_retain_trailing_combining_marks`.
         {
             for (text, expected) in [
                 ("test\u{301}", vec!["test\u{301}"]),
@@ -664,7 +661,6 @@ mod tests {
             assert!(unicode_word_ranges("\u{301} , .").next().is_none());
         }
 
-        // Case `grapheme_indices_keep_extended_clusters_whole`.
         {
             let text = "e\u{301}👨‍👩‍👧🇳🇱a";
             let clusters: Vec<_> = grapheme_indices(text).collect();
@@ -678,7 +674,6 @@ mod tests {
 
     #[test]
     fn line_break_opportunities_follow_script_rules() {
-        // Case `cjk_has_opportunities_without_ascii_spaces`.
         {
             let text = "東京京都";
             let breaks: Vec<_> = line_break_opportunities(text).collect();
@@ -686,7 +681,6 @@ mod tests {
             assert!(breaks.iter().any(|(byte, _)| *byte < text.len()));
         }
 
-        // Case `non_breaking_space_does_not_create_an_opportunity`.
         {
             let text = "10\u{a0}km away";
             let protected_end = "10\u{a0}".len();
@@ -696,7 +690,6 @@ mod tests {
             );
         }
 
-        // Case `emoji_zwj_sequence_is_not_split`.
         {
             let family = "👨‍👩‍👧‍👦";
             assert_eq!(
@@ -705,7 +698,6 @@ mod tests {
             );
         }
 
-        // Case `dictionary_line_breaks_segment_thai_without_spaces`.
         {
             let text = "ทุกสองสัปดาห์";
             let breaks: Vec<_> = line_break_opportunities(text)
@@ -717,7 +709,6 @@ mod tests {
 
     #[test]
     fn discretionary_hyphens_map_to_word_like_source_offsets() {
-        // Case `english_hyphenation_inserts_soft_hyphens_at_tex_pattern_boundaries`.
         {
             let text = "extensive";
             let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
@@ -733,7 +724,6 @@ mod tests {
             }
         }
 
-        // Case `hyphenation_only_touches_word_like_segments`.
         {
             let text = "extensive, 123";
             let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
@@ -754,7 +744,6 @@ mod tests {
             assert_eq!(map.insertions[0].source, 2);
         }
 
-        // Case `public_hyphen_breaks_are_source_offsets`.
         {
             let text = "typography";
             let breaks = discretionary_hyphen_breaks(text, "en-US");

@@ -731,7 +731,6 @@ mod tests {
             let mut entries: Vec<HistoryEntry> = (0..3)
                 .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
-            // Six minutes later, same person, same kind of change.
             entries.extend(
                 (3..6).map(|i| entry(i, "Alice", 1000 + 360 + u64::from(i), EntryKind::Text)),
             );

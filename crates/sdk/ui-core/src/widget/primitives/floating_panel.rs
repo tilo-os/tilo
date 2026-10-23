@@ -116,7 +116,6 @@ impl FloatingPanelFace {
         }
     }
 
-    /// The panel height for a body of `body` content height.
     #[must_use]
     pub fn height_for(&self, body: f64, theme: &Theme) -> f64 {
         let body = if self.body_empty || body <= 0.0 {

@@ -323,7 +323,6 @@ impl<W: Widget + 'static> Embedded<W> {
         self.overlay_transform().unwrap_or(self.transform)
     }
 
-    /// Route one window event to the widget.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -564,7 +563,6 @@ mod tests {
         assert!(height > 0.0);
         let drawn = host.rect();
         assert!((drawn.x0 - 60.0).abs() < 1e-9 && (drawn.width() - 200.0).abs() < 1e-9);
-        // A click where the box is drawn lands in it.
         click(
             &mut host,
             &mut crate::widget::Edits::lend(&mut doc),

@@ -55,7 +55,6 @@ pub(super) struct MenuSpec {
     pub row_height: f64,
     /// Rows painted at once; the window scrolls with the cursor.
     pub max_rows: usize,
-    /// Fluent key of the filter field's placeholder.
     pub placeholder: &'static str,
     /// Fluent key of the menu's accessible name.
     pub access_name: &'static str,

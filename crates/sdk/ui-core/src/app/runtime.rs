@@ -244,7 +244,6 @@ pub(super) struct ActionRuntime {
 /// Which answer from the session action host a request is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum BrokerReply {
-    /// The receipt for an invocation.
     Receipt(tilo_actions::InvocationId),
     /// The state of an invocation being observed.
     Update(tilo_actions::InvocationId),

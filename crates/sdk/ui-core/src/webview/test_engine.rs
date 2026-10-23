@@ -663,7 +663,6 @@ mod tests {
                 can_go_back: false,
                 can_go_forward: false
             }));
-            // Draining twice yields nothing new.
             assert!(engine.drain_events().is_empty());
 
             let frame = engine

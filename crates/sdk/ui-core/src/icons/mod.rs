@@ -2425,7 +2425,6 @@ mod tests {
                 Rect::new(0.0, 0.0, 24.0, 24.0),
                 Color::WHITE,
             );
-            // A stroked glyph emits at least one COLOR draw tag for its path.
             let color_tags = scene
                 .encoding()
                 .draw_tags
@@ -2745,7 +2744,6 @@ mod tests {
             icon_for_path(Path::new("/x/archive.zip"), true),
             Icon::Folder
         );
-        // Media families.
         assert_eq!(
             icon_for_path(Path::new("a/photo.PNG"), false),
             Icon::Image,

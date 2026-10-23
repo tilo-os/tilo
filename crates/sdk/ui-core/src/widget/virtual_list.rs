@@ -148,10 +148,6 @@ where
     K: Clone + Eq + Hash,
 {
     /// Build the key index once.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DuplicateListKey`] when two items resolve to the same key.
     pub fn new(items: Vec<T>, mut key: impl FnMut(&T) -> K) -> Result<Self, DuplicateListKey> {
         let keys = items.iter().map(&mut key).collect::<Vec<_>>();
         let index = keys
@@ -176,9 +172,6 @@ where
         &self.items
     }
 
-    /// # Errors
-    ///
-    /// Returns [`DuplicateListKey`] when `key` already exists.
     pub fn push(&mut self, key: K, item: T) -> Result<(), DuplicateListKey> {
         if self.index.contains_key(&key) {
             return Err(DuplicateListKey);
@@ -261,9 +254,7 @@ type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RowSelection {
     pub selected: bool,
-    /// The row above is selected.
     pub above: bool,
-    /// The row below is selected.
     pub below: bool,
     /// A row follows this one.
     pub has_next: bool,
@@ -968,7 +959,6 @@ impl<M: ListModel> VirtualList<M> {
         )
     }
 
-    /// `index`'s selection and its neighbours'.
     fn row_selection(&self, index: usize) -> RowSelection {
         let selected = |i: Option<usize>| {
             i.and_then(|i| self.model.key_at(i))
@@ -1435,10 +1425,6 @@ where
 {
     /// Short path for an owned collection. The row delegate receives the
     /// typed item plus its current display index and stable key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DuplicateListKey`] when two items resolve to the same key.
     pub fn from_items(
         items: Vec<T>,
         estimated_row_height: f32,
@@ -2497,13 +2483,11 @@ mod tests {
 
     #[test]
     fn list_models_keep_stable_unique_keys_through_mutation_and_restore() {
-        // Case `vec_model_rejects_duplicate_keys`.
         {
             let result = VecListModel::new(vec![1, 1], |value| *value);
             assert!(matches!(result, Err(DuplicateListKey)));
         }
 
-        // Case `restored_selection_discards_keys_absent_from_the_model`.
         {
             let mut selection = KeySelection::new();
             selection.toggle(1_u64);
@@ -2518,7 +2502,6 @@ mod tests {
             assert_eq!(list.selection().len(10), 1);
         }
 
-        // Case `owned_model_mutations_keep_key_index_consistent`.
         {
             let mut model = VecListModel::new(vec!["a", "b", "c"], |value| *value).unwrap();
             assert!(model.move_item(0, 2));
@@ -2531,7 +2514,6 @@ mod tests {
             assert_eq!(model.push("d", "duplicate"), Err(DuplicateListKey));
         }
 
-        // Case `from_items_is_a_typed_one_call_list_constructor`.
         {
             let list = VirtualList::from_items(
                 vec![(7_u64, "seven")],
@@ -2545,7 +2527,6 @@ mod tests {
             assert_eq!(Widget::test_id(&list), Some("contacts-list"));
         }
 
-        // Case `sync_retains_built_row_nodes_and_invalidates_same_key_replacements`.
         {
             let states = Rc::new(RefCell::new(HashMap::new()));
             let model = PagedList {
@@ -2582,7 +2563,6 @@ mod tests {
 
     #[test]
     fn semantic_rows_share_scrolled_variable_geometry_and_stable_key_actions() {
-        // Case `semantic_row_actions_use_encoded_stable_keys`.
         {
             let activated = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&activated);
@@ -2624,7 +2604,6 @@ mod tests {
             assert_eq!(&*activated.borrow(), &[20]);
         }
 
-        // Case `semantic_rows_use_the_same_scrolled_variable_height_geometry_as_layout`.
         {
             let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
             let mut list = VirtualList::new(model, 24.0, |_, _, key| {
@@ -2655,7 +2634,6 @@ mod tests {
             );
         }
 
-        // Case `page_navigation_scrolls_inside_a_tall_row_without_changing_its_key`.
         {
             let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
             let mut list = VirtualList::new(model, 24.0, |_, _, key| {
@@ -2681,7 +2659,6 @@ mod tests {
 
     #[test]
     fn hundred_million_row_lists_mount_and_request_only_the_window() {
-        // Case `hundred_million_rows_mount_only_the_visible_widget_window`.
         {
             let builds = Rc::new(Cell::new(0_usize));
             let captured = Rc::clone(&builds);
@@ -2712,7 +2689,6 @@ mod tests {
             assert!((bottom.y1 - track.y1).abs() < 0.001);
         }
 
-        // Case `paged_hundred_million_row_list_requests_only_the_window_and_wakes_on_state_changes`.
         {
             let states = Rc::new(RefCell::new(HashMap::new()));
             let requests = Rc::new(RefCell::new(Vec::new()));
@@ -2809,7 +2785,6 @@ mod tests {
 
     #[test]
     fn delegates_follow_stable_keys_and_rebuild_only_what_changed() {
-        // Case `mounted_widgets_follow_stable_keys_across_reorder`.
         {
             let keys = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
             let builds = Rc::new(Cell::new(0_usize));
@@ -2839,7 +2814,6 @@ mod tests {
             assert_eq!(builds.get(), 4, "visible keyed widgets are retained");
         }
 
-        // Case `granular_async_changes_rebuild_only_named_delegates`.
         {
             let keys = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
             let changes = Rc::new(RefCell::new(Vec::new()));
@@ -2879,7 +2853,6 @@ mod tests {
             assert_eq!(list.mounted_len(), 4);
         }
 
-        // Case `granular_owned_structural_batch_retains_live_delegates`.
         {
             let builds = Rc::new(Cell::new(0_usize));
             let captured = Rc::clone(&builds);
@@ -2916,7 +2889,6 @@ mod tests {
             assert_eq!(builds.get(), 5, "moving stable keys retains delegates");
         }
 
-        // Case `insertion_above_viewport_preserves_the_stable_key_anchor`.
         {
             let keys = Rc::new(RefCell::new((0_u64..100).collect::<Vec<_>>()));
             let mut list = VirtualList::new(
@@ -2944,7 +2916,6 @@ mod tests {
             assert_eq!(list.viewport.item_view_top(51), before);
         }
 
-        // Case `delegated_row_layout_feeds_variable_height_geometry`.
         {
             let model = VecListModel::new(vec![0_u64, 1, 2], |key| *key).unwrap();
             let mut list = VirtualList::new(model, 20.0, |_, _, key| {
@@ -2967,7 +2938,6 @@ mod tests {
 
     #[test]
     fn pointer_input_separates_delegate_presses_drag_scroll_and_selection() {
-        // Case `interactive_delegate_consumes_press_without_selecting_its_row`.
         {
             let presses = Rc::new(Cell::new(0));
             let captured = Rc::clone(&presses);
@@ -3003,7 +2973,6 @@ mod tests {
             );
         }
 
-        // Case `background_drag_scrolls_but_click_selects`.
         {
             let model = VecListModel::new((0_u64..100).collect(), |key| *key).unwrap();
             let mut list = VirtualList::new(model, 20.0, |_, _, key| {
@@ -3032,7 +3001,6 @@ mod tests {
             assert!(list.selection().is_selected(&0));
         }
 
-        // Case `reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay`.
         {
             let model = VecListModel::new((0_u64..100).collect(), |key| *key).unwrap();
             let mut list = VirtualList::new(model, 20.0, |_, _, key| {
@@ -3071,7 +3039,6 @@ mod tests {
 
     #[test]
     fn list_reorder_previews_and_commits_valid_drops_only() {
-        // Case `owned_list_reorder_previews_and_commits_by_stable_key`.
         {
             let mut list = VirtualList::from_items(
                 vec![0_u64, 1, 2],
@@ -3106,7 +3073,6 @@ mod tests {
             assert_eq!(list.reorder_target(), None);
         }
 
-        // Case `invalid_list_drop_has_no_preview_and_does_not_mutate`.
         {
             let model = VecListModel::new(vec![0_u64, 1], |key| *key).unwrap();
             let mut list = VirtualList::new(model, 20.0, |_, _, key| {

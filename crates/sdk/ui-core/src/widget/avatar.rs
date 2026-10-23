@@ -706,7 +706,6 @@ pub(crate) fn profile_image(photo: &runtime_identity::ProfilePhoto) -> peniko::I
 }
 
 impl Avatar {
-    /// An avatar for `name`, coloured by `identity`.
     pub fn person(name: impl Into<String>, identity: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -1105,7 +1104,6 @@ mod tests {
             .presence
             .hue(PresenceHue::of_identity("ada@example.org"));
         assert_eq!(a, expected);
-        // A collaborator's own colour lands on the theme's presence L/C.
         let own = AvatarFace::new("Bob", "bob")
             .presence(Color::from_rgb8(0xe0, 0x60, 0x20))
             .colour(&theme);

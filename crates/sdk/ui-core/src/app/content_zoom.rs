@@ -41,7 +41,6 @@ impl App {
         self.layout.request_rebuild();
     }
 
-    /// The zoom gesture `event` is, if it is one.
     fn zoom_gesture(&self, event: &WindowEvent) -> Option<ZoomGesture> {
         ZoomGesture::of(event, self.input.platform, self.input.modifiers.state())
     }

@@ -1,4 +1,3 @@
-//! Records of an open record's tree sync on their own routes.
 use super::framework_history_tests::RoutedOwners;
 use crate::collaboration::CollabRequest;
 use automerge::{ROOT, transaction::Transactable as _};

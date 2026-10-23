@@ -252,7 +252,6 @@ pub struct OffscreenRenderTiming {
     pub sparse_coarse_adaptive_submissions: u32,
     /// Adaptive sparse submissions which deliberately retained dense coarse work.
     pub sparse_coarse_adaptive_dense_submissions: u32,
-    /// Sum of representable native coarse bins across adaptive sparse submissions.
     pub sparse_coarse_native_bins: u64,
     /// Sum of selected native coarse bins across adaptive sparse submissions.
     pub sparse_coarse_selected_native_bins: u64,
@@ -290,7 +289,6 @@ pub struct OffscreenRenderTiming {
     pub clip_single_group_full_selected_attempts: u32,
     /// Sparse submissions where the Area fine shader actually skipped zero-mask quad invocations.
     pub sparse_fine_quad_skip_submissions: u32,
-    /// Total fine invocation groups considered by the applied quad-skip path.
     pub sparse_fine_quad_total_quads: u64,
     /// Non-zero-mask fine invocation groups evaluated by the applied quad-skip path.
     pub sparse_fine_quad_active_quads: u64,
@@ -303,7 +301,6 @@ pub struct OffscreenRenderTiming {
     pub gpu_timestamp_span_ns: u128,
     /// Rounded sum of individual GPU pass durations across verified submissions.
     pub gpu_timestamp_pass_ns: u128,
-    /// Rounded duration of the final recorded compute pass in verified submissions.
     pub gpu_timestamp_last_pass_ns: u128,
     /// Rounded duration of all earlier recorded compute passes in verified submissions.
     pub gpu_timestamp_other_pass_ns: u128,
@@ -1306,10 +1303,6 @@ impl OffscreenRenderer {
 
     /// Read the already-rendered retained target without submitting another
     /// Vello frame. Used to verify partial-damage composition pixel-for-pixel.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared GPU context or target readback fails.
     pub fn readback_current(&mut self) -> Vec<u8> {
         let (device, queue) = self.device_queue();
         self.read_target(&device, &queue)
@@ -1321,9 +1314,6 @@ impl OffscreenRenderer {
     /// Performance harnesses use this to measure Vello rather than PCIe/shared
     /// memory readback plus row repacking. Screenshot and visual-regression
     /// callers should continue to use [`Self::render`].
-    ///
-    /// # Panics
-    /// If shared GPU state is poisoned/missing or Vello rejects the render.
     pub fn render_gpu_wait(&mut self, scene: &Scene, bg: Color) {
         let mut timing = None;
         let _ = self.render_gpu_wait_count(scene, bg, &mut timing);
@@ -1964,10 +1954,6 @@ impl OffscreenRenderer {
 
     /// [`Self::render_resilient`] for a caller that can answer a failure
     /// instead of stopping: an app rendering a picture someone asked for.
-    ///
-    /// # Errors
-    /// Returns why no two consecutive overflow-free renders came within the
-    /// bounded retry count.
     pub fn try_render_resilient(&mut self, scene: &Scene, bg: Color) -> Result<Vec<u8>, String> {
         let mut confirmed = false;
         let mut attempts = ResilientAttempts::default();
@@ -2199,7 +2185,6 @@ mod tests {
             assert_send::<OffscreenRenderer>();
         }
 
-        // Case `resilient_render_requires_a_second_clean_nonempty_submission`.
         {
             // A first clean output may have warmed Vello's atlas, so only the
             // next clean submission may leave the offscreen renderer.
@@ -2210,7 +2195,6 @@ mod tests {
             assert!(resilient_submission_accepted(true, false));
         }
 
-        // Case `resilient_render_waits_through_every_stage_growing_in_turn`.
         {
             // Vello's later stages skip their work once an earlier one has
             // overflowed, so a cold renderer grows one stage per submission.
@@ -2242,7 +2226,6 @@ mod tests {
             assert_eq!(allowed, RESILIENT_RENDER_ATTEMPTS - 1);
         }
 
-        // Case `png_publication_is_complete_and_decodable`.
         {
             let dir = tempfile::tempdir().expect("temporary screenshot directory");
             let path = dir.path().join("frame.png");
@@ -2274,7 +2257,6 @@ mod tests {
         let side = 320.0;
         let full = Rect::new(0.0, 0.0, side, side);
         let mut scene = Scene::new();
-        // Deeper than Vello's on-chip blend stack on every tile.
         for _ in 0..8 {
             scene.push_layer(
                 Fill::NonZero,
@@ -2316,7 +2298,6 @@ mod tests {
 
     #[test]
     fn optimization_attempt_accounting_resets_and_separates_routes() {
-        // Case `sparse_submission_accounting_resets_and_counts_only_applied_optimizations`.
         {
             let mut accounting = SparseSubmissionAccounting::default();
             assert_eq!(accounting, SparseSubmissionAccounting::default());
@@ -2380,7 +2361,6 @@ mod tests {
             assert_eq!(accounting, SparseSubmissionAccounting::default());
         }
 
-        // Case `canonical_segment_order_attempt_accounting_resets_and_separates_routes`.
         {
             let mut accounting = CanonicalSegmentOrderAttemptAccounting::default();
             accounting.record_full(true);
@@ -2409,7 +2389,6 @@ mod tests {
             assert_eq!(accounting, AreaPpt8AttemptAccounting::default());
         }
 
-        // Case `clip_single_group_attempt_accounting_resets_and_separates_routes`.
         {
             let mut accounting = ClipSingleGroupAttemptAccounting::default();
             accounting.record_full(true);
@@ -2426,7 +2405,6 @@ mod tests {
 
     #[test]
     fn damage_and_geometric_capacity_grow_in_bounded_hysteretic_buckets() {
-        // Case `damage_texture_extent_is_quantized_and_device_bounded`.
         {
             assert_eq!(damage_texture_extent(1, 8_192), 32);
             assert_eq!(damage_texture_extent(801, 8_192), 832);
@@ -2435,7 +2413,6 @@ mod tests {
             assert_eq!(damage_texture_height_extent(8_191, 8_192), 8_192);
         }
 
-        // Case `damage_texture_reuses_animation_jitter_but_releases_large_outliers`.
         {
             assert!(!damage_texture_needs_replacement(832, 128, 809, 96));
             assert!(damage_texture_needs_replacement(832, 128, 400, 96));
@@ -2443,7 +2420,6 @@ mod tests {
             assert!(damage_texture_needs_replacement(1_024, 1_024, 128, 128));
         }
 
-        // Case `geometric_width_capacity_grows_in_bounded_buckets`.
         {
             assert_eq!(damage_texture_geometric_width_extent(33, 3_840, 8_192), 64);
             assert_eq!(
@@ -2465,7 +2441,6 @@ mod tests {
             );
         }
 
-        // Case `geometric_capacity_uses_hysteresis_and_never_recreates_identical_size`.
         {
             assert!(!damage_texture_geometric_needs_replacement(
                 2_048, 176, 1_026, 172, 2_048, 176,
@@ -2481,7 +2456,6 @@ mod tests {
             ));
         }
 
-        // Case `geometric_capacity_avoids_forward_animation_recreation_churn`.
         {
             let mut baseline_capacity = 0;
             let mut geometric_capacity = 0;
@@ -2526,7 +2500,6 @@ mod tests {
 
     #[test]
     fn timestamp_split_and_frame_comparison_accept_only_valid_input() {
-        // Case `timestamp_last_pass_split_handles_one_and_many_passes`.
         {
             let single = timestamp_sample(&[10, 16], 1, 0.5, 3.0);
             assert_eq!(timestamp_last_and_other_pass_ns(&single), Some((3, 0)));
@@ -2536,7 +2509,6 @@ mod tests {
             assert_eq!(timestamp_last_and_other_pass_ns(&multiple), Some((4, 3)));
         }
 
-        // Case `timestamp_last_pass_split_rejects_incomplete_or_backwards_pairs`.
         {
             let incomplete = timestamp_sample(&[10, 16], 2, 1.0, 6.0);
             assert_eq!(timestamp_last_and_other_pass_ns(&incomplete), None);
@@ -2568,8 +2540,6 @@ mod tests {
                 "a one-step antialiasing wobble must read as the same frame"
             );
 
-            // Two steps on a single channel of a single pixel is a real
-            // difference.
             let two_steps = [12u8, 20, 30, 255, 40, 50, 60, 255];
             assert_eq!(
                 OffscreenRenderer::pixels_differing_beyond_aa(&base, &two_steps),
@@ -2586,7 +2556,6 @@ mod tests {
             );
         }
 
-        // Case `frame_comparison_ignores_rgb_only_when_both_pixels_are_fully_transparent`.
         {
             for (actual, expected, differences) in [
                 ([0, 0, 0, 0], [81, 209, 119, 0], 0),
@@ -2620,7 +2589,6 @@ mod tests {
     )]
     #[test]
     fn native_and_retained_damage_match_full_renders() {
-        // Case `native_damage_matches_a_full_render_and_preserves_untouched_pixels`.
         {
             const W: u32 = 192;
             const H: u32 = 128;
@@ -2684,7 +2652,6 @@ mod tests {
             );
         }
 
-        // Case `native_damage_tracks_disconnected_transparent_clipped_motion_and_resize`.
         {
             const W: u32 = 256;
             const H: u32 = 192;
@@ -2754,7 +2721,6 @@ mod tests {
             }
         }
 
-        // Case `retained_damage_matches_full_with_clips_overlaps_and_image_updates`.
         {
             const W: u32 = 256;
             const H: u32 = 192;
@@ -2883,7 +2849,6 @@ mod tests {
             }
         }
 
-        // Case `geometric_damage_capacity_grows_and_shrinks_without_changing_native_pixels`.
         {
             const W: u32 = 512;
             const H: u32 = 128;
@@ -3040,7 +3005,6 @@ mod tests {
     )]
     #[test]
     fn sparse_coarse_rendering_matches_the_dense_oracle() {
-        // Case `sparse_damage_masks_same_tile_and_handles_a_tall_native_prefix`.
         'sparse_damage_masks_same_tile_and_handles_a_tall_native_prefix: {
             const W: u32 = 256;
             const H: u32 = 192;
@@ -3129,7 +3093,6 @@ mod tests {
             );
         }
 
-        // Case `sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames`.
         'sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames: {
             if !matches!(std::env::var("VELLO_SPARSE_COARSE").as_deref(), Ok("1")) {
                 eprintln!("skipping sparse coarse test: coarse selection is not requested");
@@ -3513,7 +3476,6 @@ mod tests {
             }
         }
 
-        // Case `active_sparse_coarse_overflow_recovers_dense_before_publication`.
         'active_sparse_coarse_overflow_recovers_dense_before_publication: {
             const W: u32 = 384;
             const H: u32 = 256;
@@ -3568,7 +3530,6 @@ mod tests {
             );
         }
 
-        // Case `sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle`.
         'sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle: {
             if !env_enabled_by_default("VELLO_SPARSE_UPLOAD_REUSE") {
                 eprintln!("skipping sparse upload reuse test: reuse is not requested");
@@ -3966,7 +3927,6 @@ mod tests {
     )]
     #[test]
     fn gpu_path_dispatch_matches_its_oracles_and_recovers_overflow() {
-        // Case `cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled`.
         'cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled: {
             if !env_enabled_by_default("VELLO_CPU_PATHTAG") {
                 eprintln!("skipping CPU path-tag test: selective path tags are not requested");
@@ -4324,7 +4284,6 @@ mod tests {
             }
         }
 
-        // Case `direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages`.
         'direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages: {
             if !env_enabled_by_default("VELLO_DIRECT_PATH_DISPATCH") {
                 eprintln!("skipping direct path-dispatch test: experiment is not requested");
@@ -4473,7 +4432,6 @@ mod tests {
             }
         }
 
-        // Case `gpu_path_experiments_keep_overflow_recovery_complete`.
         'gpu_path_experiments_keep_overflow_recovery_complete: {
             let deferred_bump_requested = matches!(
                 std::env::var("VELLO_DEFER_BUMP_READBACK").as_deref(),

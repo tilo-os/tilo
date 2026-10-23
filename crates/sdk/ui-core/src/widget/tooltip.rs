@@ -889,7 +889,6 @@ mod host_tests {
     fn tooltip_host_dwell_reveals_restarts_and_dismisses() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `hovering_past_dwell_reveals_then_leaving_hides`.
         {
             let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
             let t0 = crate::time::now();
@@ -905,7 +904,6 @@ mod host_tests {
                 "the host wakes when the dwell runs out"
             );
 
-            // A tick short of the dwell keeps it hidden.
             h.tick(t0 + Duration::from_millis(300));
             assert!(h.visible().is_none());
 
@@ -922,7 +920,6 @@ mod host_tests {
             assert!(h.visible().is_none(), "hides on leave");
         }
 
-        // Case `click_scroll_or_key_dismisses_a_shown_tooltip`.
         {
             let mut h = TooltipHost::new().with_dwell(Duration::ZERO);
             let t0 = crate::time::now();
@@ -936,7 +933,6 @@ mod host_tests {
             assert!(h.visible().is_none());
         }
 
-        // Case `moving_between_regions_restarts_the_dwell`.
         {
             let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
             let t0 = crate::time::now();
@@ -956,7 +952,6 @@ mod host_tests {
             assert_eq!(h.visible().map(|(l, _)| l), Some("Forward"));
         }
 
-        // Case `jitter_within_one_region_keeps_the_dwell`.
         {
             let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
             let t0 = crate::time::now();
@@ -980,7 +975,6 @@ mod host_tests {
         let theme = Theme::dark();
         let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
         let size = (120.0, 24.0);
-        // Three tools stacked in a rail at the left edge.
         let tool = Rect::new(8.0, 100.0, 48.0, 140.0);
         let next = Rect::new(8.0, 144.0, 48.0, 184.0);
         let r = chip_rect_on(&theme, TooltipSide::Beside, tool, size, vp);
@@ -994,7 +988,6 @@ mod host_tests {
         let right = Rect::new(752.0, 100.0, 792.0, 140.0);
         let r = chip_rect_on(&theme, TooltipSide::Beside, right, size, vp);
         assert!(r.x1 <= right.x0, "before the tool: {r:?}");
-        // Below stays the default placement.
         assert_eq!(
             chip_rect_on(&theme, TooltipSide::Below, tool, size, vp),
             chip_rect(&theme, tool, size, vp)
@@ -1035,7 +1028,6 @@ mod host_tests {
             "clamped to the left margin"
         );
 
-        // A roomy central anchor keeps the chip below and centred.
         let center = Rect::new(390.0, 100.0, 410.0, 120.0);
         let r = chip_rect(&theme, center, size, vp);
         assert!(r.y0 >= center.y1, "placed below when there is room");
@@ -1063,7 +1055,6 @@ mod tests {
     fn anchored_tooltip_reveals_after_delay_and_is_inert_without_an_anchor() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `hovering_anchor_enters_and_leaving_dismisses`.
         {
             // Zero delay → reveal is immediate on enter (on_hover_enter flips it).
             let mut t = Tooltip::new("Save")
@@ -1076,7 +1067,6 @@ mod tests {
             assert!(!t.is_visible(), "hides on hover-leave");
         }
 
-        // Case `delayed_tooltip_waits_on_a_deadline_while_pending`.
         {
             let mut t = Tooltip::new("Later")
                 .with_delay(Duration::from_millis(600))
@@ -1098,7 +1088,6 @@ mod tests {
             assert_eq!(t.next_wake_deadline(), None);
         }
 
-        // Case `accessibility_reports_tooltip_role_label_and_hidden`.
         {
             use crate::a11y::Role;
             // A freshly-built tooltip is not yet visible → hidden from the tree.
@@ -1118,7 +1107,6 @@ mod tests {
             );
         }
 
-        // Case `without_anchor_handle_event_is_inert`.
         {
             // Back-compat: no anchor → explicit API still drives it.
             let mut t = Tooltip::new("x");

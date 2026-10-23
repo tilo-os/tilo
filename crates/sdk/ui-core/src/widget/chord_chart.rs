@@ -615,8 +615,6 @@ impl Widget for ChordChart {
 mod tests {
     use super::*;
 
-    /// At every size the arc labels stay outside the ring, inside the
-    /// chart, and clear of each other.
     #[test]
     fn arc_labels_stay_off_the_ring_and_off_each_other() {
         let theme = Theme::dark();

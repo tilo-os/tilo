@@ -39,10 +39,6 @@ pub enum InstallPhase {
 /// `status` call per look; the first starts the install.
 pub trait EngineInstaller: Send {
     /// Start the install if none runs, and report where it stands.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the host could not be asked (no service, hung up).
     fn status(&mut self) -> Result<InstallStatus, String>;
 
     /// Start a fresh instance of the app, on `uri` if given: a runtime is

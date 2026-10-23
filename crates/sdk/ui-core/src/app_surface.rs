@@ -53,9 +53,6 @@ fn registry() -> &'static Mutex<BTreeMap<String, Named>> {
 
 /// Name `bytes`, the surface file whoever started the app named, for
 /// `app_id`, when they hash to `hash`, the hash it was named with.
-///
-/// # Errors
-/// Returns why the bytes are not the file that was named.
 pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), String> {
     let expected =
         parse_hash(hash).ok_or_else(|| format!("{SURFACE_HASH_ENV} is not a hash: {hash:?}"))?;
@@ -165,7 +162,6 @@ pub fn person_record_kinds(app_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Whether `app_id`'s surface declares the person's records of `kind`.
 #[must_use]
 pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
     person_record_kinds(app_id)

@@ -332,8 +332,6 @@ mod tests {
         files
     }
 
-    /// A database made from an index is the one that was recorded, face by
-    /// face, and reads the same bytes.
     #[test]
     fn a_recorded_database_reads_back_face_for_face() {
         let dir = tempfile::tempdir().unwrap();
@@ -402,25 +400,21 @@ mod tests {
         store(&index_path, &roots, &root, &db);
         assert!(load(&index_path, &roots).is_some());
 
-        // A font rewritten in place.
         let bytes = std::fs::read(&first).unwrap();
         std::fs::write(&first, &bytes).unwrap();
         assert!(load(&index_path, &roots).is_none(), "a rewritten font");
         store(&index_path, &roots, &root, &db);
         assert!(load(&index_path, &roots).is_some());
 
-        // A font added beside the others.
         std::fs::write(fonts.join("added.ttf"), &bytes).unwrap();
         assert!(load(&index_path, &roots).is_none(), "an added font");
         store(&index_path, &roots, &root, &db);
 
-        // Another catalog root in front of the one it loaded from.
         let front = dir.path().join("front");
         std::fs::create_dir_all(&front).unwrap();
         let in_front = vec![front, fonts.clone()];
         assert!(load(&index_path, &in_front).is_none(), "a root in front");
 
-        // Another build's index.
         let mut other: Index =
             serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
         other.build = "another".into();

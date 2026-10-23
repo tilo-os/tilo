@@ -1506,7 +1506,6 @@ mod save_status_fixture {
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
             );
-            // The change is presented, and the resampling stops once saved.
             assert!(
                 self.tile.take_structure_dirty(),
                 "the window must present the record becoming durable"
@@ -1728,7 +1727,6 @@ mod paired_local {
     }
     #[test]
     fn paired_local_views_bracket_restore_and_keep_complete_pairs_on_failure() {
-        // Case `second_capture_failure_retains_complete_previous_pair_during_owned_close`.
         {
             let (host, definition, state) = fixture();
             let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
@@ -1760,7 +1758,6 @@ mod paired_local {
             assert!(component.capture_local_view().is_err());
         }
 
-        // Case `local_hooks_bracket_generic_restore_and_clear_only_uncorrelated_ephemeral`.
         {
             for own_focus in [false, true] {
                 let (host, definition, state) = fixture();
@@ -1812,7 +1809,6 @@ mod paired_local {
             }
         }
 
-        // Case `failed_finalizer_retains_setup_record_and_original_view_bytes`.
         {
             let (host, definition, state) = fixture();
             let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();

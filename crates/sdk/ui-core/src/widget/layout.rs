@@ -236,9 +236,6 @@ pub(crate) type MeasureNode<'a> =
 /// grid and block solver again (about 200 KB of WebAssembly each). Toolkit
 /// code solves through this one function instead, so the solver is compiled
 /// once.
-///
-/// # Errors
-/// Returns Taffy's error for an invalid tree.
 #[inline(never)]
 pub(crate) fn solve_layout(
     taffy: &mut TaffyTree<()>,
@@ -1557,10 +1554,6 @@ pub(super) fn flow_rects(
 /// did not give it: a capture drawing a scrolling document at its full
 /// height. The widget's retained layout nodes then name that tree, so the
 /// host must rebuild its own before it lays the widget out again.
-///
-/// # Errors
-///
-/// Returns the solver's error when Taffy rejects the tree.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "window-space layout dimensions narrowed for taffy; never near f32::MAX"

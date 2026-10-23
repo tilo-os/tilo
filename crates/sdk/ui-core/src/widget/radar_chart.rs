@@ -617,12 +617,10 @@ mod tests {
     use super::*;
     #[test]
     fn radar_axes_and_legend_validate_and_expose_state() {
-        // Case `axes_never_accept_a_zero_maximum`.
         {
             assert!(RadarAxis::new("x", "X", 0.0).max > 0.0);
         }
 
-        // Case `legend_visibility_is_programmatic_observable_and_excludes_inspection`.
         {
             let axes = vec![
                 RadarAxis::new("a", "A", 10.0),

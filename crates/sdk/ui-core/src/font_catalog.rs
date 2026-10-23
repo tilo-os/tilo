@@ -124,10 +124,6 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
 /// build accepts, with `discover` adding the host's fonts behind it. A root
 /// whose manifest is from another Tilo build (an older image under a newer
 /// checkout) is passed over for the next one.
-///
-/// # Errors
-///
-/// Every root's failure, in order, when none loads.
 pub(crate) fn load_first_catalog(
     roots: &[PathBuf],
     locale: &str,
@@ -364,11 +360,6 @@ impl FontCatalog {
         &self.locale
     }
 
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FontCatalogError`] when the manifest or any declared font
-    /// is absent, corrupt, or does not match its declared face metadata.
     pub fn load(&self) -> Result<FontSystem, FontCatalogError> {
         self.load_with_system(fontdb::Database::load_system_fonts)
     }

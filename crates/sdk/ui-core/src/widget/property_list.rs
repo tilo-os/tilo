@@ -432,7 +432,6 @@ impl<'a> PropertyListFace<'a> {
         )
     }
 
-    /// The height the list takes at `width`.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         self.layout(text, theme, Point::ZERO, width).height
     }

@@ -641,11 +641,6 @@ impl TileHost {
     /// control in it would. The outer document never resolves an app's
     /// actions by address, so this is the only way such a choice reaches
     /// the app.
-    ///
-    /// # Errors
-    ///
-    /// Hands `invocation` back when the tile hosts no app component, or the
-    /// one it hosts is closing.
     pub fn queue_control(
         &mut self,
         invocation: tilo_actions::ControlInvocation,

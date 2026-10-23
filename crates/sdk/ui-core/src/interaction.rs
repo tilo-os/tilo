@@ -838,7 +838,6 @@ mod tests {
 
     #[test]
     fn modality_tracking_keeps_discovered_devices_and_hint_priority() {
-        // Case `keyboard_after_touch_preserves_coarse_pointer_capability`.
         {
             let env = InteractionEnvironment::TOUCH.with_keyboard_modality();
             assert_eq!(env.modality, InputModality::Keyboard);
@@ -849,7 +848,6 @@ mod tests {
             assert!(env.available.contains(InputDevice::Keyboard));
         }
 
-        // Case `modality_changes_do_not_erase_discovered_devices`.
         {
             let env = InteractionEnvironment::POINTER
                 .with_touch_modality()
@@ -862,7 +860,6 @@ mod tests {
             assert_eq!(env.controller, Some(ControllerFamily::JoyConPair));
         }
 
-        // Case `the_last_used_input_leads_shortcut_help`.
         {
             let all = InteractionEnvironment::POINTER
                 .with_touch_modality()
@@ -884,7 +881,6 @@ mod tests {
             );
         }
 
-        // Case `pointer_use_defers_to_keyboard_or_touch_by_available_devices`.
         {
             let desktop = InteractionEnvironment {
                 available: InputAvailability::NONE
@@ -917,7 +913,6 @@ mod tests {
             );
         }
 
-        // Case `a_disconnected_controller_no_longer_leads_help`.
         {
             let unplugged = InteractionEnvironment {
                 modality: InputModality::Controller,
@@ -930,7 +925,6 @@ mod tests {
             assert_eq!(unplugged.preferred_hint_modality(), InputModality::Keyboard);
         }
 
-        // Case `availability_is_an_idempotent_set_of_independent_devices`.
         {
             let available = InputAvailability::NONE
                 .with(InputDevice::Touch)
@@ -942,7 +936,6 @@ mod tests {
             assert!(available.contains(InputDevice::Controller));
         }
 
-        // Case `hid_names_select_legends_without_affecting_semantic_positions`.
         {
             assert_eq!(
                 ControllerFamily::from_device_name("Nintendo Switch Joy-Con (L)"),
@@ -1149,7 +1142,6 @@ mod tests {
         use TouchPointerEvent::{Move, Press, Release};
         use winit::event::{MouseButton, TouchPhase};
         let gone = Move((-1.0, -1.0).into());
-        // Case `a_drag_presses_where_the_finger_landed_and_releases_where_it_lifts`.
         {
             let mut emulator = TouchPointerEmulator::default();
             assert!(feed_drag(&mut emulator, TouchPhase::Started, 1, 50.0, 60.0).is_empty());
@@ -1175,7 +1167,6 @@ mod tests {
                 vec![Move((121.0, 70.0).into()), Release(MouseButton::Left), gone]
             );
         }
-        // Case `a_tap_still_clicks`.
         {
             let mut emulator = TouchPointerEmulator::default();
             feed_drag(&mut emulator, TouchPhase::Started, 2, 10.0, 20.0);
@@ -1189,7 +1180,6 @@ mod tests {
                 ]
             );
         }
-        // Case `a_still_hold_is_still_the_secondary_click`.
         {
             let mut emulator = TouchPointerEmulator::default();
             feed_drag(&mut emulator, TouchPhase::Started, 3, 50.0, 60.0);
@@ -1206,7 +1196,6 @@ mod tests {
             assert!(feed_drag(&mut emulator, TouchPhase::Moved, 3, 90.0, 60.0).is_empty());
             assert!(feed_drag(&mut emulator, TouchPhase::Ended, 3, 90.0, 60.0).is_empty());
         }
-        // Case `a_second_finger_ends_the_drag_with_a_release`.
         {
             let mut emulator = TouchPointerEmulator::default();
             feed_drag(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);
@@ -1226,7 +1215,6 @@ mod tests {
         let feed_held = |emulator: &mut TouchPointerEmulator, phase, id, x, y| {
             emulator.events_claimed(&touch(phase, id, x, y), |_| TouchClaim::HoldDrag)
         };
-        // Case `a_hold_then_a_drag_moves_the_item`.
         {
             let mut emulator = TouchPointerEmulator::default();
             assert!(feed_held(&mut emulator, TouchPhase::Started, 1, 50.0, 60.0).is_empty());
@@ -1250,7 +1238,6 @@ mod tests {
                 vec![Move((50.0, 130.0).into()), Release(MouseButton::Left), gone]
             );
         }
-        // Case `a_hold_put_back_where_it_began_is_the_secondary_click`.
         {
             let mut emulator = TouchPointerEmulator::default();
             feed_held(&mut emulator, TouchPhase::Started, 2, 50.0, 60.0);
@@ -1267,7 +1254,6 @@ mod tests {
                 ]
             );
         }
-        // Case `a_swipe_before_the_hold_still_scrolls`.
         {
             let mut emulator = TouchPointerEmulator::default();
             feed_held(&mut emulator, TouchPhase::Started, 3, 50.0, 60.0);
@@ -1278,7 +1264,6 @@ mod tests {
             );
             assert_eq!(emulator.long_press_deadline(), None, "a swipe is no hold");
         }
-        // Case `a_second_finger_puts_the_item_down`.
         {
             let mut emulator = TouchPointerEmulator::default();
             feed_held(&mut emulator, TouchPhase::Started, 4, 50.0, 60.0);

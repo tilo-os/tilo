@@ -322,12 +322,6 @@ impl HistoryController {
 
     /// Reproject factual activity from committed graph state. An existing
     /// preview stays pinned to its exact bytes and heads.
-    ///
-    /// # Errors
-    ///
-    /// Name authors as the room's roster in `presence` names its
-    /// participants. Returns whether a name changed, so the next refresh
-    /// projects the history again with them.
     pub(crate) fn follow_roster(&mut self, presence: &crate::presence::PresenceCtx) -> bool {
         let mut roster: Vec<(String, String)> = presence
             .names
@@ -506,12 +500,6 @@ impl HistoryController {
 
     /// Validate a review token without changing the document. The host owns
     /// the separate authority check and the eventual canonical restore write.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`HistoryError`] when live work is uncommitted, the resource
-    /// or selection changed, the live frontier is stale, or the selection is
-    /// an external effect receipt rather than restorable content.
     pub fn validate_restore(
         &self,
         review: &RestoreReview,

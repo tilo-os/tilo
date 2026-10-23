@@ -316,7 +316,6 @@ mod tests {
         let mut idle = Face::new("Ada", "ada", blue);
         idle.dimmed = true;
         let idle = render(idle);
-        // On the colour ring, left of the face's centre.
         let width = FaceStack::BAR.width(1);
         let center_x = 60.0 - width / 2.0;
         let ring_x = (center_x - 12.0 - GAP - RING / 2.0) as u32;

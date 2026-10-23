@@ -663,7 +663,6 @@ fn an_entered_host_serves_the_current_client_until_the_guard_drops() {
     );
 }
 
-/// The one remote-action request in `requests`.
 fn only_message(requests: Vec<CollabRequest>) -> RemoteActionMessage {
     let [CollabRequest::RemoteAction { message }] = <[CollabRequest; 1]>::try_from(requests)
         .unwrap_or_else(|requests| panic!("one request: {requests:?}"))

@@ -1009,7 +1009,6 @@ mod tests {
                 "{edge:?}"
             );
         }
-        // A viewport too small to fade paints nothing.
         let mut scene = Scene::new();
         content_edge_fade(
             &mut scene,
@@ -1041,7 +1040,6 @@ mod tests {
 
     #[test]
     fn edges_and_chips_register_on_every_preset_surface() {
-        // Case `edge_on_registers_on_every_preset_surface`.
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let s = &theme.tokens.colors.surfaces;
@@ -1077,7 +1075,6 @@ mod tests {
             );
         }
 
-        // Case `edge_on_starts_at_the_control_hairline_where_that_already_registers`.
         {
             // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
             let grey = Color::from_rgb8(0x80, 0x80, 0x80);
@@ -1087,7 +1084,6 @@ mod tests {
             );
         }
 
-        // Case `a_translucent_wash_takes_its_edge_from_the_composited_surface`.
         {
             // A 16 % accent wash over the light panel is still a light surface.
             for theme in [Theme::light(), Theme::dark()] {
@@ -1109,9 +1105,7 @@ mod tests {
             }
         }
 
-        // Case `a_separator_occupies_one_whole_pixel_row`.
         {
-            // A whole-pixel centre and a half-pixel centre both land on one row.
             let whole = separator_rect(10.0, 200.0, 100.0, 12.0).expect("rule");
             assert_eq!((whole.x0, whole.x1), (22.0, 188.0));
             assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
@@ -1123,7 +1117,6 @@ mod tests {
             );
         }
 
-        // Case `edge_on_memo_returns_the_derived_answer`.
         {
             // The memo must be transparent: the same surface asked twice (and
             // many distinct surfaces cycling through the slots) always yields
@@ -1150,7 +1143,6 @@ mod tests {
             }
         }
 
-        // Case `panel_edge_registers_on_the_panel_ground_in_every_preset`.
         {
             for (name, theme) in [
                 ("dark", Theme::dark()),
@@ -1165,7 +1157,6 @@ mod tests {
                         "{name}: the panel border must register on the panel ground"
                     );
                 } else {
-                    // The design language's inner hairline, exactly.
                     assert_eq!(border, theme.tokens.elevation.floating_edge, "{name}");
                     assert!(edge_delta(border, ground) > 0.005, "{name}: it registers");
                 }
@@ -1185,7 +1176,6 @@ mod tests {
             );
         }
 
-        // Case `card_edge_is_one_pixel_inside_rect`.
         {
             let rect = Rect::new(10.0, 20.0, 110.0, 60.0);
             let outline = edge_outline(rect, 12.0);
@@ -1226,7 +1216,6 @@ mod tests {
 
     #[test]
     fn shadow_sprites_are_cached_bounded_and_circular() {
-        // Case `sprite_is_cached_per_tint`.
         {
             let a = sprites_for(0, 0, 0);
             let b = sprites_for(0, 0, 0);
@@ -1241,7 +1230,6 @@ mod tests {
             );
         }
 
-        // Case `sprite_cache_is_bounded_and_evicted_sprites_remain_alive`.
         {
             let mut cache = HashMap::new();
             let retained = cached_sprites(&mut cache, (0, 0, 0));
@@ -1307,7 +1295,6 @@ mod tests {
             let s = build_shadow_sprites(0, 0, 0);
             let n = SHADOW_SPRITE_SIZE;
             for x in [0, 1, n / 4, n / 2, (3 * n) / 4, n - 1] {
-                // Innermost row of the corner = the edge profile in x.
                 assert_eq!(
                     alpha_at(&s.corner, x, 0),
                     alpha_at(&s.edge, x, 0),
@@ -1406,8 +1393,6 @@ mod tests {
             };
             let at = render_token_shadow(400, 400, rect, radius, &token);
 
-            // Corner arc centre, and the point where the arc meets the
-            // outward diagonal.
             let cc = 250.0 - radius;
             let k = std::f64::consts::FRAC_1_SQRT_2;
             for d in [2.0_f64, 5.0, 9.0, 14.0] {
@@ -1437,7 +1422,6 @@ mod tests {
                     color: Color::from_rgba8(255, 255, 255, a),
                 };
                 let at = render_token_shadow(400, 400, rect, radius, &token);
-                // Just outside the flat right edge, where coverage is ~half.
                 at(251.0, 200.0)
             };
             let full = peak(255);
@@ -1789,7 +1773,6 @@ mod tests {
             }
         }
 
-        // Case `degenerate_inputs_are_noops`.
         {
             let mut scene = Scene::new();
             // Zero-area rect, zero intensity, zero spread — must not panic

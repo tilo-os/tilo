@@ -41,7 +41,6 @@ impl Shadow {
 /// on a pale one.
 pub const LIGHT_SHADOW_SCALE: f32 = 0.14 / 0.38;
 
-/// A shadow of `blur` at `offset_y`, black at `alpha`.
 const fn black(offset_y: f32, blur: f32, alpha: u8) -> Shadow {
     Shadow {
         offset_y,
@@ -81,7 +80,6 @@ pub struct Elevation {
 }
 
 impl Elevation {
-    /// Elevation on a **dark** material.
     pub fn dark() -> Self {
         Self {
             // 0.28, 0.38 and 0.30 of black.

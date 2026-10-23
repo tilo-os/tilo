@@ -89,7 +89,6 @@ pub struct CapturePreview {
 /// clipboard, or both (what the shutter and Print Screen do).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScreenshotKept {
-    /// Saved into the Screenshots folder.
     pub saved: bool,
     /// On the clipboard.
     pub copied: bool,
@@ -141,7 +140,6 @@ pub enum CaptureMode {
     Pip,
 }
 
-/// What a capture is of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SourceMode {
     /// One or more dragged selections. Hold Shift to add another.
@@ -440,7 +438,6 @@ type OptionRow = (String, OptionChoice, Option<bool>);
 /// A section of the options popover: its caption and rows.
 type OptionSection = (Option<String>, Vec<OptionRow>);
 
-/// A thing on the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BarItem {
     Output(usize),
@@ -699,8 +696,6 @@ impl CaptureStudio {
         }
     }
 
-    // ----- Opening, closing and the shell's view of the tool -----
-
     pub fn open(&mut self) {
         if self.take.start_pending {
             // Repeating the shortcut while encoder setup is in flight must
@@ -899,8 +894,6 @@ impl CaptureStudio {
         std::mem::take(&mut self.pending)
     }
 
-    // ----- Recording and the kept last 30 seconds -----
-
     fn begin_recording_request(&mut self) {
         self.take = RecordingTake {
             start_pending: true,
@@ -1045,8 +1038,6 @@ impl CaptureStudio {
         }
     }
 
-    // ----- Screenshots and their receipt -----
-
     /// The devices "Send…" lists. Called by the shell whenever a screenshot
     /// is saved, so the picker names who is online now.
     pub fn set_screenshot_send_devices(&mut self, devices: Vec<ScreenshotSendDevice>) {
@@ -1176,8 +1167,6 @@ impl CaptureStudio {
         intent.screenshot_command = Some(command);
         self.pending.push(intent);
     }
-
-    // ----- What is chosen -----
 
     fn selected_candidate(&self) -> Option<&CaptureTarget> {
         let id = self.selected_target.as_ref()?;
@@ -1415,8 +1404,6 @@ impl CaptureStudio {
         }
     }
 
-    // ----- Selections -----
-
     fn selection_bounds(&self) -> Rect {
         self.rect
     }
@@ -1564,9 +1551,6 @@ impl CaptureStudio {
         true
     }
 
-    // ----- The bar -----
-
-    /// Measure the bar's parts in `theme`.
     fn measure_bar(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let spacing = &theme.tokens.spacing;
         let outputs: Vec<String> = OUTPUTS
@@ -1832,8 +1816,6 @@ impl CaptureStudio {
         Some((rect, tip))
     }
 
-    // ----- The options popover -----
-
     /// The options that apply now, in sections.
     fn option_sections(&self) -> Vec<OptionSection> {
         let mut sections = Vec::new();
@@ -1953,8 +1935,6 @@ impl CaptureStudio {
         }
     }
 
-    // ----- Clicks -----
-
     fn click(&mut self, p: Point, additive: bool) {
         if self.armed_capture.is_some() {
             return;
@@ -2059,7 +2039,6 @@ impl CaptureStudio {
         }
     }
 
-    /// A press on a receipt.
     fn press_receipt(&mut self, p: Point) {
         if let Some(receipt) = self.screenshot_receipt.as_ref() {
             if self.screenshot_pin_pending {
@@ -2126,8 +2105,6 @@ impl CaptureStudio {
         self.recording_finished_at
             .map(|_| self.recording_receipt_layout().pill)
     }
-
-    // ----- Painting the bar and the canvas -----
 
     /// Paint the bar: the setup form while choosing, the status form while
     /// recording, counting down or keeping the last 30 seconds.
@@ -2437,8 +2414,6 @@ impl CaptureStudio {
         }
     }
 
-    // ----- Events -----
-
     /// Route one event to an open menu. Returns whether it was consumed.
     fn route_menu_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
         let options = self.options_menu.is_some();
@@ -2588,7 +2563,6 @@ struct ChosenSource {
     targets: Vec<CaptureTarget>,
 }
 
-/// The on-screen parts of `targets`.
 fn visible_parts(targets: &[CaptureTarget]) -> Vec<Rect> {
     targets
         .iter()

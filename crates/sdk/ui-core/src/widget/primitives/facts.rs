@@ -45,7 +45,6 @@ impl Fact {
         }
     }
 
-    /// A fact led by `icon`.
     #[must_use]
     pub fn with_icon(icon: Icon, text: impl Into<String>) -> Self {
         Self {

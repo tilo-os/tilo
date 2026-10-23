@@ -106,7 +106,6 @@ impl<'a> BarControlFace<'a> {
         self.name
     }
 
-    /// Every bar control's height.
     #[must_use]
     pub fn height(theme: &Theme) -> f64 {
         f64::from(theme.tokens.metrics.bar_control_height)
@@ -241,7 +240,6 @@ impl<'a> BarControlFace<'a> {
         }
     }
 
-    /// The accessible node of the control at `rect`.
     pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Button)

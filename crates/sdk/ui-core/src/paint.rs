@@ -169,7 +169,6 @@ pub fn stroke_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Colo
     scene.stroke(&Stroke::new(width), transform, color, None, &rect);
 }
 
-/// Fill `rect` with corners rounded to `radius`.
 pub fn fill_round(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, color: Color) {
     fill_shape(
         scene,

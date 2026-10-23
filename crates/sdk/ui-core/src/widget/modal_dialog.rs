@@ -269,7 +269,6 @@ impl<'a> ModalSpec<'a> {
 pub struct ModalLayout {
     /// The whole window. The scrim covers this.
     pub scrim: Rect,
-    /// The sheet.
     pub card: Rect,
     /// The title's line, from the sheet's leading padding to the close
     /// control (or the trailing padding).

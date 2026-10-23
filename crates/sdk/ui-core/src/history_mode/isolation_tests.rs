@@ -1,4 +1,3 @@
-//! Real retained controls and owner operation polling exercise the host boundary.
 use super::host_tests::registration;
 use super::*;
 use crate::widget::{AppModel, ModelPath};

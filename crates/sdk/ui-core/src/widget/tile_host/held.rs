@@ -50,7 +50,6 @@ pub fn release_windows() -> bool {
     })
 }
 
-/// The hold in place, if any.
 fn current_hold() -> Option<u64> {
     HOLD.with(|hold| {
         let (number, held) = hold.get();
