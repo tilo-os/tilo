@@ -329,6 +329,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "idle",
             "invalidates when its control tick or save offer moved the document",
         ),
+        (
+            "drawn_placed_pointers",
+            "reads the last frame's pointers; measures name tags through the text renderer's shaping cache",
+        ),
         ("take_profile_samples", "drains the profiler"),
         ("clear_profile_samples", "drains the profiler"),
     ];
