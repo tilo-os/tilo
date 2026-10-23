@@ -251,7 +251,7 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
     net.frame_tick();
     // The first tick's other upkeep wrote the tree after its push; the
     // fallback projection takes that in, and from then on nothing moves.
-    std::thread::sleep(super::ROOM_PUSH_FALLBACK_INTERVAL + Duration::from_millis(50));
+    std::thread::sleep(super::room_push::ROOM_PUSH_FALLBACK_INTERVAL + Duration::from_millis(50));
     net.frame_tick();
     let _ = pushes(&mut commands);
     let idle = net.replica.lock().unwrap().tree.generation();

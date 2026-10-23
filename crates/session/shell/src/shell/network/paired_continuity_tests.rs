@@ -222,6 +222,9 @@ async fn pair_on_topic(left: &Session, right: &Session, topic: u64) {
 #[path = "cold_editor_record_tests.rs"]
 mod cold_editor_record_tests;
 
+#[path = "pump_load_tests.rs"]
+mod pump_load_tests;
+
 fn selection() -> SharedSelection {
     Arc::new(Mutex::new(selection::SelectionStore::default()))
 }
