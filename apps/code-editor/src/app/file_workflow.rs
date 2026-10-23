@@ -304,7 +304,6 @@ impl CodeApp {
     pub(super) fn open_project_dir(&mut self, path: &std::path::Path) -> Result<(), String> {
         match Project::from_dir(path) {
             Ok(project) => {
-                let name = project.name.clone();
                 self.session = Session::new(project);
                 self.adopt_presented();
                 self.invalidate_search_projection();
@@ -317,7 +316,6 @@ impl CodeApp {
                 self.search_symbols.clear();
                 self.symbol_projection_revision = None;
                 self.refresh_header();
-                self.note(format!("Opened {name}"), false);
                 Ok(())
             }
             Err(e) => {

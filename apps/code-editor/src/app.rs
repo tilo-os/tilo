@@ -488,6 +488,8 @@ pub struct CodeApp {
 
     /// The header row's height, from the theme at layout time.
     header_h: f64,
+    /// Whether the header row stands: only while a file is open.
+    laid_out_header: bool,
     /// Last cursor position, since `MouseInput` carries no coordinates.
     last_cursor: Point,
     panel_visible: bool,
@@ -729,27 +731,19 @@ pub enum LspStatus {
 }
 
 impl LspStatus {
-    /// The short label the status bar shows.
+    /// What the status bar says while the project is still being read, in
+    /// the person's words: nothing once it is ready.
     pub fn label(&self) -> String {
         match self {
-            LspStatus::None => String::new(),
-            LspStatus::Starting { server } => format!("{server}: starting\u{2026}"),
+            LspStatus::None | LspStatus::Ready { .. } => String::new(),
+            LspStatus::Starting { .. }
+            | LspStatus::Busy {
+                percentage: None, ..
+            } => "Loading project\u{2026}".to_owned(),
             LspStatus::Busy {
-                server,
-                title,
-                detail,
-                percentage,
-            } => {
-                let mut s = format!("{server}: {}", title.to_lowercase());
-                if let Some(d) = detail {
-                    let _ = write!(s, " {d}");
-                }
-                if let Some(p) = percentage {
-                    let _ = write!(s, " {p}%");
-                }
-                s
-            }
-            LspStatus::Ready { server } => format!("{server}: ready"),
+                percentage: Some(percentage),
+                ..
+            } => format!("Loading project {percentage}%"),
             LspStatus::Failed(e) => format!("Language server: {e}"),
         }
     }
@@ -905,6 +899,7 @@ impl CodeApp {
             pending_open: None,
             search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
             header_h: 0.0,
+            laid_out_header: false,
             last_cursor: Point::ZERO,
             panel_visible: false,
             rect: Rect::ZERO,
@@ -1438,6 +1433,12 @@ impl CodeApp {
 
     /// Keep the header naming the shown file, with a marker while it has
     /// unsaved edits. Idempotent: safe to call more than once a frame.
+    /// The header row stands over a file: with none open there is nothing
+    /// for it to name or act on.
+    fn shows_header(&self) -> bool {
+        self.session.active_buffer().is_some()
+    }
+
     fn refresh_header(&self) {
         let label = self
             .session
@@ -2404,7 +2405,11 @@ impl CodeApp {
         let editor_header_node = taffy
             .new_with_children(
                 Style {
-                    display: taffy::Display::Flex,
+                    display: if self.laid_out_header {
+                        taffy::Display::Flex
+                    } else {
+                        taffy::Display::None
+                    },
                     flex_direction: taffy::FlexDirection::Row,
                     align_items: Some(taffy::AlignItems::Center),
                     size: Size {
@@ -2847,6 +2852,10 @@ impl Widget for CodeApp {
         self.refresh_search_entries(state);
         self.editor.sync(state, path);
         self.run_window_toolbar();
+        if self.shows_header() != self.laid_out_header {
+            self.laid_out_header = self.shows_header();
+            self.structure_dirty = true;
+        }
         self.restore_pending_continuation(state);
 
         // A jump queued by a search hit or a cross-file definition lands once
@@ -3207,7 +3216,14 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.header, &self.search_button, &self.panel_toggle];
+        let mut out: Vec<&dyn Widget> = Vec::new();
+        if self.laid_out_header {
+            out.extend([
+                &self.header as &dyn Widget,
+                &self.search_button,
+                &self.panel_toggle,
+            ]);
+        }
         if self.find_open {
             out.push(&self.find);
         }
@@ -3219,11 +3235,12 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = vec![
-            &mut self.header,
-            &mut self.search_button,
-            &mut self.panel_toggle,
-        ];
+        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if self.laid_out_header {
+            out.push(&mut self.header);
+            out.push(&mut self.search_button);
+            out.push(&mut self.panel_toggle);
+        }
         if self.find_open {
             out.push(&mut self.find);
         }
