@@ -1,11 +1,10 @@
 //! The content column: the open snippet's language, folder and tags, what it
-//! is for, its main action, and its body in the code editor; and the two
-//! actions the column's header holds (favorite, more).
+//! is for, its main action, and its body in the code editor. Its favorite,
+//! duplicate and delete are the window bar's (`app::window_bar`).
 //!
 //! Every control is the toolkit's retained widget, so focus, keyboard
 //! activation, pressed states and tooltips are the toolkit's. The column is
-//! rebuilt (through `NavShell::set_content`) when what it shows changes;
-//! the header actions follow the open snippet in place.
+//! rebuilt (through `NavShell::set_content`) when what it shows changes.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -24,7 +23,7 @@ use ui::widget::{
     EmptyState, ModelPath, Row, Text, TextInput, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use crate::app::{Action, Core, Requests, Shared};
@@ -60,10 +59,6 @@ impl DetailKey {
             }),
             library_empty: core.library.is_empty(),
         }
-    }
-
-    pub(crate) fn has_snippet(&self) -> bool {
-        self.snippet.is_some()
     }
 }
 
@@ -208,152 +203,6 @@ fn name_field(core: &Shared, requests: &Requests, id: &SnippetId) -> TextInput {
                 .borrow_mut()
                 .push(Action::Rename(renamed.clone(), title.to_owned()));
         })
-}
-
-/// A button that acts on the open snippet, from the header row.
-fn open_snippet_button(
-    core: &Shared,
-    requests: &Requests,
-    button: Button,
-    action: fn(SnippetId) -> Action,
-) -> Button {
-    let core = Rc::clone(core);
-    let requests = Rc::clone(requests);
-    button.on_own_device_effect(move || {
-        if let Some(id) = core.try_borrow().ok().and_then(|core| core.open.clone()) {
-            requests.borrow_mut().push(action(id));
-        }
-    })
-}
-
-/// The content header's actions: the open snippet's favorite toggle and
-/// overflow menu, or none while no snippet is open.
-pub(crate) fn header_actions(core: &Shared, requests: &Requests, open: bool) -> Vec<Element> {
-    if open {
-        vec![favorite_button(core, requests), more_button(core, requests)]
-    } else {
-        Vec::new()
-    }
-}
-
-/// The header's favorite toggle for the open snippet: a star that reads as
-/// on while the snippet is a favorite.
-fn favorite_button(core: &Shared, requests: &Requests) -> Element {
-    let button = Button::icon_only("snippets.favorite", Icon::Star, &tr("snippets-favorite"));
-    Box::new(Anchored {
-        button: open_snippet_button(core, requests, button, Action::ToggleFavorite),
-        core: Rc::clone(core),
-        part: Part::Favorite,
-        shown: None,
-    })
-}
-
-/// The header's overflow button: the open snippet's less frequent actions.
-fn more_button(core: &Shared, requests: &Requests) -> Element {
-    let button = Button::icon_only(
-        "snippets.more",
-        Icon::MoreHorizontal,
-        &tr("snippets-more-actions"),
-    );
-    Box::new(Anchored {
-        button: open_snippet_button(core, requests, button, Action::More),
-        core: Rc::clone(core),
-        part: Part::More,
-        shown: None,
-    })
-}
-
-/// Which of the header's buttons an [`Anchored`] is.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Part {
-    Favorite,
-    More,
-}
-
-/// One of the header's buttons that the core follows: the favorite toggle
-/// reads the snippet's state, and the overflow button tells the core where
-/// it is, so its menu opens under it.
-struct Anchored {
-    button: Button,
-    core: Shared,
-    part: Part,
-    /// The (enabled, on) state last applied.
-    shown: Option<(bool, bool)>,
-}
-
-impl Anchored {
-    fn refresh(&mut self) {
-        let Ok(core) = self.core.try_borrow() else {
-            return;
-        };
-        let open = core.open.as_ref().and_then(|id| core.library.get(id));
-        let state = (open.is_some(), open.is_some_and(|s| s.favorite));
-        drop(core);
-        if self.shown == Some(state) {
-            return;
-        }
-        self.shown = Some(state);
-        let (enabled, on) = state;
-        self.button.set_enabled(enabled);
-        if self.part == Part::Favorite {
-            self.button.set_toggled(on);
-            self.button.set_tooltip(Some(tr(if on {
-                "snippets-remove-favorite"
-            } else {
-                "snippets-add-favorite"
-            })));
-        }
-    }
-}
-
-impl ui::widget::Decorator for Anchored {
-    type Inner = Button;
-
-    fn inner(&self) -> &Button {
-        &self.button
-    }
-
-    fn inner_mut(&mut self) -> &mut Button {
-        &mut self.button
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.refresh();
-        Widget::sync(&mut self.button, state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.refresh();
-        Widget::update(&mut self.button, state, path)
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = Widget::build_layout(&mut self.button, taffy, theme, node_map);
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        Widget::apply_layout(&mut self.button, taffy, node, origin);
-        let rect = Widget::get_rect(&self.button);
-        if self.part == Part::More
-            && let Ok(mut core) = self.core.try_borrow_mut()
-        {
-            core.more_anchor = rect;
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self.part {
-            Part::Favorite => "SnippetFavorite",
-            Part::More => "SnippetMore",
-        }
-    }
 }
 
 /// The language picker; it opens when the core asks for it (the palette's
