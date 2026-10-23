@@ -951,10 +951,72 @@ pub enum ViewMode {
     Grid,
 }
 
+/// Order names the way a person reads them: a run of digits compares by its
+/// value (`IMG_9` before `IMG_10`), letters compare without case, and the
+/// exact spelling breaks a remaining tie so the order is total. Allocates
+/// nothing, as it runs for every comparison of a folder's sort.
+pub fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut left, mut right) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        let (Some(&l), Some(&r)) = (left.peek(), right.peek()) else {
+            return left.count().cmp(&right.count()).then_with(|| a.cmp(b));
+        };
+        if l.is_ascii_digit() && r.is_ascii_digit() {
+            let by_value = number_cmp(&mut left, &mut right);
+            if by_value != Ordering::Equal {
+                return by_value;
+            }
+            continue;
+        }
+        let letters = l.to_lowercase().cmp(r.to_lowercase());
+        if letters != Ordering::Equal {
+            return letters;
+        }
+        left.next();
+        right.next();
+    }
+}
+
+/// Compare the runs of ASCII digits both sides start with by their values,
+/// consuming them: leading zeros do not count, so `007` ties with `7`.
+fn number_cmp(
+    left: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    right: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    while left.next_if_eq(&'0').is_some() {}
+    while right.next_if_eq(&'0').is_some() {}
+    // Of two runs of significant digits, the longer is the larger number;
+    // of two as long, the first digit that differs decides.
+    let mut first_difference = Ordering::Equal;
+    loop {
+        match (
+            left.next_if(char::is_ascii_digit),
+            right.next_if(char::is_ascii_digit),
+        ) {
+            (Some(l), Some(r)) => {
+                if first_difference == Ordering::Equal {
+                    first_difference = l.cmp(&r);
+                }
+            }
+            (Some(_), None) => {
+                while left.next_if(char::is_ascii_digit).is_some() {}
+                return Ordering::Greater;
+            }
+            (None, Some(_)) => {
+                while right.next_if(char::is_ascii_digit).is_some() {}
+                return Ordering::Less;
+            }
+            (None, None) => return first_difference,
+        }
+    }
+}
+
 pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
         let cmp = match sort_by {
-            SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortBy::Name => name_cmp(&a.name, &b.name),
             SortBy::Size => a.size.cmp(&b.size),
             SortBy::Modified => a.modified.cmp(&b.modified),
             SortBy::Type => a.mime.cmp(&b.mime),
@@ -964,8 +1026,12 @@ pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry
         } else {
             cmp
         };
-        // Directories always first, regardless of order direction.
-        b.is_dir.cmp(&a.is_dir).then(final_cmp)
+        // Directories always first, regardless of order direction; entries
+        // alike by the chosen key read in name order.
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then(final_cmp)
+            .then_with(|| name_cmp(&a.name, &b.name))
     });
 }
 
