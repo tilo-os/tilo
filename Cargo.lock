@@ -17750,6 +17750,7 @@ name = "tilo-extension"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "reqwest 0.13.4",
  "rustix 1.1.4",
  "serde_json",
