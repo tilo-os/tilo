@@ -14,7 +14,9 @@
 //! and Contacts keep them in: the apps the session shows open them here,
 //! one copy in the process; the session's messaging changes the accounts
 //! through their actions; and they sync with the sections to the person's
-//! other devices.
+//! other devices. So are the models their provider settings offer for an
+//! agent's run, which the session keeps from those settings for every app's
+//! model picker.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -23,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use accounts::person::PersonAccounts;
+use agent_provider_config::{OfferedModels, ProviderConfig};
 use tilo_actions::remote::Pending;
 use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, Resource, RiskLevel};
 use tilo_app::framework::SettingsRecords;
@@ -285,6 +288,30 @@ fn with_records<T>(work: impl FnOnce(&SettingsRecords) -> T) -> Result<T, String
     Holder::of(&crate::shell::state::local_user_id())?.run(work)
 }
 
+/// The person's provider settings changed: offer the models they offer now.
+pub(crate) fn provider_settings_changed() {
+    if let Err(error) = with_records(offer_models) {
+        tracing::warn!(%error, "the offered models were not updated");
+    }
+}
+
+/// Record the models the provider settings offer for an agent's run in the
+/// person's record of them, when they changed: what apps' model pickers
+/// list.
+fn offer_models(records: &SettingsRecords) {
+    let Some(record) = records.shared::<OfferedModels>() else {
+        return;
+    };
+    let models: Vec<_> = ProviderConfig::load().offered_models().collect();
+    if record.with(|offered| offered.models == models) {
+        return;
+    }
+    match record.invoke(&OfferedModels::OFFER.with(models)) {
+        Ok(()) => record.record().flush(),
+        Err(error) => tracing::warn!(%error, "the offered models were not recorded"),
+    }
+}
+
 /// Where Settings keeps the person's records on this device, which the
 /// session keeps its sections and their accounts and contacts in.
 pub(crate) fn person_dir() -> Option<PathBuf> {
@@ -326,6 +353,7 @@ fn hold((dir, person): HeldFor, former: &Path) -> Result<Holder, String> {
     // reaches them.
     drop(records.shared::<PersonAccounts>());
     drop(records.shared::<ContactDirectory>());
+    offer_models(&records);
     let waking = Arc::downgrade(&port);
     let routes = room.and_then(|room| {
         ui::app::record_routes::RecordRouteParticipant::connect(

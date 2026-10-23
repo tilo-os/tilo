@@ -294,6 +294,7 @@ members = [
     "crates/platform/tilo-sort",
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
+    "crates/platform/tilo-agent-models",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
