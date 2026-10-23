@@ -1812,6 +1812,7 @@ pub enum ScrollUnit {
 
 impl ScrollUnit {
     /// Steps a scroll amount counts per line or pixel.
+    // ratchet-allow(pixel_const): wheel steps, the input protocol's unit, not a length on screen
     pub const STEPS: f64 = 120.0;
 }
 

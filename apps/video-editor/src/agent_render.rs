@@ -32,6 +32,7 @@ pub use run::{render_still, render_video, warm_up};
 /// The longest timeline an agent's render encodes, in seconds: a render
 /// holds the host's one render slot for its whole run, and two minutes of
 /// 1080p is already most of what a content item may weigh.
+// ratchet-allow(pixel_const): seconds of video, not a length on screen
 pub const AGENT_MAX_SECONDS: f64 = 120.0;
 
 /// How long an agent's export waits for its render when it names no `wait`,
@@ -161,6 +162,7 @@ impl AgentExportSettings {
         }
         if width.max(height) > 1920 || width.min(height) > 1080 {
             return Err(format!(
+                // ratchet-allow(glyph_icon): the multiplication sign of a size, text rather than an icon
                 "{width}×{height} is larger than an agent's render may be: at most 1920×1080, \
                  either way round"
             ));

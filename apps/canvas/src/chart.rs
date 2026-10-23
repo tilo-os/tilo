@@ -46,6 +46,7 @@ const INK: &str = "#000000";
 /// The axis the bars stand on.
 const AXIS: &str = "#666666";
 /// The axis line's width in units.
+// ratchet-allow(pixel_const): the chart is the person's content, in canvas units, not chrome
 const AXIS_WIDTH: f64 = 2.0;
 /// The gap between bars as a share of a bar's width, when it is not given.
 const GAP: f64 = 2.0 / 3.0;
