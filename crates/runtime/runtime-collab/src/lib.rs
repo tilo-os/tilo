@@ -2622,6 +2622,7 @@ pub enum OpAdmission {
     EncryptionRequired,
 }
 
+#[cfg(feature = "client")]
 impl From<collab_capnp::OpAdmission> for OpAdmission {
     fn from(admission: collab_capnp::OpAdmission) -> Self {
         match admission {
@@ -2632,6 +2633,7 @@ impl From<collab_capnp::OpAdmission> for OpAdmission {
     }
 }
 
+#[cfg(feature = "client")]
 impl From<OpAdmission> for collab_capnp::OpAdmission {
     fn from(admission: OpAdmission) -> Self {
         match admission {
