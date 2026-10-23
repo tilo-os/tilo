@@ -1271,6 +1271,11 @@ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-g
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/pointer_input.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/adblock_extension.py target/chromium/tilo-chromium-host
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/extensions.py target/chromium/tilo-chromium-host \
+    Extensions.test_mv3_worker_storage_content_and_action RuntimeExtensions.test_load_unload_and_denied_methods
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/sealed_documents.py target/chromium/tilo-chromium-host
