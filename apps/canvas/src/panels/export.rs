@@ -494,9 +494,10 @@ pub fn body(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
         .push(field("canvas-export-size-label", Box::new(scale)))
         .push(field("canvas-export-area-label", Box::new(area)))
         .push(Box::new(transparent));
+    // In a narrow window the choices go under the preview rather than
+    // squeezing every option to an ellipsis beside it.
     Box::new(
         Row::new()
-            .no_wrap()
             .with_rhythm(ui::tokens::Rhythm::Section)
             .with_align_items(ui::taffy::AlignItems::Start)
             .push(super::layout::width(
@@ -511,7 +512,7 @@ pub fn body(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
                 Container::new()
                     .with_no_padding()
                     .with_flex_grow()
-                    .with_min_width(0.0)
+                    .with_min_width(ui::tokens::Metrics::BASE.min_pointer_target * 8.0)
                     .with_child(Box::new(settings)),
             )),
     )
