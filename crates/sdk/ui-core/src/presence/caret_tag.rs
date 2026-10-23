@@ -1,8 +1,11 @@
 //! The name tag beside a peer's caret: where it goes, and how a pointer
-//! beside it leaves its own name out, so one person shows one tag.
+//! whose tag would meet it leaves its own name out, so one person shows
+//! one tag.
 
-use super::render::PeerCursor;
-use vello::kurbo::{Point, Rect};
+use super::render::{PeerCursor, PillRequest, layout_peer_pills, peer_tag_size};
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use vello::kurbo::Rect;
 
 /// A peer's caret to label, and the highest its name chip may reach.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,31 +51,72 @@ impl LabeledCaret {
 /// Space between a caret and its name chip.
 const CARET_CHIP_GAP: f64 = 2.0;
 
-/// How close, in logical pixels, a person's pointer may come to their own
-/// caret before the two share one name tag, the caret's.
-pub const CARET_POINTER_TAG_REACH: f64 = 40.0;
+/// The room, in logical pixels, each name tag keeps clear around itself:
+/// a person's pointer tag and caret tag closer than twice this read as one
+/// cluster of the same name, so only the caret's shows.
+pub const TAG_CLEARANCE: f64 = 6.0;
 
-/// A caret name tag a frame painted: the name, and the caret's middle left
-/// edge in scene coordinates.
+/// A caret name tag a frame painted: the name, and the tag's rect in scene
+/// coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaretTag {
     pub label: String,
-    pub at: Point,
+    pub rect: Rect,
 }
 
-/// Leave out the name of each pointer within [`CARET_POINTER_TAG_REACH`] of
-/// a caret tag with the same name: one person, one tag. `carets` are in the
+/// Whether a caret tag and a pointer tag, each padded by
+/// [`TAG_CLEARANCE`], overlap.
+#[must_use]
+pub fn tags_crowd(caret: Rect, pointer: Rect) -> bool {
+    !caret
+        .inflate(TAG_CLEARANCE, TAG_CLEARANCE)
+        .intersect(pointer.inflate(TAG_CLEARANCE, TAG_CLEARANCE))
+        .is_zero_area()
+}
+
+/// Leave out the name of each pointer whose name tag would crowd a caret
+/// tag with the same name ([`tags_crowd`]): one person, one tag, however
+/// far the caret and pointer are, only whether their tags meet. A pointer's
+/// tag is measured where it goes beside its pointer within `viewport`, as
+/// [`super::draw_peer_cursors`] places a lone name. `carets` are in the
 /// pointers' coordinates. A pointer saying something keeps its bubble.
-pub fn hide_names_beside_caret_tags(peers: &mut [PeerCursor], carets: &[CaretTag]) {
+pub fn hide_names_beside_caret_tags(
+    peers: &mut [PeerCursor],
+    carets: &[CaretTag],
+    viewport: Rect,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
     for peer in peers.iter_mut().filter(|peer| peer.chat.is_none()) {
-        let at = Point::new(peer.pos.0, peer.pos.1);
-        if carets
+        let mine: Vec<Rect> = carets
             .iter()
-            .any(|tag| tag.label == peer.label && tag.at.distance(at) <= CARET_POINTER_TAG_REACH)
-        {
+            .filter(|tag| tag.label == peer.label)
+            .map(|tag| tag.rect)
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let pointer = pointer_tag_rect(viewport, peer, text_renderer, theme);
+        if mine.iter().any(|caret| tags_crowd(*caret, pointer)) {
             peer.name_opacity = 0.0;
         }
     }
+}
+
+/// Where `peer`'s name tag goes beside its pointer within `viewport`.
+fn pointer_tag_rect(
+    viewport: Rect,
+    peer: &PeerCursor,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> Rect {
+    let request = PillRequest {
+        at: peer.pos,
+        size: peer_tag_size(text_renderer, theme, peer),
+    };
+    layout_peer_pills(viewport, &[request])
+        .first()
+        .map_or(Rect::ZERO, |place| place.rect)
 }
 
 #[cfg(test)]
@@ -112,57 +156,91 @@ mod tests {
         let ctx = PresenceCtx::empty();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
+        let theme = Theme::default();
+        let caret = LabeledCaret::within(Rect::new(30.0, 40.0, 32.0, 60.0), 40.0);
         ctx.draw_peer_caret_labeled_in(
             &mut scene,
-            &Theme::default(),
+            &theme,
             &mut text,
             Affine::scale(2.0),
             &UserId("ada".into()),
             "Ada",
-            LabeledCaret::within(Rect::new(30.0, 40.0, 32.0, 60.0), 40.0),
+            caret,
         );
+        let (w, h) = crate::presence::render::peer_pill_size(&mut text, &theme, "Ada");
         assert_eq!(
             ctx.caret_tags(),
             vec![CaretTag {
                 label: "Ada".into(),
-                at: Point::new(60.0, 100.0),
+                rect: Affine::scale(2.0).transform_rect_bbox(caret.chip_rect(w, h)),
             }]
         );
         ctx.clear_caret_tags();
         assert!(ctx.caret_tags().is_empty());
     }
 
+    const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1440.0, 900.0);
+
+    /// Which of `pointers` keep their names beside `tags`.
+    fn shown(mut pointers: Vec<PeerCursor>, tags: &[CaretTag]) -> Vec<f32> {
+        let mut text = TextRenderer::new();
+        hide_names_beside_caret_tags(&mut pointers, tags, VIEWPORT, &mut text, &Theme::default());
+        pointers.iter().map(|p| p.name_opacity).collect()
+    }
+
+    /// A caret at `x` on a note's first line, from y 100 to 120: its 90 px
+    /// wide tag hangs below it.
+    fn first_line_tag(label: &str, x: f64) -> CaretTag {
+        let caret = LabeledCaret::within(Rect::new(x, 100.0, x + 2.0, 120.0), 100.0);
+        CaretTag {
+            label: label.into(),
+            rect: caret.chip_rect(90.0, 20.0),
+        }
+    }
+
     #[test]
-    fn a_pointer_beside_its_persons_caret_leaves_the_name_to_the_caret() {
+    fn a_pointer_86_px_along_the_line_from_its_persons_caret_leaves_the_name_to_the_caret() {
+        // The pointer a little right of the caret on the same line puts its
+        // tag below right of its tip, a few pixels from the caret's tag:
+        // the same name twice, side by side.
         let color = vello::peniko::Color::WHITE;
-        let tags = [CaretTag {
-            label: "Ada".into(),
-            at: Point::new(100.0, 100.0),
-        }];
-        let mut pointers = vec![
-            PeerCursor::new((120.0, 110.0), "Ada", color),
-            PeerCursor::new((200.0, 100.0), "Ada", color),
-            PeerCursor::new((105.0, 100.0), "Grace", color),
+        let tags = [first_line_tag("Nimble Puffin", 500.0)];
+        let pointers = vec![
+            PeerCursor::new((586.0, 110.0), "Nimble Puffin", color),
+            PeerCursor::new((586.0, 110.0), "Calm Owl", color),
         ];
-        hide_names_beside_caret_tags(&mut pointers, &tags);
-        let shown: Vec<f32> = pointers.iter().map(|p| p.name_opacity).collect();
-        assert_eq!(shown, vec![0.0, 1.0, 1.0]);
+        assert_eq!(shown(pointers, &tags), vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_pointer_whose_tag_stays_clear_of_its_persons_caret_tag_keeps_its_name() {
+        let color = vello::peniko::Color::WHITE;
+        let tags = [first_line_tag("Nimble Puffin", 500.0)];
+        let pointers = vec![
+            PeerCursor::new((760.0, 110.0), "Nimble Puffin", color),
+            PeerCursor::new((540.0, 400.0), "Nimble Puffin", color),
+        ];
+        assert_eq!(shown(pointers, &tags), vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn tags_crowd_when_closer_than_their_clearance() {
+        let caret = Rect::new(0.0, 0.0, 90.0, 20.0);
+        let apart = |space: f64| Rect::new(90.0 + space, 0.0, 180.0 + space, 20.0);
+        assert!(tags_crowd(caret, apart(2.0 * TAG_CLEARANCE - 1.0)));
+        assert!(!tags_crowd(caret, apart(2.0 * TAG_CLEARANCE + 1.0)));
     }
 
     #[test]
     fn a_pointer_saying_something_keeps_its_bubble_beside_the_caret() {
-        let mut talking = PeerCursor::new((100.0, 100.0), "Ada", vello::peniko::Color::WHITE);
+        let mut talking =
+            PeerCursor::new((586.0, 110.0), "Nimble Puffin", vello::peniko::Color::WHITE);
         talking.chat = Some(crate::presence::ChatBubble {
             text: "here".into(),
             typing: false,
             opacity: 1.0,
         });
-        let tags = [CaretTag {
-            label: "Ada".into(),
-            at: Point::new(100.0, 100.0),
-        }];
-        let mut pointers = vec![talking];
-        hide_names_beside_caret_tags(&mut pointers, &tags);
-        assert!((pointers[0].name_opacity - 1.0).abs() < f32::EPSILON);
+        let tags = [first_line_tag("Nimble Puffin", 500.0)];
+        assert_eq!(shown(vec![talking], &tags), vec![1.0]);
     }
 }

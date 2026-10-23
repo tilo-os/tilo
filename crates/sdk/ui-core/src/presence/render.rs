@@ -235,7 +235,7 @@ impl PresenceCtx {
         );
         self.note_caret_tag(CaretTag {
             label: name.to_owned(),
-            at: transform * Point::new(caret_rect.x0, caret_rect.center().y),
+            rect: transform.transform_rect_bbox(chip_rect),
         });
     }
 
@@ -551,7 +551,11 @@ const CARET_ROOM: f32 = 12.0;
 
 /// The size of the name tag of `peer`, or of the bubble carrying its message
 /// under its name while it talks.
-fn peer_tag_size(text_renderer: &mut TextRenderer, theme: &Theme, peer: &PeerCursor) -> (f64, f64) {
+pub(super) fn peer_tag_size(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    peer: &PeerCursor,
+) -> (f64, f64) {
     let Some(chat) = &peer.chat else {
         return peer_pill_size_for(text_renderer, theme, &peer.label, peer.is_agent);
     };

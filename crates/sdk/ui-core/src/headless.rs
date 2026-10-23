@@ -4099,7 +4099,7 @@ impl FrameHarness {
         self.draw_tooltip(transform);
         // Other people's pointers over everything: they point at whatever
         // is under them, a popover or the bar as much as a window. A pointer
-        // right beside its person's caret leaves the name to the caret's tag.
+        // whose tag would meet its person's caret tag leaves the name to it.
         let pointers = self.pointers_beside_caret_tags(transform);
         crate::presence::draw_peer_cursors(
             &mut self.scene,
@@ -9089,14 +9089,17 @@ impl FrameHarness {
     }
 
     /// The placed pointers as the last frame drew them: without the name of
-    /// one right beside the caret tag of the same person.
-    pub fn drawn_placed_pointers(&self) -> Vec<crate::presence::PeerCursor> {
+    /// one whose tag would meet the caret tag of the same person.
+    pub fn drawn_placed_pointers(&mut self) -> Vec<crate::presence::PeerCursor> {
         self.pointers_beside_caret_tags(self.capture_draw_transform())
     }
 
     /// [`Self::drawn_placed_pointers`]. Caret tags are noted in scene
     /// coordinates; `transform` is the one the frame drew them with.
-    fn pointers_beside_caret_tags(&self, transform: Affine) -> Vec<crate::presence::PeerCursor> {
+    fn pointers_beside_caret_tags(
+        &mut self,
+        transform: Affine,
+    ) -> Vec<crate::presence::PeerCursor> {
         let mut pointers = self.placed_pointers.clone();
         if pointers.is_empty() {
             return pointers;
@@ -9107,11 +9110,23 @@ impl FrameHarness {
             .caret_tags()
             .into_iter()
             .map(|tag| crate::presence::CaretTag {
-                at: to_surface * tag.at,
+                rect: to_surface.transform_rect_bbox(tag.rect),
                 ..tag
             })
             .collect();
-        crate::presence::hide_names_beside_caret_tags(&mut pointers, &tags);
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        );
+        crate::presence::hide_names_beside_caret_tags(
+            &mut pointers,
+            &tags,
+            viewport,
+            &mut self.text,
+            &self.theme,
+        );
         pointers
     }
 
