@@ -440,6 +440,7 @@ pub(crate) fn snapshot_of(
                 id: index.to_string(),
                 name: table.name.clone(),
                 cells,
+                hidden: table.hidden,
             }
         })
         .collect();
@@ -546,6 +547,25 @@ fn excel_number_format(fmt: CellFormat) -> Option<&'static str> {
 mod tests {
     use super::*;
     use tilo_locale::Currency;
+
+    #[test]
+    fn a_hidden_sheet_stays_hidden_through_an_xlsx() {
+        let table = |name: &str, hidden: bool| SheetTable {
+            name: name.into(),
+            hidden,
+            rows: vec![vec![Some(ImportedCell::value(
+                "1".into(),
+                CellFormat::General,
+            ))]],
+        };
+        let bytes = xlsx_bytes(&[table("Shown", false), table("Rates", true)]).unwrap();
+        let tables = parse_xlsx(&bytes).unwrap();
+        let hidden: Vec<(&str, bool)> = tables
+            .iter()
+            .map(|table| (table.name.as_str(), table.hidden))
+            .collect();
+        assert_eq!(hidden, [("Shown", false), ("Rates", true)]);
+    }
 
     #[test]
     #[expect(

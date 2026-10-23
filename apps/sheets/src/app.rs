@@ -2140,7 +2140,10 @@ impl SheetsApp {
                 fmt.insert(*addr, inferred);
             }
         }
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
+        crate::xlsx::SheetTable {
+            hidden: snap.hidden,
+            ..crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
+        }
     }
 
     /// Add `tables` as new sheets now, as an import does, and show the last.

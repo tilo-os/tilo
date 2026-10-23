@@ -82,6 +82,10 @@ fn export_markdown_content_keeps_one_note_as_content_by_title() {
     assert_eq!(answer["notes"], 1);
     assert_eq!(answer["name"], "trip-plan.md");
     let markdown = exported(&app, &answer);
+    assert!(
+        markdown.starts_with("# Trip plan\n\n"),
+        "the note's title is its first line: {markdown}"
+    );
     assert!(markdown.contains("Visit the harbour."), "{markdown}");
     assert!(!markdown.contains("Unrelated."), "{markdown}");
 }

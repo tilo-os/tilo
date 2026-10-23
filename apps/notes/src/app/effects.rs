@@ -357,7 +357,19 @@ impl NotesApp {
         let (name, markdown, notes) = match chosen {
             Some(page) => {
                 let title = state.get(page).map_or("", |meta| meta.title.trim());
-                (title.to_owned(), actions::page_markdown(state, page), 1)
+                let body = actions::page_markdown(state, page);
+                // The file starts with the note's title, as the notebook's
+                // sections do, unless its body already opens with it.
+                let titled = if title.is_empty()
+                    || body.trim_start().lines().next() == Some(format!("# {title}").as_str())
+                {
+                    body
+                } else if body.trim().is_empty() {
+                    format!("# {title}\n")
+                } else {
+                    format!("# {title}\n\n{body}")
+                };
+                (title.to_owned(), titled, 1)
             }
             None => (
                 ui::i18n!("notes-title"),
