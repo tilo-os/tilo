@@ -277,6 +277,9 @@ impl HttpClient for PageHttp {
     }
 }
 
+/// The store a peer replicates its room into, and where it lives.
+type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConnectConfig {
@@ -1493,7 +1496,7 @@ pub struct WasmPeer {
     /// Where the room's documents are kept (the profile's store, or memory
     /// for a peer in no profile) and a queue opened at start, until a room
     /// is joined and replicated ([`crate::replication`]).
-    replication: RefCell<Option<(PeerEvents, Rc<durable_store::MemoryStore>)>>,
+    replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
 }
 
 #[wasm_bindgen]
@@ -1579,8 +1582,13 @@ impl WasmPeer {
         // through it always has a replica to attach to. A peer kept in no
         // profile (a watching page's, whose device lives only in memory)
         // keeps the room's documents in memory for as long as the page.
-        let replication_store =
-            profile_store.unwrap_or_else(|| Rc::new(durable_store::MemoryStore::new()));
+        let replication_store = match profile_store {
+            Some(store) => (store, crate::replication::Kept::InProfile),
+            None => (
+                Rc::new(durable_store::MemoryStore::new()),
+                crate::replication::Kept::InPage,
+            ),
+        };
         let replication = RefCell::new(Some((handle.events(), replication_store)));
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
         let changed = Arc::new(tokio::sync::Notify::new());
