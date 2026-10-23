@@ -1769,7 +1769,13 @@ mod tests {
                 ui::widget::InPlace::List,
                 "the bar's search narrows Settings' list"
             );
-            assert!(search.drive(settings, "night light", None, false));
+            assert!(search.drive(
+                settings,
+                "night light",
+                ui::widget::FindOptions::default(),
+                None,
+                false
+            ));
         }
         app.sync(&doc, &root);
         assert_eq!(app.search_query(), "night light");
