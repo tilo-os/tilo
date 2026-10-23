@@ -395,7 +395,7 @@ content scripts (with `sender.tab`) work without help.
 - `src/extension_tabs.js` runs in each extension's service worker (the Browser
   makes the worker run it first, `extensions.rs` `prepare_tabs`) and in its
   own pages (a document script). It answers `tabs`, `windows`,
-  `action.onClicked` and `scripting` by asking the host at
+  `action.onClicked`, `contextMenus` and `scripting` by asking the host at
   `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
   page of the extension is known by its frame's address, its worker by a token
   written into it; a page cannot show either.
@@ -426,14 +426,23 @@ content scripts (with `sender.tab`) work without help.
   thread. As in Chrome it needs a click on the extension's button over the
   tab (`activeTab`) or access to every site (`<all_urls>`), and answers each
   extension at most twice a second. A hidden tab has no frame to capture.
+- `contextMenus` items are kept by the host (`src/extension_menus.h`) and
+  shown in the page's menu where their contexts (page, selection, link,
+  image, video, audio, editable, frame) and URL patterns say, after the
+  page's own items. Tilo's page menu has no submenus: an item with items
+  under it gives way to them. Choosing one fires `contextMenus.onClicked`
+  with Chrome's info and the tab, and grants `activeTab`. The items and their
+  checked state are kept in the profile (`Extension Menus.json`, never for a
+  private window), since an extension makes them once, when installed.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
   worker still sleeps. `tests/extension_tabs.py` covers each of these.
 
 ## Remaining integration work
 
-- Extensions' context menu items, keyboard shortcuts (`commands`) and side
-  panels are not offered.
+- Extensions' keyboard shortcuts (`commands`) and side panels are not
+  offered. Their context menu items show no checkmark and no submenu, and
+  appear only in a page's menu, not the toolbar button's.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs
