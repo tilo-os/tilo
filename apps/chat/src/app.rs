@@ -17,6 +17,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender};
 use ui::widget::TaffyTreeExt;
+use ui::widget::paint_damage::PaintParts;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -864,6 +865,9 @@ pub struct ChatApp {
     /// control, a native voice issue, or no connected media transport).
     pub(crate) media_error: Option<String>,
     pub(crate) canonical_dirty: bool,
+    /// The regions the last draws painted, compared to say which changed:
+    /// a typed character repaints the composer, not the window.
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     /// Document heads and pending-operation count at the last reload,
     /// so an unchanged document is not reloaded and repainted every frame.
     synced: Option<(Vec<automerge::ChangeHash>, usize)>,
@@ -1123,6 +1127,7 @@ impl ChatApp {
             camera_on_live: false,
             media_error: None,
             canonical_dirty: true,
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             synced: None,
             host_focused: true,
             external_services: true,
@@ -4663,13 +4668,18 @@ impl Widget for ChatApp {
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         // The picture tiles this frame draws note themselves again.
         self.picture_tiles.borrow_mut().clear();
+        // Every region is drawn as a part of its own, compared with the
+        // last frame's: what Chat reports as damage is the regions whose
+        // drawing changed.
+        let mut parts = PaintParts::new(scene);
+        let window = self.rect;
 
         // The conversation stands on the window ground the framework painted.
         // A pushed thread owns the narrow page, including its input targets.
         if !self.thread_is_page() {
-            self.draw_conversation(scene, tf, tr, theme, presence, &mut hits);
+            self.draw_conversation(&mut parts, scene, tf, tr, theme, presence, &mut hits);
         }
-        self.draw_drawers(scene, tf, tr, theme, presence, &mut hits);
+        self.draw_drawers(&mut parts, scene, tf, tr, theme, presence, &mut hits);
         self.declare_window_toolbar();
 
         // Call layers. The host tile is a real VideoPlayer, painted only once
@@ -4680,26 +4690,45 @@ impl Widget for ChatApp {
             // Measure the controls and header with this frame's text scale
             // before anything reads their geometry.
             self.measure_call_overlay(tr, theme);
-            self.draw_call_overlay_bg(scene, tf, tr, theme);
-            if host_has_frame {
-                self.video.draw(scene, tf, tr, theme, presence);
-            }
-            self.draw_host_camera_off(scene, tf, tr, theme);
-            self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
+            parts.draw(scene, "chat-call", window, |scene| {
+                self.draw_call_overlay_bg(scene, tf, tr, theme);
+                if host_has_frame {
+                    self.video.draw(scene, tf, tr, theme, presence);
+                }
+                self.draw_host_camera_off(scene, tf, tr, theme);
+                self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
+            });
         } else if self.app_draws_huddle() {
-            self.draw_live_huddle(scene, tf, tr, theme, presence, &mut hits);
+            // Settled, the call window paints its panel and shadow; moving,
+            // it may be anywhere in the window.
+            let placement = &self.call.placement;
+            let bounds = if placement.is_dragging() || placement.is_handoff_animating() {
+                window
+            } else {
+                ui::widget::floating_surface::painted_bounds(self.huddle_panel(), theme)
+                    .intersect(window)
+            };
+            parts.draw(scene, "chat-call", bounds, |scene| {
+                self.draw_live_huddle(scene, tf, tr, theme, presence, &mut hits);
+            });
         }
 
         // Popovers over the conversation; the context menu paints in the
         // top layer, from `draw_overlay`.
         if self.emoji_open {
-            self.draw_emoji_picker(scene, tf, tr, theme, presence, &mut hits);
+            parts.draw(scene, "chat-emoji", window, |scene| {
+                self.draw_emoji_picker(scene, tf, tr, theme, presence, &mut hits);
+            });
         }
         if self.history_open.is_some() {
-            self.draw_history_popover(scene, tf, tr, theme, &mut hits);
+            parts.draw(scene, "chat-history", window, |scene| {
+                self.draw_history_popover(scene, tf, tr, theme, &mut hits);
+            });
         }
         if self.attach_open {
-            self.draw_attach_picker(scene, tf, tr, theme, &mut hits);
+            parts.draw(scene, "chat-attach", window, |scene| {
+                self.draw_attach_picker(scene, tf, tr, theme, &mut hits);
+            });
         }
 
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
@@ -4709,18 +4738,22 @@ impl Widget for ChatApp {
             && let Some(index) = self.keyboard_target
         {
             if let Some((rect, ..)) = semantic.get(index) {
-                ui::widget::paint_focus_ring(
-                    scene,
-                    tf,
-                    *rect,
-                    f64::from(theme.tokens.radii.item),
-                    theme,
-                );
+                parts.draw(scene, "chat-focus", window, |scene| {
+                    ui::widget::paint_focus_ring(
+                        scene,
+                        tf,
+                        *rect,
+                        f64::from(theme.tokens.radii.item),
+                        theme,
+                    );
+                });
             } else {
                 self.keyboard_target = None;
             }
         }
 
+        let frame = parts.finish(scene, vec![window], tf, theme);
+        self.paint_damage.record(window, frame);
         self.hits = hits;
     }
 
@@ -5128,8 +5161,23 @@ impl Widget for ChatApp {
     fn needs_redraw(&self) -> bool {
         self.canonical_dirty || (self.thread_open.is_some() && self.thread_scroll.needs_redraw())
     }
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+    fn damage_covers_own_box(&self) -> bool {
+        self.paint_damage.covers_own_bounds()
+    }
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
     fn mark_drawn(&mut self) {
         self.canonical_dirty = false;
+        self.paint_damage.mark_drawn();
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
         self.thread_scroll.mark_drawn();
@@ -5357,6 +5405,7 @@ impl ChatApp {
     /// sidebar toggle.
     fn draw_drawers(
         &mut self,
+        parts: &mut PaintParts,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
@@ -5369,9 +5418,11 @@ impl ChatApp {
         if self.right_flap_open() || self.right_flap.reveal() > 0.001 {
             if self.thread_is_page() {
                 let page = self.thread_rect();
-                ui::surface::region(scene, tf, page, ui::surface::Region::Content, theme);
-                ChatApp::push_hit(hits, page, Hit::FocusThread);
-                self.draw_thread(scene, tf, tr, theme, presence, hits);
+                parts.draw(scene, "chat-thread", self.rect, |scene| {
+                    ui::surface::region(scene, tf, page, ui::surface::Region::Content, theme);
+                    ChatApp::push_hit(hits, page, Hit::FocusThread);
+                    self.draw_thread(scene, tf, tr, theme, presence, hits);
+                });
             } else {
                 let scrim = self.right_flap.scrim_rect();
                 if scrim.width() > 0.5 {
@@ -5379,16 +5430,19 @@ impl ChatApp {
                 }
                 let panel = self.right_flap.sidebar_rect();
                 if panel.width() > 0.5 {
-                    crate::paint::push_clip(scene, tf, panel);
-                    let local = self.right_flap.paint_panel(scene, tf, theme);
-                    if self.thread_open.is_some() {
-                        self.draw_thread(scene, tf, tr, &local, presence, hits);
-                    } else if self.pins_open {
-                        self.draw_pins(scene, tf, tr, &local, hits);
-                    } else {
-                        self.draw_members(scene, tf, tr, &local, hits);
-                    }
-                    scene.pop_layer();
+                    // Clipped to its panel, shadow and all.
+                    parts.draw(scene, "chat-detail", panel, |scene| {
+                        crate::paint::push_clip(scene, tf, panel);
+                        let local = self.right_flap.paint_panel(scene, tf, theme);
+                        if self.thread_open.is_some() {
+                            self.draw_thread(scene, tf, tr, &local, presence, hits);
+                        } else if self.pins_open {
+                            self.draw_pins(scene, tf, tr, &local, hits);
+                        } else {
+                            self.draw_members(scene, tf, tr, &local, hits);
+                        }
+                        scene.pop_layer();
+                    });
                 }
             }
         }
@@ -5407,13 +5461,17 @@ impl ChatApp {
         let nav = self.nav_rect();
         let shown = self.left_flap_open() || self.left_flap.reveal() > 0.001;
         if shown && nav.width() > 0.5 && nav.x1 > self.rect.x0 {
-            crate::paint::push_clip(scene, tf, nav);
-            let local = self.left_flap.paint_panel(scene, tf, theme);
-            self.draw_sidebar(scene, tf, tr, &local, presence, hits);
-            scene.pop_layer();
+            parts.draw(scene, "chat-nav", nav, |scene| {
+                crate::paint::push_clip(scene, tf, nav);
+                let local = self.left_flap.paint_panel(scene, tf, theme);
+                self.draw_sidebar(scene, tf, tr, &local, presence, hits);
+                scene.pop_layer();
+            });
         }
-        self.left_flap.paint_resize(scene, tf, theme);
-        self.right_flap.paint_resize(scene, tf, theme);
+        parts.draw(scene, "chat-dividers", self.rect, |scene| {
+            self.left_flap.paint_resize(scene, tf, theme);
+            self.right_flap.paint_resize(scene, tf, theme);
+        });
     }
 
     /// Flag a taffy rebuild (kept for parity; the video rect is now set in

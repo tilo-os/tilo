@@ -2005,6 +2005,71 @@ fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Room) {
     app.stage_scenario("agent-work");
 }
 
+/// Chat paints its regions by hand, and reports as damage the regions whose
+/// drawing changed: a typed character repaints the composer, not the
+/// window; a resize repaints all of it.
+#[test]
+fn a_typed_character_damages_the_composer_and_a_resize_the_window() {
+    use vello::kurbo::Rect;
+    let (mut app, mut doc) = app_with_doc();
+    app.focus = Focus::Main;
+    app.set_composer_focus();
+    type_str(&mut app, &mut doc, "hello");
+    let (w, h) = (1200.0, 800.0);
+    // One text renderer across frames, as a host keeps: its fonts are the
+    // same fonts from frame to frame.
+    let mut tr = ui::text_render::TextRenderer::new();
+    let theme = ui::theme::Theme::dark();
+    let presence = ui::presence::PresenceCtx::empty();
+    let mut frame = |app: &mut ChatApp, w: f64, h: f64| {
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        let mut scene = vello::Scene::new();
+        app.draw(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence,
+        );
+        let mut damage = Vec::new();
+        app.collect_damage(&mut damage);
+        app.mark_drawn();
+        damage
+    };
+    for _ in 0..3 {
+        frame(&mut app, w, h);
+    }
+    let still = frame(&mut app, w, h);
+    assert!(
+        still.is_empty(),
+        "an unchanged frame damages nothing: {still:?}"
+    );
+
+    type_str(&mut app, &mut doc, "!");
+    let damage = frame(&mut app, w, h);
+    let composer = Rect::new(
+        app.center_left(),
+        app.messages_rect().y1,
+        app.center_right(),
+        h,
+    );
+    assert!(!damage.is_empty(), "the typed character is repainted");
+    for rect in &damage {
+        assert_eq!(
+            composer.union(*rect),
+            composer,
+            "{rect:?} is outside the composer {composer:?}"
+        );
+    }
+
+    let window = Rect::new(0.0, 0.0, w + 100.0, h);
+    let damage = frame(&mut app, w + 100.0, h);
+    assert!(
+        damage.iter().any(|rect| rect.union(window) == *rect),
+        "a resize repaints the window: {damage:?}"
+    );
+}
+
 #[test]
 fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() {
     use ui::Widget;

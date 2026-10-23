@@ -172,6 +172,67 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
     Some(damage)
 }
 
+/// A self-drawn widget's draw, split into the parts of a [`PaintFrame`] as
+/// it paints: each part is drawn on its own, appended to the scene the
+/// widget paints in, and kept for the comparison with the last frame. A
+/// widget that paints its regions by hand (a timeline, a composer, a side
+/// panel) thereby reports the regions whose drawing changed, without
+/// tracking what each event touched.
+///
+/// Everything the widget paints must be in a part: ink added to the scene
+/// between parts is not compared, so the frame then proves nothing
+/// ([`Self::finish`] gives no frame).
+pub struct PaintParts {
+    parts: Vec<PaintPart>,
+    /// The scene's draw commands when the last part was appended.
+    drawn: usize,
+    outside: bool,
+}
+
+impl PaintParts {
+    /// Start splitting the draw into `scene`, whatever it holds already.
+    pub fn new(scene: &Scene) -> Self {
+        Self {
+            parts: Vec::new(),
+            drawn: scene.encoding().draw_tags.len(),
+            outside: false,
+        }
+    }
+
+    /// Draw the part `key`, whose `bounds` (logical, as the widget's rect)
+    /// cover every pixel `draw` paints, antialiasing and shadows included:
+    /// a change inside it repaints where it was and is.
+    pub fn draw<R>(
+        &mut self,
+        scene: &mut Scene,
+        key: &'static str,
+        bounds: Rect,
+        draw: impl FnOnce(&mut Scene) -> R,
+    ) -> R {
+        self.outside |= scene.encoding().draw_tags.len() != self.drawn;
+        let mut part = Scene::new();
+        let result = draw(&mut part);
+        scene.append(&part, None);
+        self.drawn = scene.encoding().draw_tags.len();
+        self.parts
+            .push(PaintPart::placed(key.into(), bounds, part, vec![bounds]));
+        result
+    }
+
+    /// The frame drawn, with the `geometry`, `transform` and `theme` it was
+    /// drawn with; `None` when something was painted outside every part.
+    pub fn finish(
+        self,
+        scene: &Scene,
+        geometry: Vec<Rect>,
+        transform: Affine,
+        theme: &Theme,
+    ) -> Option<PaintFrame> {
+        let outside = self.outside || scene.encoding().draw_tags.len() != self.drawn;
+        (!outside).then(|| PaintFrame::new(geometry, transform, theme, Scene::new(), self.parts))
+    }
+}
+
 /// Retains only draw caches; no document state, history or input is stored here.
 #[derive(Default)]
 pub struct PaintDamage {
@@ -370,6 +431,45 @@ mod tests {
                 vec![placed("a", 0.0), placed("a", 20.0)]
             ),
             vec![BOUNDS]
+        );
+    }
+
+    /// A hand-drawn widget's frame through [`PaintParts`]: `rows` filled,
+    /// each its own part, and `ink` painted between parts when set.
+    fn hand_drawn(damage: &mut PaintDamage, rows: &[f64], ink: bool) {
+        const KEYS: [&str; 3] = ["a", "b", "c"];
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut parts = PaintParts::new(&scene);
+        for (key, top) in KEYS.iter().zip(rows) {
+            parts.draw(&mut scene, key, row(*top), |scene| {
+                scene.append(&filled(row(*top)), None);
+            });
+            if ink {
+                scene.append(&filled(row(*top)), None);
+            }
+        }
+        let frame = parts.finish(&scene, vec![BOUNDS], Affine::IDENTITY, &theme);
+        damage.mark_drawn();
+        damage.record(BOUNDS, frame);
+    }
+
+    #[test]
+    fn hand_drawn_parts_damage_the_part_that_changed_and_ink_outside_them_all() {
+        let mut damage = PaintDamage::default();
+        hand_drawn(&mut damage, &[0.0, 40.0], false);
+        hand_drawn(&mut damage, &[0.0, 60.0], false);
+        let mut regions = Vec::new();
+        damage.collect(BOUNDS, &mut regions);
+        assert_eq!(regions, vec![row(40.0), row(60.0)]);
+
+        hand_drawn(&mut damage, &[0.0, 60.0], true);
+        let mut regions = Vec::new();
+        damage.collect(BOUNDS, &mut regions);
+        assert_eq!(
+            regions,
+            vec![BOUNDS],
+            "ink outside the parts proves nothing"
         );
     }
 }

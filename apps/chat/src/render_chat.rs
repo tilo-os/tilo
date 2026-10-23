@@ -106,6 +106,7 @@ pub(crate) fn mention_colors(
 impl ChatApp {
     pub(crate) fn draw_conversation(
         &mut self,
+        parts: &mut ui::widget::paint_damage::PaintParts,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
@@ -117,28 +118,37 @@ impl ChatApp {
         let width = composer_editor_width(field_w, theme, self.direct_person.is_none());
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
         let area = self.messages_rect();
-        if area.width() > 0.0 && area.height() >= self.chrome.body_line {
-            push_clip(scene, tf, area);
-            if self.direct_person.is_some() {
-                self.draw_person_messages(PaintCtx::new(scene, tf, tr, theme), presence, area);
-            } else {
-                self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
+        // The timeline paints inside its clip, its grip and fade in the
+        // column above the composer; the composer and the notes under it
+        // below that, to the window's foot.
+        let column = Rect::new(self.center_left(), area.y0, self.center_right(), area.y1);
+        parts.draw(scene, "chat-messages", column, |scene| {
+            if area.width() > 0.0 && area.height() >= self.chrome.body_line {
+                push_clip(scene, tf, area);
+                if self.direct_person.is_some() {
+                    self.draw_person_messages(PaintCtx::new(scene, tf, tr, theme), presence, area);
+                } else {
+                    self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
+                }
+                scene.pop_layer();
             }
-            scene.pop_layer();
-        }
-        self.draw_conversation_grip(scene, tf, theme, area, hits);
-        // Older messages fade at the top edge when more history is above.
-        if area.height() > 0.0 && self.scroll_content - self.scroll_viewport - self.scroll > 0.5 {
-            let column = Rect::new(area.x0, area.y0, self.center_right(), area.y1);
-            ui::surface::content_edge_fade(
-                scene,
-                tf,
-                column,
-                ui::surface::ContentEdge::Top,
-                theme.tokens.colors.surfaces.content,
-            );
-        }
-        self.draw_composer(scene, tf, tr, theme, presence, hits);
+            self.draw_conversation_grip(scene, tf, theme, area, hits);
+            // Older messages fade at the top edge when more history is above.
+            if area.height() > 0.0 && self.scroll_content - self.scroll_viewport - self.scroll > 0.5
+            {
+                ui::surface::content_edge_fade(
+                    scene,
+                    tf,
+                    column,
+                    ui::surface::ContentEdge::Top,
+                    theme.tokens.colors.surfaces.content,
+                );
+            }
+        });
+        let composer = Rect::new(column.x0, column.y1, column.x1, self.rect.y1);
+        parts.draw(scene, "chat-composer", composer, |scene| {
+            self.draw_composer(scene, tf, tr, theme, presence, hits);
+        });
     }
 
     /// The colours mentions are painted in on `theme`, for every participant
