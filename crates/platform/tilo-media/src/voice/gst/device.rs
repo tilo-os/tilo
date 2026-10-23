@@ -1,5 +1,5 @@
 //! Bounded device state transitions. No driver state wait runs on a caller.
-use super::{AudioError, CAPTURE_STARTUP_TIMEOUT, RunningPipeline, check_bus, gst};
+use super::{AudioError, RunningPipeline, check_bus, gst};
 use gst::prelude::*;
 use std::{
     os::fd::{AsRawFd, OwnedFd},
@@ -41,6 +41,7 @@ struct State {
     finished: AtomicBool,
     failure: AtomicU8,
     started: Instant,
+    startup_deadline: Option<Duration>,
     remote_fd: Option<OwnedFd>,
     guard: Option<Guard>,
     thread: OnceLock<Thread>,
@@ -103,7 +104,9 @@ fn registry() -> Result<&'static Registry, AudioError> {
                                 if !stop.allowed() {
                                     stop.stop();
                                 } else if !stop.0.ready.load(Ordering::Acquire)
-                                    && stop.0.started.elapsed() >= CAPTURE_STARTUP_TIMEOUT
+                                    && stop.0.startup_deadline.is_some_and(|deadline| {
+                                        stop.0.started.elapsed() >= deadline
+                                    })
                                 {
                                     stop.fail();
                                 }
@@ -125,8 +128,12 @@ pub(super) struct DevicePipeline {
     stop: CaptureStop,
 }
 impl DevicePipeline {
+    /// `startup_deadline` revokes a device that is not ready in time. It is
+    /// wall-clock, so it also fires on a pipeline that is only starved of
+    /// CPU: give one only where a driver can hold the transition.
     pub(super) fn start(
         pipeline: gst::Pipeline,
+        startup_deadline: Option<Duration>,
         remote_fd: Option<OwnedFd>,
         guard: Option<Guard>,
         needs_sample: bool,
@@ -139,6 +146,7 @@ impl DevicePipeline {
             finished: AtomicBool::new(false),
             failure: AtomicU8::new(0),
             started: Instant::now(),
+            startup_deadline,
             remote_fd,
             guard,
             thread: OnceLock::new(),

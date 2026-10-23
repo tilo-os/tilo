@@ -107,13 +107,23 @@ impl VoiceAudio {
             .map_err(|_| AudioError::Codec)?;
         Self::from_output_bound(pipeline, source, Some(remote_fd))
     }
+    /// A software output: no driver can hold its transition, so it has no
+    /// startup deadline and becomes ready whenever it reaches Playing.
     #[cfg(test)]
     fn from_output(pipeline: gst::Pipeline, source: gst_app::AppSrc) -> Result<Self, AudioError> {
-        Self::from_output_bound(pipeline, source, None)
+        Self::start_output(pipeline, source, None, None)
     }
     fn from_output_bound(
         pipeline: gst::Pipeline,
         source: gst_app::AppSrc,
+        remote_fd: Option<OwnedFd>,
+    ) -> Result<Self, AudioError> {
+        Self::start_output(pipeline, source, Some(CAPTURE_STARTUP_TIMEOUT), remote_fd)
+    }
+    fn start_output(
+        pipeline: gst::Pipeline,
+        source: gst_app::AppSrc,
+        startup_deadline: Option<Duration>,
         remote_fd: Option<OwnedFd>,
     ) -> Result<Self, AudioError> {
         let permit = Permit::acquire()?;
@@ -122,7 +132,8 @@ impl VoiceAudio {
         source.set_property("max-bytes", 1920u64);
         source.set_property("block", false);
         source.set_property_from_str("leaky-type", "downstream");
-        let pipeline = DevicePipeline::start(pipeline, remote_fd, None, false, permit)?;
+        let pipeline =
+            DevicePipeline::start(pipeline, startup_deadline, remote_fd, None, false, permit)?;
         Ok(Self {
             output: pipeline,
             output_source: source,
@@ -241,6 +252,7 @@ impl VoiceAudio {
         self.stop_capture();
         let pipeline = DevicePipeline::start(
             pipeline,
+            Some(CAPTURE_STARTUP_TIMEOUT),
             remote_fd,
             Some(still_current.clone()),
             true,
@@ -1192,8 +1204,19 @@ mod tests {
             .downcast::<gst_app::AppSrc>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        tilo_test_env::wait_until("the software output to start", || audio.output_ready());
+        wait_for_output(&audio, "the software output to start");
         audio
+    }
+
+    fn wait_for_output(audio: &VoiceAudio, what: &str) {
+        let failure = tilo_test_env::wait_for(what, || {
+            if audio.output_ready() {
+                Some(None)
+            } else {
+                audio.output.failure().map(Some)
+            }
+        });
+        assert_eq!(failure, None, "{what}: the output failed instead");
     }
 
     fn observed_output() -> (VoiceAudio, gst_app::AppSink) {
@@ -1210,7 +1233,7 @@ mod tests {
             .downcast::<gst_app::AppSink>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        tilo_test_env::wait_until("the observed output to start", || audio.output_ready());
+        wait_for_output(&audio, "the observed output to start");
         (audio, sink)
     }
 
