@@ -5591,9 +5591,7 @@ mod tests {
     }
 
     use iroh::endpoint::presets;
-    use tilo_relay::{
-        Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
-    };
+    use tilo_relay::{Relay, RelayConfig, daemon::RelayIdentity};
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
         sign_revocation_entry,
@@ -6602,14 +6600,6 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
             state_root: state.path().to_path_buf(),
-            workspaces: vec![WorkspaceBinding {
-                id: ws,
-                pin: true,
-                replication: ReplicationIntent::FullWorkspace,
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default(),
-            }],
             ..RelayConfig::default()
         };
         let relay = Box::pin(Relay::start(
@@ -6624,7 +6614,15 @@ mod tests {
         .await
         .unwrap();
         relay
-            .set_workspace_membership(ws, true, vec![a_pub, b_pub], state.path().to_path_buf())
+            .replace_governed_workspace_access(
+                ws,
+                true,
+                tilo_peer_state::GovernedAccess {
+                    member_devices: vec![a_pub, b_pub],
+                    member_user_roots: vec![relay.own_user_public_key()],
+                },
+                state.path().to_path_buf(),
+            )
             .await
             .unwrap();
         (relay, state, host_cert)
@@ -6651,14 +6649,6 @@ mod tests {
             let relay = Box::pin(Relay::start(
                 RelayConfig {
                     state_root: state.path().to_path_buf(),
-                    workspaces: vec![WorkspaceBinding {
-                        id: 42,
-                        pin: true,
-                        replication: ReplicationIntent::FullWorkspace,
-                        admitted_users: Vec::new(),
-                        shell_authority: None,
-                        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default(),
-                    }],
                     ..RelayConfig::default()
                 },
                 RelayIdentity {
@@ -6671,10 +6661,13 @@ mod tests {
             .await
             .unwrap();
             relay
-                .set_workspace_membership(
+                .replace_governed_workspace_access(
                     42,
                     true,
-                    vec![client_key.verifying_key().to_bytes()],
+                    tilo_peer_state::GovernedAccess {
+                        member_devices: vec![client_key.verifying_key().to_bytes()],
+                        member_user_roots: vec![relay.own_user_public_key()],
+                    },
                     state.path().to_path_buf(),
                 )
                 .await

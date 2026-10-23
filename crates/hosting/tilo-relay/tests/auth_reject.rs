@@ -93,10 +93,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         let relay = tilo_relay::daemon::Relay::start(cfg, identity)
             .await
             .unwrap();
-        relay
-            .set_workspace_membership(9, true, vec![good_dev.device_pubkey()], state_root)
-            .await
-            .unwrap();
+        crate::common::admit_members(&relay, 9, &[good_dev.device_pubkey()], &state_root).await;
         let addr = relay.node_addr();
 
         // The revoked device tries to connect — must fail.
@@ -204,10 +201,7 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
     )
     .await
     .unwrap();
-    relay
-        .set_workspace_membership(34, true, vec![device_key], state.path().to_path_buf())
-        .await
-        .unwrap();
+    crate::common::admit_members(&relay, 34, &[device_key], state.path()).await;
     let client = RelayClient::connect(
         client_endpoint().await,
         relay.node_addr(),

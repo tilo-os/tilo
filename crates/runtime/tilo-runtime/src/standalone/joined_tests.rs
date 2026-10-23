@@ -155,21 +155,6 @@ impl HostedRoom {
                 trust_policy: tilo_relay::TrustPolicy::AllowList {
                     users: vec![hex::encode(governor.user_public_key)],
                 },
-                workspaces: vec![tilo_relay::WorkspaceBinding {
-                    id: topic,
-                    pin: true,
-                    replication: tilo_relay::ReplicationIntent::FullWorkspace,
-                    admitted_users: vec![],
-                    shell_authority: Some(
-                        tilo_relay_protocol::retention::RetentionAuthority::new(
-                            &room.to_string(),
-                            governor.clone(),
-                        )
-                        .unwrap(),
-                    ),
-                    checkpoint_prefix_recovery:
-                        tilo_relay::CheckpointPrefixRecovery::NativeOwnerDurableBaseline,
-                }],
                 ..Default::default()
             },
             tilo_relay::daemon::RelayIdentity {

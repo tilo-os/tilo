@@ -15,11 +15,10 @@ use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
 
-/// Membership set for a workspace on this relay. Populated by the
-/// admin (`bind-workspace`) via the workspace-directory CRDT and
-/// refreshed whenever the directory reports a change. Peers listed
-/// here get store-and-forward; peers not listed get their subscribe
-/// rejected with `NotAuthorised`.
+/// Membership set for a workspace on this relay, as the room's governance
+/// or an explicit admission set it. Peers listed here get
+/// store-and-forward; peers not listed get their subscribe rejected with
+/// `NotAuthorised`.
 #[derive(Clone, Debug, Default)]
 pub struct Membership {
     /// Device public keys that are known members of this workspace.
@@ -79,7 +78,6 @@ pub type Standings = std::collections::BTreeMap<[u8; 32], tilo_action_policy::St
 
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
-    pub(crate) sync_refresh: Option<crate::peer::sync_refresh::Mailbox>,
     /// The in-process room authority governing this workspace, told of each
     /// retained body a device's admitted delta carries. Bounded; a full queue
     /// drops the notice.
@@ -350,37 +348,6 @@ impl WorkspaceRuntime {
         membership: Membership,
         payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
     ) -> Result<Self, crate::store::StoreError> {
-        Self::open_inner(
-            state_root,
-            workspace_id,
-            pinned,
-            membership,
-            payloads,
-            false,
-        )
-    }
-
-    /// Open a pinned workspace only when its durable snapshot already exists.
-    /// Native interactive hosting uses this path so a missing baseline cannot
-    /// silently become a new empty authoritative document.
-    pub(crate) fn open_with_required_snapshot(
-        state_root: &std::path::Path,
-        workspace_id: u64,
-        pinned: bool,
-        membership: Membership,
-        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
-    ) -> Result<Self, crate::store::StoreError> {
-        Self::open_inner(state_root, workspace_id, pinned, membership, payloads, true)
-    }
-
-    fn open_inner(
-        state_root: &std::path::Path,
-        workspace_id: u64,
-        pinned: bool,
-        membership: Membership,
-        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
-        require_snapshot: bool,
-    ) -> Result<Self, crate::store::StoreError> {
         let store = WorkspaceStore::open_with_payloads(state_root, workspace_id, pinned, payloads)?;
         let governed_access_record = store.load_governed_access()?;
         let admission = if governed_access_record.is_some() {
@@ -407,12 +374,6 @@ impl WorkspaceRuntime {
                         format!("automerge load: {e}"),
                     ))
                 })?),
-                None if require_snapshot => {
-                    return Err(crate::store::StoreError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "required durable workspace snapshot is missing",
-                    )));
-                }
                 None => Some(AutoCommit::new()),
             }
         } else {
@@ -444,7 +405,6 @@ impl WorkspaceRuntime {
             held_records: HashMap::new(),
             presence_mailboxes: HashMap::new(),
             recent_deltas: HashMap::new(),
-            sync_refresh: None,
             governor_tap: None,
             room_authority: None,
             standings: None,

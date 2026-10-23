@@ -18,12 +18,12 @@ mod support;
 
 use collab_types::{DocumentMutation, document_channel_id};
 use tilo_app::prelude::*;
-use tilo_browser_peer::{ContentCipher, Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{ContentCipher, PeerEvent, PeerHandle};
 use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host_limiting, start_peer, wait_for, workspace};
+use support::{ROOM, door, enrol, enter, route, start_host_limiting, wait_for, workspace};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -109,7 +109,8 @@ async fn answer(peer: &PeerHandle) -> Answer {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
-    // Alice hosts the room; Bob is a guest on her host's change budget.
+    // Alice's host governs the room and holds guests to a change budget;
+    // Bob was invited through the room and came in on his browser.
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let (bob, _) = UserIdentity::generate("Bob", 1);
@@ -121,7 +122,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
         None,
-        &[bob.verifying_key().to_bytes()],
+        &[],
         Some(MemberLimitsConfig {
             changes_per_window: 1,
             window_secs: 3600,
@@ -130,6 +131,14 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         }),
     )
     .await;
+    let room = host
+        .relay
+        .rooms()
+        .unwrap()
+        .create_room("Board", Some(ROOM))
+        .await
+        .unwrap();
+    assert_eq!(room.workspace_id, workspace());
     let route = route();
     let steward_dir = tempfile::tempdir().unwrap();
     let steward = channel_crypto::ChannelSteward::open_or_create(
@@ -139,19 +148,27 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         &channel_crypto::VaultKey::new([7; 32]),
     )
     .unwrap();
-    let peer = start_peer(
-        Host::Https(host.https()),
-        browser.cert.clone(),
-        host_device.cert.clone(),
-        browser.key.clone(),
-    );
+    let peer = enter(
+        &host,
+        door(
+            &host,
+            &alice,
+            &host_device,
+            &room.room,
+            bob.verifying_key().to_bytes(),
+        )
+        .await,
+        &browser.cert,
+        &browser.key,
+        &host_device.cert,
+        workspace(),
+    )
+    .await;
     peer.install_cipher(
         route.clone(),
         Box::new(Keys(steward.content_keys().unwrap())),
     )
     .unwrap();
-    peer.join(workspace()).unwrap();
-    ready(&[&peer]).await;
 
     // Bob pins notes on his board, each sent as the page sends a record's
     // changes, until the host stops taking them.

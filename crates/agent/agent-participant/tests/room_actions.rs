@@ -477,19 +477,11 @@ async fn start_browser(
     page: Option<&str>,
 ) -> Hosted {
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_relay::RelayConfig {
+    let cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
         web_entry: page.map(|origin| format!("{origin}/")),
         ..Default::default()
     };
-    cfg.workspaces.push(tilo_relay::WorkspaceBinding {
-        id: workspace(),
-        pin: true,
-        replication: tilo_relay::ReplicationIntent::FullWorkspace,
-        admitted_users: vec![hex::encode(user)],
-        shell_authority: None,
-        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-    });
     let (relay, agents) = tilo_relay::agents::start(
         cfg,
         RelayIdentity {

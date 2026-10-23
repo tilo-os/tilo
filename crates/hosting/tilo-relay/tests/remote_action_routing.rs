@@ -314,11 +314,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
     // that end rather than racing a send against it; the refusal of a frame
     // that arrives before the audit is covered at the handler by
     // `peer::private_transport_tests::removed_member_remote_action_is_refused`.
-    relay
-        .relay
-        .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
-        .await
-        .unwrap();
+    crate::common::admit_members(&relay.relay, WS, &[a.device_pubkey()], &relay.state_root).await;
     while tilo_test_env::within("removed member's session to end", b_client.recv())
         .await
         .is_some()
@@ -357,11 +353,7 @@ async fn remote_action_to_removed_target_is_refused() {
     let a_client = subscribed(addr.clone(), &user, &a).await;
     let c_client = subscribed(addr, &user, &c).await;
 
-    relay
-        .relay
-        .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
-        .await
-        .unwrap();
+    crate::common::admit_members(&relay.relay, WS, &[a.device_pubkey()], &relay.state_root).await;
     a_client
         .send(directed(
             c.device_pubkey(),

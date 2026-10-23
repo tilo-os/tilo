@@ -16,21 +16,10 @@
 use std::time::Duration;
 
 use tilo_peer_state::GovernedAccess;
-use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, WorkspaceBinding};
+use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint};
-
-fn binding(id: u64) -> WorkspaceBinding {
-    WorkspaceBinding {
-        id,
-        pin: true,
-        replication: tilo_relay::ReplicationIntent::FullWorkspace,
-        admitted_users: Vec::new(),
-        shell_authority: None,
-        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-    }
-}
 
 async fn connect(
     relay: &Relay,
@@ -86,7 +75,6 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     let relay = Relay::start(
         RelayConfig {
             state_root: state.path().to_path_buf(),
-            workspaces: vec![binding(701), binding(702)],
             ..RelayConfig::default()
         },
         tilo_relay::daemon::RelayIdentity {
@@ -272,7 +260,6 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     let restarted = Relay::start(
         RelayConfig {
             state_root: state.path().to_path_buf(),
-            workspaces: vec![binding(701), binding(702)],
             ..RelayConfig::default()
         },
         tilo_relay::daemon::RelayIdentity {
