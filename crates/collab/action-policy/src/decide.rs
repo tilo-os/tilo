@@ -109,6 +109,15 @@ impl<'g> Party<'g> {
         self
     }
 
+    /// The same party, known as `subject` too: an agent's run of an issue
+    /// is the agent and the issue, so grants naming either decide for it,
+    /// the most specific first.
+    #[must_use]
+    pub fn also_as(mut self, subject: Subject) -> Self {
+        self.subjects.push(subject);
+        self
+    }
+
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         if self.owns.iter().any(|owned| owned.covers(node)) {
