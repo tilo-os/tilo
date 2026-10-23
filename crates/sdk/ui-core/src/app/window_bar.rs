@@ -49,6 +49,9 @@ pub(crate) struct WindowBarRuntime {
     /// The find options the bar's search runs under (its options' Match
     /// case, Whole word, mode); the defaults on each opening.
     options: crate::widget::FindOptions,
+    /// The last find the app's document ran on its own that the search took
+    /// over, for the bar's field to show.
+    adopted: Option<crate::window_toolbar::AdoptedQuery>,
     /// What the shell was last told on this connection.
     sent: Option<WindowOffer>,
     /// The app declared window-bar slots when last looked at: its History
@@ -159,6 +162,7 @@ impl App {
             count: self.floating.window_bar.driver.count().map(Into::into),
             history: self.window_history_control().map(Into::into),
             find,
+            adopted: self.floating.window_bar.adopted.clone(),
         }
     }
 
@@ -174,10 +178,10 @@ impl App {
             self.drive_window_search(None, false);
         }
         let offer = self.window_offer();
-        if self.floating.window_bar.sent == Some(offer) {
+        if self.floating.window_bar.sent.as_ref() == Some(&offer) {
             return None;
         }
-        self.floating.window_bar.sent = Some(offer);
+        self.floating.window_bar.sent = Some(offer.clone());
         Some(offer)
     }
 
@@ -257,6 +261,7 @@ impl App {
                 let touched = self.drive_window_search(None, true);
                 self.floating.window_bar.query.clear();
                 self.floating.window_bar.options = FindOptions::default();
+                self.floating.window_bar.adopted = None;
                 touched
             }
             ToolbarEvent::History => match self.window_history_control() {
@@ -290,6 +295,18 @@ impl App {
             step,
             finishing,
         );
+        if let Some((query, options)) = bar.driver.take_adopted() {
+            // The document went to a match on its own: the search runs its
+            // query now, and the bar's field shows it.
+            query.clone_into(&mut bar.query);
+            bar.options = options;
+            let serial = bar.adopted.as_ref().map_or(1, |shown| shown.serial + 1);
+            bar.adopted = Some(crate::window_toolbar::AdoptedQuery {
+                serial,
+                query,
+                options,
+            });
+        }
         self.window_search_touched(touched);
         touched
     }

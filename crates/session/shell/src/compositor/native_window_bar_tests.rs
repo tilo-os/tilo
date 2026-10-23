@@ -144,7 +144,7 @@ fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_his
         ..WindowOffer::default()
     };
     app.send(&FloatingSurfaceClientMessage::WindowOffer {
-        offer,
+        offer: offer.clone(),
         instance: None,
     })
     .expect("send the offer");

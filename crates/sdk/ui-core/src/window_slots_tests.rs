@@ -56,7 +56,7 @@ fn the_bars_search_and_history_go_to_the_app_that_offered_its_window() {
         ..WindowOffer::default()
     };
     // Notes declares no slots, only what its window offers the bar.
-    assert!(toolbars.offer(3, 52, offer));
+    assert!(toolbars.offer(3, 52, offer.clone()));
     assert!(
         !toolbars.offer(3, 52, offer),
         "an equal offer is nothing new"

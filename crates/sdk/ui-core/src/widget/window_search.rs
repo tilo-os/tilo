@@ -165,6 +165,9 @@ pub struct SearchDriver {
     /// The query a list was last narrowed to.
     applied: Option<String>,
     count: Option<FilterCount>,
+    /// A find the document ran on its own that the search took over, until
+    /// the field it drives from takes its query ([`Self::take_adopted`]).
+    adopted: Option<(String, FindOptions)>,
 }
 
 impl SearchDriver {
@@ -213,6 +216,14 @@ impl SearchDriver {
         self.abilities = FindAbilities::default();
         self.applied = None;
         self.count = None;
+        self.adopted = None;
+    }
+
+    /// The query and options of a find the document ran on its own
+    /// ([`Findable::take_own_find`]) that the last drive took over: the
+    /// field shows that query and drives with it from now on.
+    pub fn take_adopted(&mut self) -> Option<(String, FindOptions)> {
+        self.adopted.take()
     }
 
     /// Carry `query` under `options` to the app's `root`, step when asked,
@@ -232,6 +243,8 @@ impl SearchDriver {
             InPlace::Document => {
                 let session = &mut self.session;
                 let abilities = &mut self.abilities;
+                let adopted = &mut self.adopted;
+                let mut shown = query.to_owned();
                 with_findable(root, &mut |target: &mut dyn Findable| {
                     *abilities = FindAbilities::of(target);
                     let options = abilities.allow(options);
@@ -240,7 +253,15 @@ impl SearchDriver {
                         touched = true;
                         return;
                     }
-                    if session.is_stale(query, options) {
+                    if let Some(own) = target.take_own_find() {
+                        // The document went to a match on its own: the
+                        // search runs its query from that match on.
+                        let options = abilities.allow(own.options);
+                        session.search(target, &own.query, options, Some(own.current));
+                        shown.clone_from(&own.query);
+                        *adopted = Some((own.query, options));
+                        touched = true;
+                    } else if session.is_stale(query, options) {
                         session.search(target, query, options, Some(0));
                         touched = true;
                     } else if session.content_moved(target) {
@@ -256,7 +277,7 @@ impl SearchDriver {
                         touched = true;
                     }
                 });
-                self.count = (!query.is_empty() && !finishing).then(|| {
+                self.count = (!shown.is_empty() && !finishing).then(|| {
                     let (current, total) = session.position().unwrap_or((0, session.matches()));
                     FilterCount::new(current, total)
                 });
@@ -495,6 +516,9 @@ pub struct WindowSearch {
     replace: Option<bool>,
     /// The options the app in its own process was last sent.
     options_sent: Option<FindOptions>,
+    /// The last find the app in its own process took over that the field
+    /// shows ([`Self::set_remote_adopted`]).
+    adopted_serial: Option<u64>,
     /// The search closed and the app has not yet been told.
     finishing: bool,
     requests: Vec<WindowSearchRequest>,
@@ -544,6 +568,7 @@ impl WindowSearch {
             replace_wanted: false,
             replace: None,
             options_sent: None,
+            adopted_serial: None,
             finishing: false,
             requests: Vec::new(),
             motion: EffectiveMotion::default(),
@@ -725,6 +750,7 @@ impl WindowSearch {
         self.sent = None;
         // An app in its own process opens each search on the defaults.
         self.options_sent = Some(FindOptions::default());
+        self.adopted_serial = None;
         self.abilities = FindAbilities::default();
         self.replace = None;
         self.replace_wanted = false;
@@ -890,6 +916,33 @@ impl WindowSearch {
         events
     }
 
+    /// Show `query` under `options` in the open search, as the find the
+    /// document ran on its own that the search took over: the field holds
+    /// it (selected, so typing replaces it) and the search runs it from now
+    /// on.
+    fn show_query(&mut self, query: &str, options: FindOptions) {
+        if self.field.value() != query {
+            self.field.set_query(query);
+        }
+        if self.keyboard && !self.replacing {
+            self.field.select_all();
+        }
+        self.options = options;
+    }
+
+    /// The app in its own process took over a find its document ran on its
+    /// own ([`crate::window_toolbar::AdoptedQuery`]): the field shows it, and
+    /// it is what the app was last sent, so it is not sent back.
+    pub fn set_remote_adopted(&mut self, adopted: &crate::window_toolbar::AdoptedQuery) {
+        if !self.remote || !self.is_open() || self.adopted_serial == Some(adopted.serial) {
+            return;
+        }
+        self.adopted_serial = Some(adopted.serial);
+        self.show_query(&adopted.query, adopted.options);
+        self.sent = Some(adopted.query.clone());
+        self.options_sent = Some(adopted.options);
+    }
+
     /// The count an app in its own process answered with.
     pub fn set_remote_count(&mut self, count: Option<FilterCount>) {
         if self.remote && self.is_open() {
@@ -983,6 +1036,9 @@ impl WindowSearch {
         let finishing = std::mem::take(&mut self.finishing);
         let options = self.options;
         let mut touched = self.driver.drive(root, &query, options, step, finishing);
+        if let Some((query, options)) = self.driver.take_adopted() {
+            self.show_query(&query, options);
+        }
         if !finishing && self.in_place == InPlace::Document {
             let abilities = self.driver.abilities();
             if abilities != self.abilities || self.replace_wanted {
@@ -992,6 +1048,7 @@ impl WindowSearch {
         if let Some(all) = self.replace.take()
             && !finishing
         {
+            let query = self.field.value().to_owned();
             let with = self.panel.replace_field.value().to_owned();
             touched |= self.driver.replace(root, &query, options, &with, all);
         }
@@ -1925,6 +1982,8 @@ mod tests {
         found: usize,
         current: Option<usize>,
         cleared: bool,
+        /// A find the document ran on its own, for the search to take over.
+        own: Option<crate::widget::find_bar::OwnFind>,
     }
 
     impl Findable for Doc {
@@ -1948,6 +2007,9 @@ mod tests {
             self.cleared = true;
             self.found = 0;
             self.current = None;
+        }
+        fn take_own_find(&mut self) -> Option<crate::widget::find_bar::OwnFind> {
+            self.own.take()
         }
     }
 
@@ -2041,6 +2103,72 @@ mod tests {
         assert!(search.drive(&mut doc));
         assert!(doc.cleared, "closing stops the highlights");
         assert_eq!(search.in_place(), InPlace::Nothing);
+    }
+
+    #[test]
+    fn a_find_the_document_ran_on_its_own_shows_its_query_and_steps_on_from_its_match() {
+        let mut doc = Doc {
+            text: "Cat cat concat cat".into(),
+            ..Doc::default()
+        };
+        let mut search = WindowSearch::new();
+        search.open(InPlace::Document, MotionSource::Keyboard);
+        search.drive(&mut doc);
+
+        // An action went to the third match of "cat" (an agent's result).
+        let whole_word = FindOptions {
+            whole_word: true,
+            ..FindOptions::default()
+        };
+        doc.own = Some(crate::widget::find_bar::OwnFind {
+            query: "cat".into(),
+            options: whole_word,
+            current: 2,
+        });
+        assert!(search.drive(&mut doc));
+        assert_eq!(search.query(), "cat", "the field shows the query");
+        assert_eq!(search.options(), whole_word, "and its options");
+        assert_eq!(search.position(), Some((3, 4)), "the match it went to");
+        assert_eq!(search.count(), Some(FilterCount::new(3, 4)));
+        assert_eq!(doc.current, Some(2), "the view stays on that match");
+        assert!(
+            !search.drive(&mut doc),
+            "the field's query is the one found: nothing runs again"
+        );
+
+        search.step(true);
+        search.drive(&mut doc);
+        assert_eq!(search.position(), Some((4, 4)), "it steps on from there");
+        assert_eq!(doc.current, Some(3));
+    }
+
+    #[test]
+    fn an_app_in_its_own_process_shows_the_find_it_took_over_without_sending_it_back() {
+        use crate::window_toolbar::{AdoptedQuery, ToolbarEvent};
+        let mut search = WindowSearch::new();
+        search.open_remote(InPlace::Document, MotionSource::Keyboard);
+        let _ = search.take_remote_events();
+        let adopted = AdoptedQuery {
+            serial: 1,
+            query: "cat".into(),
+            options: FindOptions::default(),
+        };
+        search.set_remote_adopted(&adopted);
+        assert_eq!(search.query(), "cat", "the field shows the app's query");
+        assert!(
+            !search
+                .take_remote_events()
+                .iter()
+                .any(|event| matches!(event, ToolbarEvent::Search { .. })),
+            "the app already runs it"
+        );
+        typed(&mut search, "dog");
+        search.set_remote_adopted(&adopted);
+        assert_eq!(
+            search.query(),
+            "dog",
+            "a find already shown never overwrites what is typed since"
+        );
     }
 
     #[test]

@@ -495,7 +495,7 @@ pub enum HistoryOffer {
 /// What an app's window offers the bar's own controls: its search in place
 /// and the count of the open search, and its History control. Sent whenever
 /// it changes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowOffer {
     #[serde(default)]
     pub search: SearchOffer,
@@ -512,6 +512,23 @@ pub struct WindowOffer {
         skip_serializing_if = "crate::widget::FindAbilities::is_plain"
     )]
     pub find: crate::widget::FindAbilities,
+    /// The last find the app's document ran on its own that its search took
+    /// over ([`crate::widget::Findable::take_own_find`]): the bar's field
+    /// shows its query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopted: Option<AdoptedQuery>,
+}
+
+/// A find an app's document ran on its own (an action went to a match) that
+/// the open search took over, for the bar's field to show. `serial` tells one
+/// such find from the next, so a find already shown never overwrites what the
+/// person typed since.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdoptedQuery {
+    pub serial: u64,
+    pub query: String,
+    #[serde(default)]
+    pub options: crate::widget::FindOptions,
 }
 
 /// What an app's chord asks of its window's search: Find (Ctrl+F, ⌘F), or
@@ -1157,6 +1174,11 @@ mod tests {
                 regex: true,
                 hex: false,
             },
+            adopted: Some(AdoptedQuery {
+                serial: 2,
+                query: "relay".into(),
+                options: crate::widget::FindOptions::default(),
+            }),
         };
         let wire = serde_json::to_string(&offer).unwrap();
         assert_eq!(serde_json::from_str::<WindowOffer>(&wire).unwrap(), offer);

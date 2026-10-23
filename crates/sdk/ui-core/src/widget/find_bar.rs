@@ -131,6 +131,18 @@ impl FindMatch {
     }
 }
 
+/// A find a view ran on its own rather than through the window's search: an
+/// action went to a match of `query` (an agent's "go to result"). The
+/// window's search shows it: its field holds the query, and it steps on from
+/// match `current`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnFind {
+    pub query: String,
+    pub options: FindOptions,
+    /// The 0-based match the view shows.
+    pub current: usize,
+}
+
 /// A view whose content can be searched in place.
 pub trait Findable {
     /// Every match of `query` under `options`, in reading order, and keep
@@ -210,7 +222,17 @@ pub trait Findable {
     fn take_engine_results(&mut self) -> Option<(usize, Option<usize>)> {
         None
     }
+
+    /// The find this view ran on its own since the last call ([`OwnFind`]),
+    /// which the window's search takes over: it shows the query and keeps
+    /// the match the view went to.
+    fn take_own_find(&mut self) -> Option<OwnFind> {
+        None
+    }
 }
+
+/// Width of the outline that tells the current match from the others.
+const CURRENT_MATCH_OUTLINE: f64 = 1.5;
 
 /// Paint one match highlight over `rect`, the span of the matched glyphs —
 /// never a whole line or block. Every match is a wash of the searcher's own
@@ -227,21 +249,27 @@ pub fn paint_find_match(
         return;
     }
     let intent = &theme.tokens.colors.intent;
-    let shape = RoundedRect::from_rect(
-        rect.inflate(1.0, 0.0),
-        f64::from(theme.tokens.radii.detail) / 2.0,
-    );
+    // Exactly the matched glyphs' span: a padded box runs into the glyph
+    // after the match.
+    let radius = f64::from(theme.tokens.radii.detail) / 2.0;
+    let shape = RoundedRect::from_rect(rect, radius);
     if current {
         use crate::color_compat::ColorCompat;
         let strong = intent.selection_tint.with_alpha_factor(2.0);
         scene.fill(Fill::NonZero, transform, strong, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.5),
-            transform,
-            intent.accent_ink,
-            None,
-            &shape,
-        );
+        // The outline lies inside the span, so it never reaches past it.
+        let half = CURRENT_MATCH_OUTLINE / 2.0;
+        if rect.width() > CURRENT_MATCH_OUTLINE && rect.height() > CURRENT_MATCH_OUTLINE {
+            let outline =
+                RoundedRect::from_rect(rect.inflate(-half, -half), (radius - half).max(0.0));
+            scene.stroke(
+                &Stroke::new(CURRENT_MATCH_OUTLINE),
+                transform,
+                intent.accent_ink,
+                None,
+                &outline,
+            );
+        }
     } else {
         scene.fill(
             Fill::NonZero,
@@ -1651,6 +1679,53 @@ impl Widget for FindScope {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
+
+    /// A match highlight paints the matched span and nothing past it: the
+    /// glyph after a match keeps its own ground, the current match's outline
+    /// included.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_match_highlight_paints_exactly_the_matched_span() {
+        let theme = Theme::dark();
+        let (w, h) = (64_u32, 32_u32);
+        let span = Rect::new(10.0, 8.0, 40.0, 24.0);
+        for current in [false, true] {
+            let mut scene = Scene::new();
+            paint_find_match(&mut scene, Affine::IDENTITY, span, current, &theme);
+            let mut pixels = vec![0_u8; (w * h * 4) as usize];
+            {
+                let mut target = tilo_cpu_raster::Target::new(&mut pixels, w, h, w as usize * 4)
+                    .expect("a target");
+                tilo_cpu_raster::CpuRasterizer::default().render(
+                    scene.encoding(),
+                    &mut target,
+                    None,
+                    tilo_cpu_raster::color::AlphaColor::from_rgba8(0, 0, 0, 255),
+                );
+            }
+            let painted = |x: u32, y: u32| {
+                let at = ((y * w + x) * 4) as usize;
+                pixels[at..at + 3].iter().any(|channel| *channel != 0)
+            };
+            assert!(painted(25, 16), "the span is painted (current: {current})");
+            for y in 0..h {
+                for x in [9, 40] {
+                    assert!(
+                        !painted(x, y),
+                        "nothing is painted beside the span at ({x}, {y}) (current: {current})"
+                    );
+                }
+            }
+            for x in 0..w {
+                for y in [7, 24] {
+                    assert!(
+                        !painted(x, y),
+                        "nothing is painted above or below the span at ({x}, {y}) (current: {current})"
+                    );
+                }
+            }
+        }
+    }
 
     /// A text a find runs over: case-folding and whole-word aware, keeping
     /// what it found and which match is current.

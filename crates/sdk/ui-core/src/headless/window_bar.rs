@@ -159,6 +159,12 @@ impl FrameHarness {
         self.window_search.position()
     }
 
+    /// The query the window bar's search field shows.
+    #[must_use]
+    pub fn window_search_query(&self) -> &str {
+        self.window_search.query()
+    }
+
     /// Whether the window bar's search offers Replace on what the window
     /// shows.
     #[must_use]

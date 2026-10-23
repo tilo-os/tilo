@@ -224,7 +224,7 @@ impl ShellOverlayHost {
             }
             Message::EditLocation { instance } => self.edit_app_location(app_id, *instance),
             Message::WindowOffer { offer, instance } => {
-                self.offer_app_window(connection, app_id, *instance, *offer)
+                self.offer_app_window(connection, app_id, *instance, offer.clone())
             }
             Message::OpenSearch { instance, opening } => {
                 self.open_app_window_search(app_id, *instance, *opening)
