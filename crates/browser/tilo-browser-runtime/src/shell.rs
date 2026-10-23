@@ -476,6 +476,8 @@ pub(crate) struct BrowserShell {
     people_open: bool,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
+    /// Asks again while the card shows a code, until the account links.
+    linking: tilo_app::linked_accounts::LinkingRecheck,
     /// The person whose recent summary the popover shows.
     expanded: Option<String>,
     /// The pointer, in logical pixels, for the popover's targets.
@@ -570,6 +572,7 @@ impl BrowserShell {
             people: CollaboratorsOverlay::default(),
             people_open: false,
             linked_seen: Cell::new(0),
+            linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             expanded: None,
             cursor: None,
             shortcuts: ShortcutConfig::default(),
@@ -1035,6 +1038,12 @@ impl BrowserShell {
     /// room's host run them, and show the linked accounts again when an
     /// answer changed them. Whether anything changed.
     fn follow_room_actions(&mut self) -> bool {
+        // Before the requests are taken, so the asks it makes go out now.
+        self.linking.follow(
+            &self.chrome.shared.linked,
+            self.profile.is_open(),
+            ui::time::now(),
+        );
         let asked = self.chrome.shared.room_actions.take_requests();
         let changed = !asked.is_empty();
         self.requests
@@ -1903,6 +1912,7 @@ impl Widget for BrowserShell {
             self.navigator
                 .next_wake_deadline(&self.navigator_frame, ui::time::now()),
         )
+        .chain(self.linking.due())
         .min()
     }
 
