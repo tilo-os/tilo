@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createVoiceCall, GRANT_DEADLINE_MS, NO_GRANT} from './voice.mjs';
+import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 
 const CALL = 'c'.repeat(64);
@@ -72,6 +72,19 @@ function fixture() {
   const call = createVoiceCall({signalling, audio, transport, environment, clock});
   const event = value => listener?.(value);
   return {sent, audio, carriers, transport, timers, clock, environment, call, event};
+}
+
+/** Run the grant deadline's looks on a page that runs, each one look
+ * later: how many looks it took to end. */
+function runDeadline({timers, clock}) {
+  let looks = 0;
+  for (let seen = 0; ; looks++) {
+    const index = timers.findLastIndex(timer => timer.delay === GRANT_LOOK_MS);
+    if (index < seen) return looks;
+    seen = index + 1;
+    clock.at += GRANT_LOOK_MS;
+    timers[index].callback();
+  }
 }
 
 const frame = n => ({timestamp: BigInt(n * 960), duration: 960, payload: Uint8Array.of(n)});
@@ -162,7 +175,7 @@ test('a network change reopens the carrier at once; refusals back off', async ()
   await drain();
   timers.at(-1).callback();
   await drain();
-  assert.deepEqual(timers.map(timer => timer.delay).filter(delay => delay !== GRANT_DEADLINE_MS), [250, 1000]);
+  assert.deepEqual(timers.map(timer => timer.delay).filter(delay => delay !== GRANT_LOOK_MS), [250, 1000]);
 });
 
 test('speaking follows the measured levels, held briefly', async () => {
@@ -214,9 +227,8 @@ test('a join the host never grants ends at the deadline with a reason; a grant i
   const late = fixture();
   late.call.join(CALL);
   await drain();
-  const deadline = late.timers.find(timer => timer.delay === GRANT_DEADLINE_MS);
-  assert.ok(deadline, 'a join waits for its grant with a deadline');
-  deadline.callback();
+  assert.ok(late.timers.some(timer => timer.delay === GRANT_LOOK_MS), 'a join waits for its grant with a deadline');
+  assert.equal(runDeadline(late), Math.ceil(GRANT_DEADLINE_MS / GRANT_LOOK_MS), 'the deadline is the time the page ran');
   await drain();
   assert.equal(late.call.state.phase, 'ended');
   assert.equal(late.call.state.reason, NO_GRANT);
@@ -229,7 +241,7 @@ test('a join the host never grants ends at the deadline with a reason; a grant i
   await drain();
   granted.event({kind: 'granted', grant: grantFor()});
   await drain();
-  granted.timers.find(timer => timer.delay === GRANT_DEADLINE_MS).callback();
+  granted.timers.find(timer => timer.delay === GRANT_LOOK_MS).callback();
   await drain();
   assert.equal(granted.call.state.phase, 'live');
   assert.equal(granted.call.state.admitted, true);

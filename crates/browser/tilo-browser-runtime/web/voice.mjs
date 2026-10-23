@@ -39,6 +39,14 @@ const RECONNECT_MS = [250, 1000, 3000, 10_000];
  * that never answers ends the call with a reason, never a call that stays
  * joining. */
 export const GRANT_DEADLINE_MS = 15_000;
+/** How often the grant deadline looks at the time the page ran. A look
+ * that comes on time counts its interval; one that comes late counts it
+ * less by its lateness, and one a whole interval late or more counts
+ * nothing: the page stood still or crawled (a busy page beside a call:
+ * software rendering while a video loads, a background tab), the session's
+ * beats and grants with it, so that time is no sign that the host will not
+ * answer. */
+export const GRANT_LOOK_MS = 2_000;
 /** Why a join ended when no grant came in time. */
 export const NO_GRANT = 'no grant arrived in time';
 
@@ -394,20 +402,41 @@ export function createVoiceCall({
     grantTimer = undefined;
   }
 
+  /** `expire` once the page ran `GRANT_DEADLINE_MS` without a grant,
+   * looked at every `GRANT_LOOK_MS`. */
+  function startGrantDeadline(expire) {
+    clearGrantDeadline();
+    let ran = 0;
+    let last = now();
+    const look = () => {
+      const at = now();
+      const late = Math.max(at - last - GRANT_LOOK_MS, 0);
+      ran += Math.max(GRANT_LOOK_MS - late, 0);
+      last = at;
+      if (ran >= GRANT_DEADLINE_MS) {
+        grantTimer = undefined;
+        expire();
+        return;
+      }
+      grantTimer = setTimer(look, GRANT_LOOK_MS);
+    };
+    grantTimer = setTimer(look, GRANT_LOOK_MS);
+  }
+
   /** The room took the carrier's admission away (revoked it, or refused
    * its token): nothing is sent or played on it any more. The session
    * still holds the participation and joins afresh when the host forgot it
    * (a page that stood still past its lifetime, a token renewed meanwhile),
-   * so the call waits for that grant; one that does not come in time ends
-   * the call, and an end the session reports ends it at once. */
+   * so the call waits for that grant; one that does not come while the
+   * page runs for the deadline ends the call, and an end the session
+   * reports ends it at once. */
   function admissionLost(call, reason) {
     if (call !== state.call) return;
     stopAll();
     update({phase: 'reconnecting', carrier: 'waiting', camera: false, screen: false, participants: []});
-    grantTimer = setTimer(() => {
-      grantTimer = undefined;
+    startGrantDeadline(() => {
       if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, reason);
-    }, GRANT_DEADLINE_MS);
+    });
   }
 
   function admissionEnded(call, reason) {
@@ -457,10 +486,9 @@ export function createVoiceCall({
       emit();
       void startAudio();
       signalling.join(call);
-      grantTimer = setTimer(() => {
-        grantTimer = undefined;
+      startGrantDeadline(() => {
         if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, NO_GRANT);
-      }, GRANT_DEADLINE_MS);
+      });
     },
     leave() {
       if (state.phase === 'idle') return;
