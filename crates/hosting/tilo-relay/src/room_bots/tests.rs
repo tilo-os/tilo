@@ -1273,22 +1273,10 @@ async fn chat_layout(rooms: &Rooms, room: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// A bridge run the room refuses part of leaves the import half done: the
-/// category it made stands, the moves after it were dropped. The run goes
-/// again from the room's records and finishes the layout, the channels
-/// under the server's category as in Discord.
-#[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
-)]
-async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_again() {
+/// Connect `room` to the Discord server the bridge last saw as `goal`, and
+/// `chat` holding `general` and `voice`.
+async fn bridged_lounge(rooms: &Rooms, room: &str, cert: &DeviceCert) {
     use tilo_resource::Fields as _;
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
-    let room = rooms.create("Lounge").await.unwrap().room;
     let link = discord::DiscordLink {
         guild_id: "1000".into(),
         only_channel: None,
@@ -1296,14 +1284,14 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
         mirror_channels: false,
         map_roles: false,
     };
-    discord::connect(&rooms, &room, &cert, &link).await.unwrap();
+    discord::connect(rooms, room, cert, &link).await.unwrap();
     let catalogue = AppCatalogue::native();
     // The server as the bridge last saw it: `goal`, and `chat` holding
     // `general` and `voice`.
     rooms
         .author_application(
-            &room,
-            &cert,
+            room,
+            cert,
             &catalogue,
             discord::APP,
             &room_record(&catalogue, discord::APP),
@@ -1336,6 +1324,25 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
         )
         .await
         .unwrap();
+}
+
+/// A bridge run the room refuses part of leaves the import half done: the
+/// category it made stands, the moves after it were dropped. The run goes
+/// again from the room's records and finishes the layout, the channels
+/// under the server's category as in Discord.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_again() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    bridged_lounge(&rooms, &room, &cert).await;
+    let catalogue = AppCatalogue::native();
     let mut runner = member_runner(
         &rooms,
         &room,

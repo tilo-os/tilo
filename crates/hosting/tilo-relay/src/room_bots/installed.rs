@@ -295,7 +295,7 @@ impl BotRunner {
                 true
             }
             Some(n) => {
-                *left = Some(n - 1);
+                *left = Some(n.saturating_sub(1));
                 false
             }
             None => false,
