@@ -271,6 +271,79 @@ pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Resul
     Ok(())
 }
 
+/// The messages a chat record of version 1 or 2, or from before its
+/// record was a model, kept in itself under `messages`, which its upgrade
+/// leaves in place: read as the record would have shown them, each under
+/// its own id, by its own author, at its own time, oldest first. Version 1
+/// and 2 kept a [`Collection`] of messages with some values as JSON text;
+/// before the model, each channel kept a list of message maps.
+pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value};
+    use ui::tilo_resource::read_key;
+    let Ok(Some(map)) = map_at(doc, &ROOT, "messages") else {
+        return Collection::default();
+    };
+    let mut upgraded = doc.clone();
+    if let Ok(items) = collection_items(&upgraded, &ROOT, "messages") {
+        for message in items {
+            let _ = upgrade_message(&mut upgraded, &message);
+        }
+    }
+    let mut kept: Collection<Message> = read_key(&upgraded, &ROOT, "messages").unwrap_or_default();
+    let mut listed = Vec::new();
+    for channel in doc.keys(&map).collect::<Vec<_>>() {
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&map, channel.as_str()) else {
+            continue;
+        };
+        for index in 0..doc.length(&list) {
+            let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index) else {
+                continue;
+            };
+            let text = |key: &str| read_key::<String>(doc, &row, key).unwrap_or_default();
+            let flag = |key: &str| read_key::<bool>(doc, &row, key).unwrap_or_default();
+            let id = text("id");
+            if id.is_empty() {
+                continue;
+            }
+            let parent = text("parent");
+            let mut reactions = ui::tilo_resource::Set::new();
+            if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&row, "reactions") {
+                for index in 0..doc.length(&list) {
+                    if let Ok(Some((Value::Object(ObjType::Map), reaction))) = doc.get(&list, index)
+                    {
+                        let emoji = read_key::<String>(doc, &reaction, "emoji").unwrap_or_default();
+                        let user = read_key::<String>(doc, &reaction, "user").unwrap_or_default();
+                        if !emoji.is_empty() && !user.is_empty() {
+                            reactions.insert(Reacted { emoji, user });
+                        }
+                    }
+                }
+            }
+            listed.push((
+                Id::from_raw(id),
+                Message {
+                    channel: Id::from_raw(channel.as_str()),
+                    author: Atom(text("author")),
+                    ts: read_key::<i64>(doc, &row, "ts").unwrap_or_default(),
+                    text: text("text"),
+                    edited: flag("edited"),
+                    parent: (!parent.is_empty()).then(|| Id::from_raw(parent)),
+                    pinned: flag("pinned"),
+                    reactions,
+                    ..Message::default()
+                },
+            ));
+        }
+    }
+    for (id, message) in listed {
+        if !kept.contains(&id) {
+            kept.push(id, message);
+        }
+    }
+    kept.sort_by(|a, b| a.ts.cmp(&b.ts));
+    kept
+}
+
 /// [`upgrade_part`] of one message stored at `message`.
 fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<(), ModelError> {
     use crate::model::{AgentReasoning, AgentStepOutcome, Attachment};
