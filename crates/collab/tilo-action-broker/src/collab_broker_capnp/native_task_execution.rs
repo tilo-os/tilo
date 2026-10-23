@@ -11,15 +11,9 @@ use tokio::sync::mpsc;
 #[path = "native_task_tests.rs"]
 mod tests;
 
-/// How often a held re-ask samples its run's cancellation. The task owner
-/// signals no change for it, so it is read in-process here, at the cadence
-/// the agent used to ask across the connection; reading the run cancelled
-/// cancels its children, which ends the hold.
-const CANCELLATION_SAMPLE: std::time::Duration = std::time::Duration::from_millis(50);
-
 /// What a native task's re-ask of its child asked to wait for: the child
-/// moving past `seen` (with no `seen`, settling), or a child that waits for
-/// its person being answered, until `until`.
+/// moving past `seen` (with no `seen`, settling) until `until`, or a child
+/// that waits for its person being decided.
 #[derive(Clone, Copy)]
 pub(super) struct ChildWait {
     seen: Option<tilo_actions::remote::UpdateMark>,
@@ -59,6 +53,18 @@ impl ChildWait {
                 .seen
                 .is_some_and(|seen| tilo_actions::remote::UpdateMark::of(update) != seen)
     }
+}
+
+/// A watch that notifies the returned wake on the next
+/// [`tilo_identity_host::policy_change`] announcement after each arming.
+fn decision_watch() -> (
+    Arc<tokio::sync::Notify>,
+    tilo_identity_host::policy_change::Watch,
+) {
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let notify = Arc::clone(&wake);
+    let watch = tilo_identity_host::policy_change::Watch::new(move || notify.notify_one());
+    (wake, watch)
 }
 
 /// A native task's request about its child: the run, the child's stable
@@ -131,39 +137,47 @@ impl CapnpBrokerState {
             return Ok(observed);
         }
         // A child that waits for its person is held, when the re-ask asked
-        // to be, until what decides it is announced changed: the person
-        // answered the run's question, a grant was given or revoked, the run
-        // stopped. Then it is decided afresh.
-        let wake = Arc::new(tokio::sync::Notify::new());
-        let watch = wait.map(|_| {
-            let wake = Arc::clone(&wake);
-            tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
-        });
+        // to be, until it is decided: the person answered the run's
+        // question, a grant was given or revoked, or the run stopped. The
+        // hold is this connection's call, so it also ends with the
+        // connection; nothing ends it on a clock.
+        if wait.is_none() {
+            return self.start_native_child(reask).await;
+        }
+        let (wake, watch) = decision_watch();
         loop {
-            if let Some(watch) = &watch {
-                let _ = watch.arm();
-            }
-            let error = match self.start_native_child(reask).await {
+            let _ = watch.arm();
+            match self.start_native_child(reask).await {
                 Err(error)
                     if crate::services::NativeTaskActionRequirement::awaits_confirmation(
                         &error.to_string(),
-                    ) =>
-                {
-                    error
-                }
+                    ) => {}
                 started => return started,
-            };
-            let Some(wait) = wait.filter(|wait| tokio::time::Instant::now() < wait.until) else {
-                return Err(error);
-            };
-            let recheck = if self.announces_decisions() {
-                wait.until
-            } else {
-                super::committed_document::next_unannounced_recheck().min(wait.until)
-            };
-            let _ = tokio::time::timeout_at(recheck, wake.notified()).await;
+            }
+            if self
+                .task_run_cancelled(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
+                .map_err(capnp::Error::failed)?
+            {
+                return Err(capnp::Error::failed(
+                    "the task was cancelled while its step waited for the person".into(),
+                ));
+            }
+            self.decision_may_change(&wake).await;
             let (route, identity) = admission;
             self.revalidate_admission(route, identity)?;
+        }
+    }
+
+    /// Until what decides a held re-ask may have changed: announced through
+    /// [`tilo_identity_host::policy_change`], which `wake` hears from a
+    /// [`decision_watch`] armed before the last look, or, on a host that
+    /// does not announce every such change, its next unannounced re-check.
+    async fn decision_may_change(&self, wake: &tokio::sync::Notify) {
+        if self.announces_decisions() {
+            wake.notified().await;
+        } else {
+            let recheck = super::committed_document::next_unannounced_recheck();
+            let _ = tokio::time::timeout_at(recheck, wake.notified()).await;
         }
     }
 
@@ -295,29 +309,24 @@ impl CapnpBrokerState {
         if let Some(current) = self.invocation_status(wire_id) {
             update = current;
         }
+        // The run stopping is announced with the publication that records
+        // it; reading it cancelled cancels the children, which ends the hold.
+        let (wake, watch) = decision_watch();
         let mut signalled = true;
         while !wait.arrived(&update) {
-            let now = tokio::time::Instant::now();
-            if now >= wait.until {
-                return;
+            let _ = watch.arm();
+            match self.task_run_cancelled(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
+            {
+                Ok(false) => {}
+                Ok(true) | Err(_) => return,
             }
-            let sample = CANCELLATION_SAMPLE.min(wait.until.saturating_duration_since(now));
             tokio::select! {
                 signal = changes.changed(), if signalled => {
-                    // A broker going away stops signalling: sample only.
+                    // A broker going away stops signalling.
                     signalled = signal.is_ok();
                 }
-                () = tilo_rt::sleep(sample) => {
-                    match self.task_run_cancelled(
-                        reask.peer_id,
-                        reask.agent_id,
-                        reask.run_id,
-                        reask.lease,
-                    ) {
-                        Ok(false) => {}
-                        Ok(true) | Err(_) => return,
-                    }
-                }
+                () = self.decision_may_change(&wake) => {}
+                () = tokio::time::sleep_until(wait.until) => return,
             }
             match self.invocation_status(wire_id) {
                 Some(current) => update = current,

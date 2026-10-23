@@ -3,21 +3,17 @@
 //! Where an operation asks first, the host answers the step
 //! [`tilo_actions::draft::AWAITING_CONFIRMATION`] and shows the person the
 //! step's draft on the issue. The step waits: it says so in the task's
-//! progress and asks again with the identical request, which the host holds
-//! until the person answers, a grant that decides the step changes or the
-//! run stops (it runs the step once the person confirmed it, as they edited
-//! it), and stops when the run is cancelled. Time spent waiting does not count against the
-//! task's time budget. A decline ([`tilo_actions::draft::DECLINED`]) ends the
-//! step with the person's reason, for the model to plan around.
+//! progress and asks once more with the identical request, which the host
+//! holds until the person answers, a grant that decides the step changes or
+//! the run stops; it runs the step once the person confirmed it, as they
+//! edited it. Time spent waiting does not count against the task's time
+//! budget. A decline ([`tilo_actions::draft::DECLINED`]) ends the step with
+//! the person's reason, for the model to plan around.
 
 use anyhow::Result;
-use tilo_actions::remote::MAX_REMOTE_WAIT;
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 
 use super::{CollabRequest, Session, TaskAction, TaskActionStop};
-
-/// How long past the host's longest hold its answer may take to arrive.
-const ANSWER_MARGIN: Duration = Duration::from_secs(10);
 
 /// Whether the host's `error` says the step waits for the person.
 pub(super) fn is_awaiting(error: &str) -> bool {
@@ -45,9 +41,8 @@ pub(super) fn step_failure(error: String) -> String {
 
 impl Session {
     /// Wait for the person to answer the paused step `action` with
-    /// `arguments` (child `invocation`): each ask is held by the host until
-    /// something that decides it changes, and asked again until the step
-    /// runs, is declined or the run is cancelled.
+    /// `arguments` (child `invocation`): one ask, held by the host until the
+    /// step runs, is declined or the run is cancelled.
     pub(super) fn await_confirmation(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -64,37 +59,30 @@ impl Session {
                 presentation: None,
             },
         )?;
-        let hold = u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX);
-        let outcome = loop {
-            if self.task_cancelled(run)? {
-                break Err(TaskActionStop::Cancelled(Some(
-                    "Cancelled while waiting for confirmation".into(),
-                )));
-            }
-            let request_id = self.next_request_id();
-            self.link.send(&CollabRequest::InvokeTaskAction {
-                request_id,
-                invocation,
-                run_id: run.run_id,
-                lease: self.task_lease(run),
-                peer_id: action.peer_id,
-                provider: action.provider.clone(),
-                resource: action.resource.clone(),
-                action: action.action.clone(),
-                arguments: arguments.clone(),
-                wait: Some(runtime_collab::TaskChildWait {
-                    wait_ms: hold,
-                    seen: tilo_actions::remote::UpdateMark::Accepted,
-                }),
-            })?;
-            // Waiting for the person does not count against the task's
-            // time budget, so neither does this answer's.
-            let answer_by = ui::time::now() + MAX_REMOTE_WAIT + ANSWER_MARGIN;
-            match self.task_action_result_until(request_id, answer_by)? {
-                Ok((_, update)) => break Ok(update),
-                Err(error) if is_awaiting(&error) => {}
-                Err(error) => break Err(TaskActionStop::Failed(step_failure(error))),
-            }
+        let request_id = self.next_request_id();
+        self.link.send(&CollabRequest::InvokeTaskAction {
+            request_id,
+            invocation,
+            run_id: run.run_id,
+            lease: self.task_lease(run),
+            peer_id: action.peer_id,
+            provider: action.provider.clone(),
+            resource: action.resource.clone(),
+            action: action.action.clone(),
+            arguments: arguments.clone(),
+            wait: Some(runtime_collab::TaskChildWait {
+                wait_ms: u32::MAX,
+                seen: tilo_actions::remote::UpdateMark::Accepted,
+            }),
+        })?;
+        // Waiting for the person does not count against the task's time
+        // budget, so neither does this answer's.
+        let outcome = match self.task_action_result_until(request_id, None)? {
+            Ok((_, update)) => Ok(update),
+            Err(_) if self.task_cancelled(run)? => Err(TaskActionStop::Cancelled(Some(
+                "Cancelled while waiting for confirmation".into(),
+            ))),
+            Err(error) => Err(TaskActionStop::Failed(step_failure(error))),
         };
         self.extend_deadline(paused);
         if outcome.is_ok() {

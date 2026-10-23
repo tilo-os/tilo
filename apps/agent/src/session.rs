@@ -768,31 +768,30 @@ impl Session {
         request_id: u64,
     ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
         let deadline = self.task_wait_deadline(Duration::from_secs(10));
-        self.task_action_result_until(request_id, deadline)
+        self.task_action_result_until(request_id, Some(deadline))
     }
 
     /// The broker's answer to task action request `request_id`, given by
-    /// `deadline`.
+    /// `deadline` if there is one.
     fn task_action_result_until(
         &mut self,
         request_id: u64,
-        deadline: Instant,
+        deadline: Option<Instant>,
     ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
+        const TURN_PUMP: Duration = Duration::from_millis(100);
         let mut deferred = Vec::new();
         loop {
             // Keep a streaming model turn moving while the step settles.
             self.pump_turn();
             let now = ui::time::now();
-            if now >= deadline {
+            if deadline.is_some_and(|deadline| now >= deadline) {
                 self.link.defer(deferred);
                 return Ok(Err(
                     "the broker did not answer the task action request".into()
                 ));
             }
-            match self
-                .link
-                .recv((deadline - now).min(Duration::from_millis(100)))?
-            {
+            let wait = deadline.map_or(TURN_PUMP, |deadline| (deadline - now).min(TURN_PUMP));
+            match self.link.recv(wait)? {
                 Some(CollabEvent::TaskActionInvocationResult {
                     request_id: received,
                     result,

@@ -1357,7 +1357,7 @@ async fn a_held_native_reask_is_answered_when_the_child_settles() {
 }
 
 /// Cancelling the run from Task Center ends a held re-ask promptly: the
-/// broker samples the run while it holds and cancels its children.
+/// stop is announced, and the broker reading it cancels the children.
 #[tokio::test(flavor = "current_thread")]
 async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
     const HOLD_MS: u32 = 5000;
@@ -1397,12 +1397,13 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
             holding(&f, before).await;
             assert!(!held.is_finished(), "held while the child runs");
             f.stop();
+            tilo_identity_host::policy_change::announce();
             let _answer = tilo_test_env::within("the cancelled re-ask's answer", held)
                 .await
                 .unwrap();
             assert!(
                 asked_at.elapsed() < Duration::from_millis(u64::from(HOLD_MS)),
-                "a cancelled run ends the hold at its next sample, not the hold's end"
+                "a cancelled run ends the hold when it is announced, not at the hold's end"
             );
             tokio::time::resume();
             assert!(

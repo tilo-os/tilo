@@ -398,9 +398,10 @@ pub struct TaskAction<'a> {
 }
 
 /// How a native task's re-ask of its own child may be held by the broker:
-/// until the child moves past `seen` or settles, a child that waits for its
-/// person is decided anew (answered, or a grant that decides it changed),
-/// the run is cancelled, or `wait_ms` (capped by the broker) passes.
+/// a running child until it moves past `seen` or settles, the run is
+/// cancelled, or `wait_ms` (capped by the broker) passes; a child that waits
+/// for its person until it is decided (answered, or a grant that decides it
+/// changed), the run stops or the connection closes, whatever `wait_ms`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskChildWait {
     pub wait_ms: u32,

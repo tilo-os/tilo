@@ -99,7 +99,8 @@ system and an entry in its history:
 
 The broker reads the tracker (`TrackerRuns`, served by the shell from the
 room's committed record) and delivers each going run to its agent under the
-native task lease: the instruction is the issue's title and description, the
+native task lease, as each publication of that record is announced
+(`policy_change`): the instruction is the issue's title and description, the
 model is the one the run captured from the issue (the agent's own without),
 the steering is the thread's messages to the run, and a run the tracker no
 longer holds as going is cancelled. The agent writes the run's reports, questions and
