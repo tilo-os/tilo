@@ -3433,6 +3433,9 @@ impl NotesApp {
     /// as well as after input.
     fn drain_header_requests(&mut self) {
         if self.header.new_note.take() {
+            // As Ctrl+N does: the new note opens with its title taking the
+            // keyboard, so the name comes first.
+            self.name_next_created = true;
             self.pending_events
                 .push(OutEvent::CreateChild { parent: None });
             self.self_dirty = true;
