@@ -578,6 +578,16 @@ impl ChatApp {
         Rect::new(v.x0 - left, v.y0 - top, v.x1 + right, v.y1 + bottom)
     }
 
+    /// How many are in the call, as its panel says it ("2 in call"). A call
+    /// that ended for a reason counts only who is still in it.
+    pub(crate) fn call_count_label(&self) -> String {
+        let n = self
+            .call_participants()
+            .len()
+            .saturating_sub(usize::from(!self.in_call()));
+        crate::i18n::t_args("chat-call-count", &[("count", n.into())])
+    }
+
     pub(crate) fn draw_huddle_bg(
         &self,
         scene: &mut Scene,
@@ -603,12 +613,7 @@ impl ChatApp {
             .map_or_else(|| "Call".into(), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
-        // A call that ended for a reason counts only who is still in it.
-        let n = self
-            .call_participants()
-            .len()
-            .saturating_sub(usize::from(!self.in_call()));
-        let count = format!("{n} in call");
+        let count = self.call_count_label();
         let count_style = local.text(TextRole::Caption).numeric();
         let count_w = width_of(tr, &count, &count_style);
         let inset = f64::from(sp.s4);

@@ -4911,6 +4911,21 @@ impl Widget for ChatApp {
             children.push(heading);
         }
         children.push(conversation);
+        // The call panel's count is painted in its title bar: read where it
+        // is drawn, and no stop for the keyboard.
+        if self.call.active
+            && let Some((title_bar, _)) = self
+                .hits
+                .iter()
+                .find(|(_, hit)| matches!(hit, Hit::CallDragHandle))
+        {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.call_count_label())
+                    .with_bounds(*title_bar)
+                    .with_hashed_key(("call-count", &self.call.channel)),
+            );
+        }
         if let Some(menu) = self.menu.as_ref()
             && let Some(menu_node) = menu.widget.accessibility()
         {
