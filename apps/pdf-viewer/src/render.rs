@@ -377,42 +377,7 @@ fn draw_page_paper(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect) -
     card_rr
 }
 
-/// The tiles available for a zoomed page this frame, and where the page's
-/// pixels at their zoom level land on screen.
-#[derive(Clone, Debug)]
-pub struct PageTiles {
-    pub placement: crate::tiles::PagePlacement,
-    /// Tiles of other zoom levels still held, each with its own screen
-    /// pixels per tile pixel, painted first (farthest level first) where the
-    /// current level's tiles have not arrived.
-    pub under: Vec<(f64, tilo_pdf::PixelRect, PenikoImage)>,
-    pub tiles: Vec<(tilo_pdf::PixelRect, PenikoImage)>,
-}
-
-/// Paint a zoomed page's tiles, each at its own pixel region, over whatever
-/// placeholder is already drawn.
-fn draw_page_tiles(scene: &mut Scene, base: Affine, tiles: &PageTiles) {
-    for (k, region, image) in &tiles.under {
-        let placement = crate::tiles::PagePlacement {
-            screen_per_px: *k,
-            ..tiles.placement
-        };
-        let (x0, y0, _, _) = placement.screen_rect(*region);
-        scene.draw_image(
-            image,
-            base * Affine::translate((x0, y0)) * Affine::scale_non_uniform(*k, *k),
-        );
-    }
-    let k = tiles.placement.screen_per_px;
-    for (region, image) in &tiles.tiles {
-        let (x0, y0, _, _) = tiles.placement.screen_rect(*region);
-        scene.draw_image(
-            image,
-            base * Affine::translate((x0, y0)) * Affine::scale_non_uniform(k, k),
-        );
-    }
-}
-
+pub use tilo_page_raster::tiles::PageTiles;
 /// Paint the raster backend's page bitmap (engine output) fitted into the
 /// card and centred — a page whose rotation or size differs from the card's
 /// keeps its aspect, matching the reader's page maps
@@ -635,7 +600,7 @@ pub fn draw_page(
             draw_page_raster_image(ctx.scene, base, card, img);
         }
         if let Some(tiles) = raster.tiles {
-            draw_page_tiles(ctx.scene, base, tiles);
+            tiles.paint(ctx.scene, base);
         }
     } else {
         draw_page_blocks(ctx, page, frame, found);

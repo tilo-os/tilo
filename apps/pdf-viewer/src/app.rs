@@ -80,13 +80,13 @@ pub(crate) const MOST_READ_PAGES: usize = 50;
 const ZOOM_MAX: f64 = 16.0;
 /// Rasterise pages at this multiple of their on-screen size so they stay
 /// crisp when the compositor scales the surface (and when zooming in a notch).
-const RASTER_SS: f64 = 2.0;
+const RASTER_SS: f64 = tilo_page_raster::SUPERSAMPLE;
 /// Max number of *new* (uncached) full-page renders a single frame may ask
 /// the worker for. A real page can cost tens-to-hundreds of ms, so capping
 /// this keeps the open→first-paint path to the single top page; the rest are
 /// asked for as results wake later frames. Cached pages are always drawn (a
 /// cache hit is ~free), so steady-state scrolling is unaffected.
-const MAX_NEW_PAGE_RASTERS_PER_FRAME: usize = 1;
+const MAX_NEW_PAGE_RASTERS_PER_FRAME: usize = tilo_page_raster::Admission::FRAME.pages;
 
 /// One frame's page imagery, keyed by 1-based page: whole-page bitmaps
 /// (placeholders under tiles for zoomed pages), rail thumbnails, and the
@@ -98,30 +98,7 @@ type RasterFrame = (
 );
 
 /// A tile the UI holds: displayed page (0-based), zoom level, column, row.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct UiTileKey {
-    page: usize,
-    level: crate::tiles::Level,
-    col: u32,
-    row: u32,
-}
-
-impl UiTileKey {
-    fn of(request: &crate::source::TileRequest) -> Self {
-        Self {
-            page: request.page,
-            level: request.level,
-            col: request.col,
-            row: request.row,
-        }
-    }
-}
-
-impl crate::tiles::LevelKey for UiTileKey {
-    fn level(&self) -> crate::tiles::Level {
-        self.level
-    }
-}
+pub(crate) type UiTileKey = crate::tiles::TileKey;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
@@ -164,7 +141,7 @@ fn pdf_save_request(suggested_name: &str) -> PickRequest {
 /// Same budget for rail thumbnails, which are also full engine page renders (a
 /// scanned page's thumbnail can cost 15-30ms). A couple per frame keeps the
 /// rail filling in briskly without the open frame paying for a whole rail-full.
-const MAX_NEW_THUMB_RASTERS_PER_FRAME: usize = 2;
+const MAX_NEW_THUMB_RASTERS_PER_FRAME: usize = tilo_page_raster::Admission::FRAME.thumbnails;
 /// How close (page points) a highlight drag must come to a text line before
 /// it snaps to text instead of falling back to a free-form rectangle.
 const SNAP_NEAR: f64 = 18.0;
@@ -453,10 +430,8 @@ pub struct PdfApp {
     raster_tile_batch: Vec<crate::source::TileRequest>,
     /// The page renders last handed to the worker, most important first.
     raster_render_batch: Vec<(usize, u32)>,
-    /// The scroll offset the last frame rasterised for, and the direction
-    /// the scroll last moved in (-1 up, +1 down): prefetch reaches ahead.
-    last_raster_scroll_y: f64,
-    scroll_heading: f64,
+    /// The direction the scroll last moved in: prefetch reaches ahead.
+    raster_heading: tilo_page_raster::reach::Heading,
     /// Whether the worker wakes this window when its results arrive.
     raster_wake_bound: bool,
     /// The view scrolled since the last presented frame, and nothing else
@@ -1086,8 +1061,7 @@ impl PdfApp {
             raster_tiles: crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES),
             raster_tile_batch: Vec::new(),
             raster_render_batch: Vec::new(),
-            last_raster_scroll_y: 0.0,
-            scroll_heading: 1.0,
+            raster_heading: tilo_page_raster::reach::Heading::default(),
             raster_wake_bound: false,
             scrolled: false,
             delivered_pages: Vec::new(),
@@ -4262,7 +4236,7 @@ impl PdfApp {
                 {
                     self.raster_tile_batch.retain(|queued| *queued != request);
                     if let Some(image) = image {
-                        self.raster_tiles.insert(UiTileKey::of(&request), image);
+                        self.raster_tiles.insert(request.key(), image);
                     }
                     self.delivered_pages.push(request.page);
                 }
@@ -9211,7 +9185,7 @@ mod tests {
         let canvas = app.canvas_rect;
         let p = tiles.placement;
         let (pw, ph) = crate::tiles::page_pixels(p.size, p.level);
-        let (px0, py0, px1, py1) = p.screen_rect(tilo_pdf::PixelRect {
+        let (px0, py0, px1, py1) = p.screen_rect(crate::tiles::PixelRect {
             x: 0,
             y: 0,
             width: pw,

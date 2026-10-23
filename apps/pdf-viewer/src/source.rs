@@ -719,7 +719,7 @@ impl RasterBackend {
     /// The width bucket `render` snaps `target_w` to. Exposed so the reader
     /// keys the worker's results with the exact bucket `render` uses.
     pub(crate) fn bucket_for(target_w: u32) -> u32 {
-        ((target_w / 24).max(1) * 24).clamp(96, 4096)
+        tilo_page_raster::bucket_for(target_w)
     }
 
     fn touch_cache(&mut self, key: RasterKey) {
@@ -852,7 +852,11 @@ impl RasterBackend {
         let region = crate::tiles::tile_region(size, level, col, row)?;
         let extra = tilo_pdf::Rotation::from_degrees(rotation).unwrap_or_default();
         let source = self.sources.get(slot.source)?;
-        let tile = tilo_pdf::Tile { col, row, region };
+        let tile = tilo_pdf::Tile {
+            col,
+            row,
+            region: crate::tiles::engine_rect(region),
+        };
         let t = ui::time::now();
         let bitmap = source
             .doc
@@ -1334,6 +1338,18 @@ pub struct TileRequest {
     pub row: u32,
 }
 
+impl TileRequest {
+    /// The tile this asks for, as the reader holds it.
+    pub fn key(&self) -> crate::tiles::TileKey {
+        crate::tiles::TileKey {
+            page: self.page,
+            level: self.level,
+            col: self.col,
+            row: self.row,
+        }
+    }
+}
+
 /// The tiles a viewer wants now, most important first. A batch *replaces*
 /// the viewer's queued tiles: after a scroll or zoom, tiles that left the
 /// viewport are never rendered ahead of the ones that entered it.
@@ -1719,11 +1735,11 @@ struct QueueState {
     open_order: VecDeque<u64>,
     controls: VecDeque<QueuedCommand>,
     renders: VecDeque<QueuedCommand>,
-    view_renders: SessionBatches<RenderRequest>,
-    tiles: SessionBatches<TileRequest>,
+    view_renders: tilo_page_raster::queue::BatchQueue<RenderRequest>,
+    tiles: tilo_page_raster::queue::BatchQueue<TileRequest>,
     texts: VecDeque<QueuedCommand>,
     /// Each session's current read-ahead text batch.
-    view_texts: SessionBatches<TextRequest>,
+    view_texts: tilo_page_raster::queue::BatchQueue<TextRequest>,
     reconciles: HashMap<u64, ReconcileRequest>,
     reconcile_order: VecDeque<u64>,
     saves: HashMap<u64, SaveRequest>,
@@ -2446,78 +2462,6 @@ fn next_page_work(state: &mut QueueState) -> Option<QueuedCommand> {
         state.prefer_text = !state.prefer_text;
     }
     command
-}
-
-/// Each session's current batch of one kind of page work, most important
-/// first, and the round-robin order sessions are served in, so one window's
-/// batch cannot starve another's.
-struct SessionBatches<T> {
-    queues: HashMap<u64, VecDeque<T>>,
-    order: VecDeque<u64>,
-}
-
-impl<T> Default for SessionBatches<T> {
-    fn default() -> Self {
-        Self {
-            queues: HashMap::new(),
-            order: VecDeque::new(),
-        }
-    }
-}
-
-impl<T: PartialEq> SessionBatches<T> {
-    /// Replace `session`'s batch; an empty one cancels it.
-    fn replace(&mut self, session: u64, items: VecDeque<T>) {
-        if items.is_empty() {
-            self.drop_session(session);
-            return;
-        }
-        if !self.queues.contains_key(&session) {
-            self.order.push_back(session);
-        }
-        self.queues.insert(session, items);
-    }
-
-    /// Queue one item behind `session`'s batch, unless it is already there
-    /// or the batch holds `cap`.
-    fn push(&mut self, session: u64, item: T, cap: usize) {
-        if !self.queues.contains_key(&session) {
-            self.order.push_back(session);
-        }
-        let queue = self.queues.entry(session).or_default();
-        if !queue.contains(&item) && queue.len() < cap {
-            queue.push_back(item);
-        }
-    }
-
-    fn drop_session(&mut self, session: u64) {
-        self.queues.remove(&session);
-        self.order.retain(|queued| *queued != session);
-    }
-
-    fn is_empty(&self) -> bool {
-        self.order.is_empty()
-    }
-
-    /// The next item, from the next session in turn.
-    fn pop(&mut self) -> Option<(u64, T)> {
-        while let Some(session) = self.order.pop_front() {
-            let Some(queue) = self.queues.get_mut(&session) else {
-                continue;
-            };
-            let Some(item) = queue.pop_front() else {
-                self.queues.remove(&session);
-                continue;
-            };
-            if queue.is_empty() {
-                self.queues.remove(&session);
-            } else {
-                self.order.push_back(session);
-            }
-            return Some((session, item));
-        }
-        None
-    }
 }
 
 fn drop_session_view_renders(state: &mut QueueState, session_id: u64) {
