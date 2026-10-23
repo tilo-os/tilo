@@ -2157,19 +2157,40 @@ mod retained_damage_tests {
             .unwrap();
             renderer.settle_bump_budget(device)
         };
-        let mut overflows = 0;
-        while render(&mut renderer) {
-            overflows += 1;
-            assert!(overflows <= 8, "the reservation must converge");
-        }
+        // The device is the process's one, which other threads poll too:
+        // one here polls it all along, so the counters' readback callbacks
+        // often run on it rather than on the thread that waits for them.
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (overflows, reported_complete) = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = device.poll(vello::wgpu::PollType::Poll);
+                }
+            });
+            // Stopped however this ends, so a failing assertion does not
+            // leave the scope waiting on the poller.
+            struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+            impl Drop for Stop<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            let _stop = Stop(&stop);
+            let mut overflows = 0;
+            while render(&mut renderer) {
+                overflows += 1;
+                assert!(overflows <= 8, "the reservation must converge");
+            }
+            let reported_complete = read(device, queue, &texture);
+            assert!(
+                !render(&mut renderer),
+                "a converged reservation keeps fitting"
+            );
+            (overflows, reported_complete)
+        });
         assert!(
             overflows > 0,
             "the scene must overflow a fresh reservation, or this test proves nothing"
-        );
-        let reported_complete = read(device, queue, &texture);
-        assert!(
-            !render(&mut renderer),
-            "a converged reservation keeps fitting"
         );
         let again = read(device, queue, &texture);
         let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(

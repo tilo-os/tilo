@@ -298,6 +298,12 @@ visualisation) — it already awaits the counters between coarse and fine, so
 reading them costs nothing extra and lets it size its *own* next frame the
 same way the sync path does.
 
+`Renderer::settle_bump_budget`, for one-shot renderers that read the frame
+back, waits until the counters' readback has landed, not a fixed four polls:
+on the device the process shares, another thread's poll can be the one
+running the readback's map callback after this thread's wait returned, and
+a frame that overflowed was then taken for one that fit.
+
 ## `vendor/vello/src/render.rs`
 
 `render_full`, `render_encoding_full` and `render_encoding_coarse` take a
