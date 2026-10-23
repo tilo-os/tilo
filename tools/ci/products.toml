@@ -1181,6 +1181,26 @@ requires = ["arch=any"]
 on = ["schedule:30 1 * * *", "dispatch"]
 
 [[matrix]]
+family = "os"
+about = """
+The Lenovo 83ED board image's crash capture, checked in the image os-board built
+(tools/ci/publish/os-board-capture.sh): its kernel configuration, the UKI's command line, device
+tree and initramfs, then its kernel and initramfs booted under KVM with an initrd that fails and a
+warm reset, whose next boot must find the failure in its pstore console record."""
+each = [{ arch = "aarch64", board = "lenovo-83ed" }]
+
+[[matrix.check]]
+name = "os-board-capture-{board}"
+run = "bash tools/ci/publish/os-board-capture.sh {board} /target/publish/os-board/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-board-capture.sh", "tools/ci/publish/uki_sections.py", "os/tests/board_initrd_pstore_vm.py"]
+needs = ["os-board-{board}"]
+requires = ["arch=arm64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+requirement = { cores = 4, memory = "8GiB" }
+timeout_secs = 3600
+default = false
+
+[[matrix]]
 family = "extension-manifests"
 about = """
 Downloadable system-extension manifests (tools/ci/publish/extension-manifests.sh): every
