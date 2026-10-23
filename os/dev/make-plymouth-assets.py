@@ -179,20 +179,26 @@ def progress_pixel(width, first, second):
     return pixel
 
 
-def text_png(path, text, size, color, weight="Regular"):
-    """Rasterize text now so the tiny initramfs never needs fonts or Pango."""
+def load_font(size, weight="Regular", family="Noto Sans", lang=None):
     # The index also names the instance of a variable font (FreeType reads
     # its high 16 bits), so a variable Noto Sans is drawn at `weight` rather
-    # than at its default instance.
+    # than at its default instance. `lang` picks the Noto that covers a
+    # locale's script.
+    pattern = f"{family}:style={weight}" + (f":lang={lang}" if lang else "")
     font_path, _, index = subprocess.run(
-        ["fc-match", "-f", "%{file}\n%{index}", f"Noto Sans:style={weight}"],
+        ["fc-match", "-f", "%{file}\n%{index}", pattern],
         check=True,
         capture_output=True,
         text=True,
     ).stdout.partition("\n")
     if not font_path:
-        raise RuntimeError("fontconfig could not resolve Noto Sans")
-    font = ImageFont.truetype(font_path, size, index=int(index or 0))
+        raise RuntimeError(f"fontconfig could not resolve {pattern}")
+    return ImageFont.truetype(font_path, size, index=int(index or 0))
+
+
+def text_png(path, text, size, color, weight="Regular"):
+    """Rasterize text now so the tiny initramfs never needs fonts or Pango."""
+    font = load_font(size, weight)
     probe = PillowImage.new("RGBA", (1, 1))
     bounds = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
     width = bounds[2] - bounds[0] + 4
@@ -204,7 +210,103 @@ def text_png(path, text, size, color, weight="Regular"):
     image.save(path, format="PNG", optimize=True)
 
 
-def main(directory):
+# --- the boot-failure screen ----------------------------------------------------
+# tilo-boot-failure draws "Tilo couldn't start" through tilo.script's failure
+# mode. Its words come from os/usr/share/tilo/boot-failure/locales/*.ftl and
+# are rasterized here, per locale and in the Noto that covers its script, as
+# failure/<locale>/<key>.png. A message with placeables is cut at them into
+# <key>.0.png, <key>.1.png, ...; what fills them at run time (a day, a year,
+# a unit's name, its log) is printable ASCII, drawn from glyph atlases:
+# failure/a/<n>.png at the buttons' size and failure/m/<n>.png, monospaced,
+# at the details' size, <n> being the glyph's index in FAILURE_GLYPHS.
+# tilo.script carries the same string; os/tests/boot_ux_invariants.sh holds
+# the two equal. The quote, backslash and bar are left out: tilo-boot-failure
+# never sends them.
+FAILURE_GLYPHS = (" !#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                  "[]^_`abcdefghijklmnopqrstuvwxyz{}~")
+
+# role: size, weight, colour. Every image of a role is one line box tall, so
+# segments of a line share their baseline.
+FAILURE_ROLES = {
+    "title": (30, "SemiBold", (240, 240, 250)),
+    "line": (19, "Regular", (200, 203, 222)),
+    "button": (18, "Regular", (232, 233, 245)),
+    "hint": (15, "Regular", (158, 163, 186)),
+    "detail": (14, "Regular", (158, 163, 186)),
+}
+
+
+def failure_role(key):
+    if key in ("boot-failure-title", "boot-failure-restarting"):
+        return "title"
+    if key.startswith("boot-failure-step-"):
+        return "line"
+    if key == "boot-failure-menu-hint":
+        return "hint"
+    if key.startswith("boot-failure-detail-"):
+        return "detail"
+    if key.startswith("boot-failure-console-"):
+        return None  # the text console's own prompts
+    return "button"
+
+
+def read_ftl(path):
+    messages = {}
+    for line in open(path, encoding="utf-8"):
+        key, sep, value = line.rstrip("\n").partition(" = ")
+        if sep and re.fullmatch(r"[a-z0-9-]+", key):
+            messages[key] = value
+    return messages
+
+
+def line_png(path, text, font, color):
+    ascent, descent = font.getmetrics()
+    width = max(1, math.ceil(font.getlength(text)))
+    image = PillowImage.new("RGBA", (width, ascent + descent), (0, 0, 0, 0))
+    if text:
+        ImageDraw.Draw(image).text((0, 0), text, font=font, fill=(*color, 255))
+    image.save(path, format="PNG", optimize=True)
+
+
+def failure_assets(directory, locales):
+    root = os.path.join(directory, "failure")
+    for atlas, family, role in (("a", "Noto Sans", "button"),
+                                ("m", "Noto Sans Mono", "detail")):
+        size, weight, color = FAILURE_ROLES[role]
+        font = load_font(size, weight, family)
+        os.makedirs(os.path.join(root, atlas), exist_ok=True)
+        for index, glyph in enumerate(FAILURE_GLYPHS):
+            line_png(os.path.join(root, atlas, f"{index}.png"), glyph, font, color)
+    for name in sorted(os.listdir(locales)):
+        if not name.endswith(".ftl"):
+            continue
+        locale = name[:-4]
+        out = os.path.join(root, locale)
+        os.makedirs(out, exist_ok=True)
+        fonts = {}
+        for key, value in read_ftl(os.path.join(locales, name)).items():
+            role = failure_role(key)
+            if role is None:
+                continue
+            if role not in fonts:
+                size, weight, _ = FAILURE_ROLES[role]
+                fonts[role] = load_font(size, weight, lang=locale)
+            short = key.removeprefix("boot-failure-")
+            pieces = re.split(r"\{ \$[a-z]+ \}", value)
+            color = FAILURE_ROLES[role][2]
+            if len(pieces) == 1:
+                line_png(os.path.join(out, f"{short}.png"), value, fonts[role], color)
+            else:
+                for index, piece in enumerate(pieces):
+                    line_png(os.path.join(out, f"{short}.{index}.png"), piece,
+                             fonts[role], color)
+    png(os.path.join(root, "button.png"), 440, 48,
+        rounded_rect(440, 48, 12, (31, 34, 51), (54, 59, 92), 1))
+    png(os.path.join(root, "button-focus.png"), 440, 48,
+        rounded_rect(440, 48, 12, (44, 50, 86), (111, 130, 255), 2))
+
+
+def main(directory, locales=None):
     os.makedirs(directory, exist_ok=True)
     png(os.path.join(directory, "tilo-logo.png"), 160, 160, logo_pixel(160))
     png(os.path.join(directory, "entry.png"), 360, 56,
@@ -227,7 +329,9 @@ def main(directory):
         progress_pixel(280, (54, 57, 75), (54, 57, 75)))
     png(os.path.join(directory, "progress-fill.png"), 280, 4,
         progress_pixel(280, (59, 67, 118), (111, 130, 255)))
+    if locales:
+        failure_assets(directory, locales)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(*sys.argv[1:3])

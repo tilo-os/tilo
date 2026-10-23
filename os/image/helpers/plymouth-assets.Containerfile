@@ -9,11 +9,12 @@ FROM ${BASE_REF} AS plymouth-assets
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
 COPY os/usr/share/plymouth/themes/tilo/ /out/tilo/
+COPY os/usr/share/tilo/boot-failure/locales/ /src/boot-failure-locales/
 COPY os/dev/make-plymouth-assets.py /usr/local/bin/make-plymouth-assets.py
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=os-fonts,source=/out/fonts,target=/usr/share/fonts/tilo,ro \
     --mount=type=tmpfs,target=/tmp \
     dnf install -y --setopt=reposdir=/repo systemd-ukify fontconfig \
-    && XDG_CACHE_HOME=/tmp/fontconfig-cache python3 /usr/local/bin/make-plymouth-assets.py /out/tilo \
+    && XDG_CACHE_HOME=/tmp/fontconfig-cache python3 /usr/local/bin/make-plymouth-assets.py /out/tilo /src/boot-failure-locales \
     && test -s /out/tilo/tilo-logo.png \
     && dnf clean all

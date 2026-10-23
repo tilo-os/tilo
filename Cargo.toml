@@ -394,6 +394,7 @@ members = [
     "crates/system/app-state",
     "crates/system/block-devices",
     "crates/system/board-successor",
+    "crates/system/boot-failure-input",
     "crates/system/boot-order",
     "crates/system/bounded-command",
     "crates/system/cloud-source",

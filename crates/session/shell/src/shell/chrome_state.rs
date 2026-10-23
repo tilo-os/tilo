@@ -3825,6 +3825,20 @@ impl ChromeState {
             self.bump();
             return true;
         }
+        // The desktop's own "The last start failed": what failed.
+        if removed.sender_id.is_none()
+            && removed.remote_route.is_none()
+            && removed.app_id.is_none()
+            && removed.default_action_key().as_deref()
+                == Some(crate::shell::boot_failure_notice::DETAILS_ACTION)
+        {
+            self.record_history(removed);
+            if let Some(details) = crate::shell::boot_failure_notice::details() {
+                self.push_notification_full(details);
+            }
+            self.bump();
+            return true;
+        }
         // The desktop's own "Couldn't join <network>": join it as the person,
         // which asks for its password in a sheet.
         if removed.sender_id.is_none()

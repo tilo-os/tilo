@@ -7,7 +7,7 @@ There are three answers, and they are ordered by how broken the machine is.
 | The machine | Use | Needs |
 |---|---|---|
 | boots, session works | `tilo rollback`, or Settings → Updates → Roll back | to be logged in |
-| boots, session does not work | it rolls back **by itself** after three tries | nothing |
+| boots, session does not work | it starts the previous version **by itself** after two failed starts | nothing |
 | boots, nothing works | Repair Mode, from the boot menu | the disk passphrase |
 
 ## What a rollback changes
@@ -78,12 +78,20 @@ going straight to it is the shorter statement of the same intent.
 
 ## Automatic rollback
 
-A deployment that has never booted successfully gets a **try counter** in its boot
-loader entry's file name — `bootc_fedora-44-1+3.conf`. systemd-boot decrements it
-on every attempt, and when it reaches zero it stops offering that entry first.
+Every start is on trial, not only the first one of a new update. Each bootc
+entry carries a **try counter** in its boot loader entry's file name —
+`bootc_fedora-44-1+2.conf`. systemd-boot decrements it on every attempt, and
+when it reaches zero it stops offering that entry first. A deployment that has
+booted a hundred times can still stop booting (a firmware update, a disk that
+filled up, a driver that broke on new hardware), and only a counter lets the
+boot loader notice.
 
-`tilo-boot-entries.service` adds the counter to every bootc entry except the one
-running now, which it recognises by the `composefs=` identity of the running root.
+`tilo-boot-entries.service` adds the counter to every bootc entry, 2 tries by
+default (`TILO_BOOT_TRIES`). It recognises the entry running now by the
+`composefs=` identity of the running root, and leaves that one's counter as the
+boot loader left it until the boot is judged. When `systemd-bless-boot` removes
+it, `tilo-boot-rearm.service` puts the entry straight back on trial for the next
+start.
 On the sealed image every entry has to name a UKI under `EFI/Linux/bootc/`, and the
 identity is read from that UKI's sealed command line; any other entry fails the
 pass. Only a dev image (`/usr/lib/tilo/image-flavour` reads `dev`) also accepts
@@ -117,7 +125,7 @@ device (the headless dev VMs reached over SSH), where no greeter can present on
 any generation. On real hardware no display device at all is what a broken GPU
 driver leaves behind, so there the greeter is still required.
 
-Blessing renames the booted entry (`name+2-1.conf` to `name.conf`) on the ESP,
+Blessing renames the booted entry (`name+1-1.conf` to `name.conf`) on the ESP,
 which stays mounted read-only. `systemd-bless-boot.service` therefore remounts
 it writable in its own private mount namespace, as `tilo-esp-write@` does;
 the global mount never becomes writable. Without that, every rename failed with
@@ -141,10 +149,13 @@ the mount everyone sees is a read-only bind (`tilo-esp-mount`): bootc mounts the
 same ESP read-write to stage an update, and a read-only superblock would refuse
 that. The live installer is left alone: it refuses to install to a mounted ESP.
 
-Three failed boots and the previous deployment becomes the default. Nothing runs
-a rollback command — the boot loader simply declines to keep choosing an entry it
-has already given three chances, which is the only mechanism that still works when
-userspace is too broken to run anything.
+Two failed starts in a row and the previous deployment becomes the default.
+Nothing runs a rollback command — the boot loader simply declines to keep
+choosing an entry it has already given two chances, which is the only mechanism
+that still works when userspace is too broken to run anything. After the
+fallback the desktop says so once, after login, and names the key that opens
+the boot menu (hold Space while the computer starts), which otherwise stays
+hidden.
 
 The fallback order is:
 
@@ -166,11 +177,46 @@ boot.
 `tilo status` shows the counters:
 
 ```
-Boot loader entries (what the firmware will actually offer):
-  bootc_fedora-44-0.conf                        tries left 2 (of 3)
-  bootc_fedora-44-1.conf                        no boot counter (booted now)
-  tilo-repair.conf                               no boot counter
+Deployments:
+  booted    registry.tilo.so/tilo/tilo-vm:main-d7d1575-lenovo-83ed
+            built 2026-10-09, generation 7
+            entry bootc_fedora-44-2.conf, booted now: on trial, 1 of 2 tries left
+  rollback  registry.tilo.so/tilo/tilo-vm:main-6656acd-lenovo-83ed
+            built 2026-10-02
+            entry bootc_fedora-44-1.conf: on trial, 2 of 2 tries left
 ```
+
+## When a start fails
+
+A start that fails, in the initrd or after it, does not end at systemd's
+administrator console. It shows **Tilo couldn't start**, one line saying which
+step failed (unlocking the disk, mounting the system, preparing the system,
+starting the desktop), and four ways on, with the keyboard (arrows, Enter, or
+the number of the choice) or by touch:
+
+- **Try again** starts the same version once more.
+- **Start the previous version** starts the deployment before this one, once.
+  It is there only when there is one, and says from when it is.
+- **Recovery console** opens a root shell after the disk passphrase or the
+  recovery key (as Repair Mode asks for it), or, on a disk that is not
+  encrypted, after an administrator's sign-in. It is never an open shell. In
+  the initrd, PCR 11 is extended first, so nothing sealed to this start can be
+  unsealed from it.
+- **Show details** shows the failed unit, its last messages and the start's
+  number (the start of its boot id).
+
+The screen also names the key that opens the boot menu. Without a display (a
+serial console) the same choices are a numbered menu. The initrd's screen is a
+dracut module (`93tilo-boot-failure`) in place of `emergency.service`; after
+switch-root the screen takes `emergency.service` and `rescue.service`, and
+`tilo-boot-failure.service` when `tilo-boot-health` finds no session.
+
+What failed is written where it survives the restart: to the kernel log at a
+level the pstore console keeps, to `EFI/tilo/boot-failure` on the ESP from the
+initrd (whose journal is only in memory), and to the journal after switch-root.
+On the next start `tilo-boot-failure-import.service` brings the newest record
+into the journal and leaves `/var/lib/tilo/boot-failure/notice`, and the
+desktop says once: "The last start failed", with the step and a Details action.
 
 ## Repair Mode
 

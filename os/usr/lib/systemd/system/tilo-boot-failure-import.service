@@ -1,0 +1,32 @@
+[Unit]
+Description=Bring the record of the last failed start into this one
+Documentation=file:///usr/share/doc/tilo/recovery.md
+# The record is on the ESP (an initrd failure), in the previous boot's journal
+# (a failure after switch-root) or in pstore. The notice it leaves in
+# /var/lib/tilo/boot-failure is read by the desktop, which says once that the
+# last start failed, or that the previous version was started instead.
+After=local-fs.target systemd-pstore.service systemd-journald.service
+Before=greetd.service
+RequiresMountsFor=/var/lib /boot /boot/efi
+ConditionKernelCommandLine=!tilo.mode=repair
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-boot-failure import
+# The ESP stays read-only here: the record an initrd left is cleared at the
+# next one (tilo-boot-failure writes it afresh, or not at all).
+UMask=0022
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tilo
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

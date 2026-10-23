@@ -10,6 +10,8 @@ Before=boot-complete.target
 # Never in repair mode: repair mode does not start a session, so a health check
 # that asks for one would condemn the very boot that is trying to fix things.
 ConditionKernelCommandLine=!tilo.mode=repair
+# A session that never came up, or did not hold, gets the boot-failure screen.
+OnFailure=tilo-boot-failure.service
 
 [Service]
 Type=oneshot

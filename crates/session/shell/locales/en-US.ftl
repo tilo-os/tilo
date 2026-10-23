@@ -3125,6 +3125,19 @@ graphics-app-name = Graphics
 graphics-stopped-title = Graphics stopped responding
 graphics-stopped-body = Everything keeps working, but may be slower until you restart the computer.
 
+boot-failure-app-name = System
+boot-failure-notice-title = The last start failed
+boot-failure-step-unlock = Unlocking the disk didn't work.
+boot-failure-step-mount = Mounting the system didn't work.
+boot-failure-step-prepare = Preparing the system didn't work.
+boot-failure-step-desktop = Starting the desktop didn't work.
+boot-failure-fallback-title = The previous version was started
+boot-failure-fallback-body = The newer version didn't start, so the computer started the one before it. To choose a version yourself, hold the Space key while the computer starts.
+boot-failure-details = Details
+boot-failure-details-title = What failed at the last start
+boot-failure-details-unit = Failed: { $unit }
+boot-failure-details-start = Start number: { $start }
+
 ## Desk widgets
 
 desk-team-title = In this workspace

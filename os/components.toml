@@ -654,6 +654,22 @@ files = [
   { link = "tilo-esp-write", to = "/usr/libexec/tilo-uki-cmdline" },
 ]
 
+# Keys and taps for the boot-failure screen (tilo-boot-failure), read from evdev
+# in the initrd and after it; the initramfs carries its own copy, so a swap
+# reaches the screen after switch-root at once and the initrd's at the next
+# image.
+[[component]]
+name = "boot-failure-input"
+kind = "userspace"
+scope = "vm"
+outside_sessions = true
+packages = ["tilo-boot-failure-input"]
+bins = ["tilo-boot-failure-input"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-boot-failure-input", to = "/usr/libexec/tilo-boot-failure-input", mode = "0755" },
+]
+
 # First-boot account files: tilo-firstboot-user runs the copy beside it, this
 # one or the one a custom installer stages in the target's /etc/tilo, so a swap
 # takes effect at the next account handoff (or install).

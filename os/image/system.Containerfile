@@ -684,6 +684,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-rollback-confirm.timer && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
     systemctl enable tilo-deployment-status.socket && \
+    systemctl enable tilo-boot-failure-import.service && \
     systemctl enable bootc-fetch-apply-updates.timer && \
     systemctl enable tilo-network-start.service && \
     systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \

@@ -12,6 +12,7 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-recovery \
     os/usr/libexec/tilo-update-policy-set \
     os/usr/libexec/tilo-update-policy-check \
+    os/usr/libexec/tilo-boot-failure \
     /usr/libexec/
 COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-boot-mode-generator /usr/lib/systemd/system-generators/tilo-boot-mode-generator
 COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-esp-generator /usr/lib/systemd/system-generators/tilo-esp-generator
@@ -21,6 +22,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-boot-rearm.service \
     os/usr/lib/systemd/system/tilo-esp-write@.service \
     os/usr/lib/systemd/system/tilo-boot-health.service \
+    os/usr/lib/systemd/system/tilo-boot-failure.service \
+    os/usr/lib/systemd/system/tilo-boot-failure-import.service \
     os/usr/lib/systemd/system/tilo-repair.target \
     os/usr/lib/systemd/system/tilo-repair@.service \
     os/usr/lib/systemd/system/tilo-deployment-rollback.service \
@@ -49,6 +52,17 @@ COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-compose
     /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf
 COPY os/usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf \
     /usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf
+# The boot-failure screen: in place of systemd's emergency and rescue consoles,
+# and, through its dracut module, in the initrd's.
+COPY os/usr/lib/systemd/system/emergency.service.d/10-tilo-boot-failure.conf \
+    /usr/lib/systemd/system/emergency.service.d/10-tilo-boot-failure.conf
+COPY os/usr/lib/systemd/system/rescue.service.d/10-tilo-boot-failure.conf \
+    /usr/lib/systemd/system/rescue.service.d/10-tilo-boot-failure.conf
+COPY --chmod=0755 os/usr/lib/dracut/modules.d/93tilo-boot-failure/module-setup.sh \
+    /usr/lib/dracut/modules.d/93tilo-boot-failure/module-setup.sh
+COPY os/usr/lib/dracut/modules.d/93tilo-boot-failure/10-tilo-boot-failure.conf \
+    /usr/lib/dracut/modules.d/93tilo-boot-failure/10-tilo-boot-failure.conf
+COPY os/usr/share/tilo/boot-failure /usr/share/tilo/boot-failure
 COPY os/usr/lib/systemd/system/tilo-update-policy@.service /usr/lib/systemd/system/tilo-update-policy@.service
 COPY os/etc/polkit-1/rules.d/49-tilo-updates.rules /etc/polkit-1/rules.d/49-tilo-updates.rules
 COPY os/usr/share/tilo/system-extensions /usr/share/tilo/system-extensions

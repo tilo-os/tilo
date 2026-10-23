@@ -16917,6 +16917,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-boot-failure-input"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-boot-order"
 version = "0.1.0"
 dependencies = [

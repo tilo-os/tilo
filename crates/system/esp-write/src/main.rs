@@ -86,7 +86,13 @@ const POLICIES: &[Policy] = &[
                 r"loader/entries\.staged/bootc[A-Za-z0-9._-]*\+[0-9]+(-[0-9]+)?\.conf",
             ),
         ],
-        install: &[r"EFI/Linux/tilo-repair\.efi", r"EFI/tilo/repair\.source"],
+        // The repair entry, and what the boot-failure screen reads in the
+        // initrd, where the machine's /etc is not there yet: its locale.
+        install: &[
+            r"EFI/Linux/tilo-repair\.efi",
+            r"EFI/tilo/repair\.source",
+            r"EFI/tilo/boot-info",
+        ],
         remove: &[
             r"EFI/Linux/tilo-repair\.efi",
             r"loader/entries/tilo-repair\.conf",

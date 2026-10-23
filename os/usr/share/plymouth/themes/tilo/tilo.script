@@ -151,6 +151,9 @@ fun display_password(prompt, bullets)
 
 fun display_normal()
   {
+    # A failed start's screen stays until tilo-boot-failure restarts.
+    if (global.mode == "failure")
+      return;
     global.mode = "normal";
     if (dialog.ready)
       dialog.retry.SetOpacity(0);
@@ -167,7 +170,9 @@ fun display_hotplug()
     # GPU driver's native mode once that loads, so the window can change size
     # and scale mid-boot. Every position derives from the window: lay the
     # current screen out again rather than keep the first framebuffer's.
-    if (global.mode == "password")
+    if (global.mode == "failure")
+      failure_redraw();
+    else if (global.mode == "password")
       display_password("", global.password_bullets);
     else
       display_normal();
@@ -190,6 +195,202 @@ fun boot_progress(duration, percent)
                                                        progress.fill_source.GetHeight()));
   }
 
+# --- the boot-failure screen ---------------------------------------------------
+# tilo-boot-failure (/usr/libexec) sends "tilo-failure:<message>" lines through
+# display-message and owns the layout: positions are permille of the screen's
+# height, so the taps it hit-tests land where this draws. All words are
+# pre-rendered per locale (os/dev/make-plymouth-assets.py); what fills them at
+# run time is printable ASCII drawn glyph by glyph from an atlas.
+#
+#   reset:<locale>                     a clean screen in that locale
+#   logo:<y>                           where the logo goes
+#   text:<y>:<role key>                one pre-rendered line, centred
+#   button:<y>:<focused>:<segments>    a button; its label is segments
+#   detail:<y>:<segments>              a details line, left-aligned
+#
+# Segments are separated by "|": "k=<key>" a pre-rendered piece, "a=<text>"
+# glyphs at the buttons' size, "m=<text>" monospaced glyphs at the details'.
+failure.glyphs = " !#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{}~";
+for (failure_at = 0; failure.glyphs.CharAt(failure_at) != ""; failure_at++)
+  failure.glyph_index[failure.glyphs.CharAt(failure_at)] = failure_at;
+for (failure_at = 0; failure_at < 10; failure_at++)
+  failure.digit["0123456789".CharAt(failure_at)] = failure_at;
+failure.count = 0;
+failure.messages = 0;
+
+fun failure_find(text, char, from)
+  {
+    for (local.at = from; text.CharAt(at) != ""; at++)
+      if (text.CharAt(at) == char)
+        return at;
+    return -1;
+  }
+
+fun failure_end(text)
+  {
+    local.at = 0;
+    while (text.CharAt(at) != "")
+      at++;
+    return at;
+  }
+
+fun failure_number(text)
+  {
+    local.value = 0;
+    for (local.at = 0; text.CharAt(at) != ""; at++)
+      value = value * 10 + failure.digit[text.CharAt(at)];
+    return value;
+  }
+
+fun failure_image(name)
+  {
+    if (!failure.cache[name])
+      global.failure.cache[name] = Image("failure/" + name + ".png");
+    return failure.cache[name];
+  }
+
+# One sprite of the screen's pool, shown with this image at (x, y).
+fun failure_put(image, x, y, z)
+  {
+    if (!failure.sprite[failure.count])
+      global.failure.sprite[failure.count] = Sprite();
+    local.sprite = failure.sprite[failure.count];
+    sprite.SetImage(image);
+    sprite.SetPosition(x, y, z);
+    sprite.SetOpacity(1);
+    global.failure.count = failure.count + 1;
+  }
+
+# The images a segment list is drawn with, in order.
+fun failure_segments(text)
+  {
+    local.images.count = 0;
+    local.start = 0;
+    local.end = failure_end(text);
+    while (start < end)
+      {
+        local.stop = failure_find(text, "|", start);
+        if (stop < 0)
+          stop = end;
+        local.kind = text.CharAt(start);
+        local.body = text.SubString(start + 2, stop);
+        if (kind == "k")
+          {
+            images[images.count] = failure_image(failure.locale + "/" + body);
+            images.count = images.count + 1;
+          }
+        else
+          {
+            for (local.at = 0; body.CharAt(at) != ""; at++)
+              {
+                local.index = failure.glyph_index[body.CharAt(at)];
+                # A glyph the atlas lacks (index 0 is the space) shows as "?".
+                if (!index && body.CharAt(at) != " ")
+                  index = failure.glyph_index["?"];
+                images[images.count] = failure_image(kind + "/" + index);
+                images.count = images.count + 1;
+              }
+          }
+        start = stop + 1;
+      }
+    return images;
+  }
+
+fun failure_width(images)
+  {
+    local.width = 0;
+    for (local.at = 0; at < images.count; at++)
+      width += images[at].GetWidth();
+    return width;
+  }
+
+fun failure_row(images, x, centre_y, z)
+  {
+    for (local.at = 0; at < images.count; at++)
+      {
+        failure_put(images[at], x, centre_y - images[at].GetHeight() / 2, z);
+        x += images[at].GetWidth();
+      }
+  }
+
+fun failure_draw(text)
+  {
+    local.colon = failure_find(text, ":", 0);
+    if (colon < 0)
+      colon = failure_end(text);
+    local.kind = text.SubString(0, colon);
+    local.rest = text.SubString(colon + 1, failure_end(text));
+    local.centre_x = Window.GetX() + Window.GetWidth() / 2;
+
+    if (kind == "reset")
+      {
+        for (local.at = 0; failure.sprite[at]; at++)
+          failure.sprite[at].SetOpacity(0);
+        global.failure.count = 0;
+        global.failure.locale = rest;
+        logo.sprite.SetPosition(centre_x - logo.image.GetWidth() / 2,
+                                Window.GetY() + Window.GetHeight() * 0.17
+                                  - logo.image.GetHeight() / 2, 10);
+        return;
+      }
+
+    colon = failure_find(rest, ":", 0);
+    local.y = Window.GetY() + Window.GetHeight() * failure_number(rest.SubString(0, colon)) / 1000;
+    rest = rest.SubString(colon + 1, failure_end(rest));
+
+    if (kind == "logo")
+      logo.sprite.SetPosition(centre_x - logo.image.GetWidth() / 2,
+                              y - logo.image.GetHeight() / 2, 10);
+    if (kind == "text")
+      {
+        local.image = failure_image(failure.locale + "/" + rest);
+        failure_put(image, centre_x - image.GetWidth() / 2, y - image.GetHeight() / 2, 200);
+      }
+    if (kind == "button")
+      {
+        local.images = failure_segments(rest.SubString(2, failure_end(rest)));
+        local.label_width = failure_width(images);
+        if (rest.CharAt(0) == "1")
+          local.back = failure_image("button-focus");
+        else
+          local.back = failure_image("button");
+        local.width = back.GetWidth();
+        if (label_width + 48 > width)
+          width = label_width + 48;
+        if (width != back.GetWidth())
+          back = back.Scale(width, back.GetHeight());
+        failure_put(back, centre_x - width / 2, y - back.GetHeight() / 2, 200);
+        failure_row(images, centre_x - label_width / 2, y, 201);
+      }
+    if (kind == "detail")
+      failure_row(failure_segments(rest), centre_x - 340, y, 200);
+  }
+
+fun failure_message(text)
+  {
+    if (global.mode != "failure")
+      {
+        global.mode = "failure";
+        set_dialog_opacity(0);
+        progress.background.SetOpacity(0);
+        progress.fill.SetOpacity(0);
+        status.heading.SetOpacity(0);
+        status.help.SetOpacity(0);
+      }
+    # Kept since the last reset, so a new screen size lays it out again.
+    if (text.SubString(0, 6) == "reset:")
+      global.failure.messages = 0;
+    global.failure.message[failure.messages] = text;
+    global.failure.messages = failure.messages + 1;
+    failure_draw(text);
+  }
+
+fun failure_redraw()
+  {
+    for (local.at = 0; at < failure.messages; at++)
+      failure_draw(failure.message[at]);
+  }
+
 fun display_message(text)
   {
     # Root discovery forwards a confirmed passphrase rejection. Password
@@ -200,6 +401,8 @@ fun display_message(text)
         if (dialog.ready)
           dialog.retry.SetOpacity(1);
       }
+    if (text.SubString(0, 13) == "tilo-failure:")
+      failure_message(text.SubString(13, failure_end(text)));
     if (text == "tilo-unlock-success")
       {
         global.unlock_rejected = 0;

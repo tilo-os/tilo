@@ -9633,6 +9633,9 @@ pub fn run() {
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&frame_builder.chrome_handle(), notice);
     }
+    // The last start of the computer failed, or fell back to the previous
+    // version: said once, after the person is in.
+    crate::shell::boot_failure_notice::look();
     // The scene spans every output but a window's width is a fraction of its
     // monitor, so strips get real per-display geometry, not the bounding box.
     frame_builder.set_output_geometry(output_geometry(backend.outputs()));
@@ -11831,6 +11834,7 @@ pub fn run() {
         frame_builder.with_chrome(|chrome| {
             session_changed |= chrome.post_queued(crate::shell::storage_notice::drain());
             session_changed |= chrome.post_queued(crate::shell::graphics_notice::drain());
+            session_changed |= chrome.post_queued(crate::shell::boot_failure_notice::drain());
             session_changed |=
                 chrome.post_consent_notices(crate::shell::app_action_consent::drain_notices());
         });

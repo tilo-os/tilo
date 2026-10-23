@@ -1,0 +1,19 @@
+[package]
+name = "tilo-boot-failure-input"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Keys and taps for the boot-failure screen, read from evdev before any compositor exists: one line per press or tap, taps as fractions of the screen."
+
+[[bin]]
+name = "tilo-boot-failure-input"
+path = "src/main.rs"
+
+[dependencies]
+# The evdev ioctls and poll(2); nothing else is needed this early in boot.
+libc.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

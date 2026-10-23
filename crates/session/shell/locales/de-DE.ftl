@@ -3080,6 +3080,19 @@ graphics-app-name = Grafik
 graphics-stopped-title = Die Grafik reagiert nicht mehr
 graphics-stopped-body = Alles funktioniert weiter, kann aber langsamer sein, bis du den Computer neu startest.
 
+boot-failure-app-name = System
+boot-failure-notice-title = Der letzte Start ist fehlgeschlagen
+boot-failure-step-unlock = Das Entsperren der Festplatte hat nicht funktioniert.
+boot-failure-step-mount = Das Einbinden des Systems hat nicht funktioniert.
+boot-failure-step-prepare = Das Vorbereiten des Systems hat nicht funktioniert.
+boot-failure-step-desktop = Das Starten des Desktops hat nicht funktioniert.
+boot-failure-fallback-title = Die vorherige Version wurde gestartet
+boot-failure-fallback-body = Die neuere Version ist nicht gestartet, deshalb hat der Computer die davor gestartet. Um selbst eine Version zu wählen, halte beim Einschalten die Leertaste gedrückt.
+boot-failure-details = Details
+boot-failure-details-title = Was beim letzten Start fehlgeschlagen ist
+boot-failure-details-unit = Fehlgeschlagen: { $unit }
+boot-failure-details-start = Startnummer: { $start }
+
 ## Desk widgets
 
 desk-team-title = In diesem Arbeitsbereich

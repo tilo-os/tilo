@@ -1,0 +1,19 @@
+[Unit]
+Description=Say that the desktop did not start, and offer the ways on
+Documentation=file:///usr/share/doc/tilo/recovery.md
+# tilo-boot-health.service's OnFailure=: the session never came up, or did not
+# hold. The screen takes the display from greetd, whose restarts would
+# otherwise keep drawing over it.
+Conflicts=greetd.service
+After=greetd.service
+ConditionKernelCommandLine=!tilo.mode=repair
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/tilo-boot-failure show --step desktop
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=journal

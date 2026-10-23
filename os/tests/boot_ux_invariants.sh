@@ -18,7 +18,7 @@ if ! containerfile_has_copy "$containerfile" os/dev/make-boot-splash.py /usr/loc
   exit 1
 fi
 grep -Fq 'plymouth-plugin-script' "$containerfile"
-if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"' "$root/os/scripts/build-initramfs.sh" \
+if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-boot-failure"' "$root/os/scripts/build-initramfs.sh" \
   || ! grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$containerfile"; then
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, and Tilo rollback unlock modules\n' >&2
   exit 1
@@ -70,7 +70,7 @@ mkdir -p "$scratch"
 tmp="$(mktemp -d "$scratch/boot-ux.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 python3 "$root/os/dev/make-boot-splash.py" "$tmp/splash.bmp"
-python3 "$root/os/dev/make-plymouth-assets.py" "$tmp/plymouth"
+python3 "$root/os/dev/make-plymouth-assets.py" "$tmp/plymouth" "$root/os/usr/share/tilo/boot-failure/locales"
 python3 - "$tmp/splash.bmp" <<'PY'
 import struct, sys
 data = open(sys.argv[1], "rb").read()
@@ -115,12 +115,48 @@ expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
             "unlock-heading.png", "unlock-help.png", "unlock-retry.png",
             "starting-tilo.png", "shutting-down.png", "startup-help.png",
             "progress-background.png", "progress-fill.png"}
-assert {path.name for path in root.iterdir()} == expected
-for path in root.iterdir():
+assert {path.name for path in root.iterdir()} == expected | {"failure"}
+for path in root.rglob("*.png"):
     data = path.read_bytes()
     assert data[:8] == b"\x89PNG\r\n\x1a\n", path
     width, height = struct.unpack(">II", data[16:24])
     assert width > 0 and height > 0, path
+PY
+
+# The boot-failure screen: every word tilo-boot-failure can ask tilo.script to
+# draw is rendered for every locale, and the glyph atlases are indexed the
+# same way on both sides.
+python3 - "$tmp/plymouth/failure" "$root/os/usr/share/tilo/boot-failure/locales" \
+  "$root/os/dev/make-plymouth-assets.py" "$script" <<'PY'
+import pathlib, re, sys
+out, locales = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+generator, script = (pathlib.Path(p).read_text() for p in sys.argv[3:5])
+glyphs = re.search(r'FAILURE_GLYPHS = \(("[^"]*")\s*("[^"]*")\)', generator)
+glyphs = eval(glyphs.group(1)) + eval(glyphs.group(2))
+assert f'failure.glyphs = "{glyphs}";' in script, "tilo.script and the generator index the glyphs differently"
+assert not set('"\\|') & set(glyphs)
+for atlas in ("a", "m"):
+    assert len(list((out / atlas).glob("*.png"))) == len(glyphs), atlas
+assert (out / "button.png").is_file() and (out / "button-focus.png").is_file()
+catalogues = {}
+for ftl in sorted(locales.glob("*.ftl")):
+    keys = {}
+    for line in ftl.read_text().splitlines():
+        key, sep, value = line.partition(" = ")
+        if sep and re.fullmatch(r"[a-z0-9-]+", key):
+            keys[key] = value
+    catalogues[ftl.stem] = keys
+    for key, value in keys.items():
+        if key.startswith("boot-failure-console-"):
+            continue
+        short = key.removeprefix("boot-failure-")
+        pieces = re.split(r"\{ \$[a-z]+ \}", value)
+        names = [f"{short}.png"] if len(pieces) == 1 else [f"{short}.{i}.png" for i in range(len(pieces))]
+        for name in names:
+            assert (out / ftl.stem / name).is_file(), (ftl.stem, name)
+english = set(catalogues["en-US"])
+for locale, keys in catalogues.items():
+    assert set(keys) == english, f"{locale} lacks or adds boot-failure words: {set(keys) ^ english}"
 PY
 
 # Every image build boots its own UKI on a panel larger than the firmware's

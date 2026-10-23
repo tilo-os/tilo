@@ -300,7 +300,11 @@ containerfile="$repo/os/Containerfile"
 # resolver timeout) is one payload row.
 # tilo-deployment-status.socket and its service answer `tilo status` for the
 # device admin: two payload rows.
-expected_contract=bab5775a1478b43f8b687522de11d4fcb695eca70bfbb3e21c370b54dea369fc
+# The boot-failure screen: tilo-boot-failure, tilo-boot-rearm.service,
+# tilo-boot-failure{,-import}.service, the emergency and rescue drop-ins, the
+# 93tilo-boot-failure dracut module and its words are recovery-files payload
+# rows, and the plymouth asset stage copies the words it renders.
+expected_contract=c97c37b85e71ee58a242884c7a413f6aaae52035da06c862b088937166cabe79
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

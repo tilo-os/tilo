@@ -25,9 +25,11 @@
 #   1. The booted deployment's own boot-entry maintenance succeeds
 #      (tilo-boot-entries.service). A dev disk boots split kernel/initrd
 #      entries, which this pass once refused outright.
-#   2. Staging an update and running the same maintenance, as every update path
-#      does, gives the staged deployment's entry, and only it, a try counter
-#      BEFORE the reboot into it.
+#   2. Every start is on trial: the booted entry, once its start was judged
+#      good and blessed, carries a fresh try counter again (tilo-boot-rearm).
+#      Staging an update and running the same maintenance, as every update path
+#      does, gives the staged deployment's entry a fresh counter too, BEFORE
+#      the reboot into it.
 #   3. The staged deployment is made unable to reach the greeter, by a greetd
 #      drop-in in /etc that acts only on the staged deployment's composefs
 #      identity. /etc is carried into the staged deployment when it is
@@ -41,13 +43,15 @@
 #                 greeter, and the one a check of `greetd is active` blesses.
 #      Each of its boots spends a try: tilo-boot-health.service fails,
 #      systemd-bless-boot leaves the counter, and the boot loader decrements it.
-#      While a broken boot is up, its own boot-entry pass puts the previous
-#      deployment on trial as well.
+#      Each shows the boot-failure screen (tilo-boot-failure.service, naming
+#      the desktop step) in place of the crash-looping greeter.
 #   4. After exactly as many failed boots as it had tries, the boot loader
 #      starts the previous deployment by itself. Nothing runs a rollback
 #      command. The used-up entry stays on the ESP, and the deployment that
 #      came back reaches its greeter, passes its health check and is blessed
-#      (systemd-bless-boot renames its entry on the read-only ESP).
+#      (systemd-bless-boot renames its entry on the read-only ESP), and its
+#      entry goes back on trial for the next start. The desktop's notice says
+#      that the previous version was started, and why.
 #
 # Entries are matched to deployments by the composefs identity they boot, never
 # by file name: bootc renumbers every entry when it stages one.
@@ -257,7 +261,8 @@ TABLE="$(entry_table)"
 A_FILE="$(entry_for "$TABLE" entries "$A_DIGEST")" \
   || fail "no single loader entry boots the running composefs identity: $(tr '\n' ';' <<<"$TABLE")"
 [ "$(id_of "$A_FILE")" = "$A_ENTRY" ] || fail "the boot loader reports entry $A_ENTRY, but the entry for this composefs identity is $A_FILE"
-[[ "$A_FILE" != *+* ]] || fail "the booted entry is still on trial after its boot was settled ($A_FILE)"
+[[ "$A_FILE" =~ \+[0-9]+\.conf$ ]] \
+  || fail "the booted entry is not back on trial with a fresh counter after its start was settled ($A_FILE): a deployment that has booted before would never fall back"
 
 # --- 1. the booted deployment's own boot-entry pass ---------------------------------
 step "boot-entry maintenance on the booted deployment"
@@ -296,7 +301,7 @@ B_FILE="$(entry_for "$TABLE" "$NEXT" "$B_DIGEST")" \
   || fail "no single $NEXT entry boots the staged composefs identity ${B_DIGEST:0:16}; see $OUT/02-entries.txt"
 A_NEXT="$(entry_for "$TABLE" "$NEXT" "$A_DIGEST")" \
   || fail "staging left no single $NEXT entry for the running deployment; see $OUT/02-entries.txt"
-[[ "$A_NEXT" != *+* ]] || fail "the running deployment's entry was given a try counter ($A_NEXT); a boot that already succeeded would be put on trial"
+[[ "$A_NEXT" =~ \+[0-9]+\.conf$ ]] || fail "the running deployment's entry carries no fresh try counter ($A_NEXT); it could never fall back"
 [[ "$B_FILE" =~ \+([0-9]+)\.conf$ ]] || fail "the staged entry $B_FILE carries no try counter: a broken update would be retried for ever"
 TRIES="${BASH_REMATCH[1]}"
 [ "$TRIES" -ge 1 ] || fail "the staged entry has $TRIES tries"
@@ -380,6 +385,11 @@ while :; do
       [ "$greetd_state" != failed ] || fail "boot $attempt: greetd failed outright, which is the greetd fault, not a crash-looping greeter"
       ok "boot $attempt: greetd stayed in service ($greetd_state) and was restarted $restarts times, and the boot was still judged failed"
     fi
+    screen="$(guest 'systemctl show -p ActiveState --value tilo-boot-failure.service' | tr -d '\r\n')"
+    [ "$screen" = active ] || fail "boot $attempt: the boot-failure screen is not up (tilo-boot-failure.service $screen); see $OUT/04-boot$attempt.txt"
+    as_root 'journalctl -b --no-pager -o cat MESSAGE_ID=5b0d1e6f8a2c4e3fa1c7d9b2e4f60a18' 2>/dev/null | grep -q 'desktop' \
+      || fail "boot $attempt: the boot-failure screen left no record in the journal naming the desktop step"
+    ok "boot $attempt: the boot-failure screen is up and named the desktop step"
     left=$((TRIES - attempt))
     [ "$b_now" = "${B_ENTRY%.conf}+$left-$attempt.conf" ] \
       || fail "after boot $attempt the broken entry is ${b_now:-<gone>}, expected ${B_ENTRY%.conf}+$left-$attempt.conf (blessed, or not decremented)"
@@ -399,13 +409,14 @@ while :; do
   [ "$entry" = "$(id_of "$a_now")" ] || fail "the previous deployment booted, but the boot loader reports entry $entry, not $a_now"
   [ "$b_now" = "${B_ENTRY%.conf}+0-$TRIES.conf" ] \
     || fail "the used-up entry is ${b_now:-<gone>}, expected ${B_ENTRY%.conf}+0-$TRIES.conf to stay on the ESP"
-  # Counted before this boot, it has to be judged and blessed like any other.
-  if [ "${a_counted:-no}" = yes ]; then
-    [ "$verdict" = good ] || fail "the deployment that came back was on trial and judged '$verdict', not good; see $OUT/04-boot$attempt.txt"
-  else
-    [ "$verdict" = not-assessed ] || fail "the deployment that came back was not on trial, yet its health check says '$verdict'"
-  fi
-  [[ "$a_now" != *+* ]] || fail "the deployment that came back is still on trial ($a_now) after a good boot: systemd-bless-boot did not bless it, so it will spend its tries on boots that work; see $OUT/04-boot$attempt.txt"
+  # On trial like every start, it has to be judged and blessed like any other.
+  [ "${a_counted:-no}" = yes ] || fail "the deployment that came back was not on trial before it came back"
+  [ "$verdict" = good ] || fail "the deployment that came back was on trial and judged '$verdict', not good; see $OUT/04-boot$attempt.txt"
+  [[ "$a_now" =~ \+[0-9]+\.conf$ ]] || fail "the deployment that came back is $a_now after a good boot, not blessed and back on trial with a fresh counter; see $OUT/04-boot$attempt.txt"
+  notice="$(as_root 'cat /var/lib/tilo/boot-failure/notice' 2>/dev/null | tr -d '\r')"
+  printf '%s\n' "$notice" > "$OUT/04-notice.txt"
+  grep -qx 'fallback=1' <<<"$notice" && grep -qx 'step=desktop' <<<"$notice" \
+    || fail "the desktop's notice does not say the previous version was started after the desktop failed; see $OUT/04-notice.txt"
   guest 'systemctl is-active --quiet greetd.service' || fail "greetd is not active on the deployment that came back"
   ok "boot $attempt: the boot loader went back to $a_now by itself (on trial: ${a_counted:-no}, health: $verdict, blessed)"
   break

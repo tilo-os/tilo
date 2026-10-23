@@ -4,11 +4,11 @@
 # Ordered before boot-complete.target and required by it, which is the seam
 # systemd provides for exactly this: systemd-bless-boot.service is ordered AFTER
 # boot-complete.target and Requires= it, so a failure here means the boot loader
-# entry keeps its decremented counter. Three such boots and sd-boot stops offering
+# entry keeps its decremented counter. Two such boots and sd-boot stops offering
 # that entry first, and the machine comes up on the previous deployment instead.
 #
 # Nothing here rolls anything back. That is deliberate: the rollback is the boot
-# loader declining to pick an entry it has already given three chances, which
+# loader declining to pick an entry it has already given its chances, which
 # works when userspace is too broken to run a rollback command at all — which is
 # the case this exists for.
 #

@@ -1,0 +1,680 @@
+#!/usr/bin/bash
+# tilo-boot-failure: the screen a failed start shows, and the record it leaves.
+#
+#   tilo-boot-failure show [--step STEP] [--unit UNIT]
+#       emergency.service and rescue.service, in the initrd and after it, and
+#       tilo-boot-failure.service when the desktop does not come up
+#   tilo-boot-failure import
+#       tilo-boot-failure-import.service, on the next boot
+#
+# Instead of systemd's administrator console, a failed start shows "Tilo
+# couldn't start", the step that failed in plain words, and four ways on:
+#
+#   Try again                    the same entry, once more
+#   Start the previous version   the deployment before this one, once
+#   Recovery console             a root shell, behind the disk passphrase (or
+#                                an administrator's sign-in on a disk that is
+#                                not encrypted); never an open one
+#   Show details                 the failed unit, its last messages, the boot
+#
+# plymouth draws it (tilo.script's failure mode, fed by display-message);
+# tilo-boot-failure-input reads keys and taps, so it works with a keyboard and
+# a touchscreen. Without a splash to draw on (a serial console, a board with no
+# display) the same choices are a numbered menu on the console.
+#
+# What failed is written where it survives the restart: to the kernel log at a
+# level the pstore console keeps, and from the initrd, whose journal lives only
+# in RAM, to EFI/tilo/boot-failure on the ESP. After switch-root the journal is
+# on disk already. `import` turns the newest record into
+# /var/lib/tilo/boot-failure/notice, which the desktop shows once.
+set -uo pipefail
+
+LIB="${TILO_BOOT_FAILURE_LIB:-/usr/share/tilo/boot-failure}"
+PLYMOUTH="${TILO_BOOT_FAILURE_PLYMOUTH:-plymouth}"
+INPUT="${TILO_BOOT_FAILURE_INPUT:-/usr/libexec/tilo-boot-failure-input}"
+EFIVARS="${TILO_EFIVARS:-/sys/firmware/efi/efivars}"
+INITRD_RELEASE="${TILO_INITRD_RELEASE:-/etc/initrd-release}"
+RUN="${TILO_BOOT_FAILURE_RUN:-/run/tilo-boot-failure}"
+STATE="${TILO_BOOT_FAILURE_STATE:-/var/lib/tilo/boot-failure}"
+PSTORE="${TILO_BOOT_FAILURE_PSTORE:-/var/lib/systemd/pstore}"
+KMSG="${TILO_BOOT_FAILURE_KMSG:-/dev/kmsg}"
+ESP_CANDIDATES="${TILO_ESP_CANDIDATES:-/boot /boot/efi}"
+ROOT_SOURCE="${TILO_ROOT_SOURCE_FILE:-/run/tilo-root/source}"
+LOADER_GUID=4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+# The journal's name for a failure record, so `import` finds the previous
+# boot's among everything else it said.
+MESSAGE_ID=5b0d1e6f8a2c4e3fa1c7d9b2e4f60a18
+
+say() { printf 'tilo-boot-failure: %s\n' "$*" >&2; }
+in_initrd() { [ -e "$INITRD_RELEASE" ]; }
+
+# --- words ---------------------------------------------------------------------
+# The catalogue is the locales/*.ftl beside this script's data, one
+# `key = value` per line, with `{ $name }` placeables. The locale is the
+# machine's: /etc/locale.conf after switch-root, and in the initrd, which has
+# no /etc of the machine's own, the one tilo-deployment notes on the ESP.
+LOCALE=en-US
+pick_locale() {  # LANG value, e.g. de_DE.UTF-8
+  local tag="${1%%.*}" file
+  tag="${tag%%@*}"
+  tag="${tag//_/-}"
+  for file in "$LIB/locales/$tag.ftl" "$LIB/locales/${tag%%-*}"-*.ftl; do
+    [ -f "$file" ] && { LOCALE="$(basename "$file" .ftl)"; return 0; }
+  done
+  return 1
+}
+
+msg() {  # KEY [NAME=VALUE]...
+  local key="$1" text="" file pair; shift
+  for file in "$LIB/locales/$LOCALE.ftl" "$LIB/locales/en-US.ftl"; do
+    text="$(sed -n "s/^$key = //p" "$file" 2>/dev/null | head -1)"
+    [ -n "$text" ] && break
+  done
+  [ -n "$text" ] || text="$key"
+  for pair in "$@"; do
+    text="${text//"{ \$${pair%%=*} }"/${pair#*=}}"
+  done
+  printf '%s\n' "$text"
+}
+
+# --- what failed ---------------------------------------------------------------
+# The step a person can understand, from the unit that failed.
+step_of_unit() {
+  case "$1" in
+    systemd-cryptsetup@*|cryptsetup*.target|tilo-rollback-unlock*|tilo-sibling-unlock*) echo unlock ;;
+    sysroot.mount|sysroot-*.mount|initrd-root-fs.target|initrd-root-device.target|tilo-root*|\
+    systemd-fsck-root.service|systemd-fsck@*|*composefs*|local-fs.target|systemd-remount-fs.service|*.mount)
+      echo mount ;;
+    greetd.service|display-manager.service|graphical.target|tilo-boot-health.service|tilo-greeter*|tilo-session*)
+      echo desktop ;;
+    *) echo prepare ;;
+  esac
+}
+
+failed_units() {
+  systemctl list-units --failed --plain --no-legend --full 2>/dev/null | awk '{ print $1 }'
+}
+
+# The most telling failed unit: the disk, then the system, then the desktop,
+# then anything else; the first of a kind in systemd's order.
+choose_unit() {
+  local units unit want
+  units="$(failed_units)"
+  for want in unlock mount desktop prepare; do
+    while IFS= read -r unit; do
+      [ -n "$unit" ] || continue
+      [ "$(step_of_unit "$unit")" = "$want" ] && { printf '%s\n' "$unit"; return 0; }
+    done <<<"$units"
+  done
+  return 1
+}
+
+# The unit's last messages worth showing: systemd's own about it and its own
+# warnings and errors, never its ordinary output, which on a screen anyone at
+# the keyboard can read may carry paths or data.
+unit_log() {  # UNIT
+  journalctl -b --no-pager -o cat -n 6 -u "$1" -p warning 2>/dev/null \
+    | tr -d '\000-\010\013-\037' | cut -c1-110 | tail -n 6
+}
+
+boot_id() { tr -d '-' </proc/sys/kernel/random/boot_id 2>/dev/null | cut -c1-12; }
+
+loader_var() {  # NAME
+  local f="$EFIVARS/$1-$LOADER_GUID"
+  [ -r "$f" ] || return 1
+  tail -c +5 "$f" | tr -d '\000'
+}
+
+# --- the ESP ---------------------------------------------------------------------
+# Read-only after switch-root, where tilo-esp-generator mounted it; in the
+# initrd mounted here, from the partition the boot loader names, and writable
+# for the one file this writes.
+ESP=""
+find_esp() {
+  local where partuuid dev
+  if [ -n "${TILO_ESP:-}" ]; then ESP="$TILO_ESP"; return 0; fi
+  if ! in_initrd; then
+    for where in $ESP_CANDIDATES; do
+      [ -d "$where/loader/entries" ] && { ESP="$where"; return 0; }
+    done
+    return 1
+  fi
+  partuuid="$(loader_var LoaderDevicePartUUID | tr '[:upper:]' '[:lower:]')" || return 1
+  [[ "$partuuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  dev="/dev/disk/by-partuuid/$partuuid"
+  [ -b "$dev" ] || udevadm settle -t 5 2>/dev/null || true
+  [ -b "$dev" ] || return 1
+  install -d -m 0700 "$RUN/esp"
+  mountpoint -q "$RUN/esp" \
+    || mount -t vfat -o rw,nosuid,nodev,noexec,umask=0077 "$dev" "$RUN/esp" 2>/dev/null || return 1
+  ESP="$RUN/esp"
+}
+
+# The machine's locale, which tilo-deployment notes on the ESP for this screen
+# (EFI/tilo/boot-info, a `locale TAG` line): the initrd has no /etc of its own.
+esp_locale() {
+  [ -n "$ESP" ] && [ -r "$ESP/EFI/tilo/boot-info" ] || return 1
+  sed -n 's/^locale \([A-Za-z0-9_-]*\)$/\1/p' "$ESP/EFI/tilo/boot-info" | head -1
+}
+
+entry_id() { local b="${1##*/}"; b="${b%.conf}"; printf '%s.conf\n' "${b%%+*}"; }
+
+# The composefs identity an entry boots: its UKI is named for it, and a dev
+# image's kernel/initrd entry says it on its options line.
+entry_digest() {  # FILE
+  local uki
+  uki="$(sed -n 's/^uki[[:space:]]\{1,\}//p' "$1" | head -1)"
+  if [[ "$uki" =~ bootc_composefs-([[:xdigit:]]{128})\.efi$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  sed -n 's/^options[[:space:]]//p' "$1" | tr ' \t' '\n\n' | sed -n 's/^composefs=//p' | head -1
+}
+
+# The entry to fall back to: of bootc's other entries, the newest, in the
+# order sd-boot itself shows them.
+PREVIOUS=""
+PREVIOUS_DATE=""
+find_previous() {
+  local cur="$1" f id best="" payload
+  [ -n "$ESP" ] || return 1
+  while IFS= read -r f; do
+    id="$(entry_id "$f")"
+    [ "$id" = "$cur" ] && continue
+    best="$f"
+    break
+  done < <(find "$ESP/loader/entries" -maxdepth 1 -name 'bootc*.conf' -type f 2>/dev/null | sort -V -r)
+  [ -n "$best" ] || return 1
+  PREVIOUS="$(entry_id "$best")"
+  # The day it came onto this machine: when bootc wrote its UKI or kernel.
+  payload="$(sed -n 's/^\(uki\|linux\)[[:space:]]\{1,\}//p' "$best" | head -1)"
+  PREVIOUS_DATE=""
+  [ -z "$payload" ] || [ ! -f "$ESP/${payload#/}" ] \
+    || PREVIOUS_DATE="$(date -d "@$(stat -c %Y "$ESP/${payload#/}")" +%F 2>/dev/null)" || PREVIOUS_DATE=""
+}
+
+# --- the record --------------------------------------------------------------------
+STEP="" UNIT="" BOOT="" ENTRY="" LOG=""
+record() {
+  local line
+  {
+    printf 'boot=%s\ntime=%s\nstep=%s\nunit=%s\nentry=%s\n' \
+      "$BOOT" "$(date +%s)" "$STEP" "$UNIT" "$ENTRY"
+    while IFS= read -r line; do [ -n "$line" ] && printf 'log=%s\n' "$line"; done <<<"$LOG"
+  } >"$RUN/record"
+  # Critical, so the pstore console, which keeps only what the console would
+  # print at loglevel=3, has it too.
+  if [ -w "$KMSG" ]; then
+    while IFS= read -r line; do
+      printf '<2>tilo-boot-failure: %s\n' "$line" >>"$KMSG" 2>/dev/null || true
+    done <"$RUN/record"
+  fi
+  if in_initrd; then
+    if [ -n "$ESP" ] && install -d "$ESP/EFI/tilo" 2>/dev/null \
+       && cp "$RUN/record" "$ESP/EFI/tilo/.boot-failure.new" 2>/dev/null \
+       && mv -f "$ESP/EFI/tilo/.boot-failure.new" "$ESP/EFI/tilo/boot-failure"; then
+      sync -f "$ESP/EFI/tilo/boot-failure" 2>/dev/null || sync
+    else
+      say "the ESP could not be written; the record is in the kernel log only"
+    fi
+  else
+    # One TILO_RECORD= field per line of the record, which `import` reads
+    # back with journalctl -o export.
+    { printf 'MESSAGE_ID=%s\nSYSLOG_IDENTIFIER=tilo-boot-failure\nPRIORITY=2\n' "$MESSAGE_ID"
+      printf 'MESSAGE=Tilo could not start: %s failed (%s)\n' "$STEP" "${UNIT:-no unit}"
+      sed 's/^/TILO_RECORD=/' "$RUN/record"
+    } | logger --journald 2>/dev/null || true
+  fi
+}
+
+# --- drawing -----------------------------------------------------------------------
+# The layout lives here, so the taps tilo-boot-failure-input reports are
+# hit-tested against what tilo.script draws. It is worked out in pixels of the
+# screen plymouth draws on and sent as permille of its height. A row spans the
+# screen's width.
+SPLASH=0
+ACTIONS=()      # action ids in screen order
+LABELS=()       # their words, for the console
+SEGMENTS=()     # their labels, for tilo.script
+ROWS=()         # permille y of each action's centre
+ROW_HALF=0      # permille: half a row's height
+FOCUS=0
+DETAILS=0
+SCREEN_HEIGHT=""
+
+screen_height() {
+  local status mode
+  if [ -n "${TILO_BOOT_FAILURE_SCREEN_HEIGHT:-}" ]; then
+    printf '%s\n' "$TILO_BOOT_FAILURE_SCREEN_HEIGHT"; return
+  fi
+  for status in /sys/class/drm/card*-*/status; do
+    [ "$(cat "$status" 2>/dev/null)" = connected ] || continue
+    mode="$(head -1 "${status%/status}/modes" 2>/dev/null)"
+    [[ "$mode" =~ ^[0-9]+x([0-9]+) ]] && { printf '%s\n' "${BASH_REMATCH[1]}"; return; }
+  done
+  mode="$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)"
+  [[ "$mode" =~ ^[0-9]+,([0-9]+)$ ]] && { printf '%s\n' "${BASH_REMATCH[1]}"; return; }
+  printf '768\n'
+}
+
+draw() {  # message...
+  local text
+  for text in "$@"; do
+    "$PLYMOUTH" display-message --text="tilo-failure:$text" 2>/dev/null || true
+  done
+}
+
+# What tilo.script can draw of run-time text: printable ASCII, without the
+# quote, backslash and bar its messages reserve.
+plain() {  # TEXT [MAX]
+  local text
+  text="$(printf '%s' "$1" | LC_ALL=C tr -c ' -~' '?' | LC_ALL=C tr '"\\|' "'/:")"
+  printf '%s' "${text:0:${2:-80}}"
+}
+
+ftl_value() {  # KEY
+  sed -n "s/^$1 = //p" "$LIB/locales/$LOCALE.ftl" 2>/dev/null | head -1
+}
+
+# A message as tilo.script segments: its pre-rendered pieces (k=key.N) with
+# the values in between, drawn from glyph atlas ATLAS ("a" or "m"). A value
+# given as seg:... is segments already.
+segments() {  # KEY ATLAS [NAME=VALUE]...
+  local key="$1" atlas="$2" short rest piece name value pair out="" i=0; shift 2
+  short="${key#boot-failure-}"
+  rest="$(ftl_value "$key")"
+  case "$rest" in
+    *'{ $'*) ;;
+    *) printf 'k=%s' "$short"; return ;;
+  esac
+  while :; do
+    piece="${rest%%"{ \$"*}"
+    [ -z "$piece" ] || out="$out|k=$short.$i"
+    [ "$piece" != "$rest" ] || break
+    rest="${rest#*"{ \$"}"
+    name="${rest%% \}*}"
+    rest="${rest#* \}}"
+    value=""
+    for pair in "$@"; do [ "${pair%%=*}" = "$name" ] && value="${pair#*=}"; done
+    case "$value" in
+      seg:*) out="$out|${value#seg:}" ;;
+      ?*) out="$out|$atlas=$(plain "$value")" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s' "${out#|}"
+}
+
+# "October 9, 2026", in the catalogue's own order and month names.
+date_parts() {  # YYYY-MM-DD; prints the words, then the segments
+  [[ "$1" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]] || return 1
+  local year="${BASH_REMATCH[1]}" month=$((10#${BASH_REMATCH[2]})) day=$((10#${BASH_REMATCH[3]}))
+  msg boot-failure-date "year=$year" "day=$day" "month=$(msg "boot-failure-month-$month")"
+  segments boot-failure-date a "year=$year" "day=$day" "month=seg:k=month-$month"
+  printf '\n'
+}
+
+detail_lines() {  # one per line: words TAB segments
+  local line
+  printf '%s\t%s\n' "$(msg boot-failure-detail-unit "unit=${UNIT:-?}")" \
+    "$(segments boot-failure-detail-unit m "unit=${UNIT:-?}")"
+  while IFS= read -r line; do
+    [ -n "$line" ] && printf '%s\t%s\n' "$line" "m=$(plain "$line")"
+  done <<<"$LOG"
+  printf '%s\t%s\n' "$(msg boot-failure-detail-boot "boot=$BOOT")" \
+    "$(segments boot-failure-detail-boot m "boot=$BOOT")"
+  [ -z "$ENTRY" ] || printf '%s\t%s\n' "$(msg boot-failure-detail-entry "entry=$ENTRY")" \
+    "$(segments boot-failure-detail-entry m "entry=$ENTRY")"
+}
+
+layout() {
+  local date
+  ACTIONS=(again)
+  LABELS=("$(msg boot-failure-try-again)")
+  SEGMENTS=("$(segments boot-failure-try-again a)")
+  if [ -n "$PREVIOUS" ]; then
+    ACTIONS+=(previous)
+    if [ -n "$PREVIOUS_DATE" ] && date="$(date_parts "$PREVIOUS_DATE")"; then
+      LABELS+=("$(msg boot-failure-previous-dated "date=${date%%$'\n'*}")")
+      SEGMENTS+=("$(segments boot-failure-previous-dated a "date=seg:${date#*$'\n'}")")
+    else
+      LABELS+=("$(msg boot-failure-previous)")
+      SEGMENTS+=("$(segments boot-failure-previous a)")
+    fi
+  fi
+  if console_gate >/dev/null; then
+    ACTIONS+=(console)
+    LABELS+=("$(msg boot-failure-console)")
+    SEGMENTS+=("$(segments boot-failure-console a)")
+  fi
+  ACTIONS+=(details)
+  if [ "$DETAILS" = 1 ]; then
+    LABELS+=("$(msg boot-failure-hide-details)")
+    SEGMENTS+=("$(segments boot-failure-hide-details a)")
+  else
+    LABELS+=("$(msg boot-failure-show-details)")
+    SEGMENTS+=("$(segments boot-failure-show-details a)")
+  fi
+  [ "$FOCUS" -lt "${#ACTIONS[@]}" ] || FOCUS=0
+}
+
+# Pixels: the title's centre a third down, the block moved up as far as the
+# logo's room when the details make it taller than the screen.
+TITLE_TO_LINE=46 LINE_TO_FIRST=72 DETAIL_STEP=22 ROW_STEP=60 ROW_PX=48 HINT_GAP=60
+paint() {
+  local h top block y i n=0 words segs details=()
+  layout
+  if [ "$SPLASH" = 0 ]; then paint_console; return; fi
+  h="${SCREEN_HEIGHT:=$(screen_height)}"
+  [ "$DETAILS" = 0 ] || mapfile -t details < <(detail_lines)
+  block=$((TITLE_TO_LINE + LINE_TO_FIRST + ${#details[@]} * DETAIL_STEP \
+    + (${#ACTIONS[@]} - 1) * ROW_STEP + HINT_GAP + 16))
+  top=$((h / 3))
+  [ $((top + block)) -le $((h - 24)) ] || top=$((h - 24 - block))
+  [ "$top" -ge $((h / 6)) ] || top=$((h / 6))
+  pm() { printf '%s' $(( $1 * 1000 / h )); }
+  draw "reset:$LOCALE" "logo:$(pm $(( top * 51 / 100 )))" \
+    "text:$(pm "$top"):title" "text:$(pm $((top + TITLE_TO_LINE))):step-$STEP"
+  y=$((top + TITLE_TO_LINE + LINE_TO_FIRST - 18))
+  for words in "${details[@]}"; do
+    segs="${words#*$'\t'}"
+    draw "detail:$(pm "$y"):$segs"
+    y=$((y + DETAIL_STEP)); n=$((n + 1))
+  done
+  [ "$n" = 0 ] || y=$((y + 30))
+  [ "$n" != 0 ] || y=$((top + TITLE_TO_LINE + LINE_TO_FIRST))
+  ROWS=()
+  ROW_HALF=$(( (ROW_STEP / 2) * 1000 / h ))
+  for i in "${!ACTIONS[@]}"; do
+    ROWS+=("$(pm $((y + i * ROW_STEP)))")
+    draw "button:${ROWS[$i]}:$([ "$i" = "$FOCUS" ] && echo 1 || echo 0):${SEGMENTS[$i]}"
+  done
+  draw "text:$(pm $((y + (${#ACTIONS[@]} - 1) * ROW_STEP + HINT_GAP))):menu-hint"
+}
+
+paint_console() {
+  local i
+  printf '\n\033[1m%s\033[0m\n%s\n\n' "$(msg boot-failure-title)" "$(msg "boot-failure-step-$STEP")"
+  [ "$DETAILS" = 1 ] && { detail_lines | cut -f1 | sed 's/^/  /'; printf '\n'; }
+  for i in "${!ACTIONS[@]}"; do printf '  %d  %s\n' "$((i + 1))" "${LABELS[$i]}"; done
+  printf '\n%s\n> ' "$(msg boot-failure-menu-hint)"
+}
+
+# --- doing ---------------------------------------------------------------------------
+restart_into() {  # ENTRY
+  stop_input
+  [ -n "$1" ] && bootctl set-oneshot "$1" 2>/dev/null \
+    || say "could not choose $1 for the next start; the boot loader picks"
+  if [ "$SPLASH" = 1 ]; then
+    draw "reset:$LOCALE" "text:$(( 1000 / 3 )):restarting"
+  else
+    printf '%s\n' "$(msg boot-failure-restarting)"
+  fi
+  systemctl reboot
+  exit 0
+}
+
+# How the recovery console authenticates here: `luks DEVICE` (the root's own
+# LUKS header, as repair mode checks it), `login` (an account's password,
+# after switch-root on a disk that is not encrypted), or nothing, in which
+# case there is no console: an initrd with no encrypted root has no secret to
+# check and no accounts to sign in with.
+console_gate() {
+  local dev=""
+  if [ -r "$ROOT_SOURCE" ]; then
+    dev="$(cat "$ROOT_SOURCE")"
+  elif ! in_initrd && [ -r /usr/libexec/tilo-rollback-common ]; then
+    # shellcheck source=/dev/null
+    dev="$( . /usr/libexec/tilo-rollback-common && rollback_luks_device 2>/dev/null)"
+  fi
+  if [ -n "$dev" ] && cryptsetup isLuks "$dev" 2>/dev/null; then
+    printf 'luks %s\n' "$dev"
+  elif ! in_initrd && [ -x /usr/bin/login ]; then
+    printf 'login\n'
+  else
+    return 1
+  fi
+}
+
+# In the initrd, PCR 11 still reads as this start's: a shell there could ask
+# the TPM for whatever is sealed to it. Extending it first leaves the console
+# no stronger than the passphrase it was opened with. A TPM that cannot be
+# extended keeps the console shut.
+PCREXTEND="${TILO_BOOT_FAILURE_PCREXTEND:-/usr/lib/systemd/systemd-pcrextend}"
+seal_off() {
+  in_initrd || return 0
+  [ -e "${TILO_BOOT_FAILURE_TPM:-/dev/tpmrm0}" ] || return 0
+  if "$PCREXTEND" --pcr=11 tilo-recovery-console 2>/dev/null; then
+    return 0
+  fi
+  say "could not extend PCR 11; the recovery console stays shut"
+  printf '%s\n' "$(msg boot-failure-console-shut)"
+  return 1
+}
+
+recovery_console() {
+  local gate pass tries=0
+  gate="$(console_gate)" || return 0
+  stop_input
+  [ "$SPLASH" = 0 ] || "$PLYMOUTH" hide-splash 2>/dev/null || true
+  printf '\033[2J\033[H'
+  # Keys pressed while the screen was up are not a passphrase.
+  while read -r -t 0.05 -n 256 _; do :; done
+  case "$gate" in
+    luks*)
+      printf '%s\n' "$(msg boot-failure-console-passphrase)"
+      while [ "$tries" -lt 3 ]; do
+        tries=$((tries + 1))
+        printf '> '
+        IFS= read -r -s pass || break
+        printf '\n'
+        if printf '%s' "$pass" | cryptsetup open --test-passphrase --key-file - "${gate#luks }" 2>/dev/null; then
+          pass=""
+          seal_off || break
+          printf '%s\n\n' "$(msg boot-failure-console-back)"
+          say "recovery console opened after the disk passphrase"
+          HOME=/root bash -l
+          break
+        fi
+        pass=""
+        printf '%s\n' "$(msg boot-failure-console-refused)"
+      done
+      ;;
+    login)
+      printf '%s\n%s\n\n' "$(msg boot-failure-console-signin)" "$(msg boot-failure-console-back)"
+      /usr/bin/login
+      ;;
+  esac
+  [ "$SPLASH" = 0 ] || "$PLYMOUTH" show-splash 2>/dev/null || true
+  start_input
+}
+
+activate() {  # INDEX
+  case "${ACTIONS[$1]:-}" in
+    again) restart_into "$ENTRY" ;;
+    previous) restart_into "$PREVIOUS" ;;
+    console) recovery_console ;;
+    details) DETAILS=$((1 - DETAILS)) ;;
+  esac
+}
+
+# A tap on a row is a press of that row's action.
+row_at() {  # Y-FRACTION
+  local y i
+  y="$(awk -v f="$1" 'BEGIN { printf "%d", f * 1000 }')"
+  for i in "${!ROWS[@]}"; do
+    if [ "$y" -ge $((ROWS[i] - ROW_HALF)) ] && [ "$y" -le $((ROWS[i] + ROW_HALF)) ]; then
+      printf '%s\n' "$i"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The helper's lines arrive on KEYS_FD, a pipe this script holds open itself
+# (a coproc's descriptors close when it exits, taking its last lines along).
+INPUT_PID="" KEYS_FD=""
+start_input() {
+  [ "$SPLASH" = 1 ] || return 0
+  exec {KEYS_FD}< <(exec "$INPUT")
+  INPUT_PID=$!
+}
+stop_input() {
+  [ -n "$INPUT_PID" ] || return 0
+  kill "$INPUT_PID" 2>/dev/null || true
+  exec {KEYS_FD}<&-
+  INPUT_PID="" KEYS_FD=""
+}
+
+handle() {  # LINE from the input helper
+  local n row
+  case "$1" in
+    "key up"|"key left") FOCUS=$(( (FOCUS + ${#ACTIONS[@]} - 1) % ${#ACTIONS[@]} )) ;;
+    "key down"|"key right"|"key tab") FOCUS=$(( (FOCUS + 1) % ${#ACTIONS[@]} )) ;;
+    "key enter"|"key space") activate "$FOCUS" ;;
+    "key "[1-9])
+      n=$(( ${1#key } - 1 ))
+      [ "$n" -lt "${#ACTIONS[@]}" ] && { FOCUS="$n"; activate "$n"; } ;;
+    "tap "*)
+      set -- $1
+      row="$(row_at "$3")" && { FOCUS="$row"; activate "$row"; } ;;
+    *) return ;;
+  esac
+}
+
+splash_up() {
+  if ! in_initrd && ! "$PLYMOUTH" --ping 2>/dev/null; then
+    plymouthd --mode=boot --attach-to-session 2>/dev/null || true
+    "$PLYMOUTH" show-splash 2>/dev/null || true
+  fi
+  "$PLYMOUTH" --ping 2>/dev/null && "$PLYMOUTH" show-splash 2>/dev/null && [ -x "$INPUT" ]
+}
+
+cmd_show() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --step) STEP="$2"; shift ;;
+      --unit) UNIT="$2"; shift ;;
+      *) say "unknown argument $1"; exit 2 ;;
+    esac
+    shift
+  done
+  install -d -m 0700 "$RUN"
+  [ -n "$UNIT" ] || UNIT="$(choose_unit)" || UNIT=""
+  [ -n "$STEP" ] || STEP="$(step_of_unit "${UNIT:-}")"
+  case "$STEP" in unlock|mount|prepare|desktop) ;; *) STEP=prepare ;; esac
+  BOOT="$(boot_id)"
+  ENTRY="$(loader_var LoaderEntrySelected)" || ENTRY=""
+  [ -z "$UNIT" ] || LOG="$(unit_log "$UNIT")"
+  find_esp || say "no ESP: the record stays in the kernel log, and there is no previous version to offer"
+  if ! in_initrd && [ -r /etc/locale.conf ]; then
+    pick_locale "$(sed -n 's/^LANG=//p' /etc/locale.conf | tr -d '"')" || true
+  else
+    pick_locale "$(esp_locale)" || true
+  fi
+  find_previous "$ENTRY" || true
+  record
+  say "step=$STEP unit=${UNIT:-none} boot=$BOOT entry=${ENTRY:-unknown} previous=${PREVIOUS:-none}"
+
+  if splash_up; then SPLASH=1; fi
+  start_input
+  local line
+  while :; do
+    paint
+    if [ "$SPLASH" = 1 ]; then
+      if [ -z "$KEYS_FD" ] || ! IFS= read -r line <&"$KEYS_FD"; then
+        # The input helper died; the console's menu still works.
+        SPLASH=0
+        "$PLYMOUTH" hide-splash 2>/dev/null || true
+        continue
+      fi
+      handle "$line"
+    else
+      IFS= read -r line || exec sleep infinity
+      handle "key ${line//[^0-9]/}"
+    fi
+  done
+}
+
+# --- the next boot -------------------------------------------------------------------
+# The newest record of a failed start that is not this boot's: from the ESP
+# (an initrd failure), the previous boot's journal (a failure after
+# switch-root), or the pstore console (whatever reached the kernel log).
+newest_record() {
+  local current best="" best_time=0 file t
+  current="$(boot_id)"
+  install -d -m 0700 "$RUN"
+  : >"$RUN/candidates"
+  find_esp && [ -r "$ESP/EFI/tilo/boot-failure" ] && cp "$ESP/EFI/tilo/boot-failure" "$RUN/candidate.esp"
+  # The last such entry of the previous boot.
+  journalctl -b -1 --no-pager -o export "MESSAGE_ID=$MESSAGE_ID" 2>/dev/null \
+    | awk '/^$/ { n++; next } sub(/^TILO_RECORD=/, "") { found = 1; last = n + 0; line[last] = line[last] $0 "\n" }
+           END { if (found) printf "%s", line[last] }' >"$RUN/candidate.journal" || true
+  for file in "$PSTORE"/*/console-ramoops* "$PSTORE"/*/dmesg-ramoops*; do
+    [ -r "$file" ] || continue
+    sed -n 's/.*tilo-boot-failure: \([a-z]*=.*\)$/\1/p' "$file"
+  done | awk '/^boot=/ { n++ } { print > (dir "/candidate.pstore." n) }' dir="$RUN"
+  for file in "$RUN"/candidate.*; do
+    [ -s "$file" ] || continue
+    [ "$(sed -n 's/^boot=//p' "$file" | head -1)" != "$current" ] || continue
+    t="$(sed -n 's/^time=//p' "$file" | head -1)"
+    [[ "$t" =~ ^[0-9]+$ ]] || continue
+    [ "$t" -gt "$best_time" ] && { best="$file"; best_time="$t"; }
+  done
+  [ -n "$best" ] && cat "$best"
+}
+
+# An entry that used up its tries, other than the one this boot started:
+# the boot loader went past it to the one before.
+exhausted_entry() {
+  local cur f
+  cur="$(loader_var LoaderEntrySelected)" || return 1
+  [ -n "$ESP" ] || find_esp || return 1
+  for f in "$ESP"/loader/entries/bootc*+0-*.conf; do
+    [ -f "$f" ] || continue
+    [ "$(entry_id "$f")" = "$cur" ] && continue
+    printf '%s %s\n' "$(entry_id "$f")" "$(entry_digest "$f")"
+    return 0
+  done
+  return 1
+}
+
+# The notice the desktop shows once (/var/lib/tilo/boot-failure/notice):
+# `id`, `fallback` (1 when this boot is the previous version because the newer
+# one used up its tries), and the record's step, unit and messages when there
+# is one. A new id is a new notice.
+cmd_import() {
+  local record id="" fallback=0 exhausted=""
+  install -d -m 0755 "$STATE"
+  record="$(newest_record)" || record=""
+  rm -f "$RUN"/candidate.*
+  exhausted="$(exhausted_entry)" || exhausted=""
+  if [ -n "$record" ]; then
+    id="$(sed -n 's/^boot=//p' <<<"$record" | head -1)"
+    [ -z "$exhausted" ] || fallback=1
+  elif [ -n "$exhausted" ]; then
+    # The newer version failed without reaching this screen (it hung, or lost
+    # power each time): the fallback is still worth saying, once.
+    id="fallback-${exhausted##* }"
+    fallback=1
+  fi
+  [ -n "$id" ] || return 0
+  if [ -r "$STATE/notice" ] && grep -qx "id=$id" "$STATE/notice"; then
+    return 0
+  fi
+  {
+    printf 'id=%s\nfallback=%s\n' "$id" "$fallback"
+    grep -E '^(time|step|unit|entry|log)=' <<<"$record" || true
+  } >"$STATE/notice.new"
+  chmod 0644 "$STATE/notice.new"
+  mv -f "$STATE/notice.new" "$STATE/notice"
+  logger -t tilo-boot-failure -p user.err \
+    "start $id failed at $(sed -n 's/^step=//p' <<<"$record")${exhausted:+; started the previous version}" \
+    2>/dev/null || true
+}
+
+case "${1:-}" in
+  show) shift; cmd_show "$@" ;;
+  import) shift; cmd_import ;;
+  *) sed -n '2,8p' "$0" >&2; exit 2 ;;
+esac

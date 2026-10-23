@@ -85,6 +85,7 @@ impl Fixture {
             .env("PATH", std::env::var_os("PATH").unwrap())
             .env("TILO_ESP", &self.esp)
             .env("TILO_EFIVARS", self.root.join("no-efivars"))
+            .env("TILO_LOCALE_CONF", self.root.join("locale.conf"))
             .env("TILO_ESP_PLAN_ROOT", &self.plans)
             .env("TILO_ESP_PLAN_OWNER", uid())
             .env("TILO_ESP_WRITE_NO_REMOUNT", "1");
@@ -379,6 +380,26 @@ fn staging_counts_every_entry_and_keeps_spent_tries() {
     fs::rename(&counted, &spent).unwrap();
     assert_ok(&f.run_entries(None, false));
     assert!(spent.exists());
+}
+
+#[test]
+fn the_entries_pass_notes_the_locale_for_the_initrd_screen() {
+    let f = Fixture::new();
+    f.make_uki("old.efi", &"a".repeat(128));
+    f.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi");
+    fs::write(f.root.join("locale.conf"), "LANG=\"de_DE.UTF-8\"\n").unwrap();
+    assert_ok(&f.run_entries(None, false));
+    let info = f.esp.join("EFI/tilo/boot-info");
+    assert_eq!(fs::read_to_string(&info).unwrap(), "locale de-DE\n");
+    // Unchanged, it is not written again.
+    let before = fs::metadata(&info).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_ok(&f.run_entries(None, false));
+    assert_eq!(fs::metadata(&info).unwrap().modified().unwrap(), before);
+    // A language that changed is.
+    fs::write(f.root.join("locale.conf"), "LANG=en_US.UTF-8\n").unwrap();
+    assert_ok(&f.run_entries(None, false));
+    assert_eq!(fs::read_to_string(&info).unwrap(), "locale en-US\n");
 }
 
 #[test]

@@ -43,14 +43,14 @@ sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' 
 # diagnostics while disabling the distro's default syslog sink.
 printf 'sysloglvl=0\n' > /etc/dracut.conf.d/99-tilo-build-logging.conf
 omit_modules="network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"
-required_modules="crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"
+required_modules="crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-boot-failure"
 log="$(mktemp /tmp/tilo-dracut.XXXXXX)"
 trap 'rm -f -- "$log"' EXIT
 dracut --force --reproducible --compress zstd -v --kver "$kver" \
     --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
     --omit-drivers "amdgpu nouveau xe xfs" \
     --add-drivers ext4 \
-    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock" \
+    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-boot-failure" \
     "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
   || { cat "$log" >&2; exit 1; }
 test -s "/usr/lib/modules/$kver/initramfs.img"

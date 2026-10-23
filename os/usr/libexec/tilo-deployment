@@ -792,11 +792,29 @@ cmd_entries() {
     esp_plan_commit || die "could not apply the boot counters"
   fi
 
+  note_locale "$esp"
+
   # cmd_repair_entry takes the same ESP lock and may hand it to the sealed-key
   # signer. Release this phase's descriptor before entering that operation.
   flock -u 6
 
   cmd_repair_entry
+}
+
+# The boot-failure screen (tilo-boot-failure) speaks the machine's language,
+# also in the initrd, which has no /etc of the machine's own: it reads the
+# locale from EFI/tilo/boot-info, written here when it changes.
+note_locale() {  # ESP
+  local esp="$1" conf="${TILO_LOCALE_CONF:-/etc/locale.conf}" locale
+  locale="$(sed -n 's/^LANG=//p' "$conf" 2>/dev/null | tr -d '"' | head -1)"
+  locale="${locale%%.*}"; locale="${locale%%@*}"; locale="${locale//_/-}"
+  [[ "$locale" =~ ^[a-z]{2,3}(-[A-Za-z0-9]+)*$ ]] || return 0
+  [ "$(cat "$esp/EFI/tilo/boot-info" 2>/dev/null)" != "locale $locale" ] || return 0
+  esp_plan_reset
+  [ -d "$esp/EFI/tilo" ] || esp_plan_op mkdir path EFI/tilo
+  printf 'locale %s\n' "$locale" >"$ESP_PLAN_DIR/boot-info"
+  { esp_plan_install boot-info EFI/tilo/boot-info && esp_plan_commit; } \
+    || warn "could not note the locale for the boot-failure screen"
 }
 
 # Derive the repair-mode boot entry from whichever UKI the running deployment
