@@ -69,6 +69,7 @@ impl Connection {
         let peer = state.next_peer_id();
         let service: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
             worker: None,
+            app_worker: None,
             state: state.clone(),
             directories: directories.clone(),
             peer_id: peer,

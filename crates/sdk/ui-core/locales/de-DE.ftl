@@ -227,6 +227,7 @@ room-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereic
 room-sync-device-needs-update-body = Die Aktualisierung kommt. Bis dahin bleiben deine Änderungen auf diesem Gerät.
 history-local-action-not-saved = Diese Änderung konnte nicht in deinem Verlauf gespeichert werden.
 history-local-action-retry = Erneut versuchen
+history-local-action-unrecorded = Deine Änderungen in diesem Fenster sind gespeichert, aber dein Verlauf zeichnet sie nicht auf.
 
 history-sync-refused = Synchronisierung angehalten: Dieser Arbeitsbereich hat eine Änderung nicht angenommen. Deine Änderungen bleiben auf diesem Gerät.
 history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.

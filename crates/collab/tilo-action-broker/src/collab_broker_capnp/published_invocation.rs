@@ -792,7 +792,7 @@ impl OriginalInvocation {
                     .lock()
                     .map_err(|_| "worker registry unavailable")?;
                 if workers
-                    .get(&self.peer)
+                    .get(self.peer, &worker.route)
                     .and_then(|entry| entry.worker_registration.as_ref())
                     != Some(worker)
                 {
@@ -1075,7 +1075,7 @@ impl OriginalInvocation {
                     .host_workers
                     .lock()
                     .map_err(|_| "worker registry unavailable")?
-                    .get(&self.peer)
+                    .get(self.peer, &worker.route)
                     .cloned()
                     .ok_or("original worker connection retired")?;
                 if admitted.worker_registration.as_ref() != Some(worker) {

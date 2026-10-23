@@ -15,7 +15,7 @@ async fn checkout_channel(
         .host_workers
         .lock()
         .unwrap()
-        .get(&peer)
+        .only(peer)
         .unwrap()
         .clone();
     // The actual joined channel supplied the verified identity. Its transport
