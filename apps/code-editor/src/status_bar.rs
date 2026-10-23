@@ -18,8 +18,7 @@ pub struct StatusState {
     pub selection: usize,
     pub caret_count: usize,
     pub problems: usize,
-    /// What the language server is doing — "rust-analyzer: indexing 42%".
-    /// Empty when there is no server.
+    /// The project still being read ("Loading project 42%"), else empty.
     pub lsp: String,
     /// True while the server is starting or busy — the readout surfaces the
     /// server's state only then, so a resting "ready" doesn't clutter it.
@@ -131,7 +130,7 @@ mod tests {
                     line: 3,
                     col: 9,
                     caret_count: 1,
-                    lsp: "rust-analyzer: ready".into(),
+                    lsp: String::new(),
                     ..Default::default()
                 },
                 "Rust",
@@ -147,11 +146,11 @@ mod tests {
                     selection: 20,
                     caret_count: 3,
                     problems: 4,
-                    lsp: "rust-analyzer: indexing 42%".into(),
+                    lsp: "Loading project 42%".into(),
                     lsp_working: true,
                     ..Default::default()
                 },
-                "Rust, Unsaved changes, 4 problems, rust-analyzer: indexing 42%",
+                "Rust, Unsaved changes, 4 problems, Loading project 42%",
                 "Ln 8, Col 2, 20 selected, 3 cursors",
             ),
             (

@@ -1571,3 +1571,49 @@ fn format_on_save_writes_what_the_formatter_answered() {
             .ends_with("typed\noff\n")
     );
 }
+
+#[test]
+fn the_status_and_header_say_only_what_the_person_needs() {
+    // Case `a_project_still_loading_reads_in_plain_words`.
+    {
+        let busy = |percentage| LspStatus::Busy {
+            server: "rust-analyzer".to_string(),
+            title: "Fetching cargo metadata".to_string(),
+            detail: Some("?".to_string()),
+            percentage,
+        };
+        assert_eq!(busy(None).label(), "Loading project\u{2026}");
+        assert_eq!(busy(Some(37)).label(), "Loading project 37%");
+        assert_eq!(
+            LspStatus::Starting {
+                server: "rust-analyzer".to_string()
+            }
+            .label(),
+            "Loading project\u{2026}"
+        );
+        assert_eq!(
+            LspStatus::Ready {
+                server: "rust-analyzer".to_string()
+            }
+            .label(),
+            ""
+        );
+    }
+    // Case `opening_a_folder_is_not_narrated`.
+    {
+        let mut sample = crate::test_support::sample();
+        let left = sample.editor(|app| app.status.left());
+        assert!(!left.contains("Opened"), "status: {left}");
+    }
+    // Case `the_header_row_stands_only_over_a_file`.
+    {
+        let mut sample = crate::test_support::sample();
+        let header = |sample: &mut crate::test_support::Sample| {
+            sample.editor(|app| (app.laid_out_header, app.search_button.get_rect().height()))
+        };
+        assert_eq!(header(&mut sample), (false, 0.0), "no file, no header row");
+        sample.open("src/main.rs");
+        let (shown, height) = header(&mut sample);
+        assert!(shown && height > 0.0, "a file brings the header row");
+    }
+}

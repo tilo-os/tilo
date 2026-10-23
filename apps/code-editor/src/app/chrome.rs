@@ -32,13 +32,15 @@ impl CodeApp {
             self.rect.x1,
             self.rect.y1,
         );
-        ui::chrome::HeaderRowFace::new(column, theme).paint_rule(scene, transform, theme);
-        self.header
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.search_button
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.panel_toggle
-            .draw(scene, transform, text_renderer, theme, presence);
+        if self.laid_out_header {
+            ui::chrome::HeaderRowFace::new(column, theme).paint_rule(scene, transform, theme);
+            self.header
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.search_button
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.panel_toggle
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
         if self.find_open {
             self.find
                 .draw(scene, transform, text_renderer, theme, presence);
