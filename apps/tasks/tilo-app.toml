@@ -14,7 +14,7 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [resources]
-kinds = ["tasks.tracker", "tilo.rich-text"]
+kinds = ["tasks.tracker", "tilo.rich-text", "settings.offered-models"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

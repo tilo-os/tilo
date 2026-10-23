@@ -180,57 +180,131 @@ impl LinkedAccounts {
 /// How often a panel showing a code asks again whether it was sent.
 pub const LINKING_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Asks again while a panel shows a code: the person sends it elsewhere
-/// (`/link` in Discord), so nothing here moves when the account links, and
-/// the panel would show the code until it was opened again.
+/// How many times a shown panel that knows no service yet asks again, at
+/// [`LINKING_RECHECK`] doubling each time, before it waits to be opened
+/// anew.
+pub const UNANSWERED_RETRIES: u32 = 4;
+
+/// Asks again while a panel shows the accounts:
+///
+/// - while it shows a code: the person sends it elsewhere (`/link` in
+///   Discord), so nothing here moves when the account links, and the panel
+///   would show the code until it was opened again;
+/// - while it knows no service at all: the read it asked on opening can
+///   fail or go unanswered on a busy page or host, and the panel would
+///   offer nothing to link until it was opened again. A room with no
+///   connector answers no reading either, so these asks are few and
+///   spaced out ([`UNANSWERED_RETRIES`]).
 #[derive(Debug, Default)]
 pub struct LinkingRecheck {
     due: Option<ui_core::time::Instant>,
+    unanswered: Option<Unanswered>,
+}
+
+/// The asks again of a shown panel that knows no service yet.
+#[derive(Debug)]
+struct Unanswered {
+    due: ui_core::time::Instant,
+    asked: u32,
 }
 
 impl LinkingRecheck {
     /// At `now`, with `accounts` shown (or not, `shown` false): asks again
-    /// once [`LINKING_RECHECK`] passed since it last did while a code waits.
-    /// When to call again, `None` while no code waits on a shown panel.
+    /// once [`LINKING_RECHECK`] passed since it last did while a code waits,
+    /// and with backoff while no service is known. When to call again,
+    /// `None` while there is nothing to ask after.
     pub fn follow(
         &mut self,
         accounts: &LinkedAccounts,
         shown: bool,
         now: ui_core::time::Instant,
     ) -> Option<ui_core::time::Instant> {
-        // Only the services a code waits for are asked: every other record
-        // of the room answers no reading, each ask a refusal at the host.
-        let waiting: Vec<String> = if shown {
-            accounts
-                .accounts()
-                .into_iter()
-                .filter(|account| matches!(account.state, LinkState::Linking(_)))
-                .map(|account| account.app)
-                .collect()
+        let known = if shown {
+            accounts.accounts()
         } else {
             Vec::new()
         };
+        self.follow_codes(accounts, &known, now);
+        self.follow_unanswered(accounts, shown && known.is_empty(), now);
+        self.due()
+    }
+
+    fn follow_codes(
+        &mut self,
+        accounts: &LinkedAccounts,
+        known: &[LinkedAccount],
+        now: ui_core::time::Instant,
+    ) {
+        // Only the services a code waits for are asked: every other record
+        // of the room answers no reading, each ask a refusal at the host.
+        let waiting: Vec<&str> = known
+            .iter()
+            .filter(|account| matches!(account.state, LinkState::Linking(_)))
+            .map(|account| account.app.as_str())
+            .collect();
         if waiting.is_empty() {
             self.due = None;
-            return None;
+            return;
         }
         match self.due {
             Some(due) if now < due => {}
             Some(_) => {
-                for app in &waiting {
+                for app in waiting {
                     accounts.refresh_app(app);
                 }
                 self.due = now.checked_add(LINKING_RECHECK);
             }
             None => self.due = now.checked_add(LINKING_RECHECK),
         }
-        self.due
+    }
+
+    fn follow_unanswered(
+        &mut self,
+        accounts: &LinkedAccounts,
+        nothing_known: bool,
+        now: ui_core::time::Instant,
+    ) {
+        if !nothing_known {
+            self.unanswered = None;
+            return;
+        }
+        let Some(unanswered) = &mut self.unanswered else {
+            // The panel asked on opening; the first ask again comes after.
+            self.unanswered = now
+                .checked_add(LINKING_RECHECK)
+                .map(|due| Unanswered { due, asked: 0 });
+            return;
+        };
+        if now < unanswered.due || unanswered.asked >= UNANSWERED_RETRIES {
+            return;
+        }
+        accounts.refresh();
+        if !accounts.accounts().is_empty() {
+            self.unanswered = None;
+            return;
+        }
+        unanswered.asked = unanswered.asked.saturating_add(1);
+        match LINKING_RECHECK
+            .checked_mul(1 << unanswered.asked)
+            .and_then(|wait| now.checked_add(wait))
+        {
+            Some(due) => unanswered.due = due,
+            None => unanswered.asked = UNANSWERED_RETRIES,
+        }
     }
 
     /// When to call [`Self::follow`] again.
     #[must_use]
-    pub const fn due(&self) -> Option<ui_core::time::Instant> {
-        self.due
+    pub fn due(&self) -> Option<ui_core::time::Instant> {
+        let unanswered = self
+            .unanswered
+            .as_ref()
+            .filter(|unanswered| unanswered.asked < UNANSWERED_RETRIES)
+            .map(|unanswered| unanswered.due);
+        match (self.due, unanswered) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 }
 
@@ -532,6 +606,77 @@ mod tests {
 
         accounts.unlink("so.tilo.discord");
         assert_eq!(accounts.accounts()[0].state, LinkState::Unlinked);
+    }
+
+    #[test]
+    fn a_shown_panel_that_knows_no_service_asks_again_with_backoff_until_one_answers() {
+        let host = Rc::new(Host {
+            reading: RefCell::new(Reading {
+                service: "Discord".into(),
+                connected: true,
+                link: "link-account".into(),
+                ..Reading::default()
+            }),
+            asked: RefCell::default(),
+        });
+        let accounts = LinkedAccounts::new(Rc::new(RoomAccounts::new(
+            Rc::new(Rc::clone(&host)),
+            Rc::new(|| {}),
+        )));
+        let mut recheck = LinkingRecheck::default();
+        let start = ui_core::time::Instant::now();
+        let later = |by: std::time::Duration| start.checked_add(by).unwrap();
+        // The read the panel asked on opening went unanswered: nothing known.
+        assert_eq!(
+            recheck.follow(&accounts, true, start),
+            Some(later(LINKING_RECHECK)),
+            "a panel that knows no service asks again after a while"
+        );
+        assert_eq!(
+            recheck.follow(&accounts, false, start),
+            None,
+            "a closed panel asks nothing"
+        );
+        recheck.follow(&accounts, true, start);
+        recheck.follow(&accounts, true, later(LINKING_RECHECK / 2));
+        assert!(host.asked.borrow().is_empty(), "not before it is due");
+        let due = recheck.follow(&accounts, true, later(LINKING_RECHECK));
+        assert_eq!(
+            *host.asked.borrow(),
+            ["so.tilo.chat", "so.tilo.discord"],
+            "every record is asked again, as on opening"
+        );
+        assert_eq!(accounts.accounts()[0].state, LinkState::Unlinked);
+        assert_eq!(due, None, "once a service answers, nothing is asked after");
+    }
+
+    #[test]
+    fn a_room_with_no_connector_is_asked_again_a_few_times_then_left() {
+        let host = Rc::new(Host::default());
+        // No connector: Discord answers no reading either.
+        host.reading.borrow_mut().connected = false;
+        let accounts = LinkedAccounts::new(Rc::new(RoomAccounts::new(
+            Rc::new(Rc::clone(&host)),
+            Rc::new(|| {}),
+        )));
+        let mut recheck = LinkingRecheck::default();
+        let mut now = ui_core::time::Instant::now();
+        let mut waits = Vec::new();
+        while let Some(due) = recheck.follow(&accounts, true, now) {
+            waits.push(due.duration_since(now));
+            now = due;
+            assert!(waits.len() <= 10, "the asks again end");
+        }
+        let asks = host.asked.borrow().len() / 2;
+        assert_eq!(asks, UNANSWERED_RETRIES as usize);
+        assert_eq!(
+            waits,
+            [2, 4, 8, 16]
+                .iter()
+                .map(|s| std::time::Duration::from_secs(*s))
+                .collect::<Vec<_>>(),
+            "each wait twice the last"
+        );
     }
 
     #[test]

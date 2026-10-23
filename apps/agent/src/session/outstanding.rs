@@ -180,10 +180,7 @@ impl Session {
                 self.observe_native_control(control)?;
             }
         }
-        if matches!(reply, Detached::Cancellation(Ok(false)))
-            && self.native_task.is_some()
-            && !observed
-        {
+        if matches!(reply, Detached::Cancellation(Ok(false))) && !observed {
             return Err(anyhow::anyhow!(
                 "native task control unavailable; refusing further actions"
             ));

@@ -79,13 +79,22 @@ stage_context() {
   tar -C "$repo_root" "${excludes[@]}" -cf - . | tar -C "$dest" -xf -
 }
 
-# The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH.
+# The pinned external assets NAME... (os/external-assets/github-assets.tsv), checksum-verified;
+# prints their directory, for --build-context. They come from the os-assets check's outputs,
+# which the calling check needs; nothing here downloads them.
+pinned_assets() {
+  TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/cache-github-assets.sh" "$@" >&2
+  printf '%s' "$repo_root/os/external-assets/cache"
+}
+
+# The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH. It comes
+# from the signing-tools check's outputs, which every check that runs this needs.
 use_cosign() {
   command -v cosign >/dev/null && return
   local tools=$scratch/publish-tools
   mkdir -p "$tools"
-  RUNNER_TEMP=$tools GITHUB_PATH=$tools/path TILO_GITHUB_ASSET_CACHE=$tools/assets \
-    TILO_ASSET_STORE= bash "$repo_root/os/dev/install-cached-cosign.sh" >/dev/null
+  RUNNER_TEMP=$tools GITHUB_PATH=$tools/path TILO_GITHUB_ASSET_CACHE=/target/signing-tools \
+    TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/install-cached-cosign.sh" >/dev/null
   PATH=$tools/tilo-cosign-tools:$PATH
 }
 

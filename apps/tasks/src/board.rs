@@ -38,13 +38,14 @@ fn status_of(lane: &str) -> Option<Status> {
 }
 
 fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
+    let people = cx.people();
     let mut board = Board::new().with_id("tasks-board");
     for status in Status::ALL {
         let cards: Vec<(String, Element)> = tracker
             .issues
             .iter()
             .filter(|(_, issue)| issue.status == status)
-            .map(|(id, issue)| (id.to_string(), card(tracker, id, issue, nav)))
+            .map(|(id, issue)| (id.to_string(), card(tracker, id, issue, &people, nav)))
             .collect();
         let header = Text::new(&ui::i18n::I18nManager::format(
             "tasks-lane-heading",
@@ -69,8 +70,25 @@ fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
     }))
 }
 
+/// What the room calls the agent `agent` (`agent:<id>`), whichever way its
+/// roster spells the id; the bare id where the room names it not.
+fn agent_name(people: &ui::framework::People, agent: &str) -> String {
+    let bare = agent.trim_start_matches("agent:");
+    [agent, bare]
+        .into_iter()
+        .map(|id| people.name(id))
+        .find(|name| name != agent && name != bare)
+        .unwrap_or_else(|| bare.to_owned())
+}
+
 /// One issue's card: its reference and title, and what it is waiting on.
-fn card(tracker: &Tracker, id: &Id, issue: &Issue, nav: &Nav) -> Element {
+fn card(
+    tracker: &Tracker,
+    id: &Id,
+    issue: &Issue,
+    people: &ui::framework::People,
+    nav: &Nav,
+) -> Element {
     let mut facts = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
     facts = facts.push(Box::new(
         Text::new(&reference(issue.number))
@@ -79,10 +97,10 @@ fn card(tracker: &Tracker, id: &Id, issue: &Issue, nav: &Nav) -> Element {
     ));
     if let Some(agent) = issue.assigned_agent() {
         facts = facts.push(Box::new(
-            Badge::text(agent.trim_start_matches("agent:")).style(ChipStyle::Tinted(Tone::Info)),
+            Badge::text(agent_name(people, agent)).style(ChipStyle::Tinted(Tone::Info)),
         ));
     } else if let Some(person) = issue.assigned_person() {
-        facts = facts.push(Box::new(Badge::text(person)));
+        facts = facts.push(Box::new(Badge::text(people.name(person))));
     }
     if let Some(run) = issue.active_run() {
         facts = facts.push(Box::new(

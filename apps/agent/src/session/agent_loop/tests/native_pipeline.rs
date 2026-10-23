@@ -1,45 +1,7 @@
-//! Native task steps: followed by their host's answers rather than a timer,
-//! and run alongside each other when the model marks them standalone —
-//! with the same rules as a Task Center run's.
+//! A run's steps: followed by their host's answers rather than a timer,
+//! and run alongside each other when the model marks them standalone.
 
 use super::*;
-
-/// A native workspace task's run (`native:` lease, a control frontier the
-/// cancellation poll answers with): its steps are native children, each
-/// re-asked by its stable id to be observed.
-fn native_run_fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> Fixture {
-    let control = runtime_collab::TaskRunControl {
-        version: 1,
-        task_id: "task:loop".into(),
-        run_epoch: 1,
-        from_revision: 0,
-        applied_revision: 0,
-        latest_revision: 0,
-        directions: Vec::new(),
-        has_more: false,
-    };
-    let mut f = fixture(
-        title,
-        World {
-            native_control: Some(control),
-            ..world
-        },
-        turns,
-    );
-    f.run.lease = "native:00000000000000000000000000000000:0".into();
-    f.run.action_context = serde_json::to_value(
-        tilo_actions::ActionContext::default()
-            .with_purpose(title)
-            .with_group(f.run.group(), title, "task"),
-    )
-    .unwrap();
-    super::super::super::validate_task_run(&f.run).unwrap();
-    f
-}
-
-fn native_terminal(sent: &[CollabRequest]) -> runtime_collab::TaskRunUpdate {
-    legacy_terminal(sent)
-}
 
 /// The children the agent started, in order: one `InvokeTaskAction` each
 /// with no wait (a re-ask always asks to be held).
@@ -74,7 +36,7 @@ fn reasks(sent: &[CollabRequest]) -> Vec<runtime_collab::TaskChildWait> {
 /// and the model reads their results in the order it wrote the calls.
 #[test]
 fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the standup change and start the agenda and the minutes",
         World {
             second_window: Some("doc-2"),
@@ -114,7 +76,7 @@ fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
         assert_eq!(result["result"], "succeeded", "{id}: {result}");
     }
     assert_eq!(
-        native_terminal(&f.sent.borrow()),
+        terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Succeeded {
             message: "Posted and started both documents.".into()
         }
@@ -125,7 +87,7 @@ fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
 /// starts only after every running step has settled.
 #[test]
 fn a_native_step_that_may_read_earlier_writes_waits_for_them() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post, write a heading, then type under it and confirm in Chat",
         World {
             settle_after: Some(Duration::from_millis(10)),
@@ -195,7 +157,7 @@ fn a_native_step_that_may_read_earlier_writes_waits_for_them() {
 /// it reads the run cancelled, and the run ends cancelled.
 #[test]
 fn cancelling_a_native_task_stops_every_step_in_flight() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the change and start the agenda",
         World {
             // Longer than the test may run: the steps end cancelled.
@@ -231,7 +193,7 @@ fn cancelling_a_native_task_stops_every_step_in_flight() {
     let cancelled: HashSet<_> = world.cancelled.iter().copied().collect();
     assert_eq!(cancelled, started, "every running child is cancelled");
     assert!(matches!(
-        native_terminal(&f.sent.borrow()),
+        terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Cancelled { .. }
     ));
 }
@@ -241,7 +203,7 @@ fn cancelling_a_native_task_stops_every_step_in_flight() {
 /// after a failure.
 #[test]
 fn a_refused_native_step_does_not_stop_the_others() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the change and start the agenda",
         World {
             settle_after: Some(Duration::from_millis(100)),
@@ -307,7 +269,7 @@ fn a_refused_native_step_does_not_stop_the_others() {
 /// once, with the outcome, and no round trip comes back empty.
 #[test]
 fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the change",
         World {
             settle_after: Some(Duration::from_millis(250)),
@@ -349,7 +311,7 @@ fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
 /// agent then re-asks at the old cadence, never in a loop.
 #[test]
 fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "post the change",
         World {
             settle_after: Some(tilo_test_env::hang_bound()),
@@ -418,7 +380,7 @@ fn native_task_benchmark() {
         .and_then(|reps| reps.parse().ok());
     let reps = measured.unwrap_or(1);
     let run_once = |independent: bool| {
-        let mut f = native_run_fixture(
+        let mut f = fixture(
             "post the standup change and start the agenda and the minutes",
             World {
                 second_window: Some("doc-2"),
@@ -440,7 +402,7 @@ fn native_task_benchmark() {
         let world = f.world.borrow();
         assert_eq!(world.started.len(), 3);
         assert!(matches!(
-            native_terminal(&f.sent.borrow()),
+            terminal(&f.sent.borrow()),
             runtime_collab::TaskRunUpdate::Succeeded { .. }
         ));
         let idle = world.idle_observations + world.cancellation_checks;
@@ -511,7 +473,7 @@ fn drafted(f: &mut Fixture) -> tilo_actions::ActionDescriptor {
 /// tells the model what happened instead of planning the task over.
 #[test]
 fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "add a closing line",
         World {
             awaiting: Some(("append-paragraph".into(), 1)),
@@ -560,7 +522,7 @@ fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
     assert!(first.contains("has resumed at that step"), "{first}");
     assert!(first.contains("Append paragraph"), "{first}");
     assert_eq!(
-        native_terminal(&sent),
+        terminal(&sent),
         runtime_collab::TaskRunUpdate::Succeeded {
             message: "Added the closing line.".into()
         }
@@ -572,7 +534,7 @@ fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
 /// it rather than leaving it to the model.
 #[test]
 fn a_paused_step_resumes_through_the_window_that_publishes_it_now() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "add a closing line",
         World {
             awaiting: Some(("append-paragraph".into(), 1)),
@@ -610,7 +572,7 @@ fn a_paused_step_resumes_through_the_window_that_publishes_it_now() {
 /// told what waits so that it asks for that step again.
 #[test]
 fn a_paused_step_the_draft_cannot_rebuild_is_left_to_the_model() {
-    let mut f = native_run_fixture(
+    let mut f = fixture(
         "add a closing line",
         World::default(),
         vec![turn(&[finish("Waiting on the person.", true)], 24)],
@@ -639,7 +601,7 @@ fn a_paused_step_the_draft_cannot_rebuild_is_left_to_the_model() {
 #[test]
 fn a_native_child_id_names_its_request_not_its_position() {
     let ids = |requests: &[&str]| {
-        let mut f = native_run_fixture("ids", World::default(), Vec::new());
+        let mut f = fixture("ids", World::default(), Vec::new());
         f.session.native_task = Some(crate::session::native_task::NativeTaskState {
             run_id: f.run.run_id,
             task_id: f.run.task_id.clone(),

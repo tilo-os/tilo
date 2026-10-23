@@ -64,7 +64,7 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
             self.doCleanups()
             self.setUp()
             publish = self.checks["publish-release-tools"]
-            self.assertEqual(publish["needs"], ["image-release-tools"])
+            self.assertEqual(publish["needs"], ["image-release-tools", "signing-tools"])
             self.assertEqual(publish["on"], ["dispatch"])
             self.assertEqual(publish["id_token"], ["registry.tilo.so"])
             self.assertIn("registry.tilo.so/tilo/tilo-release-tools", publish["run"])

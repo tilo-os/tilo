@@ -42,6 +42,13 @@ relay actor `ReleaseHomeRelay` when the map is empty, which clears the home
 relay and tells every active relay it is no longer home; each then closes on
 the existing rule, a minute after it last carried data.
 
+A net report still probing when the map emptied finishes afterwards naming
+the relay it probed, and `Actor::handle_net_report_report` made that relay
+home again for good, the release being already done; under load that was the
+usual order when the relays rested soon after waking. A report's preferred
+relay, and the current home relay it falls back to, now count only while
+that relay is still in the map.
+
 ## The net report rests while it finds nothing new (`src/socket.rs`)
 
 With relays, the socket actor re-ran its net report every 20-26 s for the
@@ -92,7 +99,9 @@ Prepared for an upstream issue/PR against `n0-computer/iroh` (not opened):
 > connection and 15 s ping last until the endpoint closes. Proposed: disable
 > the timer arm while the map is empty and reset the timer on
 > `RelayMapChange`; on a change that empties the map, clear the home relay
-> and send `SetHomeRelay(false)` to the active relays. Also: with an empty
+> and send `SetHomeRelay(false)` to the active relays, and do not make a
+> relay home that has left the map (a report in flight during the removal
+> still names it). Also: with an empty
 > map, a second link change with the same `UpdateReason` sets an equal
 > `(None, why)` net report, which `Watchable::set` does not notify, so
 > local direct addresses are only refreshed by the periodic tick; collect

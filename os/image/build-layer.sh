@@ -111,6 +111,8 @@ build_env() {
   export SOURCE_DATE_EPOCH TILO_GENERATION
   export TILO_IMAGE_ONLY=1 TILO_WITH_BROWSER=${TILO_WITH_BROWSER:-1} TILO_OUTPUT=$scratch/os-output TMPDIR=/var/tmp
   export TILO_RUST_LTO=off TILO_REQUIRE_PCR_PREDICTION=0 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$dev_owner_key
+  # The pinned external assets are os-assets' outputs, which the action needs.
+  export TILO_ASSET_OFFLINE=1
 }
 
 # An image layout into podman's storage; its id.

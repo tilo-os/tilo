@@ -18,9 +18,7 @@ rpms_ref=$(cat "$snapshot/rpms-ref")
 # The package manifest inside the snapshot itself must name what this tree's Containerfiles
 # install, not only its signed provenance: a stale snapshot fails here, before the compile.
 python3 os/dev/verify-rpm-snapshot-buildkit.py "$rpms_ref"
-assets=$scratch/github-assets
-TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh \
-  sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+assets=$(pinned_assets sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz)
 # Source bytes and the pinned base and snapshot decide the image; a commit time is no input:
 # the Containerfile's SOURCE_DATE_EPOCH defaults to 0, and oci-build.sh fixes the timestamps
 # (buildah refuses a SOURCE_DATE_EPOCH argument beside them).

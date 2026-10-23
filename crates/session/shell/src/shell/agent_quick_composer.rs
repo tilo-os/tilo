@@ -521,7 +521,7 @@ impl AgentQuickComposer {
         self.agent_switch = None;
         self.view.picks_agent.set(false);
         self.view.agent.set(owner.agent.clone());
-        self.offer_models(models_of(&agent_provider_config::ProviderConfig::load()));
+        self.offer_models(models_of());
         label.clone_into(&mut self.label);
         self.view
             .title
@@ -1093,13 +1093,17 @@ const AGENT_PICKER: &str = "agent-quick-agent";
 /// The test id of the composer's model picker.
 const MODEL_PICKER: &str = "agent-quick-model";
 
-/// The models a run may plan with, as Settings offers them: the agent's
-/// own first, then each enabled provider's models.
-fn models_of(
-    config: &agent_provider_config::ProviderConfig,
-) -> Vec<(String, Option<runtime_collab::TaskRunModel>)> {
+/// The models a run may plan with: the agent's own first, then those the
+/// person's providers offer, as their record of them lists them.
+fn models_of() -> Vec<(String, Option<runtime_collab::TaskRunModel>)> {
+    let offered = crate::shell::settings_records::Holder::of(&crate::shell::state::local_user_id())
+        .and_then(|records| {
+            records
+                .read::<agent_provider_config::OfferedModels, _>(|offered| offered.models.clone())
+        })
+        .unwrap_or_default();
     let mut models = vec![(t("agent-quick-model-own"), None)];
-    models.extend(config.offered_models().map(|offered| {
+    models.extend(offered.into_iter().map(|offered| {
         (
             t_args(
                 "agent-quick-model-of",
@@ -1756,6 +1760,51 @@ mod tests {
         Widget::sync(&mut composer, &doc, &automerge::ROOT);
         assert_eq!(composer.take_agent_switch(), None);
         assert_eq!(composer.about(), Some(&seed));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn the_model_picker_lists_what_the_persons_providers_offer() {
+        use agent_provider_config::{OfferedModel, OfferedModels};
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let held =
+            crate::shell::settings_records::Holder::of(&crate::shell::state::local_user_id())
+                .unwrap();
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        open(&mut composer, owner("tide"));
+        assert!(!shown(&mut composer, MODEL_PICKER), "only the agent's own");
+
+        held.run(|records| {
+            let record = records.shared::<OfferedModels>().unwrap();
+            record
+                .invoke(&OfferedModels::OFFER.with(vec![OfferedModel {
+                    profile: "work".into(),
+                    provider: "Work".into(),
+                    model: "m-large".into(),
+                    label: "Large".into(),
+                }]))
+                .unwrap();
+        })
+        .unwrap();
+        open(&mut composer, owner("tide"));
+        assert!(shown(&mut composer, MODEL_PICKER));
+        let large = composer.models[1].0.clone();
+        Widget::sync(&mut composer, &doc, &automerge::ROOT);
+        assert!(action(
+            &mut composer,
+            MODEL_PICKER,
+            &ui::a11y::Action::SetValue(large),
+            &mut doc
+        ));
+        edit(&mut composer, &mut doc, "Tidy the notes");
+        assert_eq!(
+            submit(&mut composer, &mut doc).model,
+            Some(runtime_collab::TaskRunModel {
+                profile: "work".into(),
+                model: "m-large".into(),
+            })
+        );
     }
 
     #[test]

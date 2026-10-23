@@ -22,13 +22,11 @@ case ${1:-} in
     [[ $(uname -m) == "$arch" ]] || die "the $arch builder is built natively, not on $(uname -m)"
     channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
     [[ -n $channel ]] || die 'no channel in rust-toolchain.toml'
-    assets=$scratch/github-assets
-    TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh \
-      "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz" \
+    assets=$(pinned_assets "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz" \
       "wasm-bindgen-0.2.108-$arch-unknown-linux-musl.tar.gz" \
       "cargo-xwin-v0.23.1.$arch-unknown-linux-musl.tar.gz" \
       "mold-2.40.4-$arch-linux.tar.gz" "$pdfium" "$(bash tools/ci/install-xwayland-satellite.sh --asset-name)" \
-      "${extra[@]}"
+      "${extra[@]}")
     # buildah bind-mounts single files only from a writable context, so the build gets a copy
     # of exactly the files the Containerfile uses.
     context=$scratch/ci-builder-context
