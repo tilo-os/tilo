@@ -58,6 +58,8 @@ struct Ui {
     appearance: LocalState<AppearanceChoice>,
     dispatcher: Dispatcher<Studio>,
     live: Live<Studio>,
+    /// The theme the editor shows, for the window bar's commands.
+    shown: window_bar::Shown,
 }
 
 impl Ui {
@@ -267,6 +269,7 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
         appearance: cx.settings::<AppearanceChoice>().state(),
         dispatcher: cx.dispatcher(),
         live: cx.live().clone(),
+        shown: window_bar::Shown::default(),
     };
     crate::effects::install(cx, &ui.notice);
     {
@@ -282,22 +285,29 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
     let nav = sidebar(&ui);
     let content = {
         let ui = ui.clone();
-        cx.switch(&ui.page.clone(), move |cx, page| match page {
-            Page::Gallery => gallery(&ui),
-            Page::Theme(id) => editor(cx, &ui, &Editing::new(cx, id, None)),
-            Page::Draft { id, base } => editor(cx, &ui, &Editing::new(cx, id, Some(base))),
+        cx.switch(&ui.page.clone(), move |cx, page| {
+            let editing = match page {
+                Page::Gallery => None,
+                Page::Theme(id) => Some(Editing::new(cx, id, None)),
+                Page::Draft { id, base } => Some(Editing::new(cx, id, Some(base))),
+            };
+            ui.shown.borrow_mut().clone_from(&editing);
+            match editing {
+                Some(editing) => editor(cx, &ui, &editing),
+                None => gallery(&ui),
+            }
         })
     };
-    Box::new(
-        NavShell::new()
-            // The gallery's tiles and the editor's form need a page's width
-            // beside the list; narrower, the window shows one at a time.
-            .content_kind(ui::widget::ContentKind::Page)
-            .with_id("themes-shell")
-            .with_pane_state(&ui.pane)
-            .sidebar(nav)
-            .content(content),
-    )
+    let shell = NavShell::new()
+        // The gallery's tiles and the editor's form need a page's width
+        // beside the list; narrower, the window shows one at a time.
+        .content_kind(ui::widget::ContentKind::Page)
+        .with_id("themes-shell")
+        .with_window_toolbar()
+        .with_pane_state(&ui.pane)
+        .sidebar(nav)
+        .content(content);
+    Box::new(window_bar::StudioWindow { shell, ui })
 }
 
 fn notice(ui: &Ui) -> Text {
@@ -424,12 +434,12 @@ fn gallery(ui: &Ui) -> Element {
         .map(|preset| preset_tile(ui, preset))
         .collect();
     Box::new(
+        // The cards keep their height to their width: the scrollbar's lane
+        // stays, so the grid's width does not change as it starts to scroll.
         Scrollable::new_vertical()
             .fill_parent_height()
+            .with_stable_vertical_gutter()
             .with_child(Box::new(ui::column![
-                Text::new("themes-presets")
-                    .with_role(TextRole::Title)
-                    .with_heading_level(1),
                 notice(ui),
                 CardGrid::new(tiles).with_card_width(CardWidth::Wide),
             ])),
@@ -649,72 +659,6 @@ fn polarity(cx: &ViewCx<Studio>, editing: &Editing) -> Dropdown {
     )
 }
 
-/// The editor's commands: apply and export the theme while it is legible,
-/// start another from it, reset it and delete it.
-fn commands(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> impl Widget + use<> {
-    let legible = {
-        let raw = editing.id.as_str().to_owned();
-        editing.value(cx, move |theme| theme.findings(&raw).is_empty())
-    };
-    let ui = ui.clone();
-    let editing = editing.clone();
-    ModelView::from_state(&legible, move |legible: &bool| -> Element {
-        let apply = {
-            let ui = ui.clone();
-            let editing = editing.clone();
-            Button::new("theme-apply", "themes-apply")
-                .role(ButtonRole::Primary)
-                .with_enabled(*legible)
-                .on_own_device_effect(move || ui.apply(editing.reference()))
-        };
-        let export = {
-            let ui = ui.clone();
-            let editing = editing.clone();
-            Button::new("theme-export", "themes-export")
-                .with_enabled(*legible)
-                .on_own_device_effect(move || ui.export(editing.reference()))
-        };
-        let duplicate = {
-            let ui = ui.clone();
-            let editing = editing.clone();
-            Button::new("theme-duplicate", "themes-duplicate")
-                .role(ButtonRole::Plain)
-                .on_view(move || ui.start_from(&editing.reference()))
-        };
-        let reset = {
-            let ui = ui.clone();
-            let editing = editing.clone();
-            Button::new("theme-reset", "themes-reset-button")
-                .role(ButtonRole::Plain)
-                .on_view(move || {
-                    ui.dispatcher
-                        .submit(editing.invoke(Studio::RESET.with(editing.id.clone())));
-                })
-        };
-        let delete = {
-            let ui = ui.clone();
-            let editing = editing.clone();
-            Button::new("theme-delete", "themes-delete-button")
-                .role(ButtonRole::Destructive)
-                .on_view(move || {
-                    // A draft never sent has nothing to delete: leaving
-                    // it is enough.
-                    if editing.sent() {
-                        ui.dispatcher
-                            .submit(Studio::DELETE.with(editing.id.clone()));
-                    }
-                    ui.open(Page::Gallery);
-                })
-        };
-        // Keep the primary effects together and the editing/lifecycle
-        // commands on a second line so phone-sized editors retain targets.
-        Box::new(ui::column![
-            ui::row![apply, export],
-            ui::row![duplicate, reset, delete]
-        ])
-    })
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "the editor lists every role of the theme document in order"
@@ -761,7 +705,6 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
         .with_id("contrast-findings")
         .with_live(ui::a11y::Politeness::Polite)
     };
-    let actions = commands(cx, ui, editing);
 
     let theme = Theme::paths();
     let name = text(cx, editing, &theme.name).with_id("theme-name");
@@ -916,12 +859,13 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
             .fill_parent_height()
             .with_child(Box::new(ui::column![
                 preview,
-                actions,
                 editor_notice(ui, editing),
                 form,
             ])),
     )
 }
+
+mod window_bar;
 
 #[cfg(test)]
 mod tests {
