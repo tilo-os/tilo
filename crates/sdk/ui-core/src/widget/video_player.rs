@@ -268,6 +268,14 @@ pub struct VideoPlayer {
     time_label_rect: Rect,
     /// `None` means hidden.
     controls_visible_until: Option<Instant>,
+    /// The controls were shown and no frame has drawn them yet. A page
+    /// that presents a frame every few seconds would otherwise let a
+    /// reveal expire unseen: the controls stay up until one frame drew
+    /// them.
+    reveal_unpainted: bool,
+    /// The last frame drew the controls, at least half opaque: what is on
+    /// screen until the next frame, and what the semantics tree lists.
+    controls_on_screen: bool,
     /// The played part of the progress line the last paint drew; zero
     /// while the controls showed instead.
     progress_line_painted: Rect,
@@ -395,6 +403,8 @@ impl VideoPlayer {
             fullscreen_button_rect: Rect::ZERO,
             time_label_rect: Rect::ZERO,
             controls_visible_until: None,
+            reveal_unpainted: false,
+            controls_on_screen: false,
             progress_line_painted: Rect::ZERO,
             scrubbing: false,
             last_cursor: Point::ZERO,
@@ -921,7 +931,7 @@ impl VideoPlayer {
     }
 
     fn controls_visible_now(&self) -> bool {
-        self.controls_pinned() || self.controls_shown_for_a_while()
+        self.controls_pinned() || self.reveal_unpainted || self.controls_shown_for_a_while()
     }
 
     /// Shown by the pointer, a key or playback starting, until the
@@ -936,7 +946,7 @@ impl VideoPlayer {
     /// Opacity for the shared control/host-overlay fade. Reduced motion keeps
     /// the exact same visibility timing but snaps between endpoints.
     pub fn controls_opacity(&self) -> f32 {
-        if self.open_menu.is_some() || self.controls_pinned() {
+        if self.open_menu.is_some() || self.controls_pinned() || self.reveal_unpainted {
             return 1.0;
         }
         let Some(deadline) = self.controls_visible_until else {
@@ -968,6 +978,7 @@ impl VideoPlayer {
 
     fn show_controls(&mut self) {
         self.controls_visible_until = crate::time::now().checked_add(CONTROLS_AUTO_HIDE);
+        self.reveal_unpainted = true;
     }
 
     /// The controls Panel: floating over the bottom of the picture, one
@@ -1233,6 +1244,8 @@ impl VideoPlayer {
             self.forget_control_rects();
             return;
         }
+        self.reveal_unpainted = false;
+        self.controls_on_screen = opacity >= 0.5;
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -1248,6 +1261,7 @@ impl VideoPlayer {
     /// The controls are not drawn: none of them may be hit, nor read in the
     /// semantics tree from where an earlier frame drew them.
     fn forget_control_rects(&mut self) {
+        self.controls_on_screen = false;
         self.play_button_rect = Rect::ZERO;
         self.scrub_track_rect = Rect::ZERO;
         self.volume_track_rect = Rect::ZERO;
@@ -1258,12 +1272,12 @@ impl VideoPlayer {
         self.menu_hit_rects.clear();
     }
 
-    /// Whether the controls are there to see now: shown (or a settings menu
-    /// open) and not faded past half. The rects hold where the last frame
-    /// drew them; once the controls hid or faded, that frame is stale until
-    /// the next one, and the tree says so at once.
+    /// Whether the controls are there to see: the last frame drew them, at
+    /// least half opaque. That frame is what the screen shows until the
+    /// next one, which takes hidden or faded controls off the screen and
+    /// out of the tree together.
     fn controls_seen(&self) -> bool {
-        (self.controls_visible_now() || self.open_menu.is_some()) && self.controls_opacity() >= 0.5
+        self.controls_on_screen
     }
 
     /// The controls a person can see and reach now, with where they are
