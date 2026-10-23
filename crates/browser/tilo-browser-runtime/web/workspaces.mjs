@@ -656,6 +656,34 @@ function memoryStore() {
 }
 
 /**
+ * Join `workspace` once its door has a seat: a page that watches because
+ * there was none asks the door's `presence` every `retryAfter` seconds (with
+ * jitter, so a full room is not asked by everyone at once) and calls `join`
+ * only when it says `open`. Asking takes no seat, so the page keeps watching
+ * on the one it has instead of trading it for a new one each time. Returns
+ * a function that stops asking.
+ */
+export function joinWhenSeated({workspace, retryAfter, join, fetch = globalThis.fetch,
+  schedule = (run, ms) => setTimeout(run, ms), cancel = clearTimeout, random = Math.random}) {
+  const wait = Math.max(5, retryAfter ?? 30);
+  let timer, stopped = false;
+  const next = () => { if (!stopped) timer = schedule(check, (wait + random() * wait / 2) * 1000); };
+  async function check() {
+    try {
+      const response = await fetch(new URL('presence', admissionDoor(workspace)), {credentials: 'omit'});
+      if (!stopped && response.ok && (await response.json())?.open === true) {
+        stopped = true;
+        join();
+        return;
+      }
+    } catch { /* The door did not answer: ask again later. */ }
+    next();
+  }
+  next();
+  return () => { stopped = true; cancel(timer); };
+}
+
+/**
  * Watch `workspace` read-only as its spectator person. Rejects with
  * `HostAdmissionError` code `full` above the host's spectator cap, so an
  * embedding site can show its static fallback.

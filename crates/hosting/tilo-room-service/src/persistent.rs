@@ -845,6 +845,15 @@ impl Persistent {
         })
     }
 
+    /// Whether `/join` would seat a guest now: a watching page asks this
+    /// before it reloads to join, so it stays on its seat until one frees.
+    pub fn seat_free(&self) -> bool {
+        self.shared
+            .seats
+            .lock_recover()
+            .free(tilo_clock::unix_now_ms())
+    }
+
     pub fn watching(&self) -> u32 {
         Self::counted(&self.shared.watching)
     }

@@ -34,7 +34,7 @@ import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
   hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
-  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
+  joinWhenSeated, membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedRoom, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
@@ -594,6 +594,8 @@ export async function startEntryPage({mode}) {
   let retryAfter = null;
   /** Why the door had no seat for this page (`full`, `too-many`, `unavailable`), when it watches instead. */
   let seatlessBecause = null;
+  /** The workspace whose door had no seat for this page. */
+  let seatlessAt = null;
   globalThis.tiloInvites = 0;
   /** Keeping the person this page joined as (`identity-actions.mjs`), once there is one. */
   let identityActions = null;
@@ -702,6 +704,7 @@ export async function startEntryPage({mode}) {
         entered = 'seatless';
         retryAfter = error.retryAfter;
         seatlessBecause = error.code;
+        seatlessAt = workspace;
         return watch();
       }
     },
@@ -803,7 +806,7 @@ export async function startEntryPage({mode}) {
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;
-    if (entered) showVisitState({entered, retryAfter, because: seatlessBecause, tell, status});
+    if (entered) showVisitState({entered, retryAfter, because: seatlessBecause, workspace: seatlessAt, tell, status});
     // Only the desktop lists host actions: a single app's mount refuses them.
     const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
       ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace', 'tab']) : null;
@@ -1195,7 +1198,7 @@ function joinByReload() {
  * live and are let in when one frees up (retried after the host's
  * Retry-After, with jitter so a full room is not asked by everyone at once).
  */
-function showVisitState({entered, retryAfter, because = null, tell, status}) {
+function showVisitState({entered, retryAfter, because = null, workspace, tell, status}) {
   if (entered === 'joined') { tell('joined'); return; }
   tell('watching');
   if (entered === 'watching') {
@@ -1214,8 +1217,7 @@ function showVisitState({entered, retryAfter, because = null, tell, status}) {
   status.textContent = because === 'full'
     ? 'It’s full right now, so you’re watching live. You’ll join when a seat frees up.'
     : 'You couldn’t join just now, so you’re watching live. You’ll join in a moment.';
-  const wait = retryAfter ?? 30;
-  setTimeout(joinByReload, (wait + Math.random() * wait / 2) * 1000);
+  joinWhenSeated({workspace, retryAfter, join: joinByReload});
 }
 
 /**

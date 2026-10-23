@@ -702,7 +702,14 @@ impl Service {
             (&Method::GET, ["presence"]) => {
                 let mut response = Self::json(
                     StatusCode::OK,
-                    &serde_json::json!({"online": persistent.online(), "watching": persistent.watching()}),
+                    &serde_json::json!({
+                        "online": persistent.online(),
+                        "watching": persistent.watching(),
+                        // Whether a guest would get in now, so a watching
+                        // page reloads to join only then.
+                        "open": ops::get().is_none_or(|ops| ops.mode().allows_joins())
+                            && persistent.seat_free(),
+                    }),
                 );
                 response.headers_mut().insert(
                     header::CACHE_CONTROL,

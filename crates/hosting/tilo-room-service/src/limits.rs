@@ -200,6 +200,19 @@ impl Seats {
         self.online
     }
 
+    /// Whether [`Self::take`] would hold a seat at `now_ms`, holding none.
+    pub fn free(&self, now_ms: u64) -> bool {
+        let held = self
+            .held
+            .iter()
+            .filter(|taken| now_ms.saturating_sub(**taken) < SEAT_HOLD_MS)
+            .count();
+        usize::try_from(self.online)
+            .unwrap_or(usize::MAX)
+            .saturating_add(held)
+            < self.cap
+    }
+
     /// Holds a seat at `now_ms`, or `false` when the room is full.
     pub fn take(&mut self, now_ms: u64) -> bool {
         while self
@@ -259,7 +272,9 @@ mod tests {
     fn a_seat_nobody_used_frees_after_its_hold() {
         let mut seats = Seats::new(1);
         assert!(seats.take(0));
+        assert!(!seats.free(SEAT_HOLD_MS - 1));
         assert!(!seats.take(SEAT_HOLD_MS - 1));
+        assert!(seats.free(SEAT_HOLD_MS));
         assert!(seats.take(SEAT_HOLD_MS));
     }
     use std::net::IpAddr;
