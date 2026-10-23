@@ -1893,10 +1893,36 @@ impl ChromeState {
 
     /// Person principal selected for the active workspace, or the session
     /// fallback when no workspace is active.
+    ///
+    /// Reads the tree, so a caller already holding a [`Self::tree`] guard
+    /// asks [`Self::active_local_user_in`] with it instead: a second read on
+    /// the same thread waits behind any writer queued since the first, and
+    /// that writer waits for the first read, so neither moves.
     pub fn active_local_user(&self) -> crate::shell::state::UserId {
-        self.tree().desktop.active_workspace().map_or_else(
+        let room = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room);
+        self.local_user_for_active_room(room)
+    }
+
+    /// [`Self::active_local_user`] for a caller that holds the tree.
+    pub fn active_local_user_in(&self, tree: &WorkspaceTree) -> crate::shell::state::UserId {
+        self.local_user_for_active_room(
+            tree.desktop
+                .active_workspace()
+                .map(crate::shell::state::Workspace::room),
+        )
+    }
+
+    fn local_user_for_active_room(
+        &self,
+        room: Option<crate::shell::state::RoomId>,
+    ) -> crate::shell::state::UserId {
+        room.map_or_else(
             || self.local_user_id.clone(),
-            |workspace| self.local_user_for_room(&workspace.room()),
+            |room| self.local_user_for_room(&room),
         )
     }
 

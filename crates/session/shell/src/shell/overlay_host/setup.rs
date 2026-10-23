@@ -96,11 +96,10 @@ impl ShellOverlayHost {
         };
         let Some((room, person)) = ({
             let state = chrome.borrow();
-            state
-                .tree()
-                .desktop
+            let tree = state.tree();
+            tree.desktop
                 .active_workspace()
-                .map(|workspace| (workspace.room(), state.active_local_user()))
+                .map(|workspace| (workspace.room(), state.active_local_user_in(&tree)))
         }) else {
             return;
         };
