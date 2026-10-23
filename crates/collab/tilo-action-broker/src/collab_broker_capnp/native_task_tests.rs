@@ -32,6 +32,8 @@ struct Native {
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
     /// The tracker's runs, as the person approves, steers and stops them.
     runs: Mutex<Vec<TrackerRun>>,
+    /// The grants recorded as given by the person, while they may grant.
+    granted: Mutex<Option<Vec<tilo_action_policy::Grant>>>,
 }
 
 /// The issue the fixture's agent runs.
@@ -140,15 +142,17 @@ impl OwnerCommitService for Native {
 }
 impl crate::services::AppActionGrants for Native {
     fn may_grant(&self, _room: &str, _person: &str) -> bool {
-        false
+        self.granted.lock().unwrap().is_some()
     }
     fn record(
         &self,
         _request: &crate::app_actions::AppActionConsentRequest,
-        _grant: tilo_action_policy::Grant,
+        grant: tilo_action_policy::Grant,
         _answer: crate::app_actions::AppActionConsent,
     ) -> Option<String> {
-        None
+        let id = grant.id.as_str().to_owned();
+        self.granted.lock().unwrap().as_mut()?.push(grant);
+        Some(id)
     }
     fn revoke(&self, requested: &str, grant: &str) {
         assert_eq!(requested, room().to_string());
@@ -262,6 +266,7 @@ impl Fixture {
             capped_connection: std::sync::atomic::AtomicBool::new(false),
             spent_grants: Mutex::new(Vec::new()),
             runs: Mutex::new(Vec::new()),
+            granted: Mutex::new(None),
         });
         let membership = OwnerCommitRequest {
             room: room().to_string(),

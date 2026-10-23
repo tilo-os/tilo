@@ -923,12 +923,18 @@ impl PortalDialogQueue {
                 // sheet names both.
                 action: format!("{} · {}", request.resource_label, request.action_label),
                 detail: action_grant_detail(request),
-                // Confirming one invocation grants nothing: it is allowed
-                // this once or not at all.
+                // Confirming one invocation grants nothing, unless the
+                // person allows it for the place it runs in as well.
                 choices: action_grant_answers(request)
-                    .iter()
-                    .map(|answer| crate::shell::app_action_consent::consent_label(*answer))
+                    .into_iter()
+                    .map(|answer| match (&request.scope, answer) {
+                        (Some(scope), AppActionConsent::Always) => {
+                            t_args("portal-confirm-scope", &[("scope", scope.clone().into())])
+                        }
+                        _ => crate::shell::app_action_consent::consent_label(answer),
+                    })
                     .collect(),
+                answers: action_grant_answers(request),
             }),
             PendingDialog::WindowTransfer { request, .. } => Some(DialogView::WindowTransfer {
                 handle: request.handle.clone(),
@@ -1308,6 +1314,8 @@ pub enum DialogView {
         action: String,
         detail: String,
         choices: Vec<String>,
+        /// What each choice answers, in the same order.
+        answers: Vec<AppActionConsent>,
     },
     /// Whether, and how, a window crosses into another workspace. The
     /// answers are the choices; Cancel leaves everything as it was.
@@ -1840,7 +1848,7 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Confirmed),
-            DialogView::ActionGrant { .. } => AppActionConsent::ALLOWING
+            DialogView::ActionGrant { answers, .. } => answers
                 .get(self.selected)
                 .is_some_and(|answer| self.queue.finish_action_grant(view.handle(), *answer)),
             DialogView::WindowTransfer { .. } => self
@@ -2670,11 +2678,11 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
     )
 }
 /// The allowing answers the grant sheet offers for `request`, in order.
-fn action_grant_answers(request: &AppActionConsentRequest) -> &'static [AppActionConsent] {
-    if request.confirming {
-        &AppActionConsent::ALLOWING[..1]
-    } else {
-        &AppActionConsent::ALLOWING
+fn action_grant_answers(request: &AppActionConsentRequest) -> Vec<AppActionConsent> {
+    match (request.confirming, &request.scope) {
+        (true, Some(_)) => vec![AppActionConsent::Once, AppActionConsent::Always],
+        (true, None) => vec![AppActionConsent::Once],
+        (false, _) => AppActionConsent::ALLOWING.to_vec(),
     }
 }
 
@@ -2685,7 +2693,22 @@ fn action_grant_detail(request: &AppActionConsentRequest) -> String {
         return moderation_detail(preview);
     }
     if request.confirming {
-        return t_args("portal-confirm-detail", &[("risk", risk.into())]);
+        let mut detail = match &request.scope {
+            Some(scope) => t_args(
+                "portal-confirm-scope-detail",
+                &[("risk", risk.into()), ("scope", scope.clone().into())],
+            ),
+            None => t_args("portal-confirm-detail", &[("risk", risk.into())]),
+        };
+        if let Some(draft) = &request.draft {
+            for field in &draft.fields {
+                detail.push('\n');
+                detail.push_str(&field.label);
+                detail.push_str(": ");
+                detail.push_str(&field.value.line());
+            }
+        }
+        return detail;
     }
     let key = if request.needs_confirmation {
         "portal-grant-detail-confirms"

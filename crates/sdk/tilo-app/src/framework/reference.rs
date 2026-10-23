@@ -34,15 +34,18 @@ pub fn room() -> Result<String, String> {
     }
 }
 
-/// A view's opens, on their own client of the session's action door, which
-/// the window's root carries to the host.
+/// A view's opens, and the actions of its own record it sends through the
+/// host ([`Dispatcher::through_host`](super::Dispatcher::through_host)), on
+/// their own client of the session's action door, which the window's root
+/// carries to the host.
 #[derive(Clone, Default)]
 pub(crate) struct Opener(Rc<RefCell<Opening>>);
 
 #[derive(Default)]
 struct Opening {
     door: Option<RemoteActions>,
-    calls: Vec<LocalState<InvocationCall>>,
+    /// Each call, by the action it invokes.
+    calls: Vec<(String, LocalState<InvocationCall>)>,
 }
 
 impl Opener {
@@ -57,19 +60,41 @@ impl Opener {
         reference: &ResourceRef,
     ) -> Result<(), String> {
         let target = reference.open_target(&room()?, app, record);
+        self.invoke(target, InvokeArgument::None);
+        Ok(())
+    }
+
+    /// Ask the host to invoke `address`, an action of the window's own
+    /// record, with `arguments`, as the person using it.
+    pub(crate) fn invoke_own(
+        &self,
+        address: tilo_actions::ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) {
+        self.invoke(
+            tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_actions::remote::OWN_PROVIDER.into(),
+                address,
+            },
+            InvokeArgument::Json(arguments),
+        );
+    }
+
+    fn invoke(&self, target: tilo_actions::remote::RemoteActionTarget, argument: InvokeArgument) {
+        let action = target.address.action.clone();
         let mut opening = self.0.borrow_mut();
         let call = opening
             .door
             .get_or_insert_with(RemoteActions::current)
-            .invoke(target, InvokeArgument::None, None);
-        opening.calls.push(call);
-        Ok(())
+            .invoke(target, argument, None);
+        opening.calls.push((action, call));
     }
 
-    /// Why each open that ended since the last call did not open.
-    pub(crate) fn take_refusals(&self) -> Vec<String> {
+    /// Why each call that ended since the last call did not go ahead, by
+    /// the action it invoked.
+    pub(crate) fn take_refusals(&self) -> Vec<(String, String)> {
         let mut refusals = Vec::new();
-        self.0.borrow_mut().calls.retain(|call| {
+        self.0.borrow_mut().calls.retain(|(action, call)| {
             call.with(|call| match call {
                 RemoteCall::Pending
                 | RemoteCall::Done(
@@ -78,11 +103,11 @@ impl Opener {
                     | InvocationUpdate::Item { .. },
                 ) => true,
                 RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
-                    refusals.push(error.message.clone());
+                    refusals.push((action.clone(), error.message.clone()));
                     false
                 }
                 RemoteCall::Refused(error) => {
-                    refusals.push(error.to_string());
+                    refusals.push((action.clone(), error.to_string()));
                     false
                 }
                 RemoteCall::Done(_) => false,

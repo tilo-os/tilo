@@ -385,3 +385,69 @@ fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
     pick(&mut app, "Nobody");
     assert_eq!(assignee(&app), None);
 }
+
+/// What a run asks is answered on the host's sheet: the issue's Answer
+/// button sends the tracker's answer through the session's door, and the
+/// app records no answer of its own.
+#[test]
+fn a_runs_question_is_answered_through_the_host() {
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    let door = std::sync::Arc::new(Door::default());
+    let _served = ui::RemoteActions::enter(
+        door.clone(),
+        ui::tilo_actions::remote::Caller::local_person("ada"),
+    );
+    let mut app = open();
+    app.call(
+        "create",
+        json!({ "title": "Send the notes", "assignee": "agent:scribe" }),
+    )
+    .expect("create");
+    let issue = only(&app);
+    app.call("approve-run", json!({ "issue": issue.as_str() }))
+        .expect("start the run");
+    let agent = ActionInvoker::actor("agent:scribe")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+    app.call_by(
+        agent,
+        "tasks.tracker",
+        "ask-confirmation",
+        json!({
+            "issue": issue.as_str(),
+            "question": {
+                "id": "q1", "app": "so.tilo.mail", "action": "send",
+                "resource": "mail.account", "arguments_digest": "digest",
+                "draft": { "action_label": "Send message", "resource_label": "Mail",
+                           "fields": [] },
+            },
+        }),
+    )
+    .expect("the run asks");
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    let answer = app
+        .harness()
+        .a11y_node_named("Answer")
+        .expect("the answer button");
+    app.harness()
+        .perform_a11y_action(answer, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    let asked = door.asked.lock().unwrap().pop().expect("one answer");
+    assert_eq!(
+        asked.target.provider,
+        ui::tilo_actions::remote::OWN_PROVIDER
+    );
+    assert_eq!(asked.target.address.action, "answer-confirmation");
+    let ui::tilo_actions::remote::InvokeArgument::Json(arguments) = asked.argument else {
+        panic!("typed arguments");
+    };
+    assert_eq!(arguments["issue"], json!(issue.as_str()));
+    let run = app.state().issues.get(&issue).unwrap().run.clone().unwrap();
+    assert_eq!(
+        run.confirmation.unwrap().state,
+        tasks::model::ConfirmationState::Waiting,
+        "only the host answers"
+    );
+}

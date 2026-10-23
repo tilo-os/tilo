@@ -93,7 +93,7 @@ system and an entry in its history:
 | `report-run` | the run's agent | its phase, and progress posted in the thread |
 | `incorporate` | the run's agent | the first *n* messages to the run, taken in |
 | `ask-confirmation` | the run's agent | the draft of an action that asks first |
-| `answer-confirmation` | people | confirm (with edits) or decline with a reason |
+| `answer-confirmation` | people, on the host's sheet | confirm (with edits) or decline with a reason |
 | `settle-confirmation` | the run's agent | the answer is spent once the action started |
 | `finish-run` | the run's agent | done goes to review, failed or stopped back to Todo |
 
@@ -115,8 +115,16 @@ the approver's live grants ([permissions.md](permissions.md) §4), with
 every message to the run read first. An action that asks first waits for
 the person's answer on the issue, and a confirmation admits only the
 arguments asked about, when the draft the person saw is the one those
-arguments render. It grants nothing: what lets a run act without asking is
-a grant naming the issue, given through the room's `grant` action.
+arguments render. The issue page shows the question with one Answer
+button; the answer it sends goes through the session's door, and the host
+puts the question, with its draft, to the run's person on its own
+confirmation sheet: Allow once, Allow for the issue (by its title), or
+Deny. The tracker records the answer they chose there, never the app's.
+Allow once grants nothing. Allow for the issue first records, as the
+person, an answer grant naming the issue for that one action
+(`agent_answers::answer_grant`), so its runs take that action without
+asking again; workspace settings list it under Issues, by the issue's
+title, with revoke.
 
 A run may act in an application nobody has open: the broker launches it
 through the workspace launcher under the run's own durable custody, bound to

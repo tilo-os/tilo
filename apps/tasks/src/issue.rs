@@ -434,7 +434,14 @@ fn run_view(issue: &Issue) -> RunView {
             .filter(|run| run.phase == RunPhase::Waiting)
             .and_then(|run| run.confirmation.as_ref())
             .filter(|question| question.state == ConfirmationState::Waiting)
-            .map(|question| question.action.clone()),
+            .map(|question| {
+                question
+                    .draft
+                    .get("action_label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&question.action)
+                    .to_owned()
+            }),
     }
 }
 
@@ -478,28 +485,7 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 ))
                 .with_id("tasks-run-question"),
             ));
-            column = column.push(Box::new(
-                Row::new()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(cx.button(
-                        "tasks-run-confirm",
-                        Tracker::ANSWER_CONFIRMATION.with(tracker::AnswerConfirmation {
-                            issue: id.clone(),
-                            confirm: true,
-                            edits: None,
-                            reason: None,
-                        }),
-                    )))
-                    .push(Box::new(cx.button(
-                        "tasks-run-decline",
-                        Tracker::ANSWER_CONFIRMATION.with(tracker::AnswerConfirmation {
-                            issue: id.clone(),
-                            confirm: false,
-                            edits: None,
-                            reason: None,
-                        }),
-                    ))),
-            ));
+            column = column.push(answer(cx, &id));
         }
         let going = view.phase.is_some_and(RunPhase::active);
         let control = if going {
@@ -515,6 +501,24 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         };
         Box::new(column.push(Box::new(control))) as Element
     })
+}
+
+/// The button that has the run's question put to the person on the host's
+/// own sheet, where they allow it once, allow it for this issue, or deny
+/// it: the answer goes through the host, which gives it as the person chose
+/// there. This app never answers for them.
+fn answer(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let dispatcher = cx.dispatcher();
+    let invoke = Tracker::ANSWER_CONFIRMATION.with(tracker::AnswerConfirmation {
+        issue: id.clone(),
+        confirm: true,
+        edits: None,
+        reason: None,
+    });
+    Box::new(
+        Button::new("tasks-run-answer", "tasks-run-answer")
+            .on_view(move || dispatcher.through_host(&invoke)),
+    )
 }
 
 /// The thread: every message, oldest first, and the composer. While a run

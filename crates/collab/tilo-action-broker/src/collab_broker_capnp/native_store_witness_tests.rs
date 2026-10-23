@@ -6,8 +6,8 @@ use crate::services::TrackerAnswer;
 const STORE: &str = "so.tilo.store";
 const RESOURCE: &str = "store:package";
 
-struct Sheet(
-    tokio::sync::mpsc::UnboundedSender<(
+pub(super) struct Sheet(
+    pub(super)  tokio::sync::mpsc::UnboundedSender<(
         AppActionConsentRequest,
         tokio::sync::oneshot::Sender<AppActionConsent>,
     )>,

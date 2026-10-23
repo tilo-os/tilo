@@ -2112,6 +2112,7 @@ mod host_steps;
 mod launchable;
 mod local_action_host;
 mod remaining_workspace_actions;
+mod run_question;
 mod witness;
 use witness::requires_store_witness;
 mod workspace_open;
@@ -9282,6 +9283,24 @@ impl channel_handle::Server for CapnpChannelHandle {
             },
             _ => None,
         };
+        // A person's answer to what an issue's run asks them is theirs to
+        // give on the host's sheet, never the app's.
+        let question = match &request.message {
+            tilo_actions::remote::RemoteActionMessage::Invoke(invoke) => {
+                match self.state.run_question(&route.app_id, &caller, invoke) {
+                    run_question::AnswerStep::Serve => None,
+                    run_question::AnswerStep::Refuse => {
+                        return refused(
+                            &request.message,
+                            tilo_actions::remote::ActionHostError::NotPermitted,
+                            results,
+                        );
+                    }
+                    run_question::AnswerStep::Ask(question) => Some(question),
+                }
+            }
+            _ => None,
+        };
         let admitting_person = current.principal_id.clone();
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
@@ -9292,6 +9311,15 @@ impl channel_handle::Server for CapnpChannelHandle {
                 admitted: Box::new(current),
             },
         };
+        if let Some(question) = question {
+            return run_question::serve_answered(
+                Arc::clone(&self.state),
+                question,
+                (host, caller),
+                request.message,
+                results,
+            );
+        }
         if let Some(consent) = consent {
             return app_consent::serve_after_consent(
                 Arc::clone(&self.state),

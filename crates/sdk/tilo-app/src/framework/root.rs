@@ -1958,8 +1958,8 @@ impl RootModel for ResourceRoot {
             self.typed.represent();
         }
         let head = self.refresh(state);
-        for reason in self.dispatch.opener.take_refusals() {
-            self.dispatch.refuse(super::reference::OPEN, reason);
+        for (action, reason) in self.dispatch.opener.take_refusals() {
+            self.dispatch.refuse(&action, reason);
         }
         self.follow_readability();
         self.storage.refresh();

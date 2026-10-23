@@ -66,6 +66,15 @@ pub struct AppActionConsentRequest {
     pub confirming: bool,
     /// Exact external disclosure, decoded by the host rather than supplied as a label.
     pub moderation: Option<ModerationConsentPreview>,
+    /// Where a confirmation may also be allowed from now on, by the name the
+    /// person knows it by: the most specific place the invocation runs in,
+    /// such as the issue an agent works on. Confirming, the person may then
+    /// answer [`AppActionConsent::Always`] for it, which grants the action
+    /// there.
+    pub scope: Option<String>,
+    /// The invocation as the person reviews it, field by field, where they
+    /// confirm exact arguments: what is admitted is what these render.
+    pub draft: Option<tilo_actions::Draft>,
 }
 
 /// The Store moderation disclosure and the root identity the host will use.

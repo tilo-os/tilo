@@ -1123,6 +1123,23 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
+    /// Send `invoke`, an action of this resource, to the session's host
+    /// instead of applying it here. The host decides it as the person's, as
+    /// it decides any caller's, may first put it to the person on its own
+    /// sheet (what a run asks is answered there, never by the app), and then
+    /// directs it back to be applied. A refusal is told in
+    /// [`Self::refused`].
+    pub fn through_host(&self, invoke: &Invoke<R>) {
+        if let Some(refusal) = invoke.refusal() {
+            self.core.refuse(invoke.id, refusal.to_owned());
+            return;
+        }
+        self.core.opener.invoke_own(
+            ActionAddress::new(self.core.resource_id(), invoke.id),
+            invoke.arguments.clone(),
+        );
+    }
+
     /// Invoke an action published on a nested resource, such as one item of
     /// a collection.
     pub(crate) fn invoke_at(

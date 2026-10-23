@@ -535,6 +535,43 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
         NativeTaskActionRequirement::awaits_confirmation(&asks),
         "{asks}"
     );
+
+    // "Allow for this issue" answers the one action, so an action whose
+    // contract confirms runs unasked too, in that issue's runs alone.
+    let mut purge = approve_task(&starter);
+    purge.consequential = true;
+    let asks = purge.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+    peer.governance_mut()
+        .put_governed_grants(
+            &[tilo_action_policy::agent_answers::answer_grant(
+                room,
+                Subject::task(ISSUE),
+                (
+                    &tilo_action_policy::agent_answers::AnswerScope::action(
+                        "so.tilo.notes",
+                        "document",
+                        "append",
+                    ),
+                    tilo_action_policy::ActionKind::Undoable,
+                ),
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    purge.check_run(&peer, room, now).unwrap();
+    purge.binding.task_id = "tasks.tracker/issues/2".into();
+    let asks = purge.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
 }
 
 /// The starter's own rights bound the run, whatever the agent was admitted

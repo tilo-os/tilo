@@ -188,6 +188,88 @@ pub(super) fn confirm_as(f: &Fixture, text: &str) {
     );
 }
 
+/// The Tasks app's answer to what a run asks is put to the run's person on
+/// the host's sheet, with what the action would do and the issue by its
+/// title to allow it for; the app's own word answers nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn the_tasks_app_has_a_runs_question_put_to_its_person_on_the_hosts_sheet() {
+    use crate::collab_broker_capnp::run_question::AnswerStep;
+    use crate::services::TRACKER_APP;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let (_target, _stream) = append_target(&f).await;
+            let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
+            f.state
+                .set_app_action_consent(Arc::new(super::store_witness::Sheet(sheet)));
+            let person = hex::encode(f.native.certificate.user_public_key);
+            let answer = tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::OWN_PROVIDER.into(),
+                    address: tilo_actions::ActionAddress::new(
+                        "tasks.tracker",
+                        "answer-confirmation",
+                    ),
+                },
+                argument: tilo_actions::remote::InvokeArgument::Json(
+                    serde_json::json!({ "issue": "release", "confirm": true })
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            let step = |app: &str, who: &str| {
+                let caller =
+                    tilo_actions::remote::Caller::local_person(who).in_room(room().to_string());
+                f.state.run_question(app, &caller, &answer)
+            };
+
+            assert!(
+                matches!(step(TRACKER_APP, &person), AnswerStep::Refuse),
+                "nothing is asked, so the app answers nothing"
+            );
+            ask_append(&f, "Draft line");
+            assert!(
+                matches!(step("so.tilo.notes", &person), AnswerStep::Serve),
+                "another app's call is no answer"
+            );
+            assert!(
+                matches!(step(TRACKER_APP, "someone-else"), AnswerStep::Refuse),
+                "only the run's person answers it"
+            );
+
+            let AnswerStep::Ask(_once) = step(TRACKER_APP, &person) else {
+                panic!("the run's person is asked");
+            };
+            let (request, _) = asked.try_recv().unwrap();
+            assert!(request.confirming);
+            assert_eq!(request.app_id, "scribe");
+            assert_eq!(request.action_label, "Append");
+            assert_eq!(request.draft.unwrap().fields[0].value.line(), "Draft line");
+            assert_eq!(
+                request.scope, None,
+                "a person who may not grant is offered once"
+            );
+
+            *f.native.granted.lock().unwrap() = Some(Vec::new());
+            let AnswerStep::Ask(_for_issue) = step(TRACKER_APP, &person) else {
+                panic!("the run's person is asked again");
+            };
+            let (request, _) = asked.try_recv().unwrap();
+            assert_eq!(request.scope.as_deref(), Some("Prepare release notes"));
+            drop(f);
+        })
+        .await;
+}
+
 /// Nothing was dispatched to the target app (peer 200) that it has not read.
 pub(super) fn nothing_delivered() -> bool {
     crate::collab_broker_capnp::unread_invocations(200) == 0

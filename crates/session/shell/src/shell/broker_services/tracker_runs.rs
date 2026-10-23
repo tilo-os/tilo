@@ -30,6 +30,9 @@ pub(crate) struct TrackerView {
     pub runs: Vec<TrackerRun>,
     pub followed: Vec<FollowedRun>,
     pub imported: std::collections::BTreeSet<String>,
+    /// Every issue's title, by its address: how grants naming an issue
+    /// are shown.
+    pub titles: HashMap<String, String>,
 }
 
 impl TrackerView {
@@ -38,6 +41,11 @@ impl TrackerView {
             runs: runs_of(tracker),
             followed: followed_runs(tracker),
             imported: tracker.imported.iter().cloned().collect(),
+            titles: tracker
+                .issues
+                .iter()
+                .map(|(id, issue)| (issue_resource(id), issue.title.clone()))
+                .collect(),
         }
     }
 }
