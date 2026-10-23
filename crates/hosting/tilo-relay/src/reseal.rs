@@ -289,14 +289,18 @@ mod tests {
     use super::*;
 
     /// Every file under `root` and its bytes, by path within it, but the
-    /// state's lock.
+    /// state's lock and the stores' staging files (named with a leading
+    /// dot), which no reader takes and which a store reclaims in the
+    /// background once it opens.
     fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
                     walk(root, &path, out);
-                } else if path.file_name() != Some(crate::state_lock::LOCK_FILE.as_ref()) {
+                } else if path.file_name().is_some_and(|name| {
+                    name != crate::state_lock::LOCK_FILE && !name.to_string_lossy().starts_with('.')
+                }) {
                     let bytes = std::fs::read(&path).unwrap();
                     out.insert(path.strip_prefix(root).unwrap().to_owned(), bytes);
                 }
