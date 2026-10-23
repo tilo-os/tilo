@@ -153,6 +153,9 @@ struct ActionOptions {
     destructive: bool,
     housekeeping: bool,
     external: bool,
+    /// Queues nothing though its record queues: an undoable change of the
+    /// record alone (mail a room holds, which no server keeps).
+    local: bool,
     incoming_message: bool,
     answers: bool,
     item: Option<syn::Ident>,
@@ -176,6 +179,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         destructive: false,
         housekeeping: false,
         external: false,
+        local: false,
         incoming_message: false,
         answers: false,
         item: None,
@@ -213,6 +217,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.incoming_message = true;
         } else if meta.path.is_ident("external") {
             options.external = true;
+        } else if meta.path.is_ident("local") {
+            options.local = true;
         } else if meta.path.is_ident("item") {
             let value = meta.value()?;
             let mut names = vec![value.parse::<syn::Ident>()?];
@@ -234,7 +240,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.audience = Some(crate::audience_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `housekeeping`, `external`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -1052,7 +1058,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             });
         }
         let queues = !outboxes.is_empty() || options.queue.is_some();
-        let action_kind = if queues {
+        if verb.options.local && !outboxes.is_empty() {
+            return Err(syn::Error::new(
+                method.span(),
+                "a `local` action queues nothing: it takes no `&mut Outbox`",
+            ));
+        }
+        let action_kind = if queues && !verb.options.local {
             quote!(Outside)
         } else {
             quote!(Undoable)

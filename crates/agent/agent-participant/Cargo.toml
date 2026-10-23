@@ -66,6 +66,11 @@ video-player = { path = "../../../apps/video-player" }
 weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
+# Apps an agent's worker holds that a browser page cannot mount
+# (`apps::agent_only_apps`). Mail's account engine is built in (main's Mail
+# does not build without `live`) but idle: a worker holds no account and
+# reaches no network.
+mail = { path = "../../../apps/mail" }
 # The certified relay session (iroh for a host-side agent) and its live
 # plane; the same code a browser page runs.
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", features = ["toolkit"] }
@@ -144,6 +149,8 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
 # Reads the links the host mints back the way a page does.
 tilo-reference = { path = "../../collab/reference" }
+# The campaign benchmark's `TILO_BENCH_TRACE`.
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.

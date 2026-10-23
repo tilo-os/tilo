@@ -178,6 +178,47 @@ fn draft_message_writes_a_new_draft() {
 }
 
 #[test]
+fn export_content_carries_the_draft_being_written_marked_a_draft() {
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    sample(&mut app);
+    app.call(
+        "draft-message",
+        json!({ "to": "Ana <ana@example.test>", "subject": "Lunch", "body": "Friday?" }),
+    )
+    .unwrap();
+    let md = app.call("export-content", json!({})).unwrap().unwrap();
+    assert_eq!(
+        (md["messages"].as_u64(), md["drafts"].as_u64()),
+        (Some(2), Some(1))
+    );
+    let text = String::from_utf8(exported(&app, &md)).unwrap();
+    assert!(
+        text.contains("## Lunch (draft)") && text.contains("- To: Ana <ana@example.test>"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Friday?") && text.contains("## Quarterly numbers"),
+        "{text}"
+    );
+    let drafts = app
+        .call(
+            "export-content",
+            json!({ "format": "json", "folder": "drafts" }),
+        )
+        .unwrap()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&exported(&app, &drafts)).unwrap();
+    assert_eq!(parsed.as_array().map(Vec::len), Some(1), "{parsed}");
+    assert_eq!(parsed[0]["draft"], true);
+    assert_eq!(parsed[0]["subject"], "Lunch");
+    let inbox = app
+        .call("export-content", json!({ "folder": "inbox" }))
+        .unwrap()
+        .unwrap();
+    assert_eq!(inbox["drafts"], 0, "the inbox holds no draft");
+}
+
+#[test]
 fn export_content_keeps_held_mail_as_markdown_json_or_eml() {
     let mut app = TestApp::<MailShell>::new().unwrap();
     let id = sample(&mut app);

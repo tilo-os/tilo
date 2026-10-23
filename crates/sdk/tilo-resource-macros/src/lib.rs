@@ -1474,7 +1474,8 @@ fn is_action_cx(ty: &Type) -> bool {
 /// Action options: `label = "..."`, `destructive` (people confirm it, through
 /// any door), `housekeeping` (a change about the record rather than to it,
 /// such as a read marker), `external` (content from outside, nobody's undo
-/// step), `field = "..."` (an action that writes only that field is placed
+/// step), `local` (an action of a record with a `queue` that queues nothing,
+/// so an undoable change rather than one reaching outside), `field = "..."` (an action that writes only that field is placed
 /// below it, so a grant on the field reaches it: someone who may only
 /// comment may add to the `comments`).
 ///
