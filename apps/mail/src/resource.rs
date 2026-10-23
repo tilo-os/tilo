@@ -645,11 +645,13 @@ pub(crate) fn started_body(text: &str, html: Option<String>) -> Vec<u8> {
 }
 
 /// `text` as HTML: each line a paragraph, a line starting with `> `
-/// quoted, nothing in it taken as markup. A bare `>` is a quoted blank
-/// line, as a reply quotes the original's paragraph breaks: it stays a
-/// quoted line rather than showing as a `>` of its own.
+/// quoted, nothing in it taken as markup. A blank line only separates
+/// paragraphs, which stand apart already: no empty paragraph of its own. A
+/// bare `>` is a quoted blank line, as a reply quotes the original's
+/// paragraph breaks: it stays a quoted line rather than a `>` of its own.
 fn quoted_html(text: &str) -> String {
     text.split('\n')
+        .filter(|line| !line.trim().is_empty())
         .map(|line| {
             let quoted = if line == ">" {
                 Some("")
