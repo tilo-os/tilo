@@ -5516,6 +5516,9 @@ impl FrameHarness {
                 .ok_or_else(|| "palette action needs a published semantic target".to_owned())?;
             return self.perform_palette_action(target, action);
         }
+        if name.starts_with("window-search-") {
+            return self.perform_window_search_semantic(name, action);
+        }
 
         if self.global_search_query().is_some() {
             let handled = self.perform_system_search_semantic(name, semantic_target, action);
@@ -10368,7 +10371,8 @@ fn parse_key(spec: &str) -> Key {
 /// `{"key": "Enter"}`, `{"type": "hello"}`, `{"modifiers": ["ctrl"]}`,
 /// `{"wait_for_named":{"target":"result","timeout_ms":1000}}`,
 /// `{"expect":{"target":"result","name_contains":"Done"}}`,
-/// `{"perform":{"target":"name","action":"activate"}}`),
+/// `{"perform":{"target":"name","action":"activate"}}`, which drives the
+/// window bar's search on a `window-search-*` target),
 /// `audit` (fail on semantic accessibility violations), `audit_report` (path
 /// for its versioned JSON result), `dump` (path for document JSON), `targets`
 /// (path for the addressable-widget list), and `inspect` (path for the combined
