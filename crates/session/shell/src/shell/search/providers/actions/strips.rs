@@ -117,7 +117,9 @@ pub(super) fn move_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(
 }
 
 /// Remove an empty strip of the active workspace. A strip that still holds
-/// windows is refused rather than closing them, and the last strip stays.
+/// windows is refused rather than closing them, the last strip stays, and a
+/// strip another device keeps is theirs to remove, as the strip switcher
+/// offers it.
 pub(super) fn remove_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let missing = || ActionError::Refused(t("search-action-strip-rename-missing"));
     let strip = match args.integer("strip") {
@@ -133,7 +135,7 @@ pub(super) fn remove_strip(state: &mut ChromeState, args: &ActionArgs) -> Result
             }),
     }
     .ok_or_else(missing)?;
-    let (empty, last) = {
+    let (empty, last, theirs) = {
         let tree = state.tree();
         let ws = tree.desktop.active_workspace().ok_or_else(missing)?;
         let found = ws
@@ -141,12 +143,21 @@ pub(super) fn remove_strip(state: &mut ChromeState, args: &ActionArgs) -> Result
             .iter()
             .find(|s| s.id == strip)
             .ok_or_else(missing)?;
-        let shape = (found.window_groups.is_empty(), ws.strips.len() < 2);
+        let shape = (
+            found.window_groups.is_empty(),
+            ws.strips.len() < 2,
+            !tree.may_rename_strip(strip),
+        );
         drop(tree);
         shape
     };
     if last {
         return Err(ActionError::Refused(t("search-action-strip-remove-last")));
+    }
+    if theirs {
+        return Err(ActionError::Refused(t(
+            "search-action-strip-remove-not-yours",
+        )));
     }
     if !empty {
         return Err(ActionError::Refused(t(
@@ -213,6 +224,71 @@ mod tests {
             "there is no such strip"
         );
         assert_eq!(names(), before);
+    }
+
+    /// What the strip switcher offers to remove, and no more: a strip
+    /// another device keeps stays, however empty. A strip of this machine's
+    /// goes from the document the person's other devices and the room read
+    /// in the same step, as a created or renamed one does, not only from
+    /// this screen.
+    #[test]
+    fn strip_remove_leaves_another_devices_strip_and_reaches_the_document() {
+        use crate::shell::state::{Strip, StripId};
+        use tilo_desktop_model::ids::compose_id;
+
+        let chrome = chrome_with_room();
+        for name in ["Main", "Second"] {
+            chrome.borrow_mut().create_strip(name).expect("a strip");
+        }
+        let other_salt = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.local_salt().wrapping_add(1).max(1)
+        };
+        let theirs = StripId(compose_id(other_salt, 42));
+        chrome
+            .borrow()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("a workspace")
+            .strips
+            .push(Strip::new(theirs, "Theirs"));
+        let strips = || {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        let before = strips();
+        let their_place = before
+            .iter()
+            .position(|id| *id == theirs)
+            .expect("their strip is listed")
+            + 1;
+        assert!(
+            invoke_shell_action(
+                &chrome,
+                "strip.remove",
+                &serde_json::json!({ "strip": their_place }),
+            )
+            .is_err(),
+            "another device's strip is theirs to remove"
+        );
+        assert_eq!(strips(), before, "nothing was removed");
+
+        let heads = chrome.borrow().tree_mut().current_heads();
+        invoke_shell_action(&chrome, "strip.remove", &serde_json::json!({ "strip": 2 }))
+            .expect("an empty strip of this machine goes");
+        assert!(!strips().contains(&before[1]), "{:?}", strips());
+        assert_ne!(
+            chrome.borrow().tree_mut().current_heads(),
+            heads,
+            "the removal is in the document the person's devices sync"
+        );
     }
 
     #[test]

@@ -2308,6 +2308,7 @@ search-action-strip-remove = Leiste entfernen
 search-action-strip-remove-subtitle = Eine leere Leiste aus diesem Arbeitsbereich entfernen
 search-action-strip-remove-not-empty = Diese Leiste enthält noch Fenster. Verschiebe oder schließe sie zuerst
 search-action-strip-remove-last = Ein Arbeitsbereich behält mindestens eine Leiste
+search-action-strip-remove-not-yours = Nur das Gerät, das diese Leiste angelegt hat, kann sie entfernen
 
 # Kurzbefehl-Schritte, die vor der Ausführung fragen, und Tastaturübernahme
 shortcut-step-confirm-detail = „{ $shortcut }“ möchte „{ $action }“ für { $resource } ausführen.

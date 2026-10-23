@@ -3463,37 +3463,16 @@ impl ChromeState {
         Some(strip)
     }
 
-    /// Remove `strip` from the active workspace if it holds no window and is
-    /// not the workspace's last strip. Focus moves to the first strip when it
-    /// had it. Returns whether the strip went.
+    /// Remove `strip` from the active workspace if it holds no window, is
+    /// not the workspace's last strip, and is this machine's to change, as
+    /// the strip switcher offers it. Focus moves to the first strip when it
+    /// had it. The removal reaches the room document and the person's other
+    /// devices at once, as a created, renamed or moved strip does. Returns
+    /// whether the strip went.
     pub fn remove_strip_if_empty(&mut self, strip: crate::shell::state::StripId) -> bool {
-        let removed = {
-            let mut tree = self.tree_mut();
-            let Some(ws) = tree.desktop.active_workspace_mut() else {
-                return false;
-            };
-            let Some(index) = ws
-                .strips
-                .iter()
-                .position(|s| s.id == strip && s.window_groups.is_empty())
-            else {
-                return false;
-            };
-            if ws.strips.len() < 2 {
-                return false;
-            }
-            let ws_id = ws.id;
-            ws.strips.remove(index);
-            let first = ws.strips.first().map(|s| s.id);
-            if tree.desktop.active_strip.get(&ws_id) == Some(&strip)
-                && let Some(first) = first
-            {
-                tree.desktop.active_strip.insert(ws_id, first);
-            }
-            tree.desktop.active_group.remove(&strip);
-            tree.queue_save();
-            true
-        };
+        let command =
+            tilo_desktop_model::commands::DesktopCommand::RemoveStrip { strip: strip.raw() };
+        let removed = self.tree_mut().commit_strip_command(&command).is_ok();
         if removed {
             self.bump();
         }

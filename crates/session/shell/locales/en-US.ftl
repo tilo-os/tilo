@@ -2328,6 +2328,7 @@ search-action-strip-remove = Remove a strip
 search-action-strip-remove-subtitle = Remove an empty strip from this workspace
 search-action-strip-remove-not-empty = This strip still has windows. Move or close them first
 search-action-strip-remove-last = A workspace keeps at least one strip
+search-action-strip-remove-not-yours = Only the device that made this strip can remove it
 
 # Shortcut steps that ask before they run, and keyboard capture
 shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.

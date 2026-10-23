@@ -5474,18 +5474,20 @@ impl WorkspaceTree {
         salt == 0 || salt == self.local_salt()
     }
 
-    /// Create, rename or move a strip of the active workspace, as a person at
-    /// this machine does it: the model's own
+    /// Create, rename, move or remove a strip of the active workspace, as a
+    /// person at this machine does it: the model's own
     /// [`DesktopCommand::CreateStrip`](tilo_desktop_model::commands::DesktopCommand::CreateStrip),
-    /// `RenameStrip` and `MoveStrip` reductions on the cache, then the room document and
-    /// the restart snapshot. A created strip takes focus. Returns the strip
-    /// the command named or made.
+    /// `RenameStrip`, `MoveStrip` and `RemoveStrip` reductions on the cache,
+    /// then the room document and the restart snapshot. A created strip takes
+    /// focus; a removed one that had it hands it to the workspace's first.
+    /// Returns the strip the command named or made.
     ///
     /// # Errors
     ///
     /// Returns a description when there is no active workspace, the name is
-    /// empty, too long or holds control characters, the strip is gone, or it
-    /// belongs to another topology owner.
+    /// empty, too long or holds control characters, the strip is gone, it
+    /// belongs to another topology owner, or a strip to remove still holds
+    /// windows or is the workspace's last.
     pub fn commit_strip_command(
         &mut self,
         command: &tilo_desktop_model::commands::DesktopCommand,
@@ -5493,7 +5495,9 @@ impl WorkspaceTree {
         use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
         let renamed = match command {
             DesktopCommand::CreateStrip { .. } => None,
-            DesktopCommand::RenameStrip { strip, .. } | DesktopCommand::MoveStrip { strip, .. } => {
+            DesktopCommand::RenameStrip { strip, .. }
+            | DesktopCommand::MoveStrip { strip, .. }
+            | DesktopCommand::RemoveStrip { strip } => {
                 let strip = StripId(*strip);
                 if !self.may_rename_strip(strip) {
                     return Err("target belongs to another topology owner".into());
@@ -5508,6 +5512,11 @@ impl WorkspaceTree {
             .map(Workspace::room)
             .ok_or("there is no active workspace")?;
         let made = apply_to_active_workspace(&mut self.desktop, command, &mut || Ok(next_id()))?;
+        if matches!(command, DesktopCommand::RemoveStrip { .. })
+            && let Some(strip) = renamed
+        {
+            self.strips_to_retain.remove(&strip);
+        }
         let strip = if let Some(strip) = renamed {
             strip
         } else {
