@@ -5324,7 +5324,13 @@ impl FrameHarness {
             self.set_focused(Some(taffy_id));
         }
         if !handled {
-            if semantic_target.is_some() && !matches!(action, crate::a11y::Action::Focus) {
+            // A painted empty state's action is pressed where it is drawn,
+            // below; any other target its widget did not handle is refused.
+            if semantic_target
+                .as_deref()
+                .is_some_and(|target| !crate::widget::empty_state::is_painted_target(target))
+                && !matches!(action, crate::a11y::Action::Focus)
+            {
                 return Err(format!(
                     "the current semantic target did not handle {action:?}"
                 ));

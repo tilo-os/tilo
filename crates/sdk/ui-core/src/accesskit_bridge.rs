@@ -1027,7 +1027,11 @@ impl TreeWalk<'_> {
 fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: f64) {
     apply_semantics_common(ak, access);
 
-    let r = w.get_rect();
+    // A widget that names where its node stands (the one control it
+    // paints inside a larger box) is taken at its word; otherwise its box.
+    let r = access
+        .bounds
+        .map_or_else(|| w.get_rect(), crate::a11y::AccessBounds::to_rect);
     if r.width() > 0.0 || r.height() > 0.0 {
         ak.set_bounds(AkRect::new(
             r.x0 * scale,
