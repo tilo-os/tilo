@@ -1,6 +1,5 @@
 # Apps that still draw a toolbar row of their own under the window bar
 # (tools/policy/check_app_toolbars.py). Counts only shrink.
-header-row 1 apps/code-editor/src/app/chrome.rs
 header-row 1 apps/git-client/src/app.rs
 header-row 1 apps/video-editor/src/app/layout.rs
 history-in-row 4 apps/git-client/src/app.rs
@@ -34,8 +33,6 @@ own-search 1 apps/browser/src/browser_widget/toolbar.rs
 own-search 1 apps/browser/src/daily_controls.rs
 own-search 1 apps/chip-design/src/view.rs
 own-search 1 apps/clocks/src/app.rs
-own-search 2 apps/code-editor/src/app.rs
-own-search 1 apps/code-editor/src/app/find_workflow.rs
 own-search 2 apps/containers/src/view.rs
 own-search 2 apps/db-client/src/app.rs
 own-search 1 apps/feeds/src/app.rs
