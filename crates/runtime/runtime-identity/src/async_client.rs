@@ -47,9 +47,6 @@ impl AsyncBrokerSigningIdentity {
     /// `exchange_timeout` applies independently to metadata and each later
     /// signing request. The caller remains responsible for authenticating the
     /// endpoint and binding it to the app and workspace before construction.
-    ///
-    /// # Errors
-    /// Returns a bounded transport, framing, protocol, or broker refusal error.
     pub async fn from_connected_io<S>(
         stream: S,
         exchange_timeout: Duration,
@@ -81,9 +78,6 @@ impl AsyncBrokerSigningIdentity {
     }
 
     /// Ask the host for a certified collaboration-join proof.
-    ///
-    /// # Errors
-    /// Returns a broker refusal or a bounded fail-closed transport error.
     pub async fn sign_collaboration_join(
         &mut self,
         workspace_id: &str,
@@ -95,9 +89,6 @@ impl AsyncBrokerSigningIdentity {
     }
 
     /// Ask the host to sign one typed collaboration operation.
-    ///
-    /// # Errors
-    /// Returns a broker refusal or a bounded fail-closed transport error.
     pub async fn sign_collaboration_op(
         &mut self,
         workspace_id: &str,
@@ -115,9 +106,6 @@ impl AsyncBrokerSigningIdentity {
     }
 
     /// Ask the host for the content keys of one document route.
-    ///
-    /// # Errors
-    /// Returns a broker refusal or a bounded fail-closed transport error.
     pub async fn channel_keys(
         &mut self,
         workspace_id: &str,

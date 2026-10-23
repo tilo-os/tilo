@@ -63,7 +63,6 @@ impl ExportedAction {
         }
     }
 
-    /// The fields of this action's resource.
     #[must_use]
     pub fn resource_fields(&self) -> ResourceFields {
         ResourceFields {
@@ -476,7 +475,6 @@ mod tests {
         folded.apply(&first.clone().then(second.clone())).unwrap();
         assert_eq!(sort(labels(&folded)), sort(labels(&turn)));
 
-        // Folding onto a reset keeps it a reset, and a later reset wins.
         let mut from_reset = SurfaceTable::default();
         from_reset
             .apply(&base.clone().then(first.clone()).then(second))

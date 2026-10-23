@@ -235,10 +235,6 @@ impl RetainedWorkerWitness {
     }
     /// Clone only the held signed installation ELF for an independently enrolled
     /// daemon receiver. This descriptor alone carries no execution authority.
-    ///
-    /// # Errors
-    /// Returns an error if worker custody is no longer valid or descriptor
-    /// duplication fails.
     pub fn held_program(&self) -> io::Result<File> {
         self.check()?;
         let file = self.program.file.try_clone()?;
@@ -284,10 +280,6 @@ pub(super) fn same_worker_peer(
 impl ServiceEndpoint {
     /// A NEW unread stream to the retained worker only. Its independent daemon
     /// receiver must still perform QPE; this method sends no protocol frames.
-    ///
-    /// # Errors
-    /// Returns an error if connection or descriptor duplication fails, the
-    /// signed program changes, or the live peer differs from retained custody.
     pub fn connect_pending_worker(&self) -> io::Result<(UnixStream, RetainedWorkerWitness)> {
         let before = self.custody()?;
         let program = self.retained_program.as_ref().ok_or_else(refused)?.clone();

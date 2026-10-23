@@ -18,10 +18,6 @@ pub trait DesktopCommandSink {
     /// Run `read` over the desktop the widgets render.
     fn with_tree<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R;
     /// The admitted revision a command against `room` binds to.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the host has no revision to bind to.
     fn source(&mut self, room: RoomId) -> Result<CommandSource, String>;
     /// Apply a per-device view change. It never changes the topology.
     fn apply_local(&mut self, intent: LocalViewIntent);
@@ -34,7 +30,6 @@ pub trait DesktopCommandSink {
     fn submit(&mut self, command: BoundCommand) -> Result<(), String>;
 }
 
-/// The room holding `group` in `tree`.
 fn group_room(tree: &DesktopTree, group: GroupId) -> Option<RoomId> {
     tree.workspaces
         .iter()
@@ -49,11 +44,6 @@ fn group_room(tree: &DesktopTree, group: GroupId) -> Option<RoomId> {
 
 /// Route one widget intent: view changes stay on this device, session
 /// changes are bound to identities and submitted to the owner.
-///
-/// # Errors
-///
-/// Returns a description when the intent no longer binds, or the sink
-/// refuses it.
 pub fn dispatch(sink: &mut impl DesktopCommandSink, intent: DesktopIntent) -> Result<(), String> {
     match intent {
         DesktopIntent::Local(intent) => {
@@ -96,11 +86,6 @@ fn duplicate_active_tab(strip: &Strip, group: &WindowGroup) -> Result<DesktopCom
 }
 
 /// Bind a widget-index intent to identities in the admitted source topology.
-///
-/// # Errors
-///
-/// Returns a description when the intent's room, group, tab or index is no
-/// longer present.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "public signature the browser desktop host calls with an owned intent"

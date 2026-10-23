@@ -68,8 +68,6 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 /// Validate the private profile before any startup side effects.
-/// # Errors
-/// Rejects public directories, symlinks, foreign ownership or creation errors.
 pub fn validate_profile(profile: &Path) -> io::Result<()> {
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
@@ -288,8 +286,6 @@ pub(crate) trait StartingProcess {
     /// The ready answer, once the process gives one.
     fn ready(&mut self) -> Option<Self::Ready>;
     /// How the process ended, if it already has.
-    /// # Errors
-    /// Returns failures to query the process.
     fn exited(&mut self) -> io::Result<Option<String>>;
     fn observe(&mut self) -> Observation;
     /// End a process that will not become ready.
@@ -328,9 +324,6 @@ fn signal_report(observation: &Observation, changed: &[Option<Instant>], now: In
 
 /// Wait until `process` is ready, failing as soon as it exits, stalls or
 /// exceeds the absolute cap.
-/// # Errors
-/// Names the stage the process reached, when each progress signal last
-/// changed, and the process's diagnostics.
 pub(crate) fn wait_until_ready<P: StartingProcess>(
     process: &mut P,
     limits: StartupLimits,
@@ -405,7 +398,6 @@ const TREE_LIMIT: usize = 256;
 #[cfg(target_os = "linux")]
 const PROCESS_SCAN_LIMIT: usize = 8192;
 
-/// The daemon's side of [`STAGES_FILE`].
 struct StartupStages(std::fs::File);
 
 impl StartupStages {
@@ -718,8 +710,6 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
 
 /// Start one production Session. The executable prepares its profile environment
 /// before entering this function; reusable serving code never mutates it.
-/// # Errors
-/// Returns profile ownership, service startup, socket or worker-spawn errors.
 pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
     serve_profile::<S>(
         profile,
@@ -967,8 +957,6 @@ fn answer_join(joiner: Option<&crate::Joiner>, request: &Value) -> Value {
 
 /// Join the room `invitation` names, through the running daemon, and print
 /// the joined room's id.
-/// # Errors
-/// Returns startup or transport errors, or why the daemon did not join.
 pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
     ensure_running(profile)?;
     let mut stream = UnixStream::connect(profile.join("native.sock"))?;
@@ -1003,9 +991,6 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 /// runtime; elsewhere, or when `standalone`, the persistent daemon of
 /// `profile`, started when none runs. EOF closes only this client's
 /// connection; neither applications nor the daemon are owned here.
-/// # Errors
-/// Returns bounded startup, transport, thread-spawn or stdio errors, and a
-/// Tilo login's missing or silent agent door.
 pub fn connect(profile: &Path, standalone: bool) -> io::Result<()> {
     let route = crate::session_door::route(
         standalone,
@@ -1061,8 +1046,6 @@ pub(crate) fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Re
 }
 
 /// Attach connected service descriptors and replace this host with the app.
-/// # Errors
-/// Returns startup, handshake or exec errors without running disconnected.
 pub fn run_app(
     profile: &Path,
     app_id: &str,

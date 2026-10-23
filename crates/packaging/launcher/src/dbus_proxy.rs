@@ -224,7 +224,6 @@ pub fn host_atspi_address(session_bus: &str) -> Option<String> {
     (!address.is_empty()).then_some(address)
 }
 
-/// Errors from [`spawn_dbus_proxy`].
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
     #[error("creating proxy socket directory {path}: {source}")]
@@ -427,7 +426,6 @@ mod tests {
                 "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
             ]
         );
-        // A portal app adds exactly the portal names.
         assert_eq!(
             session_filter_args(true, true),
             [
@@ -491,28 +489,23 @@ mod tests {
 
     #[test]
     fn proxy_paths_env_and_binary_lookup() {
-        // Phase `proxy_socket_path_uses_uid_and_pid`.
         {
             let p = proxy_socket_path(1000, 4242);
             assert_eq!(p, PathBuf::from("/run/user/1000/tilo/dbus-proxy/4242.sock"));
         }
-        // Phase `sandbox_bus_env_matches_sandbox_bus_path`.
         {
             assert_eq!(sandbox_bus_env(1000), "unix:path=/run/user/1000/bus");
             assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
         }
-        // Phase `find_proxy_binary_honours_env_override`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let bin = tmp.path().join("xdg-dbus-proxy-mock");
             std::fs::write(&bin, "#!/bin/sh\n").unwrap();
-            // Env var wins.
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(PROXY_BIN_ENV, &bin);
             let found = find_proxy_binary().expect("env override");
             assert_eq!(found, bin);
         }
-        // Phase `find_proxy_binary_returns_none_when_env_points_at_nonexistent`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             // Empty PATH so the fallback can't find a real binary.
@@ -596,7 +589,6 @@ exit 1
 
     #[test]
     fn proxy_child_is_reaped_on_drop() {
-        // Phase `spawn_and_drop_reaps_the_child`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let mock = write_mock_proxy(tmp.path());
@@ -615,7 +607,6 @@ exit 1
             // been reaped (no zombie).
             assert!(!socket.exists(), "socket should be removed on terminate");
         }
-        // Phase `drop_terminates_when_terminate_not_called`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let mock = write_mock_proxy(tmp.path());

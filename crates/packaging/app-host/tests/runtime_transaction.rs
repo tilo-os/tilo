@@ -1,6 +1,3 @@
-//! Optional-runtime review and consent through the production Cap'n Proto service.
-//! Signed HTTP fixtures mirror the native runtime release format.
-
 #![allow(
     clippy::future_not_send,
     reason = "Cap'n Proto clients and RPC drivers are confined to the test's single-threaded LocalSet"
@@ -627,7 +624,6 @@ fn signed_runtime_transaction_over_real_rpc() {
         assert!(error.contains("hash"), "{error}");
         assert!(!app_cli::runtime_installed(&device.optional_ref));
 
-        // The bundle signer is independent of the registry package publisher.
         std::fs::write(
             &device.trust,
             format!(

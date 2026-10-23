@@ -283,7 +283,6 @@ mod tests {
             Watched::start("watched-test", vec![dir.clone()], read_file(file.clone())).unwrap();
         assert_eq!(*watched.get(), "");
         std::fs::create_dir_all(&dir).unwrap();
-        // The directory itself is watched once the worker saw it appear.
         assert!(within(|| {
             let _ = std::fs::write(&file, "made");
             *watched.get() == "made"

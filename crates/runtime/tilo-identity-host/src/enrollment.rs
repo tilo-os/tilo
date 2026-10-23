@@ -85,10 +85,6 @@ fn refused(message: impl Into<String>) -> io::Error {
 /// it belongs to the token's identity, is the device that signed the token,
 /// was valid when the token was minted and is valid now, may admit devices,
 /// and is not revoked.
-///
-/// # Errors
-///
-/// Returns a `PermissionDenied` error naming the first rule `issuer` breaks.
 pub fn check_issuer(
     token: &EnrollmentToken,
     issuer: &DeviceCert,
@@ -522,7 +518,6 @@ mod tests {
         .expect_err("the broker's entry point applies the same rule");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
-        // Expired by the time the token is redeemed.
         let expired = resigned(DeviceCert {
             expires_at_ns: Some(now + 2),
             ..issuer.clone()

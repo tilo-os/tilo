@@ -103,11 +103,6 @@ impl IdentityRegistry {
     }
 
     /// Import an existing record into the managed identity directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading or loading the source record fails, if creating
-    /// the identity directory fails, or if the destination exists with a different key.
     pub fn import_record(
         &mut self,
         source: &Path,
@@ -147,10 +142,6 @@ impl IdentityRegistry {
     }
 
     /// Select an identity for a durable workspace room.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `identity_id` is not registered.
     pub fn bind_workspace(&mut self, room: impl Into<String>, identity_id: &str) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
@@ -176,10 +167,6 @@ impl IdentityRegistry {
     }
 
     /// Change the default identity after validating it exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `identity_id` is not registered.
     pub fn set_default(&mut self, identity_id: &str) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
@@ -296,10 +283,6 @@ pub struct IdentityRegistryStore {
 impl IdentityRegistryStore {
     /// Open the identity registry rooted at the environment's identity
     /// directory (`XDG_CONFIG_HOME` or `HOME`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
     pub fn from_env() -> io::Result<Self> {
         Ok(Self::at(resolve_identity_dir()?))
     }
@@ -325,11 +308,6 @@ impl IdentityRegistryStore {
     }
 
     /// Load the identity registry from disk.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading the registry file fails, if the JSON is invalid,
-    /// or if the schema version is unsupported.
     pub fn load(&self) -> io::Result<IdentityRegistry> {
         if !self.registry_path.exists() {
             return Ok(IdentityRegistry::default());
@@ -350,11 +328,6 @@ impl IdentityRegistryStore {
     }
 
     /// Save the identity registry to disk.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if creating the identity directory, setting permissions,
-    /// serializing the registry, or writing the file fails.
     pub fn save(&self, registry: &IdentityRegistry) -> io::Result<()> {
         fs::create_dir_all(&self.identity_dir)?;
         set_private_dir_mode(&self.identity_dir)?;
@@ -375,11 +348,6 @@ impl IdentityRegistryStore {
     /// Provisioning, onboarding and the Users pane write records and the
     /// active marker through `runtime_identity`, not through this registry.
     /// Idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if loading the registry, listing identities, loading a record,
-    /// setting permissions, or saving the registry fails.
     pub fn load_reconciled(&self) -> io::Result<IdentityRegistry> {
         fs::create_dir_all(&self.identity_dir)?;
         set_private_dir_mode(&self.identity_dir)?;
@@ -438,11 +406,6 @@ impl IdentityRegistryStore {
     /// directory changed within the last two seconds is reconciled again on
     /// each call: a coarse filesystem clock can give a write that lands right
     /// after a reconcile the same time.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if loading the registry, listing identities or
-    /// resolving a record path fails.
     pub fn load_reconciled_cached(&self) -> io::Result<IdentityRegistry> {
         static CACHE: std::sync::Mutex<Option<(PathBuf, DirStamp, IdentityRegistry)>> =
             std::sync::Mutex::new(None);
@@ -480,10 +443,6 @@ impl IdentityRegistryStore {
     /// inline: the session asks once at startup. A registry this process
     /// saves is read back inline by [`Self::save`], so a writer never sees its
     /// own change late.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no reconcile of the directory has succeeded yet.
     pub fn load_reconciled_prompt(&self) -> io::Result<std::sync::Arc<IdentityRegistry>> {
         let registry = match prompt_registry(&self.identity_dir) {
             Some(registry) => registry,
@@ -531,10 +490,6 @@ impl IdentityRegistryStore {
     }
 
     /// Import a new identity record and return its profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if migration, importing the record, or saving the registry fails.
     pub fn import(&self, source: &Path) -> io::Result<IdentityProfile> {
         let mut registry = self.load_reconciled()?;
         let profile = registry.import_record(source, &self.identity_dir)?.clone();
@@ -547,11 +502,6 @@ impl IdentityRegistryStore {
     /// Decryption remains inside `runtime-identity`; this registry only sees
     /// the public fingerprint and the final secured metadata path. Re-importing
     /// a backup already present on this login is idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if backup verification, migration, import, registration,
-    /// or registry persistence fails.
     pub fn import_portable(&self, source: &Path, passphrase: &[u8]) -> io::Result<IdentityProfile> {
         let info = runtime_identity::verify_portable_backup(source, passphrase)?;
         let id = hex::encode(info.group_public_key);
@@ -576,10 +526,6 @@ impl IdentityRegistryStore {
     }
 
     /// Bind an identity to a workspace in the registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if migration, binding the workspace, or saving the registry fails.
     pub fn bind_workspace(&self, room: &str, identity_id: &str) -> io::Result<()> {
         let mut registry = self.load_reconciled()?;
         registry.bind_workspace(room, identity_id)?;
@@ -589,10 +535,6 @@ impl IdentityRegistryStore {
 
 /// Resolve the selected private record for a room. Registry failure is an
 /// error rather than a silent fallback to another person's identity.
-///
-/// # Errors
-///
-/// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
@@ -602,10 +544,6 @@ pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
 }
 
 /// Resolve the selected person principal for a room.
-///
-/// # Errors
-///
-/// Returns an error if loading the registry or migration fails.
 pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
@@ -631,10 +569,6 @@ pub fn selected_principal_id_prompt(room: &str) -> io::Result<Option<String>> {
 }
 
 /// Public profile selected for a room, for shell chrome/settings.
-///
-/// # Errors
-///
-/// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
@@ -642,19 +576,11 @@ pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfil
 }
 
 /// Resolve the identity directory from environment variables.
-///
-/// # Errors
-///
-/// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
     runtime_identity::identity_dir_from_env()
 }
 
 /// Convert a relative path to absolute, or return unchanged if already absolute.
-///
-/// # Errors
-///
-/// Returns an error if getting the current directory fails.
 fn absolute_path(path: &Path) -> io::Result<PathBuf> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
@@ -663,10 +589,6 @@ fn absolute_path(path: &Path) -> io::Result<PathBuf> {
 }
 
 /// Set directory permissions to 0o700 on Unix systems.
-///
-/// # Errors
-///
-/// Returns an error if setting permissions fails.
 fn set_private_dir_mode(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
@@ -765,7 +687,6 @@ mod tests {
                 == 2
         });
         assert_eq!(reconciles(), 1, "and still not on this thread");
-        // A registry this process saves is read back by its writer at once.
         let mut registry = (*store.load_reconciled_prompt().expect("read")).clone();
         let bob = registry
             .identities
@@ -788,7 +709,6 @@ mod tests {
 
     #[test]
     fn identity_registry_migrates_selects_and_bounds_legacy_imports() {
-        // Phase `migrates_legacy_primary_and_selects_it_by_default`.
         {
             let dir = temp_dir("legacy");
             write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 7));
@@ -800,7 +720,6 @@ mod tests {
             assert!(store.registry_path().exists());
             fs::remove_dir_all(dir).expect("cleanup");
         }
-        // Phase `one_identity_can_be_selected_per_workspace`.
         {
             let dir = temp_dir("binding");
             let alice_path = dir.join("alice-source.json");
@@ -829,7 +748,6 @@ mod tests {
             );
             fs::remove_dir_all(dir).expect("cleanup");
         }
-        // Phase `unknown_identity_cannot_be_bound`.
         {
             let mut registry = IdentityRegistry::default();
             let error = registry
@@ -837,7 +755,6 @@ mod tests {
                 .expect_err("must reject unknown identity");
             assert_eq!(error.kind(), io::ErrorKind::NotFound);
         }
-        // Phase `workspace_selector_cycles_registered_identities`.
         {
             let dir = temp_dir("cycle");
             let alice_path = dir.join("alice-source.json");
@@ -877,7 +794,6 @@ mod tests {
             assert!(next == alice.id || next == bob.id);
             fs::remove_dir_all(dir).expect("cleanup");
         }
-        // Phase `legacy_import_rejects_oversized_records_before_parsing`.
         {
             let dir = temp_dir("oversized-import");
             let source = dir.join("oversized.json");

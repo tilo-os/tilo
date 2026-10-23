@@ -769,7 +769,6 @@ fn thin_fresh_oil_is_as_workable_as_loaded_oil() {
                 ),
             ])
             .to_vec();
-        // How far the dark is dragged off the line, above and below it.
         (40..54)
             .chain(67..80)
             .map(|y| {

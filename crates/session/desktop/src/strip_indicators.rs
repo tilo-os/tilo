@@ -285,7 +285,6 @@ mod tests {
             "and the owed frame is paid: only the fade start remains"
         );
 
-        // A pan that ends where it began moved nothing and shows nothing.
         let later = next + STRIP_INDICATOR_HOLD + fade(false);
         s.observe(position(1, 900), later);
         s.settle_after_pan(position(1, 900));

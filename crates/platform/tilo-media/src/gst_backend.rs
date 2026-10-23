@@ -1503,7 +1503,6 @@ mod tests {
 
     #[test]
     fn rgba_caps_and_seek_flags_are_requested_exactly() {
-        // Phase `rgba_acceptance_asks_only_for_system_memory_rgba`.
         {
             init();
             // The compatibility path must never negotiate a GPU buffer that its
@@ -1516,7 +1515,6 @@ mod tests {
                 "RGBA-only consumers must not be offered dmabuf: {s}"
             );
         }
-        // Phase `accurate_seek_carries_the_accurate_flag_and_keyframe_seek_does_not`.
         {
             let a = SeekMode::Accurate.flags();
             assert!(

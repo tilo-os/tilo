@@ -177,11 +177,6 @@ fn set_once(slot: &mut Option<Vec<u8>>, name: &str, bytes: Vec<u8>) -> Result<()
 /// Every carried blob is verified against its name after `sink` consumed
 /// it; blobs the collection does not reference, and repeats, are skipped
 /// unread by the sink. The archive may be thin: check [`Tapp::missing`].
-///
-/// # Errors
-///
-/// Returns a [`TappError`] for a malformed archive, broken metadata links,
-/// a blob that does not match its name, or an error from `sink`.
 pub fn read<R: Read>(reader: R, sink: &mut dyn BlobSink) -> Result<Tapp, TappError> {
     let mut archive = tar::Archive::new(reader);
     let mut pending = Some(Pending::default());

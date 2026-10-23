@@ -159,9 +159,6 @@ impl Bridge {
         })
     }
     /// Refresh actual host progress on a decoder worker, never on the UI thread.
-    ///
-    /// # Errors
-    /// Returns a terminal output or device failure.
     pub fn refresh(&self) -> Result<Observation, String> {
         let mut session = self
             .session
@@ -183,17 +180,11 @@ impl Drop for Bridge {
 }
 
 /// Build a pipeline-clocked S16LE/48 kHz/stereo sink for synchronized media.
-///
-/// # Errors
-/// Returns a plugin or pipeline construction failure.
 pub fn sink_bin(name: &str, gain_name: &str) -> Result<(gst::Bin, Arc<Bridge>), String> {
     build_sink_bin(name, gain_name, true)
 }
 
 /// Build an audio-only sink paced by the host device and its bounded PCM queue.
-///
-/// # Errors
-/// Returns a plugin or pipeline construction failure.
 pub fn host_clocked_sink_bin(
     name: &str,
     gain_name: &str,

@@ -869,7 +869,6 @@ mod tests {
             shrink.contract.validate_declaration()
         );
         assert_eq!(specs[1].contract.offload, None, "only where declared");
-        // Its inputs are the content its list of content names.
         assert!(shrink.params()[0].is_content_list());
         assert!(specs[1].params()[0].is_content());
     }
@@ -934,8 +933,6 @@ mod tests {
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
 
-        // Bound to its arguments, the effect takes none and keeps its
-        // declaration's contract.
         let bound = Sample::Wipe { passes: 3 }.bound();
         assert_eq!(bound.id, "wipe");
         assert_eq!(bound.label, "Wipe");
@@ -948,7 +945,6 @@ mod tests {
         );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
 
-        // Bound to the thing it acts on, it still asks for the rest.
         let asking = Sample::RenameThing {
             thing: "a".into(),
             label: None,

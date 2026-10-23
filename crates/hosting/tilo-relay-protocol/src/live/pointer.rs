@@ -25,7 +25,6 @@ pub enum LivePointer {
     /// Over the window showing `record`, `at` from the top-left corner of
     /// its content.
     Window {
-        /// The record the window shows.
         record: LiveRecord,
         /// From the window content's top-left corner.
         at: [f32; 2],
@@ -36,7 +35,6 @@ pub enum LivePointer {
     /// by `at`. Right of a window, `edge` is `[1, y]` and `at` `[dx, 0]`:
     /// a narrower window elsewhere keeps the pointer as far right of it.
     Beside {
-        /// The record the nearest window shows.
         record: LiveRecord,
         /// The window's point nearest to the pointer, as fractions of its
         /// content's size.
@@ -110,7 +108,6 @@ impl LivePointer {
 /// its content is scrolled, in the viewer's logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShownStrip {
-    /// The strip's id.
     pub id: u64,
     /// Where the strip is drawn: `[x0, y0, x1, y1]`.
     pub area: [f32; 4],
@@ -125,7 +122,6 @@ pub struct PointerLayout {
     /// Each shown window's content area, `[x0, y0, x1, y1]`, by the record
     /// it shows, topmost first.
     pub windows: Vec<(LiveRecord, [f32; 4])>,
-    /// The strip shown, if any.
     pub strip: Option<ShownStrip>,
 }
 

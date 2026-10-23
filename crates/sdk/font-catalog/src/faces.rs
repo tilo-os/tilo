@@ -122,11 +122,6 @@ impl FaceIndex {
     /// Parse every file of the catalog at `root` this build's manifest
     /// names (fixtures aside) and record its faces. A file the catalog does
     /// not hold (the standalone catalog has no `Os` files) is left out.
-    ///
-    /// # Errors
-    ///
-    /// When the catalog is not this build's, or a file it holds is not the
-    /// pinned file or holds no face.
     pub fn build(root: &Path) -> Result<Self, Error> {
         crate::check_manifest(root)?;
         let mut files = Vec::new();

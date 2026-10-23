@@ -28,7 +28,6 @@ const DEVELOPER_ID_ANCHOR: &str = "anchor apple generic \
 /// Whose signature is trusted to describe its own sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustRequirement {
-    /// Any Apple Developer ID Application signature.
     DeveloperId,
     /// A Developer ID Application signature issued to this team only.
     DeveloperIdTeam(TeamId),
@@ -213,7 +212,6 @@ mod tests {
                 CodeSignature::AdHoc { app_sandbox: false },
                 MacLaunchMode::Seatbelt(SeatbeltReason::AdHoc),
             ),
-            // An ad-hoc signature's entitlements are the payload's own claim.
             (
                 CodeSignature::AdHoc { app_sandbox: true },
                 MacLaunchMode::Seatbelt(SeatbeltReason::AdHoc),

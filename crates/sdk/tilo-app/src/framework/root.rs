@@ -2972,7 +2972,6 @@ mod search_tests {
                 text: "April".into(),
                 ..Default::default()
             },
-            // A flat id that lies in the inbox, read as a message row.
             SearchEntry {
                 anchor: Some("msg:3".into()),
                 title: "Invoice reminder".into(),
@@ -3235,7 +3234,6 @@ mod search_tests {
         ));
         assert_eq!(declared, [ScopeDecl::new("folder:inbox", "Inbox")]);
 
-        // Picking a hit opens the app at it.
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
                 let mut doc = ui_core::automerge::AutoCommit::new();
@@ -3249,7 +3247,6 @@ mod search_tests {
             .unwrap();
         OPENED.with_borrow(|opened| assert_eq!(opened.as_slice(), ["folder:inbox/msg:1"]));
 
-        // An agent opens it through the same door.
         app.call("open", serde_json::json!({ "anchor": "folder:sent/msg:2" }))
             .unwrap();
         OPENED.with_borrow(|opened| {

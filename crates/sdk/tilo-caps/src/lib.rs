@@ -314,7 +314,6 @@ impl fmt::Display for Capability {
     }
 }
 
-/// `feature`'s row in its platform crate.
 fn platform_row(feature: impl tilo_platform_caps::Feature) -> [Availability; 3] {
     feature.targets().map(|availability| match availability {
         tilo_platform_caps::Availability::Available => Availability::Available,

@@ -172,7 +172,6 @@ impl BlockList {
         self.blocks.push(Block { app_id, by });
     }
 
-    /// Whether anyone blocked `app_id`.
     #[must_use]
     pub fn is_blocked(&self, app_id: &str) -> bool {
         self.blocks

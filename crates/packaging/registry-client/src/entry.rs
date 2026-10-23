@@ -14,7 +14,6 @@ use tilo_app_package::chunks::ObjectDir;
 use tilo_app_package::manifest::Arch;
 use tilo_app_package::{DiscardBlobs, Manifest, PackageId, Verification};
 
-/// The platform a build is for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Platform {
     /// Native Tilo OS thin app (`x86_64` or `aarch64`).
@@ -174,11 +173,6 @@ pub fn check_package_with(
 /// category, version come from inside the signed package, so a
 /// registry row cannot describe a package as something it is not.
 /// The entry keeps `previous`'s versions within `retention`.
-///
-/// # Errors
-///
-/// When the package fails [`check_package`], does not match `platform` or
-/// `arch`, or conflicts with `previous`.
 pub fn build_entry(
     tapp_bytes: &[u8],
     url: &str,

@@ -317,7 +317,6 @@ pub enum ChromeIntent {
     OpenAvatarAsk,
     /// Fold the open ask into the avatar's dot: a click elsewhere, Escape.
     CollapseAvatarAsk,
-    /// The person chose the ask's answer.
     AnswerAvatarAsk,
     /// The person put the ask off ("Not now"): it goes.
     PutOffAvatarAsk,
@@ -376,7 +375,6 @@ pub enum AppTrayIcon {
 pub struct AppTrayItem {
     /// Stable key the host addresses the item by.
     pub key: String,
-    /// The application's own id for the item.
     pub id: String,
     pub status: AppTrayStatus,
     pub icon: AppTrayIcon,

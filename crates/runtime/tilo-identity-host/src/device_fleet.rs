@@ -955,7 +955,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn fleet_enrollment_loads_revokes_and_resists_clock_rollback() {
-        // Phase `a_fleet_without_consumed_enrollments_loads_empty`.
         {
             let fleet: DeviceFleet = serde_json::from_value(serde_json::json!({
                 "schema_version": 1,
@@ -966,7 +965,6 @@ mod tests {
             .expect("fleet without consumed enrollments");
             assert!(fleet.consumed_enrollments.is_empty());
         }
-        // Phase `enroll_list_and_revoke_a_secondary_device`.
         {
             let root = tempfile::tempdir().expect("temp root");
             let identity_dir = root.path().join("config/identity");
@@ -1082,7 +1080,6 @@ mod tests {
                     .is_revoked(&phone.verifying_key().to_bytes())
             );
         }
-        // Phase `clock_rollback_cannot_revive_consumed_enrollment`.
         {
             let root = tempfile::tempdir().expect("temp root");
             let identity_dir = root.path().join("config/identity");

@@ -97,9 +97,6 @@ pub trait TargetProjectionAuthority: super::ServiceAuthority {
     fn context_sha256(&self) -> [u8; 32];
     fn source_view_sha256(&self) -> [u8; 32];
     /// Actual selected held-file presentation component, preserving POSIX bytes.
-    ///
-    /// # Errors
-    /// Fails if the held selection no longer supplies a valid presentation component.
     fn presentation_name(&self) -> io::Result<OsString>;
 }
 /// Nonserializable root policy bridge, implemented only by the setup-private

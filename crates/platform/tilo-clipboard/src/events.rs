@@ -62,7 +62,6 @@ struct Transfer {
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 #[derive(Default)]
 struct Taken {
-    /// Its text, plain or rich.
     read: bool,
     /// Whether rich text was probed (a refused offer leaves plain to read).
     rich_attempted: bool,

@@ -44,7 +44,6 @@ pub struct EngineSession {
 }
 
 impl EngineSession {
-    /// Open `source` in a new session.
     pub fn open(source: Source, key: SourceKey, config: EngineConfig) -> Self {
         let mut engine = MediaEngine::with_config(config);
         engine.open(source);
@@ -397,7 +396,6 @@ mod tests {
             assert_eq!(s.bucket_ms(), bucket_ms_for_fps(60.0));
             std::fs::remove_dir_all(p.parent().unwrap()).ok();
         }
-        // Phase `the_same_file_reached_two_ways_shares_one_session_key`.
         {
             // A clip imported by absolute path and the same clip named through the
             // workspace mount must not stand up two decoders for one file.
@@ -412,7 +410,6 @@ mod tests {
             assert_ne!(session_key(&a), session_key(&other));
             std::fs::remove_dir_all(p.parent().unwrap()).ok();
         }
-        // Phase `asking_twice_for_a_source_returns_the_same_session_not_a_second_pipeline`.
         {
             // The bug this pool exists to fix: a whole engine per thumbnail.
             let p = scratch("reuse");
@@ -428,7 +425,6 @@ mod tests {
             assert_eq!(pool.len(), 1);
             std::fs::remove_dir_all(p.parent().unwrap()).ok();
         }
-        // Phase `distinct_sources_get_distinct_sessions_up_to_the_cap`.
         {
             let base = scratch("cap");
             let dir = base.parent().unwrap().to_path_buf();
@@ -461,7 +457,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `closing_a_source_drops_its_session`.
         {
             let p = scratch("close");
             let mut pool = SessionPool::new(
@@ -476,7 +471,6 @@ mod tests {
             assert!(pool.is_empty());
             std::fs::remove_dir_all(p.parent().unwrap()).ok();
         }
-        // Phase `prune_drops_only_sessions_past_the_idle_limit`.
         {
             let p = scratch("prune");
             // Zero idle tolerance: everything untouched is immediately stale.
@@ -490,7 +484,6 @@ mod tests {
                 "an idle session is closed rather than held open"
             );
 
-            // With a generous limit the same session survives.
             let mut pool = SessionPool::new(
                 EngineConfig::default().frames_only(),
                 4,

@@ -11,7 +11,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Domain of a statement signature.
 const STATEMENT_DOMAIN: &[u8] = b"tilo-compaction-statement-v1\0";
 
 /// Identity of one retained document entry: a digest of the
@@ -26,7 +25,6 @@ pub fn entry_id(body: &[u8]) -> [u8; 32] {
 /// What a member's snapshot of one route contains.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageStatement {
-    /// Workspace of the route.
     pub workspace_id: u64,
     /// Retention channel of the route.
     pub channel: [u8; 32],
@@ -43,19 +41,11 @@ pub struct CoverageStatement {
 
 impl CoverageStatement {
     /// Canonical encoding, as signed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if postcard fails to encode.
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
         postcard::to_allocvec(self)
     }
 
     /// Decode a statement; trailing bytes are refused.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `bytes` is not exactly one statement.
     pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
         let (statement, rest) = postcard::take_from_bytes(bytes)?;
         if rest.is_empty() {

@@ -28,7 +28,6 @@ type Body = BoxBody<Bytes, Infallible>;
 struct Service {
     config: Arc<Config>,
     identity: tls::HostIdentity,
-    /// The one persistent room, in persistent mode.
     persistent: Option<Arc<persistent::Persistent>>,
     rooms: Mutex<BTreeMap<String, Arc<Room>>>,
     /// Rooms being created count against the limit before they exist.

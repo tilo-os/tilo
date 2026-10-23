@@ -122,7 +122,6 @@ pub struct GuestPlan {
     /// runtime's own store and the environment records. Covered by a tmpfs
     /// after the grants are bound.
     pub masked: Vec<PathBuf>,
-    /// Directories granted read-write.
     pub trusted_dirs: Vec<PathBuf>,
     /// Directories granted read but not write.
     pub readable_dirs: Vec<PathBuf>,

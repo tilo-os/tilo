@@ -25,7 +25,6 @@ pub struct PackageMeta {
     pub root: SignedRoot,
     pub manifest: Manifest,
     pub collection: Collection,
-    /// The exact manifest bytes the root commits to.
     pub manifest_bytes: Vec<u8>,
     /// The exact encoded collection the root commits to.
     pub collection_bytes: Vec<u8>,
@@ -58,10 +57,6 @@ pub enum MetaError {
 impl PackageMeta {
     /// Assemble a package from its three metadata blobs, checking that
     /// `signed_root` hashes to `id` and commits to the other two.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first broken link as a [`MetaError`].
     pub fn from_parts(
         id: PackageId,
         signed_root: &[u8],
@@ -80,10 +75,6 @@ impl PackageMeta {
     }
 
     /// Assemble a package from a decoded root and the blobs it commits to.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first broken link as a [`MetaError`].
     pub fn from_root(
         root: SignedRoot,
         manifest_bytes: Vec<u8>,

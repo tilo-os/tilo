@@ -68,11 +68,6 @@ pub fn heads_wire(doc: &mut AutoCommit) -> Vec<[u8; 32]> {
 /// Apply the `delta_since` bytes from an [`Envelope::SyncResponse`] into
 /// `doc`. Returns the number of new operations applied (0 = already
 /// converged / empty response).
-///
-/// # Errors
-///
-/// Returns an error if `delta_since` is non-empty but does not decode
-/// as a valid Automerge incremental change series.
 pub fn apply_sync_response(
     doc: &mut AutoCommit,
     delta_since: &[u8],
@@ -164,16 +159,13 @@ mod tests {
 
     #[test]
     fn sync_heads_and_responses_converge_a_lagging_doc() {
-        // Phase `heads_wire_round_trips_through_changehash`.
         {
             let mut doc = AutoCommit::new();
             doc.put(ROOT, "k", "v").unwrap();
             let wire = heads_wire(&mut doc);
             assert_eq!(wire.len(), 1);
-            // The wire hash equals the doc's ChangeHash inner bytes.
             assert_eq!(wire[0], doc.get_heads()[0].0);
         }
-        // Phase `apply_sync_response_empty_is_noop`.
         {
             let mut doc = AutoCommit::new();
             doc.put(ROOT, "k", "v").unwrap();
@@ -181,7 +173,6 @@ mod tests {
             assert_eq!(apply_sync_response(&mut doc, &[]).unwrap(), 0);
             assert_eq!(doc.get_heads(), before);
         }
-        // Phase `apply_sync_response_converges_a_lagging_doc`.
         {
             // A "host" doc with two edits; a lagging peer with none. The
             // bytes save_after([]) produces must load the peer to identical

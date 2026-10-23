@@ -79,7 +79,6 @@ pub struct WorkspaceSettingsModel<'a> {
 /// A workspace this device keeps archived, as the General tab lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchivedWorkspace {
-    /// The room it is.
     pub room: tilo_desktop_model::RoomId,
     pub name: String,
 }
@@ -89,7 +88,6 @@ pub struct ArchivedWorkspace {
 /// everyone who joins from it gets.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum PublicCard {
-    /// Its host is being asked.
     #[default]
     Asking,
     /// What its host answered.
@@ -142,7 +140,6 @@ pub enum EventOutcome {
     ReviewAgent(String),
     /// Back from one agent's answers to the roster.
     CloseAgentReview,
-    /// Opens or closes one app's answers in the agent view.
     ToggleAgentApp(tilo_action_policy::agent_answers::AnswerScope),
     /// Opens or closes the models the reviewed agent may plan with.
     ToggleAgentModels,
@@ -524,7 +521,6 @@ impl WorkspaceSettingsOverlay {
         (old - self.general_scroll_y).abs() > f64::EPSILON
     }
 
-    /// Unscaled height of the devices card for `rows` devices.
     fn devices_card_height(rows: usize) -> f64 {
         let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
         48.0 + rows * 40.0 + 56.0
@@ -579,7 +575,6 @@ impl WorkspaceSettingsOverlay {
         Rect::new(public.x0, top, public.x1, top + (height - 16.0) * scale)
     }
 
-    /// The archived card's control under `point`, if any.
     fn archived_card_hit(&self, point: Point) -> Option<EventOutcome> {
         let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
         self.archived_rects
@@ -598,7 +593,6 @@ impl WorkspaceSettingsOverlay {
         &self.archived_rects
     }
 
-    /// The Public card's control under `point`, if any.
     fn public_card_hit(&self, point: Point) -> Option<EventOutcome> {
         let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
         let [switch, role, description] = &self.public_rects;
@@ -611,7 +605,6 @@ impl WorkspaceSettingsOverlay {
         hit(description).then_some(EventOutcome::EditDescription)
     }
 
-    /// The devices card's control under `point`, if any.
     fn devices_card_hit(&self, point: Point) -> Option<EventOutcome> {
         let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
         if let Some(index) = self.device_toggle_rects.iter().position(hit) {
@@ -3147,7 +3140,6 @@ mod tests {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
         let mut overlay = WorkspaceSettingsOverlay::default();
-        // Production field bounds with shared padding.
         overlay.layout(Rect::new(0.0, 0.0, 600.0, 700.0));
         let theme = Theme::dark().with_text_scale(2.0);
         overlay.general_text_scale = 2.0;
@@ -3503,7 +3495,6 @@ mod tests {
             }
         }
 
-        // Phase `laptop_lens_preserves_most_of_the_workspace`.
         {
             let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
             let lens = WorkspaceSettingsOverlay::rect_for(viewport);
@@ -3515,7 +3506,6 @@ mod tests {
             );
         }
 
-        // Phase `lens_keeps_a_visible_bezel_gap_on_wide_and_compact_outputs`.
         {
             for viewport in [
                 Rect::new(0.0, 0.0, 1600.0, 900.0),
@@ -3533,7 +3523,6 @@ mod tests {
             }
         }
 
-        // Phase `tab_body_reserves_a_non_overlapping_close_hint_footer`.
         {
             for card in [
                 Rect::new(880.0, 68.0, 1580.0, 880.0),
@@ -3549,7 +3538,6 @@ mod tests {
 
     #[test]
     fn closing_is_one_pointer_target_and_stays_visible_until_exit_settles() {
-        // Phase `close_transition_remains_visible_until_exit_settles`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.force_settled();
@@ -3567,7 +3555,6 @@ mod tests {
             assert!(!overlay.transition.is_visible(gone));
         }
 
-        // Phase `close_button_is_one_pointer_target`.
         {
             let close = WorkspaceSettingsOverlay::close_rect_for(Rect::new(0.0, 0.0, 540.0, 700.0));
             assert!(close.width() >= 32.0 && close.height() >= 32.0);
@@ -3576,7 +3563,6 @@ mod tests {
 
     #[test]
     fn tab_strip_compacts_labels_before_eliding_and_measures_only_when_needed() {
-        // Phase `tab_strip_plan_compacts_every_label_before_it_elides_any`.
         {
             let mut text = TextRenderer::new();
             // The 540 px laptop lens at 100 %: five ~95 px pills.
@@ -3623,7 +3609,6 @@ mod tests {
             );
         }
 
-        // Phase `tab_pills_take_measured_widths_only_when_equal_shares_cannot_hold_the_widest_label`.
         {
             let equal = tab_pill_widths(&[80.0, 60.0, 70.0, 75.0, 50.0], 500.0);
             assert_eq!(equal.len(), 5);
@@ -3644,7 +3629,6 @@ mod tests {
 
     #[test]
     fn overlay_hits_are_typed_policy_controls_carrying_their_identity() {
-        // Phase `typed_hits_prefer_policy_controls_over_tabs_and_name`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
@@ -3662,7 +3646,6 @@ mod tests {
             );
         }
 
-        // Phase `bot_hits_name_the_bots_entry`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
@@ -3682,7 +3665,6 @@ mod tests {
             );
         }
 
-        // Phase `agent_revoke_hit_keeps_the_typed_agent_identity`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
@@ -3696,7 +3678,6 @@ mod tests {
             );
         }
 
-        // Phase `ownership_entry_point_is_a_typed_actionable_control`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             let action = Rect::new(900.0, 220.0, 1_020.0, 258.0);
@@ -3707,7 +3688,6 @@ mod tests {
             );
         }
 
-        // Phase `permission_roles_entry_point_opens_the_canonical_role_actions`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             let action = Rect::new(900.0, 220.0, 1_020.0, 244.0);
@@ -3723,7 +3703,6 @@ mod tests {
             );
         }
 
-        // Phase `agent_setup_and_review_keep_the_agent_identity_typed`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
@@ -3746,7 +3725,6 @@ mod tests {
 
     #[test]
     fn role_and_destructive_sheets_need_explicit_choices() {
-        // Phase `role_sheet_keyboard_selects_an_explicit_role_without_cycling`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.open_member_role_sheet("ada".into(), CapRole::Viewer);
@@ -3765,7 +3743,6 @@ mod tests {
             );
         }
 
-        // Phase `destructive_sheet_needs_the_final_confirmation_option`.
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.open_revoke_sheet("cap-camera".into());

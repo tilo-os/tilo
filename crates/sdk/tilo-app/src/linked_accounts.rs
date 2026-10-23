@@ -38,7 +38,6 @@ pub struct Reading {
     pub service: String,
     /// The room is connected to the service (a server is bridged).
     pub connected: bool,
-    /// The reader's linked account there.
     #[serde(default)]
     pub account: Option<AccountName>,
     /// The reader started linking and the code is still good.

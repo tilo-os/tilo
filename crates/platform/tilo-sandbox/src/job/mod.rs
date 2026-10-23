@@ -192,9 +192,6 @@ impl<'a> Launch<'a> {
 /// Create the mount points `spec` needs in an image root, as the caller,
 /// before the job starts: the job itself can't write into its read-only
 /// root. Directories for directory sources, empty files for file sources.
-///
-/// # Errors
-/// Returns the first mount point that could not be made.
 pub fn prepare_mount_points(spec: &JobSpec) -> std::io::Result<()> {
     let Root::Image(root) = &spec.root else {
         return Ok(());

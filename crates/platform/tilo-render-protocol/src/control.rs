@@ -198,10 +198,6 @@ pub enum ServiceMessage {
 }
 
 /// Encode `message` for the channel.
-///
-/// # Errors
-///
-/// When it does not fit [`MAX_MESSAGE_BYTES`].
 pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, WireError> {
     let bytes = postcard::to_allocvec(message).map_err(|_| WireError::Malformed("message"))?;
     if bytes.len() > MAX_MESSAGE_BYTES {
@@ -211,10 +207,6 @@ pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, WireError> {
 }
 
 /// Decode a message from the channel.
-///
-/// # Errors
-///
-/// When the bytes are not exactly one message.
 pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, WireError> {
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(WireError::OverLimit("message size"));

@@ -135,11 +135,9 @@ impl AudioGraph {
     pub fn default_sink(&self) -> Option<&AudioDevice> {
         self.sinks.iter().find(|d| d.is_default)
     }
-    /// The current default source, if any.
     pub fn default_source(&self) -> Option<&AudioDevice> {
         self.sources.iter().find(|d| d.is_default)
     }
-    /// A sink by its node id.
     pub fn sink_by_id(&self, id: u32) -> Option<&AudioDevice> {
         self.sinks.iter().find(|d| d.id == id)
     }
@@ -631,53 +629,18 @@ pub fn wpctl_set_profile_args(device_id: u32, profile_index: u32) -> Vec<String>
 /// recorder so the settings pane's dispatch can be asserted without a daemon.
 pub trait GraphControl: Send + Sync {
     /// Switch the default sink (output).
-    ///
-    /// # Errors
-    ///
-    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
-    /// rejects `node_id`.
     fn set_default_sink(&self, node_id: u32) -> Result<(), String>;
     /// Switch the default source (input).
-    ///
-    /// # Errors
-    ///
-    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
-    /// rejects `node_id`.
     fn set_default_source(&self, node_id: u32) -> Result<(), String>;
     /// Route a stream node to a device by the device's `object.serial`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the tool's diagnostic message if `pw-metadata` is unavailable
-    /// or rejects the stream id or target serial.
     fn route_stream(&self, stream_id: u32, target_serial: u32) -> Result<(), String>;
     /// Clear a stream's explicit target (follow the default device).
-    ///
-    /// # Errors
-    ///
-    /// Returns the tool's diagnostic message if `pw-metadata` is unavailable
-    /// or rejects the stream id.
     fn unroute_stream(&self, stream_id: u32) -> Result<(), String>;
     /// Set a node's perceptual volume (`0.0..=1.0`).
-    ///
-    /// # Errors
-    ///
-    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
-    /// rejects `node_id`.
     fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String>;
     /// Mute or unmute a node.
-    ///
-    /// # Errors
-    ///
-    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
-    /// rejects `node_id`.
     fn set_node_mute(&self, node_id: u32, muted: bool) -> Result<(), String>;
     /// Switch a hardware device to one of its enumerated profiles.
-    ///
-    /// # Errors
-    ///
-    /// Returns the tool's diagnostic message if `wpctl` is unavailable or
-    /// rejects `device_id`/`profile_index`.
     fn set_device_profile(&self, device_id: u32, profile_index: u32) -> Result<(), String>;
 }
 
@@ -860,12 +823,10 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn audio_graph_parses_real_devices_streams_and_diffs_topology() {
-        // Phase `device_volume_uses_loud_channel_so_balance_does_not_decay`.
         {
             let volume = perceptual_from_channel_volumes(&[0.064, 0.512]).unwrap();
             assert!((volume - 0.8).abs() < 0.001);
         }
-        // Phase `parses_only_real_available_device_profiles`.
         {
             let g = parse_pw_dump(
                 r#"[{
@@ -885,7 +846,6 @@ mod tests {
             assert!(!g.hardware[0].profiles[2].available);
             assert_eq!(wpctl_set_profile_args(7, 2), ["set-profile", "7", "2"]);
         }
-        // Phase `parses_sinks_sources_and_default`.
         {
             let g = parse_pw_dump(FIXTURE);
             assert_eq!(g.sinks.len(), 2, "two sinks: {:?}", g.sinks);
@@ -905,7 +865,6 @@ mod tests {
             );
             assert_eq!(hp.id, 91);
         }
-        // Phase `parses_streams_with_their_current_route`.
         {
             let g = parse_pw_dump(FIXTURE);
             assert_eq!(g.playback_streams.len(), 2, "two playback streams");
@@ -933,7 +892,6 @@ mod tests {
                 "the moved stream reports its non-default sink"
             );
         }
-        // Phase `parses_perceptual_volume_and_mute`.
         {
             let g = parse_pw_dump(FIXTURE);
             // The pw-play stream's raw channelVolumes were 0.125; cube root is
@@ -950,13 +908,11 @@ mod tests {
             );
             assert_eq!(pw.muted, Some(false));
         }
-        // Phase `empty_document_is_empty_graph_not_fabricated`.
         {
             assert_eq!(parse_pw_dump(""), AudioGraph::default());
             assert_eq!(parse_pw_dump("not json"), AudioGraph::default());
             assert_eq!(parse_pw_dump("[]"), AudioGraph::default());
         }
-        // Phase `diff_reports_hotplugged_devices`.
         {
             let before = parse_pw_dump(FIXTURE);
             // Drop the Headphones sink → simulate an unplug; the graph now has one
@@ -978,7 +934,6 @@ mod tests {
                 "no change ⇒ empty delta"
             );
         }
-        // Phase `topology_signature_ignores_volume_but_tracks_structure`.
         {
             let g = parse_pw_dump(FIXTURE);
             let sig = g.topology_signature();
@@ -990,7 +945,6 @@ mod tests {
                 vol.topology_signature(),
                 "volume drift is not structural"
             );
-            // A new stream is.
             let mut added = g.clone();
             let mut ns = g.playback_streams[0].clone();
             ns.id = 999;
@@ -1016,7 +970,6 @@ mod tests {
 
     #[test]
     fn audio_control_args_target_the_right_keys() {
-        // Phase `route_args_target_the_serial_on_the_default_store`.
         {
             // Moving stream 84 to a sink whose object.serial is 269.
             assert_eq!(
@@ -1024,14 +977,12 @@ mod tests {
                 vec!["-n", "default", "84", "target.object", "269"],
             );
         }
-        // Phase `unroute_args_delete_the_target_key`.
         {
             assert_eq!(
                 pw_metadata_unroute_args(84),
                 vec!["-n", "default", "-d", "84", "target.object"],
             );
         }
-        // Phase `volume_and_mute_and_default_args`.
         {
             assert_eq!(
                 wpctl_set_volume_args(84, 0.5),

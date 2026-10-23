@@ -36,9 +36,6 @@ use tilo_resource::Doc;
 /// created. Values `record` holds as a new record starts with are taken
 /// from `defaults`, a copy of it from before the copy. A window record that
 /// cannot be read as the app's resource is left out and logged.
-///
-/// # Errors
-/// The record's write error.
 pub(crate) fn adopt(
     record: &mut Doc,
     windows: &[(ui_core::record::RecordId, Doc)],
@@ -364,7 +361,6 @@ mod tests {
             "\"oldest\"",
             "a setting a window changed survives a later window that left it alone"
         );
-        // The window records are untouched.
         assert_eq!(feeds(&windows[1].1).len(), 2);
         assert!(
             record.get(ROOT, "tilo:record").unwrap().is_none(),

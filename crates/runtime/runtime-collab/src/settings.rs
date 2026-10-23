@@ -58,10 +58,6 @@ impl From<app_settings::Client> for AppSettingsHandle {
 
 impl AppSettingsHandle {
     /// The view once its revision differs from `after`; at once for 0.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the broker refuses or disconnects.
     pub async fn read(&self, after: u64) -> Result<SettingsView, NotAvailable> {
         let mut request = self.inner.read_request();
         request.get().set_after(after);
@@ -110,12 +106,6 @@ impl AppSettingsHandle {
     /// Merge `values_json`, `{"<app id>": {...}}`, into the app's entry in
     /// `section`, answering the view after the write. `action` names the
     /// action that made the change, for the session's history.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the write is too large, the broker
-    /// refuses it (another app's entry, a section the app may only read) or
-    /// the broker disconnects.
     pub async fn update(
         &self,
         section: &str,

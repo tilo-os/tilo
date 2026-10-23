@@ -400,7 +400,6 @@ mod tests {
         let dir = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
             .expect("a fresh app directory");
         let elsewhere = tempfile::tempdir().expect("a directory the app must not reach");
-        // The app replaced `.local` with a link to somewhere on the host.
         std::fs::remove_dir_all(dir.join(".local")).expect("remove");
         std::os::unix::fs::symlink(elsewhere.path(), dir.join(".local")).expect("plant");
         let error = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
@@ -489,7 +488,6 @@ mod tests {
             assert_ne!(a, b);
             assert!(!a.starts_with(&b) && !b.starts_with(&a));
         }
-        // Phase `no_workspace_means_the_personal_room`.
         {
             assert_eq!(room_slug(None), PERSONAL_ROOM);
             assert_eq!(room_slug(Some("")), PERSONAL_ROOM);
@@ -518,7 +516,6 @@ mod tests {
                 .expect("XDG_DATA_HOME is announced");
             assert_eq!(data, "/run/tilo/app/.local/share");
         }
-        // Phase `the_bind_is_read_write_at_the_fixed_path`.
         {
             let mut argv = Vec::new();
             push_app_dir(
@@ -537,7 +534,6 @@ mod tests {
                 "HOME must point inside the app dir: {argv:?}"
             );
         }
-        // Phase `settings_session_store_overlays_only_its_own_parts`.
         {
             let mut argv = Vec::new();
             push_session_settings_bind(&mut argv, Path::new("/home/ada/.config/tilo"));
@@ -571,7 +567,6 @@ mod tests {
                 "the identity store is the host's, never Settings': {argv:?}"
             );
         }
-        // Phase `preparing_the_directory_creates_the_xdg_tree`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
@@ -580,7 +575,6 @@ mod tests {
             assert!(dir.join(".cache").is_dir());
             assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/so.tilo.notes"));
         }
-        // Phase `startup_traces_leave_the_apps_home`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();

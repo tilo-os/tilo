@@ -16,8 +16,6 @@ pub struct Proof;
 #[cfg(target_os = "linux")]
 impl Proof {
     /// Start an owned responder with a total handshake deadline.
-    /// # Errors
-    /// Returns socket creation or worker startup errors.
     pub fn start() -> io::Result<Self> {
         Self::start_with_timeout(std::time::Duration::from_secs(10))
     }

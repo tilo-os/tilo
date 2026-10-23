@@ -143,10 +143,6 @@ impl DiskIndex {
     /// The writer's lock is an advisory lock on `.tantivy-writer.lock`,
     /// which the system releases with the process holding it: the file a
     /// crashed process leaves behind does not refuse the next writer.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when another live writer holds the index.
     pub fn writer(
         &self,
         heap_bytes: usize,
@@ -230,10 +226,6 @@ pub struct DiskWriter {
 
 impl DiskWriter {
     /// Insert or replace the document with `key`.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when the indexing thread has failed.
     pub fn upsert(
         &mut self,
         key: &str,
@@ -250,7 +242,6 @@ impl DiskWriter {
         self.writer.add_document(doc).map(|_| ())
     }
 
-    /// Remove the document with `key`, if any.
     pub fn remove(&mut self, key: &str) {
         self.writer
             .delete_term(Term::from_field_text(self.fields.key, key));
@@ -270,10 +261,6 @@ impl DiskWriter {
     /// Commit, let the merges that commit started finish, and release the
     /// writer. Dropping a writer instead discards what it has not committed
     /// and abandons its merges half done, to be redone by the next writer.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when the commit, a merge or the reload fails.
     pub fn close(mut self) -> tantivy::Result<()> {
         self.writer.commit()?;
         self.writer.wait_merging_threads()?;

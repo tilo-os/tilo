@@ -65,7 +65,6 @@ const MEMBER_GRACE: Duration = Duration::from_secs(30);
 /// One room as [`LegacyWindows::advertise`] reads it.
 #[derive(Clone, Debug, Default)]
 pub struct RoomViewers {
-    /// The room's workspace.
     pub workspace_id: u64,
     /// The members in its live plane now, each by its browser session.
     pub members: Vec<[u8; 32]>,
@@ -1029,8 +1028,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A granted stream becomes an index and keyframe-headed groups on the
-    /// live relay, as a member receives them.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn granted_streams_reach_a_live_member_as_an_index_and_keyframe_groups() {
         let live = LoopbackLive::start(Arc::new(Authority)).unwrap();
@@ -1117,7 +1114,6 @@ mod tests {
             (0, DELTA.as_slice())
         );
 
-        // Revoking the grant ends the stream for members.
         observe(&bridge, &grant(7, host, "revoked"));
         bridge.maintain(now);
         let emptied = tilo_test_env::within("the emptied index", async {
@@ -1368,7 +1364,6 @@ mod tests {
             &presence(SESSION, &grant(1, 42, "granted")),
         );
         bridge.observe_presence(WORKSPACE, SESSION, USER, &presence(SESSION, &start(1)));
-        // Another device speaking for the session.
         bridge.observe_presence(
             WORKSPACE,
             [9; 32],
@@ -1714,7 +1709,6 @@ mod tests {
         let sent = adverts(&bridge.advertise(&[room(&[chrome])], &identity, now));
         assert_eq!(sent[0].3, labels(&["h264"]));
 
-        // Bounded, and nothing once the bridge closed.
         for member in 0..MAX_MEMBERS {
             let mut key = [0; 32];
             key[..8].copy_from_slice(&(member as u64).to_be_bytes());

@@ -734,12 +734,6 @@ mod codec {
 
     /// Decode one action from a published surface (`publishActions`): its
     /// operation kind, parameters and contract must all be present and parse.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error naming the action when a field is absent, an
-    /// operation kind is unknown, the semantic identity is invalid, or the
-    /// parameters or contract do not decode.
     pub fn decode_exported_action(
         row: collab_capnp::exported_action::Reader<'_>,
     ) -> Result<ExportedAction, capnp::Error> {
@@ -844,9 +838,6 @@ mod codec {
 
     /// Resolve a retained pre-event snapshot for local mutation admission only.
     /// This must never be used to authorize delivery of an ordinary invocation.
-    ///
-    /// # Errors
-    /// Returns an error on RPC failure or an oversized resolution.
     #[expect(
         clippy::future_not_send,
         reason = "directory capabilities are Rc-backed and driven on a LocalSet"
@@ -876,9 +867,6 @@ mod codec {
     }
 
     /// Decode an exact action-directory resolution from its wire form.
-    ///
-    /// # Errors
-    /// Returns an error for a malformed union or row.
     pub fn decode_action_directory_resolution(
         resolution: collab_capnp::action_directory_resolution::Reader<'_>,
     ) -> Result<ActionDirectoryResolution, capnp::Error> {
@@ -963,11 +951,6 @@ mod codec {
     }
 
     /// Decode a `publishActionSurface` request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error naming the shape or binding that does not decode, or
-    /// whose shape id is not [`SHAPE_ID_BYTES`] long.
     pub fn decode_surface_delta(
         request: collab_capnp::channel_handle::publish_action_surface_params::Reader<'_>,
     ) -> Result<SurfaceDelta, capnp::Error> {

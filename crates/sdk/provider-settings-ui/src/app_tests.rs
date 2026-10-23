@@ -1,4 +1,3 @@
-//! Mounted standalone host adapter for the shared provider contract.
 use super::app::{ProviderSettingsApp, ProviderSurface};
 use super::{ProviderEffect, ProviderPanel, definition, widgets};
 use agent_provider_config::management::AdminFuture;

@@ -130,10 +130,6 @@ pub fn with_barrier_hook<R>(
 
 /// Call this thread's barrier hook ([`with_barrier_hook`]), if one is set.
 /// Code that spreads barriers over helper threads calls it first on its own.
-///
-/// # Errors
-///
-/// Returns the hook's error.
 pub fn before_barrier() -> io::Result<()> {
     // Taken out while it runs: the barriers it issues itself do not recurse.
     let Some(mut hook) = BEFORE_BARRIER.with(|slot| slot.borrow_mut().take()) else {
@@ -150,10 +146,6 @@ pub fn before_barrier() -> io::Result<()> {
 }
 
 /// `file.sync_all()`, counted in [`fsyncs`].
-///
-/// # Errors
-///
-/// Returns the error `sync_all` reports.
 pub fn fsync(file: &fs::File) -> io::Result<()> {
     before_barrier()?;
     count_fsyncs(1);
@@ -161,10 +153,6 @@ pub fn fsync(file: &fs::File) -> io::Result<()> {
 }
 
 /// `tilo_files::native::atomic::write`, counted in [`fsyncs`].
-///
-/// # Errors
-///
-/// Returns the error the atomic write reports.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     before_barrier()?;
     count_fsyncs(ATOMIC_WRITE_FSYNCS);

@@ -96,7 +96,6 @@ fn install_list_pin_resolve_over_capnp() {
         let h = Harness::new().unwrap();
         let client = h.connect().await.unwrap();
 
-        // Build a real tapp the server can accept.
         let (bytes, expected_id) = common::build_tapp(2);
         let expected_publisher = app_registry::tapp::load(&bytes)
             .unwrap()

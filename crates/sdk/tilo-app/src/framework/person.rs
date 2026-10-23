@@ -108,9 +108,6 @@ impl<P: Resource> PersonRecord<P> {
     /// Apply `action` now: one change of the record, attributed to the
     /// person, recorded in its history and — for content the person made —
     /// one undo step of theirs.
-    ///
-    /// # Errors
-    /// The action refused to apply, or the record is unavailable.
     pub fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
         self.apply_as(action, &ActionInvoker::actor(&self.shared.me))
     }
@@ -229,7 +226,6 @@ pub(crate) struct PersonState {
 
 /// One open record as the root publishes it.
 struct Published {
-    /// The id it is published under.
     id: String,
     label: String,
     /// Its field edits and verbs, as the door reaches them.
@@ -571,7 +567,6 @@ impl PersonState {
             .collect()
     }
 
-    /// Who the records are of.
     pub(crate) fn me(&self) -> &str {
         &self.me
     }

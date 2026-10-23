@@ -359,7 +359,6 @@ fn rendering_is_consistent_across_regions_engines_markup_and_images() {
                 }
             }
         }
-        // Anti-aliasing at tile seams may differ by a pixel column.
         assert!(
             differing <= part.height() as usize * 2,
             "{differing} pixels differ"
@@ -408,7 +407,6 @@ fn rendering_is_consistent_across_regions_engines_markup_and_images() {
         // Stamps are page content, not reader markup: still drawn.
         let stamp = Rect::from_xywh(160.0, 100.0, 120.0, 50.0);
         assert!(ink_in(&without, 2.0, stamp) > 200);
-        // The document itself is unchanged by the hidden render.
         assert_eq!(doc.render(PAGE, &options).unwrap().pixels(), with.pixels());
     }
     // Phase `images_open_as_one_page_documents`.
@@ -712,7 +710,6 @@ fn export_round_trips_edits_forms_and_imported_pages() {
             .unwrap()
             .export(&edits, &[])
             .unwrap();
-        // A second engine is a different helper process with a different heap.
         let other = self::engine().unwrap();
         let out2 = other
             .open_bytes(&source)

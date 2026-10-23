@@ -196,7 +196,6 @@ impl Apps {
         }
     }
 
-    /// The installed GUI app `app_id`.
     fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
         let app = self
             .installed()

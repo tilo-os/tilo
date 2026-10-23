@@ -314,7 +314,6 @@ pub struct Selection {
     snapshot_verifications: (usize, usize),
 }
 impl Selection {
-    /// The current phase, for diagnostics.
     pub fn diagnostic_phase(&self) -> String {
         format!("{:?}", self.phase)
     }

@@ -329,7 +329,6 @@ impl AttachedView {
         self.definition
     }
 
-    /// The record the view holds.
     #[must_use]
     pub const fn checkout(&self) -> &RecordCheckout {
         &self.checkout
@@ -592,9 +591,6 @@ impl AttachedView {
     /// Merge a peer's change into the view's record. Incremental changes
     /// that build on nothing this record holds belong to another record (or
     /// arrived ahead of what they build on) and are left alone: `Ok(false)`.
-    ///
-    /// # Errors
-    /// Returns why the record store refused the peer's document.
     pub fn merge(&mut self, mutation: &DocumentMutation) -> Result<bool, String> {
         if let DocumentMutation::Incremental(bytes) = mutation {
             let mut incoming = ui_core::automerge::AutoCommit::new();
@@ -676,7 +672,6 @@ impl AttachedView {
             .collect()
     }
 
-    /// Read `record`, one the view holds beside its own.
     pub fn read_record<R>(
         &self,
         record: &ui_core::record::RecordId,
@@ -712,10 +707,6 @@ impl AttachedView {
     /// not yet (a part another device started). Changes that build on
     /// nothing the part holds are left alone: `Ok(false)`. Whether it
     /// changed.
-    ///
-    /// # Errors
-    /// Returns why the record is not one the view holds beside its own, or
-    /// why the record store refused the peer's document.
     pub fn merge_record(
         &mut self,
         record: &ui_core::record::RecordId,

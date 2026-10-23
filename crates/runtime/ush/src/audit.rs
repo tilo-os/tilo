@@ -26,14 +26,12 @@ pub struct AuditRecord {
     pub at: u64,
     /// The session that asked.
     pub session: String,
-    /// The environment record the session was built from.
     pub environment: String,
     /// What was asked: `trust-dir`, `pkg-install`, `open-session`, …
     pub request: String,
     /// What it was asked about: a path, a package name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
-    /// Whether the broker allowed it.
     pub allowed: bool,
     /// Why, when it matters — the refusal reason, or the capability id minted.
     #[serde(default, skip_serializing_if = "Option::is_none")]

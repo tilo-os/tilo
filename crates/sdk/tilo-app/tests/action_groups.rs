@@ -72,7 +72,6 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
         assert!(app.undo());
         assert_eq!(texts(&app), ["milk"]);
 
-        // A button bound to a group applies it as one action.
         let versions = app.versions().len();
         let capture = tilo_app::local_document_action::Queue::new();
         {
@@ -100,7 +99,6 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
     {
         let mut app = TestApp::<ShoppingApp>::new().unwrap();
         app.invoke(Shopping::ADD.with("milk")).unwrap();
-        // One destructive member makes the whole group ask for confirmation.
         let tidy = Invoke::group([Shopping::ADD.with("tea"), Shopping::CLEAR.invoke()]);
         assert!(matches!(
             app.invoke(tidy.clone()),

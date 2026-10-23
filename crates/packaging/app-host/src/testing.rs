@@ -14,9 +14,6 @@ pub struct ConnectedService {
 
 impl ConnectedService {
     /// Supply an explicit service dependency without mutating process environment.
-    ///
-    /// # Errors
-    /// Returns why the socket pair, runtime or server thread could not start.
     pub fn start<S>(server: S) -> Result<(Self, OwnedFd), String>
     where
         S: app_host::Server + Send + 'static,
@@ -40,9 +37,6 @@ impl ConnectedService {
     }
 
     /// Stop the fixture and assert its driver result through the caller's test.
-    ///
-    /// # Errors
-    /// Returns a runtime failure or a panicked server driver.
     pub fn shutdown(mut self) -> Result<(), String> {
         self.stop()
     }

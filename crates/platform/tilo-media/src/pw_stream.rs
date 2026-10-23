@@ -73,7 +73,6 @@ pub fn monotonic_now_ns() -> i64 {
     0
 }
 
-/// `frames` at `rate` as nanoseconds.
 pub fn frames_to_ns(frames: i64, rate: u32) -> i64 {
     let ns = i128::from(frames)
         .saturating_mul(i128::from(NS_PER_SECOND))
@@ -573,7 +572,6 @@ impl TargetLinkGuard {
     }
 }
 
-/// Trims `bytes` to whole frames of `stride` bytes.
 pub fn whole_frames(bytes: &[u8], stride: usize) -> &[u8] {
     let whole = bytes
         .len()
@@ -936,9 +934,6 @@ pub struct ObservedPlayback {
 }
 
 /// Open an output on the observer's exact connection, pinned to its sink.
-///
-/// # Errors
-/// Fails when native support, the observed daemon or the selected output is unavailable.
 #[cfg(unix)]
 pub fn open_observed_playback(
     config: &PlaybackConfig,
@@ -972,10 +967,6 @@ pub trait CaptureStream: Send {
 /// Opens audio streams. [`native_streams`] is the real one.
 pub trait AudioStreams: Send + Sync {
     /// Starts a stream that pulls from `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the stream could not be created or connected.
     fn open_playback(
         &self,
         config: &PlaybackConfig,
@@ -983,10 +974,6 @@ pub trait AudioStreams: Send + Sync {
     ) -> Result<Box<dyn PlaybackStream>, StreamError>;
 
     /// Starts recording `config.target`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the stream could not be created or connected.
     fn open_capture(&self, config: &CaptureConfig) -> Result<Box<dyn CaptureStream>, StreamError>;
 }
 

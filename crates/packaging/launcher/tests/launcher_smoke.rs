@@ -759,7 +759,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         env.set(PROXY_BIN_ENV, &mock)
             .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
 
-        // Build a manifest declaring `notifications = via-host`.
         let mut m = hello_manifest(tmp.path(), BTreeMap::new());
         m.sandbox.portals.insert(
             "notifications".to_string(),
@@ -787,7 +786,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             atspi: None,
         };
 
-        // The proxy child exists.
         let pid = guard.pid().expect("proxy pid");
         assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
 

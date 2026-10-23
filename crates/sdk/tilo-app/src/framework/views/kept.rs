@@ -54,7 +54,6 @@ impl KeptViews {
         id
     }
 
-    /// The kept view `id`.
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&KeptView> {
         self.kept_views.iter().find(|kept| kept.id == id)

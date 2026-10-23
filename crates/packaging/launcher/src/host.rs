@@ -241,7 +241,6 @@ mod tests {
                 other => panic!("expected HostAppNotAPackage, got {other:?}"),
             }
         }
-        // Phase `run_with_captured_refuses_it_too`.
         {
             let manifest = example_manifest();
             let opts = RunOptions {
@@ -325,7 +324,6 @@ mod tests {
                 )
             );
         }
-        // Phase `a_refusal_still_starts_the_app`.
         {
             let busctl = stand_in("refusing-busctl", 1);
             let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20))
@@ -343,7 +341,6 @@ mod tests {
                 "the manager's own reason is kept for the log"
             );
         }
-        // Phase `without_busctl_the_app_starts_directly`.
         {
             let status =
                 spawn_with(&launch, None, Duration::from_millis(20)).expect("the launch runs");

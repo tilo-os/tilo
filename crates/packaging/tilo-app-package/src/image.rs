@@ -193,17 +193,12 @@ impl TreeSpec {
         Ok(())
     }
 
-    /// Whether `path` is materialised executable.
     pub fn is_executable(&self, path: &str) -> bool {
         self.executable.contains(path)
     }
 
     /// Create the empty directories and links under `root`, whose payload
     /// files are already in place. Call [`TreeSpec::check`] first.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first I/O error.
     pub fn apply(&self, root: &Path) -> std::io::Result<()> {
         for dir in &self.empty_dirs {
             std::fs::create_dir_all(root.join(dir))?;
@@ -258,7 +253,6 @@ pub struct ImageSpec {
     pub arch: Arch,
     /// For a tool: the env-runtime package it was built on.
     pub runtime: Option<PackageId>,
-    /// The distribution packages the image holds.
     pub packages: Vec<String>,
 }
 

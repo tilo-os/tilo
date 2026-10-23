@@ -41,7 +41,6 @@ pub trait RichTextSource {
         false
     }
 
-    /// Read the state, once there is one.
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T>;
 
     /// Apply one edit to `doc` now.

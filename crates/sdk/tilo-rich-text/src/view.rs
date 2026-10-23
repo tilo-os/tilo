@@ -172,7 +172,6 @@ mod tests {
         large.set_transform(Affine::scale(0.5));
         let large_h = large.layout(box_rect, &theme, &mut text);
         assert!(large_h > small_h * 2.0, "{large_h} vs {small_h}");
-        // Laid out at its own size, reported where it is drawn.
         assert!((large.rect().x0 - 50.0).abs() < 1e-9);
         assert!((large.rect().width() - 300.0).abs() < 1e-9);
         assert_eq!(large.editor_mut().text_align(), ui::TextAlign::Center);

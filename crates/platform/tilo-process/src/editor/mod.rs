@@ -15,8 +15,6 @@ pub enum Failure {
 /// A caller checks its current authority immediately around the supplied send.
 pub trait Completion: Send {
     /// Send only while the original caller remains admitted.
-    /// # Errors
-    /// Returns the caller refusal or uncertain native transport failure.
     fn send(&self, send: &mut dyn FnMut() -> io::Result<()>) -> Result<(), Failure>;
     /// Complete from the actual native acknowledgement or classified failure.
     fn finish(self: Box<Self>, result: Result<(), Failure>);
@@ -63,8 +61,6 @@ pub fn read_finds_no_slave(result: &io::Result<usize>) -> bool {
     }
 }
 /// Verify the declared PTY master role on a Linux host.
-/// # Errors
-/// Refuses a descriptor that is not the master side of a PTY.
 #[cfg(unix)]
 pub fn validate_master(master: &std::fs::File) -> io::Result<()> {
     #[cfg(target_os = "linux")]

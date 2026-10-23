@@ -40,7 +40,6 @@ fn a_session_without_rooms_has_no_route() {
     assert!(configured(&[]).unwrap().is_none());
 }
 
-/// `root`'s signed revocation of `device`.
 fn revocation(
     root: &ed25519_dalek::SigningKey,
     device: [u8; 32],

@@ -90,7 +90,6 @@ fn manifest(pub_hex: &str) -> Manifest {
     Manifest::from_toml_str(&src).expect("decode")
 }
 
-/// Attest and inject the signature into `manifest.trust.attested_by`.
 fn attest_and_inject(
     manifest: &mut Manifest,
     payload_dir: &Path,

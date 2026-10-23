@@ -145,9 +145,6 @@ fn host_identity(path: &str) -> io::Result<Identity> {
     }
 }
 
-// ---- kernel interfaces ------------------------------------------------------
-
-/// `struct mount_attr`.
 #[repr(C)]
 struct MountAttr {
     attr_set: u64,
@@ -295,8 +292,6 @@ fn components(path: &str) -> io::Result<Vec<&OsStr>> {
         })
         .collect()
 }
-
-// ---- building (root) ----------------------------------------------------------
 
 /// Create the mount point for `path` under the view root `root`, parents
 /// first (`0755`), the way bubblewrap creates a bind's destination, and
@@ -591,8 +586,6 @@ fn retire_generation(root: &Path, generation: &str, wait: bool) -> io::Result<bo
     std::fs::remove_dir(&path)?;
     Ok(true)
 }
-
-// ---- using it (every launch) --------------------------------------------------
 
 /// A generation a launch uses, locked against retirement while held.
 #[derive(Debug)]
@@ -1231,7 +1224,6 @@ mod tests {
             false,
             &["--ro-bind", "/usr/bin", "/usr/bin"]
         )));
-        // Creating something inside the view.
         assert!(refused(&mut launch(false, &["--dir", "/usr/share/extra"])));
         assert!(refused(&mut launch(false, &["--symlink", "x", "/etc/y"])));
         // An option this module does not know, or arguments it cannot see.

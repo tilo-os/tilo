@@ -261,9 +261,6 @@ pub trait ResourceApp: 'static {
     /// on `input` through the window's own event path after the actions
     /// and staging, so the frame shows the app's real answer to that input.
     /// Must be deterministic, like the rest of the scenario.
-    ///
-    /// # Errors
-    /// Returns why the input could not be given (its target is missing).
     fn scenario_input(
         name: Option<&str>,
         input: &mut ui_core::headless::FrameHarness,
@@ -462,7 +459,6 @@ pub(crate) struct AppHooks {
     /// Initialize a record the launch created: the resource's own
     /// initialization, the launch's genesis and the creator's seed.
     new_record: NewRecord,
-    /// The capture's run, from the app's fixture.
     prepare_capture: fn(&mut HostContext, Option<&str>) -> Result<Run, LaunchError>,
     /// Read the record `context` opened, build the root over it and take
     /// the launch's actions on it; or why the record does not read.
@@ -905,7 +901,6 @@ fn create<A: ResourceApp>(
     create_component(hooks::<A>(), context, &target)
 }
 
-/// [`create`] of the app `app` describes.
 fn create_component(
     app: &'static AppHooks,
     mut context: HostContext,
@@ -1111,7 +1106,6 @@ fn prepare_app<A: ResourceApp>(
     prepare_hooked(hooks::<A>(), definition, args)
 }
 
-/// [`prepare_app`] of the app `app` describes.
 #[cfg(tilo_native_runner)]
 fn prepare_hooked(
     app: &AppHooks,

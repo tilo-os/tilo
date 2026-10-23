@@ -33,11 +33,9 @@ pub enum MatchTier {
     Spanning,
     /// The query occurs inside the field, not at a word start.
     Contains,
-    /// Some later word of the field starts with the query.
     WordPrefix,
     /// The query is some later whole word (or words) of the field.
     Word,
-    /// The field starts with the query.
     Prefix,
     /// The field starts with the query, which ends at a word end.
     PrefixWord,

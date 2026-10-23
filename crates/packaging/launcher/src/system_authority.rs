@@ -127,7 +127,6 @@ pub struct SystemAuthorityPlan {
     /// Sockets the app connects to: the filtered system bus and the
     /// authorities' own sockets.
     pub sockets: Vec<SocketBind>,
-    /// Set when the filtered system bus is bound.
     pub system_bus: bool,
     /// The compositor's runtime state directory, bound read-only.
     pub runtime_state: Option<RuntimeState>,
@@ -233,7 +232,6 @@ fn sandbox_user_apps() -> PathBuf {
         .join("tilo-apps")
 }
 
-/// The upstream system bus address.
 fn system_bus_address() -> String {
     std::env::var("DBUS_SYSTEM_BUS_ADDRESS")
         .ok()

@@ -93,17 +93,14 @@ pub(crate) fn in_profile(
     prepared
 }
 
-/// The settings document of the profile at `root`.
 pub(crate) fn profile_settings(root: &std::path::Path) -> std::path::PathBuf {
     root.join("settings.json")
 }
 
-/// The root of a `--data-dir` profile.
 pub(crate) fn data_dir_root(directory: &std::path::Path) -> std::path::PathBuf {
     std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf())
 }
 
-/// The content store of a `--data-dir` profile.
 pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::ContentStore {
     super::app::profile_content(
         &std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf()),
@@ -178,9 +175,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The app as its owner opens it on a fresh private profile.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn new() -> Result<Self, LaunchError> {
         Self::with_role(Role::Owner)
     }
@@ -188,9 +182,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The app as its owner opens it on a fresh private profile, in `room`:
     /// one of several windows of the app in one process, each in a room of
     /// its own.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn in_room(room: &str) -> Result<Self, LaunchError> {
         Self::fresh(room, Role::Owner, AUTHOR)
     }
@@ -198,9 +189,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The app as its owner opens it on a fresh profile on the device
     /// `device`: one of two devices sharing a record, each carrying out what
     /// is queued for it.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn on_device(device: &str) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
@@ -216,9 +204,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The app as a participant with `role` opens it on a fresh profile.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         Self::fresh(TEST_ROOM, role, AUTHOR)
     }
@@ -242,9 +227,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The app as `person` (the hex of a root public key) opens it on a
     /// fresh profile: one of that person's devices, whose person records
     /// ([`RecordEnv::person`](super::RecordEnv::person)) are theirs.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
         Self::fresh(TEST_ROOM, Role::Owner, person)
     }
@@ -252,9 +234,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Open a fresh person profile with a service lent by its mounting host.
     /// The loan follows production `HostContext::lend` and is not retained on
     /// reopen: the next host must authorize and lend its own service again.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn for_person_with_lent<S: 'static>(person: &str, service: S) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
@@ -299,10 +278,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// plain `--shots`): the app built for a capture on a fresh profile,
     /// from the scenario's fixture, with its actions applied and its view
     /// state staged, at the scenario's viewport.
-    ///
-    /// # Errors
-    /// Returns any launch failure, or the host's refusal of a scenario
-    /// action.
     pub fn capture(scenario: Option<&str>) -> Result<Self, LaunchError> {
         Self::capture_at(scenario, A::shot_viewport(scenario))
     }
@@ -354,9 +329,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// names, after its [`ResourceApp::launch`] actions. The app's own
     /// [options](ResourceApp::OPTIONS) and [switches](ResourceApp::FLAGS)
     /// among them reach it as options.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn launched(arguments: &[&str]) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
@@ -375,9 +347,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Launch on a private receiving profile after hydrating an existing
     /// record in the same room. The production installer validates its
     /// identity before the app can initialize or open it.
-    ///
-    /// # Errors
-    /// Returns invalid record scope, storage or launch failures.
     pub fn launched_replica(
         arguments: &[&str],
         document: &mut tilo_resource::Doc,
@@ -404,9 +373,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// `documents`, each a record a window of the app kept in the test room
     /// ([`window_record`]): how an app that now keeps one record per room
     /// first opens where it used to keep one per window.
-    ///
-    /// # Errors
-    /// Returns invalid record scope, storage or launch failures.
     pub fn with_window_records(documents: &mut [tilo_resource::Doc]) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         {
@@ -437,9 +403,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// A new window of an app that [keeps one record per room](ResourceApp::ROOM_RECORD)
     /// on a fresh profile whose room record is already `document`: how a
     /// room an earlier version of the app wrote opens.
-    ///
-    /// # Errors
-    /// Returns storage or launch failures.
     pub fn with_room_record(document: &mut tilo_resource::Doc) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         {
@@ -472,9 +435,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app launched with `arguments` to continue `handoff`'s playback,
     /// as the session launches the target of a media handoff.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn handed_off(arguments: &[&str], handoff: PlaybackHandoff) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
@@ -513,9 +473,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The app on the profile `--data-dir directory` opens, as its owner.
     /// Only one writer may hold a profile: this fails while the app (or
     /// another `HeadlessApp`) has it open.
-    ///
-    /// # Errors
-    /// Returns any launch, storage or construction failure.
     pub fn open_data_dir(directory: &std::path::Path) -> Result<Self, LaunchError> {
         Self::open(
             Profile::DataDir(directory.to_path_buf()),
@@ -620,18 +577,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Close the app (flushing its record) and open it again on the same
     /// profile, as a relaunch would.
-    ///
-    /// # Errors
-    /// Returns the flush or relaunch failure.
     pub fn reopen(self) -> Result<Self, LaunchError> {
         self.relaunch(&[])
     }
 
     /// Close the app and launch it again on the same profile with
     /// `arguments`, as `app ARGUMENTS` run again would.
-    ///
-    /// # Errors
-    /// Returns the flush or relaunch failure.
     pub fn relaunch(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
         self.close()?;
         let profile = match &self.profile {
@@ -655,10 +606,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// the same room, as the launcher opens one: an instance it never had,
     /// whose fallback record is a fresh record of that window's own unless
     /// the app [keeps one per room](ResourceApp::ROOM_RECORD).
-    ///
-    /// # Errors
-    /// Returns the flush or launch failure, and refuses a `--data-dir`
-    /// profile, which has one window.
     pub fn another_window(mut self) -> Result<Self, LaunchError> {
         self.close()?;
         let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
@@ -682,10 +629,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// person has open at once. Its fallback record is the room's when the
     /// app [keeps one per room](ResourceApp::ROOM_RECORD), so both show one
     /// record; [`Self::deliver_changes_to`] carries edits between them.
-    ///
-    /// # Errors
-    /// Returns the launch failure, and refuses a `--data-dir` profile,
-    /// which has one window.
     pub fn open_window(&self) -> Result<Self, LaunchError> {
         let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
         let profile = match &self.profile {
@@ -714,10 +657,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// document changes out to every other window on the record; `other`
     /// takes them in and draws its next frame, without reopening. Whether
     /// `other` changed.
-    ///
-    /// # Errors
-    /// Returns why the windows do not show one record, or why `other`
-    /// refused the changes.
     pub fn deliver_changes_to(&mut self, other: &mut Self) -> Result<bool, String> {
         if self.checkout().id != other.checkout().id {
             return Err("the windows show different records".into());
@@ -760,7 +699,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_else(|| Err("the host did not take the request".into()))
     }
 
-    /// The record the app shows.
     pub fn record(&self) -> &RecordId {
         &self.checkout().id
     }
@@ -776,9 +714,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Consume the hosted window's explicit save-retry request, as its
     /// record owner does before reporting durability again.
-    ///
-    /// # Errors
-    /// Returns an error if the framework root is absent.
     pub fn take_save_retry(&mut self) -> Result<bool, String> {
         self.harness()
             .with_widget_mut(|root: &mut super::root::ResourceRoot| {
@@ -788,9 +723,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Make every edit so far durable, as closing the app does.
-    ///
-    /// # Errors
-    /// Returns the record writer's storage failure.
     pub fn flush(&mut self) -> Result<(), LaunchError> {
         self.harness().flush_component_records().map_err(operation)
     }
@@ -806,9 +738,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The custom surface of type `S` the view hosts, without running a
     /// frame: for a test reading it, or setting it up, between the events it
     /// sends.
-    ///
-    /// # Panics
-    /// Panics when the view hosts no surface of type `S`.
     #[allow(
         clippy::expect_used,
         reason = "a test naming a surface its app does not host is wrong"
@@ -819,9 +748,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The headless frame harness, for input-level tests (`click_named`,
     /// `type_text`, `targets`).
-    ///
-    /// # Panics
-    /// Panics after the app was closed, which the API does not allow.
     #[allow(clippy::expect_used, reason = "closing consumes the TestApp")]
     pub fn harness(&mut self) -> &mut FrameHarness {
         self.harness.as_mut().expect("app is open")
@@ -964,9 +890,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// the palette or an agent does, and wait for its answer: what it
     /// reported at once, or the result of the job it started. Progress the
     /// job reported is in [`FrameHarness::job_updates`].
-    ///
-    /// # Errors
-    /// Returns the host's refusal or the effect's failure.
     pub fn effect<E: Effect>(
         &mut self,
         effect: &E,
@@ -1227,9 +1150,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// `tilo_relay_protocol::refusal::plain_reason`): withdraw them and what
     /// was built on them, as that host does, and run the frame that tells
     /// the app. Whether anything was withdrawn.
-    ///
-    /// # Errors
-    /// Returns why the record could not withdraw them.
     pub fn refused_by_room(&mut self, changes: &[[u8; 32]], reason: &str) -> Result<bool, String> {
         let refused: Vec<_> = changes
             .iter()
@@ -1255,9 +1175,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// decides its changes, as a browser page in a room does: what the app
     /// says it did waits for the room ([`Self::room_publishes`],
     /// [`Self::room_keeps`]).
-    ///
-    /// # Errors
-    /// Returns why the record could not be read.
     pub fn shared_in_room(&mut self) -> Result<(), String> {
         let (_, heads) = self
             .records
@@ -1272,9 +1189,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The host publishes what changed since it last did, as its next pass
     /// does; whether anything was published.
-    ///
-    /// # Errors
-    /// Returns why the record could not be read, or that it is not shared.
     pub fn room_publishes(&mut self) -> Result<bool, String> {
         self.settle();
         let frontier = self
@@ -1551,9 +1465,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The resource state as stored.
-    ///
-    /// # Panics
-    /// Panics when the record is unreadable, which a test should surface.
     #[allow(
         clippy::expect_used,
         reason = "a test harness surfaces corruption loudly"
@@ -1569,9 +1480,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Read the stored document itself — the parts of a large resource its
     /// state does not hold until a view demands them.
-    ///
-    /// # Panics
-    /// Panics when the record is not open, which the API does not allow.
     #[allow(
         clippy::expect_used,
         reason = "a test harness surfaces a closed record loudly"
@@ -1592,9 +1500,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Exchange edits with a collaborator's replica, as sync does both ways:
     /// the peer's edits arrive in the running app (and its views), and the
     /// app's edits arrive in `peer`.
-    ///
-    /// # Errors
-    /// Returns why either side refused the other's document.
     pub fn merge_peer(&mut self, peer: &mut tilo_resource::Doc) -> Result<(), String> {
         use tilo_automerge::ApplyIncoming;
         let mut ours = self.read_document(Clone::clone);
@@ -1659,10 +1564,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// the record as it stands now, under their own actor, and the change is
     /// merged in as sync merges a peer's. It is not the local participant's
     /// action, so it never lands on their undo stack.
-    ///
-    /// # Panics
-    /// Panics when the record is not open or the change does not merge,
-    /// which a test should surface.
     #[allow(
         clippy::expect_used,
         reason = "a test harness surfaces a failed merge loudly"
@@ -1767,9 +1668,6 @@ pub fn detached_dispatcher<R: Resource>(author: &str) -> super::Dispatcher<R> {
 /// The live state of `doc`, for a surface a unit test attaches outside any
 /// host (see [`detached_dispatcher`]); the surface keeps it current from the
 /// document its `sync` receives, as in a host.
-///
-/// # Errors
-/// Returns why `doc` does not read as `R`.
 pub fn detached_live<R: Resource>(
     doc: &tilo_resource::Doc,
 ) -> Result<super::Live<R>, tilo_resource::ModelError> {
@@ -1780,9 +1678,6 @@ pub fn detached_live<R: Resource>(
 /// component, mounted in a native [`ui_core::App`] on a fresh private
 /// profile, without running its event loop. For what the window itself
 /// declares, such as capture protection.
-///
-/// # Errors
-/// Returns any launch, storage or construction failure.
 pub fn inspect_live_window<A: ResourceApp, T>(
     inspect: impl FnOnce(&ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
@@ -1792,9 +1687,6 @@ pub fn inspect_live_window<A: ResourceApp, T>(
 /// Drive the window `A`'s live launch opens, mounted as
 /// [`inspect_live_window`] mounts it: the real [`ui_core::App`], which a
 /// test or benchmark feeds input through [`ui_core::App::surface_input`].
-///
-/// # Errors
-/// Returns any launch, storage or construction failure.
 pub fn drive_live_window<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
@@ -1826,9 +1718,6 @@ pub fn drive_live_window<A: ResourceApp, T>(
 /// one per window: stamped with that window's default identity, initialized
 /// as `A` creates a record, then edited with `actions`. Open the app over
 /// such records with [`HeadlessApp::with_window_records`].
-///
-/// # Errors
-/// Returns the resource's initialization or an action's refusal.
 pub fn window_record<A: ResourceApp>(
     instance: u64,
     actions: &[<A::Resource as Resource>::Action],
@@ -1856,9 +1745,6 @@ pub fn window_record<A: ResourceApp>(
 /// [`ui_core::app::EmbeddedApp`], which the drive lays out, draws into its
 /// own scene and feeds input through
 /// [`ui_core::app::EmbeddedApp::input_for_test`].
-///
-/// # Errors
-/// Returns any launch, storage or construction failure.
 #[cfg(feature = "native")]
 pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
@@ -1904,11 +1790,6 @@ pub fn dispatcher<R: Resource>(app_id: &'static str) -> super::Dispatcher<R> {
 /// nothing and is reported through [`Dispatcher::refused`], as the host
 /// reports it. Returns what each applied invocation applied, in order: one
 /// entry per undo step (a group's entry holds all of its actions).
-///
-/// # Errors
-/// Returns the first invocation that does not build, and an invocation of
-/// something other than the resource's own actions (an effect), which only
-/// a host runs.
 pub fn resolve<R: Resource>(
     dispatcher: &super::Dispatcher<R>,
     doc: &mut tilo_resource::Doc,

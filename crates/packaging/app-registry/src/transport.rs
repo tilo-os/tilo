@@ -53,10 +53,6 @@ impl Backend {
 impl BlobNode {
     /// Bind a fresh endpoint and serve an in-memory blob store.
     /// Ephemeral — used by tests and short-lived transfers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if binding the endpoint fails.
     pub async fn memory() -> Result<Self> {
         let store = MemStore::new();
         Self::spawn(Backend::Mem(store)).await
@@ -106,10 +102,6 @@ impl BlobNode {
     }
 
     /// Ingest `bytes`, returning the blake3 content hash. Idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying store rejects the ingest.
     pub async fn add(&self, bytes: impl Into<Bytes>) -> Result<Hash> {
         let tag = self
             .backend
@@ -148,10 +140,6 @@ impl BlobNode {
 }
 
 /// Bind a fresh client endpoint for fetching (no serving).
-///
-/// # Errors
-///
-/// Returns an error if binding the endpoint fails.
 pub async fn client_endpoint() -> Result<Endpoint> {
     Endpoint::bind(presets::N0)
         .await
@@ -168,12 +156,6 @@ pub async fn client_endpoint() -> Result<Endpoint> {
 ///   so wrong bytes abort the stream;
 /// - we re-derive the blake3 and compare, so any residual mismatch is
 ///   an explicit local error rather than silent acceptance.
-///
-/// # Errors
-///
-/// Returns an error if the ticket's advertised hash doesn't match
-/// `expected`, the connection/download fails, or the downloaded bytes
-/// hash to something other than `expected`.
 pub async fn fetch_blob(
     endpoint: &Endpoint,
     ticket: &BlobTicket,
@@ -286,7 +268,6 @@ mod tests {
         let node = BlobNode::memory().await.unwrap();
         let client = client_endpoint().await.unwrap();
 
-        // Fetch by ticket round-trips.
         let payload = Bytes::from_static(b"a tapp's worth of bytes");
         let expected = *blake3::hash(&payload).as_bytes();
         let (hash, ticket) = node.add_and_ticket(payload.clone()).await.unwrap();
@@ -295,7 +276,6 @@ mod tests {
         let got = fetch_blob(&client, &ticket, expected).await.unwrap();
         assert_eq!(got, payload);
 
-        // Asking for a different hash than the ticket carries is refused.
         let (_hash, ticket) = node
             .add_and_ticket(Bytes::from_static(b"real"))
             .await

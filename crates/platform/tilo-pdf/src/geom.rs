@@ -106,7 +106,6 @@ impl Rect {
         dx.hypot(dy)
     }
 
-    /// Whether every coordinate is finite.
     #[must_use]
     pub fn is_finite(&self) -> bool {
         self.x0.is_finite() && self.y0.is_finite() && self.x1.is_finite() && self.y1.is_finite()
@@ -295,7 +294,6 @@ mod tests {
 
     #[test]
     fn page_geometry_rotates_and_maps_user_space_to_display_space() {
-        // Phase `rotation_round_trips_points`.
         {
             let size = PageSize {
                 width: 600.0,
@@ -321,7 +319,6 @@ mod tests {
             assert_eq!(Rotation::from_degrees(-90), Some(Rotation::Cw270));
             assert_eq!(Rotation::from_degrees(45), None);
         }
-        // Phase `page_geometry_maps_user_space_to_display_space`.
         {
             // A 600x800 crop box offset by (10, 20), rotated 90° clockwise.
             let g = PageGeometry {
@@ -340,7 +337,6 @@ mod tests {
                     height: 600.0
                 }
             );
-            // The user-space top-left corner lands top-right when rotated.
             let tl = g.to_display(Point::new(10.0, 820.0));
             assert!((tl.x - 800.0).abs() < 1e-3 && tl.y.abs() < 1e-3);
             let p = Point::new(123.0, 456.0);

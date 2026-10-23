@@ -286,7 +286,6 @@ fn canonical_owner_process() {
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0].submission, report);
             assert_eq!(reports[0].author, hex::encode([12; 32]));
-            // The report shows in its channel among the messages.
             let message = chat::feedback::message_id(ID);
             assert_eq!(
                 chat::projection::read(doc)

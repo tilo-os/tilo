@@ -138,9 +138,6 @@ fn load(root: &Path) -> io::Result<(Manifest, Vec<Vec<u8>>)> {
 }
 
 /// Read a validated seed's producer fingerprint.
-///
-/// # Errors
-/// Returns an error for absent, damaged, unsafe or oversized archives.
 pub fn fingerprint(root: &Path) -> io::Result<String> {
     load(root).map(|(manifest, _)| manifest.fingerprint)
 }
@@ -154,9 +151,6 @@ fn readonly_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// Publish bounded completed public shader archives. The input is the trusted
 /// renderer's private single-file cache, never an application's writable cache.
-///
-/// # Errors
-/// Returns an error for invalid archives, unsupported format or filesystem errors.
 pub fn publish(cache: &Path, root: &Path, fingerprint: &str) -> io::Result<()> {
     std::fs::create_dir_all(root)?;
     directory(root)?;
@@ -234,9 +228,6 @@ fn replace(stage: &tempfile::TempDir, target: &Path) -> io::Result<()> {
 /// Copy a verified seed generation into the normal size-limited private Mesa
 /// cache. Archives from another Mesa/LLVM/CPU/device namespace remain unused by
 /// Mesa, which compiles the missing shaders normally.
-///
-/// # Errors
-/// Returns an error for damaged seeds or unavailable private cache storage.
 pub fn prepare(source: &Path, private: &Path) -> io::Result<()> {
     let (manifest, files) = load(source)?;
     std::fs::create_dir_all(private)?;
@@ -285,9 +276,6 @@ pub fn prepare(source: &Path, private: &Path) -> io::Result<()> {
 
 /// Refresh the existing session's read-only seed from its validated persistent
 /// public archive. This does not copy any user's scenes or private app data.
-///
-/// # Errors
-/// Returns an error for an invalid source or filesystem error.
 pub fn restore(source: &Path, session: &Path) -> io::Result<()> {
     let (manifest, files) = load(source)?;
     std::fs::create_dir_all(session)?;

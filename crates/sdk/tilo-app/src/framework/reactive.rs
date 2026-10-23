@@ -94,7 +94,6 @@ impl Gate {
 
 #[derive(Default)]
 struct Node {
-    /// Readers of the value at this node.
     here: Vec<u64>,
     /// Readers of the membership of the collection at this node.
     members: Vec<u64>,
@@ -185,7 +184,6 @@ impl Node {
     }
 }
 
-/// The object in slot `key` of `parent`.
 fn object(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(parent, key) {
         Ok(Some((Value::Object(_), id))) => Some(id),

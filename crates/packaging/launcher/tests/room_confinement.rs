@@ -153,7 +153,6 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
             "the app must be able to write in its own directory: {wrote}"
         );
 
-        // The bytes really landed, on the host, in room A's directory.
         let host_file = data
             .path
             .join("tilo-rooms/room-a")
@@ -166,7 +165,6 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
             host_file.display()
         );
 
-        // Same app, same in-sandbox path, room B.
         let from_b = run_in_room(&data, Some("room-b"), &["read", "/run/tilo/app/record.txt"]);
         assert_eq!(
             from_b, "ERR /run/tilo/app/record.txt ENOENT",
@@ -192,7 +190,6 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
             "room B's directory must not contain room A's record: {listing}"
         );
 
-        // Confirm that the fixture can read what it wrote back in room A.
         let from_a = run_in_room(&data, Some("room-a"), &["read", "/run/tilo/app/record.txt"]);
         assert_eq!(
             from_a, "OK /run/tilo/app/record.txt room-A-secret",
@@ -225,7 +222,6 @@ fn rooms_and_apps_cannot_read_each_others_directories() {
     {
         let data = DataHome::new();
 
-        // Stand in for another package's secrets, in the same room.
         let victim = data
             .path
             .join("tilo-rooms/room-a")
@@ -609,7 +605,6 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
             );
         }
 
-        // On the host, every file is where it was, unchanged.
         assert_eq!(
             std::fs::read_to_string(&secret).expect("secret"),
             "root-identity-secret"

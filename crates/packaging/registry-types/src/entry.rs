@@ -520,11 +520,6 @@ impl RegistryEntry {
 
     /// Validate the entry's identifiers, localized metadata, package targets,
     /// and artifact bindings.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`EntryValidationError`] identifying the first invalid field
-    /// or collection encountered.
     pub fn validate(&self) -> Result<(), EntryValidationError> {
         if !crate::namespace::valid_package_id(&self.package_id) {
             return Err(EntryValidationError::InvalidPackageId);
@@ -988,7 +983,6 @@ mod tests {
         );
         assert!(version["tapp_url"].is_string());
 
-        // A bot entry signs under its own domain.
         let mut relabelled = sample_entry();
         relabelled.kind = EntryKind::Bot;
         assert_ne!(app.signing_message(), relabelled.signing_message());
@@ -1166,7 +1160,6 @@ mod tests {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             sign_entry(&mut e, &key);
             assert_eq!(e.signature_hex.len(), 128, "64-byte hex-encoded sig");
-            // Idempotent under re-sign with the same key + same payload.
             let sig1 = e.signature_hex.clone();
             sign_entry(&mut e, &key);
             assert_eq!(e.signature_hex, sig1);
