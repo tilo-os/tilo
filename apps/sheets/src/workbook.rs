@@ -293,6 +293,7 @@ impl Sheet {
     pub fn snapshot_in(&self, layout: &Layout) -> SheetSnapshot {
         let mut snapshot = SheetSnapshot {
             name: self.name.0.clone(),
+            hidden: self.hidden,
             ..SheetSnapshot::default()
         };
         for (row, column, cell) in self.cells.cells() {
@@ -752,6 +753,8 @@ pub struct SheetSnapshot {
     pub fmt: HashMap<Addr, CellFormat>,
     /// cells whose text is bold
     pub bold: HashSet<Addr>,
+    /// Whether the sheet is hidden.
+    pub hidden: bool,
     /// The workbook's sheets, when formulas of this one read them.
     pub book: Option<std::sync::Arc<crate::formula::Book>>,
 }

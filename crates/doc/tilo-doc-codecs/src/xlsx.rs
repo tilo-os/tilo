@@ -486,9 +486,14 @@ fn workbook_xml(snap: &WorkbookSnapshot) -> String {
     let mut used = HashSet::new();
     for (i, sheet) in snap.sheets.iter().enumerate() {
         let n = i.saturating_add(1);
+        let state = if sheet.hidden {
+            r#" state="hidden""#
+        } else {
+            ""
+        };
         let _ = write!(
             sheets,
-            r#"<sheet name="{}" sheetId="{n}" r:id="rIdSheet{n}"/>"#,
+            r#"<sheet name="{}" sheetId="{n}"{state} r:id="rIdSheet{n}"/>"#,
             escape_attr_quotes(&unique_sheet_name(&sheet.name, &mut used)),
         );
     }

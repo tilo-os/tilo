@@ -81,6 +81,11 @@ pub fn export(model: &Calendar) -> String {
         if !e.location.is_empty() {
             line(&mut out, "LOCATION", &e.location);
         }
+        // The event's notes are its description.
+        let notes = model.notes_text(e.id);
+        if !notes.trim().is_empty() {
+            line(&mut out, "DESCRIPTION", notes.trim_end());
+        }
         let rr = recurrence_rule(e);
         if !rr.is_empty() {
             // RRULE is a structured value — written raw (no TEXT escaping).
@@ -921,6 +926,21 @@ mod tests {
         let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
         let cancelled = NaiveDate::from_ymd_opt(2026, 6, 22).unwrap();
         assert_eq!(events[0].occurrences_in(from, cancelled), vec![from]);
+    }
+
+    #[test]
+    fn an_events_notes_are_exported_as_its_description() {
+        let mut model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        let id = model.events.iter().next().unwrap().id;
+        model.notes.insert(
+            id.to_string(),
+            tilo_document::RichText::from_markdown("Bring the Q3 numbers"),
+        );
+        let ics = export(&model);
+        assert!(
+            ics.contains("DESCRIPTION:Bring the Q3 numbers\r\n"),
+            "{ics}"
+        );
     }
 
     #[test]
