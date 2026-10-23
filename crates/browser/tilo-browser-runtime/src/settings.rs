@@ -24,8 +24,11 @@ thread_local! {
     static STORE: RefCell<Weak<MemoryStore>> = const { RefCell::new(Weak::new()) };
 }
 
-/// Make `store`'s document the page's settings.
+/// Make `store`'s document the page's settings, read with a browser's
+/// defaults: nothing is kept on the device or fetched in the background
+/// unless the person turns it on.
 pub fn install(store: &Rc<MemoryStore>) {
+    settings_store::DeviceClass::Web.install();
     STORE.with_borrow_mut(|slot| *slot = Rc::downgrade(store));
     let initial = store
         .read(&key())
