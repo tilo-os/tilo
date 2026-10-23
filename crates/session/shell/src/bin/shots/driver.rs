@@ -138,7 +138,7 @@ impl ShellDriver {
         // offers no Invite.
         let owner = shell::shell::state::local_user_id();
         let mut tree = tree;
-        tree.adopt_ownerless_workspaces(&owner);
+        tree.own_workspaces_for_test(|_| owner.clone());
         let hosted_tabs = hosted_app_tabs(&tree);
         // An owned fixture never reads the wall clock, so frames compare
         // across minutes; it shows the time it is given, like a session
@@ -1173,7 +1173,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace_id = tree.desktop.active;
             let changes = AgentPreset::Operator
                 .grants(
@@ -1567,7 +1567,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace = tree.desktop.active;
             let tab_ids = tree
                 .desktop
@@ -1632,7 +1632,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace = tree.desktop.active;
             let _ = tree.admit_in_workspace(workspace, &owner, "ada", Role::Editor);
             if let Some(ws) = tree.desktop.active_workspace_mut()
@@ -1897,7 +1897,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let ws_id = tree.desktop.active;
             for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
                 let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
@@ -2145,7 +2145,7 @@ impl ShellDriver {
         let mut lounge = None;
         self.with_chrome(|st| {
             let mut tree = st.tree_mut();
-            let id = tree.append_empty_workspace("Lounge");
+            let id = tree.create_hosted_workspace("Lounge").0;
             lounge = tree
                 .desktop
                 .workspaces
@@ -3093,7 +3093,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let ws_id = tree.desktop.active;
             tree.grant_sandbox_in_workspace(
                 ws_id,

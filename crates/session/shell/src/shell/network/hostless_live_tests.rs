@@ -21,11 +21,11 @@ fn keys_of(channel: collab_types::ChannelId) -> channel_crypto::ChannelContentKe
 #[test]
 fn a_wave_crosses_a_room_with_no_workspace_host() {
     let mut host_tree = WorkspaceTree::default();
-    let ws = host_tree.append_empty_workspace("Design review");
+    let ws = host_tree.create_hosted_workspace("Design review").0;
     let room = host_tree
         .room_of(ws)
         .expect("a fresh workspace mints a room");
-    host_tree.adopt_ownerless_workspaces(&OWNER.to_string());
+    host_tree.own_workspaces_for_test(|_| OWNER.to_string().clone());
     let host_handle = host_tree.shared();
     let (mut host_net, _host_cmds) = shell_network_for_test(host_handle.clone(), 1);
     let host_key = *host_net.keypair.public().as_bytes();
@@ -38,7 +38,7 @@ fn a_wave_crosses_a_room_with_no_workspace_host() {
 
     // The guest joined the room and knows its people from its document.
     let mut guest_tree = WorkspaceTree::default();
-    let mine = guest_tree.append_empty_workspace("Mine");
+    let mine = guest_tree.create_hosted_workspace("Mine").0;
     assert!(guest_tree.stand_in_room(mine, room));
     assert!(guest_tree.pin_room_authority(room, PeerOrigin::hub(1)));
     let changes = host_handle

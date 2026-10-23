@@ -69,12 +69,7 @@ impl ShellNetwork {
     ///
     /// Why it was not joined, in the person's words.
     pub(crate) fn retry_join(&self, room: RoomId) -> Result<PeerSyncResponse, String> {
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         let needs_join_again = self
             .hosted_sites
             .join_of(room)
@@ -147,12 +142,7 @@ impl ShellNetwork {
         {
             tracing::debug!(%room, %error, "a join into a room let go was over already");
         }
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         crate::shell::native_workspace_owner::release_workspace_room(&tree, room).map(drop)
     }
 
@@ -161,7 +151,7 @@ impl ShellNetwork {
     /// long). The workspace says it needs joining again; nothing is asked of
     /// the host until the person does ([`Self::retry_join`]).
     pub(super) fn room_not_admitted(&self, room: RoomId) {
-        let workspace = self.replica.lock().ok().and_then(|replica| {
+        let workspace = {
             replica
                 .tree
                 .read()
@@ -170,7 +160,7 @@ impl ShellNetwork {
                 .iter()
                 .find(|workspace| workspace.room() == room)
                 .map(|workspace| workspace.id)
-        });
+        };
         if workspace.is_none() {
             return;
         }

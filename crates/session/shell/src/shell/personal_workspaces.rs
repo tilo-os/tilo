@@ -37,7 +37,7 @@ use tilo_user_identity::{
     DeviceCert, DirectoryError, DirectoryUpdate, RevocationList, WorkspaceDirectory, WorkspaceMeta,
 };
 
-use crate::shell::state::{PeerOrigin, RoomAuthority, RoomId, UserId, WorkspaceTree};
+use crate::shell::state::{PeerOrigin, RoomId, UserId, WorkspaceTree};
 
 /// One workspace as the person's list holds it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +79,7 @@ struct PublishInputs {
     listed: BTreeMap<RoomId, Listed>,
     /// Every workspace room of the tree, in its order.
     order: Vec<RoomId>,
-    /// The listed rooms still waiting for their governor to be pinned.
+    /// The listed rooms still joining: their replica is not here yet.
     unpinned: Vec<RoomId>,
 }
 
@@ -89,7 +89,7 @@ impl PublishInputs {
         let unpinned = listed
             .keys()
             .copied()
-            .filter(|room| tree.room_authority(*room) == RoomAuthority::Unpinned)
+            .filter(|room| tree.is_joining(*room))
             .collect();
         Self {
             listed,
@@ -135,27 +135,17 @@ pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId,
         .workspaces
         .iter()
         .filter(|workspace| {
-            !workspace.room().is_nil()
-                && !tree.requires_native_owner(workspace.room())
-                && !tree.continuation_rooms.contains(&workspace.room())
+            !workspace.room().is_nil() && !tree.continuation_rooms.contains(&workspace.room())
         })
-        .filter_map(|workspace| {
-            let governor = if workspace.owner().map(String::as_str) == Some(person.as_str()) {
-                None
-            } else {
-                let member = workspace.role_of(&person).is_some();
-                match tree.room_authority(workspace.room()) {
-                    RoomAuthority::Peer(governor) if member => Some(governor.as_str().to_string()),
-                    _ => return None,
-                }
-            };
-            Some((
+        .filter(|workspace| workspace.owner().map(String::as_str) == Some(person.as_str()))
+        .map(|workspace| {
+            (
                 workspace.room(),
                 Listed {
                     name: workspace.name.clone(),
-                    governor,
+                    governor: None,
                 },
-            ))
+            )
         })
         .collect()
 }
@@ -293,7 +283,7 @@ impl PersonalWorkspaces {
             // Do not publish that provisional name as a rename on the owner's
             // other devices. An adopted directory entry already has an agreed
             // baseline, so its later local renames can still be published.
-            if fresh && tree.room_authority(*room) == RoomAuthority::Unpinned {
+            if fresh && tree.is_joining(*room) {
                 continue;
             }
             if self.agreed.get(room) == Some(entry) {
@@ -428,23 +418,20 @@ impl PersonalWorkspaces {
                 name: meta.name.clone(),
                 governor: meta.governor.clone(),
             };
-            // An agreed room still unpinned — adopted before rooms pinned their
-            // governor from this list — is adopted again so the list pins it.
-            if self.agreed.get(room) == Some(&entry)
-                && tree.room_authority(*room) != RoomAuthority::Unpinned
+            // An agreed room whose workspace went is adopted again.
+            if self.agreed.get(room) == Some(&entry) && tree.has_workspace(*room) {
+                continue;
+            }
+            // An entry naming no usable governor is skipped: a device must
+            // never guess who governs someone's room.
+            if entry
+                .governor
+                .as_deref()
+                .is_some_and(|governor| governor_origin(governor).is_none())
             {
                 continue;
             }
-            let governor = match entry.governor.as_deref() {
-                None => None,
-                Some(governor) => match governor_origin(governor) {
-                    Some(origin) => Some(origin),
-                    // An entry naming no usable governor is skipped: a
-                    // device must never guess who governs someone's room.
-                    None => continue,
-                },
-            };
-            changed |= tree.adopt_personal_room(*room, &entry.name, person, governor.as_ref());
+            changed |= tree.adopt_personal_room(*room, &entry.name);
             self.agreed.insert(*room, entry);
         }
         let listed_rooms: std::collections::BTreeSet<RoomId> =

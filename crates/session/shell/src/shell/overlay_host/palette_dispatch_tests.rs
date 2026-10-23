@@ -1537,7 +1537,7 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
             let state = chrome.borrow();
             state
                 .tree_mut()
-                .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+                .own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
         }
         chrome.borrow_mut().peer_sync_enabled = true;
         h.set_peer_sync_bridge(std::rc::Rc::new(|_| {
@@ -1578,7 +1578,7 @@ fn delegated_inviter_follows_the_capability_policy() {
     use crate::shell::state::{PeerOrigin, RoomAuthority};
 
     let mut tree = WorkspaceTree::default();
-    let local = tree.append_empty_workspace("Joined room");
+    let local = tree.create_hosted_workspace("Joined room").0;
     tree.desktop.active = local;
     let room = tree.room_of(local).expect("room");
     tree.room_authority.insert(
@@ -1715,7 +1715,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             let state = chrome.borrow();
             state
                 .tree_mut()
-                .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+                .own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
         }
         chrome.borrow_mut().peer_sync_enabled = true;
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
@@ -2130,7 +2130,7 @@ fn invitation_actions_return_their_network_output_to_the_caller() {
         let state = chrome.borrow();
         state
             .tree_mut()
-            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+            .own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
     }
     chrome.borrow_mut().peer_sync_enabled = true;
     let pending_id = [0x42; 32];
@@ -2646,7 +2646,7 @@ fn the_invite_sheet_says_in_plain_words_why_it_cannot_invite_yet() {
         let state = chrome.borrow();
         state
             .tree_mut()
-            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+            .own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
     }
     h.set_peer_sync_enabled(true);
     chrome

@@ -82,8 +82,8 @@ fn an_enrolled_device_receives_and_follows_the_first_devices_workspace() {
     home.env().set("TILO_USER_ID", &person);
 
     let mut first_tree = WorkspaceTree::default();
-    let home_workspace = first_tree.append_empty_workspace("Home");
-    first_tree.adopt_ownerless_workspaces(&person);
+    let home_workspace = first_tree.create_hosted_workspace("Home").0;
+    first_tree.own_workspaces_for_test(|_| person.clone());
     let room = first_tree.room_of(home_workspace).unwrap();
     let first_tree = first_tree.shared();
     let first = device(

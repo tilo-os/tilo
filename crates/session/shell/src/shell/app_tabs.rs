@@ -280,7 +280,7 @@ pub fn open_beside(
                 .iter()
                 .find(|workspace| workspace.room() == anchor.room)
                 .cloned(),
-            _ => tree.workspace_after_opening_app(&app.package_id),
+            _ => tree.desktop.active_workspace().cloned(),
         }
     }
     .ok_or(AppTabError::NoWorkspace)?;

@@ -124,10 +124,7 @@ fn upkeep_tick(net: &ShellNetwork) -> Duration {
 }
 
 fn closed_tab_marked(net: &ShellNetwork) -> bool {
-    net.replica
-        .lock()
-        .unwrap()
-        .tree
+    net.tree
         .read()
         .continuation_closed_tabs
         .contains_key(&CLOSED_TAB)
@@ -254,11 +251,11 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
     std::thread::sleep(super::room_push::ROOM_PUSH_FALLBACK_INTERVAL + Duration::from_millis(50));
     net.frame_tick();
     let _ = pushes(&mut commands);
-    let idle = net.replica.lock().unwrap().tree.generation();
+    let idle = net.tree.generation();
     net.frame_tick();
     net.frame_tick();
     assert_eq!(
-        net.replica.lock().unwrap().tree.generation(),
+        net.tree.generation(),
         idle,
         "an idle tick does not take the tree for writing"
     );

@@ -6863,8 +6863,8 @@ mod tests {
             // A room owned by somebody else, with something in it.
             let owner = "ada".to_string();
             let mut host = WorkspaceTree::default();
-            let host_ws = host.append_empty_workspace("Shared");
-            host.adopt_ownerless_workspaces(&owner);
+            let host_ws = host.create_hosted_workspace("Shared").0;
+            host.own_workspaces_for_test(|_| owner.clone());
             let room = host
                 .room_of(host_ws)
                 .expect("the host's workspace has a room");

@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn a_grant_lists_its_purpose_scope_and_deadline_until_it_ends() {
         let mut tree = WorkspaceTree::default();
-        let workspace = tree.append_empty_workspace("Shared");
+        let workspace = tree.create_hosted_workspace("Shared").0;
         let owner = "owner".to_string();
         tree.desktop
             .workspaces
@@ -206,7 +206,7 @@ mod tests {
         const SERVICE: u8 = 41;
         let owner = hex::encode(public(OWNER).as_bytes());
         let mut tree = WorkspaceTree::default();
-        let workspace = tree.append_empty_workspace("Brief");
+        let workspace = tree.create_hosted_workspace("Brief").0;
         let room = tree.room_of(workspace).unwrap();
         tree.desktop
             .workspaces

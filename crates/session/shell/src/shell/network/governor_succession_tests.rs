@@ -110,7 +110,7 @@ fn sync(net: &ShellNetwork, from: &mut WorkspaceTree, device: &Device, room: Roo
 }
 
 fn member(net: &ShellNetwork, room: RoomId, who: &str) -> bool {
-    let tree = net.replica.lock().expect("replica").tree.clone();
+    let tree = net.tree.clone();
     let tree = tree.read();
     tree.desktop
         .workspaces
@@ -121,7 +121,7 @@ fn member(net: &ShellNetwork, room: RoomId, who: &str) -> bool {
 }
 
 fn authority(net: &ShellNetwork, room: RoomId) -> RoomAuthority {
-    let tree = net.replica.lock().expect("replica").tree.clone();
+    let tree = net.tree.clone();
     tree.read().room_authority(room)
 }
 

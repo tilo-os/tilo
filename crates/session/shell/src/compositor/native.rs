@@ -3806,10 +3806,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         serde_json::Value::Array(frames)
     }
 
-    /// Grant on the active workspace, on behalf of the local user, through
-    /// `Workspace::grant_as` — which refuses a grantor who neither owns the
-    /// room nor holds `Admin`, surfaced as an error, so this op cannot widen
-    /// access past what the driver already holds.
+    /// Ask the active workspace's governor for a sandbox grant, on behalf
+    /// of the local user. The governor decides; the grant shows here once
+    /// the room's admitted document carries it.
     fn grant_capability(
         &self,
         subject: &str,
@@ -3825,10 +3824,10 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree_handle = chrome.tree_handle();
         drop(chrome);
         let mut tree = tree_handle.write();
-        let ws_id = tree
+        let room = tree
             .desktop
             .active_workspace()
-            .map(|w| w.id)
+            .map(crate::shell::state::Workspace::room)
             .ok_or_else(|| "no active workspace".to_string())?;
         let subject = test_control::parse_subject(subject)?;
         let scope = test_control::parse_scope(scope)?;
@@ -3837,16 +3836,13 @@ impl ControlState for FrameBuilderControlState<'_> {
         if let Some(id) = id {
             cap = cap.with_id(id);
         }
-        // Through the tree's entry point, not `grant_as` directly, so this answers
-        // with the same authority the rest of the compositor grants under.
-        let granted = tree
-            .grant_sandbox_in_workspace(ws_id, &user, cap)
-            .ok_or_else(|| {
-                format!("{user} may not administer this workspace, so nothing was granted")
-            })?;
-        // Nothing past this point touches the tree.
+        let requested = cap.id.clone();
+        tree.request_governance(
+            room,
+            crate::shell::state::GovernanceRequest::GrantSandbox(cap),
+        );
         drop(tree);
-        Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+        Ok(serde_json::json!({ "requested": requested, "grantor": user }))
     }
 
     /// Give a grant on the active workspace through the room's governance,
@@ -3878,24 +3874,28 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree_handle = chrome.tree_handle();
         drop(chrome);
         let mut tree = tree_handle.write();
-        let (ws_id, room) = tree
+        let (room, node_of_room) = tree
             .desktop
             .active_workspace()
-            .map(|w| (w.id, w.node()))
+            .map(|w| (w.room(), w.node()))
             .ok_or_else(|| "no active workspace".to_string())?;
         let grant = tilo_action_policy::Grant::new(
             id.map_or_else(|| format!("grant:{}", uuid::Uuid::new_v4()), str::to_owned),
             subject,
-            room.join(&node),
+            node_of_room.join(&node),
             kinds,
             answer,
             tilo_action_policy::Subject::person(user.clone()),
         );
-        let granted = tree
-            .grant_in_workspace(ws_id, &user, grant)
-            .ok_or_else(|| format!("{user} may not grant that in this workspace"))?;
+        let requested = grant.id.clone();
+        tree.request_governance(
+            room,
+            crate::shell::state::GovernanceRequest::Policy(tilo_action_policy::Change::Grant(
+                grant,
+            )),
+        );
         drop(tree);
-        Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+        Ok(serde_json::json!({ "requested": requested, "grantor": user }))
     }
 
     /// Take back a grant on the active workspace through its governance.
@@ -3905,18 +3905,19 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree_handle = chrome.tree_handle();
         drop(chrome);
         let mut tree = tree_handle.write();
-        let ws_id = tree
+        let room = tree
             .desktop
             .active_workspace()
-            .map(|w| w.id)
+            .map(crate::shell::state::Workspace::room)
             .ok_or_else(|| "no active workspace".to_string())?;
-        let revoked = tree.revoke_in_workspace(ws_id, &user, &tilo_action_policy::GrantId::new(id));
+        tree.request_governance(
+            room,
+            crate::shell::state::GovernanceRequest::Policy(tilo_action_policy::Change::Revoke(
+                tilo_action_policy::GrantId::new(id),
+            )),
+        );
         drop(tree);
-        if revoked {
-            Ok(serde_json::json!({ "revoked": id, "revoker": user }))
-        } else {
-            Err(format!("{user} took back nothing named {id}"))
-        }
+        Ok(serde_json::json!({ "requested": id, "revoker": user }))
     }
 
     /// Admit a person with a role on the active workspace, as the user at
@@ -3937,16 +3938,20 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree_handle = chrome.tree_handle();
         drop(chrome);
         let mut tree = tree_handle.write();
-        let ws_id = tree
+        let room = tree
             .desktop
             .active_workspace()
-            .map(|w| w.id)
+            .map(crate::shell::state::Workspace::room)
             .ok_or_else(|| "no active workspace".to_string())?;
-        let admitted = tree.admit_in_workspace(ws_id, &user, person, role);
+        tree.request_governance(
+            room,
+            crate::shell::state::GovernanceRequest::Policy(tilo_action_policy::Change::SetRole {
+                person: person.to_owned(),
+                role,
+            }),
+        );
         drop(tree);
-        admitted
-            .map(|_| serde_json::json!({ "admitted": person, "admitter": user }))
-            .ok_or_else(|| format!("{user} may not admit {person} to this workspace"))
+        Ok(serde_json::json!({ "requested": person, "admitter": user }))
     }
 
     /// Revoke on the active workspace through `Workspace::revoke_as` — same authority check as a grant.
@@ -3976,7 +3981,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "{user} may not administer this workspace, so nothing was revoked"
             ));
         }
-        let removed = tree.revoke_sandbox_in_workspace(ws_id, &user, id);
+        let removed = tree.narrow_sandbox(ws_id, &user, id);
         // Nothing past this point touches the tree.
         drop(tree);
         Ok(serde_json::json!({ "revoked": removed, "revoker": user, "id": id }))
@@ -14972,12 +14977,6 @@ pub fn run() {
                 ("text-commit", state.text_commit_deadline()),
                 ("app-liveness", state.app_liveness_deadline()),
                 ("super-hold", super_tap.deadline()),
-                (
-                    "network-retry",
-                    peer_sync
-                        .as_ref()
-                        .and_then(|network| network.next_deadline()),
-                ),
                 (
                     "ask-agent",
                     frame_builder.host().ask_agent_deadline(park_now),
