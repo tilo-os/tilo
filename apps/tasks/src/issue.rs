@@ -7,11 +7,12 @@
 
 use crate::model::{
     ConfirmationState, Issue, Message, MessageKind, ModelChoice, RunPhase, Status, Tracker,
-    issue_resource, tracker,
+    agent_assignee, issue_resource, person_assignee, tracker,
 };
 use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
+use ui::presence::ParticipantKind;
 use ui::widget::{Badge, ChipStyle, Dropdown, Tone};
 
 use crate::{Nav, reference, tr};
@@ -162,12 +163,20 @@ fn facts(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     );
     let assign_id = id.clone();
     let read_id = id.clone();
-    let assignee = cx.control_with(
-        |state| {
-            TextInput::from_state(state)
-                .with_id("tasks-issue-assignee")
-                .with_accessible_name(tr("tasks-field-assignee"))
-                .with_placeholder("tasks-issue-assignee-placeholder")
+    let assignee = cx.member_picker(
+        vec![(String::new(), tr("tasks-assignee-nobody"))],
+        |member| match member.kind {
+            ParticipantKind::Person => Some(person_assignee(&member.id).0),
+            ParticipantKind::Agent => Some(agent_assignee(&member.id).0),
+            _ => None,
+        },
+        |picker| {
+            Box::new(labeled_field(
+                "tasks-field-assignee",
+                picker
+                    .with_id("tasks-issue-assignee")
+                    .with_accessible_name(tr("tasks-field-assignee")),
+            ))
         },
         move |tracker: &Tracker| {
             tracker
@@ -186,7 +195,7 @@ fn facts(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         Row::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(labeled_field("tasks-field-status", status)))
-            .push(Box::new(labeled_field("tasks-field-assignee", assignee)))
+            .push(assignee)
             .push(model),
     )
 }

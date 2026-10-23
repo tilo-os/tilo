@@ -1407,6 +1407,15 @@ pub struct Mapped<R, A, F> {
     map: F,
 }
 
+impl<R, A, F: Clone> Clone for Mapped<R, A, F> {
+    fn clone(&self) -> Self {
+        Self {
+            action: self.action,
+            map: self.map.clone(),
+        }
+    }
+}
+
 /// Something a control with input `I` can be bound to: an action and how the
 /// control's value becomes that action's arguments.
 pub trait Binds<R, I>: Send + Sync + 'static {
