@@ -275,6 +275,7 @@ pub struct FrameOutput<'a> {
 mod caller_palette;
 mod capture;
 mod invocation_results;
+mod root_wake;
 mod search_open;
 pub mod system_search;
 pub mod test_support;
@@ -289,6 +290,7 @@ pub struct FrameHarness {
     caller_palette: caller_palette::CallerPalette,
     system_search: system_search::SystemSearch,
     component_wake: Option<ComponentRunnerWakeState>,
+    root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     owner_service_layout_retired: bool,
     /// A replaced composition seen by a focus capture before the next
@@ -1011,11 +1013,7 @@ impl FrameHarness {
     fn pump_component_wakes_checked(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         self.readmit_owner_service_layout()?;
         self.drain_component_wakes();
-        if self
-            .component_wake
-            .as_ref()
-            .is_some_and(|wake| wake.dirty.replace(false))
-        {
+        if self.take_wake() {
             self.relayout();
         }
         self.readmit_owner_service_layout()
@@ -1535,6 +1533,7 @@ impl FrameHarness {
             caller_palette: Default::default(),
             system_search: Default::default(),
             component_wake,
+            root_wake: root_wake::RootWake::new(),
             owner_wake_queue: None,
             owner_service_layout_retired: false,
             composition_replaced: false,
@@ -1811,6 +1810,7 @@ impl FrameHarness {
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
         self.invalidate_local();
+        let _wake = self.enter_wake();
         crate::motion::note_input(event);
         self.settle_replayed_draws();
         if let Err(error) = self.readmit_owner_service_layout() {
@@ -2328,14 +2328,11 @@ impl FrameHarness {
     /// read, and what that sync took up written and shown in the same frame.
     fn sync_frame(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.frame_sync");
-        // The sync runs in the component's wake scope, as the live window's
-        // runs in the App's: work it starts on another thread (an area
+        // The sync runs in the root's wake scope, as the live window's runs
+        // in the App's: work it starts on another thread (an area
         // Settings reads off the UI thread) wakes the frame that takes in
         // its result instead of no one.
-        let _wake = self
-            .component_wake
-            .as_ref()
-            .and_then(|wake| wake.binding.lifetime.enter_if_open().ok());
+        let _wake = self.enter_wake();
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
         self.root.settle(
@@ -2410,11 +2407,7 @@ impl FrameHarness {
         // next frame answers for. Only a difference nothing announced is a
         // skipped sync.
         self.drain_component_wakes();
-        if self
-            .component_wake
-            .as_ref()
-            .is_some_and(|wake| wake.dirty.get())
-        {
+        if self.wake_pending() {
             self.request_layout();
             return;
         }
@@ -2669,10 +2662,7 @@ impl FrameHarness {
             || self.search_pending
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
-            || self
-                .component_wake
-                .as_ref()
-                .is_some_and(|wake| wake.dirty.get());
+            || self.wake_pending();
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
                 || self.settle_frame_owed
@@ -3143,6 +3133,9 @@ impl FrameHarness {
     /// the activation completes there. Bounded as composition is
     /// ([`crate::widget::layout::settle_widget_composition`]).
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        // The whole frame runs in the root's wake scope, as the live window's
+        // redraw runs in the App's: a read its layout starts wakes it.
+        let _wake = self.enter_wake();
         self.activation_recomposed = false;
         let mut result = self.try_relayout_once();
         for _ in 1..8 {
@@ -3299,10 +3292,7 @@ impl FrameHarness {
         let focused_at_start = self.focused;
         let epoch_at_start = self.local_epoch;
         self.drain_component_wakes();
-        let woken = self
-            .component_wake
-            .as_ref()
-            .is_some_and(|wake| wake.dirty.replace(false));
+        let woken = self.take_wake();
         // The frame before asked the History surfaces what this one would,
         // of the same composition and documents, and nothing that reads has
         // moved since.
@@ -3890,14 +3880,11 @@ impl FrameHarness {
             && self.history_layout.is_none_or(|layout| layout.app_visible)
         {
             crate::widget::native_view_frame_start(self.root.as_mut());
-            // The root draws in the component's wake scope, as the live
+            // The root draws in its wake scope, as the live
             // window draws in the App's: a wake raised while drawing (the
             // area read Settings starts once it has drawn) reaches the next
             // frame instead of no one.
-            let _wake = self
-                .component_wake
-                .as_ref()
-                .and_then(|wake| wake.binding.lifetime.enter_if_open().ok());
+            let _wake = self.enter_wake();
             self.presence
                 .with_permissions(self.permissions.clone(), || {
                     self.root.draw(
@@ -6164,6 +6151,7 @@ impl FrameHarness {
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
+        let _wake = self.enter_wake();
         crate::motion::note_input(event);
         self.track_tooltip(event);
         // Focus rings show for keyboard focus only: a click hides them.
