@@ -4863,7 +4863,14 @@ impl Widget for PdfApp {
                         .with_live(Politeness::Polite),
                 );
             } else {
-                children.push(button("Open PDF", "pdf.open", self.canvas_rect));
+                // Where the button is drawn, once it is; the canvas until then.
+                let drawn = self.empty_open_button_rect();
+                let bounds = if drawn.area() > 0.0 {
+                    drawn
+                } else {
+                    self.canvas_rect
+                };
+                children.push(button("Open PDF", "pdf.open", bounds));
             }
             if let Some(error) = &self.load_error {
                 children.push(

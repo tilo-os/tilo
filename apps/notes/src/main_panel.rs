@@ -2047,12 +2047,15 @@ impl Widget for MainPanel {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
-            EmptyState::paint(
+            // What is drawn is what takes the click and what the tree
+            // describes, whatever the layout pass measured before it.
+            self.empty_action_rect = EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
                 &self.empty_labels.content(),
                 self.last_pointer,
-            );
+            )
+            .unwrap_or(Rect::ZERO);
             if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
                 ui::widget::paint_focus_ring(
                     scene,

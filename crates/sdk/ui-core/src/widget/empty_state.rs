@@ -600,6 +600,11 @@ fn paint_empty_state(
             .hovered(action_rect.contains(hover))
             .focused(action_focused);
         crate::widget::Button::paint(ctx.scene, transform, ctx.text, theme, &face);
+        note_painted_action(
+            content,
+            transform.transform_rect_bbox(rect),
+            transform.transform_rect_bbox(action_rect),
+        );
         // An empty-state action is often the only route out of a first-use
         // screen: keep the normal, high-visibility focus treatment.
         if action_focused {
@@ -613,6 +618,212 @@ fn paint_empty_state(
         }
     }
     action
+}
+
+thread_local! {
+    /// One list per open [`record_painted_actions`], innermost last.
+    static PAINTED: RefCell<Vec<Vec<PaintedAction>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Most painted actions one recording keeps: a recorder nobody drains
+/// stays bounded.
+const MAX_PAINTED: usize = 256;
+
+/// An empty-state action as it was painted with [`EmptyState::paint`]:
+/// the state it belongs to and where both stand, through the paint
+/// transform they were drawn with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaintedAction {
+    /// The action button's label.
+    pub label: String,
+    /// The action button.
+    pub rect: Rect,
+    /// The empty state's title.
+    pub title: String,
+    /// The empty state's message, when it has one.
+    pub message: Option<String>,
+    /// The whole empty state.
+    pub area: Rect,
+}
+
+/// Keep every empty-state action painted on this thread from now on, until
+/// the matching [`take_painted_actions`] hands them over. Recordings nest:
+/// what an inner one takes is also kept by the one around it.
+///
+/// An app that paints an empty state itself draws its action as pixels;
+/// its host records them so the action is also described in the
+/// accessibility tree, and a check that every action drawn is described
+/// compares the two.
+pub fn record_painted_actions() {
+    PAINTED.with(|painted| painted.borrow_mut().push(Vec::new()));
+}
+
+/// The empty-state actions painted since the matching
+/// [`record_painted_actions`], ending that recording.
+#[must_use]
+pub fn take_painted_actions() -> Vec<PaintedAction> {
+    PAINTED.with(|painted| {
+        let mut painted = painted.borrow_mut();
+        let taken = painted.pop().unwrap_or_default();
+        if let Some(outer) = painted.last_mut() {
+            let room = MAX_PAINTED.saturating_sub(outer.len());
+            outer.extend(taken.iter().take(room).cloned());
+        }
+        taken
+    })
+}
+
+fn note_painted_action(content: &EmptyStateContent<'_>, area: Rect, rect: Rect) {
+    PAINTED.with(|painted| {
+        if let Some(painted) = painted.borrow_mut().last_mut()
+            && painted.len() < MAX_PAINTED
+            && let Some(label) = content.action_label
+        {
+            painted.push(PaintedAction {
+                label: label.to_owned(),
+                rect,
+                title: content.title.to_owned(),
+                message: content.message.map(str::to_owned),
+                area,
+            });
+        }
+    });
+}
+
+/// The prefix of a painted empty-state action's target in the
+/// accessibility tree; the rest is its place in [`PaintedEmptyStates`].
+const PAINTED_TARGET: &str = "tilo.painted-empty-state:";
+
+/// Whether `target` names a painted empty state's action
+/// ([`PaintedEmptyStates`]): no widget handles it, an activation presses
+/// where it is drawn.
+pub(crate) fn is_painted_target(target: &str) -> bool {
+    target.starts_with(PAINTED_TARGET)
+}
+
+/// The empty states a host's content painted itself with
+/// [`EmptyState::paint`], described for it: each becomes a group named by
+/// its title with its action as a button where it was drawn, unless the
+/// content describes that button already. Activating the button clicks
+/// where it is drawn, exactly as a pointer would, so the content's own
+/// hit test runs it.
+///
+/// A host keeps one per content it draws: [`Self::draw`] around the
+/// content's paint, [`Self::describe`] over its accessibility and
+/// [`Self::action_rect`] for where an activation lands.
+#[derive(Debug, Default)]
+pub struct PaintedEmptyStates {
+    painted: Vec<PaintedAction>,
+}
+
+impl PaintedEmptyStates {
+    /// Run `draw`, keeping the empty-state actions it paints in the space
+    /// `transform` maps from: the content's own coordinates.
+    pub fn draw(&mut self, transform: Affine, draw: impl FnOnce()) {
+        record_painted_actions();
+        draw();
+        let painted = take_painted_actions();
+        let into_content = transform.inverse();
+        self.painted = painted
+            .into_iter()
+            .map(|action| PaintedAction {
+                rect: into_content.transform_rect_bbox(action.rect),
+                area: into_content.transform_rect_bbox(action.area),
+                ..action
+            })
+            .collect();
+    }
+
+    /// `node`, the content's own accessibility, with each painted state
+    /// whose action neither it nor a widget inside `content` describes.
+    #[must_use]
+    pub fn describe(
+        &self,
+        node: Option<crate::a11y::AccessNode>,
+        content: &dyn crate::widget::Widget,
+    ) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        if self.painted.is_empty() {
+            return node;
+        }
+        let mut described = Vec::new();
+        if let Some(node) = &node {
+            buttons_in(node, &mut described);
+        }
+        content.for_each_child(&mut |child| buttons_under(child, &mut described));
+        let missing = self
+            .painted
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| {
+                !described.iter().any(|(label, bounds)| {
+                    *label == action.label
+                        && bounds
+                            .is_none_or(|bounds: Rect| bounds.intersect(action.rect).area() > 0.0)
+                })
+            })
+            .map(|(index, action)| {
+                let mut group = AccessNode::new(Role::Group)
+                    .with_name(action.title.clone())
+                    .with_bounds(action.area);
+                if let Some(message) = &action.message {
+                    group = group.with_description(message.clone());
+                }
+                group.with_children(vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(action.label.clone())
+                        .with_bounds(action.rect)
+                        .with_action_target(format!("{PAINTED_TARGET}{index}")),
+                ])
+            })
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return node;
+        }
+        let mut node = node.unwrap_or_else(|| AccessNode::new(Role::Generic));
+        node.children.extend(missing);
+        Some(node)
+    }
+
+    /// Where the painted action at `path` beneath `described` (what
+    /// [`Self::describe`] returned) is drawn; `None` for any other node.
+    #[must_use]
+    pub fn action_rect(&self, described: &crate::a11y::AccessNode, path: &[usize]) -> Option<Rect> {
+        let mut node = described;
+        for &index in path {
+            node = node.children.get(index)?;
+        }
+        let index = node
+            .action_target
+            .as_deref()?
+            .strip_prefix(PAINTED_TARGET)?
+            .parse::<usize>()
+            .ok()?;
+        self.painted.get(index).map(|action| action.rect)
+    }
+}
+
+/// The buttons `node` and its synthetic children describe.
+fn buttons_in(node: &crate::a11y::AccessNode, out: &mut Vec<(String, Option<Rect>)>) {
+    if node.role == crate::a11y::Role::Button
+        && let Some(name) = &node.name
+    {
+        out.push((
+            name.clone(),
+            node.bounds.map(crate::a11y::AccessBounds::to_rect),
+        ));
+    }
+    for child in &node.children {
+        buttons_in(child, out);
+    }
+}
+
+/// The buttons `widget` and every widget inside it describe.
+fn buttons_under(widget: &dyn crate::widget::Widget, out: &mut Vec<(String, Option<Rect>)>) {
+    if let Some(node) = widget.accessibility() {
+        buttons_in(&node, out);
+    }
+    widget.for_each_child(&mut |child| buttons_under(child, out));
 }
 
 /// What the action does when it is activated.
