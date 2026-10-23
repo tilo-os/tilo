@@ -46,6 +46,12 @@ use ui::paint::PaintCtx;
 /// The error the `error` screenshot scenario shows.
 const SHOT_LOAD_ERROR: &str = "Couldn’t read the selected files. Check permissions and try again.";
 
+/// One chooser for both files where a page can't open a second chooser
+/// without another click (a browser).
+fn diff_open_both_request() -> PickRequest {
+    PickRequest::open_multiple("Choose the two files to compare", "Compare")
+}
+
 fn diff_open_request() -> PickRequest {
     PickRequest::open("Open a file to compare", "Open")
         .thread_name("diffmerge-portal-open")
@@ -496,8 +502,10 @@ impl DiffMergeApp {
         self.load_error = None;
         if tilo_files::available(tilo_files::Feature::NativePaths) {
             self.portal_rx = Some(diff_open_request().send());
-        } else {
+        } else if self.pending_left.is_some() {
             self.portal_contents_rx = Some(diff_open_request().send_contents());
+        } else {
+            self.portal_contents_rx = Some(diff_open_both_request().send_contents());
         }
         self.invalidation.paint = true;
     }
@@ -524,19 +532,11 @@ impl DiffMergeApp {
             match rx.try_recv() {
                 Ok(outcome) => {
                     self.portal_contents_rx = None;
-                    let outcome = match outcome {
-                        ContentsOutcome::Picked(files) => match files.into_iter().next() {
-                            Some(file) => Pick::Opened(
-                                String::from_utf8(file.bytes)
-                                    .map(|text| (file.name.clone(), text))
-                                    .map_err(|_| format!("{}: not UTF-8 text", file.name)),
-                            ),
-                            None => Pick::Cancelled,
-                        },
-                        ContentsOutcome::Cancelled => Pick::Cancelled,
-                        ContentsOutcome::Failed(reason) => Pick::Failed(reason),
-                    };
-                    self.apply_pick(outcome);
+                    match outcome {
+                        ContentsOutcome::Picked(files) => self.apply_picked_contents(files),
+                        ContentsOutcome::Cancelled => self.apply_pick(Pick::Cancelled),
+                        ContentsOutcome::Failed(reason) => self.apply_pick(Pick::Failed(reason)),
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -563,6 +563,43 @@ impl DiffMergeApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
                 self.apply_pick(Pick::Failed("file picker disconnected".into()));
+            }
+        }
+    }
+
+    /// Apply the files a contents chooser delivered. Both files chosen at
+    /// once open the comparison. A page opens no second chooser without
+    /// another click, so one file is kept as the left one and the status
+    /// says to open the right one next.
+    fn apply_picked_contents(&mut self, files: Vec<ui::portal::PickedContents>) {
+        let mut texts = files.into_iter().take(2).map(|file| {
+            String::from_utf8(file.bytes)
+                .map(|text| (file.name.clone(), text))
+                .map_err(|_| format!("{}: not UTF-8 text", file.name))
+        });
+        match (texts.next(), texts.next()) {
+            (None, _) => self.apply_pick(Pick::Cancelled),
+            (Some(Err(reason)), _) | (Some(Ok(_)), Some(Err(reason))) => {
+                self.apply_pick(Pick::Opened(Err(reason)));
+            }
+            (Some(Ok((left_label, left))), Some(Ok((right_label, right)))) => {
+                self.pending_left = None;
+                self.consume_text(left_label, left);
+                self.consume_text(right_label, right);
+                self.load_error = None;
+                self.finish_open(Ok(()));
+                self.invalidation.paint = true;
+            }
+            (Some(Ok((label, text))), None) => {
+                if self.consume_text(label.clone(), text) {
+                    self.load_error = Some(format!(
+                        "{label} is the left file. Choose Open files again for the right one."
+                    ));
+                } else {
+                    self.load_error = None;
+                }
+                self.finish_open(Ok(()));
+                self.invalidation.paint = true;
             }
         }
     }
@@ -1275,6 +1312,56 @@ mod tests {
             !recorder.pick_requests().is_empty(),
             "the guest's chooser opened: {:?}",
             app.harness().control_failures()
+        );
+    }
+
+    /// A page opens no second chooser without another click, so its one
+    /// chooser takes both files: two chosen at once open the comparison,
+    /// and one chosen alone is kept as the left file while the status says
+    /// to open the right one, which the next Open files completes.
+    #[test]
+    fn a_page_chooses_both_files_at_once_or_one_after_the_other() {
+        let file = |name: &str, text: &str| ui::portal::PickedContents {
+            name: name.into(),
+            media_type: None,
+            bytes: text.as_bytes().to_vec(),
+            location: None,
+        };
+        let mut app = TestApp::<DiffmergeShell>::new().unwrap();
+        app.settle();
+        app.with_surface::<DiffMergeApp, _>(|view| {
+            view.apply_picked_contents(vec![file("a.txt", "one\n"), file("b.txt", "two\n")]);
+        })
+        .unwrap();
+        app.settle();
+        let comparison = app.state().comparison.expect("both files open");
+        assert_eq!(
+            (
+                comparison.left_label.0.as_str(),
+                comparison.right_label.0.as_str()
+            ),
+            ("a.txt", "b.txt")
+        );
+
+        let status = app
+            .with_surface::<DiffMergeApp, _>(|view| {
+                view.apply_picked_contents(vec![file("c.txt", "three\n")]);
+                view.status_text()
+            })
+            .unwrap();
+        assert!(status.contains("c.txt is the left file"), "{status}");
+        app.with_surface::<DiffMergeApp, _>(|view| {
+            view.apply_picked_contents(vec![file("d.txt", "four\n")]);
+        })
+        .unwrap();
+        app.settle();
+        let comparison = app.state().comparison.unwrap();
+        assert_eq!(
+            (
+                comparison.left_label.0.as_str(),
+                comparison.right_label.0.as_str()
+            ),
+            ("c.txt", "d.txt")
         );
     }
 
