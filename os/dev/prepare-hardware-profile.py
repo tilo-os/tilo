@@ -25,6 +25,12 @@ DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
 # Sorts after the image's own kargs.d drop-ins, so a board console named here
 # is the last console= and becomes /dev/console.
 KARGS_PATH = Path("usr/lib/bootc/kargs.d/10-hardware-profile.toml")
+# The unit that raises the console log level so the pstore console record
+# carries every kernel message, and the drop-in that starts it in the initrd
+# too. initrd.target exists only in the initrd, so the drop-in is inert after
+# switch-root.
+PSTORE_CONSOLE_UNIT = Path("usr/lib/systemd/system/tilo-pstore-console.service")
+INITRD_CONSOLE_LOG_PATH = Path("usr/lib/systemd/system/initrd.target.d/50-tilo-pstore-console.conf")
 # libinput's system quirks directory; /etc/libinput holds only the
 # administrator's local-overrides.quirks.
 LIBINPUT_QUIRKS_DIR = Path("usr/share/libinput")
@@ -216,6 +222,19 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
         dracut_lines.append(f'install_items+=" {firmware_paths} "')
     if modular_boot:
         dracut_lines.append(f'add_drivers+=" {" ".join(modular_boot)} "')
+    if definition.get("initrd_console_log"):
+        # The initrd's journal lives only in RAM. Its journald forwards to kmsg
+        # (the profile's rd.systemd.journald.* arguments), and this starts the
+        # console log level unit there as well, so a failed unit or an
+        # emergency shell in the initrd reaches the pstore console record and
+        # survives the next warm reset.
+        checked_path(root, PSTORE_CONSOLE_UNIT, required=True)
+        outputs[INITRD_CONSOLE_LOG_PATH] = (
+            "# Generated from the hardware profile's initrd_console_log.\n"
+            "[Unit]\n"
+            f"Wants={PSTORE_CONSOLE_UNIT.name}\n"
+        ).encode("utf-8")
+        dracut_lines.append(f'install_items+=" /{PSTORE_CONSOLE_UNIT.as_posix()} /{INITRD_CONSOLE_LOG_PATH.as_posix()} "')
     outputs[DRACUT_PATH] = ("\n".join(dracut_lines) + "\n").encode("utf-8")
     # bootc container ukify (os/dev/uki.sh) seals kargs.d into the UKI command
     # line, so the board's arguments are measured with the rest of the image's.

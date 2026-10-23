@@ -193,6 +193,10 @@ class HardwareProfileTest(unittest.TestCase):
         for module in LENOVO["boot_modules"]:
             (self.kernel / "kernel").mkdir(exist_ok=True)
             (self.kernel / "kernel" / f"{module}.ko.zst").write_bytes(b"module")
+        # The image's console log level unit, which the 83ED's initrd starts too.
+        unit = self.root / prepare.PSTORE_CONSOLE_UNIT
+        unit.parent.mkdir(parents=True)
+        unit.write_text("[Unit]\n", encoding="utf-8")
         for name in NAMES:
             (self.firmware / name).write_bytes(f"firmware fixture: {name}".encode())
         self.manifest = {
@@ -254,7 +258,7 @@ class HardwareProfileTest(unittest.TestCase):
             for name in NAMES:
                 self.assertEqual((installed / name).read_bytes(), (self.firmware / name).read_bytes())
             dracut = self.root / "etc/dracut.conf.d/41-tilo-hardware.conf"
-            install_line, drivers_line = dracut.read_text().splitlines()[1:]
+            install_line, drivers_line, console_line = dracut.read_text().splitlines()[1:]
             self.assertEqual(install_line, 'install_items+=" ' + " ".join(
                 f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
             ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz'
@@ -273,6 +277,15 @@ class HardwareProfileTest(unittest.TestCase):
             for module in ("ath12k", "ath12k_wifi7", "mac80211", "cfg80211", "qrtr-mhi",
                            "pwrseq-qcom-wcn", "pci-pwrctrl-pwrseq"):
                 self.assertIn(module, LENOVO["boot_modules"])
+            # The initrd keeps its journal only in RAM. Its journald forwards
+            # to kmsg, unrate-limited, and the console log level unit starts
+            # there too, so a failed unit or an emergency shell in the initrd
+            # reaches the pstore console record. The host's journald does not
+            # forward: the arguments carry the initrd-only rd. prefix.
+            self.assertEqual(console_line, 'install_items+=" /usr/lib/systemd/system/tilo-pstore-console.service'
+                             ' /usr/lib/systemd/system/initrd.target.d/50-tilo-pstore-console.conf "')
+            self.assertIn("Wants=tilo-pstore-console.service",
+                          (self.root / prepare.INITRD_CONSOLE_LOG_PATH).read_text().splitlines())
             # The image reads its profile with the compiled reader
             # (tilo-board-successor); no Python parser ships beside it.
             self.assertFalse((self.root / "usr/lib/tilo/hardware_profile.py").exists())
@@ -293,7 +306,12 @@ class HardwareProfileTest(unittest.TestCase):
             # A task blocked on slow I/O is reported, never a reason to reboot
             # a machine someone is working on.
             self.assertNotIn("hung_task_panic=1", sealed)
+            for argument in ("printk.devkmsg=on", "rd.systemd.journald.forward_to_kmsg=1",
+                             "rd.systemd.journald.max_level_kmsg=info"):
+                self.assertIn(argument, sealed)
+            self.assertFalse(any(a.startswith("systemd.journald.") for a in sealed))
             outputs = [profile_path, self.root / prepare.DEFINITION_PATH, dracut, kargs,
+                       self.root / prepare.INITRD_CONSOLE_LOG_PATH,
                        self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf",
                        self.root / "usr/share/libinput/50-tilo-lenovo-83ed.quirks",
                        *(installed / name for name in NAMES)]

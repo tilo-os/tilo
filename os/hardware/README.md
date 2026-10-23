@@ -101,6 +101,18 @@ A task stuck in uninterruptible sleep for two minutes is only reported, with
 its stack, in the journal and the console record. On a working machine that is
 usually slow disk or network I/O, and rebooting would lose the work.
 
+The initrd keeps its journal only in RAM, so a boot that fails there and is
+reset loses it. The profile's `rd.systemd.journald.forward_to_kmsg=1` and
+`rd.systemd.journald.max_level_kmsg=info` make the initrd's journald, and only
+it (systemd honours `rd.` arguments in the initrd alone), forward to kmsg;
+`printk.devkmsg=on` keeps the kernel from rate-limiting those writes to ten
+lines in five seconds. `initrd_console_log` starts
+`tilo-pstore-console.service` in the initrd as well, after the splash, so a
+failed unit or an emergency shell there reaches the console record and shows
+in the next boot's journal. Isolating the switch-root or emergency target
+leaves the unit running. Messages before the splash starts stay at
+`loglevel=3`, which keeps them off the screen.
+
 A reset that the firmware, hypervisor or PMIC triggers runs no kernel code. It
 leaves only the console log, which now has every message up to the reset.
 

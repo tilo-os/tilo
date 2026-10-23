@@ -33,13 +33,14 @@ const FIELDS: [&str; 5] = [
     "devicetree",
     "firmware",
 ];
-const OPTIONAL_V2: [&str; 6] = [
+const OPTIONAL_V2: [&str; 7] = [
     "boot_modules",
     "always_on",
     "kernel_args",
     "wifi_wake_on_wlan",
     "internal_keyboards",
     "firmware_exclude",
+    "initrd_console_log",
 ];
 const PROFILE_FIELDS: [&str; 6] = [
     "schema_version",
@@ -424,6 +425,10 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
     require(
         data.get("always_on").is_none_or(Value::is_boolean),
         "hardware definition always_on must be a boolean",
+    )?;
+    require(
+        data.get("initrd_console_log").is_none_or(Value::is_boolean),
+        "hardware definition initrd_console_log must be a boolean",
     )?;
     if let Some(wake) = data.get("wifi_wake_on_wlan") {
         require(

@@ -14,7 +14,8 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude"}
+OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude",
+               "initrd_console_log"}
 # Fedora firmware RPMs a board layer may remove (`firmware_exclude`), each with
 # the /usr/lib/firmware subtrees it owns. Closed on purpose: a board can only
 # drop vendor firmware known to be separable, and never one whose subtree its
@@ -308,6 +309,8 @@ def validate_definition(data):
         seen_modules.add(name)
     if type(data.get("always_on", False)) is not bool:
         raise ValueError("hardware definition always_on must be a boolean")
+    if type(data.get("initrd_console_log", False)) is not bool:
+        raise ValueError("hardware definition initrd_console_log must be a boolean")
     if "wifi_wake_on_wlan" in data:
         # This is a reviewed hardware safety policy, not a generic wake editor.
         if (type(data["wifi_wake_on_wlan"]) is not int or data["wifi_wake_on_wlan"] != 0

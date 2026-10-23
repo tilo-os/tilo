@@ -4,10 +4,17 @@
 # userspace runs the level rises to 7, everything short of debug. A virtual
 # terminal in graphics mode, as under the splash and the session, draws none
 # of it. Stopping restores the command line's level for the shutdown screen.
+#
+# A hardware profile with initrd_console_log also starts this in the initrd
+# (os/dev/prepare-hardware-profile.py), where its journald forwards to kmsg.
+# Isolating initrd-switch-root.target, or emergency.target when the initrd
+# fails, leaves it running, so the level holds through switch-root and an
+# emergency shell's messages still reach the record.
 [Unit]
 Description=Record every kernel message in the pstore console
 ConditionPathExistsGlob=/sys/bus/platform/drivers/ramoops/*ramoops*
 After=plymouth-start.service
+IgnoreOnIsolate=yes
 
 [Service]
 Type=oneshot

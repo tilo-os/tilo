@@ -20,6 +20,10 @@ and requires:
     module installs those optionally, so a missing package would otherwise
     leave an initramfs that unlocks over Ethernet only, silently.
 
+  * for a profile with `initrd_console_log`, the console log level unit, the
+    initrd.target drop-in that starts it and the dmesg it runs, so the
+    initrd's forwarded journal reaches the pstore console record.
+
 It proves presence in the initramfs, not that the radio associates: that
 takes the board itself.
 """
@@ -40,6 +44,11 @@ FIRMWARE_SUFFIXES = ("", ".xz", ".zst")
 SIBLING_UNLOCK_UNIT = "usr/lib/systemd/system/tilo-sibling-unlock@.service"
 # What the sibling-unlock network needs for Wi-Fi, as patterns over the
 # initramfs's paths (usr/sbin is a symlink to usr/bin on Fedora).
+INITRD_CONSOLE_LOG = (
+    "usr/lib/systemd/system/tilo-pstore-console.service",
+    "usr/lib/systemd/system/initrd.target.d/50-tilo-pstore-console.conf",
+    "usr/bin/dmesg",
+)
 WIFI_UNLOCK = {
     "NetworkManager": ("usr/bin/NetworkManager", "usr/sbin/NetworkManager"),
     "NetworkManager's Wi-Fi device plugin": ("usr/lib*/NetworkManager/*/libnm-device-plugin-wifi.so",),
@@ -102,6 +111,10 @@ def problems(definition: dict, paths: set[str], root: Path, kver: str) -> list[s
                 found.append(f"boot module {name} ({modules[name]}) is not in the initramfs")
         elif name not in builtin:
             found.append(f"boot module {name} is neither built into kernel {kver} nor installed for it")
+    if definition.get("initrd_console_log"):
+        for path in INITRD_CONSOLE_LOG:
+            if path not in paths:
+                found.append(f"{path} is not in the initramfs, so its journal would not reach the pstore console")
     if SIBLING_UNLOCK_UNIT in paths:
         for what, patterns in WIFI_UNLOCK.items():
             if not any(fnmatch.filter(paths, pattern) for pattern in patterns):

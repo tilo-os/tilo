@@ -59,6 +59,7 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
               else f"usr/lib/firmware/{name}.xz" for name in firmware),
             verify.SIBLING_UNLOCK_UNIT,
             *WIFI_UNLOCK,
+            *verify.INITRD_CONSOLE_LOG,
         }
 
     def problems(self):
@@ -66,6 +67,17 @@ class VerifyBoardInitramfsTest(unittest.TestCase):
 
     def test_complete_lenovo_initramfs_passes(self):
         self.assertEqual(self.problems(), [])
+
+    def test_initrd_journal_reaches_the_pstore_console(self):
+        # The 83ED's initrd keeps its journal only in RAM: what forwards to
+        # kmsg must reach the console record before an emergency shell.
+        self.assertTrue(LENOVO["initrd_console_log"])
+        for path in verify.INITRD_CONSOLE_LOG:
+            with self.subTest(path=path):
+                self.paths.discard(path)
+                self.assertEqual(len(self.problems()), 1)
+                self.assertIn(path, self.problems()[0])
+                self.paths.add(path)
 
     def test_missing_wifi_firmware_or_regulatory_database_fails(self):
         for name in ("ath12k/WCN7850/hw2.0/board-2.bin.xz", "ath12k/WCN7850/hw2.0/amss.bin.xz",

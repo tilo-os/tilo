@@ -8,8 +8,12 @@
     "systemd.watchdog_sec=30",
     "sbsa_gwdt.action=1",
     "softlockup_panic=1",
-    "nmi_watchdog=panic"
+    "nmi_watchdog=panic",
+    "printk.devkmsg=on",
+    "rd.systemd.journald.forward_to_kmsg=1",
+    "rd.systemd.journald.max_level_kmsg=info"
   ],
+  "initrd_console_log": true,
   "system_firmware": [
     "qcom/a740_sqe.fw",
     "qcom/gen70500_sqe.fw",
