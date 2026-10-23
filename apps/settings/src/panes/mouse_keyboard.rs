@@ -1918,18 +1918,8 @@ impl MouseKeyboardPane {
         section(
             &t("input-spell-title"),
             rows(vec![
-                self.cx
-                    .row(t("input-spell-check"))
-                    .described(t("input-spell-check-desc"))
-                    .id("text.check_spelling")
-                    .of(&self.text, TextAssistancePrefs::paths().check_spelling)
-                    .toggle(),
-                self.cx
-                    .row(t("input-spell-auto"))
-                    .described(t("input-spell-auto-desc"))
-                    .id("text.auto_correct")
-                    .of(&self.text, TextAssistancePrefs::paths().auto_correct)
-                    .toggle(),
+                check_spelling(&self.cx, &self.text),
+                auto_correct(&self.cx, &self.text),
                 self.cx
                     .row(t("input-spell-language"))
                     .id("text.spelling_language")
@@ -2079,6 +2069,22 @@ impl MouseKeyboardPane {
                 .push(Box::new(remove)),
         ))
     }
+}
+
+pub(crate) fn check_spelling(cx: &PaneCx, text: &Followed<TextAssistancePrefs>) -> Item {
+    cx.row(t("input-spell-check"))
+        .described(t("input-spell-check-desc"))
+        .id("text.check_spelling")
+        .of(text, TextAssistancePrefs::paths().check_spelling)
+        .toggle()
+}
+
+pub(crate) fn auto_correct(cx: &PaneCx, text: &Followed<TextAssistancePrefs>) -> Item {
+    cx.row(t("input-spell-auto"))
+        .described(t("input-spell-auto-desc"))
+        .id("text.auto_correct")
+        .of(text, TextAssistancePrefs::paths().auto_correct)
+        .toggle()
 }
 
 impl Widget for MouseKeyboardPane {

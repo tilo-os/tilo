@@ -51,7 +51,8 @@ class ThemeActionsTest(unittest.TestCase):
         set_theme(self.ctx, "high-contrast")
         self.assertEqual(self.commands, [
             ["tilo-vm", "control", "actions", "invoke", "actions", "appearance.theme.dark"],
-            ["tilo-vm", "control", "actions", "invoke", "actions", "appearance.high-contrast"],
+            ["tilo-vm", "control", "actions", "invoke", "settings-pages",
+             "setting:appearance.high_contrast"],
         ])
 
     def test_dark_refusal_stops_high_contrast_selection(self):
@@ -65,7 +66,7 @@ class ThemeActionsTest(unittest.TestCase):
     def test_action_refusals_reach_the_acceptance_check(self):
         for theme, action in [("light", "appearance.theme.light"),
                               ("dark", "appearance.theme.dark"),
-                              ("high-contrast", "appearance.high-contrast")]:
+                              ("high-contrast", "setting:appearance.high_contrast")]:
             with self.subTest(theme=theme):
                 self.failure = action
                 with self.assertRaisesRegex(VmError, "appearance action refused"):

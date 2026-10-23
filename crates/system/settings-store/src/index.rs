@@ -29,6 +29,28 @@ pub struct Setting {
     /// ids of the controls the page may show instead (one layout's chooser
     /// or the list of several).
     pub control: &'static str,
+    /// The switch it is, where it is one: a yes-or-no field of a settings
+    /// section the session keeps. Search then offers the switch itself,
+    /// flipped through the section's field edit as its control in Settings
+    /// flips it.
+    pub switch: Option<Switch>,
+}
+
+/// A yes-or-no setting, as the section that holds it publishes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Switch {
+    /// The section's kind (`settings.appearance`).
+    pub section: &'static str,
+    /// The field's path in the section, its names joined by dots
+    /// (`focus.enabled`).
+    pub field: &'static str,
+}
+
+impl Switch {
+    /// The names of the field's path, outermost first.
+    pub fn path(self) -> impl Iterator<Item = &'static str> {
+        self.field.split('.')
+    }
 }
 
 impl Page {
@@ -79,6 +101,20 @@ impl Setting {
     #[must_use]
     pub fn link(self) -> String {
         format!("settings://{}#{}", self.page, self.id)
+    }
+
+    /// Every word the setting is found by, in every language, lowercased:
+    /// its names and the other words people use for it. Settings' own search
+    /// and the desktop palette rank a setting by these alike.
+    #[must_use]
+    pub fn search_words(self) -> Vec<String> {
+        let mut words = names_in_every_locale(&self.name_key());
+        for word in words_in_every_locale(&self.words_key()) {
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+        words
     }
 
     /// Whether `widget_id` is the id of a control that changes this setting.
@@ -227,7 +263,22 @@ pub const PAGES: &[Page] = &[
 ];
 
 const fn s(id: &'static str, page: &'static str, control: &'static str) -> Setting {
-    Setting { id, page, control }
+    Setting {
+        id,
+        page,
+        control,
+        switch: None,
+    }
+}
+
+impl Setting {
+    /// The setting is the yes-or-no field `field` of the section `section`.
+    const fn switch(self, section: &'static str, field: &'static str) -> Self {
+        Self {
+            switch: Some(Switch { section, field }),
+            ..self
+        }
+    }
 }
 
 /// The settings people look for by name, page by page.
@@ -336,7 +387,7 @@ pub const SETTINGS: &[Setting] = &[
     // Power
     s("power.profile", "power", "power.profile"),
     s("power.charge_limit", "power", "power.charge_limit"),
-    s("power.auto_suspend", "power", "power.auto_suspend"),
+    s("power.auto_suspend", "power", "power.auto_suspend").switch("settings.power", "auto_suspend"),
     s(
         "power.suspend_after",
         "power",
@@ -368,72 +419,90 @@ pub const SETTINGS: &[Setting] = &[
         "appearance.high_contrast",
         "accessibility",
         "a11y.high_contrast",
-    ),
+    )
+    .switch("settings.appearance", "high_contrast"),
     s(
         "appearance.reduce_motion",
         "accessibility",
         "a11y.reduce_motion",
-    ),
+    )
+    .switch("settings.appearance", "reduce_motion"),
     s("a11y.screen_reader", "accessibility", "a11y.screen_reader"),
     s(
         "a11y.on_screen_keyboard",
         "accessibility",
         "a11y.on_screen_keyboard",
     ),
-    s("a11y.large_cursor", "accessibility", "a11y.large_cursor"),
+    s("a11y.large_cursor", "accessibility", "a11y.large_cursor")
+        .switch("settings.accessibility", "large_cursor"),
     s("a11y.cursor_size", "accessibility", "a11y.cursor_size"),
     s("a11y.magnifier", "accessibility", "a11y.magnifier"),
     s("a11y.colour_filter", "accessibility", "a11y.color_filter"),
-    s("a11y.sticky_keys", "accessibility", "a11y.sticky_keys"),
-    s("a11y.slow_keys", "accessibility", "a11y.slow_keys"),
-    s("a11y.bounce_keys", "accessibility", "a11y.bounce_keys"),
-    s("a11y.mouse_keys", "accessibility", "a11y.mouse_keys"),
-    s("a11y.visual_alerts", "accessibility", "a11y.visual_alerts"),
+    s("a11y.sticky_keys", "accessibility", "a11y.sticky_keys")
+        .switch("settings.accessibility", "sticky_keys"),
+    s("a11y.slow_keys", "accessibility", "a11y.slow_keys")
+        .switch("settings.accessibility", "slow_keys"),
+    s("a11y.bounce_keys", "accessibility", "a11y.bounce_keys")
+        .switch("settings.accessibility", "bounce_keys"),
+    s("a11y.mouse_keys", "accessibility", "a11y.mouse_keys")
+        .switch("settings.accessibility", "mouse_keys"),
+    s("a11y.visual_alerts", "accessibility", "a11y.visual_alerts")
+        .switch("settings.accessibility", "visual_alerts"),
     s(
         "a11y.switch_control",
         "accessibility",
         "a11y.switch_control",
-    ),
+    )
+    .switch("settings.accessibility", "switch_control"),
     s(
         "a11y.dictation_language",
         "accessibility",
         "a11y.dictation_language",
     ),
     // Notifications
-    s("notifications.dnd", "notifications", "notifications.dnd"),
+    s("notifications.dnd", "notifications", "notifications.dnd")
+        .switch("settings.notifications", "do_not_disturb"),
     s(
         "notifications.banners",
         "notifications",
         "notifications.banners",
-    ),
+    )
+    .switch("settings.notifications", "show_banners"),
     s(
         "notifications.previews",
         "notifications",
         "notifications.previews",
-    ),
+    )
+    .switch("settings.notifications", "show_previews"),
     s(
         "notifications.lock_screen",
         "notifications",
         "notifications.lock_screen",
-    ),
+    )
+    .switch("settings.notifications", "show_on_lock_screen"),
     s(
         "notifications.sounds",
         "notifications",
         "notifications.sounds",
-    ),
+    )
+    .switch("settings.notifications", "play_sounds"),
     s(
         "notifications.badges",
         "notifications",
         "notifications.badges",
-    ),
+    )
+    .switch("settings.notifications", "show_badges"),
     s(
         "notifications.quiet_hours",
         "notifications",
         "notifications.focus.enabled",
-    ),
+    )
+    .switch("settings.notifications", "focus.enabled"),
     // Spelling & dictionary
-    s("spelling.check", "spelling", "text.check_spelling"),
-    s("spelling.autocorrect", "spelling", "text.auto_correct"),
+    s("spelling.check", "spelling", "text.check_spelling")
+        .switch("settings.text-assistance", "check_spelling"),
+    s("spelling.autocorrect", "spelling", "text.auto_correct")
+        .switch("settings.text-assistance", "auto_correct"),
     s("spelling.language", "spelling", "text.spelling_language"),
     s("spelling.dictionary", "spelling", "dictionary.word"),
     // Region & formats

@@ -299,10 +299,22 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     },
 ];
 
+/// The rows of the settings these panes show, as Settings' search shows
+/// them too: each built by the function its pane builds it with.
+const SETTINGS: &[crate::setting::SettingEntry] = &[
+    crate::setting::setting_entry!("region.currency", tilo_locale::Locale => region::currency),
+    crate::setting::setting_entry!("region.date", tilo_locale::Locale => region::date_format),
+    crate::setting::setting_entry!("region.time", tilo_locale::Locale => region::time_format),
+    crate::setting::setting_entry!("region.measurement", tilo_locale::Locale => region::measurement),
+    crate::setting::setting_entry!("region.numbers", tilo_locale::Locale => region::number_style),
+    crate::setting::setting_entry!("region.first_day", tilo_locale::Locale => region::first_day),
+];
+
 pub const PART: crate::area::Part = crate::area::Part {
     areas: AREAS,
     panes: PANES,
     families: FAMILIES,
     live_areas: LIVE_AREAS,
     sections: SECTIONS,
+    settings: SETTINGS,
 };

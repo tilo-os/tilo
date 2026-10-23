@@ -1,0 +1,262 @@
+//! Each setting as the row that changes it, wherever it is shown.
+//!
+//! A setting the index names ([`settings_store::index`]) is shown by one
+//! function: the row its pane shows, with its label, its explanation and its
+//! control bound to the section's field edit. The pane builds its row with
+//! that function, and so does Settings' search: typing in the window bar
+//! lists the settings that match as those same rows, operable where they
+//! are found ([`Found`]), each page's group opening its page. A setting
+//! whose pane draws it some other way is listed by name, and showing it
+//! takes the person to it in its page.
+//!
+//! A pane brings its settings' rows in its [`crate::area::Part`] with
+//! [`setting_entry!`].
+
+use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use settings_store::index::{self, Setting};
+use ui::widget::{AppModel, Button, ButtonRole, ControlSize, ModelPath, Widget};
+
+use crate::categories::Category;
+use crate::effects::{NavigationEffect, SettingsEffect};
+use crate::host::{Followed, PaneCx, Section};
+use crate::i18n::t;
+use crate::widgets::{Item, SettingsSection, rows, section_action, setting_row};
+
+/// One setting's row, as its pane builds it.
+pub struct SettingEntry {
+    /// The setting's id in the index.
+    pub id: &'static str,
+    /// The row, over the sections `follows` keeps current.
+    pub row: fn(&PaneCx, &Follows) -> Item,
+}
+
+/// The [`SettingEntry`] of the setting `$id`, whose row `$row(cx, followed)`
+/// builds over the followed section `$section`: the function the pane
+/// builds the row with.
+#[macro_export]
+macro_rules! setting_entry {
+    ($id:literal, $section:ty => $row:path) => {
+        $crate::setting::SettingEntry {
+            id: $id,
+            row: |cx, follows| {
+                let followed = follows.of::<$section>(cx);
+                let followed = followed.borrow();
+                $row(cx, &followed)
+            },
+        }
+    };
+}
+pub use crate::setting_entry;
+
+/// The sections the rows shown outside their panes read, each followed
+/// once and kept current as it changes ([`Self::refresh`]).
+#[derive(Default)]
+pub struct Follows {
+    /// Each section followed, as itself and as what refreshes it.
+    held: RefCell<Vec<Held>>,
+}
+
+/// A followed section, as itself and as what refreshes it.
+type Held = (Rc<dyn Any>, Rc<dyn Refresh>);
+
+/// A followed section, whatever its type.
+trait Refresh {
+    fn refresh(&self) -> bool;
+}
+
+impl<T: Section> Refresh for RefCell<Followed<T>> {
+    fn refresh(&self) -> bool {
+        self.borrow_mut().refresh()
+    }
+}
+
+impl Follows {
+    /// The section `T`, followed through `cx` from when it was first asked
+    /// for.
+    pub fn of<T: Section>(&self, cx: &PaneCx) -> Rc<RefCell<Followed<T>>> {
+        let mut held = self.held.borrow_mut();
+        if let Some(followed) = held
+            .iter()
+            .find_map(|(any, _)| Rc::clone(any).downcast::<RefCell<Followed<T>>>().ok())
+        {
+            return followed;
+        }
+        let followed = Rc::new(RefCell::new(cx.follow::<T>()));
+        held.push((
+            Rc::clone(&followed) as Rc<dyn Any>,
+            Rc::clone(&followed) as Rc<dyn Refresh>,
+        ));
+        followed
+    }
+
+    /// Read every followed section again where the settings changed, moving
+    /// the controls that show them; whether any value changed.
+    pub fn refresh(&self) -> bool {
+        let held: Vec<Rc<dyn Refresh>> = self
+            .held
+            .borrow()
+            .iter()
+            .map(|(_, followed)| Rc::clone(followed))
+            .collect();
+        held.iter()
+            .fold(false, |moved, followed| followed.refresh() | moved)
+    }
+}
+
+/// Every setting's row the parts of Settings bring, by the setting's id.
+#[must_use]
+pub fn entry(id: &str) -> Option<&'static SettingEntry> {
+    crate::area::registry()
+        .settings
+        .iter()
+        .copied()
+        .find(|entry| entry.id == id)
+}
+
+/// The settings that match `query`, best first: found by their names and
+/// the words people use for them, in every language, as the desktop palette
+/// finds them.
+#[must_use]
+pub fn matching(query: &str) -> Vec<&'static Setting> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let names: Vec<String> = index::SETTINGS
+        .iter()
+        .map(|setting| t(&setting.name_key()).to_lowercase())
+        .collect();
+    let words: Vec<Vec<String>> = index::SETTINGS
+        .iter()
+        .map(|setting| setting.search_words())
+        .collect();
+    let ranks = ui::search::ListIndex::default().ranks(
+        query,
+        names.iter().zip(&words).map(|(name, words)| {
+            std::iter::once((name.as_str(), ui::search::FieldWeight::TITLE)).chain(
+                words
+                    .iter()
+                    .map(|word| (word.as_str(), ui::search::FieldWeight::KEYWORD)),
+            )
+        }),
+    );
+    let mut found: Vec<(i32, usize)> = ranks
+        .into_iter()
+        .enumerate()
+        .filter_map(|(at, rank)| rank.map(|rank| (rank, at)))
+        .collect();
+    found.sort_by(|(a, a_at), (b, b_at)| b.cmp(a).then(a_at.cmp(b_at)));
+    found
+        .into_iter()
+        .filter_map(|(_, at)| index::SETTINGS.get(at))
+        .filter(|setting| Category::from_slug(setting.page).is_some())
+        .collect()
+}
+
+/// What Settings' search found: the matching settings, grouped by the page
+/// each is on, as the rows that change them.
+pub struct Found {
+    cx: PaneCx,
+    follows: Follows,
+    /// The settings found, best first.
+    settings: Vec<&'static Setting>,
+    composed: ui::widget::Composed,
+}
+
+impl Found {
+    #[must_use]
+    pub fn new(cx: PaneCx, settings: Vec<&'static Setting>) -> Self {
+        Self {
+            cx,
+            follows: Follows::default(),
+            settings,
+            composed: ui::widget::Composed::default(),
+        }
+    }
+
+    /// A button `id` reading `label`, running `effect`: Settings' own
+    /// navigation, as an agent's `open` runs it.
+    fn navigating(&self, id: &str, label: &str, effect: NavigationEffect) -> Button {
+        self.cx.bind_invocation(
+            Button::new(id, label)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small),
+            SettingsEffect::from(effect),
+        )
+    }
+
+    /// One page's group: its name, a button opening it, and each setting
+    /// found there.
+    fn group(&self, page: &'static str, settings: &[&'static Setting]) -> Option<SettingsSection> {
+        let category = Category::from_slug(page)?;
+        let items: Vec<Item> = settings
+            .iter()
+            .map(|setting| {
+                if let Some(entry) = entry(setting.id) {
+                    return (entry.row)(&self.cx, &self.follows);
+                }
+                let name = t(&setting.name_key());
+                let show = self
+                    .navigating(
+                        &format!("settings.found.show:{}", setting.id),
+                        &t("settings-found-show"),
+                        NavigationEffect::ShowSetting {
+                            setting: setting.id.to_owned(),
+                        },
+                    )
+                    .with_accessible_name(&format!("{}: {name}", t("settings-found-show")));
+                setting_row(&name, Box::new(show))
+            })
+            .collect();
+        let open = self
+            .navigating(
+                &format!("settings.found.open:{page}"),
+                &t("settings-found-open"),
+                NavigationEffect::OpenPane {
+                    pane: page.to_owned(),
+                },
+            )
+            .with_accessible_name(&format!(
+                "{}: {}",
+                t("settings-found-open"),
+                category.label()
+            ));
+        Some(section_action(&category.label(), open, rows(items)))
+    }
+
+    fn build_composition(&self) -> Box<dyn Widget> {
+        let mut pages: Vec<(&'static str, Vec<&'static Setting>)> = Vec::new();
+        for setting in &self.settings {
+            match pages.iter_mut().find(|(page, _)| *page == setting.page) {
+                Some((_, found)) => found.push(setting),
+                None => pages.push((setting.page, vec![setting])),
+            }
+        }
+        crate::widgets::page(
+            pages
+                .iter()
+                .filter_map(|(page, settings)| self.group(page, settings))
+                .collect(),
+        )
+    }
+}
+
+impl Widget for Found {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        // The rows' controls follow the stored values in place.
+        self.follows.refresh();
+        self.composed.sync(state, root);
+    }
+
+    crate::pane_model::composed_pane!(kept);
+
+    fn name(&self) -> &'static str {
+        "SettingsFound"
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -217,6 +217,8 @@ pub struct Part {
     pub live_areas: &'static [(u16, crate::effects::LiveArea)],
     /// Every settings section, by place.
     pub sections: &'static [(u16, SectionEntry)],
+    /// The rows of the settings its panes show, as search shows them too.
+    pub settings: &'static [crate::setting::SettingEntry],
 }
 
 /// Everything the parts of Settings bring, in place order.
@@ -229,6 +231,8 @@ pub struct Registry {
     pub live_areas: Vec<&'static crate::effects::LiveArea>,
     /// Every settings section.
     pub sections: Vec<&'static SectionEntry>,
+    /// Every setting's row.
+    pub settings: Vec<&'static crate::setting::SettingEntry>,
 }
 
 impl Registry {
@@ -273,6 +277,7 @@ impl Registry {
                     })
                     .collect(),
             ),
+            settings: parts.iter().flat_map(|part| part.settings.iter()).collect(),
         }
     }
 }

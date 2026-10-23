@@ -118,6 +118,11 @@ pub struct SettingsApp {
     /// The pane whose query the window bar's open search drives
     /// ([`crate::area::PaneQuery`]), from when it opened until it closes.
     queried: Option<Category>,
+    /// What the window bar's search last asked for, and the settings it
+    /// found, shown as their rows in place of the pane until a page is
+    /// opened ([`crate::setting::Found`]). Empty when it found none.
+    found_query: String,
+    found: Vec<&'static settings_store::index::Setting>,
 }
 
 impl Default for SettingsApp {
@@ -174,6 +179,8 @@ impl SettingsApp {
             shell_text_scale: 1.0,
             wallpaper_status: ui::LocalState::new(None),
             queried: None,
+            found_query: String::new(),
+            found: Vec::new(),
         }
     }
 
@@ -300,10 +307,12 @@ impl SettingsApp {
     /// searching). The search is the window bar's: the sidebar's list is
     /// what it filters in place.
     pub fn search_query(&self) -> &str {
-        self.shell
-            .as_ref()
-            .and_then(NavShell::sidebar_ref::<ui::widget::NavList>)
-            .map_or("", ui::widget::NavList::filter)
+        match &self.shell {
+            Some(shell) => shell
+                .sidebar_ref::<ui::widget::NavList>()
+                .map_or("", ui::widget::NavList::filter),
+            None => &self.staged_filter,
+        }
     }
 
     /// The on-screen rect of the narrow content screen's back-arrow button
@@ -325,6 +334,27 @@ impl SettingsApp {
     /// point) and on narrow screens (where the shell's back arrow returns to
     /// the Settings list).
     fn build_content(&self) -> Box<dyn Widget> {
+        // What search found reads from its top each time it changes; a pane
+        // keeps where it was scrolled to.
+        let (body, offset): (Box<dyn Widget>, ScrollOffset) = if self.found.is_empty() {
+            (
+                self.build_pane_body(),
+                std::rc::Rc::clone(
+                    self.pane_scroll
+                        .borrow_mut()
+                        .entry(self.selected)
+                        .or_default(),
+                ),
+            )
+        } else {
+            (
+                Box::new(crate::setting::Found::new(
+                    self.cx.clone(),
+                    self.found.clone(),
+                )),
+                ScrollOffset::default(),
+            )
+        };
         // The toolkit's page frame: one readable column on the leading edge
         // with the page gutter around it, so a wide window leaves its extra
         // room beside the form rather than around a narrow floating column.
@@ -332,13 +362,7 @@ impl SettingsApp {
             Container::new()
                 .readable()
                 .with_inset(ui::tokens::Rhythm::Group)
-                .with_child(self.build_pane_body()),
-        );
-        let offset = std::rc::Rc::clone(
-            self.pane_scroll
-                .borrow_mut()
-                .entry(self.selected)
-                .or_default(),
+                .with_child(body),
         );
         let scroll = Scrollable::new_vertical()
             .with_persisted_offset(offset)
@@ -483,7 +507,7 @@ impl SettingsApp {
 
     /// Narrow the sidebar to `query`, as the window bar's search does (a
     /// staged scene has no bar to type into).
-    fn narrow_sidebar(&mut self, query: &str) {
+    pub(crate) fn narrow_sidebar(&mut self, query: &str) {
         match self
             .shell
             .as_mut()
@@ -492,6 +516,30 @@ impl SettingsApp {
             Some(nav) => nav.set_filter(query),
             None => query.clone_into(&mut self.staged_filter),
         }
+        self.follow_query(query);
+    }
+
+    /// Take in what the window bar's search asks for now: the settings it
+    /// finds are shown as their rows, in place of the pane, until the
+    /// person opens a page. A query finding none leaves the pane shown.
+    fn follow_query(&mut self, query: &str) {
+        if query == self.found_query {
+            return;
+        }
+        query.clone_into(&mut self.found_query);
+        let found = crate::setting::matching(query);
+        if found.is_empty() && self.found.is_empty() {
+            return;
+        }
+        self.found = found;
+        self.structure_dirty = true;
+        self.refresh_shell_children();
+    }
+
+    /// The settings the window bar's search found and shows, for tests.
+    #[must_use]
+    pub fn found_settings(&self) -> Vec<&'static str> {
+        self.found.iter().map(|setting| setting.id).collect()
     }
 
     /// Lay out what a screenshot scenario shows.
@@ -506,9 +554,9 @@ impl SettingsApp {
                     shell.back();
                 }
             }
-            Staged::Search(category) => {
+            Staged::Search(category, query) => {
                 self.select(category);
-                self.narrow_sidebar(crate::scenarios::SEARCH_QUERY);
+                self.narrow_sidebar(query);
             }
             Staged::Focused(category, control) => {
                 self.select(category);
@@ -581,9 +629,19 @@ impl SettingsApp {
             .sidebar(nav)
             .sidebar_header("", Vec::new())
             .content(self.build_content())
-            .content_header(self.selected.label(), Vec::new());
+            .content_header(self.content_title(), Vec::new());
         shell.show(self.narrow_screen);
         shell
+    }
+
+    /// What the content says it is: the pane's name, or that it lists what
+    /// search found.
+    fn content_title(&self) -> String {
+        if self.found.is_empty() {
+            self.selected.label()
+        } else {
+            crate::i18n::t("settings-found-title")
+        }
     }
 
     /// Swap the shell's nav + content to reflect the current selection /
@@ -591,7 +649,7 @@ impl SettingsApp {
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
         let content = self.build_content();
-        let title = self.selected.label();
+        let title = self.content_title();
         if let Some(shell) = &mut self.shell {
             // Keep the retained navigation's viewport and focus when only
             // the selected pane changes.
@@ -814,6 +872,14 @@ impl Widget for SettingsApp {
         // presentation state: no CRDT text, collaboration traffic or undo.
         if let Some(category) = self.sidebar_selection.with(|request| *request) {
             self.sidebar_selection.set(None);
+            // Opening a page, from the sidebar or a setting found, shows the
+            // page; what search found is left behind.
+            let found = !self.found.is_empty();
+            self.found.clear();
+            if found && self.selected == category {
+                self.structure_dirty = true;
+                self.refresh_shell_children();
+            }
             self.select(category);
             if let Some(setting) = self.setting_request.with(|request| *request) {
                 self.setting_request.set(None);
@@ -824,6 +890,10 @@ impl Widget for SettingsApp {
                 self.refresh_shell_children();
             }
         }
+        // The window bar's search is typed into the sidebar's list, outside
+        // the app: what it asks for now is read from there.
+        let query = self.search_query().to_owned();
+        self.follow_query(&query);
         // The read the pane shown waits for has landed, or the layout list
         // the Keyboard page showed without: build the pane.
         if (self.pane_waits.get() && !self.pane_reading())
@@ -1779,9 +1849,14 @@ mod tests {
         }
         app.sync(&doc, &root);
         assert_eq!(app.search_query(), "night light");
+        assert_eq!(
+            app.found_settings().first(),
+            Some(&"display.night_light"),
+            "the settings it finds are shown in place of the pane"
+        );
         assert!(
-            !app.take_structure_dirty(),
-            "a new query filters navigation in place without rebuilding the pane"
+            app.take_structure_dirty(),
+            "the content shows what was found"
         );
         let nav = app
             .shell
