@@ -1039,9 +1039,8 @@ pub struct State {
     pub last_remote_input: Option<(MsgPeerId, SurfaceId, InputEvent)>,
     /// Last `RemoteInput` event the firewall refused, and the rule that refused it — otherwise indistinguishable from a broken filter.
     pub last_remote_input_denial: Option<(MsgPeerId, SurfaceId, Denial)>,
-    /// Per-foreign-surface RGBA staging. [`CompositorHandler::commit`] calls
-    /// [`SurfaceTracker::on_commit`] for every committed surface listed in
-    /// [`crate::shell::state::Workspace::shared_surfaces`]; the streaming task drains via [`SurfaceTracker::take_latest`] per encode tick.
+    /// The dmabuf each shared window last committed, for an encoder that
+    /// imports it without a copy, and which capture path its frames took.
     pub surface_tracker: SurfaceTracker,
     /// The compositor's `wl_seat` handle with a pointer device already
     /// registered, constructed in [`State::new`]. Peer-sync's
@@ -2920,32 +2919,24 @@ impl State {
         store.is_capture_protected(surface, app_id.unwrap_or_default())
     }
 
-    /// A share session's next frame: the window's pixels, or the themed
-    /// placeholder at the stream's size while the window is protected.
-    fn share_frame(
-        &self,
-        session: &SharedFlatpakSession,
-        surface: SurfaceId,
-        pixels: impl FnOnce() -> Option<Vec<u8>>,
-    ) -> Option<Vec<u8>> {
-        if self.is_surface_capture_protected(surface) {
-            let (width, height) = session.dimensions();
-            return Some(crate::shell::capture_protection::placeholder_rgba(
-                width,
-                height,
-                self.capture_placeholder_fill,
-            ));
-        }
-        pixels()
+    /// What a protected window is streamed as: the themed placeholder, at
+    /// the stream's size.
+    fn share_placeholder(&self, session: &SharedFlatpakSession) -> Vec<u8> {
+        let (width, height) = session.dimensions();
+        crate::shell::capture_protection::placeholder_rgba(
+            width,
+            height,
+            self.capture_placeholder_fill,
+        )
     }
 
-    /// Install the non-blocking network bridge used by live legacy streams.
     /// Encode each streamed window on a thread of its own, waking the loop
     /// with `wake` when a frame is ready for [`Self::flush_share_sessions`].
     pub fn set_share_encode_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
         self.share_encode_wake = Some(wake);
     }
 
+    /// Install the non-blocking network bridge used by live legacy streams.
     pub fn set_legacy_stream_publisher(&mut self, publisher: LegacyStreamPublisher) {
         self.legacy_stream_publisher = Some(publisher);
     }
@@ -2997,14 +2988,15 @@ impl State {
         self.legacy_stream_routes.extend(routes);
     }
 
-    /// Send each streamed window's frames encoded since, encoding its
-    /// held-back frame first where this thread encodes it and it is due.
+    /// Send each streamed window's frames encoded since, staging its new
+    /// frame first, and encoding what is due where this thread encodes it.
     /// Returns how many went out.
     pub fn flush_share_sessions(&mut self) -> usize {
         let now = std::time::Instant::now();
         let mut sent = 0_usize;
         let sessions = self.active_sessions.values().cloned().collect::<Vec<_>>();
         for session in sessions {
+            self.stage_share_frame(&session);
             sent = sent.saturating_add(self.publish_encoded(&session, now));
         }
         sent
@@ -3759,14 +3751,12 @@ impl State {
     /// can start decoding without the window having to damage itself (a
     /// static window may never do so).
     fn seed_share_frame(&self, session: &SharedFlatpakSession, surface: SurfaceId) {
-        if let Some(rgba) = self.share_frame(session, surface, || {
-            crate::compositor::foreign::store()
-                .snapshot(surface)
-                .map(|frame| frame.rgba)
-        }) {
-            session.deposit_captured_rgba(rgba);
-            self.publish_encoded(session, std::time::Instant::now());
+        if self.is_surface_capture_protected(surface) {
+            session.deposit_captured_rgba(self.share_placeholder(session));
+        } else {
+            session.stage_window_again();
         }
+        self.publish_encoded(session, std::time::Instant::now());
     }
 
     /// Stage the buffer a foreign (external-client) toplevel just committed
@@ -3897,48 +3887,27 @@ impl State {
             || crate::compositor::foreign::store().is_sheet(surface_id)
     }
 
-    /// Pump the share-session encoder for `surface_id` on a fresh commit.
-    /// Called from [`CompositorHandler::commit`] after
-    /// [`SurfaceTracker::on_commit`] has staged the buffer bytes.
-    ///
-    /// `false` when no session is registered or the tracker slot is empty
-    /// (damage-only commit); `true` when the deposit was accepted and the
-    /// encode tick ran — NOT a guarantee a frame was emitted. Split out so integration tests can drive the tick path without a `WlSurface`.
+    /// Stage `surface_id`'s new frame for its stream on a commit: the
+    /// client's dmabuf, encoded at once, where the encoder imports it, else
+    /// the frame the frame store holds. Returns whether a frame was staged.
     pub fn tick_share_session_for_surface(&mut self, surface_id: SurfaceId) -> bool {
         let Some(session) = self.active_sessions.get(&surface_id).cloned() else {
             return false;
         };
-        if self.is_surface_capture_protected(surface_id) {
-            // Neither the client's buffer nor a readback of it leaves the
-            // machine; the commit still paces the placeholder stream.
-            let fresh = self
-                .surface_tracker
-                .take_latest_dmabuf(surface_id)
-                .is_some()
-                | self.surface_tracker.take_latest(surface_id).is_some();
-            if !fresh {
-                return false;
-            }
-            let Some(rgba) = self.share_frame(&session, surface_id, || None) else {
-                return false;
-            };
-            session.deposit_captured_rgba(rgba);
-            self.publish_encoded(&session, tilo_clock::now());
-            return true;
-        }
-        // DMABUF-direct path takes priority when the commit hook stashed a
-        // Dmabuf this tick — `take_latest_dmabuf` drains it so a re-tick
-        // without a fresh commit finds none. Falling back to SHM covers the mixed-mode case (a client briefly attaching SHM between DMABUF commits).
-        if let Some(dmabuf) = self.surface_tracker.take_latest_dmabuf(surface_id) {
+        let dmabuf = self.surface_tracker.take_latest_dmabuf(surface_id);
+        if !self.is_surface_capture_protected(surface_id)
+            && let Some(dmabuf) = dmabuf
+            && session.takes_dmabuf(&dmabuf)
+        {
+            // Encoded before the commit returns, while the client cannot
+            // draw into the buffer again.
+            session
+                .note_window_frame_sent(crate::compositor::foreign::store().frame_seq(surface_id));
             session.deposit_captured_dmabuf(dmabuf);
-            let emitted = session.encode_next_frame(tilo_clock::now());
-            if let Some(frame) = emitted {
+            if let Some(frame) = session.encode_next_frame(tilo_clock::now()) {
                 if self.legacy_stream_publisher.is_some() {
                     let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
                 }
-                // Encoder actually consumed the DMABUF. Only *now* do we bump
-                // the tracker's `dmabuf_direct_count` — the metric reflects
-                // zero-copy, not "DMABUF-shaped but rejected and fell back to SHM".
                 self.surface_tracker.note_capture_path(
                     surface_id,
                     crate::compositor::surface_readback::CapturePath::DmabufDirect,
@@ -3946,20 +3915,30 @@ impl State {
             }
             return true;
         }
-        let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
-            return false;
-        };
-        // The stream carries the window as its tab shows it, at the size its
-        // first frame (the tab's snapshot) set: without the shadow and resize
-        // border a client-side-decorating toolkit draws around it.
-        let rgba = crate::compositor::foreign::store().crop_to_window(
-            surface_id,
-            frame.rgba,
-            frame.width,
-            frame.height,
-        );
-        session.deposit_captured_rgba(rgba);
+        let staged = self.stage_share_frame(&session);
         self.publish_encoded(&session, tilo_clock::now());
+        staged
+    }
+
+    /// Stage the window's frame for `session` when the frame store holds a
+    /// new one: as the store holds it, or the placeholder of a protected
+    /// window. Returns whether one was staged.
+    fn stage_share_frame(&self, session: &SharedFlatpakSession) -> bool {
+        if session.is_paint() {
+            return false;
+        }
+        let surface = session.surface_id;
+        let seq = crate::compositor::foreign::store().frame_seq(surface);
+        if !session.note_window_frame(seq) {
+            return false;
+        }
+        if self.is_surface_capture_protected(surface) {
+            // Neither the client's buffer nor a readback of it leaves the
+            // machine; its frames still pace the placeholder stream.
+            session.deposit_captured_rgba(self.share_placeholder(session));
+        } else {
+            session.stage_window();
+        }
         true
     }
 
@@ -5736,60 +5715,24 @@ impl CompositorHandler for State {
             Self::hold_drawn_buffer(surface, surface_id);
             return;
         }
-        // Pull the most recent buffer assignment: `NewBuffer(b)` is freshly-attached; `Removed` means detach — drop the tracker slot.
+        // A shared window's pixels reach its stream through the frame store,
+        // captured above. A client's dmabuf is also kept for an encoder that
+        // imports it without a copy.
         wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
-                    // Path detection: DMABUF takes the direct path (capture-path counter, encoder pulls the fd); SHM falls to readback + swizzle.
-                    let (path, result) = self
-                        .surface_tracker
-                        .on_commit_with_path_detection(surface_id, buffer);
-                    match result {
-                        Ok(_) => {}
-                        Err(
-                            crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported,
-                        ) => {
-                            // The tentative path is `DmabufDirect`. Pull the
-                            // Dmabuf off the wl_buffer via smithay's dmabuf-role
-                            // lookup and stash it on the tracker —
-                            // `tick_share_session_for_surface` drains it via
-                            // `take_latest_dmabuf` the same tick.
-                            //
-                            // If `get_dmabuf` fails despite detection saying
-                            // "not shm" (an unrecognised buffer type, e.g. `wl_drm`), the tracker slot stays empty this tick — the frame is dropped and no counter bumped, correct for "we don't know how to handle this buffer at all".
-                            match smithay::wayland::dmabuf::get_dmabuf(buffer) {
-                                Ok(dmabuf) => {
-                                    self.surface_tracker
-                                        .note_dmabuf_committed(surface_id, dmabuf.clone());
-                                }
-                                Err(_) => {
-                                    tracing::warn!(
-                                        target: "shell::compositor::state",
-                                        surface_id,
-                                        path = ?path,
-                                        "buffer is neither shm nor dmabuf (unknown role); dropping frame"
-                                    );
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                target: "shell::compositor::state",
-                                surface_id, ?err, ?path,
-                                "surface readback failed; tracker slot left empty",
-                            );
-                        }
+                    if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) {
+                        self.surface_tracker
+                            .note_dmabuf_committed(surface_id, dmabuf.clone());
                     }
                 }
                 Some(wl_compositor::BufferAssignment::Removed) => {
                     self.surface_tracker.forget(surface_id);
                 }
-                None => {
-                    // Nothing attached this commit — preserve the previously-staged frame so a damage-only re-commit doesn't wipe the tracker.
-                }
+                None => {}
             }
         });
 
@@ -5803,10 +5746,7 @@ impl CompositorHandler for State {
             }
         }
 
-        // Share-session tick hook: if this surface has an active Flatpak
-        // share session, deposit the freshly-captured RGBA and pump the
-        // encoder the same tick — without this the encoder waits for the
-        // render loop's next damage sweep, a full-frame stall. Delegated to `tick_share_session_for_surface` to keep the pump logic testable without a real `WlSurface`.
+        // A shared window's new frame is staged the commit it lands on.
         let _ = self.tick_share_session_for_surface(surface_id);
         Self::hold_drawn_buffer(surface, surface_id);
     }
@@ -9063,45 +9003,42 @@ mod tick_hook_tests {
     }
 
     #[test]
-    fn tick_hook_encodes_one_frame_per_commit_until_unregistered() {
-        // Phase `two_commits_produce_two_encoded_frames`.
-        // Two commits with a share session registered must produce two encoded frames — `encode_next_frame` pumps once per commit into the per-subscriber queue.
+    fn tick_hook_encodes_each_new_frame_of_the_window_until_unregistered() {
+        let store = crate::compositor::foreign::store();
+        // Phase `each_frame_the_store_holds_is_encoded_once`.
         {
             const W: u32 = 64;
             const H: u32 = 64;
             const HOST: PeerId = 0xAAAA;
             const VIEWER: PeerId = 0xBBBB;
-            const SURFACE: SurfaceId = 42;
+            const SURFACE: SurfaceId = 7_301_042;
+            store.forget(SURFACE);
+            store.publish_rgba(SURFACE, &gradient(W, H), W, H);
 
             let session = Arc::new(
                 SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, &cfg()).expect("session"),
             );
             session.add_viewer(VIEWER, false);
-
             let mut state = make_state();
             state.register_share_session(session.clone());
 
-            // Simulate the sequence a real commit would produce: `on_commit`
-            // deposits bytes (mocked via `deposit_for_test`), then the commit
-            // handler calls `tick_share_session_for_surface` directly — no real `WlSurface` needed.
-            state
-                .surface_tracker
-                .deposit_for_test(SURFACE, gradient(W, H), W, H);
-            let ran = state.tick_share_session_for_surface(SURFACE);
-            assert!(ran, "first commit must fire the tick");
-            // The throttle is time-based: two back-to-back ticks land inside its
-            // 33 ms window. The second commit comes 40 ms later on the clock
-            // the tick reads, so the throttle accepts it.
-            state
-                .surface_tracker
-                .deposit_for_test(SURFACE, gradient(W, H), W, H);
+            assert!(
+                state.tick_share_session_for_surface(SURFACE),
+                "a new frame is staged"
+            );
+            assert!(
+                !state.tick_share_session_for_surface(SURFACE),
+                "a commit without a new frame stages none"
+            );
+            // The throttle is time-based: the next frame lands 40 ms later on
+            // the clock the tick reads, past the stream's frame interval.
+            store.publish_rgba(SURFACE, &gradient(W, H), W, H);
             let later = std::time::Instant::now() + std::time::Duration::from_millis(40);
-            let ran2 = ui::time::testing::with_monotonic_time(later, || {
+            let ran = ui::time::testing::with_monotonic_time(later, || {
                 state.tick_share_session_for_surface(SURFACE)
             });
-            assert!(ran2, "second commit must fire the tick");
+            assert!(ran, "the second frame is staged");
 
-            // Both encoded frames land in the subscriber's substream queue with monotonic sequence numbers.
             let f0 = session
                 .poll_stream_frame(VIEWER)
                 .expect("first frame on the substream");
@@ -9111,36 +9048,20 @@ mod tick_hook_tests {
             assert_eq!(f0.sequence, 0);
             assert_eq!(f1.sequence, 1);
             assert!(session.poll_stream_frame(VIEWER).is_none());
+            store.forget(SURFACE);
         }
         // Phase `commit_without_active_session_is_noop`.
-        // A commit for a surface with no registered share session is a no-op (no encoder pumped, no substream traffic).
         {
             let mut state = make_state();
-            state
-                .surface_tracker
-                .deposit_for_test(999, vec![0; 64], 4, 4);
-            assert!(!state.tick_share_session_for_surface(999));
-        }
-        // Phase `commit_without_staged_frame_returns_false`.
-        // A commit with a registered session but no staged frame returns `false` — the damage-only path (cursor motion, null-attach).
-        {
-            const HOST: PeerId = 0xAAAA;
-            const SURFACE: SurfaceId = 55;
-
-            let session = Arc::new(
-                SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
-            );
-            let mut state = make_state();
-            state.register_share_session(session);
-            // Tracker slot is empty.
-            assert!(!state.tick_share_session_for_surface(SURFACE));
+            assert!(!state.tick_share_session_for_surface(7_301_999));
         }
         // Phase `unregister_stops_the_tick_hook`.
-        // `unregister_share_session` stops the tick hook from pumping.
         {
             const HOST: PeerId = 0xAAAA;
             const VIEWER: PeerId = 0xBBBB;
-            const SURFACE: SurfaceId = 77;
+            const SURFACE: SurfaceId = 7_301_077;
+            store.forget(SURFACE);
+            store.publish_rgba(SURFACE, &vec![0xFFu8; 32 * 32 * 4], 32, 32);
 
             let session = Arc::new(
                 SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
@@ -9150,9 +9071,6 @@ mod tick_hook_tests {
             state.register_share_session(session);
             let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
             assert!(state.remote_seats.key_transition(VIEWER, 42, true));
-            state
-                .surface_tracker
-                .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
             assert!(state.tick_share_session_for_surface(SURFACE));
             state.unregister_share_session(SURFACE);
             assert_eq!(
@@ -9167,11 +9085,9 @@ mod tick_hook_tests {
                 !state.remote_seats.key_transition(VIEWER, 42, false),
                 "ending the share already consumed the held modifier"
             );
-            // Post-unregister the tick is a no-op even with a staged frame.
-            state
-                .surface_tracker
-                .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
+            store.publish_rgba(SURFACE, &vec![0xFFu8; 32 * 32 * 4], 32, 32);
             assert!(!state.tick_share_session_for_surface(SURFACE));
+            store.forget(SURFACE);
         }
     }
 

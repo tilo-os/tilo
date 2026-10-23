@@ -21,6 +21,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::collab::colorimetry::Colorimetry;
+use crate::collab::encoder::nv12::Region;
 use crate::collab::encoder::{
     Codec, Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, build,
 };
@@ -62,8 +63,10 @@ struct StagedFrame {
 /// single tick can only encode one and storing both would invite ambiguity
 /// about which wins.
 enum StagedKind {
-    /// Row-major RGBA bytes from SHM readback.
+    /// Row-major RGBA bytes, the whole frame.
     Rgba(Vec<u8>),
+    /// The window as the frame store holds it when the frame is encoded.
+    Window,
     /// DMABUF handle handed to the encoder; Arc-backed inside smithay, so
     /// staging it keeps every plane fd alive without a dup.
     #[cfg(target_os = "linux")]
@@ -318,6 +321,13 @@ pub struct SharedFlatpakSession {
     /// The next frame encoded is a keyframe. A flag, not a call on the
     /// encoder, so asking never waits for an encode in progress.
     keyframe_wanted: AtomicBool,
+    /// The newest of the window's frames the frame store was seen holding.
+    window_noted: AtomicU64,
+    /// The window's frame last handed to the encoder, when the frame before
+    /// the next one came from the frame store.
+    window_taken: Mutex<Option<u64>>,
+    /// Which dmabuf layouts the encoder imports, as it answered.
+    dmabuf_layouts: Mutex<std::collections::HashMap<(u32, u64), bool>>,
     origin: Instant,
     active: Arc<AtomicBool>,
     /// Per-share video substream sender — every `encode_next_frame` deposits
@@ -512,6 +522,9 @@ impl SharedFlatpakSession {
             encoded: Mutex::new(Vec::new()),
             in_background: AtomicBool::new(false),
             keyframe_wanted: AtomicBool::new(false),
+            window_noted: AtomicU64::new(0),
+            window_taken: Mutex::new(None),
+            dmabuf_layouts: Mutex::new(std::collections::HashMap::new()),
             origin: Instant::now(),
             active: Arc::new(AtomicBool::new(true)),
             stream_sender,
@@ -615,6 +628,7 @@ impl SharedFlatpakSession {
             }
         };
         *self.encoder.lock_recover() = encoder;
+        self.dmabuf_layouts.lock_recover().clear();
         *self.codec_state.lock_recover() = state;
         *self.standing_keyframe.lock_recover() = None;
         self.stream_sender.set_format(
@@ -787,6 +801,66 @@ impl SharedFlatpakSession {
         self.stage(StagedKind::Rgba(rgba));
     }
 
+    /// The frame store holds frame `seq` of the window
+    /// ([`crate::compositor::foreign::ForeignFrameStore::frame_seq`]).
+    /// Returns whether it is one not seen before.
+    pub fn note_window_frame(&self, seq: u64) -> bool {
+        !self.paint && seq != 0 && self.window_noted.swap(seq, Ordering::AcqRel) != seq
+    }
+
+    /// Encode the window as the frame store holds it when it is encoded,
+    /// converting only what changed since the frame before.
+    pub fn stage_window(&self) {
+        self.stage(StagedKind::Window);
+    }
+
+    /// Encode the window as the frame store holds it, even unchanged since
+    /// the frame before: a reader starts at it.
+    pub fn stage_window_again(&self) {
+        *self.window_taken.lock_recover() = None;
+        self.stage(StagedKind::Window);
+    }
+
+    /// Frame `seq` of the window was sent as the client's dmabuf, so the
+    /// store's copy of it is not encoded again.
+    pub fn note_window_frame_sent(&self, seq: u64) {
+        self.window_noted.store(seq, Ordering::Release);
+    }
+
+    /// Whether the encoder imports `dmabuf` without a copy.
+    #[cfg(target_os = "linux")]
+    pub fn takes_dmabuf(&self, dmabuf: &Dmabuf) -> bool {
+        let format = dmabuf.format();
+        let layout = (format.code as u32, u64::from(format.modifier));
+        if let Some(takes) = self.dmabuf_layouts.lock_recover().get(&layout) {
+            return *takes;
+        }
+        let takes = self
+            .encoder
+            .lock_recover()
+            .accepts_dmabuf(layout.0, layout.1);
+        self.dmabuf_layouts.lock_recover().insert(layout, takes);
+        takes
+    }
+
+    /// The window as the frame store holds it, with what changed since the
+    /// frame last taken from it; `None` when it holds none at the stream's
+    /// size or nothing changed since.
+    fn window_frame(&self) -> Option<(Vec<u8>, Option<Vec<Region>>)> {
+        let store = crate::compositor::foreign::store();
+        let snapshot = store.snapshot(self.surface_id)?;
+        if (snapshot.width, snapshot.height) != (self.width, self.height) {
+            return None;
+        }
+        let previous = self.window_taken.lock_recover().replace(snapshot.seq);
+        if previous == Some(snapshot.seq) {
+            return None;
+        }
+        let changed = previous
+            .and_then(|previous| store.snapshot_changes(self.surface_id, previous, snapshot.seq));
+        Some((snapshot.rgba, changed))
+    }
+
     /// Replace any undrained deposit with `kind`, stamped now. A paint
     /// share never takes captured frames.
     fn stage(&self, kind: StagedKind) {
@@ -924,6 +998,12 @@ impl SharedFlatpakSession {
         let staged = self.staged_frame.lock_recover().take();
         let staged = staged?;
         let carried_ts = staged.capture_ts_ns;
+        let window = if matches!(staged.kind, StagedKind::Window) {
+            Some(self.window_frame()?)
+        } else {
+            *self.window_taken.lock_recover() = None;
+            None
+        };
 
         let mut encoder = self.encoder.lock_recover();
         if self.keyframe_wanted.swap(false, Ordering::AcqRel) {
@@ -938,6 +1018,14 @@ impl SharedFlatpakSession {
                 encoder.encode(FrameInput::Rgba(rgba), &mut nalus),
                 CapturePath::ShmReadback,
             ),
+            StagedKind::Window => {
+                let input = match &window {
+                    Some((rgba, Some(changed))) => FrameInput::RgbaChanged { rgba, changed },
+                    Some((rgba, None)) => FrameInput::Rgba(rgba),
+                    None => return None,
+                };
+                (encoder.encode(input, &mut nalus), CapturePath::ShmReadback)
+            }
             #[cfg(target_os = "linux")]
             StagedKind::Dmabuf(dmabuf) => (
                 encoder.encode(dmabuf_frame_input(dmabuf), &mut nalus),
