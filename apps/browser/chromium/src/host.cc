@@ -47,7 +47,9 @@
 #include <deque>
 #include <fcntl.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <map>
 #include <optional>
@@ -220,6 +222,8 @@ bool service_session_consumed=false;
 int devtools_write=-1,devtools_read=-1;
 tilo::DevToolsPending devtools_pending;
 std::string downloads_directory;
+// Where extensions' context menu items are kept (extension_menus.h).
+std::string extension_menus_file;
 std::shared_ptr<tilo::CredentialWorker> credential_worker;
 struct CredentialDeliveryState {std::mutex mutex;bool active=false;};
 // A blocked worker retains this plain state through shutdown, without touching
@@ -273,8 +277,26 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void PublishZoom() { if(browser_) { auto d=CefDictionaryValue::Create();d->SetDouble("level",browser_->GetHost()->GetZoomLevel());Event("zoom",d); } }
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
-  void OnBeforeContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model) override {
+  void OnBeforeContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model) override {
     if(!params->GetLinkUrl().empty()) { model->AddItem(26501,"Open link in new tab");model->AddItem(26502,"Copy link address"); }
+    // Extensions' items, after the page's own as in Chrome.
+    menu_offers_.clear();
+    if(!extension_tabs) return;
+    menu_context_=tilo::MenuContext{};
+    menu_context_.page=params->GetPageUrl().ToString();menu_context_.frame=params->GetFrameUrl().ToString();
+    menu_context_.link=params->GetLinkUrl().ToString();menu_context_.src=params->GetSourceUrl().ToString();
+    menu_context_.selection=params->GetSelectionText().ToString();menu_context_.editable=params->IsEditable();
+    menu_context_.main_frame=!frame || frame->IsMain();
+    switch(params->GetMediaType()) {
+      case CM_MEDIATYPE_IMAGE: menu_context_.media="image";break;
+      case CM_MEDIATYPE_VIDEO: menu_context_.media="video";break;
+      case CM_MEDIATYPE_AUDIO: menu_context_.media="audio";break;
+      default: break;
+    }
+    menu_offers_=extension_tabs->MenuOffers(menu_context_);
+    if(menu_offers_.size()>kMaxMenuOffers) menu_offers_.resize(kMaxMenuOffers);
+    if(!menu_offers_.empty() && model->GetCount()) model->AddSeparator();
+    for(size_t i=0;i<menu_offers_.size();++i) model->AddItem(kFirstMenuOffer+static_cast<int>(i),menu_offers_[i].label);
   }
   bool RunContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model,CefRefPtr<CefRunContextMenuCallback> callback) override {
     if(context_callback_) context_callback_->Cancel();
@@ -290,7 +312,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     d->SetList("items",items);Event("context_menu",d);return true;
   }
   bool OnContextMenuCommand(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,int command,EventFlags) override {
-    if(command==26501) { OpenTab(params->GetLinkUrl(),false);return true; }return false;
+    if(command==26501) { OpenTab(params->GetLinkUrl(),false);return true; }
+    if(command>=kFirstMenuOffer && command<kFirstMenuOffer+static_cast<int>(menu_offers_.size())) {
+      if(extension_tabs) extension_tabs->MenuChosen(id_,menu_offers_[static_cast<size_t>(command-kFirstMenuOffer)],menu_context_);
+      return true;
+    }
+    return false;
   }
   void OnContextMenuDismissed(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>) override { context_callback_=nullptr;context_commands_.clear();auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);Event("context_closed",d); }
   CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
@@ -1329,6 +1356,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The pointer shape the page last asked for, by its CSS name.
   std::string cursor_;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
+  // The extensions' items in the open menu, by command from kFirstMenuOffer,
+  // and where it opened.
+  static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=24;
+  std::vector<tilo::MenuOffer> menu_offers_;tilo::MenuContext menu_context_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
   tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);
@@ -1511,7 +1542,19 @@ void StartExtensionTabs() {
   hooks.frame=[](int tab)->std::shared_ptr<tilo::ExtensionFrame> {auto client=ClientOf(tab);return client?client->PaintedFrame():nullptr;};
   hooks.pipe=&PipeCall;
   hooks.private_mode=private_mode;
+  if(!private_mode && !extension_menus_file.empty())
+    hooks.save_menus=[](std::string json) {
+      // Written whole, then put in place: a crash leaves the old file.
+      const std::string partial=extension_menus_file+".partial";
+      {std::ofstream out(partial,std::ios::binary|std::ios::trunc);out<<json;if(!out.good()) return;}
+      std::error_code error;std::filesystem::rename(partial,extension_menus_file,error);
+    };
   extension_tabs=std::make_unique<tilo::ExtensionTabs>(std::move(hooks));
+  if(!private_mode && !extension_menus_file.empty()) {
+    std::ifstream in(extension_menus_file,std::ios::binary);
+    std::string json((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());
+    if(!json.empty() && json.size()<=16*1024*1024) extension_tabs->LoadMenus(json);
+  }
   CefRefPtr<tilo::ExtensionBridgeFactory> bridge=new tilo::ExtensionBridgeFactory(
     [](int browser,const std::string& frame,const std::string& method,const std::string& body,tilo::ExtensionTabs::Reply reply) {
       int caller=0;
@@ -1823,6 +1866,7 @@ int RunHost(int argc,char** argv) {
   std::filesystem::create_directories(profile);
   profile=std::filesystem::canonical(profile).string();
   if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
+  extension_menus_file=profile+"/Extension Menus.json";
   Output writer;output=&writer;
 #if defined(OS_LINUX) || defined(OS_MAC)
   // Chromium's pipe handler reads commands on fd 3 and replies on fd 4. Use

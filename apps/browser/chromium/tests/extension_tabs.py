@@ -24,6 +24,10 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A tab is captured as it shows, as PNG or JPEG at the quality asked for, by
   an extension given it by a click or with access to every site, and by no
   other; at most twice a second, as Chrome allows.
+- An extension's context menu items show in the page's menu where their
+  contexts say (page, selection, link, image); choosing one tells the
+  extension with the tab, which it may then script (activeTab), and the
+  items and their state outlast a restart.
 """
 import base64
 import hashlib
@@ -32,6 +36,7 @@ import json
 from pathlib import Path
 import secrets
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -66,6 +71,15 @@ def prepare(source, into):
     manifest['background']['service_worker'] = 'tilo-worker.js'
     (target / 'manifest.json').write_text(json.dumps(manifest))
     return target, token
+
+
+def _token(path):
+    """The token `prepare` wrote into the worker of the extension at `path`."""
+    script = path / 'tilo-extension-tabs.js'
+    if not script.exists():
+        return None
+    first = script.read_text().split('\n', 1)[0]
+    return first.split('"')[1]
 
 
 def extension_id(path):
@@ -142,6 +156,17 @@ def image(url, kind):
     return base64.b64decode(url[len(prefix):])
 
 
+# A page with a link, an image and words, each where the test right-clicks
+# it, in CSS pixels; `?select` selects the words.
+MENU_PAGE = """<!doctype html><title>menus</title><body style="margin:0">
+<a href="/target" style="position:absolute;left:10px;top:10px;width:200px;height:30px;display:block">a link</a>
+<img src="/image.svg" style="position:absolute;left:10px;top:60px;width:80px;height:80px">
+<p id="words" style="position:absolute;left:10px;top:160px;margin:0;font-size:24px">selected words</p>
+<script>if (location.search === '?select') getSelection().selectAllChildren(document.getElementById('words'));</script>
+</body>"""
+IMAGE = b'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="teal"/></svg>'
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     # What the fixtures' workers report (`POST /report/<name>`), by name.
     reports = {}
@@ -156,10 +181,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        page = SHOT if self.path == '/shot' else f'<!doctype html><title>page {self.path}</title><body>page</body>'
-        body = page.encode()
+        kind = 'text/html'
+        if self.path == '/shot':
+            body = SHOT.encode()
+        elif self.path.startswith('/menus'):
+            body = MENU_PAGE.encode()
+        elif self.path == '/image.svg':
+            body, kind = IMAGE, 'image/svg+xml'
+        else:
+            body = f'<!doctype html><title>page {self.path}</title><body>page</body>'.encode()
         self.send_response(200)
-        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -180,15 +212,20 @@ class ExtensionTabs(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def start(self, *names, access):
+    def start(self, *names, access, installed=None, profile=None):
         """A host with the fixtures `names` loaded, each granted what the
         Browser grants an installed extension (`access`: name -> (permissions,
-        hosts))."""
-        installed = tempfile.TemporaryDirectory(prefix='tilo-extension-tabs-')
-        self.addCleanup(installed.cleanup)
-        prepared = [prepare(FIXTURES / name, Path(installed.name)) for name in names]
+        hosts)). A host started again with the `installed` directory and the
+        `profile` of an earlier one finds the same extensions there."""
+        if installed is None:
+            directory = tempfile.TemporaryDirectory(prefix='tilo-extension-tabs-')
+            self.addCleanup(directory.cleanup)
+            installed = Path(directory.name)
+        # One prepared before keeps its token in the worker it wrote.
+        prepared = [((installed / name).resolve(), _token(installed / name)) if (installed / name).exists()
+                    else prepare(FIXTURES / name, installed) for name in names]
         paths = [path for path, _ in prepared]
-        host = Host(args=['--use-mock-keychain', '--load-extension=' + ','.join(map(str, [MANAGER, *paths]))])
+        host = Host(args=['--use-mock-keychain', '--load-extension=' + ','.join(map(str, [MANAGER, *paths]))], profile=profile)
         self.addCleanup(host.close)
         host.send(op='extension_identity', id=extension_id(MANAGER))
         # The Browser tells the engine what each extension may do once it has
@@ -371,6 +408,96 @@ class ExtensionTabs(unittest.TestCase):
             host.settle(2.0)
         host.send(op='extension_click', id=ids['clicker'])
         self.title(host, 1, 'clicked:true|clicked:true')
+
+    # chrome.contextMenus: items in the page's menu, and a choice reaching
+    # the extension.
+    def menu(self, host, x, y):
+        """Right-click at (x, y) and read the menu that opens, then close it:
+        its items by label."""
+        host.send(op='mouse_move', x=x, y=y)
+        host.send(op='mouse_button', button='right', down=True, x=x, y=y)
+        host.send(op='mouse_button', button='right', down=False, x=x, y=y)
+        menu = host.until(lambda e: e['event'] == 'context_menu')
+        return menu, {item['label']: item['id'] for item in menu['items']}
+
+    def close_menu(self, host, menu):
+        host.send(op='context_action', id=menu['id'], command=0)
+        host.until(lambda e: e['event'] == 'context_closed' and e['id'] == menu['id'])
+
+    def page_menu(self, host, x, y, wanted):
+        """The menu at (x, y) once the extension's item `wanted` is in it: the
+        worker makes its items as it is installed, a moment after the start."""
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            menu, items = self.menu(host, x, y)
+            if wanted in items or time.monotonic() > deadline:
+                return menu, items
+            self.close_menu(host, menu)
+            host.settle(0.5)
+
+    def choose(self, host, menu, items, label):
+        """Choose the item `label`: what the extension marked the page with."""
+        before = len(host.seen)
+        host.send(op='context_action', id=menu['id'], command=items[label])
+        match = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('chosen:')
+        seen = next((e for e in host.seen[before:] if match(e)), None) or host.until(match)
+        return json.loads(seen['title'][len('chosen:'):])
+
+    def test_items_show_where_their_contexts_say_and_a_choice_reaches_the_extension(self):
+        installed = Path(tempfile.mkdtemp(prefix='tilo-extension-menus-'))
+        self.addCleanup(shutil.rmtree, installed, True)
+        profile = Path(tempfile.mkdtemp(prefix='tilo-extension-menus-profile-'))
+        self.addCleanup(shutil.rmtree, profile, True)
+        access = {'menus': (['contextMenus', 'activeTab', 'scripting'], [])}
+        host, ids = self.start('menus', access=access, installed=installed, profile=profile)
+        page = self.url + '/menus'
+        host.navigate(page)
+        ours = {'Mark the page', 'Look up "selected words"', 'Mark the link', 'Mark the image', 'Remember the page', 'Everywhere'}
+
+        # The page itself: its items, and those for every context.
+        menu, items = self.page_menu(host, 400, 400, 'Mark the page')
+        self.assertEqual(ours & set(items), {'Mark the page', 'Remember the page', 'Everywhere'})
+        self.assertFalse({'Elsewhere', 'Gone', 'Before'} & set(items), items)
+        self.close_menu(host, menu)
+
+        # A link: its item, not the page's.
+        menu, items = self.menu(host, 20, 20)
+        self.assertEqual(ours & set(items), {'Mark the link', 'Everywhere'})
+        chosen = self.choose(host, menu, items, 'Mark the link')
+        # The tab's address shows the click gave the extension the page.
+        self.assertEqual(chosen['url'], page)
+        if sys.platform == 'darwin':
+            # macOS selects the words under a right-click.
+            chosen['info'].pop('selectionText', None)
+        self.assertEqual(chosen['info'], {'menuItemId': 'link', 'linkUrl': self.url + '/target', 'pageUrl': page, 'frameId': 0, 'editable': False})
+
+        # An image.
+        menu, items = self.menu(host, 40, 100)
+        self.assertEqual(ours & set(items), {'Mark the image', 'Everywhere'})
+        chosen = self.choose(host, menu, items, 'Mark the image')
+        self.assertEqual(chosen['info']['mediaType'], 'image')
+        self.assertEqual(chosen['info']['srcUrl'], self.url + '/image.svg')
+
+        # A selection, named in the item's title.
+        host.navigate(page + '?select')
+        menu, items = self.menu(host, 40, 172)
+        self.assertEqual(ours & set(items), {'Look up "selected words"', 'Everywhere'})
+        chosen = self.choose(host, menu, items, 'Look up "selected words"')
+        self.assertEqual((chosen['info']['menuItemId'], chosen['info']['selectionText']), ('selection', 'selected words'))
+
+        # A checkbox turns on.
+        menu, items = self.menu(host, 400, 400)
+        chosen = self.choose(host, menu, items, 'Remember the page')
+        self.assertEqual((chosen['info']['wasChecked'], chosen['info']['checked']), (False, True))
+
+        # The items and their state outlast the engine: an extension makes
+        # them once, when installed.
+        host.close()
+        host, _ = self.start('menus', access=access, installed=installed, profile=profile)
+        host.navigate(page)
+        menu, items = self.page_menu(host, 400, 400, 'Remember the page')
+        chosen = self.choose(host, menu, items, 'Remember the page')
+        self.assertEqual((chosen['info']['wasChecked'], chosen['info']['checked']), (True, False))
 
 
 if __name__ == '__main__':

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 
 # How long a wait on the host may take before it counts as hung: the
@@ -36,8 +37,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 class Host:
-    def __init__(self, args=()):
-        self.profile = tempfile.TemporaryDirectory(prefix='tilo-regressions-')
+    def __init__(self, args=(), profile=None):
+        # A profile given is the caller's, kept when the host closes: a later
+        # host may open it again.
+        self.profile = tempfile.TemporaryDirectory(prefix='tilo-regressions-') if profile is None else types.SimpleNamespace(name=str(profile), cleanup=lambda: None)
         self.log = tempfile.TemporaryFile()
         self.p = subprocess.Popen([str(HOST), '--profile='+self.profile.name, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log)
         self.events = queue.Queue()
@@ -97,6 +100,8 @@ class Host:
     def latest_title(self):
         return next(e['title'] for e in reversed(self.seen) if e['event']=='title')
     def close(self):
+        if self.p.stdin.closed:
+            return
         try:
             self.send(op='shutdown')
             self.until(lambda e:e['event']=='closed')

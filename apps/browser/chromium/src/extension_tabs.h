@@ -46,7 +46,9 @@
 #include "include/cef_scheme.h"
 #include "include/cef_task.h"
 #include "include/wrapper/cef_closure_task.h"
+#include "extension_menus.h"
 #include "extension_tabs_script.h"
+#include "match_pattern.h"
 
 namespace tilo {
 
@@ -87,47 +89,6 @@ inline bool ExtensionId(const std::string& id) {
   if (id.size() != 32) return false;
   for (char c : id) if (c < 'a' || c > 'p') return false;
   return true;
-}
-
-// `*` matches any run of characters.
-inline bool GlobMatch(const std::string& pattern, const std::string& text) {
-  size_t p = 0, t = 0, star = std::string::npos, mark = 0;
-  while (t < text.size()) {
-    if (p < pattern.size() && pattern[p] == '*') { star = p++; mark = t; }
-    else if (p < pattern.size() && pattern[p] == text[t]) { ++p; ++t; }
-    else if (star != std::string::npos) { p = star + 1; t = ++mark; }
-    else return false;
-  }
-  while (p < pattern.size() && pattern[p] == '*') ++p;
-  return p == pattern.size();
-}
-// Chrome's match patterns (`<all_urls>`, `*://*.example.com/*`), for access to
-// a page.
-inline bool MatchPattern(const std::string& pattern, const std::string& url) {
-  CefURLParts parts;
-  if (!CefParseURL(url, parts)) return false;
-  const std::string scheme = CefString(&parts.scheme).ToString();
-  const std::string host = CefString(&parts.host).ToString();
-  std::string path = CefString(&parts.path).ToString();
-  const std::string query = CefString(&parts.query).ToString();
-  if (!query.empty()) path += "?" + query;
-  if (pattern == "<all_urls>") return scheme == "http" || scheme == "https" || scheme == "file" || scheme == "ws" || scheme == "wss";
-  const auto separator = pattern.find("://");
-  if (separator == std::string::npos) return false;
-  const std::string want_scheme = pattern.substr(0, separator);
-  const auto slash = pattern.find('/', separator + 3);
-  const std::string want_host = pattern.substr(separator + 3, slash == std::string::npos ? std::string::npos : slash - separator - 3);
-  const std::string want_path = slash == std::string::npos ? "/*" : pattern.substr(slash);
-  if (want_scheme == "*" ? scheme != "http" && scheme != "https" : want_scheme != scheme) return false;
-  if (want_host != "*" && scheme != "file") {
-    if (want_host.rfind("*.", 0) == 0) {
-      const std::string base = want_host.substr(2);
-      if (host != base && !(host.size() > base.size() && host.compare(host.size() - base.size() - 1, std::string::npos, "." + base) == 0)) return false;
-    } else if (want_host != host) {
-      return false;
-    }
-  }
-  return GlobMatch(want_path, path.empty() ? "/" : path);
 }
 
 // DevTools calls on one tab's inspector, each answered on a later UI turn.
@@ -268,9 +229,14 @@ class ExtensionTabs {
     std::function<std::shared_ptr<ExtensionFrame>(int)> frame;
     // A DevTools call on the browser's pipe, `session` empty for the browser.
     std::function<void(const std::string&, CefRefPtr<CefDictionaryValue>, const std::string&, PipeDone)> pipe;
+    // Keep the extensions' context menu items (ExtensionMenus::Save) with
+    // the profile; unset for a private one.
+    std::function<void(std::string)> save_menus;
     bool private_mode = false;
   };
   explicit ExtensionTabs(Hooks hooks) : hooks_(std::move(hooks)) {}
+  // A change not yet kept is kept as the host closes.
+  ~ExtensionTabs() { if (saving_ && hooks_.save_menus) hooks_.save_menus(menus_.Save()); }
 
   // The Browser's own extension, whose content script is in every page and
   // whose worker answers which tab a page is (Identify).
@@ -299,7 +265,12 @@ class ExtensionTabs {
     for (auto it = granted_.begin(); it != granted_.end();) it = it->first == id ? granted_.erase(it) : std::next(it);
     captures_.erase(id);
     for (auto it = ports_.begin(); it != ports_.end();) it = it->second.extension == id ? ports_.erase(it) : std::next(it);
+    // Removed: its menu items go with it, as in Chrome.
+    menus_.RemoveAll(id);
+    MenusChanged();
   }
+  // The items the profile kept from an earlier run.
+  void LoadMenus(const std::string& json) { menus_.Load(json); }
 
   // A request to the bridge from `frame` of the host tab `caller`, or with
   // no tab (0) from a service worker: answered for the extension whose page
@@ -436,9 +407,56 @@ class ExtensionTabs {
       const auto* tab = ByExtensionId(tabs, IntOf(args, "windowId"));
       if (!tab) { Fail(reply, "No window with id: " + std::to_string(IntOf(args, "windowId").value_or(-1)) + "."); return; }
       Succeed(reply, Wrap(WindowObject(extension, *tab, false)));
+    } else if (method.rfind("contextMenus.", 0) == 0) {
+      if (!Has(extension, "contextMenus")) { Fail(reply, "The extension may not add menu items"); return; }
+      std::optional<std::string> error;
+      if (method == "contextMenus.create") error = menus_.Create(extension, args->GetDictionary("properties"));
+      else if (method == "contextMenus.update") error = menus_.Update(extension, args->GetValue("id"), args->GetDictionary("properties"));
+      else if (method == "contextMenus.remove") error = menus_.Remove(extension, args->GetValue("id"));
+      else if (method == "contextMenus.removeAll") menus_.RemoveAll(extension);
+      else error = "Tilo does not support " + method + " yet";
+      if (error) { Fail(reply, *error); return; }
+      MenusChanged();
+      Succeed(reply, nullptr);
     } else {
       Fail(reply, "Tilo does not support " + method + " yet");
     }
+  }
+
+  // The extensions' items for the menu the person opened on a page. A web
+  // page shows every extension's; an extension's own page only its
+  // own; the Browser's pages none.
+  std::vector<MenuOffer> MenuOffers(const MenuContext& context) const {
+    std::vector<MenuOffer> offers;
+    const std::string prefix = "chrome-extension://";
+    const std::string& page = context.page;
+    const bool web = page.rfind("http://", 0) == 0 || page.rfind("https://", 0) == 0 || page.rfind("file://", 0) == 0;
+    const std::string own = page.rfind(prefix, 0) == 0 ? page.substr(prefix.size(), 32) : std::string();
+    if (!web && own.empty()) return offers;
+    for (const auto& [extension, access] : access_) {
+      if (extension == identity_ || !access.permissions.count("contextMenus") || (!web && extension != own)) continue;
+      for (auto& offer : menus_.Offers(extension, context)) offers.push_back(std::move(offer));
+    }
+    return offers;
+  }
+  // The person chose an extension's item in the menu of `tab`'s page: the
+  // extension hears of it with the page, which it may then script until the
+  // page navigates if it asked for activeTab, as after a click on its button.
+  void MenuChosen(int tab, const MenuOffer& offer, const MenuContext& context) {
+    if (!access_.count(offer.extension)) return;
+    auto info = menus_.Choose(offer.extension, offer.key, context);
+    if (!info) return;
+    MenusChanged();
+    Ensure([this, tab, offer, info] {
+      const auto tabs = Tabs();
+      const auto* found = Find(tabs, tab);
+      if (!found || !access_.count(offer.extension)) return;
+      if (Has(offer.extension, "activeTab") && !found->panel) granted_.insert({offer.extension, found->id});
+      auto args = CefListValue::Create();
+      args->SetDictionary(0, info);
+      if (!found->panel) args->SetDictionary(1, TabObject(offer.extension, *found));
+      Push(offer.extension, "contextMenus.onClicked", args, true);
+    });
   }
 
   // The extension's toolbar button opened its popup over `tab`, which it may
@@ -618,6 +636,17 @@ class ExtensionTabs {
     params->SetString("sessionId", session);
     return params;
   }
+  // Keep the items with the profile a moment after a change: an extension
+  // makes its items in a burst, which is written once.
+  void MenusChanged() {
+    if (!hooks_.save_menus || saving_) return;
+    saving_ = true;
+    CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self) {
+      if (!self->saving_) return;
+      self->saving_ = false;
+      self->hooks_.save_menus(self->menus_.Save());
+    }, this), 250);
+  }
   bool Listened(const std::string& event) const {
     for (const auto& [extension, events] : listening_) if (events.count(event)) return true;
     return false;
@@ -668,7 +697,7 @@ class ExtensionTabs {
     });
   }
   static bool Listenable(const std::string& name) {
-    static const std::set<std::string> names{"action.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged"};
+    static const std::set<std::string> names{"action.onClicked", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged"};
     return names.count(name) > 0;
   }
   static bool Populate(CefRefPtr<CefDictionaryValue> args) {
@@ -1451,7 +1480,7 @@ class ExtensionTabs {
     auto name = CefValue::Create();
     name->SetString(event);
     InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.dispatch(" + ToJson(name) + ", " + ToJson(Wrap(args)) + ") : -1",
-             event == "action.onClicked", [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+             event == "action.onClicked" || event == "contextMenus.onClicked", [](std::optional<std::string>, CefRefPtr<CefValue>) {});
   }
   // Evaluate `expression` in the extension's service worker, waking it if
   // it sleeps, and answer with its value (a promise's, once it settles).
@@ -1601,6 +1630,8 @@ class ExtensionTabs {
   std::map<std::string, Port> ports_;
   uint64_t port_ = 0;
   uint64_t generation_ = 0;
+  ExtensionMenus menus_;
+  bool saving_ = false;
 };
 
 // A request to the bridge, read here and answered on the UI thread.

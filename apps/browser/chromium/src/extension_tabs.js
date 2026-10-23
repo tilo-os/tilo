@@ -2,10 +2,11 @@
 // an offscreen embedding: its tab registry holds only the tabs of its own
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
-// click, a tab's capture and scripts on a tab from the host's tabs instead, over a request the
-// host answers itself. A page of the extension is known by its address; its
-// worker, which has none, by a token the Browser wrote with this script into
-// the worker it runs first (extensions.rs).
+// click, a tab's capture, context menu items and scripts on a tab from the
+// host's tabs instead, over a request the host answers itself. A page of the
+// extension is known by its address; its worker, which has none, by a token
+// the Browser wrote with this script into the worker it runs first
+// (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -231,6 +232,46 @@
   event(tabs, 'onRemoved', 'tabs.onRemoved');
   event(windows, 'onFocusChanged', 'windows.onFocusChanged');
   event(action, 'onClicked', 'action.onClicked');
+
+  // Context menu items: the host keeps them and shows them in the page's
+  // menu (extension_menus.h); a choice comes back as onClicked.
+  if (!chrome.contextMenus && (runtime.getManifest().permissions || []).includes('contextMenus')) {
+    chrome.contextMenus = {onClicked: {}};
+  }
+  const menus = chrome.contextMenus;
+  if (menus) {
+    // Changes reach the host in the order they were made: an extension
+    // often removes all its items and makes them anew.
+    let queue = Promise.resolve();
+    const inOrder = (method, args) => {
+      const result = queue.then(() => call(method, args));
+      queue = result.catch(() => {});
+      return result;
+    };
+    // A script's own `onclick` cannot cross to the host; onClicked can.
+    const plain = (properties) => {
+      const own = {...(properties || {})};
+      delete own.onclick;
+      return own;
+    };
+    let generated = 0;
+    // `create` answers with the item's id at once, and calls back once made.
+    menus.create = (properties, callback) => {
+      const own = plain(properties);
+      if (own.id === undefined) own.id = ++generated;
+      inOrder('contextMenus.create', {properties: own}).then(() => {
+        if (typeof callback === 'function') callback();
+      }, (error) => {
+        console.error(`Unchecked runtime.lastError: ${error.message}`);
+        if (typeof callback === 'function') callback();
+      });
+      return own.id;
+    };
+    replace(menus, 'update', (id, properties) => inOrder('contextMenus.update', {id, properties: plain(properties)}));
+    replace(menus, 'remove', (id) => inOrder('contextMenus.remove', {id}));
+    replace(menus, 'removeAll', () => inOrder('contextMenus.removeAll'));
+    event(menus, 'onClicked', 'contextMenus.onClicked');
+  }
 
   if (scripting) {
     // A script's files are the extension's own: read here, run on the tab.
