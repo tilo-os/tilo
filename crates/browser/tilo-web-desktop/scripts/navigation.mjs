@@ -26,15 +26,20 @@ let progress = 'loading';
 const server = await serve(resolve(bundle));
 // Software Vulkan, as the CI mount test runs Chrome.
 const browser = await launch({args: ['--no-sandbox', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
-const tab = await browser.tab();
-const {evaluate} = tab;
-await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
-await tab.navigate(`${server.url}/`);
-for (let i = 0; ; i++) {
-  await sleep(1000);
-  if (await evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false)) break;
-  assert.ok(i < 90, `the desktop never presented: ${await evaluate("document.getElementById('status')?.textContent")}`);
+// A tab showing the desktop at `deviceScaleFactor`, once it has presented.
+async function desktop(deviceScaleFactor, options) {
+  const tab = await browser.tab(options);
+  await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor, mobile: false});
+  await tab.navigate(`${server.url}/`);
+  for (let i = 0; ; i++) {
+    await sleep(1000);
+    if (await tab.evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false)) break;
+    assert.ok(i < 90, `the desktop never presented: ${await tab.evaluate("document.getElementById('status')?.textContent")}`);
+  }
+  return tab;
 }
+const tab = await desktop(1);
+const {evaluate} = tab;
 
 // A panic stops the runtime without an exception; say so in the page's log.
 await evaluate(`(() => {
@@ -185,15 +190,21 @@ for (const app of ['so.tilo.clocks', 'so.tilo.calculator', 'so.tilo.notes']) {
 // The accessibility mirror lies over the canvas: each uniquely named button
 // the frame lays out has its DOM element at the rect it is drawn at, in the
 // page's CSS pixels, where magnifiers, touch exploration and element
-// geometry look for it.
-{
-  progress = 'the accessibility mirror lies over the drawn buttons';
+// geometry look for it. Layout units are CSS pixels whatever the device
+// pixel ratio, so it holds at 2 as at 1.
+async function mirrorLiesOverDrawnButtons(evaluate, deviceScaleFactor) {
+  progress = `the accessibility mirror lies over the drawn buttons at device scale ${deviceScaleFactor}`;
   let placed;
   for (let i = 0; i < 50; i++) {
     if (i) await sleep(200);
-    placed = await evaluate(`(()=>{
+    // The host lays out semantics when asked (or when the mirror takes
+    // focus); ask, so a page no step has looked at yet has a tree.
+    placed = await evaluate(`(async()=>{
+      tiloMount.requestSemantics();
+      await new Promise(done => setTimeout(done, 0));
       const state=tiloMount.state(),canvas=tiloMount.canvas,size=state.logicalSize,r=canvas.getBoundingClientRect();
       if(state.phase!=='presented'||!size||!(size[0]>0)||!(size[1]>0))return null;
+      if(devicePixelRatio!==${deviceScaleFactor})throw Error('the page draws at device scale '+devicePixelRatio);
       const drawn=new Map();
       const walk=n=>{
         const s=n?.semantics;if(s?.state?.hidden)return;
@@ -215,11 +226,12 @@ for (const app of ['so.tilo.clocks', 'so.tilo.calculator', 'so.tilo.notes']) {
     })()`);
     if (placed?.length && placed.every(p => p.drawn.every((v, k) => Math.abs(v - p.mirror[k]) <= 1))) break;
   }
-  assert.ok(placed?.length, 'the desktop mirrors at least one drawn button');
+  assert.ok(placed?.length, `the desktop mirrors at least one drawn button at device scale ${deviceScaleFactor}`);
   for (const p of placed) assert.ok(p.drawn.every((v, k) => Math.abs(v - p.mirror[k]) <= 1),
-    `"${p.name}" is mirrored at ${JSON.stringify(p.mirror)}, drawn at ${JSON.stringify(p.drawn)}`);
+    `at device scale ${deviceScaleFactor}, "${p.name}" is mirrored at ${JSON.stringify(p.mirror)}, drawn at ${JSON.stringify(p.drawn)}`);
   console.log(JSON.stringify({settled: progress, buttons: placed.length}));
 }
+await mirrorLiesOverDrawnButtons(evaluate, 1);
 const order = (await snapshot()).entries.map(e => e.label);
 const {width, height} = await evaluate('(({width,height})=>({width,height}))(tiloMount.canvas.getBoundingClientRect())');
 const [cx, cy] = [Math.round(width / 2), Math.round(height * 0.6)];
@@ -393,6 +405,26 @@ console.log(JSON.stringify({step: 'workspace activity', ok: true}));
 const errors = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
 assert.deepEqual(errors, [], 'no page exception');
 assert.equal(await evaluate('tiloMount.state().error ?? null'), null, 'the desktop kept drawing');
+
+// The same at device scale 2, in a profile of its own so the two desktops do
+// not share storage: the canvas's backing store doubles while the mirror
+// stays in CSS pixels.
+{
+  const hidpi = await desktop(2, {context: await browser.context()});
+  // A window, so its title bar's buttons are drawn as in the first desktop.
+  const opened = () => hidpi.evaluate('tiloMount.navigation.getSnapshot().entries.length');
+  const before = await opened();
+  await hidpi.evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();
+    await tiloMount.navigation.dispatch({kind:'launch',app:'so.tilo.calculator',generation:s.generation});})()`);
+  await polls('the calculator opens at device scale 2', opened, before + 1);
+  await sleep(1000);
+  await mirrorLiesOverDrawnButtons(hidpi.evaluate, 2);
+  const backing = await hidpi.evaluate('(c=>c.width/c.getBoundingClientRect().width)(tiloMount.canvas)');
+  assert.ok(Math.abs(backing - 2) < 0.01, `at device scale 2 the canvas draws ${backing} device pixels a CSS pixel`);
+  const errors = hidpi.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
+  assert.deepEqual(errors, [], 'no page exception at device scale 2');
+  await hidpi.close();
+}
 await browser.close();
 await server.close();
 clearTimeout(watchdog);
