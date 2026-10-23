@@ -159,7 +159,10 @@ fn try_retain_frame(
 
 #[test]
 fn tail_delta_retain_is_constant_in_history() {
-    let mut fixture = TailFixture::new(32);
+    // Every checkpoint frame runs a whole selection, by far the dearest step
+    // here; the history that must not cost anything is the tail's.
+    let routes = 4;
+    let mut fixture = TailFixture::new(routes);
     let (_tmp, store) = bound_store(fixture.authority.clone());
     let selections = track_selection_constructions(store.root());
     let constructed = || selections.load(std::sync::atomic::Ordering::SeqCst);
@@ -207,7 +210,7 @@ fn tail_delta_retain_is_constant_in_history() {
     assert_eq!(constructed().checked_sub(before), Some(count));
     assert_eq!(
         replay_frames(&store).len(),
-        33,
+        routes + 1,
         "the room and one snapshot per route remain; every covered tail retires"
     );
     assert_eq!(fixture.replayed_heads(&store), fixture.branch.get_heads());
