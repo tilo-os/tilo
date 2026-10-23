@@ -92,21 +92,18 @@ t dispatch publish-os-board-lenovo-83ed --ref main
 | Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:main-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
 The moving tag moves only forward along main: a build of an older commit leaves it.
-`t test os-board-lenovo-83ed` builds the image from your tree without publishing it
-(`t outputs` gives the OCI archive). The flashable disk is not on t yet: the newest is
-the one Build / OS dev installed last, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
-Lenovo, written to a USB drive or its internal disk and booted from the firmware
-boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
-root grows on first boot):
-
-The newest disk per board stays at a fixed URL, which retention never prunes
-(`<board>` is `lenovo-83ed` or `orangepi-3b-v2-1`):
+`t test os-board-lenovo-83ed` builds the image and its flashable disk from your tree without
+publishing them (`t outputs` gives the OCI archive and `disk/disk.qcow2`). The disk is installed
+following the moving tag and replaces the board's durable copy, again only forward along main:
+64 GB for the Lenovo, written to a USB drive or its internal disk and booted from the firmware
+boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its root grows on
+first boot). `<board>` is `lenovo-83ed` or `orangepi-3b-v2-1`:
 
 ```sh
 base=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/aarch64-<board>
-curl -fLO "$base/tilo-vm-candidate-aarch64.qcow2"
-curl -fsSL "$base/tilo-vm-candidate-aarch64.qcow2.sha256" | sha256sum -c -
-sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
+curl -fLO "$base/tilo-vm-<board>.qcow2"
+curl -fsSL "$base/tilo-vm-<board>.qcow2.sha256" | sha256sum -c -
+sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-<board>.qcow2 /dev/sdX
 ```
 
 The installed system follows the moving tag on its own: the update timer stages each new
