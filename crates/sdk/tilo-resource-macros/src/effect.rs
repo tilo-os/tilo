@@ -502,7 +502,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote! {
                 ::std::option::Option::Some(
                     (|args: &#krate::__private::ActionArgs| -> #krate::__private::RiskLevel {
-                        match <Self as #krate::Effect>::decode(#id, &args.to_json()) {
+                        match <#name as #krate::Effect>::decode(#id, &args.to_json()) {
                             ::std::result::Result::Ok(effect) => #classify(&effect),
                             ::std::result::Result::Err(_) => #krate::__private::RiskLevel::Destructive,
                         }
