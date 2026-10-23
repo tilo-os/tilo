@@ -4267,6 +4267,13 @@ impl Widget for CalendarApp {
             .then_some(winit::window::CursorIcon::NsResize)
     }
 
+    /// The notes editor is laid out for the detail pane's notes, also while
+    /// the calendar paints over it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.notes_editor);
+        true
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.agenda.wants_pointer_capture() || self.tasks.wants_pointer_capture()
     }
