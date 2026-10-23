@@ -535,7 +535,8 @@ printf '%s\n' 'tiloaccept:x:42424:42424::/home/tiloaccept:/sbin/nologin' >/etc/p
 /proc/self/fd/9 -t tmpfs tmpfs /home
 mkdir -p /home/tiloaccept
 /proc/self/fd/9 --bind "$TILO_SCOPE" /home/tiloaccept
-/proc/self/fd/9 -t tmpfs tmpfs /usr/bin
+/proc/self/fd/9 -t tmpfs tmpfs /usr/libexec
+mkdir /usr/libexec/tilo
 : > /usr/libexec/tilo/tilo-enroll
 /proc/self/fd/9 --bind "$TILO_ENROLL_BIN" /usr/libexec/tilo/tilo-enroll
 export PKEXEC_UID=42424
