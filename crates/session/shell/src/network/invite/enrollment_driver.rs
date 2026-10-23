@@ -135,6 +135,44 @@ pub(crate) fn command(
         attempt,
     ))
 }
+/// Renews this device's custody, answering the custody that then presents
+/// the renewal.
+type Renewal = fn(HostIdentity) -> std::io::Result<HostIdentity>;
+
+/// The session's renewal ([`crate::firstboot::renew_due_device_certificates`]):
+/// the session's custody reads its certificates from disk, so it presents
+/// what was renewed there.
+fn renew_session_custody(identity: HostIdentity) -> std::io::Result<HostIdentity> {
+    crate::firstboot::renew_due_device_certificates()?;
+    Ok(identity)
+}
+
+/// The custody an enrollment presents for `topic`: when the certificate it
+/// would present is due for renewal, renewed first through `renew`, so the
+/// host sees the renewal and not the certificate it replaces.
+async fn custody_to_present(identity: HostIdentity, topic: u64, renew: Renewal) -> HostIdentity {
+    let due = identity
+        .current_native_material(topic)
+        .ok()
+        .and_then(|(certificate, _)| tilo_identity_host::provisioning::renewal_due_at(&certificate))
+        .is_some_and(|due| due <= tilo_clock::unix_now_ns());
+    if !due {
+        return identity;
+    }
+    let held = identity.clone();
+    match tokio::task::spawn_blocking(move || renew(identity)).await {
+        Ok(Ok(renewed)) => renewed,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "could not renew this device's certificate before enrolling");
+            held
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not renew this device's certificate before enrolling");
+            held
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Registry {
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -175,10 +213,7 @@ impl Registry {
                 Via::Iroh => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
                 Via::Https { http, door } => tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, door),
             };
-            // A certificate due for renewal is renewed before the host sees it.
-            if let Ok(Err(error)) = tokio::task::spawn_blocking(crate::firstboot::renew_due_device_certificates).await {
-                tracing::warn!(%error, "could not renew this device's certificate before enrolling");
-            }
+            let identity = custody_to_present(identity, attempt.identity_topic, renew_session_custody).await;
             let result = if *receiver.borrow() { Err("native enrollment cancelled".into()) } else {
                 tokio::select! {
                     biased;
@@ -202,5 +237,70 @@ impl Drop for Registry {
         for task in &self.tasks {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+    const SECOND: u64 = 1_000_000_000;
+
+    fn custody(issued_at_ns: u64, expires_at_ns: u64) -> HostIdentity {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "device".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns,
+            expires_at_ns: Some(expires_at_ns),
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::default(),
+            workspace_revocations: HashMap::default(),
+            identity_paths: None,
+        }
+    }
+
+    fn renewed(_: HostIdentity) -> std::io::Result<HostIdentity> {
+        let now = tilo_clock::unix_now_ns();
+        Ok(custody(now, now.saturating_add(600 * SECOND)))
+    }
+
+    fn never(_: HostIdentity) -> std::io::Result<HostIdentity> {
+        panic!("a certificate not yet due is presented as it is")
+    }
+
+    #[tokio::test]
+    async fn an_enrollment_renews_a_certificate_that_is_due_and_presents_the_renewal() {
+        let now = tilo_clock::unix_now_ns();
+        // Two thirds through its lifetime.
+        let due = custody(
+            now.saturating_sub(400 * SECOND),
+            now.saturating_add(200 * SECOND),
+        );
+        let presented = custody_to_present(due.clone(), 0, renewed).await;
+        let (certificate, _) = presented.current_native_material(0).unwrap();
+        assert_ne!(certificate, due.device_cert);
+        assert!(certificate.issued_at_ns >= now, "presents the renewal");
+    }
+
+    #[tokio::test]
+    async fn an_enrollment_presents_a_certificate_not_yet_due_as_it_is() {
+        let now = tilo_clock::unix_now_ns();
+        let young = custody(
+            now.saturating_sub(100 * SECOND),
+            now.saturating_add(500 * SECOND),
+        );
+        let presented = custody_to_present(young.clone(), 0, never).await;
+        assert_eq!(presented.device_cert, young.device_cert);
     }
 }

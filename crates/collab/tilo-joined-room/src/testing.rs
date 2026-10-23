@@ -426,3 +426,24 @@ pub fn stored(storage: &NativeAuthorityStorage, room: RoomId) -> Option<Stored> 
 pub fn set_stored_peer(storage: &mut NativeAuthorityStorage, room: RoomId, peer: Vec<u8>) {
     storage.rooms.get_mut(&room).unwrap().peer = peer;
 }
+
+/// Keep `complete`, the proof of `join` this device signed with `device`
+/// for the challenge its host issued over `hint`, as an enrollment whose
+/// Complete never reached the host: what a device holds when it lost the
+/// host before the host admitted it.
+///
+/// # Errors
+/// As [`NativeWorkspaceOwner::prepare_enrollment_into`], or the proof does
+/// not verify for `hint`.
+pub fn retain_unsent_enrollment(
+    owner: &NativeWorkspaceOwner,
+    join: join::VerifiedJoin,
+    complete: join::JoinCompleteRequest,
+    device: DeviceCert,
+    hint: join::TransportHint,
+) -> Result<crate::PendingEnrollmentId, String> {
+    let prepared = SystemTime::now();
+    let intent =
+        VerifiedNativeEnrollmentIntent::from_proof(join, complete, device, hint, prepared)?;
+    owner.prepare_enrollment_into(&intent, None, prepared)
+}

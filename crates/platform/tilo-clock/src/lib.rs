@@ -332,6 +332,12 @@ fn wall_ms(at: SystemTime) -> u64 {
         .map_or(1, |since| saturating_u64(since.as_millis()).max(1))
 }
 
+/// Let the wall clock run again after [`freeze_wall`], on every thread.
+pub fn thaw_wall() {
+    FROZEN_WALL_MS.store(0, Ordering::Relaxed);
+    FROZEN_HERE_MS.with(|here| here.set(0));
+}
+
 /// Whether [`freeze_wall`] pinned the wall clock.
 #[must_use]
 pub fn wall_frozen() -> bool {

@@ -280,7 +280,7 @@ uuid = { workspace = true, features = ["js"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Native enrollment and private owner assertions in the remote person fixtures.
 tilo-desktop-model = { path = "../../session/desktop-model" }
-tilo-joined-room = { path = "../../collab/tilo-joined-room" }
+tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # The shell-selection fixture, the selection construction counter and the
@@ -318,6 +318,12 @@ path = "tests/it.rs"
 [[test]]
 name = "held_memory"
 path = "tests/held_memory.rs"
+
+# Its own binary: it moves the wall clock the relay reads for the whole
+# process.
+[[test]]
+name = "lapsed_join_renewal"
+path = "tests/lapsed_join_renewal.rs"
 
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.
