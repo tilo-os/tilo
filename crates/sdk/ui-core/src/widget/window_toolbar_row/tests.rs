@@ -25,6 +25,7 @@ fn browser() -> WindowToolbar {
             menu: false,
             items: Vec::new(),
             navigates: false,
+            toggles: false,
         }],
         ..WindowToolbar::default()
     }
@@ -705,4 +706,49 @@ fn a_menu_button_lists_its_items_and_the_overflow_menu_carries_them() {
             .any(|entry| *entry == MenuEntry::Item(0, 1)),
         "the overflow menu carries Format's items"
     );
+}
+
+#[test]
+fn a_sidebar_or_panel_toggle_shows_whether_its_panel_is_open() {
+    for open in [true, false] {
+        let toolbar = WindowToolbar {
+            sidebar: Some(open),
+            actions: vec![ToolbarAction::new("inspector", "panel-right", "Inspector").on(open)],
+            ..WindowToolbar::default()
+        }
+        .bounded();
+        let mut row = ToolbarRow::new();
+        row.show(
+            5,
+            Some(&toolbar),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        row.lay_out(Rect::new(0.0, 0.0, 600.0, 40.0));
+        assert_eq!(
+            shows_on(&toolbar, &Slot::Sidebar),
+            open,
+            "drawn on while open"
+        );
+        assert_eq!(
+            shows_on(&toolbar, &Slot::Action(0)),
+            open,
+            "drawn on while open"
+        );
+        let nodes = row.accessibility();
+        let sidebar_name = text(if open {
+            "window-toolbar-hide-sidebar"
+        } else {
+            "window-toolbar-show-sidebar"
+        });
+        for name in [sidebar_name.as_str(), "Inspector"] {
+            let toggle = find_node(&nodes, Role::ToggleButton, name)
+                .unwrap_or_else(|| panic!("{name} is a toggle, open or closed"));
+            assert_eq!(
+                toggle.state.checked,
+                Some(open),
+                "{name} is pressed while open"
+            );
+        }
+    }
 }

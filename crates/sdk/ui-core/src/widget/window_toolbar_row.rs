@@ -481,8 +481,8 @@ fn menu_item(action: &crate::window_toolbar::ToolbarAction) -> MenuItem {
     if let Some(icon) = Icon::from_name(&action.icon) {
         item = item.with_icon(icon);
     }
-    if action.on {
-        item = item.with_checked(true);
+    if action.toggles || action.on {
+        item = item.with_checked(action.on);
     }
     item
 }
@@ -1795,12 +1795,17 @@ impl ToolbarRow {
             .zip(&self.slots.leading)
             .filter(|(_, rect)| rect.area() > 0.0)
         {
-            nodes.push(button(
+            let mut node = button(
                 action.name.clone(),
                 format!("{LEADING_TARGET_PREFIX}{}", action.id),
                 *rect,
                 action.enabled,
-            ));
+            );
+            if action.toggles || action.on {
+                node.role = Role::ToggleButton;
+                node.state.checked = Some(action.on);
+            }
+            nodes.push(node);
         }
         if let Some(location) = toolbar.location.as_ref()
             && self.slots.location.area() > 0.0
@@ -1923,9 +1928,9 @@ impl ToolbarRow {
                 *rect,
                 action.enabled,
             );
-            if action.on {
+            if action.toggles || action.on {
                 node.role = Role::ToggleButton;
-                node.state.checked = Some(true);
+                node.state.checked = Some(action.on);
             }
             if !action.items.is_empty() {
                 let slot = Slot::Action(i);
@@ -2073,7 +2078,7 @@ impl ToolbarRow {
                 action.name.clone(),
                 format!("{ACTION_TARGET_PREFIX}{}", action.id),
                 action.enabled,
-                action.on.then_some(true),
+                (action.toggles || action.on).then_some(action.on),
             )
         };
         match entry {
@@ -2083,7 +2088,7 @@ impl ToolbarRow {
                     leading.name.clone(),
                     format!("{LEADING_TARGET_PREFIX}{}", leading.id),
                     leading.enabled,
-                    leading.on.then_some(true),
+                    (leading.toggles || leading.on).then_some(leading.on),
                 )
             }),
             MenuEntry::Item(i, j) => toolbar
@@ -2281,6 +2286,17 @@ fn layered(
     }
 }
 
+/// Whether `slot` is drawn on: the sidebar's toggle while the sidebar is
+/// open, a toggle while it is on (a panel's, while the panel is open).
+fn shows_on(toolbar: &WindowToolbar, slot: &Slot) -> bool {
+    match slot {
+        Slot::Sidebar => toolbar.sidebar == Some(true),
+        Slot::Leading(i) => toolbar.leading.get(*i).is_some_and(|action| action.on),
+        Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|action| action.on),
+        _ => false,
+    }
+}
+
 /// Paint `toolbar`'s slots. Returns where a location with choices painted
 /// its picker, which its menu hangs from.
 fn paint_slots(
@@ -2304,9 +2320,7 @@ fn paint_slots(
             tr,
             theme,
             (slots.sidebar, Icon::PanelLeft),
-            // Open or closed, the sidebar shows its state itself; the
-            // button stays plain like the bar's other navigation.
-            face(Slot::Sidebar, true, false),
+            face(Slot::Sidebar, true, shows_on(toolbar, &Slot::Sidebar)),
         );
     }
     if let Some(nav) = toolbar.navigation {
@@ -2337,7 +2351,11 @@ fn paint_slots(
             tr,
             theme,
             (*rect, icon),
-            face(Slot::Leading(i), action.enabled, action.on),
+            face(
+                Slot::Leading(i),
+                action.enabled,
+                shows_on(toolbar, &Slot::Leading(i)),
+            ),
         );
     }
     if let Some(views) = toolbar.views.as_ref()
@@ -2382,7 +2400,11 @@ fn paint_slots(
             continue;
         };
         paint_icon_button(scene, transform, tr, theme, (*rect, icon), {
-            let mut lifted = face(Slot::Action(i), action.enabled, action.on);
+            let mut lifted = face(
+                Slot::Action(i),
+                action.enabled,
+                shows_on(toolbar, &Slot::Action(i)),
+            );
             lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
             lifted
         });

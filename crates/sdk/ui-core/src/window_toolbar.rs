@@ -343,9 +343,13 @@ pub struct ToolbarAction {
     /// It can act now.
     #[serde(default = "enabled")]
     pub enabled: bool,
-    /// It is a toggle that is on (a bookmarked page's star).
+    /// It is a toggle that is on (a bookmarked page's star, an open panel).
     #[serde(default)]
     pub on: bool,
+    /// It is a toggle, on or off ([`Self::on`]): assistive technology
+    /// hears it as pressed or not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub toggles: bool,
     /// It is in the overflow menu only, never a button in the row: an
     /// occasional action (import, export, the app's settings).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -381,6 +385,7 @@ impl ToolbarAction {
             menu: false,
             items: Vec::new(),
             navigates: false,
+            toggles: false,
         }
     }
 
@@ -402,6 +407,7 @@ impl ToolbarAction {
     #[must_use]
     pub fn on(mut self, on: bool) -> Self {
         self.on = on;
+        self.toggles = true;
         self
     }
 
@@ -1014,6 +1020,7 @@ mod tests {
                 menu: false,
                 items: Vec::new(),
                 navigates: false,
+                toggles: false,
             }],
             ..WindowToolbar::default()
         }
@@ -1093,6 +1100,7 @@ mod tests {
                 menu: false,
                 items: Vec::new(),
                 navigates: false,
+                toggles: false,
             });
         }
         many.actions.push(ToolbarAction {
@@ -1104,6 +1112,7 @@ mod tests {
             menu: false,
             items: Vec::new(),
             navigates: false,
+            toggles: false,
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -1115,6 +1124,7 @@ mod tests {
                 menu: false,
                 items: Vec::new(),
                 navigates: false,
+                toggles: false,
             });
         }
         let bounded = many.clone().bounded();

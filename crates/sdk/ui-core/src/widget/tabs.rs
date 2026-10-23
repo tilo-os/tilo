@@ -8603,6 +8603,7 @@ mod tests {
                 menu: false,
                 items: Vec::new(),
                 navigates: false,
+                toggles: false,
             }],
             ..WindowToolbar::default()
         }
@@ -8809,6 +8810,7 @@ mod tests {
                 menu: false,
                 items: Vec::new(),
                 navigates: false,
+                toggles: false,
             });
         }
         slots
