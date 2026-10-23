@@ -290,7 +290,10 @@ containerfile="$repo/os/Containerfile"
 # tilo-<noun> name. The programs those nouns drive live in /usr/libexec/tilo/,
 # off PATH; each old /usr/bin name is a link to tilo, which runs the program
 # under that name: two rows per moved program.
-expected_contract=e4a56eb52b675806104e271656dc05bd90e8d6b08485436a7a4eae109dacc1f3
+# The public content refresh's user tilo-public-content-refresh.service/.timer
+# ride the existing user-unit COPY instruction; they are the intentional
+# payload rows.
+expected_contract=d4dc06ba89f79a9fc02464b4fa69cb38e76dee3cad52977e3fa66b6aee55be8f
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
