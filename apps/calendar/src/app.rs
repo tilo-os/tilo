@@ -4528,9 +4528,11 @@ impl Widget for CalendarApp {
 impl CalendarApp {
     /// Declare the window bar's slots ([`crate::window_bar`]).
     fn declare_window_toolbar(&self) {
+        // The location names the task list only on the Tasks screen.
         ui::window_toolbar::declare(Some(crate::window_bar::window_toolbar(
             self.view,
             self.anchor,
+            &self.tasks_source().title(),
             self.sidebar_open(),
         )));
     }
