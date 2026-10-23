@@ -1175,3 +1175,67 @@ fn the_calendar_reads_its_events_and_one_in_full() {
             .is_err()
     );
 }
+
+/// Moving an event's start keeps how long it lasts.
+#[test]
+fn set_start_moves_an_event_keeping_its_length() {
+    let mut app = TestApp::<CalendarShell>::new().expect("test app");
+    app.invoke(new_event(
+        "Planning",
+        "2026-09-08T09:00",
+        "2026-09-08T10:30",
+    ))
+    .expect("create");
+    let event = state_of(&app).events[0].clone();
+    app.call_on(
+        &crate::actions::event_resource_id(event.id),
+        "set-start",
+        serde_json::json!({ "start": "2026-09-10T14:00:00" }),
+    )
+    .expect("set-start");
+    let moved = state_of(&app).event(event.id).expect("event").clone();
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 10).unwrap();
+    assert_eq!(moved.start, at(day, 14, 0));
+    assert_eq!(moved.end, at(day, 15, 30));
+}
+
+/// An agent keeps the calendar, or one event, as an `.ics` in the room's
+/// content, without the attended file chooser Export ICS opens.
+#[test]
+fn export_ics_content_keeps_the_calendar_or_one_event_as_content() {
+    let mut app = TestApp::<CalendarShell>::new().expect("test app");
+    for (title, start, end) in [
+        ("Standup", "2026-09-08T09:00", "2026-09-08T09:15"),
+        ("Review", "2026-09-09T13:00", "2026-09-09T14:00"),
+    ] {
+        app.invoke(new_event(title, start, end)).expect("create");
+    }
+    let text = |app: &TestApp<CalendarShell>, answer: &serde_json::Value| {
+        let hash = ui::tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
+        String::from_utf8(app.content().read(hash).unwrap()).unwrap()
+    };
+    let all = app
+        .call("export-ics-content", serde_json::json!({}))
+        .expect("export")
+        .expect("an answer");
+    assert_eq!(all["events"], 2);
+    let ics = text(&app, &all);
+    assert!(ics.starts_with("BEGIN:VCALENDAR"), "{ics}");
+    assert!(ics.contains("SUMMARY:Standup") && ics.contains("SUMMARY:Review"));
+    let review = state_of(&app)
+        .events
+        .iter()
+        .find(|event| event.title == "Review")
+        .expect("review")
+        .id;
+    let one = app
+        .call(
+            "export-ics-content",
+            serde_json::json!({ "event": review.to_string() }),
+        )
+        .expect("export one")
+        .expect("an answer");
+    assert_eq!(one["events"], 1);
+    let ics = text(&app, &one);
+    assert!(ics.contains("SUMMARY:Review") && !ics.contains("SUMMARY:Standup"));
+}
