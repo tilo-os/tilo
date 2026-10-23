@@ -3055,6 +3055,7 @@ mod committed_document;
 #[path = "app/document_routes.rs"]
 mod document_routes;
 
+#[cfg(feature = "broker-transport")]
 #[path = "app/record_routes.rs"]
 pub mod record_routes;
 
