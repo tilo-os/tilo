@@ -40,7 +40,6 @@ de-DE search-answer-money-stale glyph
 de-DE search-app-action-launches glyph
 de-DE search-app-job-reported-counts glyph
 de-DE search-app-resource-contains glyph
-de-DE search-files-location glyph
 de-DE state-notice-newer-detail glyph
 de-DE window-transfer-choice-copy glyph
 de-DE window-transfer-choice-move glyph
@@ -63,7 +62,6 @@ en-US search-answer-money-stale glyph
 en-US search-app-action-launches glyph
 en-US search-app-job-reported-counts glyph
 en-US search-app-resource-contains glyph
-en-US search-files-location glyph
 en-US state-notice-newer-detail glyph
 en-US window-transfer-choice-copy glyph
 en-US window-transfer-choice-move glyph

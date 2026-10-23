@@ -1362,7 +1362,6 @@ search-record-in-another-workspace = In another workspace
 search-files-no-app = No app on this desktop opens .{ $ext } documents.
 search-files-folder-failed = Files couldn’t open this folder.
 search-files-home = Home
-search-files-location = { $folder } · { $age }
 
 # Search: host apps
 
