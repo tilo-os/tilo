@@ -1342,7 +1342,6 @@ search-record-in-another-workspace = In einem anderen Arbeitsbereich
 search-files-no-app = Keine App auf diesem Desktop öffnet .{ $ext }-Dokumente.
 search-files-folder-failed = Dateien konnte diesen Ordner nicht öffnen.
 search-files-home = Persönlicher Ordner
-search-files-location = { $folder } · { $age }
 
 # Suche: Host-Apps
 

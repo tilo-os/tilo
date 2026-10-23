@@ -842,11 +842,10 @@ impl FilesProvider {
     }
 }
 
-/// A file row's second line: the folder it is in, and how long ago it last
-/// changed ("Documents · yesterday"). The name is the title already; saying
-/// it again in a path only pushes the part that tells two files apart off
-/// the row.
-fn location_line(entry: &NameEntry) -> String {
+/// A file row's second line as two facts: the folder it is in, and how
+/// long ago it last changed. The name is the title already; saying it again
+/// in a path only pushes the part that tells two files apart off the row.
+fn location_facts(entry: &NameEntry) -> Vec<String> {
     let folder = entry
         .display
         .rsplit_once('/')
@@ -863,16 +862,12 @@ fn location_line(entry: &NameEntry) -> String {
             .as_secs();
         ui::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
     });
-    match age {
-        Some(age) => crate::shell::i18n::t_args(
-            "search-files-location",
-            &[("folder", folder.into()), ("age", age.into())],
-        ),
-        None => folder,
-    }
+    std::iter::once(folder).chain(age).collect()
 }
 
-fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> SearchResult {
+/// A file's row. A content hit's second line is the passage that matched;
+/// any other's is where the file is and when it changed.
+fn make_result(entry: &NameEntry, score: i32, snippet: Option<String>) -> SearchResult {
     let kind = if entry.is_dir {
         ResourceKind::Folder
     } else {
@@ -880,15 +875,23 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
     };
     let path = entry.path.clone();
     let is_dir = entry.is_dir;
+    // The plain line, for matching and for whoever reads rows as text.
+    let (line, facts) = if let Some(snippet) = snippet {
+        (snippet, Vec::new())
+    } else {
+        let facts = location_facts(entry);
+        (facts.join(", "), facts)
+    };
     SearchResult::view_with_output(
         kind,
         "files",
         entry.path.display().to_string(),
         file_title(&entry.path),
-        subtitle.or_else(|| Some(location_line(entry))),
+        Some(line),
         score,
         move |chrome: &Chrome| open_search_hit(&path, is_dir, chrome),
     )
+    .with_facts(facts)
 }
 
 fn file_title(path: &Path) -> String {
@@ -2298,6 +2301,31 @@ mod tests {
             .hits
             .first()
             .map(|hit| hit.score)
+    }
+
+    #[test]
+    fn a_file_row_says_its_folder_and_its_age_as_two_facts() {
+        let entry = NameEntry {
+            path: PathBuf::from("/home/tester/Downloads/report.pdf"),
+            facts: NameFacts::new("~/Downloads/report.pdf", Some(SystemTime::now())),
+            display: "~/Downloads/report.pdf".to_string(),
+            is_dir: false,
+        };
+        let row = make_result(&entry, 1, None);
+        assert_eq!(row.facts.len(), 2, "{:?}", row.facts);
+        assert_eq!(row.facts[0], "Downloads");
+        assert!(
+            row.facts.iter().all(|fact| !fact.contains('·')),
+            "{:?}",
+            row.facts
+        );
+
+        let found_inside = make_result(&entry, 1, Some("…quarterly report…".into()));
+        assert!(
+            found_inside.facts.is_empty(),
+            "a content hit shows the passage"
+        );
+        assert_eq!(found_inside.subtitle.as_deref(), Some("…quarterly report…"));
     }
 
     #[test]
