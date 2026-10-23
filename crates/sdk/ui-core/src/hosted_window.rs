@@ -79,6 +79,12 @@ impl HostedWindow {
         Self::default()
     }
 
+    /// Which window this is: equal for clones of one window, different
+    /// for windows alive at the same time.
+    pub(crate) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.inner).addr()
+    }
+
     fn state(&self) -> MutexGuard<'_, State> {
         // The state stays whole across a panic elsewhere: every write is
         // one assignment.

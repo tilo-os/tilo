@@ -1071,10 +1071,17 @@ impl ResourceOperations for HostedSurface {
         }
         // The surface answers its operations as its effect vocabulary; only
         // the toolkit's own widgets inside it (a button bound to a view)
-        // answer theirs, never the surface by hand.
+        // answer theirs, never the surface by hand. A toolkit container the
+        // surface decorates (its shell) routes them to its parts, those its
+        // children do not list among them too (a header button shown in
+        // the window's bar), as it lists their handlers.
         let before = doc.pending_ops();
-        let started =
-            ui_core::host_operation::start_in_children(self.host.surface_mut(), op, doc, path);
+        let surface = self.host.surface_mut();
+        let started = if decorates_routing(surface) {
+            ui_core::host_operation::start_operation(surface, op, doc, path)
+        } else {
+            ui_core::host_operation::start_in_children(surface, op, doc, path)
+        };
         refuse_raw_writes(doc, before, "start_operation");
         started
     }
@@ -1089,20 +1096,33 @@ impl ResourceOperations for HostedSurface {
         if let Some(update) = self.host.poll_effect(invocation, cancellation_requested) {
             return Some(update);
         }
-        self.host
-            .surface_mut()
-            .children_mut()
-            .into_iter()
-            .find_map(|child| {
-                ui_core::host_operation::poll_resource_operation(
-                    child,
-                    invocation,
-                    cancellation_requested,
-                    doc,
-                    path,
-                )
-            })
+        let surface = self.host.surface_mut();
+        if decorates_routing(surface) {
+            return ui_core::host_operation::poll_resource_operation(
+                surface,
+                invocation,
+                cancellation_requested,
+                doc,
+                path,
+            );
+        }
+        surface.children_mut().into_iter().find_map(|child| {
+            ui_core::host_operation::poll_resource_operation(
+                child,
+                invocation,
+                cancellation_requested,
+                doc,
+                path,
+            )
+        })
     }
+}
+
+/// Whether `surface` decorates a toolkit container that routes operations
+/// itself ([`ResourceOperations`]), rather than leaving them to its
+/// children.
+fn decorates_routing(surface: &(impl Widget + ?Sized)) -> bool {
+    ui_core::widget::capability::capability::<dyn ResourceOperations>(surface).is_some()
 }
 
 impl SurfacePublication for HostedSurface {

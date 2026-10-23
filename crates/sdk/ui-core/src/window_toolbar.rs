@@ -796,6 +796,17 @@ fn window() -> Option<crate::hosted_window::HostedWindow> {
     WINDOW.with(|current| current.borrow().clone())
 }
 
+/// Which window this module's calls act on now: the one a host lent the app
+/// it is running, or `None` for the process's own window.
+pub(crate) fn current_window() -> Option<usize> {
+    WINDOW.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map(crate::hosted_window::HostedWindow::identity)
+    })
+}
+
 /// Declare the window's slots (`None`: none). Cheap when nothing changed.
 pub fn declare(toolbar: Option<WindowToolbar>) {
     if let Some(window) = window() {
