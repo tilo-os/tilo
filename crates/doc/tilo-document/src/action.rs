@@ -455,6 +455,16 @@ pub enum RichTextAction {
     /// made); edited blocks are edited in place, the rest inserted or
     /// removed. Unlike [`Self::ReplaceBody`] it does not recreate the body.
     SyncBody { markdown: String },
+    /// Replace the first occurrence of `find` in the body's text (every
+    /// occurrence with `all`) by `replace`, in place: other text, marks,
+    /// images and blocks stay. Resolved as it applies; refused when `find`
+    /// is not in the body.
+    ReplaceText {
+        find: String,
+        replace: String,
+        #[serde(default)]
+        all: bool,
+    },
     /// Replace the whole body with `blocks`, formatted as they are: text an
     /// app brings with marks Markdown cannot carry (a note's links to other
     /// notes, a slide's runs, a copied fragment).
@@ -589,7 +599,8 @@ impl RichTextAction {
             | Self::ShiftIndent { .. }
             | Self::MoveBlock { .. }
             | Self::DeleteBlocks { .. }
-            | Self::SyncBody { .. } => ActionDomain::Blocks,
+            | Self::SyncBody { .. }
+            | Self::ReplaceText { .. } => ActionDomain::Blocks,
         }
     }
 }

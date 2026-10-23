@@ -310,6 +310,9 @@ pub(crate) fn check(
             }
             Ok(())
         }
+        RichTextAction::ReplaceText { find, replace, .. } => {
+            crate::replace_text::check(doc, c, find, replace)
+        }
         RichTextAction::SyncBody { markdown } => {
             text_in_limits(markdown)?;
             let known = |token: &str| block_id(&order, token).ok();
@@ -1083,6 +1086,9 @@ pub(crate) fn apply(dm: &mut DocMut<'_>, action: &RichTextAction) -> Vec<Written
             keep_a_paragraph(dm);
         }
         RichTextAction::SyncBody { markdown } => return sync_body(dm, markdown),
+        RichTextAction::ReplaceText { find, replace, all } => {
+            return crate::replace_text::apply(dm, find, replace, *all);
+        }
         _ => {}
     }
     written
