@@ -242,6 +242,7 @@ pub fn prepare(launch: &HostLaunch) {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt as _;
 
     fn launch(program: &str, source: EntrySource, args: &[&str], home: &Path) -> HostLaunch {
         HostLaunch {
@@ -277,7 +278,6 @@ mod tests {
             read(&preferences),
             serde_json::json!({ "browser": { "custom_chrome_frame": false } })
         );
-        use std::os::unix::fs::PermissionsExt as _;
         let mode = std::fs::metadata(&preferences)
             .unwrap()
             .permissions()
