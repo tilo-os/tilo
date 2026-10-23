@@ -2245,7 +2245,8 @@ impl ShellNetwork {
             }
         };
         let device_fabric_path = device_fabric_path(state_dir);
-        let device_fabric = load_device_fabric(&device_fabric_path);
+        let device_fabric =
+            load_device_fabric(&device_fabric_path).restored(personal_continuity_device.as_ref());
         let now = tilo_clock::unix_now();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
             load_pending_invitations(&pending_invitations_path)
@@ -2713,10 +2714,7 @@ impl ShellNetwork {
         {
             return Some(personal_continuity_topic_id(user_public_key));
         }
-        if let NeighbourMsg::PersonalWorkspaces {
-            user_public_key, ..
-        } = msg
-        {
+        if let Some(user_public_key) = msg.personal_lane() {
             return Some(personal_continuity_topic_id(user_public_key));
         }
         let room = match msg {
@@ -6364,6 +6362,20 @@ impl ShellNetwork {
         })
     }
 
+    /// The person's `device` has no route here any more: it shows offline
+    /// until it is back.
+    fn device_departed(&self, device: &crate::shell::personal_continuity::DeviceId) {
+        let Ok(mut fabric) = self.device_fabric.lock() else {
+            return;
+        };
+        if fabric.mark_departed(device)
+            && let Some(path) = self.device_fabric_path.as_deref()
+            && let Err(error) = self.persist_device_fabric(path, &fabric)
+        {
+            tracing::warn!(%error, "device fabric persistence failed");
+        }
+    }
+
     /// Edit this device's own fabric snapshot and publish it under the next
     /// stamp. The read, the edit and the write happen under one hold of the
     /// fabric, so an edit never builds on a snapshot another thread (the
@@ -6720,8 +6732,13 @@ impl ShellNetwork {
         });
     }
 
+    /// Capture this device's continuity, keep it on disk, and tell the
+    /// person's other devices when it changed. The capture and its durable
+    /// write are this device's own state (they acknowledge owner claims and
+    /// closed tabs once on disk), so they happen even while it knows no
+    /// other device; only the publish waits for someone to tell.
     fn publish_personal_continuity_if_changed(&self) {
-        if !self.enforce_app_continuations_policy() || !self.personal_fabric_allowed() {
+        if !self.enforce_app_continuations_policy() {
             return;
         }
         let Some(user_public_key) = self.personal_continuity_user else {
@@ -6735,6 +6752,9 @@ impl ShellNetwork {
         let Some(snapshot) = self.local_continuity_snapshot_bytes() else {
             return;
         };
+        if !self.personal_fabric_allowed() {
+            return;
+        }
         let after = self
             .personal_continuity_fingerprint
             .lock()
@@ -7313,8 +7333,11 @@ impl ShellNetwork {
                     && routes
                         .get(&(ws, peer))
                         .is_some_and(|route| route.membership_epoch == epoch)
+                    && let Some(route) = routes.remove(&(ws, peer))
+                    && !routes.values().any(|other| other.device == route.device)
                 {
-                    routes.remove(&(ws, peer));
+                    drop(routes);
+                    self.device_departed(&route.device);
                 }
                 self.record_content_sources_changed();
                 let has_live_route =
@@ -7524,7 +7547,9 @@ impl ShellNetwork {
                     tracing::warn!(%error, "device fabric merge persistence failed");
                 }
             }
-            Ok(false) => {}
+            Ok(false) => {
+                tracing::debug!(peer = %peer, "personal fabric snapshot was no newer");
+            }
             Err(error) => {
                 tracing::warn!(%error, peer = %peer, "dropping conflicting personal fabric state");
             }
@@ -7950,6 +7975,7 @@ impl ShellNetwork {
         }
         if self.dispatch_personal_continuity(ws, &origin, &msg)
             || self.dispatch_personal_workspaces(ws, &origin, &msg)
+            || self.dispatch_room_archive(ws, &origin, &msg)
         {
             return;
         }
@@ -8357,7 +8383,8 @@ impl ShellNetwork {
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
-            | NeighbourMsg::PersonalWorkspaces { .. } => None,
+            | NeighbourMsg::PersonalWorkspaces { .. }
+            | NeighbourMsg::RoomArchive { .. } => None,
         }
     }
 
@@ -11862,6 +11889,10 @@ mod tests {
             membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(1)),
         });
         assert!(!net.person_display_devices(&local)[0].online);
+        assert!(
+            !net.online_device_ids().contains(&owner),
+            "a device that left takes no screen edge and no input until it is back"
+        );
         assert_eq!(net.person_display_devices(&local)[0].outputs.len(), 1);
         net.forget_device_fabric(&owner);
         assert!(net.person_display_devices(&local).is_empty());

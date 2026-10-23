@@ -1,7 +1,5 @@
 //! Host-owned adaptation of authenticated task channels to the canonical owner.
 //! No caller certificate, actor label or new grant is accepted from task arguments.
-use crate::collab_broker_capnp::InvocationJob;
-use tilo_peer_state::workspace_task::{WorkspaceTaskCommand, WorkspaceTaskSnapshot};
 
 #[cfg(test)]
 #[path = "task_execution_tests.rs"]
@@ -65,95 +63,6 @@ pub struct NativeTaskActionRequirement {
 }
 
 impl NativeTaskActionRequirement {
-    /// Apply the room's grants for the agent to this action, on the live
-    /// admitted document, held to the exact task/run's frozen authority.
-    /// Where any of them asks first, the run pauses for its person: unless
-    /// the invocation is [`Self::confirmed`], the answer is an error starting
-    /// with [`tilo_actions::draft::AWAITING_CONFIRMATION`].
-    pub fn check(
-        &self,
-        peer: &tilo_peer_state::StatePeer,
-        room: &str,
-        agent: &str,
-        now: std::time::SystemTime,
-    ) -> Result<(), String> {
-        use tilo_action_policy::{Answer, Authority, Context, roles};
-        let doc = peer
-            .admitted_room()
-            .ok_or("native action policy unavailable")?;
-        let policy = tilo_desktop_model::projection::room_policy_of(doc, room);
-        let node = tilo_actions::action_node(
-            &policy.node(),
-            &self.app,
-            &self.resource_kind,
-            &self.resource,
-            self.need.field.as_deref(),
-            &self.action,
-        );
-        let cx = Context::at_time(now);
-        let binding = self
-            .binding
-            .as_ref()
-            .ok_or("native task action binding absent")?;
-        if binding.agent_id != agent || self.need.privileged {
-            return Err("native task action binding invalid or action privileged".into());
-        }
-        let state = tilo_peer_state::workspace_task::snapshot(doc)?;
-        let task = state
-            .tasks
-            .iter()
-            .find(|task| task.id == binding.task_id)
-            .ok_or("native task absent")?;
-        let control = state
-            .controls
-            .get(&binding.task_id)
-            .ok_or("native task control absent")?;
-        let run = control.active_run.as_ref().ok_or("native task run ended")?;
-        if run.epoch != binding.epoch
-            || run.agent_id != agent
-            || task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress
-            || task.assigned_agent.as_deref() != Some(agent)
-        {
-            return Err("native task run replaced or stopped".into());
-        }
-        let approval = run.approval.as_ref().ok_or("native task starter absent")?;
-        // The run acts for its starter, so the agent is bounded as the
-        // starter's delegate, as every member admits its writes: the agent
-        // delegation and the answers the room holds for the agent. The
-        // preset it was admitted with bounds what it does on its own, not
-        // what a person asked of it.
-        let delegation = roles::agent_delegation(room, agent, &approval.person);
-        let verdict =
-            Authority::person(delegation.party(&policy.grants)).decide(&node, self.need.kind, &cx);
-        let member = peer.permissions(approval.device, now)?;
-        let foreign = tilo_action_policy::roles::foreign_device_bound();
-        let starter = member
-            .authority(&foreign)
-            .decide(&node, self.need.kind, &cx)
-            .answer;
-        if member.person != approval.person || starter == Answer::Deny {
-            return Err("native task action is no longer authorized by its starter".into());
-        }
-        let bound = control
-            .execution_authority
-            .as_ref()
-            .ok_or("native task authority absent")?;
-        let frozen = if bound.scope.covers(&node) {
-            bound.starter.answer(&node, self.need.kind, &cx)
-        } else {
-            Answer::Deny
-        };
-        if bound.epoch != binding.epoch || frozen == Answer::Deny {
-            return Err("native task action exceeds its frozen execution authority".into());
-        }
-        self.answer(
-            &policy,
-            (&node, &cx),
-            &binding.task_id,
-            (verdict, [starter, frozen]),
-        )
-    }
-
     /// Apply the room's grants to `requirement` for a run of the Tasks app's
     /// tracker: as [`Self::check`], the agent acting for the run's starter
     /// on the starter's live grants, held to the issue's own grant set.
@@ -291,50 +200,6 @@ fn not_allowed(kind: tilo_action_policy::ActionKind, whose: &str) -> String {
     )
 }
 
-pub trait WorkspaceTaskExecution: Send + Sync {
-    fn requires_room(&self, room: &str) -> bool;
-    /// Read the canonical task controls in this native workspace.
-    fn snapshot(&self, room: &str) -> Result<WorkspaceTaskSnapshot, String>;
-    /// Read instructions only while the assigned agent remains a current member.
-    fn agent_snapshot(&self, room: &str, agent: &str) -> Result<WorkspaceTaskSnapshot, String>;
-    /// The broker supplies a binding derived from its authenticated channel.
-    /// Authority uses the host's existing enrolled attestation, never a wire grant.
-    fn report(
-        &self,
-        room: &str,
-        binding: NativeTaskBinding,
-        command: WorkspaceTaskCommand,
-    ) -> tilo_owner_commit::CommitFuture;
-    /// Check the current owner capability policy before observing retained action output.
-    fn authorize_action(
-        &self,
-        room: &str,
-        agent: &str,
-        requirement: &NativeTaskActionRequirement,
-    ) -> Result<(), String>;
-    /// Admit a host activation in the same serialized task turn as an action.
-    /// The callback must retain custody before invoking the ordinary launcher.
-    ///
-    /// # Errors
-    /// Membership, starter authority, frozen scope or instruction frontier changed.
-    fn admit_host_launch(
-        &self,
-        room: &str,
-        binding: &NativeTaskBinding,
-        requirement: &NativeTaskActionRequirement,
-        launch: &mut dyn FnMut() -> Result<(), String>,
-    ) -> Result<(), String>;
-
-    /// Runs ordinary action admission inside the existing serialized task turn.
-    fn admit(
-        &self,
-        room: &str,
-        binding: &NativeTaskBinding,
-        requirement: &NativeTaskActionRequirement,
-        action: &mut dyn FnMut() -> Result<InvocationJob, String>,
-    ) -> Result<InvocationJob, String>;
-}
-
 /// The resource prefix of an issue in the Tasks app's tracker. A run whose
 /// task id is an issue's address is that issue's run, kept in the Tasks
 /// app's record ([`TrackerRuns`]) rather than in the room's task records.
@@ -441,6 +306,12 @@ pub trait TrackerRuns: Send + Sync {
     /// # Errors
     /// The room's tracker cannot be read now.
     fn runs(&self, room: &str) -> Result<Vec<TrackerRun>, String>;
+    /// Whether `agent` is still admitted to `room`, as the room's owner
+    /// holds it now: a removed agent reads its run no more.
+    ///
+    /// # Errors
+    /// The agent is no longer admitted, or the room cannot be read.
+    fn check_agent(&self, room: &str, agent: &str) -> Result<(), String>;
     /// Apply the room's grants for the run's agent, acting for the run's
     /// starter, to `requirement`, as [`NativeTaskActionRequirement::check`]
     /// does for a room task. Where any of them asks first, the error starts

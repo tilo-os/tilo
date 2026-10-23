@@ -57,7 +57,7 @@ pub(crate) struct SealingMember {
 
 impl SealingMember {
     /// `key`'s device, a member of `room`, takes part in the channel of the
-    /// record `(app, record)` the governor holds in the clear so far.
+    /// record `(app, record)` the governor holds.
     pub(crate) async fn join(
         rooms: &Rooms,
         room: &str,
@@ -78,16 +78,19 @@ impl SealingMember {
         let surface = {
             let state = rooms.room(room).await.unwrap();
             let mut scratch = state.lock().await.peer().clone();
-            let mut document =
-                automerge::AutoCommit::load(&scratch.document(app, record).unwrap()).unwrap();
-            let heads = document.get_heads();
+            let mut document = automerge::AutoCommit::new();
             document.put(ROOT, "probe", true).unwrap();
             document.commit_edit("fixture", "probe");
+            let artifact = collab_types::document_artifact_id(app, room, record);
             let NeighbourMsg::AppDocument { envelope, .. } = scratch
-                .publish_incremental(
+                .publish_sealed_incremental(
                     app,
                     record,
-                    document.save_after(&heads),
+                    document.save_after(&[]),
+                    &mut |plaintext| {
+                        keys.seal_content(artifact, ContentRetention::Delta, plaintext)
+                            .map_err(|error| error.to_string())
+                    },
                     &key,
                     SystemTime::now(),
                 )
@@ -548,12 +551,20 @@ async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
         }
     })
     .await;
-    assert!(
-        held.iter().skip(1).all(|op| op.encryption.is_some()),
-        "past the record's cleartext start, the members' writes and their snapshot stay sealed"
-    );
+    assert!(held.iter().all(holds_nothing_in_the_clear));
     drop(rooms);
     relay.shutdown().await;
+}
+
+/// Whether `op` is sealed, or holds nothing: the checkpoint a record is
+/// born from.
+fn holds_nothing_in_the_clear(op: &SignedOp) -> bool {
+    op.encryption.is_some()
+        || matches!(
+            collab_types::DocumentMutation::decode(&op.payload),
+            Ok(collab_types::DocumentMutation::Snapshot(bytes))
+                if automerge::AutoCommit::load(&bytes).unwrap().get_heads().is_empty()
+        )
 }
 
 /// Copy what `from` holds into `to`, keeping files `to` has already.
@@ -872,6 +883,131 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
         .await
         .expect("the node still reads the room's calls");
     assert!(calls.iter().any(|listed| listed.state.call == call.call));
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// What the relay retains of `record`, once it retains a write `wanted`.
+async fn retained_once(
+    relay: &crate::daemon::Relay,
+    workspace_id: u64,
+    record: &str,
+    wanted: impl Fn(&SignedOp) -> bool + Send + Sync,
+) -> Vec<SignedOp> {
+    tilo_test_env::within("the relay retains the record", async {
+        loop {
+            let held = retained_writes(relay, workspace_id, record).await;
+            if held.iter().any(&wanted) {
+                break held;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+}
+
+/// A node that stewards its room's channels opens a record's channel
+/// before the record's first write: nothing of the record is ever retained
+/// in the clear, and the room reads it through the channel's keys.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Relay::shutdown consumes the relay after the assertions"
+)]
+async fn a_record_of_a_stewarded_room_is_sealed_from_its_first_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let (room, workspace_id) = (created.room, created.workspace_id);
+    rooms
+        .author_room_record(&room, &cert, (APP, RECORD), |doc| {
+            doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let held = retained_once(&relay, workspace_id, RECORD, |op| op.encryption.is_some()).await;
+    assert!(held.iter().all(holds_nothing_in_the_clear));
+    assert_eq!(readable(&rooms, &room).await.as_deref(), Some("Welcome"));
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+/// A record its room wrote in the clear before the node stewarded its
+/// channel is sealed once its operator decided it: its channel is opened, the
+/// relay retains one sealed snapshot in place of the writes in the clear,
+/// and a member with the channel's keys reads every change of that history
+/// from it, with its author and sequence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Relay::shutdown consumes the relay after the assertions"
+)]
+async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
+    const LEGACY: &str = "legacy";
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let (room, workspace_id) = (created.room, created.workspace_id);
+    let (member_key, _) = member_device(&rooms, &room, (&key, &cert), 3).await;
+    // Two authors' writes, as the room's host kept them in the clear before
+    // it stewarded the record's channel.
+    let mut written = automerge::AutoCommit::new();
+    written.put(ROOT, "title", "before").unwrap();
+    written.commit_edit("fixture", "title");
+    let mut other = written.fork();
+    other.put(ROOT, "by", "another author").unwrap();
+    other.commit_edit("fixture", "by");
+    written.put(ROOT, "title", "the channel").unwrap();
+    written.commit_edit("fixture", "title");
+    written.merge_incoming(&mut other).unwrap();
+    {
+        let state = rooms.room(&room).await.unwrap();
+        let mut governed = state.lock().await;
+        let mut candidate = governed.peer().clone();
+        let now = SystemTime::now();
+        for bytes in [automerge::AutoCommit::new().save(), written.save()] {
+            candidate
+                .publish_document(APP, LEGACY, bytes, &key, now)
+                .unwrap();
+        }
+        let collaboration = governed.collaboration().clone();
+        governed
+            .commit(candidate, &key, now, |_, _| Ok(collaboration))
+            .unwrap();
+        rooms.settle(&mut governed).await.unwrap();
+    }
+    retained_once(&relay, workspace_id, LEGACY, |op| {
+        !holds_nothing_in_the_clear(op)
+    })
+    .await;
+
+    // The host's operator decided to seal what its rooms hold in the clear.
+    rooms.reseal_existing();
+    relay.compactor().reseal_existing();
+    rooms.reseal_stewarded(relay.compactor()).await;
+
+    let held = retained_writes(&relay, workspace_id, LEGACY).await;
+    assert!(held.iter().all(|op| op.encryption.is_some()));
+    rooms.reseal_stewarded(relay.compactor()).await;
+    assert_eq!(retained_writes(&relay, workspace_id, LEGACY).await, held);
+    let member = SealingMember::join(&rooms, &room, (APP, LEGACY), member_key).await;
+    let mut read = automerge::AutoCommit::new();
+    for op in &held {
+        member.open_into(op, &mut read);
+    }
+    let changes =
+        |doc: &mut automerge::AutoCommit| -> std::collections::HashSet<(automerge::ActorId, u64)> {
+            doc.get_changes(&[])
+                .iter()
+                .map(|change| (change.actor_id().clone(), change.seq()))
+                .collect()
+        };
+    assert!(changes(&mut written).is_subset(&changes(&mut read)));
+    assert_eq!(title(&read.save()).as_deref(), Some("the channel"));
     drop(rooms);
     relay.shutdown().await;
 }

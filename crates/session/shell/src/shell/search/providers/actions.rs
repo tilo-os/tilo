@@ -7626,6 +7626,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn theme_and_language_actions_are_searchable_and_write_the_settings_store() {
         use settings_store::appearance::{HIGH_CONTRAST, MODE};
+        // The person's settings records, kept apart from every other test's.
+        let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
         // The session keeps the person's settings, as it does in a session.
         let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
@@ -7709,6 +7711,8 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn a_theme_action_records_the_field_edits_it_makes_with_both_leaves() {
+        // The person's settings records, kept apart from every other test's.
+        let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
         let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
         let records = settings_store::SessionSettings::open(paths.clone()).expect("records");

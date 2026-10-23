@@ -799,6 +799,13 @@ impl Pan {
 
     fn pan_max_scroll_x(&self) -> f64 {
         let viewport = self.viewport.width().max(1.0);
+        // A lone window that fits, its gutters included, stays at home: it
+        // takes the strip, so there is no further window to glimpse past.
+        if self.laid_spans.len() <= 1
+            && self.content_w + self.trailing_gutter() <= viewport + SNAP_SETTLED_PX
+        {
+            return 0.0;
+        }
         let trailing = (viewport * TRAILING_REVEAL_FRAC).max(self.trailing_gutter());
         (self.content_w + trailing - viewport).max(0.0)
     }
@@ -2018,6 +2025,28 @@ impl GroupRow {
         }
     }
 
+    /// Per group, in strip order, whether it has its run of the strip (its
+    /// lane) to itself: no other window there that is not closing. A lone
+    /// window at the default width takes the strip
+    /// ([`WindowWidth::resolve_in_strip`]), so closing its last neighbour
+    /// widens it and opening one beside it narrows it again.
+    pub fn alone_per_group(&self) -> Vec<bool> {
+        let lanes: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.lane_index_of(i))
+            .collect();
+        let open: Vec<bool> = self.groups.iter().map(|g| !g.is_closing()).collect();
+        (0..self.groups.len())
+            .map(|i| {
+                open.get(i).copied().unwrap_or(false)
+                    && !lanes
+                        .iter()
+                        .zip(&open)
+                        .enumerate()
+                        .any(|(j, (&lane, &other))| j != i && other && Some(&lane) == lanes.get(i))
+            })
+            .collect()
+    }
+
     /// Per-group usable width, in strip order. Depends only on the groups'
     /// own stored widths and the pushed output spans or lanes, never on a
     /// previous frame's layout, so it's stable on the very first frame.
@@ -2031,12 +2060,14 @@ impl GroupRow {
                 })
                 .collect();
         }
+        let alone = self.alone_per_group();
         let mut canvas_x = self.rect.x0 + self.leading_inset;
         self.groups
             .iter()
-            .map(|g| {
+            .zip(alone)
+            .map(|(g, alone)| {
                 let usable = self.usable_at(canvas_x);
-                canvas_x += g.width().resolve(usable) + HANDLE_SLOT_PX;
+                canvas_x += g.width().resolve_in_strip(usable, alone) + HANDLE_SLOT_PX;
                 usable
             })
             .collect()
@@ -2048,6 +2079,7 @@ impl GroupRow {
     /// On a partitioned strip each lane's canvas starts at its own
     /// display's left edge.
     pub fn group_canvas_spans(&self) -> Vec<(u64, f64, f64)> {
+        let alone = self.alone_per_group();
         if !self.lanes.is_empty() {
             let usable = self.usable_per_group();
             let mut cursor: Vec<f64> = self
@@ -2061,9 +2093,10 @@ impl GroupRow {
                 .enumerate()
                 .map(|(i, g)| {
                     let lane = self.lane_index_of(i);
-                    let width = g
-                        .width()
-                        .resolve(usable.get(i).copied().unwrap_or(DEFAULT_STRIP_USABLE_PX));
+                    let width = g.width().resolve_in_strip(
+                        usable.get(i).copied().unwrap_or(DEFAULT_STRIP_USABLE_PX),
+                        alone.get(i).copied().unwrap_or(false),
+                    );
                     let x0 = cursor.get(lane).copied().unwrap_or(0.0);
                     if let Some(c) = cursor.get_mut(lane) {
                         *c = x0 + width + HANDLE_SLOT_PX;
@@ -2075,9 +2108,10 @@ impl GroupRow {
         let mut canvas_x = self.rect.x0 + self.leading_inset;
         self.groups
             .iter()
-            .map(|g| {
+            .zip(alone)
+            .map(|(g, alone)| {
                 let usable = self.usable_at(canvas_x);
-                let width = g.width().resolve(usable);
+                let width = g.width().resolve_in_strip(usable, alone);
                 let span = (g.id, canvas_x, canvas_x + width);
                 canvas_x += width + HANDLE_SLOT_PX;
                 span
@@ -2249,7 +2283,7 @@ impl GroupRow {
             if let Some(g) = self.groups.get_mut(i)
                 && g.width() != width
             {
-                g.set_width(width);
+                g.share_width(width);
                 g.stamp_pending_width_change();
             }
         }
@@ -3196,6 +3230,11 @@ impl GroupRow {
     /// Whether one of this row's own tab bars currently owns a drag.
     pub fn tab_drag_active(&self) -> bool {
         self.groups.iter().any(WindowGroup::drag_in_flight)
+    }
+
+    /// The tab one of this row's tab bars is dragging, while one is.
+    pub fn dragged_tab(&self) -> Option<u64> {
+        self.groups.iter().find_map(WindowGroup::dragged_tab)
     }
 
     /// The exact destination currently painted for a tab from another strip.
@@ -4325,8 +4364,15 @@ impl Widget for GroupRow {
         self.sync_sibling_fade(theme);
         self.move_omega = spring_omega(theme.tokens.motion.springs.heavy);
         let usable_per_group = self.usable_per_group();
-        for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
+        let alone = self.alone_per_group();
+        for ((g, &usable), alone) in self
+            .groups
+            .iter_mut()
+            .zip(usable_per_group.iter())
+            .zip(alone)
+        {
             g.set_strip_usable_px(usable);
+            g.set_alone(alone);
         }
         let runs = self.lanes.len().max(1);
         let snap_lane: Vec<bool> = (0..runs)
@@ -4374,8 +4420,15 @@ impl Widget for GroupRow {
         // left edge lands on), with no dependency on a previous frame's
         // layout — keeps a single-frame offscreen render identical to live.
         let usable_per_group = self.usable_per_group();
-        for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
+        let alone = self.alone_per_group();
+        for ((g, &usable), alone) in self
+            .groups
+            .iter_mut()
+            .zip(usable_per_group.iter())
+            .zip(alone)
+        {
             g.set_strip_usable_px(usable);
+            g.set_alone(alone);
         }
         for group in &mut self.groups {
             group.set_fullscreen_presentation(
@@ -8752,7 +8805,7 @@ mod tests {
     /// real `build_layout` / `apply_layout` pair, rebuilding the taffy
     /// tree so a changed width actually takes — the baked length on the
     /// old node is what a stale tree would keep serving.
-    fn relayout_strip(row: &mut GroupRow, viewport_w: f64) {
+    pub(super) fn relayout_strip(row: &mut GroupRow, viewport_w: f64) {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Size as TSize, TaffyTree};
 
@@ -8786,7 +8839,12 @@ mod tests {
     /// A strip of `count` groups, each `permille` of the strip's usable
     /// width, behind the shell's wheel-disc gutter — the shape the
     /// compositor actually lays out.
-    fn strip_at(count: usize, viewport_w: f64, leading_inset: f64, permille: u32) -> GroupRow {
+    pub(super) fn strip_at(
+        count: usize,
+        viewport_w: f64,
+        leading_inset: f64,
+        permille: u32,
+    ) -> GroupRow {
         let groups: Vec<WindowGroup> = (0..count)
             .map(|i| {
                 make_group(
@@ -9206,84 +9264,6 @@ mod tests {
     fn set_strip_permille(row: &mut GroupRow, permille: u32) {
         for g in &mut row.groups {
             g.set_width(WindowWidth::Fraction(permille));
-        }
-    }
-
-    /// A 1280 px display with the wheel disc's gutter before the strip: the
-    /// window in use, then one that has just opened beside it.
-    fn opened_beside(viewport_w: f64, inset: f64) -> GroupRow {
-        let mut row = strip_at(1, viewport_w, inset, crate::widget::WIDTH_NORMAL_PERMILLE);
-        let mut opened = make_group(200, &[2]);
-        opened.start_spawn_animation();
-        row.insert_group(opened, 1);
-        row
-    }
-
-    #[test]
-    fn a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it() {
-        // Phase `two_windows_share_a_1280_display`.
-        {
-            let mut row = opened_beside(1280.0, 251.0);
-            assert!(
-                row.share_with_neighbour(200),
-                "two two-thirds windows overflow 1280 px"
-            );
-            relayout_strip(&mut row, 1280.0);
-            relayout_strip(&mut row, 1280.0);
-            let spans = row.group_canvas_spans();
-            let (first, last) = (spans[0], spans[1]);
-            assert!(
-                last.2 - first.1 <= 1280.0,
-                "both windows fit on the screen together: {spans:?}"
-            );
-            for (id, x0, x1) in &spans {
-                assert!(
-                    x1 - x0 >= tilo_desktop_model::width::SIDE_BY_SIDE_MIN_PX,
-                    "window {id} opens at a usable width: {spans:?}"
-                );
-            }
-            assert!(
-                row.groups[1].take_pending_width_change().is_some(),
-                "the new width is handed to the host to persist"
-            );
-
-            row.scroll_groups_into_view_animated(
-                100,
-                200,
-                crate::time::now(),
-                MotionSource::default(),
-            );
-            let to = row.pan.glide.map_or(row.scroll_x(), |glide| glide.to);
-            assert!(
-                first.1 >= to - 0.5 && last.2 <= to + 1280.0 + 0.5,
-                "the pan shows both whole: spans {spans:?}, scroll {to}"
-            );
-        }
-        {
-            let mut row = opened_beside(800.0, 0.0);
-            assert!(
-                !row.share_with_neighbour(200),
-                "two windows under the side-by-side minimum would both be unusable"
-            );
-            assert_eq!(
-                row.groups[0].width().permille(),
-                WindowWidth::Normal.permille()
-            );
-            assert_eq!(row.groups[1].width(), WindowWidth::Normal);
-        }
-        {
-            let mut row = strip_at(2, 800.0, 0.0, 1000);
-            row.scroll_groups_into_view_animated(
-                100,
-                200,
-                crate::time::now(),
-                MotionSource::default(),
-            );
-            let to = row.pan.glide.map_or(row.scroll_x(), |glide| glide.to);
-            assert!(
-                to.abs() < 0.5,
-                "the window the person is in stays framed, not the new one: {to}"
-            );
         }
     }
 
@@ -10083,7 +10063,10 @@ mod tests {
             assert!(!row.edge_resize_in_flight());
             assert_eq!(
                 row.groups[1].take_pending_width_change(),
-                Some(crate::widget::permille_for_px(360.0, FIXTURE_USABLE_PX))
+                Some(WindowWidth::Fraction(crate::widget::permille_for_px(
+                    360.0,
+                    FIXTURE_USABLE_PX
+                )))
             );
             assert_eq!(row.groups[0].take_pending_width_change(), None);
             assert_eq!(row.groups[2].take_pending_width_change(), None);
@@ -11468,3 +11451,6 @@ mod keyboard_tests;
 #[cfg(test)]
 #[path = "group_row_pacing_tests.rs"]
 mod pacing_tests;
+#[cfg(test)]
+#[path = "group_row_sharing_tests.rs"]
+mod sharing_tests;

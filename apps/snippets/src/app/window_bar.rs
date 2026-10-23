@@ -1,8 +1,9 @@
 //! Snippets' controls, as slots in the window's bar ([`ui::window_toolbar`]):
 //! the shell's sidebar toggle and Back, what the window shows as the
-//! location (the open snippet, else the chosen place), New snippet, and the open snippet's favorite toggle, with
-//! Duplicate and Delete in the bar's menu. The bar's search is the
-//! library's search; the window draws no header row.
+//! location (the open snippet, else the chosen place), New snippet (unless
+//! the library is empty and the window offers it itself), and the open
+//! snippet's favorite toggle, with Duplicate and Delete in the bar's menu.
+//! The bar's search is the library's search; the window draws no header row.
 
 use ui::widget::{NavPane, NavShell};
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
@@ -32,7 +33,12 @@ impl SnippetsApp {
             label,
             ..ToolbarLocation::default()
         });
-        let mut actions = vec![ToolbarAction::new(NEW_SNIPPET, "plus", tr("snippets-new"))];
+        // An empty library offers New snippet in the window itself; the bar
+        // would only repeat it.
+        let mut actions = Vec::new();
+        if !core.library.snippets.is_empty() {
+            actions.push(ToolbarAction::new(NEW_SNIPPET, "plus", tr("snippets-new")));
+        }
         if let Some((id, open)) = core
             .open
             .as_ref()

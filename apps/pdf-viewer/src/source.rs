@@ -32,6 +32,25 @@ fn profiling() -> bool {
     std::env::var_os("TILO_PDF_PROFILE").is_some()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Calls into the PDF engine (rasterising, reading text or links) made
+    /// on this thread: a test counts the ones a frame makes on the UI thread.
+    static ENGINE_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count a call into the PDF engine on this thread (tests only).
+fn note_engine_call() {
+    #[cfg(test)]
+    ENGINE_CALLS.with(|calls| calls.set(calls.get() + 1));
+}
+
+/// How many calls into the PDF engine this thread has made.
+#[cfg(test)]
+pub(crate) fn engine_calls_on_this_thread() -> u64 {
+    ENGINE_CALLS.with(std::cell::Cell::get)
+}
+
 use anyhow::{Context, anyhow};
 use tilo_content::ContentStore;
 use vello::peniko::{Blob, ImageData as PenikoImage};
@@ -688,6 +707,7 @@ impl RasterBackend {
         if let Some(links) = self.link_cache.get(&key) {
             return links.clone();
         }
+        note_engine_call();
         let links = Arc::new(
             self.sources
                 .get(slot.source)
@@ -709,6 +729,7 @@ impl RasterBackend {
     /// page text. A page whose text is too large to analyse honestly yields
     /// `None` (reported as unavailable, never as a truncated layer).
     fn extract_page_text(&self, slot: PageSlot) -> Option<PageText> {
+        note_engine_call();
         let layer = self.sources.get(slot.source)?.doc.text(slot.page).ok()?;
         if layer.len() > MAX_TEXT_LAYER_GLYPHS {
             return None;
@@ -799,6 +820,7 @@ impl RasterBackend {
                 bucket,
             )
         };
+        note_engine_call();
         let bitmap = source.doc.render(slot.page, &options).ok()?;
         if profiling() {
             eprintln!(
@@ -858,6 +880,7 @@ impl RasterBackend {
             region: crate::tiles::engine_rect(region),
         };
         let t = ui::time::now();
+        note_engine_call();
         let bitmap = source
             .doc
             .render(

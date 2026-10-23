@@ -1255,6 +1255,36 @@ fn history_person_of(
     })
 }
 
+/// What the page's desktop mounts with: its stores, identity and settings.
+fn desktop_inputs(
+    config: &Config,
+    dyn_store: &Rc<dyn durable_store::DurableStore>,
+    permissions: Rc<RefCell<PermissionContext>>,
+) -> Result<crate::desktop::Inputs, JsValue> {
+    let views = Rc::new(
+        InstanceViewStore::with_store(Rc::clone(dyn_store), &config.device, &config.room)
+            .map_err(error)?,
+    );
+    Ok(crate::desktop::Inputs {
+        feedback: config
+            .peer
+            .and_then(|peer| FEEDBACK_STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))),
+        owners: RecordOwners::with_store(Rc::clone(dyn_store)),
+        views,
+        device: config.device.clone(),
+        salt: config
+            .peer
+            .and_then(crate::replication::device_of)
+            .unwrap_or_else(|| config.device.clone()),
+        room: config.room.clone(),
+        author: config.author(),
+        permissions,
+        models: config.models()?,
+        provider_admin: config.provider_admin()?,
+        peer: config.peer,
+    })
+}
+
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -1262,31 +1292,10 @@ fn present_desktop(
     permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<Presentation, JsValue> {
     let opening_permissions = Rc::clone(&permissions);
-    let views = Rc::new(
-        InstanceViewStore::with_store(Rc::clone(&dyn_store), &config.device, &config.room)
-            .map_err(error)?,
-    );
     let dyn_history_store = Rc::clone(&dyn_store);
     let wake = proxy()?;
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
-        crate::desktop::Inputs {
-            feedback: config.peer.and_then(|peer| {
-                FEEDBACK_STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))
-            }),
-            owners: RecordOwners::with_store(Rc::clone(&dyn_store)),
-            views,
-            device: config.device.clone(),
-            salt: config
-                .peer
-                .and_then(crate::replication::device_of)
-                .unwrap_or_else(|| config.device.clone()),
-            room: config.room.clone(),
-            author: config.author(),
-            permissions,
-            models: config.models()?,
-            provider_admin: config.provider_admin()?,
-            peer: config.peer,
-        },
+        desktop_inputs(config, &dyn_store, permissions)?,
         dyn_store,
         config.apps.as_deref(),
         config.workspace_name.as_deref(),

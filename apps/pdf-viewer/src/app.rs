@@ -444,8 +444,7 @@ pub struct PdfApp {
     delivered_thumbs: bool,
     /// How the canvas was shown by the frame being drawn and by the frame
     /// last presented.
-    canvas_drawing: Option<CanvasShown>,
-    canvas_presented: Option<CanvasShown>,
+    shown: ui::scroll_copy::ShownFrames<CanvasShown>,
     raster_text_pending: HashSet<usize>,
     /// Link areas per displayed page (1-based), in the page's display space;
     /// mapped into card space when hit-tested so they follow the current
@@ -1072,8 +1071,7 @@ impl PdfApp {
             scrolled: false,
             delivered_pages: Vec::new(),
             delivered_thumbs: false,
-            canvas_drawing: None,
-            canvas_presented: None,
+            shown: ui::scroll_copy::ShownFrames::default(),
             raster_text_pending: HashSet::new(),
             raster_links: std::collections::HashMap::new(),
             raster_links_pending: HashSet::new(),
@@ -4406,13 +4404,14 @@ impl PdfApp {
                     self.raster_links.clear();
                     self.raster_links_pending.clear();
                     self.raster_text_pending.clear();
-                    self.text_layers_replaced("the pages changed");
+                    self.page_plan_replaced("the pages changed");
                     if let Some(document) = self.raster_document.as_mut() {
                         document.page_sizes = page_sizes;
                         document.geometries = geometries;
                         document.rotations = rotations;
                     }
                     self.rebuild_page_maps();
+                    self.submit_text_batch();
                     self.dirty = true;
                 }
                 RasterEvent::ReconcileFailed { request, error }
@@ -5645,7 +5644,7 @@ impl Widget for PdfApp {
         self.scrolled = false;
         self.delivered_pages.clear();
         self.delivered_thumbs = false;
-        self.canvas_presented = self.canvas_drawing.take();
+        self.shown.present();
     }
 }
 

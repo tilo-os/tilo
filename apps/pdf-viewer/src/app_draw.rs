@@ -624,7 +624,7 @@ impl PdfApp {
         self.draw_toast(scene, base, tr, theme);
 
         self.sidebar_hits = hits;
-        self.canvas_drawing = Some(self.canvas_shown(base, theme));
+        self.shown.note(self.canvas_shown(base, theme));
     }
 
     /// What this frame shows of the document and what floats over it, for

@@ -131,6 +131,37 @@ pub(crate) struct Changes {
     pub outgoing: Vec<Outgoing>,
 }
 
+/// The verdict on an op for `route` from a page's mirror of its channel's
+/// journal, through the one gate a broker checks too
+/// ([`channel_crypto::admission`]). A page that holds the channel's content
+/// keys (`sealed`) knows the channel requires them, journal or not, as a
+/// broker that registered its gate does. `governance_known`: the host
+/// answered `Ready` for the route's room, after the governance it holds,
+/// so a channel the mirror has no journal of requires nothing; before that,
+/// cleartext waits.
+pub fn document_admission(
+    journal: Option<&channel_crypto::GovernanceJournal>,
+    governance_known: bool,
+    sealed: bool,
+    route: &DocumentRoute,
+    encryption: Option<&collab_types::EncryptionMetadata>,
+) -> collab_types::inbound::OpAdmission {
+    let keys = sealed.then_some(channel_crypto::ChannelGate {
+        encryption_required: true,
+        head_epoch: None,
+    });
+    let gates = journal
+        .map(channel_crypto::GovernanceJournal::gate)
+        .into_iter()
+        .chain(keys);
+    channel_crypto::admission(
+        gates,
+        governance_known,
+        Channels::channel(route),
+        encryption,
+    )
+}
+
 /// What this page knows of who governs a room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Governance {
@@ -352,6 +383,22 @@ impl Channels {
 
     pub(crate) fn channel(route: &DocumentRoute) -> ChannelId {
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
+    }
+
+    /// The verdict on an op for `route` from this page's mirror of its
+    /// channel's journal ([`document_admission`]).
+    pub(crate) fn admission(
+        &self,
+        route: &DocumentRoute,
+        (governance_known, sealed): (bool, bool),
+        encryption: Option<&collab_types::EncryptionMetadata>,
+    ) -> collab_types::inbound::OpAdmission {
+        let journal = self
+            .routes
+            .get(&Self::channel(route))
+            .and_then(|route| route.member.as_ref())
+            .map(ChannelMember::journal);
+        document_admission(journal, governance_known, sealed, route, encryption)
     }
 
     /// Let the host govern the rooms no device of this person was seen

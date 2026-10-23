@@ -61,6 +61,8 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NetworkArea> {
     app.areas().find()
 }
 
+pub(crate) mod values;
+
 // Ask the authenticated host: this app intentionally has an isolated network
 // namespace and cannot inspect the host's nl80211 interface by spawning iw.
 fn host_network_wake(profile: &str, enabled: Option<bool>) -> Result<NetworkWakeStatus, String> {
@@ -1085,6 +1087,11 @@ impl NetworkArea {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
         }
+    }
+
+    /// The model, where the networks were read; never reads them.
+    pub(crate) fn read(&self) -> Option<&Shared<NetworkModel>> {
+        self.model.get()
     }
 
     /// The model over this device's networks, or over sample networks for a

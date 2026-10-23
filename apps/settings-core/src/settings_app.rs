@@ -123,6 +123,12 @@ pub struct SettingsApp {
     /// opened ([`crate::setting::Found`]). Empty when it found none.
     found_query: String,
     found: Vec<&'static settings_store::index::Setting>,
+    /// What each setting found and shown by name or as a switch of the
+    /// device is set to, read at every
+    /// sync from the sections `value_follows` keeps and what the areas last
+    /// read: cheap reads, compared to rebuild only on a change.
+    found_reads: Vec<crate::setting::Read>,
+    value_follows: crate::setting::Follows,
 }
 
 impl Default for SettingsApp {
@@ -181,6 +187,8 @@ impl SettingsApp {
             queried: None,
             found_query: String::new(),
             found: Vec::new(),
+            found_reads: Vec::new(),
+            value_follows: crate::setting::Follows::default(),
         }
     }
 
@@ -351,6 +359,7 @@ impl SettingsApp {
                 Box::new(crate::setting::Found::new(
                     self.cx.clone(),
                     self.found.clone(),
+                    self.found_reads.clone(),
                 )),
                 ScrollOffset::default(),
             )
@@ -532,8 +541,21 @@ impl SettingsApp {
             return;
         }
         self.found = found;
+        self.read_found();
         self.structure_dirty = true;
         self.refresh_shell_children();
+    }
+
+    /// Read what the settings found are set to; whether any reads otherwise
+    /// than when last read.
+    fn read_found(&mut self) -> bool {
+        self.value_follows.refresh();
+        let values = crate::setting::reads(self, &self.value_follows, &self.found);
+        if values == self.found_reads {
+            return false;
+        }
+        self.found_reads = values;
+        true
     }
 
     /// The settings the window bar's search found and shows, for tests.
@@ -894,6 +916,10 @@ impl Widget for SettingsApp {
         // the app: what it asks for now is read from there.
         let query = self.search_query().to_owned();
         self.follow_query(&query);
+        if !self.found.is_empty() && self.read_found() {
+            self.structure_dirty = true;
+            self.refresh_shell_children();
+        }
         // The read the pane shown waits for has landed, or the layout list
         // the Keyboard page showed without: build the pane.
         if (self.pane_waits.get() && !self.pane_reading())

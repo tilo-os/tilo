@@ -223,6 +223,10 @@ struct GovernedRoom {
     unkept: bool,
     /// Whether writing them through is due already ([`Rooms::keep_soon`]).
     keeping: bool,
+    /// The room's document started over from a base at an admission, and
+    /// what the relay retains of it from before is still to be archived,
+    /// ahead of the base's publication ([`Rooms::settle`]).
+    rebased: bool,
 }
 
 impl RoomRecord {
@@ -324,6 +328,7 @@ impl GovernedRoom {
             desktop_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
+            rebased: false,
         };
         this.persist()?;
         Ok(this)
@@ -377,6 +382,7 @@ impl GovernedRoom {
             desktop_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
+            rebased: false,
         })
     }
 
@@ -527,6 +533,17 @@ impl GovernedRoom {
         if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
             return Err("a room change cannot replace the room".into());
         }
+        // A member admitted from now on is given the room as it stands, not
+        // what was withdrawn before they joined.
+        let members = |peer: &StatePeer| {
+            peer.governance()
+                .governed_access(now)
+                .map(|access| access.member_user_roots)
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let joined = !members(&candidate).is_subset(&members(&self.peer));
         let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
         crate::timing::window("room.commit.prepare", preparing);
@@ -544,7 +561,8 @@ impl GovernedRoom {
             .rev()
             .take_while(|publication| !publication.checkpoint)
             .count();
-        if tail >= MAX_PUBLICATION_TAIL {
+        let mut rebased = false;
+        if tail >= MAX_PUBLICATION_TAIL || joined {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
@@ -559,6 +577,7 @@ impl GovernedRoom {
                     _ => None,
                 })
                 .collect::<std::collections::BTreeSet<_>>();
+            rebased = joined && candidate.rebase_room()?;
             record.outgoing = candidate
                 .durable_bootstrap_messages(key, now, generation)?
                 .iter()
@@ -596,6 +615,7 @@ impl GovernedRoom {
             return Err(error);
         }
         self.peer = candidate;
+        self.rebased |= rebased;
         crate::timing::event(
             "room.governance_commit",
             committing,
@@ -732,6 +752,10 @@ struct RoomsInner {
     /// Each room's layout scope, as its governance says
     /// ([`layout_scope`]).
     layouts: layout_scope::Layouts,
+    /// Whether the records its rooms hold in the clear are sealed: only once
+    /// the host's operator decided it ([`crate::reseal`]).
+    #[cfg(feature = "agents")]
+    resealing: std::sync::atomic::AtomicBool,
 }
 
 /// What a member sent a room's channel steward.
@@ -855,6 +879,8 @@ impl Rooms {
                 queued_writes: std::sync::Mutex::default(),
                 listings,
                 layouts: layout_scope::Layouts::default(),
+                #[cfg(feature = "agents")]
+                resealing: std::sync::atomic::AtomicBool::new(false),
             }),
         };
         this.learn_layouts().await;
@@ -1877,6 +1903,11 @@ impl Rooms {
             .await
             .map_err(|error| error.to_string())?;
         let publisher = Arc::clone(&room.publisher);
+        if room.rebased {
+            publisher.flushed().await;
+            self.archive_room_history(room).await?;
+            room.rebased = false;
+        }
         let epoch = publisher.reconcile(&mut room.record.published);
         let workspace_id = room.workspace_id();
         let (mut publications, unreadable) = room.unpublished(&host.records);
@@ -1941,6 +1972,27 @@ impl Rooms {
         // Watchers (a persistent room's operator) learn that this room's
         // governance moved; nobody listening is fine.
         let _ = self.inner.changes.send(room.room().to_owned());
+        Ok(())
+    }
+
+    /// Archive what the relay retains of `room`'s document, once every
+    /// governance change published before is retained: the room starts over
+    /// from the base its next publication carries.
+    async fn archive_room_history(&self, room: &GovernedRoom) -> Result<(), String> {
+        let host = &self.inner.host;
+        let workspace_id = room.workspace_id();
+        host.records.settled(workspace_id).await;
+        let Some((channel, _)) = neighbour_wire::retention(&room.peer().room_message(), true)
+        else {
+            return Err("the room's document has no retention channel".into());
+        };
+        let hosted = host.workspaces.lock().await.get(&workspace_id).cloned();
+        let workspace = hosted.ok_or("the room's workspace is not hosted here")?;
+        let archived =
+            crate::compaction::owner_run(&workspace, move |store| store.archive_channel(&channel))
+                .await?;
+        drop(workspace);
+        tracing::info!(room = %room.room(), archived, "the room's history before an admission is archived");
         Ok(())
     }
 

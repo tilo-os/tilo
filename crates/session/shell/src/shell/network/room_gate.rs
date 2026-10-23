@@ -85,6 +85,7 @@ impl ShellNetwork {
             | NeighbourMsg::PersonalContinuityRequest { .. }
             | NeighbourMsg::PersonalContinuityCheckpoint { .. }
             | NeighbourMsg::PersonalWorkspaces { .. }
+            | NeighbourMsg::RoomArchive { .. }
             // Retired generations, refused where they enter
             // (`NeighbourMsg::is_retired`).
             | NeighbourMsg::IdentityAnnouncement { .. }

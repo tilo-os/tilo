@@ -12,7 +12,7 @@ use tilo_action_broker::services::{
     AppActionGrants, LegacyWorkspaceProjection, WorkspaceAuthority,
 };
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
-use tilo_desktop_model::{RoomId, WorkspaceTaskStatus};
+use tilo_desktop_model::RoomId;
 use tilo_identity_host::broker::WorkspaceMembership;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
@@ -576,27 +576,10 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     reopened.with_workspace(&RoomId::new(), &mut |_| panic!("no such room"));
 }
 
-fn task(id: &str) -> tilo_desktop_model::WorkspaceTask {
-    tilo_desktop_model::WorkspaceTask {
-        id: id.into(),
-        title: "Draft".into(),
-        created_by: "person-1".into(),
-        assigned_agent: None,
-        route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
-        status: WorkspaceTaskStatus::Queued,
-        resource: None,
-        subject: None,
-        created_at: 1,
-        updated_at: 1,
-        audit: Vec::new(),
-    }
-}
-
 #[test]
-fn effect_and_task_records_persist_in_the_profile() {
+fn effect_records_persist_in_the_profile() {
     let temp = tempfile::tempdir().unwrap();
-    let mut tree = bootstrap();
-    tree.workspaces[0].tasks.push(task("task-1"));
+    let tree = bootstrap();
     let room = tree.workspaces[0].room().to_string();
     std::fs::write(
         temp.path().join(STANDALONE_WORKSPACE),
@@ -624,20 +607,6 @@ fn effect_and_task_records_persist_in_the_profile() {
             )
             .unwrap();
     }
-    workspace
-        .record_task_update(
-            &room,
-            "task-1",
-            "agent-1",
-            Some(WorkspaceTaskStatus::Done),
-            "Wrote the outline".into(),
-        )
-        .unwrap();
-    assert!(
-        workspace
-            .record_task_update(&room, "absent", "agent-1", None, "x".into())
-            .is_err()
-    );
     assert!(
         workspace
             .record_effect(&RoomId::new().to_string(), invocation, "a", context, status)
@@ -655,17 +624,6 @@ fn effect_and_task_records_persist_in_the_profile() {
         "a retry keeps one receipt"
     );
     assert_eq!(workspace.effect_receipts[0].invocation, invocation);
-    let task = &workspace.tasks[0];
-    assert_eq!(task.status, WorkspaceTaskStatus::Done);
-    let events: Vec<_> = task
-        .audit
-        .iter()
-        .map(|event| (event.action(), event.note.as_deref()))
-        .collect();
-    assert_eq!(
-        events,
-        [("set-status", None), ("report", Some("Wrote the outline"))]
-    );
 }
 
 #[test]
@@ -673,7 +631,6 @@ fn the_desktop_sessions_workspace_refuses_records() {
     let temp = tempfile::tempdir().unwrap();
     let mut tree = bootstrap();
     tree.workspaces[0].set_owner("desktop-owner".to_owned());
-    tree.workspaces[0].tasks.push(task("task-1"));
     let room = tree.workspaces[0].room().to_string();
     let bytes = serde_json::to_vec_pretty(&tree).unwrap();
     let desktop = temp.path().join(DESKTOP_WORKSPACE);
@@ -693,15 +650,9 @@ fn the_desktop_sessions_workspace_refuses_records() {
             )
             .is_err()
     );
-    assert!(
-        workspace
-            .record_task_update(&room, "task-1", "agent-1", None, "x".into())
-            .is_err()
-    );
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
     let tree = workspace.snapshot().unwrap();
     assert!(tree.workspaces[0].effect_receipts.is_empty());
-    assert!(tree.workspaces[0].tasks[0].audit.is_empty());
     assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
 }
 

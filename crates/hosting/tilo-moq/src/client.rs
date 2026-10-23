@@ -253,9 +253,10 @@ struct State {
     pictures_out: BTreeMap<String, PictureOut>,
     /// Advances whenever `pictures_out` gains or loses a track.
     pictures_revision: u64,
-    /// Windows whose tracks were asked for afresh since last taken: each
-    /// needs a keyframe, since its new reader can start at nothing else.
-    window_keyframes: BTreeSet<u64>,
+    /// Picture tracks (call layers and windows) asked for afresh since last
+    /// taken, or whose picture could not join its group: each needs a
+    /// keyframe, since its new reader can start at nothing else.
+    keyframes: BTreeSet<video::Track>,
     /// The picture tracks to show of each publication, by namespace.
     shown: BTreeMap<String, BTreeSet<String>>,
     /// Pictures received, by namespace and track.
@@ -419,7 +420,7 @@ impl Client {
                 reading_revision: 0,
                 pictures_out: BTreeMap::new(),
                 pictures_revision: 0,
-                window_keyframes: BTreeSet::new(),
+                keyframes: BTreeSet::new(),
                 shown: BTreeMap::new(),
                 pictures_in: BTreeMap::new(),
                 counters: Counters::default(),
@@ -522,6 +523,20 @@ impl Client {
     /// Returns an error when the session is not live, publication is muted, the
     /// frame is stale, or the group cannot accept it.
     pub fn try_send(&self, frame: CapturedOpus) -> Result<(), ClientError> {
+        self.try_send_sealed(frame, |_, payload| Some(payload))
+    }
+    /// [`Self::try_send`], with the frame's payload replaced by what `seal`
+    /// makes of it once its sequence number is known.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::try_send`]; [`ClientError::Invalid`] when `seal` makes
+    /// nothing, or more than an object holds.
+    pub fn try_send_sealed(
+        &self,
+        frame: CapturedOpus,
+        seal: impl FnOnce(u64, Vec<u8>) -> Option<Vec<u8>>,
+    ) -> Result<(), ClientError> {
         self.shared.check()?;
         let now = Instant::now();
         let mut state = self.shared.state.lock_recover();
@@ -546,11 +561,12 @@ impl Client {
         let next = sequence.checked_add(1).ok_or(ClientError::Capacity)?;
         let timestamp = moq_net::Timestamp::from_scale(frame.timestamp_48k, 48_000)
             .map_err(|_| ClientError::Invalid)?;
+        let payload = seal(sequence, frame.payload).ok_or(ClientError::Invalid)?;
         let bytes = VoiceObject {
             sequence,
             timestamp: frame.timestamp_48k,
             duration: frame.duration_samples,
-            payload: frame.payload,
+            payload,
         }
         .encode()
         .map_err(|_| ClientError::Invalid)?;
@@ -628,9 +644,45 @@ impl Client {
     /// it does, so a still window sends its new reader nothing until asked.
     pub fn take_window_keyframes(&self) -> Vec<u64> {
         let mut state = self.shared.state.lock_recover();
-        std::mem::take(&mut state.window_keyframes)
-            .into_iter()
-            .collect()
+        let windows = state
+            .keyframes
+            .iter()
+            .filter_map(|track| match track {
+                video::Track::Window(tab) => Some(*tab),
+                video::Track::Picture(..) => None,
+            })
+            .collect::<Vec<_>>();
+        state
+            .keyframes
+            .retain(|track| matches!(track, video::Track::Picture(..)));
+        windows
+    }
+    /// Whether a layer of `source` needs a keyframe now, as
+    /// [`Self::take_picture_keyframes`] would take.
+    pub fn wants_picture_keyframe(&self, source: Source) -> bool {
+        let state = self.shared.state.lock_recover();
+        state
+            .keyframes
+            .iter()
+            .any(|track| matches!(track, video::Track::Picture(of, _) if *of == source))
+    }
+    /// The layers of `source` that need a keyframe now: their tracks were
+    /// asked for afresh, or a picture could not join its group. A still
+    /// picture sends a new reader nothing until asked.
+    pub fn take_picture_keyframes(&self, source: Source) -> Vec<Layer> {
+        let mut state = self.shared.state.lock_recover();
+        let layers = state
+            .keyframes
+            .iter()
+            .filter_map(|track| match track {
+                video::Track::Picture(of, layer) if *of == source => Some(*layer),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        state
+            .keyframes
+            .retain(|track| !matches!(track, video::Track::Picture(of, _) if *of == source));
+        layers
     }
     /// Call `wake` whenever a picture arrives, or a picture layer or window
     /// is asked for or no longer is: an owner that waits on events, not a
@@ -667,6 +719,11 @@ impl Client {
             .get_mut(&video::track(source, object.layer))
             .ok_or(ClientError::Muted)
             .and_then(|out| out.write(object.keyframe, timestamp, bytes));
+        if matches!(sent, Err(ClientError::Capacity | ClientError::Expired)) {
+            state
+                .keyframes
+                .insert(video::Track::Picture(source, object.layer));
+        }
         drop(state);
         sent
     }
@@ -696,7 +753,7 @@ impl Client {
             .ok_or(ClientError::Muted)
             .and_then(|out| out.write(object.keyframe, timestamp, bytes));
         if matches!(sent, Err(ClientError::Capacity | ClientError::Expired)) {
-            state.window_keyframes.insert(tab);
+            state.keyframes.insert(video::Track::Window(tab));
         }
         drop(state);
         sent
@@ -1007,8 +1064,8 @@ fn accept_picture(shared: &Shared, request: moq_net::track::Request) {
     let name = request.name().to_owned();
     let track = request.accept(moq_net::track::Info::default().with_max_age(PICTURE_SEND_AGE));
     let mut state = shared.state.lock_recover();
-    if let Some(tab) = video::parse_window_track(&name) {
-        state.window_keyframes.insert(tab);
+    if let Some(track) = video::Track::parse(&name) {
+        state.keyframes.insert(track);
     }
     state.pictures_out.insert(
         name,

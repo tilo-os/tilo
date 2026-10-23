@@ -48,6 +48,40 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&StorageArea> {
     app.areas().find()
 }
 
+/// What the storage settings found by search are set to, as the page last
+/// read them: nothing until it has.
+pub(crate) mod values {
+    use super::{StorageModel, area, cache_size, cache_size_shown};
+    use crate::i18n::{t, t_args};
+    use crate::setting::Follows;
+    use crate::settings_app::SettingsApp;
+
+    fn read<V>(app: &SettingsApp, read: impl FnOnce(&StorageModel) -> Option<V>) -> Option<V> {
+        let model = area(app)?.model.get()?;
+        let model = model.borrow();
+        read(&model)
+    }
+
+    pub(crate) fn cache(app: &SettingsApp, _: &Follows) -> Option<String> {
+        read(app, |model| {
+            cache_size(model.cache_policy?.budget_bytes).map(cache_size_shown)
+        })
+    }
+
+    pub(crate) fn clean(app: &SettingsApp, _: &Follows) -> Option<String> {
+        read(app, |model| {
+            let scan = model.scan.as_ref()?;
+            Some(match &scan.cleanup {
+                Some(preview) if !preview.items.is_empty() => t_args(
+                    "settings-storage-reclaimable",
+                    &[("size", ui::format::size(preview.total_bytes).into())],
+                ),
+                _ => t("settings-storage-clean-nothing"),
+            })
+        })
+    }
+}
+
 fn category_label(category: StorageCategory) -> String {
     t(match category {
         StorageCategory::InstalledApps => "settings-storage-cat-apps",

@@ -27,8 +27,12 @@ RUN --mount=type=secret,id=actions_cache_url \
     && /opt/cargo-hakari/bin/cargo-hakari hakari --version
 
 FROM registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b
+# Fedora builds node with English-only ICU and ships the rest of the ICU data
+# as nodejs-full-i18n, a weak dependency. Without its break-iterator data
+# Intl.Segmenter's segment() dereferences a missing iterator and node dies
+# with SIGSEGV, so the JavaScript suites that count graphemes need it.
 RUN dnf install -y --setopt=install_weak_deps=False \
-      bash coreutils findutils grep sed tar gzip git python3 jq ripgrep nodejs \
+      bash coreutils findutils grep sed tar gzip git python3 jq ripgrep nodejs nodejs-full-i18n \
       ca-certificates curl libgcc libstdc++ zlib-ng-compat \
       gnupg2 diffutils which \
     && dnf clean all

@@ -104,7 +104,7 @@ impl super::ShellOverlayHost {
                 active.name.clone(),
                 tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local)
                     .into_iter()
-                    .filter(|row| !row.invited)
+                    .filter(|row| !row.invited && !row.own_device)
                     .collect::<Vec<RosterRow>>(),
             )
         };

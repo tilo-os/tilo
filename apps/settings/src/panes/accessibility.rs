@@ -516,6 +516,49 @@ fn assist<'a, V>(
         .of(access, path)
 }
 
+/// What the accessibility settings found by search that their pane draws
+/// its own way are set to, as stored.
+pub(crate) mod values {
+    use ui::LocalState;
+
+    use super::{AccessibilityEffect, AccessibilitySettings};
+    use crate::effects::effect;
+    use crate::host::PaneCx;
+    use crate::i18n::t;
+    use crate::setting::{Follows, Read, on_off};
+    use crate::settings_app::SettingsApp;
+    use crate::widgets::Item;
+
+    /// The screen reader, a switch where there is a speech engine for it.
+    pub(crate) fn screen_reader(app: &SettingsApp, follows: &Follows) -> Read {
+        let on = follows
+            .get::<AccessibilitySettings>(app.host())
+            .screen_reader;
+        if super::software(app).speech.is_some() {
+            Read::Switch(on)
+        } else {
+            Read::Value(Some(on_off(on)))
+        }
+    }
+
+    pub(crate) fn screen_reader_switch(cx: &PaneCx, on: bool) -> Item {
+        cx.row(t("a11y-screen-reader"))
+            .described(t("a11y-screen-reader-desc"))
+            .id("a11y.screen_reader")
+            .toggle_effect(
+                &LocalState::new(on),
+                effect(AccessibilityEffect::SET_SCREEN_READER),
+            )
+    }
+
+    pub(crate) fn dictation_language(app: &SettingsApp, follows: &Follows) -> String {
+        let language = follows
+            .get::<AccessibilitySettings>(app.host())
+            .dictation_language;
+        crate::i18n::t(&language.label_key())
+    }
+}
+
 pub(crate) fn high_contrast(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> Item {
     cx.row(t("a11y-high-contrast"))
         .described(t("a11y-high-contrast-desc"))

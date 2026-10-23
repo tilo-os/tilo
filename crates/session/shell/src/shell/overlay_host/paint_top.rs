@@ -104,7 +104,7 @@ impl ShellOverlayHost {
         });
 
         overlay_part(scene, "shell.app-uninstall", desktop, |scene| {
-            self.draw_uninstall(scene, transform, text_renderer, theme, presence);
+            self.draw_app_sheet(scene, transform, text_renderer, theme, presence);
             None
         });
 

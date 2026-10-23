@@ -265,14 +265,29 @@ mod tests {
     fn deadline_retires_child_holding_stdout_after_leader_exit() {
         let temp = tempfile::tempdir().unwrap();
         let pid_file = temp.path().join("child.pid");
+        // The shell drains its input only once the descendant's PID is
+        // recorded. More input than a pipe buffers holds the write, and so the
+        // start of the deadline, until then: a slow start cannot meet the
+        // deadline before the PID exists.
         let command = [
             "/bin/sh".into(),
             "-c".into(),
-            "sleep 60 & echo $! > \"$1\"; exit 0".into(),
+            "sleep 60 & echo $! > \"$1\"; cat > /dev/null; exit 0".into(),
             "fixture".into(),
             pid_file.clone().into_os_string(),
         ];
-        assert!(run_fixed(&command, 4096, Duration::from_millis(250)).is_err());
+        let env = ENV.map(|(key, value)| (key, OsString::from(value)));
+        let input = vec![0_u8; 1 << 20];
+        assert!(
+            run(&Request {
+                command: &command,
+                env: &env,
+                input: Some(&input),
+                limit: 4096,
+                timeout: Duration::from_millis(250),
+            })
+            .is_err()
+        );
         let pid: i32 = std::fs::read_to_string(pid_file)
             .unwrap()
             .trim()

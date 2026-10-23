@@ -31,6 +31,27 @@ use tilo_user_identity::{
 
 pub const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
+/// A test's scratch directory for a host's or a steward's state, removed
+/// with it. It is in memory where the system has one
+/// ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), as `tilo-app`'s
+/// test profiles are. Every write still syncs as it does for a person, but a
+/// sync in memory costs nothing, where on a busy build node's shared disk one
+/// waited up to seconds for every other writer's data: a host's channel
+/// admission is a chain of synced writes (request, admission, acknowledgement),
+/// and a page's keys then took longer than the host waits for them. These
+/// tests prove what a page and a host do, not that a disk keeps data; the
+/// relay's durability tests keep the real disk.
+pub fn scratch_dir() -> tempfile::TempDir {
+    if let Some(memory) = tilo_paths::memory_temp_dir()
+        && let Ok(directory) = tempfile::Builder::new()
+            .prefix("browser-peer-test-")
+            .tempdir_in(memory)
+    {
+        return directory;
+    }
+    tempfile::tempdir().unwrap()
+}
+
 pub fn workspace() -> u64 {
     tilo_relay_protocol::room_workspace_id(ROOM).unwrap()
 }

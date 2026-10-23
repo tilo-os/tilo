@@ -9,6 +9,9 @@ use super::ShellDriver;
 impl ShellDriver {
     /// The sheet for the app kind `scene` names.
     pub(super) fn scene_app_uninstall(&mut self, scene: &str) {
+        // This run's private home, so the copies' folders read as the
+        // person's own.
+        let home = tilo_paths::home().unwrap_or_else(|| PathBuf::from("/home/you"));
         let (id, name, source) = match scene {
             "app-uninstall-flatpak" => (
                 "org.gnome.Chess",
@@ -22,11 +25,20 @@ impl ShellDriver {
                 "tilo-downloaded-krita",
                 "Krita",
                 AppSource::Downloaded {
-                    program: PathBuf::from("/home/you/Applications/krita-5.2.AppImage"),
-                    entry: PathBuf::from(
-                        "/home/you/.local/share/applications/tilo-downloaded/tilo-downloaded-krita.desktop",
-                    ),
+                    program: home.join("Applications/krita-5.2.AppImage"),
+                    entry: home.join(".local/share/applications/tilo-downloaded/tilo-downloaded-krita.desktop"),
                     appimage: true,
+                    locations: Vec::new(),
+                },
+            ),
+            "app-uninstall-downloaded-copies" => (
+                "tilo-downloaded-tilo-imager",
+                "Tilo Imager",
+                AppSource::Downloaded {
+                    program: home.join("Downloads/Tilo-Imager-x86_64.AppImage"),
+                    entry: home.join(".local/share/applications/tilo-downloaded/tilo-downloaded-tilo-imager.desktop"),
+                    appimage: true,
+                    locations: vec![home.join("Downloads/tilo-imager-linux-x86_64/tilo-imager")],
                 },
             ),
             "app-uninstall-system" => ("org.gnome.TextEditor", "Text Editor", AppSource::System),

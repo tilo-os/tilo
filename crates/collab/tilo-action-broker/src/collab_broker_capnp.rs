@@ -62,8 +62,6 @@ mod tracker_runs;
 mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
-#[path = "workspace_tasks.rs"]
-mod workspace_tasks;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
@@ -134,7 +132,6 @@ use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
 use collab_types::{Principal, Role as CapRole};
 use tilo_desktop_model::DesktopTree;
-use tilo_desktop_model::WorkspaceTaskStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AuthorizedDocumentRoute {
@@ -867,9 +864,8 @@ impl BrokerActor {
     /// whether the room's grants ask first (`true`), when the invocation
     /// then needs the confirmation of the person it is made for, and the
     /// `Once` grants admitting it spends. Decided on one sample: the action
-    /// where it is published; the task the call works in (`task`, and every
-    /// task an agent runs, including waiting tasks);
-    /// and, for a person, a change of the route record it acts on, so a
+    /// where it is published; the run of an issue the call works in
+    /// (`run`), bounded by that issue's grants; and, for a person, a change of the route record it acts on, so a
     /// person restricted on one record cannot act on it through an action
     /// they may otherwise use.
     ///
@@ -880,24 +876,10 @@ impl BrokerActor {
         &self,
         workspace: &tilo_desktop_model::Workspace,
         now: u64,
-        task: Option<&str>,
+        run: Option<&crate::services::NativeTaskBinding>,
         (surface, action): (&PublishedSurface, &PublishedAction),
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
-        self.admit_published_with_task_in(
-            workspace,
-            now,
-            workspace_tasks::TaskAdmission::Legacy(task),
-            (surface, action),
-        )
-    }
-
-    fn admit_published_with_task_in(
-        &self,
-        workspace: &tilo_desktop_model::Workspace,
-        now: u64,
-        task: workspace_tasks::TaskAdmission<'_>,
-        (surface, action): (&PublishedSurface, &PublishedAction),
-    ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        use tilo_action_policy::Refused;
         let refused = || "caller no longer authorized for invocation".to_owned();
         let record = if self.is_agent {
             None
@@ -909,33 +891,44 @@ impl BrokerActor {
         let need = action.contract.need();
         let node = published_node(workspace, &surface.app_id, action);
         let (answer, spent) = self.verdict_in(workspace, &node, need.kind, need.privileged, now);
-        // Whoever acts for a person asks them before an attended action,
-        // whatever the grants allow.
-        let mut asks = match answer {
-            Answer::Allow => self.delegate().is_some() && action.contract.is_attended(),
-            Answer::Ask => true,
-            Answer::Deny => return Err(refused()),
-        };
         let agent = self
             .is_agent
             .then(|| self.id.strip_prefix("agent:").unwrap_or(&self.id));
-        match task.answer(workspace, agent, &node, need.kind, now) {
-            Some(Answer::Deny) => return Err("the task's grants do not cover this action".into()),
-            Some(Answer::Ask) => asks = true,
-            Some(Answer::Allow) | None => {}
-        }
-        if let Some(record) = record {
+        // The run's agent alone acts in it, within the issue's grants.
+        let task = run.and_then(|run| {
+            if agent != Some(run.agent_id.as_str()) {
+                return Some(Answer::Deny);
+            }
+            let cx = tilo_desktop_model::context_at(now);
+            workspace
+                .policy
+                .task_answer(&run.task_id, &node, need.kind, &cx)
+        });
+        let record = record.map(|record| {
             let node = collab_types::validator::document_node(
                 &workspace.policy.room,
                 &surface.app_id,
                 &record,
             );
-            match self.answer_in(workspace, &node, need.kind, now) {
-                Answer::Allow => {}
-                Answer::Ask => asks = true,
-                Answer::Deny => return Err(refused()),
-            }
-        }
+            self.answer_in(workspace, &node, need.kind, now)
+        });
+        // The broker reaches the person on their own device to ask them.
+        let asks = match tilo_action_policy::admit(
+            tilo_action_policy::Invoked {
+                answer,
+                attended: action.contract.is_attended(),
+                task,
+                record,
+            },
+            tilo_action_policy::Asker {
+                reachable: true,
+                delegated: self.delegate().is_some(),
+            },
+        ) {
+            Ok(admission) => admission == tilo_action_policy::Admission::AsksFirst,
+            Err(Refused::Task) => return Err("the task's grants do not cover this action".into()),
+            Err(Refused::Action | Refused::Record) => return Err(refused()),
+        };
         Ok((asks, spent))
     }
 
@@ -3291,14 +3284,6 @@ fn argument_digest(argument: Option<&str>) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
-fn bounded_task_message(message: &str) -> Result<String, String> {
-    let message = message.trim();
-    if message.is_empty() || message.chars().count() > 280 {
-        return Err("task update message must be between 1 and 280 characters".into());
-    }
-    Ok(message.to_string())
-}
-
 /// One subscription onto the broker fanout. Slot-indexed inside a
 /// [`ChannelSubscribers`] table so it can be dropped en masse when
 /// the connection tears down.
@@ -3423,9 +3408,6 @@ pub struct CapnpBrokerState {
     committed_read_id: AtomicU64,
     owner_commit_failure: Mutex<Option<String>>,
     owner_commit_order: AsyncMutex<()>,
-    /// Native task run reports apply one at a time, each from the state the
-    /// one before it committed ([`Self::report_native_task`]).
-    native_task_report_order: AsyncMutex<()>,
     /// The shell's one replicated workspace owner/capability authority.
     /// `None` exists only for transitional test/diagnostic brokers; a
     /// certified join fails closed when they have no authority to consult.
@@ -3518,7 +3500,6 @@ pub struct CapnpBrokerState {
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
-    task_run_id: AtomicU64,
     invocation_id: AtomicU64,
     services: HostServices,
     workers: Mutex<Vec<PendingWorker>>,
@@ -4290,7 +4271,6 @@ impl CapnpBrokerState {
                 committed_read_id: AtomicU64::new(1),
                 owner_commit_failure: Mutex::new(None),
                 owner_commit_order: AsyncMutex::new(()),
-                native_task_report_order: AsyncMutex::new(()),
                 membership,
                 trusted_devices,
                 certificate_authority: config
@@ -4347,7 +4327,6 @@ impl CapnpBrokerState {
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
                 pending_task_runs: Mutex::new(HashMap::new()),
-                task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
@@ -6026,30 +6005,17 @@ impl CapnpBrokerState {
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
-        // A context group can only narrow legacy work. Only authenticated
-        // native custody selects the exact-run ceiling instead of all of an
-        // agent's running/waiting task ceilings.
-        let task = context
-            .as_ref()
-            .and_then(|context| context.group.as_ref())
-            .filter(|group| group.kind == "task")
-            .map(|group| group.id.as_str());
         let (asks, spent) = self
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                match durable {
-                    Some(DurableContext::Task { binding, .. }) => actor
-                        .admit_published_with_task_in(
-                            workspace,
-                            now,
-                            workspace_tasks::TaskAdmission::Native(binding),
-                            (&offered.0, &offered.1),
-                        ),
-                    _ => actor.admit_published_in(workspace, now, task, (&offered.0, &offered.1)),
-                }
+                let run = match durable {
+                    Some(DurableContext::Task { binding, .. }) => Some(binding),
+                    _ => None,
+                };
+                actor.admit_published_in(workspace, now, run, (&offered.0, &offered.1))
             })??;
 
         if (durable.is_some() || execution.is_some())
@@ -6902,145 +6868,6 @@ impl CapnpBrokerState {
         })
     }
 
-    fn admitted_task_execution_budget(
-        &self,
-        cluster_id: &str,
-        task: &tilo_desktop_model::WorkspaceTask,
-    ) -> Result<Option<collab_types::task_budget::TaskExecutionBudget>, String> {
-        if let Some(owner) = self
-            .services
-            .workspace_memberships
-            .as_ref()
-            .filter(|owner| owner.requires_room(cluster_id))
-        {
-            let native = owner.task_snapshot(cluster_id)?;
-            if !native.tasks.iter().any(|current| current == task) {
-                return Err("the native task changed before budget admission".into());
-            }
-            let control = native
-                .controls
-                .get(&task.id)
-                .ok_or("native task control is absent")?;
-            if let Some(budget) = control.execution_budget {
-                budget.validate()?;
-            }
-            Ok(control.execution_budget)
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Mint and deliver one live-only task run. No durable/offline queue is
-    /// kept: losing the subscribed agent means Launch remains unavailable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when workspace authority, task ownership, or a live
-    /// task-capable subscriber is unavailable.
-    pub fn dispatch_workspace_task(&self, cluster_id: &str, task_id: &str) -> Result<u64, String> {
-        if self.native_tasks(cluster_id).is_some() {
-            return self.dispatch_native_task(cluster_id, task_id);
-        }
-        if self.services.legacy_workspace.is_none() {
-            return Err("task mutation service unsupported".into());
-        }
-        let membership = self
-            .membership
-            .as_ref()
-            .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
-        // The cloned task is the complete copy needed below; workspace
-        // authority is never retained across subscriber work.
-        let task = membership.decide_in_room(cluster_id, |workspace| match workspace {
-            Some(workspace) => workspace
-                .tasks
-                .iter()
-                .find(|task| task.id == task_id)
-                .cloned()
-                .ok_or_else(|| "the task no longer exists".to_string()),
-            None => Err("the task workspace is no longer hosted".to_string()),
-        })??;
-        let agent_id = task
-            .assigned_agent
-            .clone()
-            .filter(|_| task.route != tilo_desktop_model::WorkspaceTaskRoute::Manual)
-            .ok_or_else(|| "the task has no agent route".to_string())?;
-        if task.status.is_finished() {
-            return Err("a finished task cannot be launched".into());
-        }
-        let execution_budget = self.admitted_task_execution_budget(cluster_id, &task)?;
-        let (peer_id, tx) = self
-            .task_subscribers
-            .lock()
-            .map_err(|_| "the task subscription registry is unavailable".to_string())?
-            .iter()
-            .find(|(_, subscriber)| {
-                subscriber.cluster_id == cluster_id && subscriber.agent_id == agent_id
-            })
-            .map(|(peer_id, subscriber)| (*peer_id, subscriber.tx.clone()))
-            .ok_or_else(|| "the assigned agent is not live and task-capable".to_string())?;
-        let run_id = self.task_run_id.fetch_add(1, Ordering::Relaxed);
-        let lease = uuid::Uuid::new_v4().to_string();
-        let context = task.action_context();
-        tx.send(TaskRunEnvelope {
-            paused: None,
-            task_id: task.id.clone(),
-            title: task.title.clone(),
-            instruction: Some(
-                task.resource
-                    .as_ref()
-                    .and_then(|resource| resource.agent_request.as_ref())
-                    .map_or_else(|| task.title.clone(), |request| request.instruction.clone()),
-            ),
-            subject: task.subject.clone(),
-            run_id,
-            lease: lease.clone(),
-            planning: match task.route {
-                tilo_desktop_model::WorkspaceTaskRoute::RulesOnly => {
-                    runtime_collab::TaskRunPlanning::RulesOnly
-                }
-                tilo_desktop_model::WorkspaceTaskRoute::Model => {
-                    runtime_collab::TaskRunPlanning::Model
-                }
-                tilo_desktop_model::WorkspaceTaskRoute::Manual => {
-                    return Err("a manual task cannot be dispatched to an agent".into());
-                }
-            },
-            execution_budget,
-            action_context: context.clone(),
-            model: None,
-        })
-        .map_err(|_| "the assigned agent task stream closed".to_string())?;
-        self.pending_task_runs
-            .lock()
-            .map_err(|_| "the task run registry is unavailable".to_string())?
-            .insert(
-                run_id,
-                PendingTaskRun {
-                    peer_id,
-                    agent_id: agent_id.clone(),
-                    cluster_id: cluster_id.to_string(),
-                    task_id: task.id.clone(),
-                    lease,
-                    action_context: context,
-                    terminal: false,
-                    native: None,
-                },
-            );
-        let actor = format!("agent:{agent_id}");
-        self.services
-            .legacy_workspace
-            .as_ref()
-            .ok_or("task mutation service unsupported")?
-            .record_task_update(
-                cluster_id,
-                &task.id,
-                &actor,
-                Some(WorkspaceTaskStatus::InProgress),
-                format!("Broker dispatched live run {run_id}"),
-            )?;
-        Ok(run_id)
-    }
-
     fn task_run_for(
         &self,
         peer_id: u64,
@@ -7068,9 +6895,8 @@ impl CapnpBrokerState {
             })
     }
 
-    /// A person cancelled this task from the native Task Center. Agents may
-    /// observe that fact, but only the person-facing task surface changes the
-    /// durable cancellation state.
+    /// Whether the person stopped this run on its issue. Agents may observe
+    /// that; only the issue's own actions change it.
     fn task_run_cancelled(
         &self,
         peer_id: u64,
@@ -7079,106 +6905,19 @@ impl CapnpBrokerState {
         lease: &str,
     ) -> Result<bool, String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        if run.native.is_some() {
-            return Ok(self.native_task_status(&run, lease)?.cancelled);
-        }
-        let membership = self
-            .membership
-            .as_ref()
-            .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
-        membership.decide_in_room(&run.cluster_id, |workspace| {
-            let workspace =
-                workspace.ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
-            Ok(workspace
-                .tasks
-                .iter()
-                .find(|task| task.id == run.task_id)
-                .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled))
-        })?
+        Ok(self.native_task_status(&run, lease)?.cancelled)
     }
 
-    async fn record_task_run_update(
+    fn record_task_run_update(
         &self,
         peer_id: u64,
         agent_id: &str,
         run_id: u64,
         lease: &str,
-        update: runtime_collab::TaskRunUpdate,
+        update: &runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
-        if run
-            .native
-            .as_ref()
-            .is_some_and(|binding| crate::services::is_tracker_issue(&binding.task_id))
-        {
-            return self.report_tracker_run(&run, &update);
-        }
-        if run.native.is_some() {
-            return self.report_native_task(run, update).await;
-        }
-        let (summary, status, terminal) = match update {
-            runtime_collab::TaskRunUpdate::DirectionsApplied { .. } => {
-                return Err("native directions are unavailable on a legacy task".into());
-            }
-            runtime_collab::TaskRunUpdate::Accepted => {
-                ("Agent accepted run".to_string(), None, false)
-            }
-            runtime_collab::TaskRunUpdate::Progress {
-                presentation: Some(_),
-                ..
-            } => {
-                return Err("typed presentation requires a native task owner".into());
-            }
-            runtime_collab::TaskRunUpdate::Progress {
-                message,
-                presentation: None,
-            } => (
-                format!("Agent progress · {}", bounded_task_message(&message)?),
-                None,
-                false,
-            ),
-            runtime_collab::TaskRunUpdate::Succeeded { message } => (
-                format!("Agent completed · {}", bounded_task_message(&message)?),
-                Some(WorkspaceTaskStatus::Done),
-                true,
-            ),
-            runtime_collab::TaskRunUpdate::Failed { message } => (
-                format!(
-                    "Agent needs attention · {}",
-                    bounded_task_message(&message)?
-                ),
-                Some(WorkspaceTaskStatus::Waiting),
-                true,
-            ),
-            runtime_collab::TaskRunUpdate::Cancelled { message } => (
-                format!("Agent cancelled · {}", bounded_task_message(&message)?),
-                Some(WorkspaceTaskStatus::Cancelled),
-                true,
-            ),
-        };
-        if terminal {
-            let mut runs = self
-                .pending_task_runs
-                .lock()
-                .map_err(|_| "the task run registry is unavailable".to_string())?;
-            let Some(current) = runs.get_mut(&run_id) else {
-                return Err("the task run disappeared".into());
-            };
-            if current.terminal {
-                return Err("the task run is already terminal".into());
-            }
-            current.terminal = true;
-            // The terminal marker is durable in the run registry before the
-            // workspace projection is updated below.
-            drop(runs);
-        }
-        let actor = format!("agent:{}", run.agent_id);
-        self.services
-            .legacy_workspace
-            .as_ref()
-            .ok_or("task mutation service unsupported")?
-            .record_task_update(&run.cluster_id, &run.task_id, &actor, status, summary)?;
-        Ok(())
+        self.report_tracker_run(&run, update)
     }
 
     fn start_task_action(
@@ -7210,7 +6949,7 @@ impl CapnpBrokerState {
             .and_then(|surface| surface.action_projection(resource, action))
             .ok_or("the task action is no longer published in this workspace")?;
         self.admit_task_action(
-            run,
+            &run,
             lease,
             target,
             (provenance, confirmed),
@@ -7220,7 +6959,7 @@ impl CapnpBrokerState {
 
     fn admit_task_action(
         &self,
-        run: PendingTaskRun,
+        run: &PendingTaskRun,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
         (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
@@ -7230,7 +6969,7 @@ impl CapnpBrokerState {
             peer_id: target_peer,
             provider: _,
             resource,
-            action,
+            action: _,
             argument,
         } = target;
         let (surface, descriptor) = offered;
@@ -7250,13 +6989,9 @@ impl CapnpBrokerState {
         let consequential = descriptor
             .contract
             .asks_for_argument(contract_argument.as_deref().or(argument));
-        // A native run pauses for its person where an action asks first
-        // (`native_task_confirmation`); an older run has nobody to ask.
-        if consequential && run.native.is_none() {
-            return Err(
-                "task action requires an interactive confirmation and cannot run unattended".into(),
-            );
-        }
+        // A run pauses for its person where an action asks first
+        // (`native_task_confirmation`).
+        let binding = run.native.clone().ok_or("not a run of an issue")?;
         let requirement = crate::services::NativeTaskActionRequirement {
             binding: run.native.clone(),
             app: surface.app_id.clone(),
@@ -7268,47 +7003,23 @@ impl CapnpBrokerState {
             attended: descriptor.contract.is_attended(),
             confirmed: confirmed.0,
         };
-        if let Some(binding) = &run.native {
-            let (caller, invocation) =
-                provenance.ok_or("native task action requires authenticated original caller")?;
-            let mut current = binding.clone();
-            current.revision = runtime_collab::native_task_revision(lease)
-                .ok_or("invalid native lease")?
-                .1;
-            let mut start = || {
-                self.start_native_task_invocation(
-                    &run,
-                    target,
-                    caller,
-                    *invocation,
-                    (surface.clone(), descriptor.clone()),
-                    (confirmed.0 || consequential, confirmed.1),
-                )
-            };
-            if crate::services::is_tracker_issue(&binding.task_id) {
-                self.admit_tracker_action(&run, &current, &requirement, &mut start)
-            } else {
-                self.native_tasks(&run.cluster_id)
-                    .ok_or("native task owner unavailable")?
-                    .admit(&run.cluster_id, &current, &requirement, &mut start)
-            }
-        } else {
-            self.start_invocation_confirmed_for(
-                target_peer,
-                resource,
-                action,
-                InvocationInputs {
-                    original_request: None,
-                    requested: None,
-                    caller: None,
-                    execution: None,
-                    argument,
-                    actor: &BrokerActor::agent(run.agent_id),
-                    confirmation_token: None,
-                    context: Some(run.action_context),
-                },
+        let (caller, invocation) =
+            provenance.ok_or("native task action requires authenticated original caller")?;
+        let mut current = binding;
+        current.revision = runtime_collab::native_task_revision(lease)
+            .ok_or("invalid native lease")?
+            .1;
+        let mut start = || {
+            self.start_native_task_invocation(
+                run,
+                target,
+                caller,
+                *invocation,
+                (surface.clone(), descriptor.clone()),
+                (confirmed.0 || consequential, confirmed.1),
             )
-        }
+        };
+        self.admit_tracker_action(run, &current, &requirement, &mut start)
     }
 
     fn disconnect_device_media(&self, peer_id: u64) {
@@ -11213,8 +10924,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             )
             .map_err(|error| capnp::Error::failed(format!("invalid task update: {error}")))?;
             state
-                .record_task_run_update(peer_id, &agent_id, request.get_run_id(), &lease, update)
-                .await
+                .record_task_run_update(peer_id, &agent_id, request.get_run_id(), &lease, &update)
                 .map_err(capnp::Error::failed)
         })
     }
@@ -18007,18 +17717,6 @@ pub mod tests {
                 room == self.0
             }
 
-            fn task_snapshot(
-                &self,
-                _: &str,
-            ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>
-            {
-                Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
-                    tasks: Vec::new(),
-                    controls: std::collections::BTreeMap::default(),
-                    grants: Vec::new(),
-                })
-            }
-
             fn execute(
                 &self,
                 _: tilo_owner_commit::OwnerCommitRequest,
@@ -21345,93 +21043,8 @@ mod host_worker_capacity_tests {
 }
 
 #[cfg(test)]
-mod resource_view_tests {
-    use super::*;
-
-    fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedAction {
-        PublishedAction {
-            semantic_identity: None,
-            resource: "note:one".into(),
-            action: action.into(),
-            resource_kind: "note".into(),
-            resource_label: "One".into(),
-            action_label: "Open".into(),
-            description: None,
-            operation_kind: tilo_actions::OperationKind::View,
-            params: vec![
-                tilo_actions::ActionParam::optional(
-                    "slot_capability",
-                    tilo_actions::ParamType::Text,
-                    "Mount capability",
-                ),
-                tilo_actions::ActionParam::optional(
-                    "slot_view",
-                    tilo_actions::ParamType::Text,
-                    "View slot",
-                ),
-            ],
-            contract: tilo_actions::ActionContract::view(),
-            view: Some(tilo_actions::ResourceViewDescriptor {
-                id: view_id.into(),
-                label: "Editor".into(),
-                description: None,
-                open_action: action.into(),
-                primary,
-                range: None,
-                mount: Some(tilo_actions::ResourceViewMountSpec::new(
-                    action,
-                    "slot_capability",
-                    "slot_view",
-                )),
-            }),
-            input: PublishedInput::None,
-        }
-    }
-
-    #[test]
-    fn published_resource_views_validate_bindings_and_resource_cardinality() {
-        let editor = test_published_view("open", "editor", true);
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&editor)).is_ok());
-
-        let mut wrong_owner = editor.clone();
-        wrong_owner.view.as_mut().unwrap().open_action = "preview".into();
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&wrong_owner)).is_err());
-
-        let mut unsafe_open = editor.clone();
-        unsafe_open.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&unsafe_open)).is_err());
-
-        let mut invalid_mount = editor.clone();
-        invalid_mount
-            .view
-            .as_mut()
-            .unwrap()
-            .mount
-            .as_mut()
-            .unwrap()
-            .view_param = "slot_capability".into();
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&invalid_mount)).is_err());
-
-        let mut ranged = editor.clone();
-        ranged.view.as_mut().unwrap().range =
-            Some(tilo_actions::ResourceViewRangeSpec::new("show-range"));
-        let mut target = editor.clone();
-        target.action = "show-range".into();
-        target.view = None;
-        target.params = vec![
-            tilo_actions::ActionParam::required("start", tilo_actions::ParamType::Integer, "Start"),
-            tilo_actions::ActionParam::required("end", tilo_actions::ParamType::Integer, "End"),
-            tilo_actions::ActionParam::required("unit", tilo_actions::ParamType::Text, "Unit"),
-        ];
-        assert!(validate_resource_view_descriptors(&[ranged.clone(), target.clone()]).is_ok());
-        assert!(validate_resource_view_descriptors(std::slice::from_ref(&ranged)).is_err());
-        target.operation_kind = tilo_actions::OperationKind::Document;
-        assert!(validate_resource_view_descriptors(&[ranged, target]).is_err());
-
-        let reader = test_published_view("read", "reader", true);
-        assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());
-    }
-}
+#[path = "collab_broker_capnp/resource_view_tests.rs"]
+mod resource_view_tests;
 
 #[cfg(test)]
 mod person_record_join_tests {

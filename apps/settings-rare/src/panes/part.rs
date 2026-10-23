@@ -299,8 +299,8 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     },
 ];
 
-/// The rows of the settings these panes show, as Settings' search shows
-/// them too: each built by the function its pane builds it with.
+/// The settings these panes show, as Settings' search shows them: a row
+/// built by the function its pane builds it with, or what it is set to.
 const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_entry!("region.currency", tilo_locale::Locale => region::currency),
     crate::setting::setting_entry!("region.date", tilo_locale::Locale => region::date_format),
@@ -308,6 +308,13 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_entry!("region.measurement", tilo_locale::Locale => region::measurement),
     crate::setting::setting_entry!("region.numbers", tilo_locale::Locale => region::number_style),
     crate::setting::setting_entry!("region.first_day", tilo_locale::Locale => region::first_day),
+    crate::setting::setting_value!("region.language" => known region::language::value),
+    crate::setting::setting_switch!("time.automatic" => time_date::values::automatic, time_date::values::automatic_switch),
+    crate::setting::setting_value!("time.zone" => time_date::values::zone),
+    crate::setting::setting_value!("storage.cache" => storage::values::cache),
+    crate::setting::setting_value!("storage.clean" => storage::values::clean),
+    crate::setting::setting_switch!("updates.automatic" => updates::values::automatic, updates::values::automatic_switch),
+    crate::setting::setting_switch!("updates.metered" => updates::values::metered, updates::values::metered_switch),
 ];
 
 pub const PART: crate::area::Part = crate::area::Part {

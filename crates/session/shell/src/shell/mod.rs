@@ -24,6 +24,7 @@ pub mod automation_records;
 pub mod automation_triggers;
 pub(crate) mod broker_services;
 pub use broker_services::decide_receipt_against_surfaces;
+pub mod add_app_sheet;
 pub(crate) mod agent_quick_composer;
 pub mod arrival_line;
 pub mod capture_protection;

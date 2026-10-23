@@ -270,7 +270,7 @@ use crate::compositor::session_bootstrap::{
     LoadedSession, finish_session_collab_broker, load_session_tree, service_socket_is_live,
     start_session_collab_broker,
 };
-use crate::compositor::state::{ClientState, State};
+use crate::compositor::state::{ClientState, InputOrigin, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
     parse_request, serialise_response,
@@ -7166,6 +7166,9 @@ struct SpatialControlSession {
     pressed_keys: std::collections::BTreeSet<u32>,
     pressed_buttons: std::collections::BTreeSet<u32>,
     nearby_drop: Option<std::path::PathBuf>,
+    /// The window whose tab was being dragged here when the pointer crossed:
+    /// let go over the other device, it shows there.
+    dragged_tab: Option<u64>,
 }
 
 /// Apply a production native-seat batch; the runtime drains revocation barriers
@@ -7186,6 +7189,73 @@ pub(crate) fn dispatch_spatial_input_batch(
                 let _ = state.apply_personal_fabric_input(&controller, event);
             }
         }
+    }
+}
+
+/// Deliver the input the person's other devices sent as this device's own:
+/// pointer and buttons through the same queue as its own pointer, keys
+/// through its keyboard layout, so the desktop, its apps and its clients all
+/// take them, and the drawn pointer moves.
+fn queue_personal_fabric_input(
+    state: &mut State,
+    backend: &mut dyn Backend,
+    pending: &mut std::collections::VecDeque<BackendEvent>,
+) {
+    use crate::shell::device_fabric::FabricInputEvent;
+    let device_id = winit::event::DeviceId::dummy();
+    for event in state.take_personal_fabric_input() {
+        let input = match event {
+            FabricInputEvent::PointerMotion { x, y } => {
+                let point = (f64::from(x), f64::from(y));
+                let placements = crate::compositor::backend::layout::placements(backend.outputs());
+                let (scene_x, scene_y) =
+                    crate::compositor::backend::layout::logical_to_scene(&placements, point);
+                backend.place_pointer(scene_x, scene_y);
+                WindowEvent::CursorMoved {
+                    device_id,
+                    position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+                }
+            }
+            FabricInputEvent::PointerButton { button, pressed } => WindowEvent::MouseInput {
+                device_id,
+                state: if pressed {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                },
+                button: match button {
+                    0x110 => MouseButton::Left,
+                    0x111 => MouseButton::Right,
+                    0x112 => MouseButton::Middle,
+                    0x116 => MouseButton::Back,
+                    0x115 => MouseButton::Forward,
+                    other => MouseButton::Other(u16::try_from(other).unwrap_or(u16::MAX)),
+                },
+            },
+            FabricInputEvent::Scroll {
+                horizontal,
+                vertical,
+            } => WindowEvent::MouseWheel {
+                device_id,
+                delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+                    f64::from(horizontal),
+                    f64::from(vertical),
+                )),
+                phase: winit::event::TouchPhase::Moved,
+            },
+            FabricInputEvent::Key {
+                keycode, pressed, ..
+            } => {
+                pending.extend(
+                    backend
+                        .translate_key(keycode, pressed)
+                        .into_iter()
+                        .map(|event| BackendEvent::Sibling(Box::new(event))),
+                );
+                continue;
+            }
+        };
+        pending.push_back(BackendEvent::Sibling(Box::new(BackendEvent::Input(input))));
     }
 }
 
@@ -7241,6 +7311,7 @@ pub(crate) fn teardown_spatial_control_for_test(
         pressed_keys: held.0,
         pressed_buttons: held.1,
         nearby_drop: None,
+        dragged_tab: None,
     });
     end_spatial_control(network, &mut active);
     active.is_none()
@@ -7455,6 +7526,7 @@ fn move_to_observed_display(
             pressed_keys: std::collections::BTreeSet::new(),
             pressed_buttons: std::collections::BTreeSet::new(),
             nearby_drop: drop,
+            dragged_tab: None,
         });
     }
     if crate::shell::device_fabric_runtime::send_spatial_input_bound(
@@ -7490,6 +7562,7 @@ fn move_to_observed_display(
             pressed_keys: std::collections::BTreeSet::new(),
             pressed_buttons: std::collections::BTreeSet::new(),
             nearby_drop,
+            dragged_tab: None,
         });
     }
     SpatialMotion::Remote
@@ -7617,6 +7690,7 @@ fn begin_spatial_control(
         pressed_keys: std::collections::BTreeSet::new(),
         pressed_buttons: std::collections::BTreeSet::new(),
         nearby_drop,
+        dragged_tab: None,
     })
 }
 
@@ -7701,6 +7775,38 @@ fn finish_nearby_drop(
         return Some(false);
     }
     None
+}
+
+/// Let go of a window dragged across the shared edge, over the other device:
+/// it shows there, and the pointer stays there. The press was this device's,
+/// so the release is too; the caller ends the drag here where it began.
+fn finish_tab_move(
+    event: &WindowEvent,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) -> bool {
+    let Some(session) = active.as_mut() else {
+        return false;
+    };
+    if !matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        }
+    ) {
+        return false;
+    }
+    let Some(tab) = session.dragged_tab.take() else {
+        return false;
+    };
+    if let Err(error) =
+        crate::shell::device_fabric_runtime::show_tab_on(network, &session.target, tab)
+    {
+        tracing::warn!(%error, tab, "the window dragged to another device was not shown there");
+    }
+    true
 }
 
 fn forward_spatial_window_event(
@@ -9897,6 +10003,8 @@ pub fn run() {
     // NTFS drives open only through the shell's own sheet; see shell::drives.
     crate::shell::drives::start(Arc::clone(&session_wake));
     crate::shell::app_list::set_wake(Arc::clone(&session_wake));
+    crate::shell::downloaded_apps::set_wake(Arc::clone(&session_wake));
+    crate::shell::downloaded_apps::follow_moves();
     crate::app_icons::set_wake(Arc::clone(&session_wake));
     crate::shell::mpris::set_now_playing_wake(Arc::clone(&session_wake));
     crate::shell::install_component_wake(Arc::clone(&session_wake));
@@ -9915,6 +10023,9 @@ pub fn run() {
         .set_desk_wake(Arc::clone(&session_wake));
     // The network, once the loop installs it, takes the same wake and
     // binds the hosted apps that use it.
+    // What the broker asks of the person's records the session holds
+    // wakes the loop, which runs it.
+    crate::shell::settings_records::wake_with(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         // From here on the loop never waits on the disk to open a tab's
         // record: the record store's thread opens it and wakes the loop.
@@ -10955,6 +11066,13 @@ pub fn run() {
         }
         let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
+            // Another of the person's devices' input is this device's own,
+            // except that it does not say someone is here.
+            let (event, origin) = match event {
+                BackendEvent::Sibling(event) => (*event, InputOrigin::Sibling),
+                event => (event, InputOrigin::Here),
+            };
+            state.input_origin = origin;
             dispatched_input.note(&event);
             state.physical_key_input_time_ns = match &event {
                 BackendEvent::PhysicalKey { input_time_ns, .. } => Some(*input_time_ns),
@@ -11033,7 +11151,9 @@ pub fn run() {
                     }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
-                    state.remote_input_firewall.note_local_input(Instant::now());
+                    if state.input_origin == InputOrigin::Here {
+                        state.remote_input_firewall.note_local_input(Instant::now());
+                    }
                     // Super alone, tapped or held, opens the Super surface.
                     // Observed ahead of every branch below, so a chord one of
                     // them handles still disarms it.
@@ -11290,6 +11410,13 @@ pub fn run() {
                             }
                             None => {}
                         }
+                    } else if peer_sync
+                        .as_ref()
+                        .is_some_and(|network| finish_tab_move(wev, network, &mut spatial_control))
+                    {
+                        frame_builder.with_chrome(
+                            crate::shell::chrome_state::ChromeState::request_tab_drag_cancel,
+                        );
                     } else if peer_sync.as_ref().is_some_and(|network| {
                         forward_spatial_window_event(wev, network, &mut spatial_control)
                     }) {
@@ -11428,7 +11555,14 @@ pub fn run() {
                                     time_usec,
                                 );
                             }
-                            crate::compositor::spatial_pointer::SpatialMotion::Remote => {}
+                            crate::compositor::spatial_pointer::SpatialMotion::Remote => {
+                                // A window dragged across the edge goes along.
+                                if let Some(session) = spatial_control.as_mut()
+                                    && session.dragged_tab.is_none()
+                                {
+                                    session.dragged_tab = frame_builder.host().dragged_tab();
+                                }
+                            }
                             crate::compositor::spatial_pointer::SpatialMotion::Returned(point) => {
                                 if let Some(point) = point {
                                     let placements = crate::compositor::backend::layout::placements(
@@ -11591,10 +11725,12 @@ pub fn run() {
                 | BackendEvent::TabletPad(_)
                 | BackendEvent::TabletPadMap { .. }
                 | BackendEvent::TabletPadAdded(_)
-                | BackendEvent::TabletPadRemoved(_) => {
+                | BackendEvent::TabletPadRemoved(_)
+                | BackendEvent::Sibling(_) => {
                     // Redraw is implicit: the native loop paints every tick.
                     // Pen and pad events were expanded into client or
-                    // ordinary input before the batch.
+                    // ordinary input before the batch, another device's
+                    // input unwrapped above.
                 }
             }
         }
@@ -12820,6 +12956,7 @@ pub fn run() {
                     }
                 }
             }
+            queue_personal_fabric_input(&mut state, backend.as_mut(), &mut pending_events);
             let nearby_drop_events = crate::shell::device_fabric_runtime::take_nearby_drop_events();
             let nearby_drop_event_count = nearby_drop_events.len();
             pump_phase!(

@@ -110,7 +110,7 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
         Some(&governor.device_public_key)
     );
     let profile = directory.path().join("feedback-private-profile");
-    let mut apps = InProcessApps::at(&profile, &author).unwrap();
+    let mut apps = InProcessApps::at(&profile, &profile.join("person"), &author).unwrap();
     assert!(
         delivery.pump(&mut apps).is_err(),
         "this fixture supplies no application broker; publication must remain unavailable"
@@ -350,7 +350,7 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
     .unwrap();
     let profile = directory.path().join("cold-publisher");
     assert!(!profile.exists());
-    let mut apps = InProcessApps::at(&profile, &author).unwrap();
+    let mut apps = InProcessApps::at(&profile, &profile.join("person"), &author).unwrap();
     let original_view = save_user_view(&apps);
     let mut publisher = publisher_on(
         &mut apps,

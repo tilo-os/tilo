@@ -128,7 +128,7 @@ impl Widget for ShellOverlayHost {
             .fold(false, |changed, actions| {
                 actions.pump(&mut self.agent_quick_composer, tracker) | changed
             });
-        let action_dirty = action_dirty | self.switch_composer_agent();
+        let action_dirty = action_dirty | self.pump_agent_asks() | self.switch_composer_agent();
         if action_dirty {
             self.agent_quick_composer.sync(doc, path);
         }
@@ -136,7 +136,7 @@ impl Widget for ShellOverlayHost {
         let person_quick_dirty = self.person_quick_composer.update(doc, path)
             | (self.peer_sync_overlay.visible() && self.peer_sync_overlay.update(doc, path))
             | self.run_peer_sync_sheet_request()
-            | self.pump_uninstall()
+            | self.pump_app_sheets()
             | person_activation
             | person_context_dirty
             | person_action_dirty;
@@ -145,6 +145,7 @@ impl Widget for ShellOverlayHost {
         let marker_dirty = self
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
+        crate::shell::settings_records::pump();
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
@@ -516,9 +517,9 @@ impl Widget for ShellOverlayHost {
                 .build_layout(taffy, theme, node_map)
         });
         self.peer_sync_node = self.build_peer_sync_layout(taffy, theme, node_map);
-        let uninstall_window = self.build_uninstall_layout(taffy, theme, node_map);
-        if uninstall_window.is_none() {
-            self.uninstall_nodes = None;
+        let app_sheet_window = self.build_app_sheet_layout(taffy, theme, node_map);
+        if app_sheet_window.is_none() {
+            self.app_sheet_nodes = None;
         }
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.place_on_focused_display(taffy, capture_node);
@@ -617,7 +618,7 @@ impl Widget for ShellOverlayHost {
             children.push(pairing_node);
         }
         children.extend(self.peer_sync_node);
-        children.extend(uninstall_window);
+        children.extend(app_sheet_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -748,7 +749,7 @@ impl Widget for ShellOverlayHost {
         }
         self.pairing
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
-        self.apply_uninstall_layout(taffy);
+        self.apply_app_sheet_layout(taffy);
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
             // display it opens on.
@@ -988,8 +989,8 @@ impl Widget for ShellOverlayHost {
         if self.peer_sync_node.is_some() {
             out.push(&self.peer_sync_overlay);
         }
-        if let (Some(asking), Some(_)) = (&self.uninstall_sheet, self.uninstall_nodes) {
-            out.push(&asking.dialog);
+        if let (Some(sheet), Some(_)) = (&self.app_sheet, self.app_sheet_nodes) {
+            out.push(sheet.dialog());
         }
         out
     }
@@ -1033,8 +1034,8 @@ impl Widget for ShellOverlayHost {
         if self.peer_sync_node.is_some() {
             out.push(&mut self.peer_sync_overlay);
         }
-        if let (Some(asking), Some(_)) = (&mut self.uninstall_sheet, self.uninstall_nodes) {
-            out.push(&mut asking.dialog);
+        if let (Some(sheet), Some(_)) = (&mut self.app_sheet, self.app_sheet_nodes) {
+            out.push(sheet.dialog_mut());
         }
         out
     }
@@ -1044,9 +1045,9 @@ impl Widget for ShellOverlayHost {
             | self.person_quick_composer.take_focus_reset()
             | self.peer_sync_overlay.take_focus_reset()
             | self
-                .uninstall_sheet
+                .app_sheet
                 .as_mut()
-                .is_some_and(|asking| asking.dialog.take_focus_reset())
+                .is_some_and(|sheet| sheet.dialog_mut().take_focus_reset())
             | self.bar_popovers.profile.take_focus_reset()
             | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
@@ -1118,7 +1119,7 @@ impl Widget for ShellOverlayHost {
             | self.person_quick_composer.take_structure_dirty()
             | (self.peer_sync_overlay.visible() != self.peer_sync_node.is_some())
             | self.peer_sync_overlay.take_structure_dirty()
-            | self.take_uninstall_changed()
+            | self.take_app_sheet_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()

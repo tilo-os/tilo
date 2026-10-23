@@ -103,6 +103,93 @@ mod tests {
         );
     }
 
+    /// One room policy, one action: the broker admitting a member's
+    /// invocation and a window checking its own person's admit it the same
+    /// way, for every role and every kind of action, a person's own clicks
+    /// on their own device and those reaching outside alike.
+    #[test]
+    fn a_window_admits_its_person_exactly_as_the_broker_does() {
+        use tilo_actions::{ActionKind, DoorError};
+
+        // What a broker admission answers, as a window's door answers it.
+        #[derive(Debug, PartialEq)]
+        enum Answered {
+            Runs,
+            AsksFirst,
+            Refused,
+        }
+        let contracts = {
+            let of = |kind: ActionKind, tag: Option<&str>| {
+                let mut contract = tilo_actions::ActionContract {
+                    kind,
+                    ..tilo_actions::ActionContract::default()
+                };
+                contract.tags.extend(tag.map(str::to_owned));
+                contract
+            };
+            [
+                ("read", of(ActionKind::Read, None)),
+                ("edit", of(ActionKind::Undoable, None)),
+                ("outside", of(ActionKind::Outside, None)),
+                (
+                    "own-device",
+                    of(ActionKind::Outside, Some(tilo_actions::OWN_DEVICE_SCOPE)),
+                ),
+                (
+                    "attended",
+                    of(ActionKind::Outside, Some(tilo_actions::ATTENDED_TAG)),
+                ),
+            ]
+        };
+        let member = "member-person";
+        for role in Role::ALL {
+            let mut w = workspace();
+            if role != Role::Owner {
+                w.admit(member, role);
+            }
+            let person = if role == Role::Owner { OWNER } else { member };
+            let window = ui::permissions::PermissionContext::from_standing(
+                &w.policy.room,
+                tilo_action_policy::Standing::person(w.policy.clone(), person),
+            )
+            .at_unix_time(10);
+            for (id, contract) in &contracts {
+                let mut published = action(id);
+                published.contract = contract.clone();
+                let s = surface("rec-1", vec![published.clone()]);
+                let broker = match authorize_person_published(&w, 10, person, false, &s, &published)
+                {
+                    Ok(false) => Answered::Runs,
+                    Ok(true) => Answered::AsksFirst,
+                    Err(_) => Answered::Refused,
+                };
+                let resource = tilo_actions::Resource::new(
+                    published.resource.as_str(),
+                    published.resource_kind.as_str(),
+                    "Document",
+                );
+                let spec = tilo_actions::ActionSpec::operation(
+                    *id,
+                    *id,
+                    tilo_actions::OperationKind::Effect,
+                    "parity.run",
+                    &(),
+                )
+                .unwrap()
+                .with_contract(contract.clone());
+                let answer = window.invocation_answer(WRITER, &resource, &spec, None, None);
+                let direct = window.standing().bounds.is_empty();
+                let windowed = match ui::permissions::admit_in_window(answer, &spec, direct, false)
+                {
+                    Ok(()) => Answered::Runs,
+                    Err(DoorError::ConfirmationRequired) => Answered::AsksFirst,
+                    Err(_) => Answered::Refused,
+                };
+                assert_eq!(windowed, broker, "{role:?} {id}");
+            }
+        }
+    }
+
     #[test]
     fn an_editor_reaching_outside_is_asked_and_the_owner_is_not() {
         let mut w = workspace();

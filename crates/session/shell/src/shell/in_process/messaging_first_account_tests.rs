@@ -63,7 +63,7 @@ fn empty_native_messages_first_account_protected_review_receive_reply_and_revoke
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("first-apps"),
-        Some(rig.root.path().join("first-apps").join("person")),
+        &rig.root.path().join("first-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -103,7 +103,7 @@ fn empty_native_messages_first_account_protected_review_receive_reply_and_revoke
     drop(identity);
     approve_fixture_profile_key(&mut apps, &credential, proposal);
     drop(credential);
-    seed_person(&mut apps, &directory());
+    seed_person(&apps, &directory());
     let writes = Arc::new(AtomicUsize::new(0));
     let daemon = sender_daemon(send_peer, writes.clone());
     let (arrive, inbox) = receiver_daemon(receive_peer);
@@ -234,8 +234,6 @@ fn receive_and_reply(
     account: &ServiceAccount,
     arrive: &mpsc::Sender<()>,
 ) -> MessagesEffect {
-    // The account published reaches the app's copy over its route.
-    carry_accounts(apps);
     effect(
         &mut mounted.harness,
         &MessagesEffect::OpenPerson {
@@ -304,7 +302,7 @@ fn interrupted_first_account_reset_retires_old_review_before_fresh_pairing() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("first-apps"),
-        Some(rig.root.path().join("first-apps").join("person")),
+        &rig.root.path().join("first-apps").join("person"),
         &rig.owner.principal,
         socket,
     )

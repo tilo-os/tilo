@@ -6,11 +6,11 @@ pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use task_execution::{
     NativeTaskActionRequirement, NativeTaskBinding, TRACKER_APP, TRACKER_ISSUE_PREFIX,
     TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun, TrackerRuns,
-    WorkspaceTaskExecution, is_tracker_issue,
+    is_tracker_issue,
 };
 
 use std::sync::Arc;
-use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
+use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
 
 /// Current native seat identity, installed only by the authenticated host.
 /// This Rust capability is never exposed through a wire request.
@@ -197,19 +197,6 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
         context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String>;
-    /// Records one task status update in the legacy projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the projection cannot record the update.
-    fn record_task_update(
-        &self,
-        room: &str,
-        task: &str,
-        actor: &str,
-        status: Option<WorkspaceTaskStatus>,
-        summary: String,
-    ) -> Result<(), String>;
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
@@ -251,14 +238,6 @@ pub trait WorkspaceMemberships: Send + Sync {
     fn health(&self) -> Result<(), String> {
         Err("workspace membership owner continuity is unavailable".into())
     }
-
-    /// Read canonical coordination state directly from the admitted owner.
-    /// # Errors
-    /// Refuses unavailable or fenced owner state; never substitutes presentation data.
-    fn task_snapshot(
-        &self,
-        room: &str,
-    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>;
 
     fn execute(
         &self,
@@ -1509,9 +1488,8 @@ pub struct HostServices {
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
-    pub task_execution: Option<Arc<dyn WorkspaceTaskExecution>>,
     /// The Tasks app's tracker, whose issues assigned to an agent are its
-    /// runs. Without it agents run only the room's own tasks.
+    /// runs. Without it agents run no tasks.
     pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
     pub person_chat: Option<person_chat::PersonChatService>,
     pub native_certificates: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,

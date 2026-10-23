@@ -137,101 +137,92 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
     let base = ActionContract {
         kind: ActionKind::Outside,
         retry: RetryPolicy::AtMostOnce,
+        result: ResultSpec::Json {
+            schema: result_schema(step),
+        },
         ..ActionContract::default()
     };
     match step {
         DISCOVER => ActionContract {
             execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["role", "device", "service", "label", "verification_code"],
-                    "properties": {
-                        "role": { "type": "string", "enum": ["personal-device", "home-peer"] },
-                        "device": { "type": "string" },
-                        "service": { "type": "string" },
-                        "label": { "type": "string" },
-                        "verification_code": { "type": "string" }
-                    }
-                }),
-            },
             ..base
         },
-        APPROVE => ActionContract {
+        APPROVE | ANSWER => ActionContract {
             risk: RiskLevel::Privileged,
             confirmation: ConfirmationPolicy::Confirm,
             execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["role", "device", "label"],
-                    "properties": {
-                        "role": { "type": "string", "enum": ["personal-device", "home-peer"] },
-                        "device": { "type": "string" },
-                        "label": { "type": "string" }
-                    }
-                }),
-            },
             ..base
         },
         ASKING => ActionContract {
             kind: ActionKind::Read,
-            result: ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["asking"],
-                    "properties": {
-                        "asking": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "required": ["ask", "device", "label", "code", "via", "asked_at_ms"],
-                                "properties": {
-                                    "ask": { "type": "string" },
-                                    "device": { "type": "string" },
-                                    "label": { "type": "string" },
-                                    "code": { "type": "string" },
-                                    "via": { "type": "string" },
-                                    "asked_at_ms": { "type": "integer" }
-                                }
-                            }
+            ..base
+        },
+        _ => base,
+    }
+}
+
+/// The JSON `step` answers with.
+fn result_schema(step: &str) -> serde_json::Value {
+    match step {
+        DISCOVER => serde_json::json!({
+            "type": "object",
+            "required": ["role", "device", "service", "label", "verification_code"],
+            "properties": {
+                "role": { "type": "string", "enum": ["personal-device", "home-peer"] },
+                "device": { "type": "string" },
+                "service": { "type": "string" },
+                "label": { "type": "string" },
+                "verification_code": { "type": "string" }
+            }
+        }),
+        APPROVE => serde_json::json!({
+            "type": "object",
+            "required": ["role", "device", "label"],
+            "properties": {
+                "role": { "type": "string", "enum": ["personal-device", "home-peer"] },
+                "device": { "type": "string" },
+                "label": { "type": "string" }
+            }
+        }),
+        ASKING => serde_json::json!({
+            "type": "object",
+            "required": ["asking"],
+            "properties": {
+                "asking": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["ask", "device", "label", "code", "via", "asked_at_ms"],
+                        "properties": {
+                            "ask": { "type": "string" },
+                            "device": { "type": "string" },
+                            "label": { "type": "string" },
+                            "code": { "type": "string" },
+                            "via": { "type": "string" },
+                            "asked_at_ms": { "type": "integer" }
                         }
                     }
-                }),
-            },
-            ..base
-        },
-        ANSWER => ActionContract {
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["ask", "label", "approved"],
-                    "properties": {
-                        "ask": { "type": "string" },
-                        "label": { "type": "string" },
-                        "approved": { "type": "boolean" }
-                    }
-                }),
-            },
-            ..base
-        },
-        _ => ActionContract {
-            result: ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["device", "forgotten", "stopped"],
-                    "properties": {
-                        "device": { "type": "string" },
-                        "forgotten": { "type": "boolean" },
-                        "stopped": { "type": "boolean" }
-                    }
-                }),
-            },
-            ..base
-        },
+                }
+            }
+        }),
+        ANSWER => serde_json::json!({
+            "type": "object",
+            "required": ["ask", "label", "approved"],
+            "properties": {
+                "ask": { "type": "string" },
+                "label": { "type": "string" },
+                "approved": { "type": "boolean" }
+            }
+        }),
+        _ => serde_json::json!({
+            "type": "object",
+            "required": ["device", "forgotten", "stopped"],
+            "properties": {
+                "device": { "type": "string" },
+                "forgotten": { "type": "boolean" },
+                "stopped": { "type": "boolean" }
+            }
+        }),
     }
 }
 

@@ -481,6 +481,26 @@ impl CodeEditor {
         self.hover = point;
     }
 
+    /// For an embedded host: this editor's damage since the frame on screen,
+    /// as part of `owner`, the widget in the tree it is drawn in
+    /// ([`TextInput::collect_damage_for`]).
+    pub fn collect_damage_for<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) {
+        self.inner.collect_damage_for(owner, regions);
+    }
+
+    /// For an embedded host's `mark_drawn`: the frame just drawn is on
+    /// screen.
+    pub fn mark_shown(&mut self) {
+        self.inner.mark_shown();
+    }
+
+    /// Whether the diagnostic under the pointer shows its message
+    /// ([`Self::draw_diagnostic_card`]).
+    pub fn shows_diagnostic_card(&self) -> bool {
+        self.hover
+            .is_some_and(|point| self.diagnostic_at(point).is_some())
+    }
+
     /// For an embedded host: paint the message of the diagnostic under the
     /// pointer from its own top-layer pass, kept inside `window`.
     pub fn draw_diagnostic_card(
@@ -721,6 +741,7 @@ impl CodeEditor {
         // Least severe first, so an error's squiggle and mark win.
         let mut order: Vec<&Diagnostic> = self.diagnostics.iter().collect();
         order.compact_sort_by_key(|d| d.severity);
+        let mut marks = Vec::new();
         for d in order {
             let color = d.color(theme);
             let end = d
@@ -733,6 +754,7 @@ impl CodeEditor {
                 let x0 = row.x0.max(rect.x0 + gutter);
                 let x1 = row.x1.max(x0 + 4.0).min(rect.x1);
                 paint_diagnostic_underline(scene, transform, x0, x1, row.y1 - 1.0, color);
+                marks.push(Rect::new(x0, row.y0, x1, row.y1 + 2.0));
             }
             if gutter > 0.0 {
                 let caret = self.inner.caret_rect(theme, start);
@@ -742,17 +764,14 @@ impl CodeEditor {
                     caret.center().y,
                 );
                 if rect.contains(centre) {
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        color,
-                        None,
-                        &vello::kurbo::Circle::new(centre, d_px / 2.0),
-                    );
+                    let dot = vello::kurbo::Circle::new(centre, d_px / 2.0);
+                    scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &dot);
+                    marks.push(vello::kurbo::Shape::bounding_box(&dot).inflate(1.0, 1.0));
                 }
             }
         }
         scene.pop_layer();
+        self.inner.note_marks(marks);
     }
 
     /// The message of the diagnostic under the pointer, on a floating

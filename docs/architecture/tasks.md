@@ -106,6 +106,13 @@ read first. An action that asks first waits for the person's answer on the
 issue, and a confirmation admits only the arguments asked about, when the
 draft the person saw is the one those arguments render.
 
+A run may act in an application nobody has open: the broker launches it
+through the workspace launcher under the run's own durable custody, bound to
+the run, its approver and the messages it took in, and admits the action
+against the freshly published contract only. Stop and a revoked grant fence
+both the launch and the action after it. A run's turn and total time
+ceilings are the issue's `set-execution-budget`.
+
 ## The composer
 
 "Tell an agent" asks through the tracker: work becomes an issue whose run
@@ -124,3 +131,6 @@ imported to its `import`, as the person. Each becomes an issue under an id
 derived from the task's, so two devices importing at once make one issue,
 and an imported task is never imported again. A task's run does not move
 with it: an agent's task waits in Todo for a person to approve it again.
+Nothing else reads or writes the room's task records: the broker runs only
+issues, and a notification handed to an agent is asked through the tracker,
+as the composer asks.

@@ -272,6 +272,16 @@ impl TrackerRuns for NativeTrackerRuns {
             .unwrap_or_default())
     }
 
+    fn check_agent(&self, room: &str, agent: &str) -> Result<(), String> {
+        let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
+        let owner = &self.owner.opened_owner("tracker owner unavailable")?;
+        owner.with_current(room_id, |view| {
+            view.peer()
+                .workspace()
+                .check_admitted_agent(agent, std::time::SystemTime::now())
+        })
+    }
+
     fn authorize_action(
         &self,
         room: &str,
@@ -284,7 +294,7 @@ impl TrackerRuns for NativeTrackerRuns {
             let now = std::time::SystemTime::now();
             view.peer()
                 .workspace()
-                .check_task_execution_actor(&run.agent, None, now)?;
+                .check_admitted_agent(&run.agent, now)?;
             requirement.check_tracker(view.peer(), room, run, now)
         })
     }

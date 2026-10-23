@@ -667,3 +667,75 @@ fn gossip_sweeps_a_topic_cache_only_while_it_holds_messages() {
         "the next message arms the sweep again"
     );
 }
+
+/// A neighbours-only gossip message reaches every direct neighbour, also
+/// one plumtree moved to its lazy set. In a triangle the first swarm
+/// message arrives twice somewhere and prunes that link to lazy; a
+/// neighbours-only message (how Tilo announces device identities) then has
+/// to cross it all the same. Three topic states with every message routed
+/// at once.
+#[test]
+fn gossip_neighbours_only_messages_cross_a_pruned_link() {
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+    use iroh_gossip::proto::{Command, Config, DeliveryScope, Scope, topic};
+    use tokio::time::Instant;
+
+    let now = Instant::now();
+    let mut states: BTreeMap<u64, topic::State<u64, _>> = (1..=3)
+        .map(|id| (id, topic::State::new(id, None, Config::default())))
+        .collect();
+    let mut neighbours: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    let mut heard: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    let mut run = |states: &mut BTreeMap<u64, topic::State<u64, _>>,
+                   first: Vec<(u64, topic::InEvent<u64>)>| {
+        let mut queue: VecDeque<(u64, topic::InEvent<u64>)> = first.into();
+        while let Some((at, event)) = queue.pop_front() {
+            let state = states.get_mut(&at).expect("a peer of the triangle");
+            for out in state.handle(event, now) {
+                match out {
+                    topic::OutEvent::SendMessage(to, message) => {
+                        queue.push_back((to, topic::InEvent::RecvMessage(at, message)));
+                    }
+                    topic::OutEvent::EmitEvent(topic::Event::NeighborUp(peer)) => {
+                        neighbours.entry(at).or_default().insert(peer);
+                    }
+                    topic::OutEvent::EmitEvent(topic::Event::Received(event))
+                        if event.scope == DeliveryScope::Neighbors =>
+                    {
+                        heard.entry(at).or_default().insert(event.delivered_from);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
+    let join = |peers: Vec<u64>| topic::InEvent::Command(Command::Join(peers));
+    run(
+        &mut states,
+        vec![(1, join(vec![])), (2, join(vec![1])), (3, join(vec![1, 2]))],
+    );
+    let swarm = |body: &'static [u8]| {
+        topic::InEvent::Command(Command::Broadcast(body.into(), Scope::Swarm))
+    };
+    run(
+        &mut states,
+        vec![(1, swarm(b"one")), (2, swarm(b"two")), (3, swarm(b"three"))],
+    );
+    let hello = || {
+        topic::InEvent::Command(Command::Broadcast(
+            b"hello".as_slice().into(),
+            Scope::Neighbors,
+        ))
+    };
+    run(&mut states, (1..=3).map(|id| (id, hello())).collect());
+    assert_eq!(
+        neighbours.values().map(BTreeSet::len).sum::<usize>(),
+        6,
+        "the three peers are each other's neighbours: {neighbours:?}"
+    );
+    assert_eq!(
+        heard, neighbours,
+        "every peer hears the neighbours-only message of each of its neighbours"
+    );
+}

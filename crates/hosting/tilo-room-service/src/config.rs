@@ -96,6 +96,10 @@ pub struct PersistentConfig {
     /// device and the room shares its records and people), or `shared`.
     /// Settled at every start.
     pub layout: String,
+    /// Who the room's door lets in (`TILO_ROOMS_ADMISSION`): anyone as a
+    /// guest (`open`, unless set), or only its members (`invite`), so a
+    /// newcomer needs an invitation from someone in it.
+    pub admission: Admission,
     /// Days a member may be away (no session) before their membership ends
     /// (`TILO_ROOMS_INACTIVE_AFTER_DAYS`, 30 unless set); one who comes back
     /// later joins through the door again as the same person. Membership
@@ -492,6 +496,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         author_apps: author_apps(var, &seed_apps)?,
         seed_apps,
         layout: layout(var)?,
+        admission: admission(var)?,
         inactive_after_days: inactive_after_days(var)?,
         attachments: AttachmentQuota {
             max_file: optional(var, "TILO_ROOMS_ATTACHMENT_MAX_MIB")?,
@@ -542,6 +547,28 @@ fn optional(var: &impl Fn(&str) -> Option<String>, name: &str) -> Result<Option<
                 .with_context(|| format!("{name} is a whole number of MiB"))
         })
         .transpose()
+}
+
+/// Who a persistent room's door lets in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Admission {
+    /// Anyone, as a guest: the door makes them a member.
+    #[default]
+    Open,
+    /// Only the room's members, such as one opening another tab. Anyone
+    /// else joins with an invitation someone in the room made.
+    Invite,
+}
+
+/// `TILO_ROOMS_ADMISSION`: `open` unless set, or `invite`.
+fn admission(var: &impl Fn(&str) -> Option<String>) -> Result<Admission> {
+    match var("TILO_ROOMS_ADMISSION").as_deref().map(str::trim) {
+        None | Some("open") => Ok(Admission::Open),
+        Some("invite") => Ok(Admission::Invite),
+        Some(other) => anyhow::bail!(
+            "TILO_ROOMS_ADMISSION is open (anyone joins as a guest) or invite (only with an invitation), not {other:?}"
+        ),
+    }
 }
 
 /// `TILO_ROOMS_LAYOUT`: `personal` unless set, or `shared`.

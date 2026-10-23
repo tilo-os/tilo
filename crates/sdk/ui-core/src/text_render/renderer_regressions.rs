@@ -843,7 +843,10 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
                         &run,
                         &layout,
                         transform,
-                        Color::WHITE,
+                        RunPaint {
+                            color: Color::WHITE,
+                            paint: None,
+                        },
                         clip,
                     );
                     if renderer.draw_uniform_rich_run(
@@ -851,7 +854,10 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
                         &run,
                         &layout,
                         transform,
-                        Color::WHITE,
+                        RunPaint {
+                            color: Color::WHITE,
+                            paint: None,
+                        },
                         clip,
                     ) {
                         borrowed += 1;
@@ -862,7 +868,10 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
                             &run,
                             &layout,
                             transform,
-                            Color::WHITE,
+                            RunPaint {
+                                color: Color::WHITE,
+                                paint: None,
+                            },
                             clip,
                         );
                     }
@@ -930,7 +939,10 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
                     &run,
                     &layout,
                     Affine::IDENTITY,
-                    Color::WHITE,
+                    RunPaint {
+                        color: Color::WHITE,
+                        paint: None,
+                    },
                     clip,
                 ));
                 renderer.draw_rich_run_copied(
@@ -938,7 +950,10 @@ fn painted_glyphs_match_the_reference_output_and_shaped_offsets() {
                     &run,
                     &layout,
                     Affine::IDENTITY,
-                    Color::WHITE,
+                    RunPaint {
+                        color: Color::WHITE,
+                        paint: None,
+                    },
                     clip,
                 );
             }

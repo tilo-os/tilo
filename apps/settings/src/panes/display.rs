@@ -64,6 +64,27 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DisplayArea> {
     app.areas().find()
 }
 
+pub(crate) mod values;
+
+/// The Night Light switch, a comfort of every display.
+pub(crate) fn night_light(cx: &PaneCx, prefs: &Followed<DisplayPrefs>) -> Item {
+    cx.row(t("display-night-light"))
+        .id("display.night_light")
+        .of(prefs, DisplayPrefs::paths().night_light)
+        .toggle()
+}
+
+/// The automatic-brightness switch, where a light sensor can drive the
+/// built-in panel.
+pub(crate) fn automatic_brightness(cx: &PaneCx, on: bool) -> Item {
+    cx.row(t("display-auto-brightness"))
+        .id("display.auto_brightness")
+        .toggle_effect(
+            &LocalState::new(on),
+            effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
+        )
+}
+
 /// What Displays changes: this device's outputs and their arrangement, its
 /// brightness, and the person's display comforts.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
@@ -910,6 +931,11 @@ impl DisplayArea {
             };
             Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// The model, where the displays were read; never reads them.
+    pub(crate) fn read(&self) -> Option<&Shared<DisplayModel>> {
+        self.model.get()
     }
 
     /// Take in background results, if the model exists.
@@ -2738,13 +2764,7 @@ impl DisplayModel {
         section(
             &t("display-night-light"),
             rows(vec![
-                self.cx
-                    .row(t("display-night-light"))
-                    .id("display.night_light")
-                    .toggle(
-                        &LocalState::new(prefs.night_light),
-                        crate::prefs::DisplayPrefs::paths().night_light,
-                    ),
+                night_light(&self.cx, &self.prefs),
                 self.cx
                     .row(t("display-night-light-schedule"))
                     .described(t("display-night-light-schedule-desc"))
@@ -2778,13 +2798,7 @@ impl DisplayModel {
         if output.builtin {
             let prefs = *self.prefs.get();
             let automatic_brightness = if self.ambient_sensor_available {
-                self.cx
-                    .row(t("display-auto-brightness"))
-                    .id("display.auto_brightness")
-                    .toggle_effect(
-                        &LocalState::new(prefs.auto_brightness),
-                        effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
-                    )
+                automatic_brightness(&self.cx, prefs.auto_brightness)
             } else {
                 value_row(&t("display-auto-brightness"), &t("display-no-ambient"))
             };

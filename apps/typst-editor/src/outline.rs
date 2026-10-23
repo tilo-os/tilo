@@ -30,10 +30,15 @@ pub(crate) struct Heading {
 /// The headings `source` writes, read from its syntax rather than its lines:
 /// a heading in raw text, a comment or a string is not one. Headings a
 /// script makes only exist once compiled, and are not guessed at.
+#[cfg(test)]
 pub(crate) fn headings(source: &str) -> Vec<Heading> {
-    let source = Source::detached(source);
+    headings_in(&Source::detached(source))
+}
+
+/// [`headings`] of a source already parsed (the one a compile reads).
+pub(crate) fn headings_in(source: &Source) -> Vec<Heading> {
     let mut result = Vec::new();
-    collect_headings(&LinkedNode::new(source.root()), &source, &mut result);
+    collect_headings(&LinkedNode::new(source.root()), source, &mut result);
     result
 }
 
@@ -129,7 +134,6 @@ pub(crate) struct Outline {
     list: NavList,
     /// The heading row chosen since the host last looked.
     chosen: Rc<RefCell<Option<String>>>,
-    source: Option<String>,
     headings: Vec<Heading>,
     /// The drawer opened or closed since the host's layout tree was built:
     /// the list joins the window's children only while it shows.
@@ -147,19 +151,13 @@ impl Outline {
                 .with_accessible_name("Outline")
                 .on_select(move |id| *pick.borrow_mut() = Some(id)),
             chosen,
-            source: None,
             headings: Vec::new(),
             structure_dirty: false,
         }
     }
 
-    /// Follow the open document's source.
-    pub(crate) fn sync(&mut self, source: &str) {
-        if self.source.as_deref() == Some(source) {
-            return;
-        }
-        let headings = headings(source);
-        self.source = Some(source.to_owned());
+    /// Follow the open document's headings, as its last compile read them.
+    pub(crate) fn set_headings(&mut self, headings: Vec<Heading>) {
         if headings != self.headings {
             self.list.set_sections(vec![
                 NavSection::new("typst.outline", "Outline", outline_items(&headings))
@@ -342,7 +340,7 @@ mod tests {
     #[test]
     fn a_chosen_heading_is_the_effect_that_goes_to_it_and_does_not_stay_chosen() {
         let mut outline = Outline::new();
-        outline.sync("= Root\n== Child");
+        outline.set_headings(headings("= Root\n== Child"));
         *outline.chosen.borrow_mut() = Some(heading_id(2));
         assert_eq!(
             outline.take_chosen(),

@@ -105,6 +105,8 @@ pub(crate) struct Bridge {
     pub selected: Option<ContactId>,
     /// Shown in place of rows when the list is empty.
     pub empty_title: Option<String>,
+    /// The empty state's sentence under its title, when it has one.
+    pub empty_message: Option<String>,
     /// The empty state's icon (a star for favorites when `None`).
     pub empty_icon: Option<Icon>,
     /// A row to scroll into view on the next paint.
@@ -125,6 +127,16 @@ impl Bridge {
     /// The decoded picture at `address`, once it has loaded.
     pub(crate) fn picture(&self, address: &str) -> Option<vello::peniko::ImageData> {
         self.images.as_ref()?.get(address)
+    }
+
+    /// What the list shows in place of rows, when it says anything.
+    pub(crate) fn empty_content(&self) -> Option<EmptyStateContent<'_>> {
+        let title = self.empty_title.as_deref()?;
+        Some(EmptyStateContent {
+            icon: Some(self.empty_icon.unwrap_or(Icon::Star)),
+            message: self.empty_message.as_deref(),
+            ..EmptyStateContent::new(title)
+        })
     }
 }
 
@@ -314,11 +326,7 @@ impl ContactList {
                 painted.push((row.id, rect));
             }
             ctx.scene.pop_layer();
-        } else if let Some(title) = bridge.empty_title.as_deref() {
-            let content = EmptyStateContent {
-                icon: Some(bridge.empty_icon.unwrap_or(Icon::Star)),
-                ..EmptyStateContent::new(title)
-            };
+        } else if let Some(content) = bridge.empty_content() {
             EmptyState::paint(ctx, self.rect, &content, self.cursor);
         }
         drop(bridge);
@@ -531,7 +539,14 @@ impl Widget for ContactList {
                         ),
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // An empty list says why in words, for assistive technology too.
+        let children = match bridge.empty_content() {
+            Some(content) if bridge.rows.is_empty() => {
+                vec![content.access_node(self.rect, None, "")]
+            }
+            _ => children,
+        };
         Some(
             AccessNode::new(Role::List)
                 .with_name("Contacts")
@@ -570,9 +585,13 @@ impl Widget for ContactList {
 pub(crate) fn empty_pane(
     shared: &Shared,
     title: &str,
+    message: Option<&str>,
     action: Option<(&str, Request)>,
 ) -> ui::widget::Element {
-    let state = EmptyState::new(title).with_icon(Icon::Users);
+    let mut state = EmptyState::new(title).with_icon(Icon::Users);
+    if let Some(message) = message {
+        state = state.with_message(message);
+    }
     Box::new(match action {
         Some((label, request)) => state
             .with_action(label)

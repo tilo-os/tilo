@@ -1,5 +1,7 @@
 //! Downloaded programs in the person's apps: one added from its `AppImage`, with
-//! its own icon, and one whose file is gone.
+//! its own icon, and one whose file is gone. The artwork is real: Tilo
+//! Imager's own icon, which its `AppImage` and its tarball both carry, and
+//! the system's generic application icon for a program with none.
 use std::time::Duration;
 
 use desktop_entry::downloaded::{Icon, Identity, Program, ProgramKind, Store};
@@ -7,8 +9,8 @@ use desktop_entry::downloaded::{Icon, Identity, Program, ProgramKind, Store};
 use super::ShellDriver;
 
 impl ShellDriver {
-    /// Aseprite, added from `~/Downloads/Aseprite-1.3.AppImage`, and Ardour,
-    /// added from a tarball's folder that was deleted since. Written into
+    /// Tilo Imager, added from `~/Downloads/Tilo-Imager-x86_64.AppImage`,
+    /// and Ardour, added from a tarball's folder that was deleted since. Written into
     /// this run's private home, as adding them would.
     pub(super) fn seed_downloaded_apps(&mut self) {
         let (Some(home), Some(store)) = (tilo_paths::home(), Store::for_session()) else {
@@ -34,26 +36,19 @@ impl ShellDriver {
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
             Program { path, kind }
         };
-        let aseprite = program(
-            home.join("Downloads/Aseprite-1.3.AppImage"),
+        let imager = program(
+            home.join("Downloads/Tilo-Imager-x86_64.AppImage"),
             ProgramKind::AppImage,
         );
         let _ = store.add(
-            &identity(
-                "com.aseprite.Aseprite",
-                "Aseprite",
-                icon([0x3d, 0x6a, 0xe0]),
-            ),
-            &aseprite,
+            &identity("org.tilo.Imager", "Tilo Imager", imager_icon()),
+            &imager,
         );
         let ardour = program(
             home.join("Downloads/Ardour-8.4/ardour"),
             ProgramKind::Program,
         );
-        let _ = store.add(
-            &identity("ardour", "Ardour", icon([0xe0, 0x8a, 0x2b])),
-            &ardour,
-        );
+        let _ = store.add(&identity("ardour", "Ardour", None), &ardour);
         let _ = std::fs::remove_dir_all(home.join("Downloads/Ardour-8.4"));
         desktop_entry::cache::invalidate();
         // Let the applications index take them in, as it would long before
@@ -78,10 +73,57 @@ impl ShellDriver {
         self.fb.host_mut().filter_palette_to_apps_for_shots();
         self.scene_palette_query("");
     }
+
+    /// "Add <name> to apps?" the first time a downloaded program runs: an
+    /// `AppImage` (with Move to Applications), a program from a tarball
+    /// with its icon beside it, and a loose binary with no artwork, which
+    /// shows the system's generic application icon. The icon goes through
+    /// the worker's own [`shell::shell::downloaded_apps::ask_icon`].
+    pub(super) fn scene_downloaded_add(&mut self, kind: AddScene) {
+        let ask = |name: &str, file: &str, appimage: bool, icon: Option<Icon>| {
+            shell::shell::add_app_sheet::Ask {
+                surface_id: 1,
+                name: name.into(),
+                file: file.into(),
+                appimage,
+                icon: shell::shell::downloaded_apps::ask_icon(icon.as_ref()),
+            }
+        };
+        let ask = match kind {
+            AddScene::AppImage => ask(
+                "Tilo Imager",
+                "/home/you/Downloads/Tilo-Imager-x86_64.AppImage",
+                true,
+                imager_icon(),
+            ),
+            AddScene::Tarball => ask(
+                "Tilo Imager",
+                "/home/you/Downloads/tilo-imager-linux-x86_64/tilo-imager",
+                false,
+                imager_icon(),
+            ),
+            AddScene::NoArtwork => ask("MyTool", "/home/you/Downloads/mytool", false, None),
+        };
+        let _ = self.paint_settled();
+        self.host_mut().ask_add_app(ask);
+        // Past the sheet's entrance.
+        self.step_frames(20);
+    }
 }
 
-fn icon(rgb: [u8; 3]) -> Option<Icon> {
-    Icon::sniff(app_icon_png(rgb)?)
+/// Which first-run question a scene shows.
+#[derive(Clone, Copy)]
+pub(super) enum AddScene {
+    AppImage,
+    Tarball,
+    NoArtwork,
+}
+
+/// Tilo Imager's icon, as its `AppImage` embeds it and its tarball ships it.
+fn imager_icon() -> Option<Icon> {
+    Icon::sniff(
+        include_bytes!("../../../../../../../apps/imager/packaging/linux/tilo-imager.svg").to_vec(),
+    )
 }
 
 /// A 128-pixel rounded square in `rgb` with a lighter disc, as PNG: an app

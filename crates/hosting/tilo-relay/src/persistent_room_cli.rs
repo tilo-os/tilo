@@ -104,6 +104,12 @@ pub struct PersistentArgs {
     /// A person made a Moderator once they joined; repeatable.
     #[arg(long = "moderator", value_name = "HEX")]
     pub moderators: Vec<String>,
+    /// Take people by invitation: the door pre-admits only the room's
+    /// members (another tab of theirs is another device), and members may
+    /// invite someone with an invitation of their own, which they let in.
+    /// Settled at every start.
+    #[arg(long = "members-only")]
+    pub members_only: bool,
     /// A file of more owners and moderators, `{"owners": [hex],
     /// "moderators": [hex]}`, read again whenever it changes, so a role is
     /// granted or taken back while the room runs.
@@ -454,6 +460,38 @@ fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>>
         .collect()
 }
 
+/// The relay of the persistent room `name` whose `room --state` is `state`
+/// and whose root key is in `root_file`, as that room starts it: its state
+/// root and identity. Refuses a state whose host has no device key yet.
+pub(crate) fn room_relay(
+    state: &Path,
+    root_file: &Path,
+    name: &str,
+) -> anyhow::Result<(PathBuf, RelayIdentity)> {
+    let root = read_root_file(root_file)?;
+    anyhow::ensure!(
+        state.join("host-device.key").is_file(),
+        "{} holds no room host",
+        state.display()
+    );
+    let host = host_key(state)?;
+    let host_cert = enrol(
+        &root,
+        &host,
+        &format!("{name} room host"),
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    )?;
+    Ok((
+        tilo_relay_protocol::metrics::room_relay_root(state),
+        RelayIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: host,
+            device_cert: host_cert,
+            revocations: RevocationList::new(),
+        },
+    ))
+}
+
 /// The host's own device key, kept beside the relay's state. The root is
 /// never written here.
 fn host_key(state: &Path) -> anyhow::Result<SigningKey> {
@@ -568,10 +606,12 @@ struct Admitter {
     room: String,
     spectator: [u8; 32],
     removals: Removals,
+    /// The door lets in only the room's members (`--members-only`).
+    members_only: bool,
 }
 
 impl Admitter {
-    fn of(context: &PersistentRoom, removals: Removals) -> Self {
+    fn of(context: &PersistentRoom, removals: Removals, members_only: bool) -> Self {
         Self {
             rooms: context.rooms.clone(),
             host_cert: context.host_cert.clone(),
@@ -579,6 +619,7 @@ impl Admitter {
             room: context.room.clone(),
             spectator: context.spectator.verifying_key().to_bytes(),
             removals,
+            members_only,
         }
     }
 }
@@ -721,6 +762,7 @@ async fn answer_pre_admit(
         token_sha256: token_sha256.clone(),
         reason,
         removed: false,
+        invite_only: false,
     };
     let (Some(user), Some(digest)) = (hex32(&user_public_key), hex32(&token_sha256)) else {
         return refused("the guest key and token digest must be 64 hex characters".into());
@@ -740,6 +782,21 @@ async fn answer_pre_admit(
             token_sha256,
             reason: "the person was removed from the room within the day".into(),
             removed: true,
+            invite_only: false,
+        };
+    }
+    // Taking people by invitation, the door still lets a member in again
+    // (another tab of theirs is another device), and nobody else.
+    if context.members_only
+        && !members
+            .iter()
+            .any(|member| member.user_public_key == user && !member.removed)
+    {
+        return RoomEvent::PreAdmitRefused {
+            token_sha256,
+            reason: "the room takes people by invitation only".into(),
+            removed: false,
+            invite_only: true,
         };
     }
     match issue_pre_admission(
@@ -1060,6 +1117,53 @@ pub(crate) async fn ensure_guest_policy(
     Ok(())
 }
 
+/// The grant letting the room's members (guests are Editors) invite
+/// someone, which a room taking people by invitation holds and an open one
+/// does not: anyone joins an open room through its door.
+const MEMBERS_INVITE: &str = "members-invite";
+
+/// Let the room's members invite people, and let in whom they invited,
+/// while the room takes people by invitation (`members_only`); take that
+/// back once it lets anyone in again. Settled at every start.
+pub(crate) async fn settle_member_invites(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    members_only: bool,
+) -> anyhow::Result<()> {
+    use tilo_action_policy::{Answer, Grant, GrantId, KindSet, Role, Subject, roles};
+    // One request per start and setting: the same setting settled again
+    // after the room changed writes it again, which changes nothing.
+    let generation = rooms
+        .summary(room)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .generation;
+    let request_id =
+        *blake3::hash(format!("{MEMBERS_INVITE}/{members_only}/{generation}").as_bytes())
+            .as_bytes();
+    if members_only {
+        let invite = Grant::new(
+            MEMBERS_INVITE,
+            Subject::Role(Role::Editor),
+            roles::governance_action(room, roles::governance::INVITE),
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            Subject::Person(hex::encode(cert.user_public_key)),
+        );
+        rooms
+            .put_room_grants(room, cert, request_id, vec![invite])
+            .await
+            .map_err(|error| anyhow::anyhow!("let members invite: {error}"))?;
+    } else {
+        rooms
+            .remove_room_grants(room, cert, request_id, vec![GrantId(MEMBERS_INVITE.into())])
+            .await
+            .map_err(|error| anyhow::anyhow!("take back members inviting: {error}"))?;
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
@@ -1194,6 +1298,7 @@ pub(crate) async fn run(
     .await?;
     settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
     ensure_guest_policy(&rooms, &room, &host_cert).await?;
+    settle_member_invites(&rooms, &room, &host_cert, persistent.members_only).await?;
     settle_app_authorship(
         &rooms,
         &room,
@@ -1299,6 +1404,7 @@ pub(crate) async fn run(
         roles_file: persistent.roles_file.clone(),
         inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
         state: state.clone(),
+        members_only: persistent.members_only,
     };
     let result = tokio::select! {
         result = serve_operator(&context, &governance, &mut operator) => result,
@@ -1474,6 +1580,8 @@ struct Governance {
     roles_file: Option<PathBuf>,
     inactive_after_mins: u64,
     state: PathBuf,
+    /// The room takes people by invitation (`--members-only`).
+    members_only: bool,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -1752,7 +1860,7 @@ async fn serve_operator(
     // grants or takes back reaches the room without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let admitter = Admitter::of(context, removals.clone());
+    let admitter = Admitter::of(context, removals.clone(), governance.members_only);
     let mut admitting = tokio::task::JoinSet::<RoomEvent>::new();
     loop {
         tokio::select! {
@@ -1817,6 +1925,7 @@ async fn serve_operator(
 )]
 mod tests {
     use super::*;
+    use tilo_relay_protocol::rooms::{RoomsReply, RoomsRequest};
     const DAY_MS: u64 = 24 * 3600 * 1000;
 
     #[test]
@@ -2013,6 +2122,7 @@ mod tests {
             room,
             spectator: [9; 32],
             removals,
+            members_only: false,
         };
         (relay, admitter)
     }
@@ -2118,6 +2228,183 @@ mod tests {
         );
         let members = rooms.summary(&room).await.unwrap().members;
         assert!(listed_removed(&members, person), "still removed");
+        relay.shutdown().await;
+    }
+
+    /// Ask for an invitation to `room` as `device`, as a member's page does.
+    async fn invite(rooms: &Rooms, room: &str, device: &DeviceCert) -> RoomsReply {
+        rooms
+            .page_rooms(
+                device,
+                RoomsRequest::Invite {
+                    room: room.to_owned(),
+                    request_id: rand::random(),
+                    role: RoomRole::Editor,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3600 * NS_PER_SEC),
+                    inviter_name: Some("Member".into()),
+                },
+            )
+            .await
+    }
+
+    /// A room taking people by invitation lets nobody new in through its
+    /// door, and still lets a member in again: another tab of theirs is
+    /// another device of the same person. A member invites someone with an
+    /// invitation of their own and lets them in; once the room lets anyone
+    /// in again, members no longer invite.
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one story: the door, a member's other tab, an invitation and taking it back"
+    )]
+    #[cfg_attr(
+        feature = "agents",
+        expect(
+            clippy::significant_drop_tightening,
+            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions"
+        )
+    )]
+    async fn taking_people_by_invitation_members_invite_whom_the_door_turns_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let (relay, open) = plaza(dir.path()).await;
+        let rooms = open.rooms.clone();
+        let room = open.room.clone();
+        ensure_guest_policy(&rooms, &room, &open.host_cert)
+            .await
+            .unwrap();
+        // An open room settles as one at every start, holding no such grant.
+        settle_member_invites(&rooms, &room, &open.host_cert, false)
+            .await
+            .unwrap();
+        let by_invitation = Admitter {
+            members_only: true,
+            ..open.clone()
+        };
+        let guest = |seed: u8| {
+            let device = SigningKey::from_bytes(&[seed; 32]);
+            let root = SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
+            let cert = enrol(&root, &device, "guest", DeviceCapabilities::member()).unwrap();
+            (device, cert)
+        };
+        let pre_admit = |admitter: &Admitter, person: [u8; 32], token: &'static [u8]| {
+            answer_pre_admit(
+                admitter.clone(),
+                hex::encode(person),
+                hex::encode(token_digest(token)),
+                "Guest".into(),
+                RoomRole::Editor,
+            )
+        };
+
+        // Someone who joined while the door was open is a member. An open
+        // room's link is its invitation: members invite nobody themselves.
+        let member = guest(12);
+        let person = member.1.user_public_key;
+        assert!(
+            joins(
+                &rooms,
+                &member,
+                pre_admit(&open, person, b"open").await,
+                b"open"
+            )
+            .await
+        );
+        let asked = invite(&rooms, &room, &member.1).await;
+        assert!(matches!(asked, RoomsReply::Refused(_)), "{asked:?}");
+
+        settle_member_invites(&rooms, &room, &open.host_cert, true)
+            .await
+            .unwrap();
+        let stranger = guest(11);
+        let asked = pre_admit(&by_invitation, stranger.1.user_public_key, b"stranger").await;
+        assert!(
+            matches!(
+                asked,
+                RoomEvent::PreAdmitRefused {
+                    invite_only: true,
+                    ..
+                }
+            ),
+            "{asked:?}"
+        );
+        let another_tab = (
+            SigningKey::from_bytes(&[13; 32]),
+            enrol(
+                &SigningKey::from_bytes(&[112; 32]),
+                &SigningKey::from_bytes(&[13; 32]),
+                "guest",
+                DeviceCapabilities::member(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(another_tab.1.user_public_key, person, "the same person");
+        let asked = pre_admit(&by_invitation, person, b"again").await;
+        assert!(
+            joins(&rooms, &another_tab, asked, b"again").await,
+            "a member gets in again"
+        );
+
+        // The member invites the stranger, who asks to join with it and
+        // waits until the member lets them in.
+        let issued = invite(&rooms, &room, &member.1).await;
+        let RoomsReply::Invitation {
+            signed_invitation, ..
+        } = issued
+        else {
+            panic!("a member invites: {issued:?}");
+        };
+        let JoinReply::Challenge { challenge } = rooms
+            .page_join(JoinStep::Ask {
+                invitation: signed_invitation,
+                device_cert: stranger.1.clone(),
+                request_id: rand::random(),
+            })
+            .await
+        else {
+            panic!("no challenge");
+        };
+        let signature = stranger.0.sign(&join_proof_digest(&challenge)).to_bytes();
+        let waiting = rooms
+            .page_join(JoinStep::Prove {
+                challenge,
+                signature,
+                name: "Stranger".into(),
+            })
+            .await;
+        assert!(matches!(waiting, JoinReply::Waiting), "{waiting:?}");
+        let listed = rooms
+            .page_rooms(&member.1, RoomsRequest::Requests { room: room.clone() })
+            .await;
+        let RoomsReply::Requests(requests) = listed else {
+            panic!("the member sees who waits: {listed:?}");
+        };
+        let [request] = requests.as_slice() else {
+            panic!("{requests:?}");
+        };
+        assert_eq!(request.user_public_key, stranger.1.user_public_key);
+        let admitted = rooms
+            .page_rooms(
+                &member.1,
+                RoomsRequest::Admit {
+                    room: room.clone(),
+                    request_id: request.request_id,
+                },
+            )
+            .await;
+        assert!(matches!(admitted, RoomsReply::Room(_)), "{admitted:?}");
+        let members = rooms.summary(&room).await.unwrap().members;
+        assert!(
+            members.iter().any(
+                |member| member.user_public_key == stranger.1.user_public_key && !member.removed
+            ),
+            "the invited stranger is a member"
+        );
+
+        settle_member_invites(&rooms, &room, &open.host_cert, false)
+            .await
+            .unwrap();
+        let asked = invite(&rooms, &room, &member.1).await;
+        assert!(matches!(asked, RoomsReply::Refused(_)), "{asked:?}");
         relay.shutdown().await;
     }
 

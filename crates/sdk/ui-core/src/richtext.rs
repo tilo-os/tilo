@@ -1025,7 +1025,8 @@ impl RichTextLayout {
         bounded: bool,
     ) -> Option<(f32, f32, f32)> {
         let mut byte_fallback = None;
-        for run in self.buffer.layout_runs() {
+        let line = self.cursor_at(position.byte).line;
+        for run in self.rows_of_lines(line..line.saturating_add(1)) {
             // A missing affinity may require a byte-only fallback. Do not
             // construct and sort every paragraph's grapheme stops while
             // looking for an exact match that cannot exist there. Use the
@@ -1143,9 +1144,7 @@ impl RichTextLayout {
     /// current-line background without rebuilding a second line model.
     pub fn logical_line_bands(&self, byte: usize) -> Vec<(f32, f32)> {
         let line = self.cursor_at(byte).line;
-        self.buffer
-            .layout_runs()
-            .filter(|run| run.line_i == line)
+        self.rows_of_lines(line..line.saturating_add(1))
             .map(|run| (run.line_top, run.line_height))
             .collect()
     }
@@ -1165,6 +1164,27 @@ impl RichTextLayout {
                 .last()
                 .is_none_or(|(line, _, _)| *line != run.line_i)
             {
+                origins.push((run.line_i, run.line_top, run.line_height));
+            }
+        }
+        origins
+    }
+
+    /// [`Self::logical_line_origins`] of the lines whose first row meets
+    /// `top..=bottom`, in the layout's coordinates: a gutter numbers only
+    /// the lines it shows.
+    pub fn logical_line_origins_within(&self, top: f32, bottom: f32) -> Vec<(usize, f32, f32)> {
+        let mut origins = Vec::new();
+        let mut last_line = None;
+        for run in self.rows_within(top, bottom) {
+            if run.line_top > bottom {
+                break;
+            }
+            if last_line == Some(run.line_i) {
+                continue;
+            }
+            last_line = Some(run.line_i);
+            if run.line_top + run.line_height >= top {
                 origins.push((run.line_i, run.line_top, run.line_height));
             }
         }
@@ -1300,6 +1320,32 @@ impl RichTextLayout {
         stops
     }
 
+    /// The shaped rows of the logical lines `lines`, as
+    /// [`Buffer::layout_runs`] places them.
+    pub(crate) fn rows_of_lines(
+        &self,
+        lines: std::ops::Range<usize>,
+    ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
+        self.buffer
+            .layout_runs()
+            .skip_while(move |run| run.line_i < lines.start)
+            .take_while(move |run| run.line_i < lines.end)
+    }
+
+    /// The shaped rows whose band, widened by twice its height for ink that
+    /// overhangs it, meets `top..=bottom` (in the layout's coordinates), and
+    /// any between them.
+    pub fn rows_within(
+        &self,
+        top: f32,
+        bottom: f32,
+    ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
+        self.buffer
+            .layout_runs()
+            .skip_while(move |run| run.line_top + run.line_height * 3.0 < top)
+            .take_while(move |run| run.line_top - run.line_height * 2.0 <= bottom)
+    }
+
     fn cursor_at(&self, byte: usize) -> Cursor {
         let byte = self.offset_map.source_to_shaped(byte.min(self.text_len));
         let line = match self.line_starts.binary_search(&byte) {
@@ -1359,10 +1405,7 @@ impl RichTextLayout {
         }
         let cursor_start = self.cursor_at(start);
         let cursor_end = self.cursor_at(end);
-        for run in self.buffer.layout_runs() {
-            if run.line_i < cursor_start.line || run.line_i > cursor_end.line {
-                continue;
-            }
+        for run in self.rows_of_lines(cursor_start.line..cursor_end.line.saturating_add(1)) {
             // A wrapped paragraph is one logical line of many visual rows, and
             // `highlight` segments every grapheme of a row it is given. A row
             // whose glyphs all end before the range or start after it selects

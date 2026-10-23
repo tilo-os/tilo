@@ -120,6 +120,26 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
     REGISTRY.lock_recover()
 }
 
+/// The X server the satellite with process id `pid` bridges: its socket and
+/// MIT-MAGIC-COOKIE-1. `None` when `pid` is no bridge of this session. Takes
+/// the registry, which the bridge thread may hold for a while: call it off
+/// the compositor's loop.
+pub(crate) fn bridged_display(pid: u32) -> Option<(PathBuf, [u8; 16])> {
+    let registry = registry();
+    registry
+        .displays
+        .as_ref()?
+        .workspaces
+        .values()
+        .find(|display| {
+            display
+                .bridge
+                .as_ref()
+                .is_some_and(|bridge| bridge.child.id() == pid)
+        })
+        .map(|display| (display.socket.clone(), display.cookie))
+}
+
 /// Signalled, with [`REGISTRY`], whenever the display thread delivers a
 /// display it bound (or failed to).
 static DELIVERED: Condvar = Condvar::new();

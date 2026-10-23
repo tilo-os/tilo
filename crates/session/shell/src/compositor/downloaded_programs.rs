@@ -5,7 +5,7 @@ use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::compositor::state::ClientState;
-use crate::shell::downloaded_apps::{self, ObservedWindow};
+use crate::shell::downloaded_apps::ObservedWindow;
 
 /// Hand a window that just named itself to the downloaded-program worker
 /// when it belongs to an unconfined host process Tilo did not start: a
@@ -29,7 +29,9 @@ pub fn observe(surface: &WlSurface, surface_id: u64, app_id: &str) {
     let Some(pid) = state.pid else {
         return;
     };
-    downloaded_apps::observe_window(ObservedWindow {
+    // An X11 program's windows all come from satellite's connection: the
+    // X11 side finds the program behind each, and its icon.
+    crate::compositor::x11_windows::observe_window(ObservedWindow {
         surface_id,
         pid,
         pid_start_time: state.pid_start_time,

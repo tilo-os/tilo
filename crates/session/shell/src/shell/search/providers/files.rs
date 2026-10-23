@@ -1212,7 +1212,7 @@ fn open_search_hit(
         return open_folder_in_files(path, path, chrome);
     }
     match doc_open::resolve(path) {
-        DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
+        DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } | DocumentTarget::Program => {
             doc_open::open_in_workspace(path, chrome)
                 .map(|opened| opened.to_value(path))
                 .map_err(|e| {

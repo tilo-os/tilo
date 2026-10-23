@@ -229,7 +229,7 @@ tilo-winit-x11 = { version = "0.1.0", path = "../../sdk/winit-x11" }
 # XKB keysym values for the media keys winit reports only as raw keysyms.
 xkeysym = "0.2.1"
 # Publishes `Xft.dpi` on each workspace's X server.
-x11rb = { version = "0.13", default-features = false }
+x11rb = { version = "0.13", default-features = false, features = ["res"] }
 pollster.workspace = true
 sysinfo.workspace = true
 automerge.workspace = true

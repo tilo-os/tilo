@@ -1269,10 +1269,10 @@ impl DesktopSurface {
                 shared.tree.set_active_group(strip_id, group.id);
                 changed = true;
             }
-            if let Some(permille) = group.take_pending_width_change()
+            if let Some(width) = group.take_pending_width_change()
                 && let Some(model) = find_group(&mut shared.tree, strip_id, group.id)
             {
-                model.width = WindowWidth::Fraction(permille);
+                model.width = width;
                 changed = true;
             }
             if let Some(maximized) = group.take_pending_maximize_change()

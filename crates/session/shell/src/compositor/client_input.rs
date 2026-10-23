@@ -1675,7 +1675,11 @@ pub fn route_input(
 ) -> bool {
     // The host's own input takes priority over every remote peer for the next half second; stamped here since both the backend loop and the test-control socket push local input through this function.
     // An agent is one more participant, not the host, and wins no priority.
-    if state.client_input.participant.is_none() {
+    // Input another of the person's devices sent is theirs too, so it takes
+    // nothing back from them either.
+    if state.client_input.participant.is_none()
+        && state.input_origin == crate::compositor::state::InputOrigin::Here
+    {
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());

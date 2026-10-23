@@ -39,7 +39,8 @@ impl Announcing {
 }
 
 /// The native membership owner of one room. Every re-check of the room's
-/// membership surface reads its tasks, so the reads are the re-checks.
+/// membership surface asks whether it keeps the room, so the questions are
+/// the re-checks.
 #[cfg(target_os = "linux")]
 struct CountedRoom {
     room: String,
@@ -56,19 +57,8 @@ impl CountedRoom {
 #[cfg(target_os = "linux")]
 impl crate::services::WorkspaceMemberships for CountedRoom {
     fn requires_room(&self, room: &str) -> bool {
-        room == self.room
-    }
-
-    fn task_snapshot(
-        &self,
-        _: &str,
-    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
         self.checks.lock().unwrap().push(tilo_clock::unix_now_ns());
-        Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
-            tasks: Vec::new(),
-            controls: std::collections::BTreeMap::default(),
-            grants: Vec::new(),
-        })
+        room == self.room
     }
 
     fn execute(&self, _: tilo_owner_commit::OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {

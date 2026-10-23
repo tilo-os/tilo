@@ -10821,6 +10821,10 @@ mod tests {
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
 
+#[cfg(test)]
+#[path = "frame_window_bar_keyboard_tests.rs"]
+mod window_bar_keyboard_tests;
+
 /// `regions` without any region another one contains (the first of two
 /// equal ones stays): the same pixels, rasterised once. A changed card's
 /// old and new bounds and the blurred surface on it often nest.

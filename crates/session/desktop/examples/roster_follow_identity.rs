@@ -28,6 +28,7 @@ fn rows(theme: &Theme) -> Vec<RosterRow> {
             availability: ui::Availability::Available,
             call: None,
             join: None,
+            own_device: false,
         })
         .collect()
 }

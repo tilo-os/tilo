@@ -29,7 +29,7 @@ impl Peer {
         let source = source(&rig, &lifecycle, &socket);
         let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
             &rig.root.path().join("native-apps"),
-            Some(rig.root.path().join("native-apps").join("person")),
+            &rig.root.path().join("native-apps").join("person"),
             &rig.owner.principal,
             socket,
         )
@@ -149,7 +149,7 @@ impl Peer {
         );
         assert_eq!(self.mounted.harness.dump_json(), before);
     }
-    fn contacts(&mut self, other: &Self) {
+    fn contacts(&self, other: &Self) {
         let mut directory = tilo_contact_directory::ContactDirectory::default();
         let certificate = &other.rig.admission.host.device_cert;
         let address = format!(
@@ -170,11 +170,9 @@ impl Peer {
                 "native-reviewed-device".into(),
             )
             .unwrap();
-        seed_person(&mut self.apps, &directory);
+        seed_person(&self.apps, &directory);
     }
     fn choose(&mut self) -> String {
-        // The account published reaches the app's copy over its route.
-        carry_accounts(&mut self.apps);
         effect(
             &mut self.mounted.harness,
             &MessagesEffect::OpenPerson {
@@ -249,7 +247,7 @@ impl Peer {
         drop(apps);
         let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
             &rig.root.path().join("native-apps"),
-            Some(rig.root.path().join("native-apps").join("person")),
+            &rig.root.path().join("native-apps").join("person"),
             &rig.owner.principal,
             rig.root.path().join("native-first.sock"),
         )

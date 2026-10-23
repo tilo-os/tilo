@@ -11,6 +11,8 @@ use typst_layout::Page;
 use vello::peniko::ImageData;
 
 use tilo_page_raster::PageSource;
+
+use crate::page_text::PageText;
 use tilo_page_raster::tiles::{self, TileKey};
 
 /// A frame hashed by what it draws. Spans and introspection tags are left
@@ -58,6 +60,8 @@ pub struct TypstPages {
     /// What each page looks like, as a hash of what it draws: equal for a
     /// page an edit left as it was.
     looks: Vec<u128>,
+    /// Each page's selectable text.
+    text: Vec<PageText>,
 }
 
 impl TypstPages {
@@ -73,11 +77,24 @@ impl TypstPages {
             .iter()
             .map(|page| typst::utils::hash128(&(Looks(&page.frame), &page.fill)))
             .collect();
+        let text = pages
+            .iter()
+            .map(|page| PageText::of_frame(&page.frame))
+            .collect();
         Self {
             pages,
             sizes,
             looks,
+            text,
         }
+    }
+
+    /// These pages with `text` as their selectable text.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_text(mut self, text: Vec<PageText>) -> Self {
+        self.text = text;
+        self
     }
 
     /// Blank pages of `sizes` (in points).
@@ -112,6 +129,12 @@ impl TypstPages {
 
     pub fn looks(&self) -> &[u128] {
         &self.looks
+    }
+
+    /// The selectable text of `page`; none past the last page.
+    pub fn text(&self, page: usize) -> &PageText {
+        static NONE: PageText = PageText::EMPTY;
+        self.text.get(page).unwrap_or(&NONE)
     }
 }
 

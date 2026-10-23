@@ -269,6 +269,7 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
             raw(crate::downloaded::KEY_PROGRAM),
             raw(crate::downloaded::KEY_KIND),
             raw(crate::downloaded::KEY_FILE),
+            raw(crate::downloaded::KEY_LOCATIONS),
         ),
     })
 }
@@ -402,7 +403,7 @@ fn boolean(raw: Option<&str>) -> bool {
 
 /// A `;`-separated list value. `\;` is a literal semicolon; a customary trailing `;`
 /// produces no empty final element.
-fn string_list(raw: Option<&str>) -> Vec<String> {
+pub(crate) fn string_list(raw: Option<&str>) -> Vec<String> {
     let Some(raw) = raw else {
         return Vec::new();
     };

@@ -172,14 +172,4 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         drop(tree);
         Ok(())
     }
-    fn record_task_update(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: Option<tilo_desktop_model::WorkspaceTaskStatus>,
-        _: String,
-    ) -> Result<(), String> {
-        Err("task mutation unsupported by this fixture".into())
-    }
 }

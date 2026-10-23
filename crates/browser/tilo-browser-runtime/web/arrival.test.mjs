@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {existsSync} from 'node:fs';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, FAILURES, fill, isCoffeeHost, lineParts, refusedByHost,
+import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, FAILURES, fill, inviteLinkTarget, isCoffeeHost, lineParts, refusedByHost,
   parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -264,6 +264,27 @@ test('a person the room removed is told so in their language, and trying again d
     assert.equal(failureMessage(error, {workspace: 'Lounge', messages: locale('de-DE')}),
       'Du wurdest aus Lounge entfernt. Um zurückzukommen, bitte jemanden darin um eine neue Einladung.');
     assert.equal(failureMessage(error, {messages: locale('en-US')}), failureMessage(error));
+  }
+});
+
+test('a room taking people by invitation tells a visitor without one that they need one, in their language', () => {
+  const door = Object.assign(new Error('join: HTTP 403'), {name: 'HostAdmissionError', code: 'invitation-only'});
+  assert.ok(refusedByHost(door));
+  assert.equal(failureMessage(door, {workspace: 'Lounge'}),
+    'You need an invitation to join Lounge for now. Ask someone in it for an invite link, then open it here.');
+  assert.match(failureMessage(door), /^You need an invitation to join this workspace for now\./);
+  assert.equal(failureMessage(door, {workspace: 'Lounge', messages: locale('de-DE')}),
+    'Für Lounge brauchst du im Moment eine Einladung. Bitte jemanden darin um einen Einladungslink und öffne ihn hier.');
+  assert.equal(failureMessage(door, {messages: locale('en-US')}), failureMessage(door));
+});
+
+test('a pasted invite link opens as itself; anything else is not one', () => {
+  const base = 'https://tilo.coffee/';
+  const link = 'https://tilo.coffee/#/desktop/room/abc?invite=XYZ';
+  assert.equal(inviteLinkTarget(`  ${link}\n`, base), link);
+  assert.equal(inviteLinkTarget('https://tilo.coffee/?invite=XYZ', base), 'https://tilo.coffee/?invite=XYZ');
+  for (const text of ['', 'hello', 'https://tilo.coffee/', 'https://tilo.coffee/#/desktop/room/abc', 'javascript:alert(1)?invite=1', null]) {
+    assert.equal(inviteLinkTarget(text, base), null, String(text));
   }
 });
 

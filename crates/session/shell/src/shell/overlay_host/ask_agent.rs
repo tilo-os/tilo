@@ -283,6 +283,44 @@ impl ShellOverlayHost {
     /// The session source for the workspace, and those of its agent
     /// `members` that are admitted (certified under their own key) and hold
     /// a live task subscription, so a queued task reaches them.
+    /// Ask agents the work the chrome handed them (a notification), each
+    /// as an issue in its workspace's Tasks. Whether one was asked.
+    pub(super) fn pump_agent_asks(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let asks = chrome.borrow_mut().take_agent_asks();
+        let mut asked = false;
+        for ask in asks {
+            let Some(broker) = self.shortcut_triggers.broker() else {
+                break;
+            };
+            let source = ActionSessionSource::new(broker);
+            let room = ask.room.to_string();
+            let Some(identity_revision) = source.identity_revision(&room) else {
+                continue;
+            };
+            let person = chrome.borrow().local_user_for_room(&ask.room);
+            let owner = ComposerOwner {
+                person,
+                room,
+                agent: ask.agent,
+                identity_revision,
+            };
+            if self
+                .agent_actions
+                .entry(owner.clone())
+                .or_default()
+                .open_and_ask(source, &owner, (&ask.title, &ask.body))
+            {
+                asked = true;
+            } else {
+                tracing::warn!(agent = %owner.agent, "a notification could not be handed to the agent");
+            }
+        }
+        asked
+    }
+
     fn live_agents(
         &self,
         room: &str,

@@ -61,6 +61,53 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&TimeDateArea> {
     app.areas().find()
 }
 
+/// What the time settings found by search are set to, as the page last
+/// read the clock: nothing until it has.
+pub(crate) mod values {
+    use ui::LocalState;
+
+    use super::{ClockPrefs, TimeDateEffect, TimeDatePane, area};
+    use crate::effects::effect;
+    use crate::host::PaneCx;
+    use crate::i18n::t;
+    use crate::setting::{Follows, Read};
+    use crate::settings_app::SettingsApp;
+    use crate::widgets::Item;
+
+    /// Automatic time, a switch once the clock was read and said whether
+    /// it is on.
+    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Read {
+        area(app)
+            .and_then(|area| area.reading.get())
+            .filter(|reading| reading.auto_error.is_none())
+            .map_or(Read::Value(None), |reading| {
+                Read::Switch(reading.automatic.unwrap_or(false))
+            })
+    }
+
+    /// The automatic-time switch.
+    pub(crate) fn automatic_switch(cx: &PaneCx, on: bool) -> Item {
+        cx.row(t("time-auto")).id("time.auto").toggle_effect(
+            &LocalState::new(on),
+            effect(TimeDateEffect::SET_AUTOMATIC_TIME),
+        )
+    }
+
+    pub(crate) fn zone(app: &SettingsApp, follows: &Follows) -> Option<String> {
+        let reading = area(app)?.reading.get()?;
+        let zone = reading.status.ok()?.timezone?;
+        let city = TimeDatePane::zone_name(&zone)?;
+        Some(if follows.get::<ClockPrefs>(app.host()).automatic_zone {
+            crate::i18n::t_args(
+                "time-zone-automatic-now",
+                &[("zone", ui::i18n::ArgValue::from(city.as_str()))],
+            )
+        } else {
+            city
+        })
+    }
+}
+
 /// A map-friendly model over the exact IANA ids accepted by timedated.
 /// Coordinates come from the same installed tzdata package; this deliberately
 /// has no embedded city/coordinate database. Aliases absent from the tzdata
@@ -687,10 +734,7 @@ impl TimeDatePane {
                 &t("time-auto"),
                 &t_args("time-status-error", &[("error", error.as_str().into())]),
             ),
-            (None, automatic) => self.cx.row(t("time-auto")).id("time.auto").toggle_effect(
-                &LocalState::new(automatic.unwrap_or(false)),
-                effect(TimeDateEffect::SET_AUTOMATIC_TIME),
-            ),
+            (None, automatic) => values::automatic_switch(&self.cx, automatic.unwrap_or(false)),
         }
     }
 

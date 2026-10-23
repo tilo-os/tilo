@@ -4691,3 +4691,60 @@ fn a_narrow_windows_empty_list_says_the_book_is_empty() {
         "beside the first-run pane the list stays quiet"
     );
 }
+
+/// The node the accessibility tree holds under `name`, as the host exports it.
+fn exported_node(app: &mut Live, name: &str) -> Option<ui::accesskit::Node> {
+    app.settle();
+    app.harness_mut()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name))
+        .map(|(_, node)| node)
+}
+
+/// Writing the first contact replaces the content's first-run pane with the
+/// form, so the list beside it says the book is empty and where the new
+/// contact will appear instead of standing blank. Someone who may only view
+/// is told so, and offered no New contact that would be refused.
+#[test]
+fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
+    let mut app = Live::empty(1280, 800);
+    let first_run = exported_node(&mut app, "No contacts yet").expect("the first-run pane");
+    assert_eq!(
+        first_run.children().len(),
+        1,
+        "someone who may edit is offered New contact"
+    );
+    app.request(Request::NewContact);
+    app.settle();
+    assert_eq!(app.mode, Mode::Edit);
+    assert!(app.form.as_ref().is_some_and(|form| form.is_new));
+    let state = exported_node(&mut app, "No contacts yet")
+        .expect("the list beside the form names the empty book");
+    assert_eq!(state.role(), ui::accesskit::Role::Group);
+    assert_eq!(
+        state.description(),
+        Some("The contact you're adding appears here once you save it.")
+    );
+    assert!(
+        app.shared.borrow().painted.is_empty(),
+        "no row stands where the empty state is drawn"
+    );
+
+    let mut viewer = Live::mount(
+        ui::framework::testing::TestApp::with_role(ui::Role::Viewer).unwrap(),
+        (1280, 800),
+    );
+    let state = exported_node(&mut viewer, "No contacts yet")
+        .expect("an empty book is named to someone who may only view it");
+    assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+    assert!(
+        state.children().is_empty(),
+        "the empty state offers no New contact to someone who may only view"
+    );
+    viewer.request(Request::NewContact);
+    viewer.settle();
+    let state = exported_node(&mut viewer, "No contacts yet")
+        .expect("the list beside a viewer's form names the empty book");
+    assert_eq!(state.description(), Some(VIEW_ONLY_MESSAGE));
+}

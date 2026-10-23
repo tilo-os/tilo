@@ -245,7 +245,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_room_as_itself()
     let laptop = enrol(&owner, "laptop", DeviceCapabilities::primary());
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let rooms = hosted.relay.rooms().unwrap().clone();
     let room = rooms.create("An agent's own session").await.unwrap();

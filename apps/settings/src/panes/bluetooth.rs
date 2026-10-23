@@ -46,6 +46,48 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&BluetoothArea> {
     app.areas().find()
 }
 
+/// Whether Bluetooth is on, as the page last read it: a switch once the
+/// area has read the adapter.
+pub(crate) fn enabled(
+    app: &crate::settings_app::SettingsApp,
+    _: &crate::setting::Follows,
+) -> crate::setting::Read {
+    use crate::setting::Read;
+    if adapter_absent(app.host()) {
+        return Read::Value(Some(t("settings-bluetooth-no-adapter")));
+    }
+    area(app)
+        .and_then(|area| area.model.get())
+        .and_then(|model| {
+            let model = model.borrow();
+            model.read_error.is_none().then_some(model.powered)
+        })
+        .map_or(Read::Value(None), Read::Switch)
+}
+
+/// The radio's switch: on, off, or unavailable while it cannot be read
+/// or there is no adapter.
+fn radio_row(cx: &PaneCx, on: bool, enabled: bool, detail: Option<&str>) -> Item {
+    let mut radio = ListRow::new("settings.bluetooth.radio", t("settings-bluetooth-card"))
+        .trailing(Box::new(
+            cx.bind(
+                Toggle::from_state(&LocalState::new(on))
+                    .with_id("bluetooth.toggle")
+                    .with_enabled(enabled),
+                effect(BluetoothEffect::SET_BLUETOOTH),
+            ),
+        ));
+    if let Some(detail) = detail {
+        radio = radio.secondary(detail);
+    }
+    row(Box::new(radio))
+}
+
+/// Bluetooth's switch where search finds it.
+pub(crate) fn enabled_switch(cx: &PaneCx, on: bool) -> Item {
+    radio_row(cx, on, true, None)
+}
+
 fn token(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace('.', "_")
 }
@@ -949,28 +991,11 @@ impl BluetoothModel {
         )
     }
 
-    /// The radio's switch: on, off, or unavailable while it cannot be read
-    /// or there is no adapter.
-    fn radio_row(&self, on: bool, enabled: bool, detail: Option<&str>) -> Item {
-        let mut radio = ListRow::new("settings.bluetooth.radio", t("settings-bluetooth-card"))
-            .trailing(Box::new(
-                self.cx.bind(
-                    Toggle::from_state(&LocalState::new(on))
-                        .with_id("bluetooth.toggle")
-                        .with_enabled(enabled),
-                    effect(BluetoothEffect::SET_BLUETOOTH),
-                ),
-            ));
-        if let Some(detail) = detail {
-            radio = radio.secondary(detail);
-        }
-        row(Box::new(radio))
-    }
-
     /// The pane of a device without an adapter: the switch off and
     /// disabled, and why.
     fn without_adapter(&self) -> Box<dyn Widget> {
-        crate::widgets::page(vec![untitled(rows(vec![self.radio_row(
+        crate::widgets::page(vec![untitled(rows(vec![radio_row(
+            &self.cx,
             false,
             false,
             Some(&t("settings-bluetooth-no-adapter")),
@@ -982,7 +1007,12 @@ impl BluetoothModel {
             return self.without_adapter();
         }
         // An unread power state is not offered as a switch position.
-        let mut radio = vec![self.radio_row(self.powered, self.read_error.is_none(), None)];
+        let mut radio = vec![radio_row(
+            &self.cx,
+            self.powered,
+            self.read_error.is_none(),
+            None,
+        )];
         if let Some(notice) = &self.notice {
             radio.push(note(notice));
         }

@@ -40,12 +40,21 @@ pub const ENTRY_DIR: &str = "tilo-downloaded";
 /// The program the entry starts: the `AppImage` or binary itself.
 pub const KEY_PROGRAM: &str = "X-Tilo-Downloaded-Program";
 /// The program file's stable identity when the entry was written
-/// (`<device>:<inode>`), for following it across moves and renames.
+/// ([`file_identity`]), for following it across moves and renames.
 pub const KEY_FILE: &str = "X-Tilo-Downloaded-File";
+/// The other copies of the same app the person has run or added, newest
+/// first: kept when a newer copy became the one the entry starts, so
+/// Uninstall can trash them all and a gone copy falls back to one still
+/// there.
+pub const KEY_LOCATIONS: &str = "X-Tilo-Downloaded-Locations";
 /// The identity the entry is keyed by.
 pub const KEY_IDENTITY: &str = "X-Tilo-Downloaded-Identity";
 /// `AppImage` or `Program`.
 pub const KEY_KIND: &str = "X-Tilo-Downloaded-Kind";
+
+/// The icon an entry names when the program has no artwork of its own:
+/// the system's generic application icon, from the icon theme.
+pub const GENERIC_ICON: &str = "application-x-executable";
 
 /// Largest icon taken from a program's folder or image.
 const MAX_ICON_BYTES: usize = 4 * 1024 * 1024;
@@ -96,6 +105,42 @@ pub struct ProcessFacts {
     /// `APPIMAGE` from its environment: an `AppImage`'s runtime names the
     /// image it mounted there for the program it starts.
     pub appimage: Option<PathBuf>,
+    /// The script its parent process runs, when the parent is a shell
+    /// running one: how a launcher script (`idea.sh`) starts a bundled
+    /// runtime (`jbr/bin/java`).
+    pub parent_script: Option<PathBuf>,
+}
+
+/// Programs that run another program's code: when one of these is what a
+/// window's process runs, the program the person started is the script
+/// that started it, or the one the folder's desktop entry names.
+const RUNTIMES: &[&str] = &[
+    "java",
+    "javaw",
+    "python",
+    "python3",
+    "node",
+    "nodejs",
+    "electron",
+    "wine",
+    "wine64",
+    "wine-preloader",
+    "wine64-preloader",
+    "mono",
+    "dotnet",
+];
+
+/// Shells a launcher script runs in.
+const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh"];
+
+fn is_runtime(exe: &Path) -> bool {
+    exe.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        RUNTIMES.contains(&name.as_ref())
+            || name
+                .strip_prefix("python3.")
+                .is_some_and(|minor| minor.chars().all(|c| c.is_ascii_digit()))
+    })
 }
 
 /// Read [`ProcessFacts`] for `pid`. `None` when the process is gone, its
@@ -116,7 +161,50 @@ pub fn process_facts(pid: u32) -> Option<ProcessFacts> {
                 (!value.is_empty()).then(|| PathBuf::from(value))
             })
         });
-    Some(ProcessFacts { exe, appimage })
+    Some(ProcessFacts {
+        exe,
+        appimage,
+        parent_script: parent_script(&proc),
+    })
+}
+
+/// The script `proc`'s parent runs, when the parent is a shell running a
+/// file: `bash ./idea.sh` or a `#!/bin/sh` script started directly, which
+/// the kernel starts as `/bin/sh ./idea.sh`. A relative path is resolved
+/// against the parent's working folder.
+#[cfg(target_os = "linux")]
+fn parent_script(proc: &Path) -> Option<PathBuf> {
+    let stat = std::fs::read_to_string(proc.join("stat")).ok()?;
+    let ppid: u32 = stat
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    let parent = PathBuf::from(format!("/proc/{ppid}"));
+    let shell = std::fs::read_link(parent.join("exe")).ok()?;
+    if !shell
+        .file_name()
+        .is_some_and(|name| SHELLS.contains(&name.to_string_lossy().as_ref()))
+    {
+        return None;
+    }
+    let cmdline = std::fs::read(parent.join("cmdline")).ok()?;
+    let script = cmdline
+        .split(|byte| *byte == 0)
+        .skip(1)
+        .map(|arg| String::from_utf8_lossy(arg).into_owned())
+        .find(|arg| !arg.is_empty() && !arg.starts_with('-'))?;
+    let script = PathBuf::from(script);
+    let script = if script.is_absolute() {
+        script
+    } else {
+        std::fs::read_link(parent.join("cwd")).ok()?.join(script)
+    };
+    std::fs::metadata(&script)
+        .is_ok_and(|meta| meta.is_file())
+        .then_some(script)
 }
 
 /// Whether a running process is a downloaded program, and which file
@@ -142,7 +230,19 @@ pub fn classify(facts: &ProcessFacts, home: &Path) -> Option<Program> {
             kind: ProgramKind::AppImage,
         });
     }
-    let exe = &facts.exe;
+    let launcher;
+    let exe = if is_runtime(&facts.exe) {
+        // The runtime is not the program: the script that started it is,
+        // or the program the folder's desktop entry names.
+        launcher = facts
+            .parent_script
+            .clone()
+            .filter(|script| script.starts_with(home))
+            .or_else(|| entry_program(&facts.exe, home))?;
+        &launcher
+    } else {
+        &facts.exe
+    };
     let relative = exe.strip_prefix(home).ok()?;
     if relative.as_os_str().is_empty()
         || relative
@@ -175,6 +275,56 @@ pub fn classify(facts: &ProcessFacts, home: &Path) -> Option<Program> {
         path: exe.clone(),
         kind,
     })
+}
+
+/// The program a desktop entry beside `exe` (in its folder or up to
+/// [`FOLDER_LEVELS`] above, never above `home`) starts, when that program is
+/// a file in the same tree: how a bundled runtime finds the launcher its
+/// app ships.
+fn entry_program(exe: &Path, home: &Path) -> Option<PathBuf> {
+    let mut folder = exe.parent();
+    let mut level = 0_usize;
+    while let Some(dir) = folder {
+        if dir == home || !dir.starts_with(home) || level > FOLDER_LEVELS {
+            return None;
+        }
+        let mut desktops: Vec<PathBuf> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "desktop"))
+            .collect();
+        desktops.sort();
+        for path in desktops {
+            if std::fs::metadata(&path).map_or(true, |meta| meta.len() > MAX_DESKTOP_BYTES) {
+                continue;
+            }
+            let Some(first) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|contents| crate::entry::parse(&contents, "", &path, &[]))
+                .and_then(|entry| entry.exec)
+                .and_then(|exec| crate::exec::split_exec(&exec).ok())
+                .and_then(|argv| argv.into_iter().next())
+            else {
+                continue;
+            };
+            let program = Path::new(&first);
+            let program = if program.is_absolute() {
+                program.to_path_buf()
+            } else {
+                dir.join(program)
+            };
+            if program.starts_with(dir)
+                && !is_runtime(&program)
+                && std::fs::metadata(&program).is_ok_and(|meta| meta.is_file())
+            {
+                return Some(program);
+            }
+        }
+        folder = dir.parent();
+        level = level.saturating_add(1);
+    }
+    None
 }
 
 /// Icon bytes and how to decode them.
@@ -233,6 +383,11 @@ pub struct Identity {
 /// Find `program`'s identity, best source first. Never fails: the window
 /// always names the program.
 pub fn identify(program: &Program, window: &WindowFacts) -> Identity {
+    identify_with_source(program, window).0
+}
+
+/// [`identify`], and whether only the window named the program.
+fn identify_with_source(program: &Program, window: &WindowFacts) -> (Identity, bool) {
     #[cfg(feature = "appimage")]
     let embedded = match program.kind {
         ProgramKind::AppImage => appimage::read_identity(&program.path).ok().flatten(),
@@ -242,7 +397,10 @@ pub fn identify(program: &Program, window: &WindowFacts) -> Identity {
     let embedded: Option<Found> = None;
     let found = embedded.or_else(|| folder_identity(&program.path, &window.app_id));
     let window_key = window_key(&window.app_id, &program.path);
-    match found {
+    // Only the window names it: no entry anywhere, or just an icon under
+    // the program's own name, keyed by the window.
+    let from_window = found.as_ref().is_none_or(|found| found.key == window_key);
+    let identity = match found {
         Some(found) => Identity {
             key: found.key,
             name: found.entry.name.clone(),
@@ -269,7 +427,8 @@ pub fn identify(program: &Program, window: &WindowFacts) -> Identity {
             startup_wm_class: (!window.app_id.trim().is_empty()).then(|| window.app_id.clone()),
             field_code: None,
         },
-    }
+    };
+    (identity, from_window)
 }
 
 /// A desktop entry found for a program, with its icon.
@@ -474,6 +633,8 @@ pub struct Recorded {
     pub path: PathBuf,
     pub program: PathBuf,
     pub kind: ProgramKind,
+    /// The other copies ([`KEY_LOCATIONS`]).
+    pub locations: Vec<PathBuf>,
 }
 
 /// The program a desktop entry was written for, as the scan reads it.
@@ -486,6 +647,8 @@ pub struct DownloadedProgram {
     /// Whether the program's file is there. Set by the scan, which runs on
     /// a worker; a freshly parsed entry assumes it is.
     pub present: bool,
+    /// The other copies of the app, newest first ([`KEY_LOCATIONS`]).
+    pub locations: Vec<PathBuf>,
 }
 
 impl DownloadedProgram {
@@ -493,6 +656,7 @@ impl DownloadedProgram {
         program: Option<&str>,
         kind: Option<&str>,
         file: Option<&str>,
+        locations: Option<&str>,
     ) -> Option<Self> {
         let program = program.map(str::trim).filter(|p| p.starts_with('/'))?;
         Some(Self {
@@ -503,8 +667,92 @@ impl DownloadedProgram {
                 .filter(|f| !f.is_empty())
                 .map(str::to_owned),
             present: true,
+            locations: crate::entry::string_list(locations)
+                .into_iter()
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .collect(),
         })
     }
+
+    /// Every copy of the app: the one the entry starts, then the others.
+    #[must_use]
+    pub fn copies(&self) -> Vec<PathBuf> {
+        std::iter::once(self.program.clone())
+            .chain(self.locations.iter().cloned())
+            .collect()
+    }
+
+    /// The file record id of Tilo's filesystem the program had when its
+    /// entry was written: what finds it again after a move or rename.
+    #[must_use]
+    pub fn record(&self) -> Option<[u8; 16]> {
+        parse_record(self.file.as_deref()?.strip_prefix(RECORD_PREFIX)?)
+    }
+}
+
+/// The [`file_identity`] of a file that has a record id.
+const RECORD_PREFIX: &str = "record:";
+/// The extended attribute Tilo's filesystem serves each file's record id
+/// on (16 bytes), the same through every move and rename.
+const RECORD_ID_XATTR: &str = "user.tilo.record-id";
+
+fn parse_record(hex: &str) -> Option<[u8; 16]> {
+    let digits: Vec<u8> = hex.bytes().filter(|byte| *byte != b'-').collect();
+    if digits.len() != 32 {
+        return None;
+    }
+    let mut out = [0_u8; 16];
+    for (byte, pair) in out.iter_mut().zip(digits.chunks_exact(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
+}
+
+fn format_record(id: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(36);
+    for (index, byte) in id.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            out.push('-');
+        }
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// The record id Tilo's filesystem gives the file at `path`, if it is on
+/// it.
+#[cfg(target_os = "linux")]
+fn record_id(path: &Path) -> Option<[u8; 16]> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let name = std::ffi::CString::new(RECORD_ID_XATTR).ok()?;
+    let mut id = [0_u8; 16];
+    // SAFETY: both strings are NUL-terminated and outlive the call, and the
+    // buffer is writable for the length passed.
+    let read = unsafe {
+        libc::getxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            id.as_mut_ptr().cast(),
+            id.len(),
+        )
+    };
+    (usize::try_from(read).ok() == Some(id.len())).then_some(id)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn record_id(_path: &Path) -> Option<[u8; 16]> {
+    None
+}
+
+/// A file the person declined to add.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Declined {
+    /// [`file_identity`], when the file has one.
+    file: Option<String>,
+    path: PathBuf,
 }
 
 /// The entries of downloaded programs, as files in an `applications`
@@ -515,6 +763,8 @@ pub struct Store {
     entries: PathBuf,
     /// Where their icons are kept, outside every icon-theme root.
     icons: PathBuf,
+    /// The files the person was asked about and said no to, one per line.
+    declined: PathBuf,
 }
 
 impl Store {
@@ -527,17 +777,62 @@ impl Store {
     pub fn in_data_home(data: &Path) -> Self {
         Self::at(
             &data.join("applications"),
-            &data.join("tilo").join("downloaded-apps").join("icons"),
+            &data.join("tilo").join("downloaded-apps"),
         )
     }
 
     /// A store writing into `applications_dir` (an XDG `applications`
-    /// directory) and keeping icons in `icons_dir`.
-    pub fn at(applications_dir: &Path, icons_dir: &Path) -> Self {
+    /// directory) and keeping what else it knows (icons, the files the
+    /// person declined) in `state_dir`.
+    pub fn at(applications_dir: &Path, state_dir: &Path) -> Self {
         Self {
             entries: applications_dir.join(ENTRY_DIR),
-            icons: icons_dir.to_path_buf(),
+            icons: state_dir.join("icons"),
+            declined: state_dir.join("declined"),
         }
+    }
+
+    /// Remember that the person declined to add the program at `path`, so
+    /// that file is not asked about again. Another file (a new version, a
+    /// copy) is. Files that are gone are forgotten on the way.
+    ///
+    /// # Errors
+    ///
+    /// The list could not be written.
+    pub fn decline(&self, path: &Path) -> io::Result<()> {
+        let mut declined: Vec<Declined> = self
+            .declined_files()
+            .into_iter()
+            .filter(|declined| declined.path.exists() && declined.path != path)
+            .collect();
+        declined.push(Declined {
+            file: file_identity(path),
+            path: path.to_path_buf(),
+        });
+        let text = serde_json::to_vec(&declined).map_err(io::Error::other)?;
+        if let Some(parent) = self.declined.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        write_atomically(&self.declined, &text)
+    }
+
+    /// Whether the person declined the program at `path`: the same file,
+    /// wherever it is now, or this path when the file has no identity.
+    pub fn declined(&self, path: &Path) -> bool {
+        let file = file_identity(path);
+        self.declined_files()
+            .iter()
+            .any(|declined| match (&file, &declined.file) {
+                (Some(file), Some(recorded)) => file == recorded,
+                _ => declined.path == path,
+            })
+    }
+
+    fn declined_files(&self) -> Vec<Declined> {
+        std::fs::read(&self.declined)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
     }
 
     /// The desktop-file id an entry keyed by `key` has.
@@ -574,12 +869,14 @@ impl Store {
             main.get(KEY_PROGRAM).map(String::as_str),
             main.get(KEY_KIND).map(String::as_str),
             None,
+            main.get(KEY_LOCATIONS).map(String::as_str),
         )?;
         Some(Recorded {
             desktop_id: desktop_id.to_owned(),
             path,
             program: downloaded.program,
             kind: downloaded.kind,
+            locations: downloaded.locations,
         })
     }
 
@@ -597,9 +894,23 @@ impl Store {
         std::fs::create_dir_all(&self.entries)?;
         let icon = match &identity.icon {
             Some(icon) => Some(self.write_icon(&slug(&identity.key), icon)?),
-            None => self.read(&desktop_id).and_then(|_| existing_icon(&path)),
+            None => self
+                .read(&desktop_id)
+                .and_then(|_| existing_icon(&path))
+                .or_else(|| Some(GENERIC_ICON.to_owned())),
         };
-        let contents = render(identity, program, icon.as_deref());
+        // The newest copy is the one the entry starts; the copy it replaces
+        // and the ones before it stay known while they are there.
+        let locations = self
+            .read(&desktop_id)
+            .map(|recorded| {
+                other_copies(
+                    std::iter::once(recorded.program).chain(recorded.locations),
+                    &program.path,
+                )
+            })
+            .unwrap_or_default();
+        let contents = render(identity, program, icon.as_deref(), &locations);
         write_atomically(&path, contents.as_bytes())?;
         Ok(desktop_id)
     }
@@ -692,6 +1003,10 @@ impl Store {
             startup_wm_class: entry.startup_wm_class.clone(),
             field_code: entry.exec.as_deref().and_then(field_code),
         };
+        let locations = entry
+            .downloaded
+            .map(|downloaded| other_copies(downloaded.copies(), program))
+            .unwrap_or_default();
         let rendered = render(
             &identity,
             &Program {
@@ -699,8 +1014,100 @@ impl Store {
                 kind,
             },
             entry.icon.as_deref(),
+            &locations,
         );
         write_atomically(&path, rendered.as_bytes())
+    }
+
+    /// When the file the entry `desktop_id` starts is gone, make the newest
+    /// other copy still there the one it starts. Returns that copy, or
+    /// `None` when the file is there or no other copy is.
+    ///
+    /// # Errors
+    ///
+    /// The entry could not be rewritten.
+    pub fn fall_back(&self, desktop_id: &str) -> io::Result<Option<PathBuf>> {
+        let Some(recorded) = self.read(desktop_id) else {
+            return Ok(None);
+        };
+        if std::fs::metadata(&recorded.program).is_ok() {
+            return Ok(None);
+        }
+        let Some(copy) = recorded
+            .locations
+            .into_iter()
+            .find(|copy| std::fs::metadata(copy).is_ok_and(|meta| meta.is_file()))
+        else {
+            return Ok(None);
+        };
+        self.locate(desktop_id, &copy)?;
+        Ok(Some(copy))
+    }
+
+    /// The identity of an entry this store has for a program whose window
+    /// is `app_id`: the entry's `StartupWMClass`, or the desktop file name it
+    /// was keyed by, is that app id. How a copy that names itself only
+    /// through its window (a bare binary) joins the entry another copy of
+    /// the same program made, rather than adding a second one.
+    #[must_use]
+    pub fn key_for_window(&self, app_id: &str) -> Option<String> {
+        let app_id = app_id.trim();
+        if app_id.is_empty() {
+            return None;
+        }
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&self.entries)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "desktop"))
+            .collect();
+        files.sort();
+        files.into_iter().find_map(|path| {
+            let contents = std::fs::read_to_string(&path).ok()?;
+            let groups = crate::entry::unlocalised_groups(&contents);
+            let main = groups.get("Desktop Entry")?;
+            let key = main.get(KEY_IDENTITY)?;
+            let class = main
+                .get("StartupWMClass")
+                .map(|class| crate::entry::unescape(class));
+            let same = |name: &str| name.trim().eq_ignore_ascii_case(app_id);
+            (same(key) || class.as_deref().is_some_and(same)).then(|| key.clone())
+        })
+    }
+
+    /// [`identify`] `program`, joining an entry this store already has
+    /// for the same window ([`Self::key_for_window`]) when nothing but the
+    /// window names the program.
+    #[must_use]
+    pub fn identify(&self, program: &Program, window: &WindowFacts) -> Identity {
+        let (mut identity, from_window) = identify_with_source(program, window);
+        if from_window
+            && let Some(recorded) = self
+                .key_for_window(&window.app_id)
+                .and_then(|key| self.lookup(&key))
+        {
+            let contents = std::fs::read_to_string(&recorded.path).unwrap_or_default();
+            let locales = crate::locale::locale_candidates();
+            if let Some(entry) =
+                crate::entry::parse(&contents, &recorded.desktop_id, &recorded.path, &locales)
+            {
+                identity.name = entry.name;
+                identity.comment = entry.comment;
+                identity.categories = entry.categories;
+                identity.keywords = entry.keywords;
+                identity.mime_types = entry.mime_types;
+                identity.field_code = entry.exec.as_deref().and_then(field_code);
+                identity.startup_wm_class = entry.startup_wm_class.or(identity.startup_wm_class);
+            }
+            let groups = crate::entry::unlocalised_groups(&contents);
+            if let Some(key) = groups
+                .get("Desktop Entry")
+                .and_then(|main| main.get(KEY_IDENTITY))
+            {
+                identity.key.clone_from(key);
+            }
+        }
+        identity
     }
 
     fn write_icon(&self, slug: &str, icon: &Icon) -> io::Result<String> {
@@ -729,17 +1136,116 @@ fn existing_icon(entry: &Path) -> Option<String> {
         .filter(|icon| icon.starts_with('/'))
 }
 
-/// `<device>:<inode>` of the file at `path`.
+/// The stable identity of the file at `path`: `record:<id>` with its record
+/// id when it is on Tilo's filesystem, which a move or rename keeps and
+/// which finds the file again; otherwise `<device>:<inode>`, which tells a
+/// replaced file from the same one.
 #[cfg(unix)]
 pub fn file_identity(path: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::metadata(path).ok()?;
+    if let Some(id) = record_id(path) {
+        return Some(format!("{RECORD_PREFIX}{}", format_record(&id)));
+    }
     Some(format!("{}:{}", meta.dev(), meta.ino()))
 }
 
 #[cfg(not(unix))]
 pub fn file_identity(_path: &Path) -> Option<String> {
     None
+}
+
+/// Whether `path` is a compiled program that runs by itself (an ELF
+/// executable; every `AppImage` is one), as opposed to a script, a
+/// document, an object file or a shared library. Reads its first bytes.
+pub fn is_program(path: &Path) -> bool {
+    use std::io::Read as _;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let extension = Path::new(&name)
+        .extension()
+        .map(|ext| ext.to_string_lossy().into_owned());
+    let library = matches!(extension.as_deref(), Some("so" | "ko")) || name.contains(".so.");
+    let mut header = [0_u8; 18];
+    let read = !library
+        && std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+        && std::fs::File::open(path)
+            .and_then(|mut file| file.read_exact(&mut header))
+            .is_ok();
+    // `e_type`: 2 is an executable, 3 a position-independent one (or a
+    // library, which the name told apart); 1, an object file, never runs.
+    let kind = match header.get(5) {
+        Some(1) => header.get(16).copied(),
+        Some(2) => header.get(17).copied(),
+        _ => None,
+    };
+    read && header.get(..4) == Some(b"\x7fELF".as_slice()) && matches!(kind, Some(2 | 3))
+}
+
+/// Move the file at `program` into `folder` (the person's Applications
+/// folder), keeping its name, or `<name> (2)` and on when that is taken.
+/// Within one filesystem it is a rename; across filesystems the copy is
+/// written and synced before the original goes. Returns where it is now.
+///
+/// Only for a self-contained file (an `AppImage`): a program that sits
+/// among files it needs must stay where it is.
+///
+/// # Errors
+///
+/// The folder could not be made or the file could not be moved; the file
+/// is then where it was.
+pub fn move_into(program: &Path, folder: &Path) -> io::Result<PathBuf> {
+    let name = program
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a file"))?;
+    if program.parent() == Some(folder) {
+        return Ok(program.to_path_buf());
+    }
+    std::fs::create_dir_all(folder)?;
+    let target = free_name(folder, Path::new(name));
+    match std::fs::rename(program, &target) {
+        Ok(()) => Ok(target),
+        Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
+            copy_then_remove(program, &target)?;
+            Ok(target)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// `name` in `folder`, or the first `<stem> (n).<ext>` nothing has taken.
+fn free_name(folder: &Path, name: &Path) -> PathBuf {
+    let first = folder.join(name);
+    if std::fs::symlink_metadata(&first).is_err() {
+        return first;
+    }
+    let stem = name
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let extension = name
+        .extension()
+        .map(|ext| format!(".{}", ext.to_string_lossy()))
+        .unwrap_or_default();
+    (2_u32..=u32::MAX)
+        .map(|n| folder.join(format!("{stem} ({n}){extension}")))
+        .find(|candidate| std::fs::symlink_metadata(candidate).is_err())
+        .unwrap_or(first)
+}
+
+/// Copy `from` to `to` with its permissions, sync it, then remove `from`.
+fn copy_then_remove(from: &Path, to: &Path) -> io::Result<()> {
+    let written = std::fs::copy(from, to).and_then(|_| {
+        let file = std::fs::File::open(to)?;
+        file.sync_all()
+    });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(to);
+        return Err(error);
+    }
+    std::fs::remove_file(from)
 }
 
 /// `key` as a file name: letters, digits, `.`, `_` and `-` kept, anything
@@ -802,7 +1308,27 @@ fn exec_argument(path: &Path) -> String {
     out
 }
 
-fn render(identity: &Identity, program: &Program, icon: Option<&str>) -> String {
+/// The copies among `copies` that are still files and are not `current`,
+/// in order, each once.
+fn other_copies(copies: impl IntoIterator<Item = PathBuf>, current: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for copy in copies {
+        if copy != current
+            && !out.contains(&copy)
+            && std::fs::metadata(&copy).is_ok_and(|meta| meta.is_file())
+        {
+            out.push(copy);
+        }
+    }
+    out
+}
+
+fn render(
+    identity: &Identity,
+    program: &Program,
+    icon: Option<&str>,
+    locations: &[PathBuf],
+) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("[Desktop Entry]\nType=Application\n");
     let _ = writeln!(out, "Name={}", value(&identity.name));
@@ -839,6 +1365,13 @@ fn render(identity: &Identity, program: &Program, icon: Option<&str>) -> String 
     );
     if let Some(file) = file_identity(&program.path) {
         let _ = writeln!(out, "{KEY_FILE}={file}");
+    }
+    if !locations.is_empty() {
+        let paths: Vec<String> = locations
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let _ = writeln!(out, "{KEY_LOCATIONS}={}", list(&paths));
     }
     out
 }
