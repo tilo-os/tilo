@@ -61,6 +61,8 @@ use ui::widget::{ControlSize, SegmentedTouch};
 mod accessibility;
 mod block_layout;
 mod controls;
+#[cfg(test)]
+mod damage_tests;
 mod dispatch;
 mod find;
 #[cfg(test)]
@@ -1220,6 +1222,9 @@ pub struct WordProcessorWidget {
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Notice,
+    /// The last frame's drawing, part by part, so a frame reports where it
+    /// differs from it.
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     ime_rect: Option<Rect>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
@@ -1482,6 +1487,7 @@ impl WordProcessorWidget {
             kept: None,
             style_menu: StyleMenu::default(),
             toast: Notice::default(),
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),

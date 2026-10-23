@@ -1410,6 +1410,15 @@ impl<'a> ButtonFace<'a> {
 const FOCUS_RING_WIDTH: f64 = 2.0;
 const REST_BORDER_WIDTH: f64 = 1.0;
 
+/// How far past a control's face its ink may reach under `theme`: the focus
+/// ring, the ground-coloured line that parts it from a fill of your colour,
+/// and their antialiasing. A 2 px mark stroked centred on a rect reaches no
+/// further, so a region drawn as a part of its own pads its bounds by this.
+#[must_use]
+pub fn focus_ring_reach(theme: &Theme) -> f64 {
+    FOCUS_RING_WIDTH + f64::from(theme.tokens.metrics.chrome_rule_px) + 0.5
+}
+
 /// Resolve a label key for painting, measuring or speaking. An empty key is
 /// an icon-only face and stays empty: routed through `i18n!` it would come
 /// back as the pseudo-locale's `⟦⟧` markers — a visible bracket pair beside

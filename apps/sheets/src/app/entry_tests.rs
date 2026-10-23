@@ -314,3 +314,75 @@ fn tab_commits_and_moves_right_in_the_running_app() {
         .unwrap();
     assert_eq!(wants, (true, false));
 }
+
+/// Sheets paints its regions as parts, and reports as damage the regions
+/// whose drawing changed: a typed character repaints the editor and the
+/// formula bar, a committed cell its rows and marks, a resize the window.
+#[test]
+fn a_typed_character_damages_its_cell_and_formula_bar_and_a_resize_the_window() {
+    let (w, h) = (1200.0, 800.0);
+    let (mut app, mut doc, mut tr, theme) = super::tests::measured_app_with_doc(w, h, 1.0);
+    let presence = PresenceCtx::default();
+    // One text renderer across frames, as a host keeps: its fonts are the
+    // same fonts from frame to frame.
+    let mut frame = |app: &mut SheetsApp, w: f64, h: f64| {
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        app.relayout();
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        let mut damage = Vec::new();
+        app.collect_damage(&mut damage);
+        app.mark_drawn();
+        damage
+    };
+    let b3 = (1, 2);
+    app.grid.select_only(b3);
+    type_chars(&mut app, &mut doc, "hello");
+    assert!(app.grid.is_editing());
+    for _ in 0..3 {
+        frame(&mut app, w, h);
+    }
+    let still = frame(&mut app, w, h);
+    assert!(
+        still.is_empty(),
+        "an unchanged frame damages nothing: {still:?}"
+    );
+
+    type_chars(&mut app, &mut doc, "!");
+    let damage = frame(&mut app, w, h);
+    let row = app.grid.cell_screen_rect(b3.0, b3.1);
+    let body = app.grid.body_rect();
+    let editor_row = Rect::new(body.x0, row.y0, body.x1, row.y1).inflate(0.0, 4.0);
+    let formula_bar = app
+        .fx_rect
+        .union(app.formula_field_rect)
+        .union(app.name_box_rect)
+        .inflate(4.0, 4.0);
+    assert!(!damage.is_empty(), "the typed character is repainted");
+    for rect in &damage {
+        assert!(
+            editor_row.union(*rect) == editor_row || formula_bar.union(*rect) == formula_bar,
+            "{rect:?} is outside the edited row {editor_row:?} and the formula bar {formula_bar:?}"
+        );
+    }
+
+    press(&mut app, &mut doc, NamedKey::Enter);
+    let damage = frame(&mut app, w, h);
+    let window = Rect::new(0.0, 0.0, w, h);
+    assert!(
+        damage.iter().any(|rect| rect.union(row) == *rect),
+        "the committed cell is repainted: {damage:?}"
+    );
+    let area: f64 = damage.iter().map(Rect::area).sum();
+    assert!(
+        area < window.area() / 4.0,
+        "a committed cell repaints its rows and marks, not the window: {damage:?}"
+    );
+
+    let wider = Rect::new(0.0, 0.0, w + 100.0, h);
+    let damage = frame(&mut app, w + 100.0, h);
+    assert!(
+        damage.iter().any(|rect| rect.union(wider) == *rect),
+        "a resize repaints the window: {damage:?}"
+    );
+}
