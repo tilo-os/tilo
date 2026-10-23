@@ -13,6 +13,14 @@ pub(crate) mod destination_read;
 pub(crate) mod receipt_read;
 pub(crate) mod status_read;
 
+/// The reads Chat answers from its committed record: a feedback report's
+/// receipt, status and destination.
+pub static READERS: [ui::semantic_document_read::RegisteredSemanticReader; 3] = [
+    receipt_read::READER,
+    status_read::READER,
+    destination_read::READER,
+];
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TriageUpdate {

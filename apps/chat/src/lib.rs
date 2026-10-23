@@ -86,7 +86,6 @@ pub mod record;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
-pub mod semantic_read;
 mod shared_resources;
 mod window_bar;
 
