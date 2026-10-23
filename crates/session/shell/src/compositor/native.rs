@@ -7166,6 +7166,9 @@ struct SpatialControlSession {
     pressed_keys: std::collections::BTreeSet<u32>,
     pressed_buttons: std::collections::BTreeSet<u32>,
     nearby_drop: Option<std::path::PathBuf>,
+    /// The window whose tab was being dragged here when the pointer crossed:
+    /// let go over the other device, it shows there.
+    dragged_tab: Option<u64>,
 }
 
 /// Apply a production native-seat batch; the runtime drains revocation barriers
@@ -7241,6 +7244,7 @@ pub(crate) fn teardown_spatial_control_for_test(
         pressed_keys: held.0,
         pressed_buttons: held.1,
         nearby_drop: None,
+        dragged_tab: None,
     });
     end_spatial_control(network, &mut active);
     active.is_none()
@@ -7455,6 +7459,7 @@ fn move_to_observed_display(
             pressed_keys: std::collections::BTreeSet::new(),
             pressed_buttons: std::collections::BTreeSet::new(),
             nearby_drop: drop,
+            dragged_tab: None,
         });
     }
     if crate::shell::device_fabric_runtime::send_spatial_input_bound(
@@ -7490,6 +7495,7 @@ fn move_to_observed_display(
             pressed_keys: std::collections::BTreeSet::new(),
             pressed_buttons: std::collections::BTreeSet::new(),
             nearby_drop,
+            dragged_tab: None,
         });
     }
     SpatialMotion::Remote
@@ -7617,6 +7623,7 @@ fn begin_spatial_control(
         pressed_keys: std::collections::BTreeSet::new(),
         pressed_buttons: std::collections::BTreeSet::new(),
         nearby_drop,
+        dragged_tab: None,
     })
 }
 
@@ -7701,6 +7708,38 @@ fn finish_nearby_drop(
         return Some(false);
     }
     None
+}
+
+/// Let go of a window dragged across the shared edge, over the other device:
+/// it shows there, and the pointer stays there. The press was this device's,
+/// so the release is too; the caller ends the drag here where it began.
+fn finish_tab_move(
+    event: &WindowEvent,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) -> bool {
+    let Some(session) = active.as_mut() else {
+        return false;
+    };
+    if !matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        }
+    ) {
+        return false;
+    }
+    let Some(tab) = session.dragged_tab.take() else {
+        return false;
+    };
+    if let Err(error) =
+        crate::shell::device_fabric_runtime::show_tab_on(network, &session.target, tab)
+    {
+        tracing::warn!(%error, tab, "the window dragged to another device was not shown there");
+    }
+    true
 }
 
 fn forward_spatial_window_event(
@@ -11295,6 +11334,13 @@ pub fn run() {
                             }
                             None => {}
                         }
+                    } else if peer_sync
+                        .as_ref()
+                        .is_some_and(|network| finish_tab_move(wev, network, &mut spatial_control))
+                    {
+                        frame_builder.with_chrome(
+                            crate::shell::chrome_state::ChromeState::request_tab_drag_cancel,
+                        );
                     } else if peer_sync.as_ref().is_some_and(|network| {
                         forward_spatial_window_event(wev, network, &mut spatial_control)
                     }) {
@@ -11433,7 +11479,14 @@ pub fn run() {
                                     time_usec,
                                 );
                             }
-                            crate::compositor::spatial_pointer::SpatialMotion::Remote => {}
+                            crate::compositor::spatial_pointer::SpatialMotion::Remote => {
+                                // A window dragged across the edge goes along.
+                                if let Some(session) = spatial_control.as_mut()
+                                    && session.dragged_tab.is_none()
+                                {
+                                    session.dragged_tab = frame_builder.host().dragged_tab();
+                                }
+                            }
                             crate::compositor::spatial_pointer::SpatialMotion::Returned(point) => {
                                 if let Some(point) = point {
                                     let placements = crate::compositor::backend::layout::placements(
