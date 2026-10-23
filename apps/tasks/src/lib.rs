@@ -126,7 +126,10 @@ impl ResourceApp for App {
             ],
         )])
         .with_id("tasks.places")
-        .with_accessible_name(tr("tasks-title"))
+        // Named for what it lists, not the app: the sidebar's heading and
+        // the window's tab already say "Tasks".
+        .with_accessible_name(tr("tasks-places"))
+        .with_semantic_key("tasks.places")
         .bind_selection(&selection)
         .on_select(move |key| {
             chosen.open.set(None);

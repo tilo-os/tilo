@@ -451,3 +451,88 @@ fn a_runs_question_is_answered_through_the_host() {
         "only the host answers"
     );
 }
+
+/// Each semantics node of an inspection, outer and nested, with the rect it
+/// stands for: its own bounds, else the area of what it is drawn in, as the
+/// browser's accessibility mirror places it.
+fn semantic_nodes(snapshot: &serde_json::Value) -> Vec<(serde_json::Value, [f64; 4])> {
+    fn rect(value: &serde_json::Value) -> Option<[f64; 4]> {
+        let r = value.as_array()?;
+        Some([
+            r[0].as_f64()?,
+            r[1].as_f64()?,
+            r[2].as_f64()?,
+            r[3].as_f64()?,
+        ])
+    }
+    fn bounds(node: &serde_json::Value, enclosing: [f64; 4]) -> [f64; 4] {
+        let b = &node["bounds"];
+        match (
+            b["x0"].as_f64(),
+            b["y0"].as_f64(),
+            b["x1"].as_f64(),
+            b["y1"].as_f64(),
+        ) {
+            (Some(x0), Some(y0), Some(x1), Some(y1)) => [x0, y0, x1 - x0, y1 - y0],
+            _ => enclosing,
+        }
+    }
+    fn nested(
+        node: &serde_json::Value,
+        enclosing: [f64; 4],
+        out: &mut Vec<(serde_json::Value, [f64; 4])>,
+    ) {
+        let at = bounds(node, enclosing);
+        out.push((node.clone(), at));
+        for child in node["children"].as_array().into_iter().flatten() {
+            nested(child, at, out);
+        }
+    }
+    fn walk(layout: &serde_json::Value, out: &mut Vec<(serde_json::Value, [f64; 4])>) {
+        if layout["semantics"].is_object() {
+            nested(
+                &layout["semantics"],
+                rect(&layout["rect"]).unwrap_or_default(),
+                out,
+            );
+        }
+        for child in layout["children"].as_array().into_iter().flatten() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&snapshot["root"], &mut out);
+    out
+}
+
+#[test]
+fn the_places_tree_names_what_it_lists_and_the_heading_is_drawn_where_it_is() {
+    let mut app = open();
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&app.harness().inspection_json().expect("inspection")).expect("json");
+    let nodes = semantic_nodes(&snapshot);
+    let drawn = |at: &[f64; 4]| at[2] > 0.0 && at[3] > 0.0;
+
+    // The places tree is named for what it lists, apart from the app's
+    // title the heading and the window's tab carry, and keeps one identity.
+    let trees: Vec<_> = nodes.iter().filter(|(n, _)| n["role"] == "Tree").collect();
+    assert_eq!(trees.len(), 1, "one tree: {trees:?}");
+    let (tree, at) = trees[0];
+    assert_eq!(tree["name"], "Task views");
+    assert_eq!(tree["semantic_key"], "tasks.places");
+    assert!(drawn(at), "the tree is drawn: {at:?}");
+
+    // The page's heading is in the tree, at the rect it is drawn at. It
+    // shares its name with the place it heads ("Issues"), so assistive
+    // technology tells the two apart by role.
+    let headings: Vec<_> = nodes
+        .iter()
+        .filter(|(n, _)| n["role"].get("Heading").is_some())
+        .collect();
+    assert!(
+        headings
+            .iter()
+            .any(|(n, at)| n["name"] == "Issues" && drawn(at)),
+        "the heading \"Issues\" is in the tree where it is drawn: {headings:?}"
+    );
+}

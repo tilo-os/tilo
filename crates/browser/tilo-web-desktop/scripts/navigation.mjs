@@ -417,8 +417,9 @@ assert.equal(await evaluate('tiloMount.state().error ?? null'), null, 'the deskt
 // node is drawn, both in page CSS pixels. A node without bounds of its own
 // stands for the area it is drawn in, as in the mirror. A node is matched to
 // its element by its semantic key or action target (the last part of the
-// element's data-tilo-semantic key) when that is unique, else by a unique
-// accessible name; a node neither identifies is not checked.
+// element's data-tilo-semantic key) when that is unique, else by an
+// accessible name unique among nodes of its role (a page's heading may share
+// its name with the place it heads); a node neither identifies is not checked.
 const MIRROR_PLACEMENT = `(async()=>{
   tiloMount.requestSemantics();
   await new Promise(done => setTimeout(done, 0));
@@ -441,17 +442,18 @@ const MIRROR_PLACEMENT = `(async()=>{
     for(const child of n.children??[])walk(child);
   };
   walk(state.semantics?.root);
-  const tally=key=>{const m=new Map();for(const n of nodes)if(n[key])m.set(n[key],(m.get(n[key])??0)+1);return m;};
-  const ids=tally('id'),names=tally('name');
+  const named=n=>n.name?n.role+'|'+n.name:undefined;
+  const tally=key=>{const m=new Map();for(const n of nodes){const k=key(n);if(k)m.set(k,(m.get(k)??0)+1);}return m;};
+  const ids=tally(n=>n.id),names=tally(named);
   const mirrors=[...tiloMount.semantics.querySelectorAll('[data-tilo-semantic]')].map(e=>{
     let id;try{id=JSON.parse(e.dataset.tiloSemantic).at(-1);}catch{}
-    return {e,id,name:e.getAttribute('aria-label')};
+    return {e,id,named:named({role:e.tiloRole&&role({role:e.tiloRole}),name:e.getAttribute('aria-label')})};
   });
   const controls=[];
   for(const n of nodes){
     let mirrored=[];
     if(typeof n.id==='string'&&ids.get(n.id)===1)mirrored=mirrors.filter(m=>m.id===n.id);
-    if(mirrored.length!==1&&n.name&&names.get(n.name)===1)mirrored=mirrors.filter(m=>m.name===n.name);
+    if(mirrored.length!==1&&named(n)&&names.get(named(n))===1)mirrored=mirrors.filter(m=>m.named===named(n));
     if(mirrored.length!==1)continue;
     const e=mirrored[0].e,d=e.getBoundingClientRect(),b=n.b;
     controls.push({name:n.name??n.id,role:n.role,editable:e.localName==='textarea',focused:n.focused,active:document.activeElement===e,
@@ -495,10 +497,13 @@ async function mirrorLiesOverEveryControl(page, what, minimum, accept = () => tr
 // The windows, one at a time, and the controls each must have mirrored: the
 // whole desktop is checked each time, so these count its top bar and window
 // frame too. Calendar's month has a button a day, view radio buttons, a
-// combo box and a navigation tree; Tasks has a text field.
+// combo box and a navigation tree; Tasks has a text field, its places tree
+// and the page's heading.
 const HIDPI_WINDOWS = [
-  ['so.tilo.calendar', {Button: 45, RadioButton: 5, ToggleButton: 2, ComboBox: 1, Tree: 1, TreeItem: 4, Tab: 1, Separator: 1}],
-  ['so.tilo.tasks', {Button: 10, ToggleButton: 2, TextInput: 1, TreeItem: 2, Separator: 1}],
+  ['so.tilo.calendar', {Button: 45, RadioButton: 5, ToggleButton: 2, ComboBox: 1, Tree: 1, TreeItem: 4, Tab: 1, Separator: 1},
+    [['Tree', 'Calendar navigation']]],
+  ['so.tilo.tasks', {Button: 10, ToggleButton: 2, TextInput: 1, Tree: 1, TreeItem: 2, Heading: 1, Separator: 1},
+    [['Tree', 'Task views'], ['Heading', 'Issues']]],
 ];
 {
   const hidpi = await desktop(2, {context: await browser.context()});
@@ -506,12 +511,14 @@ const HIDPI_WINDOWS = [
   const navigate = body => hidpi.evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();
     await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});})()`);
   const entries = async () => (await hidpi.evaluate('tiloMount.navigation.getSnapshot()')).entries;
-  for (const [app, minimum] of HIDPI_WINDOWS) {
+  for (const [app, minimum, named] of HIDPI_WINDOWS) {
     for (const entry of await entries()) await navigate({kind: 'close', route: entry.route});
     await polls(`no window is open before ${app} at device scale 2`, async () => (await entries()).length, 0);
     await navigate({kind: 'launch', app});
     await polls(`${app} opens at device scale 2`, async () => (await entries()).length, 1);
     const controls = await mirrorLiesOverEveryControl(hidpi, `${app}'s controls are mirrored where they are drawn at device scale 2`, minimum);
+    for (const [role, name] of named)
+      assert.ok(controls.some(c => c.role === role && c.name === name), `${app}'s ${role} "${name}" is mirrored where it is drawn at device scale 2`);
     if (!minimum.TextInput) continue;
     const field = controls.find(c => c.role === 'TextInput' && c.editable);
     assert.ok(field, `${app}'s text field is mirrored by an editable element: ${JSON.stringify(controls.filter(c => c.role === 'TextInput'))}`);

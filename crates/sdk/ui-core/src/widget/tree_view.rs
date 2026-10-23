@@ -894,6 +894,7 @@ pub struct TreeView<T, M = TreeNode<T>> {
     delegate_structure_dirty: bool,
     delegate_layout_dirty: bool,
     accessible_name: Option<String>,
+    semantic_key: Option<String>,
     rect: Rect,
     is_focused: bool,
     last_cursor: Option<Point>,
@@ -1133,6 +1134,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             delegate_structure_dirty: false,
             delegate_layout_dirty: false,
             accessible_name: None,
+            semantic_key: None,
             rect: Rect::ZERO,
             is_focused: false,
             last_cursor: None,
@@ -1513,6 +1515,15 @@ impl<T, M: TreeModel> TreeView<T, M> {
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
+        self
+    }
+
+    /// The tree's stable identity for assistive technology and the browser's
+    /// accessibility mirror, so its node stays the same one across frames and
+    /// layout changes rather than being known by its place in the layout.
+    #[must_use]
+    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
+        self.semantic_key = Some(key.into());
         self
     }
 
@@ -3852,6 +3863,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .focused(self.is_focused())
                     .disabled(!self.is_enabled()),
             );
+        if let Some(key) = &self.semantic_key {
+            node = node.with_semantic_key(key.clone());
+        }
         if let Some(sel) = self.selected()
             && let Some(idx) = self.visible_index_of(sel)
             && let Some((TreeRowKey::Node(_), depth)) = self.index.row_at(&self.model, idx)
