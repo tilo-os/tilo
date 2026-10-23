@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A Tilo computer joins a real site's home workspace through its door: the
+"""A Tilo computer joins a site's home workspace through its door: the
 acceptance of "a workspace is its room".
 
 Against a site that runs the way tilo.coffee runs (its entry.json naming the
@@ -17,12 +17,22 @@ headless sessions of fresh throwaway identities whose community site it is
   rejoin     A, started again and joined again, holds the same workspace
              (same id, same room), never a second one
 
-Never point it at the production Lounge from CI: everything it does is
-real, posts included. It refuses tilo.coffee unless --production is given.
+Without --site it starts that site here: the room service in persistent
+mode with its relay and the site's web entry serving the desktop bundle
+(crates/hosting/tilo-room-service/dev/run.py, the production pieces with
+plain local origins), from the nested session's build, so every run admits,
+enrolls, posts and reads through the real door path with nothing stubbed.
+--bundle names the desktop bundle the site serves to the web view; without
+one the site serves only entry.json and the web checks fail.
+
+With --site it joins that site instead. Never point it at the production
+Lounge from CI: everything it does is real, posts included. It refuses
+tilo.coffee unless --production is given.
+
 A check that cannot observe its subject fails; nothing is skipped. Exits
 non-zero when any check failed, 2 when it could not run at all.
 
-usage: dist/dev/site-door-acceptance.py --site URL [--room UUID] [--out DIR]
+usage: dist/dev/site-door-acceptance.py [--site URL [--room UUID]] [--out DIR]
            [--no-build] [--bundle DIR]
 """
 from __future__ import annotations
@@ -40,9 +50,12 @@ import urllib.parse
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
+RUN_SITE = REPO / "crates/hosting/tilo-room-service/dev/run.py"
 WEB_VIEW = REPO / "crates/hosting/tilo-room-service/dev/site-web-view.mjs"
 # How long a fresh session may take to start and join the site.
 START = 900.0
+# How long the local site may take to answer.
+SITE_START = 300.0
 PRODUCTION = {"tilo.coffee", "www.tilo.coffee"}
 
 
@@ -143,14 +156,79 @@ def workspaces_of(session: Session) -> list[dict]:
     return [w for w in tree.get("workspaces", []) if str(w.get("room")) == session.room]
 
 
+def free_port_base(span: int = 80) -> int:
+    """A base port with `span` free ports above it on this machine: a t node
+    runs other checks beside this one."""
+    import random
+    import socket
+    for _ in range(200):
+        base = random.randrange(20000, 60000 - span)
+        try:
+            for port in range(base, base + span):
+                with socket.socket() as probe:
+                    probe.bind(("127.0.0.1", port))
+        except OSError:
+            continue
+        return base
+    raise Failed("no free ports for the local site")
+
+
+class LocalSite:
+    """The site this script starts when given none: run.py's room service,
+    relay and web entry, from the nested session's build."""
+
+    def __init__(self, out: pathlib.Path, bundle: pathlib.Path | None):
+        self.dir, self.bundle = out / "site", bundle
+        self.process: subprocess.Popen | None = None
+        self.site = self.room = ""
+
+    def start(self):
+        build = pathlib.Path(os.environ.get("TILO_NESTED_SESSION_BUILD", REPO / "target/nested-session"))
+        self.dir.mkdir(parents=True, exist_ok=True)
+        ready = self.dir / "ready.json"
+        ready.unlink(missing_ok=True)
+        base = free_port_base()
+        command = [sys.executable, "-I", str(RUN_SITE), "--scratch", str(self.dir), "--fresh",
+                   "--name", "lounge", "--shown-name", "Lounge", "--home-app", "so.tilo.chat",
+                   "--relay-bin", str(build / "bin/tilo-relay"),
+                   "--room-service-bin", str(build / "bin/tilo-room-service"),
+                   "--web-port", str(base), "--api-port", str(base + 1), "--port-base", str(base + 10),
+                   "--ready-file", str(ready)]
+        command += ["--bundle", str(self.bundle)] if self.bundle else ["--no-bundle"]
+        # Both sessions and the web view join from one address: the door's
+        # per-address guest limits are the operator's setting here.
+        env = dict(os.environ, TILO_ROOMS_GUEST_JOINS_PER_10_MIN="1000", TILO_ROOMS_GUEST_JOINS_PER_DAY="100000")
+        log = open(self.dir / "site.log", "a")
+        self.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                        start_new_session=True, env=env)
+
+        def answered():
+            if self.process.poll() is not None:
+                raise Failed(f"the local site exited with {self.process.returncode} (see {self.dir / 'site.log'})")
+            try:
+                return json.loads(ready.read_text())
+            except (OSError, ValueError):
+                return None
+        up = wait_for("the local site to answer", answered, SITE_START)
+        self.site, self.room = up["site"], up["room"]
+        print(f"the local site is up at {self.site} (room {self.room})")
+
+    def stop(self):
+        if self.process is None or self.process.poll() is not None:
+            return
+        os.killpg(self.process.pid, signal.SIGTERM)
+        try:
+            self.process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            os.killpg(self.process.pid, signal.SIGKILL)
+
+
 def web_view(site: str, args, out: pathlib.Path, text: str | None) -> dict:
     """Open the site in headless Chrome as a person of its own and report
     the room it opened and, with `text`, whether its Chat shows it."""
     command = ["node", str(WEB_VIEW), "--site", site, "--out", str(out / "web")]
     if text is not None:
         command += ["--expect", text]
-    if args.bundle:
-        command += ["--bundle", str(args.bundle)]
     done = subprocess.run(command, capture_output=True, text=True, timeout=600)
     (out / "web.log").write_text(done.stdout + done.stderr)
     try:
@@ -159,29 +237,58 @@ def web_view(site: str, args, out: pathlib.Path, text: str | None) -> dict:
         raise Failed(f"the web view did not report (exit {done.returncode}; see {out / 'web.log'})")
 
 
+def tail(path: pathlib.Path, lines: int = 80, matching: tuple[str, ...] = ()):
+    """The end of `path`, printed under its name, if it exists: its last
+    `lines`, or its last `lines` that mention any of `matching`."""
+    try:
+        text = path.read_text(errors="replace").splitlines()
+    except OSError:
+        print(f"--- {path}: missing")
+        return
+    if matching:
+        text = [line for line in text if any(word in line.lower() for word in matching)]
+    print(f"--- {path} (last {min(lines, len(text))} of {len(text)} lines)")
+    for line in text[-lines:]:
+        print(f"    {line}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--site", default=os.environ.get("TILO_ACCEPTANCE_SITE"),
-                        help="the site whose home workspace is joined (TILO_ACCEPTANCE_SITE)")
+                        help="the site whose home workspace is joined (TILO_ACCEPTANCE_SITE); "
+                             "without one, a local site this script starts")
     parser.add_argument("--room", default=os.environ.get("TILO_ACCEPTANCE_ROOM"),
                         help="the room the site's home workspace is, as its host's operator knows it")
     parser.add_argument("--production", action="store_true", help="allow tilo.coffee itself (never from CI)")
     parser.add_argument("--no-build", action="store_true", help="start the sessions from the last build")
-    parser.add_argument("--bundle", type=pathlib.Path, help="the web bundle the web view checks against")
+    parser.add_argument("--bundle", type=pathlib.Path,
+                        help="the desktop bundle the local site serves to the web view")
     parser.add_argument("--out", type=pathlib.Path, help="where logs, state dumps and snapshots go")
     args = parser.parse_args()
-    if not args.site:
-        print("no site: give --site or TILO_ACCEPTANCE_SITE", file=sys.stderr)
-        return 2
-    site = args.site if args.site.endswith("/") else args.site + "/"
-    host = urllib.parse.urlparse(site).hostname or ""
-    if host in PRODUCTION and not args.production:
-        print(f"{host} is the production Lounge: this posts into it. Use a test site, or --production by hand.",
-              file=sys.stderr)
+    if args.site:
+        host = urllib.parse.urlparse(args.site).hostname or ""
+        if host in PRODUCTION and not args.production:
+            print(f"{host} is the production Lounge: this posts into it. Use a test site, or --production by hand.",
+                  file=sys.stderr)
+            return 2
+    elif args.room:
+        print("--room names a room of a --site; the local site says its own", file=sys.stderr)
         return 2
     # Under target/, never /tmp: two sessions keep their whole state there.
     out = (args.out or REPO / "target/site-door-acceptance" / time.strftime("%Y%m%d-%H%M%S")).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    local = None if args.site else LocalSite(out, args.bundle)
+    if local is not None:
+        try:
+            local.start()
+        except Failed as failure:
+            print(f"FAIL site: {failure}")
+            tail(local.dir / "site.log")
+            local.stop()
+            return 2
+        args.room = local.room
+    site = args.site or local.site
+    site = site if site.endswith("/") else site + "/"
     a = Running("a", out / "a", site, out)
     b = Running("b", out / "b", site, out)
     failed: list[str] = []
@@ -227,12 +334,30 @@ def main() -> int:
               f"after joining again A holds {[(w['id'], w['room']) for w in again]}")
         for session in (session_a, session_b):
             session.snapshot(out, "end")
-    except Failed as failure:
+    except (Failed, OSError) as failure:
+        # A session that went away takes its control socket with it: an
+        # OSError here is a session that stopped, said as a failure.
         failed.append("setup")
-        print(f"FAIL setup: {failure}")
+        print(f"FAIL setup: {failure!r}")
+        for running in (a, b):
+            if running.process is not None and running.process.poll() is not None:
+                print(f"session {running.name} exited with {running.process.returncode}")
+        # A failed check keeps no outputs: say here what the sessions said.
+        for running in (a, b):
+            tail(out / f"{running.name}.log")
+            tail(running.state / "state/tilo/peer-sync/hosted-rooms.json")
+            tail(running.state / "logs/shell.log", lines=40)
+            tail(running.state / "logs/shell.log", lines=150, matching=(
+                "community", "site", "door", "join", "enrol", "room", "error", "warn", "panic", "refus"))
     finally:
         a.stop()
         b.stop()
+        if failed:
+            tail(out / "web.log", lines=60)
+        if local is not None:
+            if failed:
+                tail(local.dir / "site.log", lines=60)
+            local.stop()
     print(("all door checks passed" if not failed else f"failed: {', '.join(failed)}") + f" ({out})")
     return 1 if failed else 0
 
