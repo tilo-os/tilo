@@ -978,6 +978,16 @@ impl NotesApp {
         ))
     }
 
+    /// Whether a popup of the window is open: one of the shell's, the page
+    /// tree's menu, or the editor's.
+    fn popup_open(&self) -> bool {
+        self.sidebar.menu_is_open()
+            || self.main.has_editor_popup()
+            || Widget::modal_capture(&self.shell).is_some()
+            || Widget::modal_capture(&self.main).is_some()
+            || Widget::modal_capture(self.sidebar.tree()).is_some()
+    }
+
     /// A press on the failed save's toast: "Try again" asks the host to
     /// submit the note again, the close button dismisses it. Returns whether
     /// the press was the toast's.
@@ -3002,13 +3012,25 @@ impl Widget for NotesApp {
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
             return;
         }
-        if self.handle_save_status_press(event, ctx.handled) {
-            return;
-        }
-        self.transfer_toasts.handle_event(event, ctx);
-        self.take_toast_undo();
-        if *ctx.handled {
-            return;
+        // An open popup (a dropdown's list, a menu, the editor's block
+        // menu) takes the pointer before the save bubble and the toasts in
+        // the corner it may reach over.
+        let popup_holds_pointer = self.popup_open()
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            );
+        if !popup_holds_pointer {
+            if self.handle_save_status_press(event, ctx.handled) {
+                return;
+            }
+            self.transfer_toasts.handle_event(event, ctx);
+            self.take_toast_undo();
+            if *ctx.handled {
+                return;
+            }
         }
         if self.handle_shell(event, ctx) {
             return;

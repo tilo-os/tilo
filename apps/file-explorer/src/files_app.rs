@@ -9304,6 +9304,11 @@ impl FileExplorerWidget {
         if !(ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key()) {
             return false;
         }
+        // An open popup of the window (a dropdown's list, a menu) takes
+        // every wheel over the window, held keys or not.
+        if Widget::modal_capture(&self.nav).is_some() {
+            return false;
+        }
         let dy = match delta {
             winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
             winit::event::MouseScrollDelta::PixelDelta(p) => p.y,
