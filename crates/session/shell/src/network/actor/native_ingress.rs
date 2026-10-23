@@ -383,6 +383,11 @@ impl ActorState {
             return;
         };
         route.pending = None;
+        // The host is reachable again: a certificate renewal that failed
+        // meanwhile tries again.
+        if result.is_ok() {
+            tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
+        }
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };

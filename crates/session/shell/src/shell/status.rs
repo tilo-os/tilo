@@ -411,7 +411,7 @@ fn publish_network(
     state: Option<NetworkState>,
 ) -> bool {
     let hints = network_hints(state.as_ref());
-    status.0.send_if_modified(|last| {
+    let changed = status.0.send_if_modified(|last| {
         if *last == hints {
             false
         } else {
@@ -419,6 +419,10 @@ fn publish_network(
             true
         }
     });
+    // A certificate renewal that failed while offline tries again.
+    if changed {
+        tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
+    }
     if let Ok(mut current) = slot.lock() {
         *current = state;
     }

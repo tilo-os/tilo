@@ -4290,6 +4290,9 @@ fn report_addrs(
             out.clear();
             out.push(current);
         }
+        // A new address or home relay: the network came back or moved, and
+        // a certificate renewal that failed meanwhile tries again.
+        tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
     };
     report(current);
     tokio::spawn(async move {
