@@ -24075,6 +24075,7 @@ dependencies = [
  "resvg",
  "ring",
  "rqrr",
+ "rusqlite",
  "russh",
  "rustc-hash 1.1.0",
  "rustix 0.38.44",
