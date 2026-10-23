@@ -17486,7 +17486,6 @@ dependencies = [
  "collab-types",
  "desktop-policy",
  "hex",
- "postcard",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -17497,7 +17496,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-sort",
  "uuid",
- "web-time",
 ]
 
 [[package]]

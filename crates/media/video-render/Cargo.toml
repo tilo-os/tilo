@@ -52,5 +52,12 @@ serial_test.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
 
+# The tests reach these only through the editor's footage helper, which
+# `tests/render_helper.rs` include!s from apps/video-editor/tests/support
+# (`gstreamer_app`, `advisory_lock`, `tilo_test_env::hang_deadline`), where
+# machete cannot follow.
+[package.metadata.cargo-machete]
+ignored = ["gstreamer-app", "tilo-advisory-lock", "tilo-test-env"]
+
 [lints]
 workspace = true
