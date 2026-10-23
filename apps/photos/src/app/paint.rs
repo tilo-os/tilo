@@ -518,7 +518,8 @@ impl PhotosApp {
         if self.library_albums.is_empty() {
             let title = tr("photos-albums-empty-title");
             let body = tr("photos-albums-empty-body");
-            let action = tr("photos-new-album");
+            // While an album is being made, its editor stands for New album.
+            let action = (!self.album_editor).then(|| tr("photos-new-album"));
             self.album_editor_hits.extend(
                 EmptyState::paint(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -528,7 +529,7 @@ impl PhotosApp {
                         illustration: None,
                         title: &title,
                         message: Some(&body),
-                        action_label: Some(&action),
+                        action_label: action.as_deref(),
                         error: false,
                     },
                     self.pointer,
