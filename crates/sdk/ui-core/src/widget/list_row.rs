@@ -3199,6 +3199,21 @@ impl Widget for ListRow {
                 .is_some_and(|t| t.element.is_layout_dirty())
     }
 
+    // The control (child 1, after the band's stand-in) is described by the
+    // row's subtitle and secondary line, which a reader would otherwise only
+    // meet on the row.
+    fn accessibility_child_description(&self, child_index: usize) -> Option<String> {
+        if child_index != 1 || self.trailing.is_none() {
+            return None;
+        }
+        let words: Vec<&str> = [self.subtitle.as_deref(), self.secondary.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter(|words| !words.is_empty())
+            .collect();
+        (!words.is_empty()).then(|| words.join(", "))
+    }
+
     // In the order of the row's layout nodes: the text band's stand-in,
     // then the control.
     fn children(&self) -> Vec<&dyn Widget> {

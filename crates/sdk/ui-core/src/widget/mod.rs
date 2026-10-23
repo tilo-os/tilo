@@ -1916,6 +1916,15 @@ pub trait Widget {
         false
     }
 
+    /// What describes one retained [`children`](Widget::children) entry to
+    /// assistive technology, when this widget holds the words for it: a
+    /// row's secondary line is its trailing switch's description. The
+    /// bridge sets it as that child's node's description unless the child
+    /// describes itself.
+    fn accessibility_child_description(&self, _child_index: usize) -> Option<String> {
+        None
+    }
+
     /// Perform an accessibility [`Action`](crate::a11y::Action) on this
     /// widget, or on one of its **synthetic** accessibility nodes. May mutate
     /// the CRDT like [`handle_event`](Widget::handle_event).
