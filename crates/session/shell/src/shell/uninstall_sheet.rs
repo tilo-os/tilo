@@ -53,7 +53,6 @@ pub struct Asking {
 }
 
 impl Asking {
-    /// The sheet for `item`.
     #[must_use]
     pub fn new(item: AppListItem) -> Self {
         let remove_data = LocalState::new(true);
@@ -141,7 +140,6 @@ impl Asking {
         self.dismissed.get().then_some(Answer::Cancelled)
     }
 
-    /// Whether the sheet offers "Remove its data".
     #[must_use]
     pub fn offers_data_switch(&self) -> bool {
         self.item.removal() == AppRemoval::UninstallWithData

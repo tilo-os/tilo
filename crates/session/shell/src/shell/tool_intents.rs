@@ -466,7 +466,6 @@ mod tests {
 
     #[test]
     fn workspace_tool_intents_are_typed_and_confined_to_the_active_room() {
-        // Phase `service_accepts_only_versioned_typed_requests`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("tools.sock");
@@ -504,7 +503,6 @@ mod tests {
             assert_eq!(seen.lock().unwrap().len(), 1);
         }
 
-        // Phase `workspace_route_opens_exact_tab_for_active_room`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -532,7 +530,6 @@ mod tests {
             assert_eq!(state.ws_settings_tab, WsTab::Permissions);
         }
 
-        // Phase `workspace_route_cannot_switch_or_target_another_room`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -554,7 +551,6 @@ mod tests {
 
     #[test]
     fn terminal_intents_run_their_command_in_terminal_or_open_it_plainly() {
-        // Phase `files_directory_runs_a_login_shell_there`.
         {
             let intent = ToolIntent::Terminal {
                 directory: Some("/home/u/Projects".into()),
@@ -564,7 +560,6 @@ mod tests {
             };
             assert_eq!(argv.last().map(String::as_str), Some("/home/u/Projects"));
         }
-        // Phase `container_shell_runs_the_engine_cli`.
         {
             let intent = ToolIntent::ContainerShell {
                 container: "web".into(),
@@ -575,7 +570,6 @@ mod tests {
                 Route::TerminalCommand(vec!["distrobox".into(), "enter".into(), "web".into()])
             );
         }
-        // Phase `plain_terminal_and_tools_open_their_package`.
         {
             assert_eq!(
                 route(&ToolIntent::Terminal { directory: None }),
@@ -600,7 +594,6 @@ mod tests {
 
     #[test]
     fn identity_backup_intents_open_the_trusted_flow_only_for_this_workspace() {
-        // Phase `identity_backup_route_opens_trusted_flow_for_current_workspace`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -629,7 +622,6 @@ mod tests {
             assert_eq!(opens, 1);
         }
 
-        // Phase `identity_backup_route_cannot_target_another_workspace`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
