@@ -6,10 +6,12 @@
 //! [`forbid_on_this_thread`]; from then until the guard drops, callers
 //! that would otherwise ask for a durable barrier
 //! ([`crate::DurableStore::flush_where_allowed`]) only start the commit and
-//! learn of its outcome later, through [`crate::DurableStore::durability`].
+//! learn of its outcome later, through [`crate::DurableStore::durability`],
+//! and code that would wait on the disk itself (an app the compositor hosts
+//! listing a folder) does it on a worker.
 //!
-//! A store whose blocking [`crate::DurableStore::flush`] is still reached on
-//! such a thread reports it through [`refused`]: to the observer the process
+//! A blocking call still reached on such a thread, such as a store's
+//! [`crate::DurableStore::flush`], reports it through [`refused`]: to the observer the process
 //! installed ([`observe`], which a compositor's audit lists), and, on a
 //! thread a test marked with [`forbid_strictly_on_this_thread`], as a panic,
 //! so the test names the caller.
@@ -78,8 +80,15 @@ pub fn observe(observer: fn(&str)) -> bool {
     OBSERVER.set(observer).is_ok()
 }
 
-/// A store is about to wait (`what` says on what) on this thread. Where
-/// waits are forbidden the observer hears of it, and a strict test fails.
+/// The caller is about to wait on storage (`what` says on what): a store's
+/// commit, or the disk itself, such as listing a folder. Where waits are
+/// forbidden the observer hears of it, and a strict test fails, naming the
+/// caller.
+///
+/// # Panics
+///
+/// On a thread a test marked with [`forbid_strictly_on_this_thread`].
+#[track_caller]
 pub fn refused(what: &str) {
     let rule = RULE.with(Cell::get);
     if rule == Rule::Allowed {
@@ -88,10 +97,12 @@ pub fn refused(what: &str) {
     if let Some(observer) = OBSERVER.get() {
         observer(what);
     }
+    let at = std::panic::Location::caller();
     assert!(
         rule != Rule::Strict,
-        "{what}: a storage wait on a thread that must never wait on storage; \
-         use DurableStore::flush_where_allowed and read the outcome from durability"
+        "{at}: {what} is a storage wait on a thread that must never wait on storage; \
+         move it to a worker, or for a commit use DurableStore::flush_where_allowed \
+         and read the outcome from durability"
     );
 }
 
@@ -112,7 +123,12 @@ mod tests {
             {
                 let _inner = forbid_strictly_on_this_thread();
                 let strict = std::panic::catch_unwind(|| refused("a wait"));
-                assert!(strict.is_err(), "a strict thread fails the test");
+                let message = strict.expect_err("a strict thread fails the test");
+                let message = message
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(message.contains("waiting.rs"), "names no caller: {message}");
             }
             assert!(forbidden(), "the outer guard still holds");
             refused("tolerated again");

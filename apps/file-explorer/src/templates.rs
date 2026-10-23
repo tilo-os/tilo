@@ -30,7 +30,7 @@ pub fn templates_dir() -> Option<PathBuf> {
 /// dotfiles are skipped), sorted by name for a stable menu order. An absent or
 /// unreadable directory yields an empty list.
 pub fn list_templates(dir: &Path) -> Vec<PathBuf> {
-    tilo_files::frame_loop::assert_may_wait("listing the Templates folder");
+    ui::storage::waiting::refused("listing the Templates folder");
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
         for entry in rd.flatten() {
@@ -87,7 +87,7 @@ impl Catalog {
         };
         // On a frame loop the worker starts at once, so the first menu
         // already has the list.
-        if tilo_files::frame_loop::on_frame_loop() {
+        if ui::storage::waiting::forbidden() {
             let _ = catalog.live();
         }
         catalog
@@ -105,7 +105,7 @@ impl Catalog {
     /// The template files, sorted by name. Listed when asked, except on a
     /// frame loop, where the worker's last list is read.
     pub(crate) fn templates(&self) -> Vec<PathBuf> {
-        if tilo_files::frame_loop::on_frame_loop() || self.live.get().is_some() {
+        if ui::storage::waiting::forbidden() || self.live.get().is_some() {
             return self
                 .live()
                 .map(|live| live.shared.templates.lock_recover().clone())
@@ -285,7 +285,7 @@ mod tests {
         let catalog = std::thread::scope(|scope| {
             scope
                 .spawn(|| {
-                    tilo_files::frame_loop::enter();
+                    let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
                     let catalog = Catalog::new(Some(dir.clone()), ui::WakeHandle::detached());
                     // Reading it waits on nothing: this would panic otherwise.
                     assert!(catalog.templates().is_empty());
@@ -315,7 +315,7 @@ mod tests {
         let catalog = std::thread::scope(|scope| {
             scope
                 .spawn(move || {
-                    tilo_files::frame_loop::enter();
+                    let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
                     // This would panic were the folder listed here.
                     let _ = catalog.templates();
                     catalog
