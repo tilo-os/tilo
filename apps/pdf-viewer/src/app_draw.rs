@@ -607,6 +607,9 @@ impl PdfApp {
         self.draw_rail(scene, base, tr, theme, &thumb_imgs);
         let mut edit_rect = Rect::ZERO;
         let hits = self.draw_sidebar(scene, base, tr, theme, &mut edit_rect);
+        if self.show_sidebar && !self.overlay_mode {
+            self.review.paint_resize(scene, base, theme);
+        }
         self.edit_rect = edit_rect;
         if let Some(rect) = free_text_edit {
             self.edit_rect = rect;
