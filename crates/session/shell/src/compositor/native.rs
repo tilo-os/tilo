@@ -10193,6 +10193,9 @@ pub fn run() {
     // Whether the pre-sleep signal found an existing lock. A failed suspend
     // may clear only a lock installed for that sleep request.
     let mut sleep_lock_was_locked = false;
+    // Whether the pending sleep is the idle timer's. Its pre-sleep lock is
+    // the idle timer's too, which the person's other devices do not follow.
+    let mut sleep_requested_by_idle = false;
     // Suspend-inhibitor registry: apps hold a token via
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
     // Mailbox the async power service uses to reach this loop (lock, battery
@@ -11283,6 +11286,7 @@ pub fn run() {
                             Some(tilo_power_mgmt::PowerAction::Suspend) => {
                                 tracing::info!(target: "tilo::power", "power key: requesting suspend");
                                 sleep_lock_was_locked = session.is_locked();
+                                sleep_requested_by_idle = false;
                                 session_changed = true;
                                 power_bridge.request_suspend();
                             }
@@ -11409,6 +11413,7 @@ pub fn run() {
                             Some(crate::shell::media_keys::Response::Suspend) => {
                                 tracing::info!(target: "tilo::power", "sleep key: requesting suspend");
                                 sleep_lock_was_locked = session.is_locked();
+                                sleep_requested_by_idle = false;
                                 session_changed = true;
                                 power_bridge.request_suspend();
                             }
@@ -12192,6 +12197,7 @@ pub fn run() {
                 } else {
                     tracing::info!(target: "tilo::power", "idle threshold reached: requesting suspend");
                     sleep_lock_was_locked = session.is_locked();
+                    sleep_requested_by_idle = true;
                     power_bridge.request_idle_suspend();
                 }
             } else {
@@ -12221,7 +12227,26 @@ pub fn run() {
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
-                    apply_session_transitions!(session.prepare_for_sleep(Instant::now()));
+                    let transitions = session.prepare_for_sleep(Instant::now());
+                    if sleep_requested_by_idle {
+                        // The idle timer's sleep locks like the idle timer:
+                        // the lock stays on this device.
+                        for t in transitions {
+                            if t == SessionTransition::Locked {
+                                session_follow.locked_by_idle();
+                            }
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
+                                &mut screen_dimmer,
+                                Some(&mut state.output_management),
+                            );
+                        }
+                    } else {
+                        apply_session_transitions!(transitions);
+                    }
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
@@ -12235,6 +12260,7 @@ pub fn run() {
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
                     session.cancel_suspend();
+                    sleep_requested_by_idle = false;
                     // A lid/critical request can fail before it ever emits
                     // PreparingForSleep. Only undo a lock that this pending
                     // sleep actually installed; never unlock an unrelated
@@ -12255,6 +12281,7 @@ pub fn run() {
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
                     sleep_lock_was_locked = false;
+                    sleep_requested_by_idle = false;
                     // A resumed panel is scanning out whatever was left in its buffers, so the next frame must be a full one.
                     outputs_dirty = false;
                     session_changed = true;
