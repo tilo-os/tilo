@@ -119,7 +119,9 @@ arguments render. The issue page shows the question with one Answer
 button; the answer it sends goes through the session's door, and the host
 puts the question, with its draft, to the run's person on its own
 confirmation sheet: Allow once, Allow for the issue (by its title), or
-Deny. The tracker records the answer they chose there, never the app's.
+Deny. The run's person is also told with an ordinary notification, whose
+Answer opens the same sheet; nothing raises the sheet on its own. The
+tracker records the answer they chose there, never the app's.
 Allow once grants nothing. Allow for the issue first records, as the
 person, an answer grant naming the issue for that one action
 (`agent_answers::answer_grant`), so its runs take that action without

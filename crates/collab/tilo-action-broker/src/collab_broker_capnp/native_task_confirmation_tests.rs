@@ -282,6 +282,64 @@ async fn the_tasks_app_has_a_runs_question_put_to_its_person_on_the_hosts_sheet(
         .await;
 }
 
+/// What the run's person is told without being interrupted.
+#[derive(Default)]
+struct Notices {
+    told: std::sync::Mutex<Vec<String>>,
+    withdrawn: std::sync::Mutex<Vec<String>>,
+}
+
+impl crate::app_actions::AppActionConsentPrompter for Notices {
+    fn ask(
+        &self,
+        _request: crate::app_actions::AppActionConsentRequest,
+    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionConsent>> {
+        panic!("a run's question never raises the sheet on its own")
+    }
+
+    fn notify(
+        &self,
+        request: crate::app_actions::AppActionConsentRequest,
+        _answer: crate::app_actions::AnswerLater,
+    ) -> bool {
+        self.told.lock().unwrap().push(request.handle);
+        true
+    }
+
+    fn withdraw(&self, handle: &str) {
+        self.withdrawn.lock().unwrap().push(handle.to_owned());
+    }
+}
+
+/// What a run asks reaches its person as a notice, once, and the notice is
+/// taken back once they answered.
+#[tokio::test(flavor = "current_thread")]
+async fn a_runs_question_reaches_its_person_as_a_notice_once() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let (_target, _stream) = append_target(&f).await;
+            let notices = Arc::new(Notices::default());
+            f.state.set_app_action_consent(notices.clone());
+            let rooms = std::collections::BTreeSet::from([room().to_string()]);
+
+            let asked = ask_append(&f, "Draft line");
+            f.state.refresh_tracker_runs(&rooms);
+            f.state.refresh_tracker_runs(&rooms);
+            let handle = format!("run-question:{}", asked.id);
+            assert_eq!(*notices.told.lock().unwrap(), [handle.clone()]);
+            assert!(notices.withdrawn.lock().unwrap().is_empty());
+
+            confirm_as(&f, "Draft line");
+            f.state.refresh_tracker_runs(&rooms);
+            assert_eq!(*notices.withdrawn.lock().unwrap(), [handle]);
+            assert_eq!(notices.told.lock().unwrap().len(), 1);
+            drop(f);
+        })
+        .await;
+}
+
 /// Nothing was dispatched to the target app (peer 200) that it has not read.
 pub(super) fn nothing_delivered() -> bool {
     crate::collab_broker_capnp::unread_invocations(200) == 0

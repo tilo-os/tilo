@@ -580,7 +580,7 @@ impl CapnpBrokerState {
         })
     }
 
-    pub(super) fn refresh_native_task_delivery(&self) {
+    pub(super) fn refresh_native_task_delivery(self: &Arc<Self>) {
         let rooms = match self.task_subscribers.lock() {
             Ok(subscribers) => {
                 let rooms = subscribers
