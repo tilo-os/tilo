@@ -114,16 +114,25 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]) #arrival-retry { display: block; }
     [data-arrival=stopped][data-entry=refused][data-own-desktop] #arrival-own { display: block; }
-    /* Turned away for coming without an invitation: the field for the link
-       they get, under the words, and their own desktop under it. */
-    #arrival-invite { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px + 5.5em); transform: translateX(-50%); width: min(26em, calc(100% - 48px)); grid-template-columns: 1fr auto; gap: 8px; margin: 0; }
+    /* Turned away for coming without an invitation: a door of its own,
+       one group centred a little above the middle (optically centred): the
+       mark, a heading, a line on how to get in, the field for the invite
+       link, and their own desktop under it. #status keeps the same words
+       for screen readers. */
+    #arrival-door { display: none; }
+    [data-arrival=stopped][data-entry=refused][data-invite-link] #arrival-door { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box; padding: 24px 24px 8vh; text-align: center; background: #121214; }
+    [data-invite-link] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    #arrival-door > svg { display: block; margin-bottom: 20px; }
+    #arrival-door h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; line-height: 1.3; color: #ececf0; }
+    #arrival-door > p { margin: 0 0 24px; max-width: 30em; line-height: 1.5; color: #a8a8b2; }
+    #arrival-door #arrival-own { position: static; transform: none; margin-top: 4px; }
+    #arrival-invite { display: grid; width: min(26em, 100%); grid-template-columns: 1fr auto; gap: 8px; margin: 0; }
     #arrival-invite input { min-width: 0; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: #e6e6e9; }
     #arrival-invite input:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 1px; }
     #arrival-invite button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
     #arrival-invite button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     #arrival-invite-error { grid-column: 1 / -1; margin: 0; min-height: 1.5em; color: #ff8a80; text-align: center; }
-    [data-arrival=stopped][data-entry=refused][data-invite-link] #arrival-invite { display: grid; }
-    [data-invite-link] #arrival-own { top: calc(50% + 22px + 5.5em + 88px); background: transparent; border: 1px solid #34363d; color: #d4d4d8; }
+    [data-invite-link] #arrival-own { background: transparent; border: 1px solid #34363d; color: #d4d4d8; }
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .tilo-entry-card { z-index: 3; }
     /* A workspace that turned this browser away for good: only its card shows. */
@@ -142,7 +151,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
   <button id="arrival-own" type="button">Open your own desktop</button>
-  <form id="arrival-invite"><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form>
+  <section id="arrival-door" aria-labelledby="arrival-door-heading"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-door-heading"></h1><p id="arrival-door-body"></p><form id="arrival-invite"><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the
