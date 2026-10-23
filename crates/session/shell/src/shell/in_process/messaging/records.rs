@@ -4,7 +4,6 @@ use super::{
     Authorization, NativeMessagingCredential, NativeMessagingIdentity, Owner, Route, SendError,
     SignalAuthority,
 };
-use accounts::person::PersonAccounts;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -108,7 +107,8 @@ pub(crate) struct Records {
     principal: String,
     device: String,
     directory: Metadata,
-    accounts: Metadata,
+    /// The person's records the session keeps, their accounts among them.
+    person: crate::shell::settings_records::Holder,
     receiver: mpsc::Receiver<Request>,
     port: Arc<Port>,
 }
@@ -117,16 +117,16 @@ impl Records {
         owners: &mut RecordOwners,
         principal: &str,
         device: &str,
+        person: crate::shell::settings_records::Holder,
         wake: crate::session_runtime::Wake,
     ) -> Result<Rc<dyn RecordQueries>, SendError> {
         let directory = Metadata::existing::<ContactDirectory>(owners, principal)?;
-        let accounts = Metadata::existing::<PersonAccounts>(owners, principal)?;
         let (sender, receiver) = mpsc::sync_channel(CAPACITY);
         let owner = Rc::new(Self {
             principal: principal.into(),
             device: device.into(),
             directory,
-            accounts,
+            person,
             receiver,
             port: Arc::new(Port {
                 id: uuid::Uuid::new_v4(),
@@ -199,7 +199,10 @@ impl Records {
         if owner.principal != self.principal || owner.device != self.device {
             return Err(SendError::Revoked);
         }
-        let accounts = self.accounts.read::<PersonAccounts>()?.store();
+        let accounts = self
+            .person
+            .accounts(accounts::person::PersonAccounts::store)
+            .map_err(|_| SendError::Unavailable)?;
         let service = match owner.service {
             Service::Signal => "signal",
             Service::Whatsapp => "whatsapp",

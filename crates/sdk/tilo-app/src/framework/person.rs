@@ -344,18 +344,31 @@ impl PersonState {
 
     /// The person's record of `P`, opened on first use.
     pub(crate) fn open<P: Resource>(&self) -> Option<PersonRecord<P>> {
-        self.open_of::<P>(self.app_id, true)
+        self.open_of::<P>(self.app_id, true, true)
     }
 
     /// The shared record `P`, opened on first use: kept by its owner, a copy
     /// of it here in every other app, changed where `P` says.
     pub(crate) fn open_shared<P: tilo_resource::SharedRecord>(&self) -> Option<PersonRecord<P>> {
-        self.open_of::<P>(P::OWNER, P::edited_by(self.app_id))
+        self.open_of::<P>(P::OWNER, P::edited_by(self.app_id), true)
+    }
+
+    /// The shared record `P`, opened on first use as [`Self::open_shared`]
+    /// but never published: a host holds it for its own edits, and the app
+    /// whose window shows it publishes its actions.
+    pub(crate) fn hold_shared<P: tilo_resource::SharedRecord>(&self) -> Option<PersonRecord<P>> {
+        self.open_of::<P>(P::OWNER, P::edited_by(self.app_id), false)
     }
 
     /// The person's record of `P` that the app `owner` keeps, opened on
-    /// first use, and whether this app changes it.
-    fn open_of<P: Resource>(&self, owner: &'static str, edits: bool) -> Option<PersonRecord<P>> {
+    /// first use, whether this app changes it, and whether it is published
+    /// when it is this app's own.
+    fn open_of<P: Resource>(
+        &self,
+        owner: &'static str,
+        edits: bool,
+        publish: bool,
+    ) -> Option<PersonRecord<P>> {
         let open = |record: StoredRecord| -> Option<Opened> {
             let shared = self.shared_of::<P>(record, (!edits).then_some(owner))?;
             let held = Rc::new(held::<P>(&shared, edits));
@@ -378,6 +391,7 @@ impl PersonState {
             P::LABEL,
             &|doc| P::initialize(doc).map_err(|error| error.to_string()),
             &open,
+            publish,
         )?;
         shared
             .downcast::<Shared<P>>()
@@ -387,8 +401,8 @@ impl PersonState {
 
     /// The open record of `kind` that the app `owner` keeps, or the one
     /// `open` makes of it, created by `initialize` where it does not exist
-    /// yet, kept and (for this app's own) published: the part of opening a
-    /// person record that does not depend on its type.
+    /// yet, kept and (for this app's own, when `publish`) published: the
+    /// part of opening a person record that does not depend on its type.
     fn open_kind(
         &self,
         owner: &'static str,
@@ -396,6 +410,7 @@ impl PersonState {
         label: &'static str,
         initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
         open: &dyn Fn(StoredRecord) -> Option<Opened>,
+        publish: bool,
     ) -> Option<Rc<dyn Any>> {
         let key = (owner, kind.to_owned());
         if let Some(open) = self.opened.borrow().get(&key) {
@@ -403,7 +418,7 @@ impl PersonState {
         }
         let record = open_record(&self.records_of(owner)?, kind.to_owned(), kind, initialize)?;
         let Opened { shared, door, step } = open(record)?;
-        if owner != self.app_id {
+        if owner != self.app_id || !publish {
             self.opened.borrow_mut().insert(key, Rc::clone(&shared));
             return Some(shared);
         }

@@ -47,6 +47,9 @@ pub struct InProcessApps {
     first_accounts: Option<Rc<dyn messaging::first_account::FirstAccounts>>,
     messaging_registry: Option<std::sync::Arc<dyn tilo_messaging::MessagingRegistry>>,
     credential_owner: Option<accounts::CredentialOwner>,
+    /// The person's records the session keeps (their accounts among them),
+    /// held where its settings are; `None` keeps the apps from them.
+    person_records: Option<crate::shell::settings_records::Holder>,
     messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
     messaging_record_wake: Option<crate::session_runtime::Wake>,
     messaging_transport:
@@ -105,6 +108,7 @@ impl InProcessApps {
             first_accounts: None,
             messaging_registry: None,
             credential_owner: None,
+            person_records: None,
             messaging_records: None,
             messaging_record_wake: None,
             messaging_transport: None,
@@ -380,9 +384,8 @@ impl InProcessApps {
     /// As [`Self::at`].
     pub fn native(author: &str) -> Result<Self, LaunchError> {
         let mut apps = Self::native_for_profile(
-            &cli::data_home()
-                .join(crate::shell::SHELL_RECORDS_PACKAGE)
-                .join("apps"),
+            &crate::shell::settings_records::session_apps(),
+            crate::shell::settings_records::person_dir(),
             author,
             launcher::services::collab_socket(),
         )?;
@@ -417,10 +420,12 @@ impl InProcessApps {
         Ok(())
     }
 
-    /// The same native startup, with an explicit private profile and broker
-    /// scope for owned native hosts and isolated integration fixtures.
+    /// The same native startup, with an explicit private profile, directory
+    /// of the person's records and broker scope for owned native hosts and
+    /// isolated integration fixtures.
     pub(crate) fn native_for_profile(
         profile: &std::path::Path,
+        person: Option<std::path::PathBuf>,
         author: &str,
         socket: std::path::PathBuf,
     ) -> Result<Self, LaunchError> {
@@ -434,6 +439,10 @@ impl InProcessApps {
             )
         }));
         apps.native_broker_socket = Some(socket);
+        apps.person_records = Some(crate::shell::settings_records::Holder::held(
+            (person, author.to_owned()),
+            profile,
+        ));
         apps.feedback_destination = feedback_native::configured_destination(profile)?;
         apps.native_messaging_root = Some(profile.join("private-messages"));
         let registry = tilo_messaging::messaging_registry(&apps.author.0)
